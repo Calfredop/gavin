@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct SessionManager {
     registry: Mutex<Registry>,
     sessions: Mutex<HashMap<String, PtySession>>,
+    attached_writers: Mutex<HashMap<String, Arc<Mutex<UnixStream>>>>,
 }
 
 impl SessionManager {
@@ -17,6 +18,7 @@ impl SessionManager {
         Self {
             registry: Mutex::new(registry),
             sessions: Mutex::new(HashMap::new()),
+            attached_writers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -89,6 +91,59 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
         session.try_wait()
     }
+
+    pub fn attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<UnixStream>>) {
+        let already_running = {
+            let mut writers = self.attached_writers.lock().unwrap();
+            let existed = writers.contains_key(id);
+            writers.insert(id.to_string(), writer);
+            existed
+        };
+        if !already_running {
+            self.spawn_pump(id.to_string());
+        }
+    }
+
+    fn spawn_pump(self: &Arc<Self>, id: String) {
+        let manager = Arc::clone(self);
+        std::thread::spawn(move || {
+            let mut reader = match manager.reader_for(&id) {
+                Ok(r) => r,
+                Err(e) => {
+                    if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                        let _ = write_message(&mut *w.lock().unwrap(), &Response::Error { message: e.to_string() });
+                    }
+                    manager.attached_writers.lock().unwrap().remove(&id);
+                    return;
+                }
+            };
+
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                        // No writer currently attached, or a write to it failed (dead
+                        // connection): drop this chunk and keep reading. The session
+                        // keeps running either way; a future Attach registers a fresh
+                        // writer and picks up from whatever the PTY produces next —
+                        // scrollback replay is explicitly out of scope (see Non-goals).
+                        if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                            let _ = write_message(&mut *w.lock().unwrap(), &Response::Output { id: id.clone(), data });
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
+            if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                let _ = write_message(&mut *w.lock().unwrap(), &Response::SessionExited { id: id.clone(), exit_code });
+            }
+            manager.attached_writers.lock().unwrap().remove(&id);
+        });
+    }
 }
 
 pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
@@ -129,7 +184,7 @@ pub fn run_server(socket_path: &std::path::Path, manager: Arc<SessionManager>) -
 }
 
 fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
-    let mut writer = stream.try_clone()?;
+    let writer = Arc::new(Mutex::new(stream.try_clone()?));
     let mut reader = BufReader::new(stream);
 
     loop {
@@ -140,43 +195,14 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
         };
 
         if let Request::Attach { id } = req {
-            spawn_output_pump(Arc::clone(&manager), id, writer.try_clone()?);
+            manager.attach(&id, Arc::clone(&writer));
             continue;
         }
 
         let response = handle_request(&manager, req);
-        write_message(&mut writer, &response)?;
+        write_message(&mut *writer.lock().unwrap(), &response)?;
     }
     Ok(())
-}
-
-fn spawn_output_pump(manager: Arc<SessionManager>, id: String, mut writer: UnixStream) {
-    std::thread::spawn(move || {
-        let mut reader = match manager.reader_for(&id) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = write_message(&mut writer, &Response::Error { message: e.to_string() });
-                return;
-            }
-        };
-
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    if write_message(&mut writer, &Response::Output { id: id.clone(), data }).is_err() {
-                        return;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-
-        let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
-        let _ = write_message(&mut writer, &Response::SessionExited { id, exit_code });
-    });
 }
 
 #[cfg(test)]
@@ -309,6 +335,62 @@ mod tests {
             if let Response::Output { data, .. } = resp {
                 collected.push_str(&data);
                 if collected.contains("attached_ok") {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
+    }
+
+    #[test]
+    fn reattaching_after_detach_delivers_output_to_the_new_connection_only() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        // First attach, then drop the connection without the session exiting.
+        {
+            let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+            write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+            // Give the pump thread a moment to start before we drop the connection.
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Reattach from a third connection and drive the session — this must
+        // not race with, or lose output to, the now-disconnected first pump.
+        let mut stream3 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream3, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream3,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "echo reattached_ok\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream3.try_clone().unwrap());
+        let mut collected = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::Output { data, .. } = resp {
+                collected.push_str(&data);
+                if collected.contains("reattached_ok") {
                     break;
                 }
             }
