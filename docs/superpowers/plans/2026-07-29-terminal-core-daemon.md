@@ -682,6 +682,12 @@ git commit -m "feat(daemon): add newline-delimited JSON IPC protocol"
 - Consumes: `registry::{Registry, SessionRecord, SessionStatus}` (Task 1), `pty::PtySession` (Task 2), `protocol::{Request, Response, SessionSummary, read_message, write_message}` (Task 3).
 - Produces: `server::SessionManager` with `SessionManager::new(registry: Registry) -> Self`, `.create_session(workspace_path: &str, cwd: &str, command: Option<&str>) -> anyhow::Result<String>`, `.list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>>`, `.write_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()>`, `.kill_session(&self, id: &str) -> anyhow::Result<()>`. `server::handle_request(manager: &SessionManager, req: Request) -> Response`. `server::run_server(socket_path: &Path, manager: Arc<SessionManager>) -> anyhow::Result<()>` (blocks, accepting connections until the process exits).
 
+Note: `Registry` wraps a `rusqlite::Connection`, which is `Send` but not
+`Sync`. `SessionManager` is shared across connection-handling threads as
+`Arc<SessionManager>`, and `Arc<T>` is only `Send` (movable into
+`thread::spawn`) when `T: Send + Sync`. So `registry` is stored as
+`Mutex<Registry>`, exactly like `sessions` already is — this isn't optional.
+
 - [ ] **Step 1: Write the failing integration test**
 
 Create `crates/daemon/src/server.rs`:
@@ -697,7 +703,7 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub struct SessionManager {
-    registry: Registry,
+    registry: Mutex<Registry>,
     sessions: Mutex<HashMap<String, PtySession>>,
 }
 
@@ -806,7 +812,7 @@ Add to `crates/daemon/src/server.rs` (above the `#[cfg(test)]` block):
 impl SessionManager {
     pub fn new(registry: Registry) -> Self {
         Self {
-            registry,
+            registry: Mutex::new(registry),
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -820,7 +826,7 @@ impl SessionManager {
         let id = Uuid::new_v4().to_string();
         let pty = PtySession::spawn(cwd, command)?;
 
-        self.registry.insert(&SessionRecord {
+        self.registry.lock().unwrap().insert(&SessionRecord {
             id: id.clone(),
             workspace_path: workspace_path.to_string(),
             cwd: cwd.to_string(),
@@ -834,7 +840,7 @@ impl SessionManager {
     }
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
-        let records = self.registry.list()?;
+        let records = self.registry.lock().unwrap().list()?;
         Ok(records
             .into_iter()
             .map(|r| SessionSummary {
@@ -860,7 +866,7 @@ impl SessionManager {
         if let Some(session) = sessions.get_mut(id) {
             session.kill()?;
         }
-        self.registry.remove(id)?;
+        self.registry.lock().unwrap().remove(id)?;
         sessions.remove(id);
         Ok(())
     }
@@ -1196,12 +1202,12 @@ Add to `impl SessionManager` in `crates/daemon/src/server.rs`:
 
 ```rust
     pub fn recover(&self) -> anyhow::Result<()> {
-        let records = self.registry.list()?;
+        let records = self.registry.lock().unwrap().list()?;
         let mut sessions = self.sessions.lock().unwrap();
         for record in records {
             let pty = PtySession::spawn(&record.cwd, record.command.as_deref())?;
             sessions.insert(record.id.clone(), pty);
-            self.registry.mark_restored(&record.id)?;
+            self.registry.lock().unwrap().mark_restored(&record.id)?;
         }
         Ok(())
     }
