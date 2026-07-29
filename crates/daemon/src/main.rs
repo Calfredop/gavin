@@ -3,4 +3,50 @@ mod pty;
 mod registry;
 mod server;
 
-fn main() {}
+use registry::Registry;
+use server::SessionManager;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+fn app_support_dir() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME not set");
+    PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("gavin")
+}
+
+fn socket_path() -> PathBuf {
+    app_support_dir().join("daemon.sock")
+}
+
+fn db_path() -> PathBuf {
+    app_support_dir().join("registry.sqlite")
+}
+
+fn main() -> anyhow::Result<()> {
+    let dir = app_support_dir();
+    std::fs::create_dir_all(&dir)?;
+
+    let registry = Registry::open(&db_path())?;
+    let manager = Arc::new(SessionManager::new(registry));
+    manager.recover()?;
+
+    println!("gavin-daemon listening on {}", socket_path().display());
+    server::run_server(&socket_path(), manager)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_are_scoped_under_app_support() {
+        let dir = app_support_dir();
+        assert!(socket_path().starts_with(&dir));
+        assert!(db_path().starts_with(&dir));
+        assert_eq!(socket_path().file_name().unwrap(), "daemon.sock");
+        assert_eq!(db_path().file_name().unwrap(), "registry.sqlite");
+    }
+}
