@@ -1336,9 +1336,24 @@ Add to `impl SessionManager` in `crates/daemon/src/server.rs`:
         let records = self.registry.lock().unwrap().list()?;
         let mut sessions = self.sessions.lock().unwrap();
         for record in records {
-            let pty = PtySession::spawn(&record.cwd, record.command.as_deref())?;
-            sessions.insert(record.id.clone(), pty);
-            self.registry.lock().unwrap().mark_restored(&record.id)?;
+            // A single bad leftover record (e.g. its cwd was deleted or an
+            // unmounted volume since the last run — plausible after any real
+            // restart) must not abort recovery of every session after it in
+            // the list. Log and move on instead of propagating with `?`.
+            match PtySession::spawn(&record.cwd, record.command.as_deref()) {
+                Ok(pty) => {
+                    sessions.insert(record.id.clone(), pty);
+                    if let Err(e) = self.registry.lock().unwrap().mark_restored(&record.id) {
+                        eprintln!("failed to mark session {} restored: {e}", record.id);
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "failed to recover session {} (cwd {}): {e}",
+                        record.id, record.cwd
+                    );
+                }
+            }
         }
         Ok(())
     }
