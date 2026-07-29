@@ -1082,10 +1082,19 @@ Add these two methods to `impl SessionManager` (alongside `reader_for`/`exit_cod
             let mut reader = match manager.reader_for(&id) {
                 Ok(r) => r,
                 Err(e) => {
-                    if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                    // Atomically take-and-remove in one lock acquisition. Getting the
+                    // writer and removing the entry as two separate lock acquisitions
+                    // would leave a window where a concurrent Attach for this same id
+                    // registers a new writer in between — and this cleanup would then
+                    // delete that fresh registration, stranding the new client with no
+                    // pump thread ever spawned for it again. `.remove()` returns
+                    // whatever is currently registered (possibly a writer from a
+                    // concurrent Attach that raced in first), so the right writer
+                    // always gets notified no matter how the race lands.
+                    let removed = manager.attached_writers.lock().unwrap().remove(&id);
+                    if let Some(w) = removed {
                         let _ = write_message(&mut *w.lock().unwrap(), &Response::Error { message: e.to_string() });
                     }
-                    manager.attached_writers.lock().unwrap().remove(&id);
                     return;
                 }
             };
@@ -1110,10 +1119,13 @@ Add these two methods to `impl SessionManager` (alongside `reader_for`/`exit_cod
             }
 
             let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
-            if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+            // Same atomic take-and-remove as the error path above, and for the same
+            // reason: a single `.remove()` call closes the race window a separate
+            // get-then-remove would leave open.
+            let removed = manager.attached_writers.lock().unwrap().remove(&id);
+            if let Some(w) = removed {
                 let _ = write_message(&mut *w.lock().unwrap(), &Response::SessionExited { id: id.clone(), exit_code });
             }
-            manager.attached_writers.lock().unwrap().remove(&id);
         });
     }
 ```
