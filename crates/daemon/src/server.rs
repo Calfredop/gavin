@@ -2,7 +2,7 @@ use crate::protocol::{read_message, write_message, Request, Response, SessionSum
 use crate::pty::PtySession;
 use crate::registry::{Registry, SessionRecord, SessionStatus};
 use std::collections::HashMap;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -73,6 +73,22 @@ impl SessionManager {
         sessions.remove(id);
         Ok(())
     }
+
+    pub fn reader_for(&self, id: &str) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
+        let sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
+        session.reader()
+    }
+
+    pub fn exit_code_for(&self, id: &str) -> anyhow::Result<Option<i32>> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
+        session.try_wait()
+    }
 }
 
 pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
@@ -88,9 +104,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok),
         Request::ResizeSession { .. } => Ok(Response::Ok),
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
-        Request::Attach { .. } => Ok(Response::Error {
-            message: "Attach is not handled yet".to_string(),
-        }),
+        Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
@@ -124,10 +138,45 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
             Some(r) => r,
             None => break,
         };
+
+        if let Request::Attach { id } = req {
+            spawn_output_pump(Arc::clone(&manager), id, writer.try_clone()?);
+            continue;
+        }
+
         let response = handle_request(&manager, req);
         write_message(&mut writer, &response)?;
     }
     Ok(())
+}
+
+fn spawn_output_pump(manager: Arc<SessionManager>, id: String, mut writer: UnixStream) {
+    std::thread::spawn(move || {
+        let mut reader = match manager.reader_for(&id) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = write_message(&mut writer, &Response::Error { message: e.to_string() });
+                return;
+            }
+        };
+
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if write_message(&mut writer, &Response::Output { id: id.clone(), data }).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
+        let _ = write_message(&mut writer, &Response::SessionExited { id, exit_code });
+    });
 }
 
 #[cfg(test)]
@@ -216,5 +265,54 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn attach_from_a_new_connection_streams_output_of_an_existing_session() {
+        let (socket_path, _dir) = start_test_server();
+
+        // Connection 1: create the session, then drop the connection
+        // (simulating the GUI app closing).
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        // Connection 2: attach to the same session and drive it.
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "echo attached_ok\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut collected = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::Output { data, .. } = resp {
+                collected.push_str(&data);
+                if collected.contains("attached_ok") {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
     }
 }
