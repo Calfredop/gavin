@@ -92,6 +92,17 @@ impl SessionManager {
         session.try_wait()
     }
 
+    pub fn recover(&self) -> anyhow::Result<()> {
+        let records = self.registry.lock().unwrap().list()?;
+        let mut sessions = self.sessions.lock().unwrap();
+        for record in records {
+            let pty = PtySession::spawn(&record.cwd, record.command.as_deref())?;
+            sessions.insert(record.id.clone(), pty);
+            self.registry.lock().unwrap().mark_restored(&record.id)?;
+        }
+        Ok(())
+    }
+
     pub fn attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<UnixStream>>) {
         let already_running = {
             let mut writers = self.attached_writers.lock().unwrap();
@@ -406,6 +417,53 @@ mod tests {
                     break;
                 }
             }
+            assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
+    }
+
+    #[test]
+    fn recover_spawns_fresh_shells_for_leftover_registry_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+
+        // Simulate a previous daemon process: a registry entry exists,
+        // but there is no live PTY for it (this new process just started).
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "leftover-1".to_string(),
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    status: SessionStatus::Idle,
+                    restored: false,
+                })
+                .unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+        let manager = SessionManager::new(registry);
+
+        manager.recover().unwrap();
+
+        let sessions = manager.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "leftover-1");
+        assert_eq!(sessions[0].restored, true);
+
+        // The recovered session must have a real, live PTY behind it.
+        manager
+            .write_input("leftover-1", b"echo recovered_ok\n")
+            .unwrap();
+        let mut reader = manager.reader_for("leftover-1").unwrap();
+
+        let mut collected = String::new();
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !collected.contains("recovered_ok") {
+            let n = reader.read(&mut buf).unwrap();
+            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
             assert!(std::time::Instant::now() < deadline, "got: {collected}");
         }
     }
