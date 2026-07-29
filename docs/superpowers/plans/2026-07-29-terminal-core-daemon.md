@@ -949,7 +949,7 @@ git commit -m "feat(daemon): serve session CRUD over a Unix domain socket"
 
 **Interfaces:**
 - Consumes: `SessionManager` (Task 4), `PtySession::reader`/`.try_wait` (Task 2).
-- Produces: `SessionManager::reader_for(&self, id: &str) -> anyhow::Result<Box<dyn std::io::Read + Send>>`, `SessionManager::exit_code_for(&self, id: &str) -> anyhow::Result<Option<i32>>`. `handle_connection` now spawns an output-pump thread when it sees `Request::Attach`, writing `Response::Output` (and `Response::SessionExited` on EOF) to that connection.
+- Produces: `SessionManager::reader_for(&self, id: &str) -> anyhow::Result<Box<dyn std::io::Read + Send>>`, `SessionManager::exit_code_for(&self, id: &str) -> anyhow::Result<Option<i32>>`, `SessionManager::attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<UnixStream>>)`. A new `SessionManager.attached_writers` field tracks, per session, the currently-registered writer for whichever connection last attached. `attach` spawns at most one long-lived pump thread per session (on its first attach) that forwards `Response::Output` (and `Response::SessionExited` on EOF) to whichever writer is currently registered — a later `Attach` for the same session swaps the registered writer rather than spawning a competing thread. `handle_connection`'s own writer is now `Arc<Mutex<UnixStream>>`, shared with any pump thread forwarding to that connection, so the two can never interleave writes.
 
 This is the task that proves "sessions survive the app closing": a session created on one connection can be attached to and driven from a completely different, later connection.
 
@@ -1035,11 +1035,94 @@ Add these two methods to `impl SessionManager` in `crates/daemon/src/server.rs`:
     }
 ```
 
-Replace the `Request::Attach { .. }` arm in `handle_request` — but `handle_request` only returns a single `Response`, and `Attach` needs to keep streaming, so move `Attach` handling out of `handle_request` and into `handle_connection` directly. Replace the whole `handle_connection` function with:
+Naive design note (superseded below): spawning a brand-new reader-clone thread on every `Attach` call — one thread per attach, reading via its own `try_clone_reader()` — has three real problems once a session gets attached to more than once over its lifetime: (1) the pump thread and the main connection loop write to independent socket clones with no coordination, so interleaved `write_message` calls (each two syscalls: body, then newline) can corrupt the line-framed protocol; (2) a pump thread only exits on PTY EOF or a failed write, so a client that attaches then disconnects from an otherwise-idle session leaves the thread blocked in `read()` forever — an unbounded leak across repeated attach/detach cycles; (3) because each `Attach` clones a *new* independent PTY reader, two live threads can compete for the same output bytes, so a client reattaching while a stale thread is still blocked can silently miss output.
+
+The design below avoids all three: **at most one reader thread per session, for the session's whole attached lifetime**, forwarding to whichever writer is currently registered as attached (swapped on each new `Attach`, no new thread spawned), with that writer shared behind one `Mutex` so the main connection loop and the forwarding thread never race on the same socket.
+
+Add one field to `SessionManager` — go back and change its definition (from Task 4) to:
+
+```rust
+pub struct SessionManager {
+    registry: Mutex<Registry>,
+    sessions: Mutex<HashMap<String, PtySession>>,
+    attached_writers: Mutex<HashMap<String, Arc<Mutex<UnixStream>>>>,
+}
+```
+
+And its constructor:
+
+```rust
+    pub fn new(registry: Registry) -> Self {
+        Self {
+            registry: Mutex::new(registry),
+            sessions: Mutex::new(HashMap::new()),
+            attached_writers: Mutex::new(HashMap::new()),
+        }
+    }
+```
+
+Add these two methods to `impl SessionManager` (alongside `reader_for`/`exit_code_for` above):
+
+```rust
+    pub fn attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<UnixStream>>) {
+        let already_running = {
+            let mut writers = self.attached_writers.lock().unwrap();
+            let existed = writers.contains_key(id);
+            writers.insert(id.to_string(), writer);
+            existed
+        };
+        if !already_running {
+            self.spawn_pump(id.to_string());
+        }
+    }
+
+    fn spawn_pump(self: &Arc<Self>, id: String) {
+        let manager = Arc::clone(self);
+        std::thread::spawn(move || {
+            let mut reader = match manager.reader_for(&id) {
+                Ok(r) => r,
+                Err(e) => {
+                    if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                        let _ = write_message(&mut *w.lock().unwrap(), &Response::Error { message: e.to_string() });
+                    }
+                    manager.attached_writers.lock().unwrap().remove(&id);
+                    return;
+                }
+            };
+
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                        // No writer currently attached, or a write to it failed (dead
+                        // connection): drop this chunk and keep reading. The session
+                        // keeps running either way; a future Attach registers a fresh
+                        // writer and picks up from whatever the PTY produces next —
+                        // scrollback replay is explicitly out of scope (see Non-goals).
+                        if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                            let _ = write_message(&mut *w.lock().unwrap(), &Response::Output { id: id.clone(), data });
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
+            if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                let _ = write_message(&mut *w.lock().unwrap(), &Response::SessionExited { id: id.clone(), exit_code });
+            }
+            manager.attached_writers.lock().unwrap().remove(&id);
+        });
+    }
+```
+
+`Attach` needs to keep streaming, which `handle_request`'s single-`Response`-return shape can't express, so move `Attach` handling out of `handle_request` and into `handle_connection` directly. Replace the whole `handle_connection` function with:
 
 ```rust
 fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
-    let mut writer = stream.try_clone()?;
+    let writer = Arc::new(Mutex::new(stream.try_clone()?));
     let mut reader = BufReader::new(stream);
 
     loop {
@@ -1050,45 +1133,18 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
         };
 
         if let Request::Attach { id } = req {
-            spawn_output_pump(Arc::clone(&manager), id, writer.try_clone()?);
+            manager.attach(&id, Arc::clone(&writer));
             continue;
         }
 
         let response = handle_request(&manager, req);
-        write_message(&mut writer, &response)?;
+        write_message(&mut *writer.lock().unwrap(), &response)?;
     }
     Ok(())
 }
-
-fn spawn_output_pump(manager: Arc<SessionManager>, id: String, mut writer: UnixStream) {
-    std::thread::spawn(move || {
-        let mut reader = match manager.reader_for(&id) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = write_message(&mut writer, &Response::Error { message: e.to_string() });
-                return;
-            }
-        };
-
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    if write_message(&mut writer, &Response::Output { id: id.clone(), data }).is_err() {
-                        return;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-
-        let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
-        let _ = write_message(&mut writer, &Response::SessionExited { id, exit_code });
-    });
-}
 ```
+
+Every write to a given connection — whether from the main request/response loop or from a pump thread forwarding output to that connection — now goes through the same `Arc<Mutex<UnixStream>>`, so two writes can never interleave.
 
 Add `use std::io::Read;` to the top of `crates/daemon/src/server.rs`.
 
@@ -1115,10 +1171,73 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+Add one more test proving a second, later attach correctly takes over from an
+earlier one instead of racing it or losing output — this is the regression
+test for the fan-out/leak problem the naive design above had. Add to the
+`#[cfg(test)] mod tests` block, alongside the existing attach test:
+
+```rust
+    #[test]
+    fn reattaching_after_detach_delivers_output_to_the_new_connection_only() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        // First attach, then drop the connection without the session exiting.
+        {
+            let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+            write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+            // Give the pump thread a moment to start before we drop the connection.
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Reattach from a third connection and drive the session — this must
+        // not race with, or lose output to, the now-disconnected first pump.
+        let mut stream3 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream3, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream3,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "echo reattached_ok\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream3.try_clone().unwrap());
+        let mut collected = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::Output { data, .. } = resp {
+                collected.push_str(&data);
+                if collected.contains("reattached_ok") {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
+    }
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p gavin-daemon server::`
-Expected: PASS — all tests in `server::tests` green, including the new attach test.
+Expected: PASS — all tests in `server::tests` green, including both attach tests.
 
 - [ ] **Step 5: Commit**
 
