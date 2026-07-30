@@ -578,7 +578,8 @@ git commit -m "feat(app): add session id config persistence"
 
 **Files:**
 - Create: `app/src-tauri/src/session.rs`
-- Modify: `app/src-tauri/src/lib.rs` (register the setup hook and the two commands)
+- Modify: `app/src-tauri/src/lib.rs` (register the setup hook and the commands)
+- Modify: `app/src/lib/Terminal.svelte` (Step 4 only — one line calling the new `signal_frontend_ready` command; this file is otherwise Task 6's)
 
 **Interfaces:**
 - Consumes: `daemon::{connect_or_spawn, spawn_real_daemon}` (Task 3), `config::{AppConfig, load, save}` (Task 4), `protocol::{Request, Response, read_message, write_message, socket_path}` (Task 1) — the `protocol` dependency was already added to `app/src-tauri/Cargo.toml` in Task 3.
@@ -672,33 +673,70 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.emit("session-ready", &session_id)?;
 
     let mut reader = BufReader::new(reader_stream);
-    std::thread::spawn(move || loop {
-        let resp: Option<Response> = match read_message(&mut reader) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = app_handle.emit("daemon-error", e.to_string());
+    let reader_app_handle = app_handle.clone();
+    std::thread::spawn(move || {
+        // Wait for the frontend to confirm its listeners are registered
+        // (see FrontendReady/signal_frontend_ready below) before reading —
+        // and therefore emitting — anything from the daemon. On a
+        // reattach, the daemon replies to Attach with the session's
+        // buffered scrollback almost immediately; if that gets read and
+        // emitted as pty-output before any frontend listener exists, it's
+        // gone for good (Tauri doesn't buffer/replay missed events) and
+        // the terminal renders blank despite the session being fully
+        // alive underneath. Unread bytes just sit safely in the OS socket
+        // buffer while we wait — nothing is lost by waiting.
+        loop {
+            if reader_app_handle
+                .state::<FrontendReady>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 break;
             }
-        };
-        let Some(resp) = resp else {
-            let _ = app_handle.emit("daemon-error", "daemon closed the connection");
-            break;
-        };
-        match resp {
-            Response::Output { id, data } => {
-                let _ = app_handle.emit("pty-output", (id, data));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        loop {
+            let resp: Option<Response> = match read_message(&mut reader) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = reader_app_handle.emit("daemon-error", e.to_string());
+                    break;
+                }
+            };
+            let Some(resp) = resp else {
+                let _ = reader_app_handle.emit("daemon-error", "daemon closed the connection");
+                break;
+            };
+            match resp {
+                Response::Output { id, data } => {
+                    let _ = reader_app_handle.emit("pty-output", (id, data));
+                }
+                Response::SessionExited { id, exit_code } => {
+                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
+                }
+                Response::Error { message } => {
+                    let _ = reader_app_handle.emit("daemon-error", message);
+                }
+                _ => {}
             }
-            Response::SessionExited { id, exit_code } => {
-                let _ = app_handle.emit("session-exited", (id, exit_code));
-            }
-            Response::Error { message } => {
-                let _ = app_handle.emit("daemon-error", message);
-            }
-            _ => {}
         }
     });
 
     Ok(())
+}
+
+/// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal
+/// sent before anyone is waiting on it would be lost) when the frontend
+/// confirms its event listeners are registered. Managed eagerly in
+/// `lib.rs`'s `.setup()`, before `bootstrap` even starts, so
+/// `signal_frontend_ready` is always valid to call no matter how far
+/// `bootstrap` has gotten.
+pub struct FrontendReady(pub std::sync::atomic::AtomicBool);
+
+#[tauri::command]
+pub fn signal_frontend_ready(state: State<FrontendReady>) {
+    state.0.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -745,6 +783,8 @@ commands:
 ```rust
 tauri::Builder::default()
     .setup(|app| {
+        app.manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)));
+
         let handle = app.handle().clone();
         std::thread::spawn(move || {
             if let Err(e) = session::bootstrap(handle.clone()) {
@@ -791,19 +831,146 @@ call this command to check whether bootstrap already finished before that
 listener existed — closing the race regardless of which order things
 actually happen in.
 
-- [ ] **Step 4: Verify it compiles**
+- [ ] **Step 4: Gate the reader thread on frontend readiness**
+
+`get_current_session` (Step 3) only closes the race for `session-ready`.
+There's a second, more consequential instance of the same race: on a
+*reattach*, the daemon replies to `Attach` with the session's buffered
+scrollback almost immediately (there's no `CreateSession` round-trip
+delaying things the way there is on a fresh session). If the background
+reader thread reads that reply and emits it as `pty-output` before any
+frontend listener exists, it's gone — Tauri doesn't buffer or replay missed
+events — and the terminal renders **blank** even though the session is
+fully alive underneath. Unlike `session-ready`, there's no fresh content to
+lose on `CreateSession` (a brand-new session has no scrollback yet), which
+is why this specifically breaks reattach and not first launch.
+
+Add `session.rs`'s `bootstrap` function and the reader thread it spawns
+(already shown in full in Step 1 above, incorporating this fix) a wait
+gate: the reader thread doesn't start reading from the socket at all until
+the frontend confirms its listeners are registered. Add this type and
+command to `session.rs`:
+
+```rust
+/// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
+/// before anyone is waiting on it would be lost) when the frontend confirms
+/// its event listeners are registered. Managed eagerly in `lib.rs`'s
+/// `.setup()`, before `bootstrap` even starts, so `signal_frontend_ready`
+/// is always valid to call no matter how far `bootstrap` has gotten.
+pub struct FrontendReady(pub std::sync::atomic::AtomicBool);
+
+#[tauri::command]
+pub fn signal_frontend_ready(state: State<FrontendReady>) {
+    state.0.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+```
+
+In `lib.rs`, manage `FrontendReady` eagerly at the top of `.setup()` (before
+spawning the `bootstrap` thread) and register the new command:
+
+```rust
+tauri::Builder::default()
+    .setup(|app| {
+        app.manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)));
+
+        let handle = app.handle().clone();
+        std::thread::spawn(move || {
+            if let Err(e) = session::bootstrap(handle.clone()) {
+                let _ = handle.emit("daemon-error", e.to_string());
+            }
+        });
+        Ok(())
+    })
+    .invoke_handler(tauri::generate_handler![
+        session::write_input,
+        session::resize_session,
+        session::get_current_session,
+        session::signal_frontend_ready
+    ])
+    // ... keep whatever else the scaffold's Builder chain already had ...
+```
+
+And update the reader thread inside `bootstrap` (Step 1's code) to poll-wait
+on this flag before its main loop:
+
+```rust
+    let mut reader = BufReader::new(reader_stream);
+    let reader_app_handle = app_handle.clone();
+    std::thread::spawn(move || {
+        loop {
+            if reader_app_handle
+                .state::<FrontendReady>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        loop {
+            let resp: Option<Response> = match read_message(&mut reader) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = reader_app_handle.emit("daemon-error", e.to_string());
+                    break;
+                }
+            };
+            let Some(resp) = resp else {
+                let _ = reader_app_handle.emit("daemon-error", "daemon closed the connection");
+                break;
+            };
+            match resp {
+                Response::Output { id, data } => {
+                    let _ = reader_app_handle.emit("pty-output", (id, data));
+                }
+                Response::SessionExited { id, exit_code } => {
+                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
+                }
+                Response::Error { message } => {
+                    let _ = reader_app_handle.emit("daemon-error", message);
+                }
+                _ => {}
+            }
+        }
+    });
+```
+
+(Note `app_handle` inside `bootstrap` is cloned into `reader_app_handle`
+before the closure moves it, and every `app_handle.emit(...)` call inside
+the old reader loop becomes `reader_app_handle.emit(...)` — the rest of
+`bootstrap` above this point, and `write_input`/`resize_session`, are
+unchanged.)
+
+Finally, in `app/src/lib/Terminal.svelte` (Task 6's file), call the new
+command immediately after the `Promise.all([...])` listener registration
+completes, so the reader thread is released the moment — and not before —
+this component's listeners genuinely exist:
+
+```typescript
+    unlisteners.push(unlistenReady, unlistenOutput, unlistenExited, unlistenError);
+    invoke("signal_frontend_ready").catch(() => {});
+```
+
+(inserted immediately after the existing `unlisteners.push(...)` line that
+follows the `Promise.all`, before the `get_current_session` poll that
+already follows it.)
+
+- [ ] **Step 5: Verify it compiles**
 
 Run: `cargo build -p app` (substitute the actual package name if different)
-Expected: builds successfully. There is no automated test for this task —
-`bootstrap` requires a running daemon and a live Tauri `AppHandle`, neither
-of which is available in a unit test context. Behavior is verified manually
-in Task 7 once the frontend (Task 6) exists to observe it through.
+and `cd app && npm run check`.
+Expected: both succeed. There is no automated test for this fix — it
+requires a running daemon, a live Tauri `AppHandle`, and a real reattach
+cycle to observe. Behavior is verified manually in Task 7, which is what
+found this bug in the first place — re-run its reattach step specifically
+against this fix.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add app/src-tauri/src/session.rs app/src-tauri/src/lib.rs
-git commit -m "feat(app): wire Tauri commands and daemon event relay"
+git add app/src-tauri/src/session.rs app/src-tauri/src/lib.rs app/src/lib/Terminal.svelte
+git commit -m "fix(app): gate the reader thread on frontend readiness to stop losing the reattach scrollback replay"
 ```
 
 ---
