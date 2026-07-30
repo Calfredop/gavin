@@ -26,7 +26,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             session::write_input,
-            session::resize_session
+            session::resize_session,
+            session::get_current_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

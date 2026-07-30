@@ -131,3 +131,8 @@ pub fn resize_session(
         .ok_or_else(|| "no active session".to_string())?;
     send_request(&state.writer, &Request::ResizeSession { id, cols, rows }).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn get_current_session(session: State<ActiveSessionId>) -> Option<String> {
+    session.0.lock().unwrap().clone()
+}
