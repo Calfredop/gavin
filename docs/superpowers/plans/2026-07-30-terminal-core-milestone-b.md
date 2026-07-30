@@ -74,6 +74,32 @@ anyhow = "1"
 `crates/daemon/src/protocol.rs` first and copy it verbatim into the new
 location — don't retype it from memory, to avoid transcription drift.
 
+Also add, to the same `crates/protocol/src/lib.rs` (above the
+`#[cfg(test)]` block), the daemon socket's location. This moves out of
+`crates/daemon/src/main.rs` in Step 3 below — both the daemon and, later,
+the Milestone B client need to agree on exactly where the socket is, so it
+belongs in the crate both of them already depend on, not duplicated in two
+places where it could drift:
+
+```rust
+use std::path::PathBuf;
+
+pub fn app_support_dir() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME not set");
+    PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("gavin")
+}
+
+pub fn socket_path() -> PathBuf {
+    app_support_dir().join("daemon.sock")
+}
+```
+
+(`db_path()` stays daemon-only — nothing outside the daemon needs to know
+where the SQLite registry lives, only where the socket is.)
+
 - [ ] **Step 2: Wire the new crate into the workspace**
 
 In root `Cargo.toml`, add the new member:
@@ -97,7 +123,54 @@ protocol = { path = "../protocol" }
 
 Delete `crates/daemon/src/protocol.rs` entirely.
 
-In `crates/daemon/src/main.rs`, remove the `mod protocol;` line.
+In `crates/daemon/src/main.rs`, remove the `mod protocol;` line, remove the
+now-duplicated `app_support_dir()` and `socket_path()` function definitions
+(they moved to `protocol` in Step 1 above), and use the crate's versions
+instead. The file should end up as:
+
+```rust
+mod pty;
+mod registry;
+mod server;
+
+use registry::Registry;
+use server::SessionManager;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+fn db_path() -> PathBuf {
+    protocol::app_support_dir().join("registry.sqlite")
+}
+
+fn main() -> anyhow::Result<()> {
+    let dir = protocol::app_support_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+
+    let registry = Registry::open(&db_path())?;
+    let manager = Arc::new(SessionManager::new(registry));
+    manager.recover()?;
+
+    println!("gavin-daemon listening on {}", protocol::socket_path().display());
+    server::run_server(&protocol::socket_path(), manager)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_are_scoped_under_app_support() {
+        let dir = protocol::app_support_dir();
+        assert!(protocol::socket_path().starts_with(&dir));
+        assert!(db_path().starts_with(&dir));
+        assert_eq!(protocol::socket_path().file_name().unwrap(), "daemon.sock");
+        assert_eq!(db_path().file_name().unwrap(), "registry.sqlite");
+    }
+}
+```
 
 In `crates/daemon/src/server.rs`, change:
 
@@ -231,12 +304,18 @@ git commit -m "chore: scaffold Tauri + Svelte app"
 ### Task 3: Rust backend — connect-or-spawn daemon logic
 
 **Files:**
-- Modify: `app/src-tauri/Cargo.toml` (add deps: `anyhow`, `tempfile` dev-dep — check what the scaffold already added and only add what's missing)
+- Modify: `app/src-tauri/Cargo.toml` (add deps: `anyhow`, `protocol` path dep, `tempfile` dev-dep — check what the scaffold already added and only add what's missing)
 - Create: `app/src-tauri/src/daemon.rs`
 - Modify: `app/src-tauri/src/lib.rs` (add `mod daemon;` — or `main.rs` if that's where the scaffold put the app's module root; check which file has the `run()`/`main()` entry point and add the `mod` declaration there)
 
 **Interfaces:**
-- Produces: `daemon::app_support_dir() -> PathBuf`, `daemon::socket_path() -> PathBuf` (identical values to the daemon's own `main.rs` helpers — must match exactly, since both processes read/write the same socket), `daemon::resolve_daemon_binary_path() -> anyhow::Result<PathBuf>`, `daemon::connect_or_spawn(socket_path: &Path, timeout: Duration, spawn_daemon: impl FnMut() -> anyhow::Result<std::process::Child>) -> anyhow::Result<UnixStream>`, `daemon::spawn_real_daemon() -> anyhow::Result<std::process::Child>`.
+- Consumes: `protocol::socket_path()` (Task 1) — the real socket location; this module doesn't redefine it, only Task 5's `session::bootstrap` calls it directly at the point of use.
+- Produces: `daemon::resolve_daemon_binary_path() -> anyhow::Result<PathBuf>`, `daemon::connect_or_spawn(socket_path: &Path, timeout: Duration, spawn_daemon: impl FnMut() -> anyhow::Result<std::process::Child>) -> anyhow::Result<UnixStream>`, `daemon::spawn_real_daemon() -> anyhow::Result<std::process::Child>`.
+
+Add `protocol = { path = "../../crates/protocol" }` to
+`app/src-tauri/Cargo.toml` now if it isn't already there (adjust the
+relative path if Task 2's scaffold nested `src-tauri` differently) — Task 5
+needs it too, but there's no reason to wait.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -247,18 +326,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-
-pub fn app_support_dir() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME not set");
-    PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("gavin")
-}
-
-pub fn socket_path() -> PathBuf {
-    app_support_dir().join("daemon.sock")
-}
 
 #[cfg(test)]
 mod tests {
@@ -512,10 +579,9 @@ git commit -m "feat(app): add session id config persistence"
 **Files:**
 - Create: `app/src-tauri/src/session.rs`
 - Modify: `app/src-tauri/src/lib.rs` (register the setup hook and the two commands)
-- Modify: `app/src-tauri/Cargo.toml` (add `protocol` path dep)
 
 **Interfaces:**
-- Consumes: `daemon::{socket_path, connect_or_spawn, spawn_real_daemon}` (Task 3), `config::{AppConfig, load, save}` (Task 4), `protocol::{Request, Response, read_message, write_message}` (Task 1).
+- Consumes: `daemon::{connect_or_spawn, spawn_real_daemon}` (Task 3), `config::{AppConfig, load, save}` (Task 4), `protocol::{Request, Response, read_message, write_message, socket_path}` (Task 1) — the `protocol` dependency was already added to `app/src-tauri/Cargo.toml` in Task 3.
 - Produces: `session::bootstrap(app_handle: AppHandle) -> anyhow::Result<()>` — connects, creates-or-reattaches, manages Tauri state, spawns the background response-reader thread. `#[tauri::command] session::write_input(data: String, ...) -> Result<(), String>`. `#[tauri::command] session::resize_session(cols: u16, rows: u16, ...) -> Result<(), String>`. Tauri events emitted: `session-ready` (payload: session id string), `pty-output` (payload: `(id, data)` tuple), `session-exited` (payload: `(id, exit_code)` tuple), `daemon-error` (payload: error message string). Task 6 (frontend) consumes both the commands and the events by these exact names/payload shapes.
 
 This task's exact Tauri API calls (`Manager`/`Emitter` traits, `app.path()`,
@@ -526,19 +592,7 @@ that version's docs if anything here fails to compile, and adapt names while
 preserving every command/event name and payload shape listed above exactly
 — Task 6 depends on them by name.
 
-- [ ] **Step 1: Add the `protocol` dependency**
-
-In `app/src-tauri/Cargo.toml`, add:
-
-```toml
-protocol = { path = "../../crates/protocol" }
-```
-
-(adjust the relative path if Task 2's scaffold nested `src-tauri` differently
-than expected — it should point at `crates/protocol` from
-`app/src-tauri/Cargo.toml`'s location).
-
-- [ ] **Step 2: Implement the bootstrap and commands**
+- [ ] **Step 1: Implement the bootstrap and commands**
 
 Create `app/src-tauri/src/session.rs`:
 
@@ -679,7 +733,7 @@ pub fn resize_session(
 }
 ```
 
-- [ ] **Step 3: Wire it into the app entry point**
+- [ ] **Step 2: Wire it into the app entry point**
 
 Open `app/src-tauri/src/lib.rs` (the file with `run()`, generated by Task
 2's scaffold). Add `mod session;` alongside the existing `mod daemon;`/
@@ -709,7 +763,7 @@ Merge this into the scaffold's existing `Builder` chain rather than
 replacing it wholesale — keep any plugin registrations Task 2's scaffold
 already added.
 
-- [ ] **Step 4: Verify it compiles**
+- [ ] **Step 3: Verify it compiles**
 
 Run: `cargo build -p app` (substitute the actual package name if different)
 Expected: builds successfully. There is no automated test for this task —
@@ -717,10 +771,10 @@ Expected: builds successfully. There is no automated test for this task —
 of which is available in a unit test context. Behavior is verified manually
 in Task 7 once the frontend (Task 6) exists to observe it through.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add app/src-tauri/Cargo.toml app/src-tauri/Cargo.lock app/src-tauri/src/session.rs app/src-tauri/src/lib.rs
+git add app/src-tauri/src/session.rs app/src-tauri/src/lib.rs
 git commit -m "feat(app): wire Tauri commands and daemon event relay"
 ```
 
