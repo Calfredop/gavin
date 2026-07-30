@@ -18,6 +18,18 @@ pub fn get_current_layout(state: State<CurrentLayout>) -> LayoutNode {
     state.0.lock().unwrap().clone()
 }
 
+#[tauri::command]
+pub fn set_layout(
+    layout: LayoutNode,
+    app_handle: AppHandle,
+    state: State<CurrentLayout>,
+) -> Result<(), String> {
+    *state.0.lock().unwrap() = layout.clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    crate::config::save(&config_dir, &crate::config::AppConfig { layout: Some(layout) })
+        .map_err(|e| e.to_string())
+}
+
 /// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
 /// before anyone is waiting on it would be lost) when the frontend confirms
 /// its event listeners are registered. Managed via `Builder::manage` before

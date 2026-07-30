@@ -29,6 +29,7 @@ pub fn run() {
             session::create_session,
             session::kill_session,
             session::get_current_layout,
+            session::set_layout,
             session::signal_frontend_ready,
             session::get_bootstrap_error
         ])
