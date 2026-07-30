@@ -582,7 +582,7 @@ git commit -m "feat(app): add session id config persistence"
 
 **Interfaces:**
 - Consumes: `daemon::{connect_or_spawn, spawn_real_daemon}` (Task 3), `config::{AppConfig, load, save}` (Task 4), `protocol::{Request, Response, read_message, write_message, socket_path}` (Task 1) — the `protocol` dependency was already added to `app/src-tauri/Cargo.toml` in Task 3.
-- Produces: `session::bootstrap(app_handle: AppHandle) -> anyhow::Result<()>` — connects, creates-or-reattaches, manages Tauri state, spawns the background response-reader thread. `#[tauri::command] session::write_input(data: String, ...) -> Result<(), String>`. `#[tauri::command] session::resize_session(cols: u16, rows: u16, ...) -> Result<(), String>`. Tauri events emitted: `session-ready` (payload: session id string), `pty-output` (payload: `(id, data)` tuple), `session-exited` (payload: `(id, exit_code)` tuple), `daemon-error` (payload: error message string). Task 6 (frontend) consumes both the commands and the events by these exact names/payload shapes.
+- Produces: `session::bootstrap(app_handle: AppHandle) -> anyhow::Result<()>` — connects, creates-or-reattaches, manages Tauri state, spawns the background response-reader thread. `#[tauri::command] session::write_input(data: String, ...) -> Result<(), String>`. `#[tauri::command] session::resize_session(cols: u16, rows: u16, ...) -> Result<(), String>`. `#[tauri::command] session::get_current_session(...) -> Option<String>` — lets the frontend ask for already-established state instead of relying solely on catching the one-shot `session-ready` event (see Step 3). Tauri events emitted: `session-ready` (payload: session id string), `pty-output` (payload: `(id, data)` tuple), `session-exited` (payload: `(id, exit_code)` tuple), `daemon-error` (payload: error message string). Task 6 (frontend) consumes the commands and the events by these exact names/payload shapes.
 
 This task's exact Tauri API calls (`Manager`/`Emitter` traits, `app.path()`,
 `State<T>`, the `#[tauri::command]` macro, `tauri::generate_handler!`) are
@@ -763,7 +763,35 @@ Merge this into the scaffold's existing `Builder` chain rather than
 replacing it wholesale — keep any plugin registrations Task 2's scaffold
 already added.
 
-- [ ] **Step 3: Verify it compiles**
+- [ ] **Step 3: Add a query command to close a startup race**
+
+`bootstrap` runs on a background thread started directly in `.setup()` and
+can complete — including emitting `session-ready` — before the frontend's
+webview has finished loading and registered its event listener (a known
+class of Tauri event-timing race: an event emitted before any listener is
+attached is simply not delivered, it isn't buffered/replayed). Since
+`bootstrap` reconnecting to an already-running daemon can be very fast, this
+isn't a rare edge case — it's the common case. Add a small command so the
+frontend can ask for the current state instead of relying solely on
+catching a one-shot event:
+
+```rust
+#[tauri::command]
+pub fn get_current_session(session: State<ActiveSessionId>) -> Option<String> {
+    session.0.lock().unwrap().clone()
+}
+```
+
+Add `session::get_current_session` to the `tauri::generate_handler![...]`
+list in `app/src-tauri/src/lib.rs`, alongside `write_input` and
+`resize_session`.
+
+Task 6's frontend will register its `session-ready` listener *first*, then
+call this command to check whether bootstrap already finished before that
+listener existed — closing the race regardless of which order things
+actually happen in.
+
+- [ ] **Step 4: Verify it compiles**
 
 Run: `cargo build -p app` (substitute the actual package name if different)
 Expected: builds successfully. There is no automated test for this task —
@@ -771,7 +799,7 @@ Expected: builds successfully. There is no automated test for this task —
 of which is available in a unit test context. Behavior is verified manually
 in Task 7 once the frontend (Task 6) exists to observe it through.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add app/src-tauri/src/session.rs app/src-tauri/src/lib.rs
@@ -788,7 +816,7 @@ git commit -m "feat(app): wire Tauri commands and daemon event relay"
 - Modify: `app/src/App.svelte`
 
 **Interfaces:**
-- Consumes exactly the Tauri commands/events Task 5 produces: `invoke("write_input", { data })`, `invoke("resize_session", { cols, rows })`, and the events `session-ready` (string payload), `pty-output` (`[id, data]` tuple payload), `session-exited` (`[id, exitCode]` tuple payload), `daemon-error` (string payload).
+- Consumes exactly the Tauri commands/events Task 5 produces: `invoke("write_input", { data })`, `invoke("resize_session", { cols, rows })`, `invoke("get_current_session")` (returns `string | null`), and the events `session-ready` (string payload), `pty-output` (`[id, data]` tuple payload), `session-exited` (`[id, exitCode]` tuple payload), `daemon-error` (string payload).
 
 The exact npm package names for xterm.js and the Tauri JS API import paths
 below reflect the current `@xterm/*` scoped packages and Tauri 2.x's
@@ -850,13 +878,32 @@ Create `app/src/Terminal.svelte` (adjust path per the note above):
 
     window.addEventListener("resize", sendResize);
 
+    function handleSessionReady(id: string) {
+      if (status !== "connecting") return; // already handled — see below
+      currentSessionId = id;
+      status = "ready";
+      sendResize();
+    }
+
+    // Register the listener BEFORE polling for already-established state.
+    // bootstrap() runs on a background thread and can finish — including
+    // emitting session-ready — before this component ever mounts,
+    // especially when reattaching to an already-running daemon (the common
+    // case). An event emitted before any listener exists is simply not
+    // delivered, not buffered. The status guard in handleSessionReady
+    // means it doesn't matter which of the poll or the event fires first,
+    // or if both do.
     unlisteners.push(
       await listen<string>("session-ready", (event) => {
-        currentSessionId = event.payload;
-        status = "ready";
-        sendResize();
+        handleSessionReady(event.payload);
       })
     );
+
+    invoke<string | null>("get_current_session")
+      .then((id) => {
+        if (id) handleSessionReady(id);
+      })
+      .catch(() => {});
 
     unlisteners.push(
       await listen<[string, string]>("pty-output", (event) => {
