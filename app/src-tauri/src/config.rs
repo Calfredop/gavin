@@ -16,7 +16,12 @@ pub fn load(config_dir: &Path) -> anyhow::Result<AppConfig> {
         return Ok(AppConfig::default());
     }
     let contents = std::fs::read_to_string(&path)?;
-    Ok(serde_json::from_str(&contents)?)
+    // A corrupted/unparseable config file is treated the same as "no
+    // saved session" rather than a startup error — a stale or missing
+    // session id is already normal, expected behavior (see the
+    // ListSessions check in session::bootstrap), not something that
+    // should block launch.
+    Ok(serde_json::from_str(&contents).unwrap_or_default())
 }
 
 pub fn save(config_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
@@ -61,5 +66,14 @@ mod tests {
         save(&nested, &config).unwrap();
 
         assert!(config_path(&nested).exists());
+    }
+
+    #[test]
+    fn load_treats_malformed_json_as_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(dir.path()), "{not valid json").unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config, AppConfig::default());
     }
 }

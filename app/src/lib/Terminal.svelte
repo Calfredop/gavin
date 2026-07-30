@@ -43,10 +43,41 @@
       });
     });
     sendResize();
+    term.focus();
+  }
+
+  // Repeatedly polls for either a ready session or a bootstrap failure,
+  // since bootstrap() can fail before any listener exists to catch its
+  // daemon-error emit — the same class of startup race the event listeners
+  // below are hardened against. Gives up after ~7.5s with a clear timeout
+  // message rather than leaving "Connecting…" up forever.
+  async function pollForStartupState() {
+    const maxAttempts = 15;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (status !== "connecting") return; // resolved via an event meanwhile
+      const [id, bootstrapError] = await Promise.all([
+        invoke<string | null>("get_current_session").catch(() => null),
+        invoke<string | null>("get_bootstrap_error").catch(() => null),
+      ]);
+      if (bootstrapError) {
+        status = "error";
+        errorMessage = bootstrapError;
+        return;
+      }
+      if (id) {
+        handleSessionReady(id);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (status === "connecting") {
+      status = "error";
+      errorMessage = "Timed out waiting for the daemon to become reachable.";
+    }
   }
 
   onMount(async () => {
-    term = new Terminal({ convertEol: true });
+    term = new Terminal({ convertEol: false });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
@@ -57,42 +88,43 @@
     // Register every listener before anything else async (all four in one
     // Promise.all, not sequential awaits), so none of them can miss an
     // event bootstrap() emits from its background thread before this
-    // component finishes mounting — the same race class Task 5's fix round
-    // closed for session-ready specifically, now closed as tightly as
-    // practical for the other three too.
-    const [unlistenReady, unlistenOutput, unlistenExited, unlistenError] =
-      await Promise.all([
-        listen<string>("session-ready", (event) => {
-          handleSessionReady(event.payload);
-        }),
-        listen<[string, string]>("pty-output", (event) => {
-          const [id, data] = event.payload;
-          if (currentSessionId && id !== currentSessionId) return;
-          term.write(data);
-        }),
-        listen<[string, number]>("session-exited", (event) => {
-          const [id, code] = event.payload;
-          if (currentSessionId && id !== currentSessionId) return;
-          status = "exited";
-          exitCode = code;
-        }),
-        listen<string>("daemon-error", (event) => {
-          status = "error";
-          errorMessage = event.payload;
-        }),
-      ]);
-    unlisteners.push(unlistenReady, unlistenOutput, unlistenExited, unlistenError);
-    invoke("signal_frontend_ready").catch(() => {});
+    // component finishes mounting. The signal in `finally` fires even if
+    // listener registration itself fails, so the backend's reader thread
+    // (which waits on this signal, bounded — see session.rs) is never left
+    // waiting on a signal that silently never comes.
+    try {
+      const [unlistenReady, unlistenOutput, unlistenExited, unlistenError] =
+        await Promise.all([
+          listen<string>("session-ready", (event) => {
+            handleSessionReady(event.payload);
+          }),
+          listen<[string, string]>("pty-output", (event) => {
+            const [id, data] = event.payload;
+            // Deliberately falsy-tolerant (not `if (id !== currentSessionId) return;`):
+            // currentSessionId is null until handleSessionReady runs, and this
+            // guard must not drop output just because status is still
+            // "connecting" — that's exactly the bug this whole fix wave exists
+            // to prevent. Don't "simplify" this comparison.
+            if (currentSessionId && id !== currentSessionId) return;
+            term.write(data);
+          }),
+          listen<[string, number]>("session-exited", (event) => {
+            const [id, code] = event.payload;
+            if (currentSessionId && id !== currentSessionId) return;
+            status = "exited";
+            exitCode = code;
+          }),
+          listen<string>("daemon-error", (event) => {
+            status = "error";
+            errorMessage = event.payload;
+          }),
+        ]);
+      unlisteners.push(unlistenReady, unlistenOutput, unlistenExited, unlistenError);
+    } finally {
+      invoke("signal_frontend_ready").catch(() => {});
+    }
 
-    // bootstrap() may have already finished — e.g. reattaching to an
-    // already-running daemon, the common case — before the listeners above
-    // went live. Catch that case too. Order-independent with the
-    // session-ready listener thanks to handleSessionReady's own guard.
-    invoke<string | null>("get_current_session")
-      .then((id) => {
-        if (id) handleSessionReady(id);
-      })
-      .catch(() => {});
+    pollForStartupState();
   });
 
   onDestroy(() => {

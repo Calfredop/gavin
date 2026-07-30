@@ -2,7 +2,7 @@ use protocol::{read_message, socket_path, write_message, Request, Response};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct DaemonConnection {
@@ -13,14 +13,23 @@ pub struct ActiveSessionId(pub Mutex<Option<String>>);
 
 /// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
 /// before anyone is waiting on it would be lost) when the frontend confirms
-/// its event listeners are registered. Managed eagerly in `lib.rs`'s
-/// `.setup()`, before `bootstrap` even starts, so `signal_frontend_ready`
-/// is always valid to call no matter how far `bootstrap` has gotten.
+/// its event listeners are registered. Managed via `Builder::manage` before
+/// `.setup()` runs (not inside it — window creation can precede the setup
+/// closure), so `signal_frontend_ready` is always valid to call.
 pub struct FrontendReady(pub std::sync::atomic::AtomicBool);
+
+/// Set if `bootstrap` fails before it can emit `daemon-error` to a listener
+/// that might not exist yet. Same eager-`manage` rationale as `FrontendReady`.
+pub struct BootstrapError(pub Mutex<Option<String>>);
 
 #[tauri::command]
 pub fn signal_frontend_ready(state: State<FrontendReady>) {
     state.0.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
+    state.0.lock().unwrap().clone()
 }
 
 fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Result<()> {
@@ -40,11 +49,35 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
     let reader_stream = stream;
+    let mut boot_reader = BufReader::new(reader_stream.try_clone()?);
 
     let config_dir = app_handle.path().app_config_dir()?;
     let config = crate::config::load(&config_dir)?;
 
-    let session_id = match config.session_id {
+    // A saved session id can be stale (registry reset, its cwd no longer
+    // exists so recover() skipped it, it was killed by another client) or
+    // point at a session that has since exited (e.g. the user typed
+    // `exit`). Check with the daemon before trusting it — the design spec
+    // requires this to be a silent, normal fallback to a fresh session,
+    // not an error surfaced to the user.
+    let mut existing_id = config.session_id.clone();
+    if let Some(id) = &existing_id {
+        send_request(&writer, &Request::ListSessions)?;
+        let resp: Response = read_message(&mut boot_reader)?
+            .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during startup"))?;
+        let sessions = match resp {
+            Response::SessionList { sessions } => sessions,
+            other => anyhow::bail!("expected SessionList, got {other:?}"),
+        };
+        let still_valid = sessions
+            .iter()
+            .any(|s| &s.id == id && s.status != "exited");
+        if !still_valid {
+            existing_id = None;
+        }
+    }
+
+    let session_id = match existing_id {
         Some(id) => {
             send_request(&writer, &Request::Attach { id: id.clone() })?;
             id
@@ -59,11 +92,11 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                     command: None,
                 },
             )?;
-            // The daemon's very next reply to a CreateSession request on a
-            // fresh connection is SessionCreated — read it synchronously
-            // here, before the background loop below starts consuming
-            // everything else on this stream.
-            let mut boot_reader = BufReader::new(reader_stream.try_clone()?);
+            // The daemon's very next reply to a CreateSession request is
+            // SessionCreated — read it synchronously here, on the same
+            // boot_reader used for the ListSessions check above, before the
+            // background loop below starts consuming everything else on
+            // this stream.
             let resp: Response = read_message(&mut boot_reader)?
                 .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during startup"))?;
             let id = match resp {
@@ -86,12 +119,26 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let mut reader = BufReader::new(reader_stream);
     let reader_app_handle = app_handle.clone();
     std::thread::spawn(move || {
+        // Wait for the frontend to confirm its listeners are registered
+        // before reading — and therefore emitting — anything from the
+        // daemon (see FrontendReady's doc comment for why). Bounded: an
+        // unbounded wait here would leave the daemon's connection-handling
+        // thread blocked mid-write on a full scrollback replay (the
+        // AF_UNIX socket buffer is much smaller than the replay can be),
+        // which backs up through the session's writer mutex into the PTY
+        // pump and can stall the user's actual shell — worse than the
+        // small chance of an early emit being missed if the frontend is
+        // simply slow rather than broken.
+        let gate_deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if reader_app_handle
                 .state::<FrontendReady>()
                 .0
                 .load(std::sync::atomic::Ordering::SeqCst)
             {
+                break;
+            }
+            if Instant::now() >= gate_deadline {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
