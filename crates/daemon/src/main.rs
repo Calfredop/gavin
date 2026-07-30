@@ -5,6 +5,7 @@ mod server;
 
 use registry::Registry;
 use server::SessionManager;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -27,6 +28,7 @@ fn db_path() -> PathBuf {
 fn main() -> anyhow::Result<()> {
     let dir = app_support_dir();
     std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
 
     let registry = Registry::open(&db_path())?;
     let manager = Arc::new(SessionManager::new(registry));

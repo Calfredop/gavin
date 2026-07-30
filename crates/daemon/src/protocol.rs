@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
+
+/// Cap on a single protocol line, so a client that never sends a newline
+/// can't grow the daemon's read buffer unbounded.
+const MAX_LINE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -59,9 +63,12 @@ pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> anyhow::Result<Option<T>> {
     let mut line = String::new();
-    let bytes_read = reader.read_line(&mut line)?;
+    let bytes_read = reader.by_ref().take(MAX_LINE_BYTES).read_line(&mut line)?;
     if bytes_read == 0 {
         return Ok(None);
+    }
+    if !line.ends_with('\n') && (bytes_read as u64) >= MAX_LINE_BYTES {
+        anyhow::bail!("protocol line exceeded {MAX_LINE_BYTES} bytes without a newline");
     }
     let msg = serde_json::from_str(line.trim_end())?;
     Ok(Some(msg))

@@ -1,16 +1,24 @@
 use crate::protocol::{read_message, write_message, Request, Response, SessionSummary};
 use crate::pty::PtySession;
 use crate::registry::{Registry, SessionRecord, SessionStatus};
-use std::collections::HashMap;
-use std::io::{BufReader, Read};
+use std::collections::{HashMap, VecDeque};
+use std::io::{BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+/// Cap on how much recent output is retained per session for replay to a
+/// client that reattaches after missing it (e.g. app closed, daemon still
+/// running). A rolling window, not a per-attach diff — every Attach replays
+/// whatever's currently buffered, regardless of what a previous Attach saw.
+const OUTPUT_BUFFER_CAP: usize = 64 * 1024;
 
 pub struct SessionManager {
     registry: Mutex<Registry>,
     sessions: Mutex<HashMap<String, PtySession>>,
     attached_writers: Mutex<HashMap<String, Arc<Mutex<UnixStream>>>>,
+    output_buffers: Mutex<HashMap<String, VecDeque<u8>>>,
 }
 
 impl SessionManager {
@@ -19,6 +27,7 @@ impl SessionManager {
             registry: Mutex::new(registry),
             sessions: Mutex::new(HashMap::new()),
             attached_writers: Mutex::new(HashMap::new()),
+            output_buffers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -28,6 +37,10 @@ impl SessionManager {
         cwd: &str,
         command: Option<&str>,
     ) -> anyhow::Result<String> {
+        if !std::path::Path::new(cwd).is_dir() {
+            anyhow::bail!("cwd does not exist or is not a directory: {cwd}");
+        }
+
         let id = Uuid::new_v4().to_string();
         let pty = PtySession::spawn(cwd, command)?;
 
@@ -59,11 +72,23 @@ impl SessionManager {
     }
 
     pub fn write_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let writer = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions
+                .get(id)
+                .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
+            session.writer_handle()
+        };
+        writer.lock().unwrap().write_all(data)?;
+        Ok(())
+    }
+
+    pub fn resize_session(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
+        let sessions = self.sessions.lock().unwrap();
         let session = sessions
-            .get_mut(id)
+            .get(id)
             .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
-        session.write_input(data)
+        session.resize(cols, rows)
     }
 
     pub fn kill_session(&self, id: &str) -> anyhow::Result<()> {
@@ -96,10 +121,19 @@ impl SessionManager {
         let records = self.registry.lock().unwrap().list()?;
         let mut sessions = self.sessions.lock().unwrap();
         for record in records {
-            // A single bad leftover record (e.g. its cwd was deleted or an
-            // unmounted volume since the last run — plausible after any real
-            // restart) must not abort recovery of every session after it in
-            // the list. Log and move on instead of propagating with `?`.
+            if record.status == SessionStatus::Exited {
+                continue;
+            }
+            if !std::path::Path::new(&record.cwd).is_dir() {
+                eprintln!(
+                    "skipping recovery of session {} — cwd no longer exists: {}",
+                    record.id, record.cwd
+                );
+                continue;
+            }
+            // A single bad leftover record (e.g. its command is no longer
+            // executable) must not abort recovery of every session after it
+            // in the list. Log and move on instead of propagating with `?`.
             match PtySession::spawn(&record.cwd, record.command.as_deref()) {
                 Ok(pty) => {
                     sessions.insert(record.id.clone(), pty);
@@ -119,6 +153,24 @@ impl SessionManager {
     }
 
     pub fn attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<UnixStream>>) {
+        // Replay buffered output BEFORE registering the writer, so a
+        // concurrently-running pump thread (this session may already be
+        // attached elsewhere) can't interleave live output ahead of history.
+        let buffered: Vec<u8> = {
+            let buffers = self.output_buffers.lock().unwrap();
+            buffers
+                .get(id)
+                .map(|b| b.iter().copied().collect())
+                .unwrap_or_default()
+        };
+        if !buffered.is_empty() {
+            let data = String::from_utf8_lossy(&buffered).into_owned();
+            let _ = write_message(
+                &mut *writer.lock().unwrap(),
+                &Response::Output { id: id.to_string(), data },
+            );
+        }
+
         let already_running = {
             let mut writers = self.attached_writers.lock().unwrap();
             let existed = writers.contains_key(id);
@@ -154,17 +206,54 @@ impl SessionManager {
             };
 
             let mut buf = [0u8; 4096];
+            // Bytes read but not yet forwarded because they end mid-way
+            // through a multi-byte UTF-8 character — carried to the next
+            // read instead of being lossily corrupted at the chunk boundary.
+            let mut pending: Vec<u8> = Vec::new();
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                        // No writer currently attached, or a write to it failed (dead
-                        // connection): drop this chunk and keep reading. The session
-                        // keeps running either way; a future Attach registers a fresh
-                        // writer and picks up from whatever the PTY produces next —
-                        // scrollback replay is explicitly out of scope (see Non-goals).
-                        if let Some(w) = manager.attached_writers.lock().unwrap().get(&id) {
+                        // Scrollback buffer stores raw bytes — never affected by
+                        // the UTF-8 chunking concern below, since it isn't decoded
+                        // to a String until replay time (attach(), a rare event).
+                        {
+                            let mut buffers = manager.output_buffers.lock().unwrap();
+                            let ring = buffers.entry(id.clone()).or_insert_with(VecDeque::new);
+                            ring.extend(buf[..n].iter().copied());
+                            while ring.len() > OUTPUT_BUFFER_CAP {
+                                ring.pop_front();
+                            }
+                        }
+
+                        pending.extend_from_slice(&buf[..n]);
+                        let (consume_len, force_flush) = match std::str::from_utf8(&pending) {
+                            Ok(_) => (pending.len(), false),
+                            Err(e) => (e.valid_up_to(), e.error_len().is_some()),
+                        };
+                        if consume_len == 0 && !force_flush {
+                            // Genuinely incomplete multi-byte sequence at the very
+                            // end — wait for more bytes instead of corrupting it.
+                            continue;
+                        }
+                        let take = if force_flush { pending.len() } else { consume_len };
+                        let data = if force_flush {
+                            // Not just incomplete — genuinely invalid bytes. Don't
+                            // wait forever for a completion that will never come.
+                            String::from_utf8_lossy(&pending[..take]).into_owned()
+                        } else {
+                            String::from_utf8(pending[..take].to_vec())
+                                .expect("consume_len is a valid utf8 boundary")
+                        };
+                        pending.drain(..take);
+
+                        // No writer currently attached, or a write to it failed
+                        // (dead connection): drop this chunk from live forwarding
+                        // and keep reading — it's already in the scrollback buffer
+                        // above, so a future Attach will still see it.
+                        let target = manager.attached_writers.lock().unwrap().get(&id).cloned();
+                        if let Some(w) = target {
                             let _ = write_message(&mut *w.lock().unwrap(), &Response::Output { id: id.clone(), data });
                         }
                     }
@@ -173,6 +262,9 @@ impl SessionManager {
             }
 
             let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
+            if let Err(e) = manager.registry.lock().unwrap().update_status(&id, SessionStatus::Exited) {
+                eprintln!("failed to persist exited status for session {id}: {e}");
+            }
             // Same atomic take-and-remove as the error path above, and for the same
             // reason: a single `.remove()` call closes the race window a separate
             // get-then-remove would leave open.
@@ -195,7 +287,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::WriteInput { id, data } => manager
             .write_input(&id, data.as_bytes())
             .map(|_| Response::Ok),
-        Request::ResizeSession { .. } => Ok(Response::Ok),
+        Request::ResizeSession { id, cols, rows } => manager
+            .resize_session(&id, cols, rows)
+            .map(|_| Response::Ok),
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
     };
@@ -205,12 +299,25 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
 
 pub fn run_server(socket_path: &std::path::Path, manager: Arc<SessionManager>) -> anyhow::Result<()> {
     if socket_path.exists() {
+        if UnixStream::connect(socket_path).is_ok() {
+            anyhow::bail!(
+                "another gavin-daemon is already listening on {}",
+                socket_path.display()
+            );
+        }
         std::fs::remove_file(socket_path)?;
     }
     let listener = UnixListener::bind(socket_path)?;
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
 
     for stream in listener.incoming() {
-        let stream = stream?;
+        let stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("accept error: {e}");
+                continue;
+            }
+        };
         let manager = Arc::clone(&manager);
         std::thread::spawn(move || {
             if let Err(e) = handle_connection(stream, manager) {
@@ -434,6 +541,117 @@ mod tests {
             }
             assert!(std::time::Instant::now() < deadline, "got: {collected}");
         }
+    }
+
+    #[test]
+    fn reattach_replays_buffered_output_produced_while_detached() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        // First attach starts the pump (and the scrollback buffer), then detach.
+        {
+            let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+            write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Produce output while nobody is attached; the pump is still running
+        // and keeps appending to the scrollback buffer even with no writer.
+        {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let resp = request(
+                &mut stream,
+                &Request::WriteInput {
+                    id: id.clone(),
+                    data: "echo while_detached\n".to_string(),
+                },
+            );
+            assert!(matches!(resp, Response::Ok));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Reattach: the replay must include output produced while detached.
+        let mut stream3 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream3, &Request::Attach { id: id.clone() }).unwrap();
+
+        let mut reader = BufReader::new(stream3.try_clone().unwrap());
+        let mut collected = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::Output { data, .. } = resp {
+                collected.push_str(&data);
+                if collected.contains("while_detached") {
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
+    }
+
+    #[test]
+    fn create_session_rejects_nonexistent_cwd() {
+        let (socket_path, _dir) = start_test_server();
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+
+        let resp = request(
+            &mut stream,
+            &Request::CreateSession {
+                workspace_path: "/tmp/ws".to_string(),
+                cwd: "/tmp/definitely-does-not-exist-xyz".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn resize_session_returns_ok_for_existing_session() {
+        let (socket_path, _dir) = start_test_server();
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+
+        let created = request(
+            &mut stream,
+            &Request::CreateSession {
+                workspace_path: "/tmp/ws".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        );
+        let id = match created {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+
+        let resp = request(&mut stream, &Request::ResizeSession { id, cols: 120, rows: 40 });
+        assert!(matches!(resp, Response::Ok));
+    }
+
+    #[test]
+    fn resize_session_returns_error_for_unknown_session() {
+        let (socket_path, _dir) = start_test_server();
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+
+        let resp = request(
+            &mut stream,
+            &Request::ResizeSession { id: "does-not-exist".to_string(), cols: 80, rows: 24 },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
     }
 
     #[test]
