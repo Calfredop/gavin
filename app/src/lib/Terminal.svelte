@@ -2,6 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { confirm } from "@tauri-apps/plugin-dialog";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
@@ -15,6 +17,22 @@
   let fitAddon: FitAddon;
   let currentSessionId: string | null = null;
   const unlisteners: UnlistenFn[] = [];
+
+  // Set once the user has explicitly confirmed closing (either via the
+  // exited screen's Y/n prompt, or by answering "yes" to the window-close
+  // dialog below) so the second mechanism doesn't also prompt for the
+  // same close.
+  let closeConfirmed = false;
+
+  async function quitApp() {
+    closeConfirmed = true;
+    // destroy(), not close() — close() would re-dispatch CloseRequested
+    // through the very listener that's intercepting it below, since
+    // closeConfirmed's guard only skips preventDefault() on the second
+    // pass rather than actually bypassing the event. destroy() skips
+    // CloseRequested entirely, which is the whole point of calling it here.
+    await getCurrentWindow().destroy();
+  }
 
   function sendResize() {
     if (!fitAddon) return;
@@ -37,6 +55,14 @@
     // guard above from ever running once the session genuinely becomes
     // ready.
     term.onData((data) => {
+      // xterm.js keeps its own keyboard capture active for the lifetime of
+      // the terminal instance — it doesn't know the underlying session
+      // exited. Without this guard, any keystroke on the exited/error
+      // screen (including answering the Y/n prompt) still gets forwarded
+      // here and fails against a session with no live PTY, which then
+      // overwrites the exited/error screen with a misleading connection
+      // error.
+      if (status !== "ready") return;
       invoke("write_input", { data }).catch((e) => {
         status = "error";
         errorMessage = String(e);
@@ -85,6 +111,25 @@
 
     window.addEventListener("resize", sendResize);
 
+    // Intercept the native close button: confirm before actually closing,
+    // since a user might not realize the session survives independent of
+    // the window (it's owned by the daemon, not this process). Skipped if
+    // closeConfirmed is already true — e.g. the exited screen's Y/n prompt
+    // already asked and got a "yes", so don't ask twice for the same close.
+    unlisteners.push(
+      await getCurrentWindow().onCloseRequested(async (event) => {
+        if (closeConfirmed) return;
+        event.preventDefault();
+        const shouldClose = await confirm(
+          "Close this window? Your terminal session will keep running — reopen the app to resume it.",
+          { title: "gavin" }
+        );
+        if (shouldClose) {
+          await quitApp();
+        }
+      })
+    );
+
     // Register every listener before anything else async (all four in one
     // Promise.all, not sequential awaits), so none of them can miss an
     // event bootstrap() emits from its background thread before this
@@ -113,6 +158,9 @@
             if (currentSessionId && id !== currentSessionId) return;
             status = "exited";
             exitCode = code;
+            // No confirmation — the session ending (e.g. typing `exit`) closes
+            // the window directly.
+            quitApp();
           }),
           listen<string>("daemon-error", (event) => {
             status = "error";
@@ -146,7 +194,7 @@
     </div>
   {:else if status === "exited"}
     <div class="overlay">
-      <p>Session exited (code {exitCode}).</p>
+      <p>Session exited (code {exitCode}). Closing…</p>
     </div>
   {/if}
   <div class="terminal-container" bind:this={container}></div>
