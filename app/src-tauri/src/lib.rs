@@ -1,5 +1,6 @@
 mod config;
 mod daemon;
+mod layout;
 mod session;
 
 use tauri::{Emitter, Manager};
