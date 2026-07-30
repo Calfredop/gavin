@@ -1,6 +1,7 @@
 <script lang="ts">
   import { layoutState, splitPane, closePane, applyPreset } from "./layoutState";
   import { presetSingle, presetSideBySide, presetGrid2x2 } from "./layout";
+  import { confirmPaneClose } from "./confirmClose";
 
   async function split(direction: "row" | "column"): Promise<void> {
     const id = $layoutState.focusedSessionId;
@@ -9,7 +10,10 @@
 
   async function handleClosePane(): Promise<void> {
     const id = $layoutState.focusedSessionId;
-    if (id) await closePane(id);
+    if (!id) return;
+    if (await confirmPaneClose(id)) {
+      await closePane(id);
+    }
   }
 
   async function applySingle(): Promise<void> {

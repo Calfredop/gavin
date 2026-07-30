@@ -3,6 +3,7 @@
   import type { LayoutNode } from "./layout";
   import TerminalPane from "./TerminalPane.svelte";
   import { layoutState, switchToTab, addTab, closeSession, focusPane } from "./layoutState";
+  import { confirmTabClose } from "./confirmClose";
 
   let { leaf }: { leaf: Extract<LayoutNode, { type: "leaf" }> } = $props();
 
@@ -40,9 +41,11 @@
         {sessionId.slice(0, 8)}
         <span
           class="close"
-          onclick={(e) => {
+          onclick={async (e) => {
             e.stopPropagation();
-            closeSession(sessionId);
+            if (await confirmTabClose(sessionId)) {
+              closeSession(sessionId);
+            }
           }}>×</span
         >
       </button>
