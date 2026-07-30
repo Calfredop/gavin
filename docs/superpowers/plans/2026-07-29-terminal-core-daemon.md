@@ -1489,3 +1489,98 @@ git commit -m "feat(daemon): wire up main entry point with startup recovery"
 - **Spec coverage:** create/list/kill sessions (Task 4), PTY spawn/read/write/resize/kill (Task 2), durable persistence on every state change (Task 1, used throughout), sessions surviving app-closed-but-daemon-alive via `Attach` on a new connection (Task 5), device-restart recovery with fresh shell + `restored: true` + no scrollback replay (Task 6). Git status, status detection, notifications, and the GUI are explicitly out of scope for this plan (see Global Constraints) and belong to later milestones.
 - **Placeholder scan:** none found — every step has real code and concrete run/expect commands.
 - **Type consistency:** `SessionRecord`, `SessionStatus`, `Request`/`Response`/`SessionSummary`, and every `SessionManager` method signature are introduced once (Tasks 1-4) and reused verbatim in later tasks (Tasks 5-7) without renaming.
+
+## Final Review Remediation
+
+After all 7 tasks passed their individual task-scoped reviews, a whole-branch
+review caught issues no single task's diff could reveal — some plan-mandated
+code that was correct relative to its own task's brief but wrong relative to
+the actual spec, and one cross-cutting concurrency anti-pattern that appeared
+twice, independently, in opposite directions (a process-global mutex held
+across blocking I/O). Fixed in one consolidated wave rather than reopening
+individual tasks:
+
+1. **Critical — pump thread held the `attached_writers` lock across a
+   blocking socket write** (daemon-wide stall if one client stops draining
+   its socket). Fix: clone the `Arc<Mutex<UnixStream>>` out and drop the map
+   guard before writing — same pattern already used correctly elsewhere in
+   the file, just missed at this one call site.
+2. **Important, escalated by human decision — `write_input` held the global
+   `sessions` lock across a blocking PTY write**, so a single wedged child
+   process (stopped reading stdin) blocked every other session's operations
+   *and* `kill_session` itself, with no in-band recovery. Fix: `PtySession`'s
+   writer becomes `Arc<Mutex<Box<dyn Write + Send>>>` so it can be cloned out
+   from under the `sessions` lock before writing, exactly mirroring how
+   `reader_for` already worked.
+3. **Important — `ResizeSession` was a no-op that reported success.** Every
+   session stayed a fixed 24×80 regardless of the client's actual terminal
+   size. Fix: wire it to `PtySession::resize` (already built and tested in
+   Task 2, never called).
+4. **Important — session exit was never persisted.** A session whose shell
+   exited kept showing `status: idle` forever in `ListSessions`, and
+   `recover()` would resurrect it with a fresh shell on the next restart even
+   if the user had deliberately exited it. Fix: the pump's exit path now
+   calls `Registry::update_status(id, Exited)`; `recover()` skips records
+   already `Exited`.
+5. **Important — `recover()`'s cwd validation guarded a case that can't
+   happen while missing the case that does.** `portable-pty` silently falls
+   back to `$HOME` for a nonexistent `cwd` rather than erroring, so the
+   fix-round-1 error-catching added in Task 6 never actually triggers for a
+   deleted/unmounted project directory — the session comes back to life
+   silently running in the wrong place instead. Fix: explicitly check
+   `Path::new(cwd).is_dir()` before spawning, in both `create_session` and
+   `recover()`; skip (don't resurrect) a `recover()` record whose cwd no
+   longer exists.
+6. **Important — no `TERM` set for spawned shells.** `portable-pty` inherits
+   the parent process's environment wholesale; a daemon auto-spawned by the
+   GUI (not launched from an interactive terminal) has no `TERM`, breaking
+   every full-screen TUI, including the AI coding agents this app exists to
+   host. Fix: explicitly set `TERM=xterm-256color` in the spawned command's
+   environment.
+7. **Important — the daemon could be silently hijacked by a second launch,
+   and died on any single transient accept error.** Fix: before unlinking an
+   existing socket file, attempt to connect to it first — if that succeeds,
+   another daemon is already live, so exit instead of stealing its socket.
+   In the accept loop, log-and-continue on a per-connection accept error
+   instead of propagating it out of `main` (which would kill every session).
+8. **Important — socket/state-directory permissions were never set
+   explicitly** (umask-dependent; `registry.sqlite` could be group/world
+   readable, leaking workspace paths). Fix: `0o700` on the app-support
+   directory, `0o600` on the socket after bind. Related: `read_message` had
+   no line-length cap, so a client that never sends a newline could grow the
+   read buffer unbounded — capped to 1 MiB per line.
+9. **Important, decided by human — detached-session output was silently
+   dropped; the spec says reattaching (app closed, daemon alive) should see
+   "scrollback and all."** Fix: `SessionManager` gains a per-session bounded
+   ring buffer (`output_buffers: Mutex<HashMap<String, VecDeque<u8>>>`,
+   capped at 64 KiB) that the pump thread appends every chunk to. `attach()`
+   replays the current buffer contents to a newly-registered writer *before*
+   registering it (so a concurrently-running pump can't interleave live
+   output ahead of replayed history), then proceeds as before. The buffer is
+   never cleared on replay — it's a rolling window, not a per-attach diff.
+10. **Important, decided by human — `String::from_utf8_lossy` was applied
+    per 4096-byte chunk, permanently corrupting any multi-byte character
+    that straddled a read boundary** (common in real terminal output: box
+    drawing, emoji, CJK, spinners). Fix: the pump now carries an incomplete
+    trailing byte sequence forward across reads (`std::str::from_utf8`,
+    `Utf8Error::valid_up_to`/`error_len`) instead of lossily converting every
+    chunk in isolation; only genuinely invalid (not just incomplete) byte
+    sequences fall back to lossy conversion, bounding how long a partial
+    sequence can wait. The scrollback ring buffer stores raw bytes
+    regardless, so it's never affected by this splitting concern — only the
+    lossy conversion at *replay* time (a rare, one-time event per attach) can
+    still produce an isolated replacement character right at the buffer's
+    trimmed start, which is accepted as a bounded, rare degradation.
+
+Also folded into the same wave (cheap, and each resolves multiple previously
+logged Minor findings): `Cargo.lock` committed (reproducible builds); a
+`Drop` impl on `PtySession` that kills its child (fixes the leaked-process
+paths in `create_session`'s registry-insert-failure case, double-`recover()`,
+and never-reaped exited-but-unattached sessions in one place).
+
+Deliberately deferred (not part of this wave, logged in the ledger):
+protocol-level asymmetries (`kill_session` succeeding silently on an unknown
+id while `write_input` errors; no request/response correlation ids;
+malformed-JSON tearing down a connection with no error response), mutex
+poisoning policy, and the exit-code `-1` sentinel collision. None are
+load-bearing for Milestone A or Milestone B's initial client work.
