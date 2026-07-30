@@ -409,23 +409,29 @@ Add, alongside the existing `#[tauri::command]` functions in
 `app/src-tauri/src/session.rs`:
 
 ```rust
-#[tauri::command]
-pub fn create_session(state: State<CommandConnection>) -> Result<String, String> {
+/// Shared by the create_session command below and, starting in Task 3,
+/// resolve_layout's per-tab fallback for stale/exited saved session ids —
+/// defined once here rather than duplicated, since both are exactly
+/// "create a fresh session at $HOME and return its id."
+fn create_fresh_session(command_conn: &Mutex<UnixStream>) -> anyhow::Result<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let resp = send_command(
-        &state.0,
+        command_conn,
         &Request::CreateSession {
             workspace_path: home.clone(),
             cwd: home,
             command: None,
         },
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     match resp {
         Response::SessionCreated { id } => Ok(id),
-        Response::Error { message } => Err(message),
-        other => Err(format!("unexpected response: {other:?}")),
+        other => anyhow::bail!("expected SessionCreated, got {other:?}"),
     }
+}
+
+#[tauri::command]
+pub fn create_session(state: State<CommandConnection>) -> Result<String, String> {
+    create_fresh_session(&state.0).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -467,11 +473,11 @@ git commit -m "feat(app): add dual-connection command channel (create_session, k
 ### Task 3: Generalize bootstrap for multi-session layouts
 
 **Files:**
-- Modify: `app/src-tauri/src/session.rs` (remove `ActiveSessionId`; add `resolve_layout`/`resolve_sessions`/`create_fresh_session`/`CurrentLayout`/`get_current_layout`; generalize `bootstrap`; change `write_input`/`resize_session` signatures)
+- Modify: `app/src-tauri/src/session.rs` (remove `ActiveSessionId`; add `resolve_layout`/`resolve_sessions`/`CurrentLayout`/`get_current_layout`; generalize `bootstrap`; change `write_input`/`resize_session` signatures)
 - Modify: `app/src-tauri/src/lib.rs` (register the new commands, drop the removed ones)
 
 **Interfaces:**
-- Consumes: `layout::LayoutNode` (Task 1), `CommandConnection`/`send_command`/`create_session`/`kill_session` (Task 2).
+- Consumes: `layout::LayoutNode` (Task 1), `CommandConnection`/`send_command`/`create_fresh_session`/`create_session`/`kill_session` (Task 2) — `create_fresh_session` in particular is reused as-is, not redefined.
 - Produces: `session::CurrentLayout(pub Mutex<LayoutNode>)`, `#[tauri::command] session::get_current_layout(state: State<CurrentLayout>) -> LayoutNode`. Changed: `#[tauri::command] session::write_input(session_id: String, data: String, state: State<DaemonConnection>) -> Result<(), String>`, `#[tauri::command] session::resize_session(session_id: String, cols: u16, rows: u16, state: State<DaemonConnection>) -> Result<(), String>` (both now take an explicit `session_id`, replacing the old implicit `ActiveSessionId` lookup). Removed: `ActiveSessionId`, `get_current_session`. Tauri events: `layout-ready` (payload: the resolved `LayoutNode`) replaces `session-ready`; `pty-output`/`session-exited`/`daemon-error` unchanged in shape (still per-session-id-tagged, already correct for multiplexing).
 
 This is the task that ties Tasks 1 and 2 into a working whole. There is no
@@ -505,25 +511,11 @@ pub fn get_current_layout(state: State<CurrentLayout>) -> LayoutNode {
 }
 ```
 
-Add these helper functions (private, not commands) near `send_command`:
+Add these helper functions (private, not commands) near `send_command`.
+`create_fresh_session` already exists from Task 2 — don't redefine it, just
+use it here:
 
 ```rust
-fn create_fresh_session(command_conn: &Mutex<UnixStream>) -> anyhow::Result<String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let resp = send_command(
-        command_conn,
-        &Request::CreateSession {
-            workspace_path: home.clone(),
-            cwd: home,
-            command: None,
-        },
-    )?;
-    match resp {
-        Response::SessionCreated { id } => Ok(id),
-        other => anyhow::bail!("expected SessionCreated, got {other:?}"),
-    }
-}
-
 /// Walks the tree, replacing any session id not present in `valid_ids`
 /// (stale, exited, or never existed) with a freshly created session — the
 /// same silent, normal fallback Milestone B established for its one
@@ -762,5 +754,9 @@ git commit -m "feat(app): generalize bootstrap for multi-session layouts"
   separate future plan, not glossed over as "TODO" inside this one.
 - **Type consistency:** `LayoutNode` (Task 1) is consumed identically by
   `resolve_layout`/`resolve_sessions` (Task 3) and `CurrentLayout`. `Mutex<UnixStream>`-based `CommandConnection`/`send_command` (Task 2) are
-  reused verbatim by `create_fresh_session`/`resolve_layout` (Task 3) —
+  reused verbatim by `resolve_layout`/`resolve_sessions` (Task 3), and
+  `create_fresh_session` (Task 2) is called directly from `resolve_sessions`
+  (Task 3) rather than being duplicated — a pre-flight scan caught the
+  original draft defining it twice (once as `create_session`'s body, once
+  standalone for the resolve path) and consolidated to one definition —
   the exact same helper, not reimplemented.
