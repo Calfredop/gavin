@@ -1,5 +1,6 @@
 import { get } from "svelte/store";
 import { layoutState, splitPane, addTab, closeSession } from "./layoutState";
+import { copySelection, pasteClipboard } from "./clipboard";
 
 async function handleKeydown(event: KeyboardEvent): Promise<void> {
   // metaKey is Cmd on macOS -- the app is macOS-first per the project roadmap.
@@ -25,6 +26,14 @@ async function handleKeydown(event: KeyboardEvent): Promise<void> {
     event.preventDefault();
     event.stopPropagation();
     await closeSession(state.focusedSessionId);
+  } else if (key === "c") {
+    event.preventDefault();
+    event.stopPropagation();
+    await copySelection();
+  } else if (key === "v") {
+    event.preventDefault();
+    event.stopPropagation();
+    await pasteClipboard();
   }
 }
 

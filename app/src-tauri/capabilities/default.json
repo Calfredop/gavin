@@ -8,6 +8,8 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
   ]
 }
