@@ -26,7 +26,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             session::write_input,
             session::resize_session,
-            session::get_current_session,
+            session::create_session,
+            session::kill_session,
+            session::get_current_layout,
             session::signal_frontend_ready,
             session::get_bootstrap_error
         ])

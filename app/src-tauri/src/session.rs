@@ -1,4 +1,6 @@
+use crate::layout::LayoutNode;
 use protocol::{read_message, socket_path, write_message, Request, Response};
+use std::collections::HashSet;
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -9,7 +11,12 @@ pub struct DaemonConnection {
     writer: Arc<Mutex<UnixStream>>,
 }
 
-pub struct ActiveSessionId(pub Mutex<Option<String>>);
+pub struct CurrentLayout(pub Mutex<LayoutNode>);
+
+#[tauri::command]
+pub fn get_current_layout(state: State<CurrentLayout>) -> LayoutNode {
+    state.0.lock().unwrap().clone()
+}
 
 /// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
 /// before anyone is waiting on it would be lost) when the frontend confirms
@@ -54,6 +61,61 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
     let mut reader = BufReader::new(&mut *stream);
     read_message(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("daemon closed the command connection"))
+}
+
+/// Walks the tree, replacing any session id not present in `valid_ids`
+/// (stale, exited, or never existed) with a freshly created session — the
+/// same silent, normal fallback Milestone B established for its one
+/// session, now applied uniformly to every tab in every pane.
+fn resolve_sessions(
+    node: &mut LayoutNode,
+    command_conn: &Mutex<UnixStream>,
+    valid_ids: &HashSet<String>,
+) -> anyhow::Result<()> {
+    match node {
+        LayoutNode::Leaf { tabs, .. } => {
+            for id in tabs.iter_mut() {
+                if !valid_ids.contains(id.as_str()) {
+                    *id = create_fresh_session(command_conn)?;
+                }
+            }
+            Ok(())
+        }
+        LayoutNode::Split { children, .. } => {
+            for child in children.iter_mut() {
+                resolve_sessions(child, command_conn, valid_ids)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Loads the persisted layout (or builds a fresh single-pane default if
+/// none was saved) and resolves every session id it references against
+/// the daemon's actual live sessions, replacing any that are stale.
+fn resolve_layout(
+    command_conn: &Mutex<UnixStream>,
+    saved: Option<LayoutNode>,
+) -> anyhow::Result<LayoutNode> {
+    match saved {
+        Some(mut layout) => {
+            let resp = send_command(command_conn, &Request::ListSessions)?;
+            let valid_ids: HashSet<String> = match resp {
+                Response::SessionList { sessions } => sessions
+                    .into_iter()
+                    .filter(|s| s.status != "exited")
+                    .map(|s| s.id)
+                    .collect(),
+                other => anyhow::bail!("expected SessionList, got {other:?}"),
+            };
+            resolve_sessions(&mut layout, command_conn, &valid_ids)?;
+            Ok(layout)
+        }
+        None => {
+            let id = create_fresh_session(command_conn)?;
+            Ok(LayoutNode::Leaf { tabs: vec![id], active_tab_index: 0 })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -151,99 +213,57 @@ mod command_connection_tests {
     }
 }
 
-/// Connects to (or spawns) the daemon, creates or reattaches to the saved
-/// session, registers Tauri-managed state for the commands below, and
+/// Connects to (or spawns) the daemon over two connections — one for the
+/// continuous Attach/Output relay, one for one-shot request/response
+/// commands (see CommandConnection's doc comment) — resolves the saved
+/// layout (or builds a fresh default), attaches every session it
+/// references, registers Tauri-managed state for the commands below, and
 /// spawns a background thread that relays every subsequent daemon message
 /// to the frontend as a Tauri event. Called once from the app's setup hook.
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
-    let stream = crate::daemon::connect_or_spawn(
+    let stream_conn = crate::daemon::connect_or_spawn(
         &socket_path(),
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
     )?;
+    // The daemon is confirmed reachable by the connect above (which may
+    // have just spawned it) — this second connection should succeed
+    // immediately, no retry/backoff needed.
+    let command_stream = UnixStream::connect(socket_path())?;
+    let command_conn = Mutex::new(command_stream);
 
-    let writer = Arc::new(Mutex::new(stream.try_clone()?));
-    let reader_stream = stream;
-    let mut boot_reader = BufReader::new(reader_stream.try_clone()?);
+    let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));
+    let reader_stream = stream_conn;
 
     let config_dir = app_handle.path().app_config_dir()?;
     let config = crate::config::load(&config_dir)?;
 
-    // A saved session id can be stale (registry reset, its cwd no longer
-    // exists so recover() skipped it, it was killed by another client) or
-    // point at a session that has since exited (e.g. the user typed
-    // `exit`). Check with the daemon before trusting it — the design spec
-    // requires this to be a silent, normal fallback to a fresh session,
-    // not an error surfaced to the user.
-    let mut existing_id = config.session_id.clone();
-    if let Some(id) = &existing_id {
-        send_request(&writer, &Request::ListSessions)?;
-        let resp: Response = read_message(&mut boot_reader)?
-            .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during startup"))?;
-        let sessions = match resp {
-            Response::SessionList { sessions } => sessions,
-            other => anyhow::bail!("expected SessionList, got {other:?}"),
-        };
-        let still_valid = sessions
-            .iter()
-            .any(|s| &s.id == id && s.status != "exited");
-        if !still_valid {
-            existing_id = None;
-        }
+    let layout = resolve_layout(&command_conn, config.layout)?;
+    crate::config::save(
+        &config_dir,
+        &crate::config::AppConfig { layout: Some(layout.clone()) },
+    )?;
+
+    for id in layout.all_session_ids() {
+        send_request(&writer, &Request::Attach { id })?;
     }
 
-    let session_id = match existing_id {
-        Some(id) => {
-            send_request(&writer, &Request::Attach { id: id.clone() })?;
-            id
-        }
-        None => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-            send_request(
-                &writer,
-                &Request::CreateSession {
-                    workspace_path: home.clone(),
-                    cwd: home,
-                    command: None,
-                },
-            )?;
-            // The daemon's very next reply to a CreateSession request is
-            // SessionCreated — read it synchronously here, on the same
-            // boot_reader used for the ListSessions check above, before the
-            // background loop below starts consuming everything else on
-            // this stream.
-            let resp: Response = read_message(&mut boot_reader)?
-                .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during startup"))?;
-            let id = match resp {
-                Response::SessionCreated { id } => id,
-                other => anyhow::bail!("expected SessionCreated, got {other:?}"),
-            };
-            crate::config::save(
-                &config_dir,
-                &crate::config::AppConfig { session_id: Some(id.clone()) },
-            )?;
-            send_request(&writer, &Request::Attach { id: id.clone() })?;
-            id
-        }
-    };
-
     app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
-    app_handle.manage(ActiveSessionId(Mutex::new(Some(session_id.clone()))));
-    app_handle.emit("session-ready", &session_id)?;
+    app_handle.manage(CommandConnection(command_conn));
+    app_handle.manage(CurrentLayout(Mutex::new(layout.clone())));
+    app_handle.emit("layout-ready", &layout)?;
 
     let mut reader = BufReader::new(reader_stream);
     let reader_app_handle = app_handle.clone();
     std::thread::spawn(move || {
         // Wait for the frontend to confirm its listeners are registered
         // before reading — and therefore emitting — anything from the
-        // daemon (see FrontendReady's doc comment for why). Bounded: an
-        // unbounded wait here would leave the daemon's connection-handling
-        // thread blocked mid-write on a full scrollback replay (the
-        // AF_UNIX socket buffer is much smaller than the replay can be),
-        // which backs up through the session's writer mutex into the PTY
-        // pump and can stall the user's actual shell — worse than the
-        // small chance of an early emit being missed if the frontend is
-        // simply slow rather than broken.
+        // daemon (see FrontendReady's doc comment). Bounded: an unbounded
+        // wait here would leave the daemon's connection-handling thread
+        // blocked mid-write on a full scrollback replay, backing up
+        // through the session's writer mutex into the PTY pump — worse
+        // than the small chance of an early emit being missed if the
+        // frontend is simply slow rather than broken.
         let gate_deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if reader_app_handle
@@ -291,38 +311,23 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 
 #[tauri::command]
 pub fn write_input(
+    session_id: String,
     data: String,
     state: State<DaemonConnection>,
-    session: State<ActiveSessionId>,
 ) -> Result<(), String> {
-    let id = session
-        .0
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "no active session".to_string())?;
-    send_request(&state.writer, &Request::WriteInput { id, data }).map_err(|e| e.to_string())
+    send_request(&state.writer, &Request::WriteInput { id: session_id, data })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn resize_session(
+    session_id: String,
     cols: u16,
     rows: u16,
     state: State<DaemonConnection>,
-    session: State<ActiveSessionId>,
 ) -> Result<(), String> {
-    let id = session
-        .0
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "no active session".to_string())?;
-    send_request(&state.writer, &Request::ResizeSession { id, cols, rows }).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_current_session(session: State<ActiveSessionId>) -> Option<String> {
-    session.0.lock().unwrap().clone()
+    send_request(&state.writer, &Request::ResizeSession { id: session_id, cols, rows })
+        .map_err(|e| e.to_string())
 }
 
 /// Shared by the create_session command below and, starting in Task 3,
