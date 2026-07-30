@@ -1,4 +1,3 @@
-mod protocol;
 mod pty;
 mod registry;
 mod server;
@@ -9,24 +8,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-fn app_support_dir() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME not set");
-    PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("gavin")
-}
-
-fn socket_path() -> PathBuf {
-    app_support_dir().join("daemon.sock")
-}
-
 fn db_path() -> PathBuf {
-    app_support_dir().join("registry.sqlite")
+    protocol::app_support_dir().join("registry.sqlite")
 }
 
 fn main() -> anyhow::Result<()> {
-    let dir = app_support_dir();
+    let dir = protocol::app_support_dir();
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
 
@@ -34,8 +21,8 @@ fn main() -> anyhow::Result<()> {
     let manager = Arc::new(SessionManager::new(registry));
     manager.recover()?;
 
-    println!("gavin-daemon listening on {}", socket_path().display());
-    server::run_server(&socket_path(), manager)?;
+    println!("gavin-daemon listening on {}", protocol::socket_path().display());
+    server::run_server(&protocol::socket_path(), manager)?;
     Ok(())
 }
 
@@ -45,10 +32,10 @@ mod tests {
 
     #[test]
     fn paths_are_scoped_under_app_support() {
-        let dir = app_support_dir();
-        assert!(socket_path().starts_with(&dir));
+        let dir = protocol::app_support_dir();
+        assert!(protocol::socket_path().starts_with(&dir));
         assert!(db_path().starts_with(&dir));
-        assert_eq!(socket_path().file_name().unwrap(), "daemon.sock");
+        assert_eq!(protocol::socket_path().file_name().unwrap(), "daemon.sock");
         assert_eq!(db_path().file_name().unwrap(), "registry.sqlite");
     }
 }

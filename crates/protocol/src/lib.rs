@@ -74,6 +74,20 @@ pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(
     Ok(Some(msg))
 }
 
+use std::path::PathBuf;
+
+pub fn app_support_dir() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME not set");
+    PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("gavin")
+}
+
+pub fn socket_path() -> PathBuf {
+    app_support_dir().join("daemon.sock")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

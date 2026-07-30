@@ -1,4 +1,4 @@
-use crate::protocol::{read_message, write_message, Request, Response, SessionSummary};
+use protocol::{read_message, write_message, Request, Response, SessionSummary};
 use crate::pty::PtySession;
 use crate::registry::{Registry, SessionRecord, SessionStatus};
 use std::collections::{HashMap, VecDeque};
