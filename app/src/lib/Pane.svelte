@@ -51,7 +51,12 @@
   </div>
   <div class="content" bind:this={containerEl} onmousedown={() => focusPane(active)}>
     {#each leaf.tabs as sessionId (sessionId)}
-      <TerminalPane bind:this={paneRefs[sessionId]} {sessionId} visible={sessionId === active} />
+      <TerminalPane
+        bind:this={paneRefs[sessionId]}
+        {sessionId}
+        visible={sessionId === active}
+        focused={sessionId === $layoutState.focusedSessionId}
+      />
     {/each}
   </div>
 </div>

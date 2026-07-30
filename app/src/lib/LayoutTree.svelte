@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { LayoutNode } from "./layout";
   import Pane from "./Pane.svelte";
-  import { resizePane } from "./layoutState";
+  import { previewResizePane, commitLayout } from "./layoutState";
 
   let { node, path }: { node: LayoutNode; path: number[] } = $props();
 
@@ -30,14 +31,19 @@
     const newFirst = Math.min(remaining - 0.05, Math.max(0.05, fraction - before));
     sizes[dragIndex] = newFirst;
     sizes[dragIndex + 1] = remaining - newFirst;
-    void resizePane(path, sizes);
+    previewResizePane(path, sizes);
   }
 
   function stopDrag(): void {
     dragIndex = null;
     window.removeEventListener("pointermove", onDrag);
     window.removeEventListener("pointerup", stopDrag);
+    void commitLayout();
   }
+
+  onDestroy(() => {
+    stopDrag();
+  });
 </script>
 
 {#if node.type === "leaf"}

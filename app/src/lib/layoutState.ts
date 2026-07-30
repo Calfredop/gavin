@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
+import * as terminalRegistry from "./terminalRegistry";
 
 export interface LayoutState {
   status: "connecting" | "ready" | "error";
@@ -146,15 +147,26 @@ export async function closeSession(sessionId: string): Promise<void> {
 // killSession call happens here) -- both cases mean "remove this session
 // from the tree." See Global Constraints for why the empty-tree case
 // deliberately skips persistence.
+//
+// Guarded against sessions already absent from the tree: closeSession
+// removes the session from the tree immediately after a successful kill,
+// but the daemon separately emits its own session-exited event once the
+// session actually dies, re-entering this function for an id that's
+// already gone. Without the findLeafPath guard below, layout.closeTab
+// would throw (it assumes the session is present), and that throw would
+// escape uncaught from inside a Tauri event callback. applyPreset's old-
+// session cleanup can trigger this same double-removal path too.
 export function handleSessionExited(sessionId: string): void {
   const state = get(layoutState);
   if (!state.tree) return;
+  if (!layout.findLeafPath(state.tree, sessionId)) return;
   const tree = layout.closeTab(state.tree, sessionId);
   const focusedSessionId =
     state.focusedSessionId === sessionId
       ? (tree ? (layout.allSessionIds(tree)[0] ?? null) : null)
       : state.focusedSessionId;
   layoutState.update((s) => ({ ...s, tree, focusedSessionId }));
+  terminalRegistry.destroyTerminal(sessionId);
   if (tree) {
     void persistLayout(tree);
   }
@@ -172,12 +184,25 @@ export function focusPane(sessionId: string): void {
   layoutState.update((s) => ({ ...s, focusedSessionId: sessionId }));
 }
 
-export async function resizePane(splitPath: number[], sizes: number[]): Promise<void> {
+// Updates the tree's sizes without persisting -- used for live visual
+// feedback while a divider drag is in progress. Call commitLayout() once,
+// on drag-end, to actually persist; calling backend.setLayout on every
+// pointermove would flood the daemon with writes and risks out-of-order
+// completions leaving a stale mid-drag size persisted instead of the final
+// one.
+export function previewResizePane(splitPath: number[], sizes: number[]): void {
   const state = get(layoutState);
   if (!state.tree) return;
   const tree = layout.resizeSplit(state.tree, splitPath, sizes);
   layoutState.update((s) => ({ ...s, tree }));
-  await persistLayout(tree);
+}
+
+// Persists whatever the current tree is. Call once after a batch of
+// previewResizePane calls (e.g. on pointerup), not per intermediate step.
+export async function commitLayout(): Promise<void> {
+  const state = get(layoutState);
+  if (!state.tree) return;
+  await persistLayout(state.tree);
 }
 
 export async function applyPreset(
@@ -198,8 +223,54 @@ export async function applyPreset(
   // Old sessions are killed best-effort *after* the new tree is already
   // committed -- unlike closeSession, applying a preset is spec'd as an
   // already-deliberate action, so one stuck kill shouldn't block it.
-  await Promise.all(oldIds.map((id) => backend.killSession(id).catch(() => {})));
+  await Promise.all(
+    oldIds.map((id) =>
+      backend
+        .killSession(id)
+        .catch(() => {})
+        .finally(() => terminalRegistry.destroyTerminal(id))
+    )
+  );
   await persistLayout(tree);
+}
+
+// Closes every tab in the pane containing anySessionId -- distinct from
+// closeSession (which closes just the one named session). Used by the
+// toolbar's "Close Pane" button; Cmd+W intentionally stays scoped to a
+// single tab via closeSession, per the design spec.
+export async function closePane(anySessionId: string): Promise<void> {
+  const state = get(layoutState);
+  if (!state.tree) return;
+  const path = layout.findLeafPath(state.tree, anySessionId);
+  if (!path) return;
+  const leaf = layout.getNodeAtPath(state.tree, path);
+  if (leaf.type !== "leaf") return;
+  const sessionIds = [...leaf.tabs];
+
+  for (const id of sessionIds) {
+    try {
+      await backend.killSession(id);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+  }
+
+  let tree: LayoutNode | null = state.tree;
+  for (const id of sessionIds) {
+    if (!tree) break;
+    tree = layout.closeTab(tree, id);
+    terminalRegistry.destroyTerminal(id);
+  }
+
+  const focusedSessionId = sessionIds.includes(state.focusedSessionId ?? "")
+    ? (tree ? (layout.allSessionIds(tree)[0] ?? null) : null)
+    : state.focusedSessionId;
+
+  layoutState.update((s) => ({ ...s, tree, focusedSessionId }));
+  if (tree) {
+    void persistLayout(tree);
+  }
 }
 
 export async function newSessionFromEmpty(): Promise<void> {

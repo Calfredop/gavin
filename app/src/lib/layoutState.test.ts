@@ -13,6 +13,10 @@ vi.mock("./backend", () => ({
   signalFrontendReady: vi.fn(),
 }));
 
+vi.mock("./terminalRegistry", () => ({
+  destroyTerminal: vi.fn(),
+}));
+
 import * as backend from "./backend";
 import {
   layoutState,
@@ -22,6 +26,7 @@ import {
   switchToTab,
   focusPane,
   handleSessionExited,
+  closePane,
 } from "./layoutState";
 
 function setState(partial: {
@@ -166,6 +171,61 @@ describe("handleSessionExited", () => {
 
     const state = get(layoutState);
     expect(state.focusedSessionId).toBe("a");
+  });
+
+  it("is a no-op when called for a session already absent from the tree", () => {
+    // Mirrors the daemon's own session-exited event arriving after
+    // closeSession has already removed the session from the tree --
+    // handleSessionExited must not throw (layout.closeTab throws for an
+    // unknown session id) and must not mutate state or persist.
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    setState({ tree, focusedSessionId: "a" });
+
+    expect(() => handleSessionExited("already-gone")).not.toThrow();
+
+    const state = get(layoutState);
+    expect(state.tree).toEqual(tree);
+    expect(state.focusedSessionId).toBe("a");
+    expect(backend.setLayout).not.toHaveBeenCalled();
+    expect(backend.killSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("closePane", () => {
+  it("closes every tab in the pane, killing each session and dropping the whole pane", async () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 },
+        { type: "leaf", tabs: ["c"], activeTabIndex: 0 },
+      ],
+    };
+    setState({ tree, focusedSessionId: "b" });
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closePane("b");
+
+    expect(backend.killSession).toHaveBeenCalledWith("a");
+    expect(backend.killSession).toHaveBeenCalledWith("b");
+    expect(backend.killSession).not.toHaveBeenCalledWith("c");
+    const state = get(layoutState);
+    expect(state.tree).toEqual({ type: "leaf", tabs: ["c"], activeTabIndex: 0 });
+    expect(state.focusedSessionId).toBe("c");
+    expect(backend.setLayout).toHaveBeenCalledWith(state.tree);
+  });
+
+  it("does not throw and does not mutate state when the session id isn't found", async () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    setState({ tree, focusedSessionId: "a" });
+
+    await expect(closePane("missing")).resolves.toBeUndefined();
+
+    const state = get(layoutState);
+    expect(state.tree).toEqual(tree);
+    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(backend.setLayout).not.toHaveBeenCalled();
   });
 });
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, splitPane, closeSession, applyPreset } from "./layoutState";
+  import { layoutState, splitPane, closePane, applyPreset } from "./layoutState";
   import { presetSingle, presetSideBySide, presetGrid2x2 } from "./layout";
 
   async function split(direction: "row" | "column"): Promise<void> {
@@ -7,9 +7,9 @@
     if (id) await splitPane(id, direction);
   }
 
-  async function closePane(): Promise<void> {
+  async function handleClosePane(): Promise<void> {
     const id = $layoutState.focusedSessionId;
-    if (id) await closeSession(id);
+    if (id) await closePane(id);
   }
 
   async function applySingle(): Promise<void> {
@@ -26,7 +26,7 @@
 <div class="toolbar">
   <button onclick={() => split("row")}>Split Right</button>
   <button onclick={() => split("column")}>Split Down</button>
-  <button onclick={closePane}>Close Pane</button>
+  <button onclick={handleClosePane}>Close Pane</button>
   <div class="presets">
     <span>Presets:</span>
     <button onclick={applySingle}>Single</button>
