@@ -11,6 +11,18 @@ pub struct DaemonConnection {
 
 pub struct ActiveSessionId(pub Mutex<Option<String>>);
 
+/// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
+/// before anyone is waiting on it would be lost) when the frontend confirms
+/// its event listeners are registered. Managed eagerly in `lib.rs`'s
+/// `.setup()`, before `bootstrap` even starts, so `signal_frontend_ready`
+/// is always valid to call no matter how far `bootstrap` has gotten.
+pub struct FrontendReady(pub std::sync::atomic::AtomicBool);
+
+#[tauri::command]
+pub fn signal_frontend_ready(state: State<FrontendReady>) {
+    state.0.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Result<()> {
     write_message(&mut *writer.lock().unwrap(), req)
 }
@@ -72,29 +84,43 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.emit("session-ready", &session_id)?;
 
     let mut reader = BufReader::new(reader_stream);
-    std::thread::spawn(move || loop {
-        let resp: Option<Response> = match read_message(&mut reader) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = app_handle.emit("daemon-error", e.to_string());
+    let reader_app_handle = app_handle.clone();
+    std::thread::spawn(move || {
+        loop {
+            if reader_app_handle
+                .state::<FrontendReady>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 break;
             }
-        };
-        let Some(resp) = resp else {
-            let _ = app_handle.emit("daemon-error", "daemon closed the connection");
-            break;
-        };
-        match resp {
-            Response::Output { id, data } => {
-                let _ = app_handle.emit("pty-output", (id, data));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        loop {
+            let resp: Option<Response> = match read_message(&mut reader) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = reader_app_handle.emit("daemon-error", e.to_string());
+                    break;
+                }
+            };
+            let Some(resp) = resp else {
+                let _ = reader_app_handle.emit("daemon-error", "daemon closed the connection");
+                break;
+            };
+            match resp {
+                Response::Output { id, data } => {
+                    let _ = reader_app_handle.emit("pty-output", (id, data));
+                }
+                Response::SessionExited { id, exit_code } => {
+                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
+                }
+                Response::Error { message } => {
+                    let _ = reader_app_handle.emit("daemon-error", message);
+                }
+                _ => {}
             }
-            Response::SessionExited { id, exit_code } => {
-                let _ = app_handle.emit("session-exited", (id, exit_code));
-            }
-            Response::Error { message } => {
-                let _ = app_handle.emit("daemon-error", message);
-            }
-            _ => {}
         }
     });
 

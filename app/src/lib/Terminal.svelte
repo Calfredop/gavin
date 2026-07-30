@@ -82,6 +82,7 @@
         }),
       ]);
     unlisteners.push(unlistenReady, unlistenOutput, unlistenExited, unlistenError);
+    invoke("signal_frontend_ready").catch(() => {});
 
     // bootstrap() may have already finished — e.g. reattaching to an
     // already-running daemon, the common case — before the listeners above
