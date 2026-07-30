@@ -862,6 +862,28 @@ Create `app/src/Terminal.svelte` (adjust path per the note above):
     invoke("resize_session", { cols, rows }).catch(() => {});
   }
 
+  function handleSessionReady(id: string) {
+    if (status !== "connecting") return; // already handled — see below
+    currentSessionId = id;
+    status = "ready";
+    // Input is only wired up once a session actually exists. Attaching
+    // onData unconditionally at mount time, before any session exists, is
+    // exactly the bug this restructuring exists to avoid: a keystroke that
+    // arrives before the session is ready would fail server-side ("no
+    // active session"), and naively treating that failure as a fatal error
+    // would permanently mask a perfectly working terminal — the "error"
+    // status leaving "connecting" would block this very function's own
+    // guard above from ever running once the session genuinely becomes
+    // ready.
+    term.onData((data) => {
+      invoke("write_input", { data }).catch((e) => {
+        status = "error";
+        errorMessage = String(e);
+      });
+    });
+    sendResize();
+  }
+
   onMount(async () => {
     term = new Terminal({ convertEol: true });
     fitAddon = new FitAddon();
@@ -869,65 +891,46 @@ Create `app/src/Terminal.svelte` (adjust path per the note above):
     term.open(container);
     fitAddon.fit();
 
-    term.onData((data) => {
-      invoke("write_input", { data }).catch((e) => {
-        status = "error";
-        errorMessage = String(e);
-      });
-    });
-
     window.addEventListener("resize", sendResize);
 
-    function handleSessionReady(id: string) {
-      if (status !== "connecting") return; // already handled — see below
-      currentSessionId = id;
-      status = "ready";
-      sendResize();
-    }
+    // Register every listener before anything else async (all four in one
+    // Promise.all, not sequential awaits), so none of them can miss an
+    // event bootstrap() emits from its background thread before this
+    // component finishes mounting — the same race class Task 5's fix round
+    // closed for session-ready specifically, now closed as tightly as
+    // practical for the other three too.
+    const [unlistenReady, unlistenOutput, unlistenExited, unlistenError] =
+      await Promise.all([
+        listen<string>("session-ready", (event) => {
+          handleSessionReady(event.payload);
+        }),
+        listen<[string, string]>("pty-output", (event) => {
+          const [id, data] = event.payload;
+          if (currentSessionId && id !== currentSessionId) return;
+          term.write(data);
+        }),
+        listen<[string, number]>("session-exited", (event) => {
+          const [id, code] = event.payload;
+          if (currentSessionId && id !== currentSessionId) return;
+          status = "exited";
+          exitCode = code;
+        }),
+        listen<string>("daemon-error", (event) => {
+          status = "error";
+          errorMessage = event.payload;
+        }),
+      ]);
+    unlisteners.push(unlistenReady, unlistenOutput, unlistenExited, unlistenError);
 
-    // Register the listener BEFORE polling for already-established state.
-    // bootstrap() runs on a background thread and can finish — including
-    // emitting session-ready — before this component ever mounts,
-    // especially when reattaching to an already-running daemon (the common
-    // case). An event emitted before any listener exists is simply not
-    // delivered, not buffered. The status guard in handleSessionReady
-    // means it doesn't matter which of the poll or the event fires first,
-    // or if both do.
-    unlisteners.push(
-      await listen<string>("session-ready", (event) => {
-        handleSessionReady(event.payload);
-      })
-    );
-
+    // bootstrap() may have already finished — e.g. reattaching to an
+    // already-running daemon, the common case — before the listeners above
+    // went live. Catch that case too. Order-independent with the
+    // session-ready listener thanks to handleSessionReady's own guard.
     invoke<string | null>("get_current_session")
       .then((id) => {
         if (id) handleSessionReady(id);
       })
       .catch(() => {});
-
-    unlisteners.push(
-      await listen<[string, string]>("pty-output", (event) => {
-        const [id, data] = event.payload;
-        if (currentSessionId && id !== currentSessionId) return;
-        term.write(data);
-      })
-    );
-
-    unlisteners.push(
-      await listen<[string, number]>("session-exited", (event) => {
-        const [id, code] = event.payload;
-        if (currentSessionId && id !== currentSessionId) return;
-        status = "exited";
-        exitCode = code;
-      })
-    );
-
-    unlisteners.push(
-      await listen<string>("daemon-error", (event) => {
-        status = "error";
-        errorMessage = event.payload;
-      })
-    );
   });
 
   onDestroy(() => {
@@ -938,7 +941,11 @@ Create `app/src/Terminal.svelte` (adjust path per the note above):
 </script>
 
 <div class="terminal-page">
-  {#if status === "error"}
+  {#if status === "connecting"}
+    <div class="overlay">
+      <p>Connecting…</p>
+    </div>
+  {:else if status === "error"}
     <div class="overlay">
       <p>Couldn't connect to the daemon.</p>
       <p class="detail">{errorMessage}</p>
