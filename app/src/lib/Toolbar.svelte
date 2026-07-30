@@ -2,6 +2,7 @@
   import { layoutState, splitPane, closePane, applyPreset } from "./layoutState";
   import { presetSingle, presetSideBySide, presetGrid2x2 } from "./layout";
   import { confirmPaneClose } from "./confirmClose";
+  import { Columns2, Rows2, X, Square, Grid2x2 } from "lucide-svelte";
 
   async function split(direction: "row" | "column"): Promise<void> {
     const id = $layoutState.focusedSessionId;
@@ -28,14 +29,20 @@
 </script>
 
 <div class="toolbar">
-  <button onclick={() => split("row")}>Split Right</button>
-  <button onclick={() => split("column")}>Split Down</button>
-  <button onclick={handleClosePane}>Close Pane</button>
+  <button aria-label="Split Right" title="Split Right" onclick={() => split("row")}>
+    <Columns2 size={16} />
+  </button>
+  <button aria-label="Split Down" title="Split Down" onclick={() => split("column")}>
+    <Rows2 size={16} />
+  </button>
+  <button aria-label="Close Pane" title="Close Pane" onclick={handleClosePane}>
+    <X size={16} />
+  </button>
   <div class="presets">
     <span>Presets:</span>
-    <button onclick={applySingle}>Single</button>
-    <button onclick={applySideBySide}>Side by Side</button>
-    <button onclick={applyGrid}>2×2 Grid</button>
+    <button onclick={applySingle}><Square size={14} /> Single</button>
+    <button onclick={applySideBySide}><Columns2 size={14} /> Side by Side</button>
+    <button onclick={applyGrid}><Grid2x2 size={14} /> 2×2 Grid</button>
   </div>
 </div>
 
@@ -52,6 +59,9 @@
     flex: 0 0 auto;
   }
   .toolbar button {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     background: #3a3a3a;
     border: none;
     color: #ccc;

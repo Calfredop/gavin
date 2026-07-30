@@ -4,6 +4,7 @@
   import TerminalPane from "./TerminalPane.svelte";
   import { layoutState, switchToTab, addTab, closeSession, focusPane } from "./layoutState";
   import { confirmTabClose } from "./confirmClose";
+  import { X, Plus } from "lucide-svelte";
 
   let { leaf }: { leaf: Extract<LayoutNode, { type: "leaf" }> } = $props();
 
@@ -46,11 +47,15 @@
             if (await confirmTabClose(sessionId)) {
               closeSession(sessionId);
             }
-          }}>×</span
+          }}
         >
+          <X size={12} />
+        </span>
       </button>
     {/each}
-    <button class="new-tab" onclick={() => addTab(active)}>+</button>
+    <button class="new-tab" aria-label="New Tab" title="New Tab" onclick={() => addTab(active)}>
+      <Plus size={14} />
+    </button>
   </div>
   <div class="content" bind:this={containerEl} onmousedown={() => focusPane(active)}>
     {#each leaf.tabs as sessionId (sessionId)}
