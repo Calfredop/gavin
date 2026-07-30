@@ -1320,3 +1320,496 @@ that in the report instead.
 - **Spec coverage:** auto-spawn-or-connect (Task 3), session create-or-reattach with local persistence (Tasks 4-5), full-window xterm.js rendering with working input/output/resize (Task 6), error states for daemon-unreachable and session-exited (Tasks 5-6), and the manual verification the spec's own Testing section calls for, including the specific "relaunch reattaches to the same session" proof (Task 7). Workspaces/panes/git-status/notifications are correctly out of scope per the spec's Non-goals and aren't touched anywhere in this plan.
 - **Placeholder scan:** no vague instructions — every Rust task has complete code. Tasks 2 and 6 have explicit, bounded uncertainty about third-party tool/package exactness (flagged in Global Constraints and inline), consistent with how Milestone A handled `portable-pty`, not a "figure it out later" gap.
 - **Type consistency:** `Request`/`Response`/`read_message`/`write_message` (Task 1) are consumed identically in Tasks 3 and 5. `AppConfig`/`load`/`save` (Task 4) are consumed identically in Task 5. The four event names and their payload shapes, and the two command names and their argument shapes, are defined once in Task 5 and consumed by exact match in Task 6.
+
+## Final Review Remediation
+
+A whole-branch review (after Task 7's own live-testing fix already landed) found one Critical and two Important issues invisible to any single task's diff, plus one Important finding via combination with a previously-deferred Minor. Fixed in one consolidated wave:
+
+1. **Critical — a stale or exited saved session id permanently bricked the app.** Neither branch of `bootstrap`'s create-or-reattach match checked whether `Attach` actually succeeded. The design spec requires the opposite explicitly (fall through to a fresh session, no error surfaced — "an expected, normal occurrence"), but no task ever implemented that fallback. Concretely reachable by something as ordinary as typing `exit` in the shell: next launch, the same dead id gets re-attached, `session-exited`/`daemon-error` fires again, and there is no in-app recovery — only manually deleting `~/Library/Application Support/com.gavin.app/config.json` unblocks it. Fixed by sending `ListSessions` before trusting a saved id (its reply is always immediate and well-defined, unlike an `Attach` reply to a healthy-but-quiet session, which may be nothing at all) and falling through to `CreateSession` — reusing the *same* `BufReader`, incidentally also fixing a previously-flagged Minor about a throwaway second `BufReader` on the create path — whenever the id is missing or its status is `exited`.
+2. **Important — `bootstrap` failures had no race mitigation at all.** Three of the four startup paths (`session-ready`, the reader-thread events) got a race fix; the fourth — `bootstrap` erroring outright (daemon binary missing, corrupt config, `app_config_dir` failing) — didn't, despite being exactly the case the spec's error-handling section calls out ("render an inline error state... instead of crashing or showing a blank window"). Fixed with the same pattern as `FrontendReady`: an eagerly-managed `BootstrapError` state the frontend polls alongside `get_current_session`, now on a repeating interval with a ~7.5s timeout rather than a single check, so a hung daemon connection surfaces a clear message instead of "Connecting…" forever.
+3. **Important — the frontend-readiness gate could back-pressure into the daemon and the user's actual shell, and its `manage()` timing claim wasn't airtight.** If `signal_frontend_ready` never arrives (an unhandled listener-registration failure, no `try`/`finally`), the reader thread parked forever — meaning the client stopped draining the socket entirely, unlike before this milestone's fixes existed. On a large scrollback replay, the daemon's connection-handling thread blocks mid-write once the AF_UNIX socket buffer fills (a few KB, much smaller than the 64 KiB replay cap), which backs up through the session's writer mutex into the PTY pump and can stall the shell process itself. Separately, `FrontendReady` was managed inside `.setup()`, but window creation can precede the setup closure running, so the "always valid to call" claim wasn't guaranteed. Fixed: bound the gate to a 5s deadline (proceed anyway rather than block indefinitely — a late emit lost occasionally is far better than wedging the daemon), wrap the frontend's listener registration in `try`/`finally` so the signal always fires, and move both `FrontendReady` and the new `BootstrapError` to `Builder::manage()` calls before `.setup()` rather than inside it.
+4. **Important, via combination — a corrupted `config.json` compounds finding #2.** Previously deferred as a Task 4 Minor ("no test for malformed JSON") in isolation; combined with the bootstrap-error gap, a corrupt config file meant `load()` erroring, `bootstrap` failing fast, and (pre-fix-#2) the failure being silently lost. Fixed by treating unparseable config content the same as "no saved session" (`AppConfig::default()`) rather than a startup error — a stale/missing session id is already normal, expected behavior per finding #1's fallback.
+
+Also folded in (cheap, directly relevant to the milestone's stated goal of *working* keyboard input): `convertEol: true` removed from the xterm.js `Terminal` constructor (it forces a `\r` before every bare `\n`, which corrupts cursor movement in raw-mode TUIs like vim/htop that rely on real PTY line-ending semantics, not plain-text semantics); `term.focus()` added once a session is ready, so the terminal has keyboard focus without requiring a click first; the unused scaffold `greet` command and its registration removed.
+
+**Deliberately deferred** (real findings, not blocking this milestone): a `request_replay` command so any future component remount (not just app restart) can re-request the scrollback — today's one-shot gate is fine for this milestone's single mount-per-launch usage, but the reviewer correctly notes "it will be a user-visible [gap] the moment Milestone C introduces panes that mount and unmount," so this is Milestone C's problem to solve as part of its own pane-lifecycle design, not bolted on speculatively now. Also deferred: CSP hardening (`tauri.conf.json`'s `"csp": null"`), the unused `tauri-plugin-opener` capability grant, resize-event debouncing, cosmetic scaffold leftovers (`app.html` title, `productName`), and the `HOME`-unset `.expect()` panicking instead of returning a `Result` (exceedingly unlikely for a GUI app launched from Finder/Dock, where `HOME` is always set).
+
+**Not fixed by code, flagged for a human:** literal keyboard-input verification (type a character, see it echo) has no end-to-end evidence at any layer — the verification environment had no macOS Accessibility/Automation permission to send synthetic keystrokes, so `term.onData` → `invoke("write_input")` → the daemon was never actually exercised, only read and reasoned about. Process-identity and protocol-probe substitutes covered everything else convincingly, but this one gap needs a person with the keyboard: launch the app, type `echo milestone_b_smoke_test`, confirm it echoes back.
+
+### Complete replacement: `app/src-tauri/src/session.rs`
+
+```rust
+use protocol::{read_message, socket_path, write_message, Request, Response};
+use std::io::BufReader;
+use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+pub struct DaemonConnection {
+    writer: Arc<Mutex<UnixStream>>,
+}
+
+pub struct ActiveSessionId(pub Mutex<Option<String>>);
+
+/// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
+/// before anyone is waiting on it would be lost) when the frontend confirms
+/// its event listeners are registered. Managed via `Builder::manage` before
+/// `.setup()` runs (not inside it — window creation can precede the setup
+/// closure), so `signal_frontend_ready` is always valid to call.
+pub struct FrontendReady(pub std::sync::atomic::AtomicBool);
+
+/// Set if `bootstrap` fails before it can emit `daemon-error` to a listener
+/// that might not exist yet. Same eager-`manage` rationale as `FrontendReady`.
+pub struct BootstrapError(pub Mutex<Option<String>>);
+
+#[tauri::command]
+pub fn signal_frontend_ready(state: State<FrontendReady>) {
+    state.0.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
+    state.0.lock().unwrap().clone()
+}
+
+fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Result<()> {
+    write_message(&mut *writer.lock().unwrap(), req)
+}
+
+/// Connects to (or spawns) the daemon, creates or reattaches to the saved
+/// session, registers Tauri-managed state for the commands below, and
+/// spawns a background thread that relays every subsequent daemon message
+/// to the frontend as a Tauri event. Called once from the app's setup hook.
+pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
+    let stream = crate::daemon::connect_or_spawn(
+        &socket_path(),
+        Duration::from_secs(3),
+        crate::daemon::spawn_real_daemon,
+    )?;
+
+    let writer = Arc::new(Mutex::new(stream.try_clone()?));
+    let reader_stream = stream;
+    let mut boot_reader = BufReader::new(reader_stream.try_clone()?);
+
+    let config_dir = app_handle.path().app_config_dir()?;
+    let config = crate::config::load(&config_dir)?;
+
+    // A saved session id can be stale (registry reset, its cwd no longer
+    // exists so recover() skipped it, it was killed by another client) or
+    // point at a session that has since exited (e.g. the user typed
+    // `exit`). Check with the daemon before trusting it — the design spec
+    // requires this to be a silent, normal fallback to a fresh session,
+    // not an error surfaced to the user.
+    let mut existing_id = config.session_id.clone();
+    if let Some(id) = &existing_id {
+        send_request(&writer, &Request::ListSessions)?;
+        let resp: Response = read_message(&mut boot_reader)?
+            .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during startup"))?;
+        let sessions = match resp {
+            Response::SessionList { sessions } => sessions,
+            other => anyhow::bail!("expected SessionList, got {other:?}"),
+        };
+        let still_valid = sessions
+            .iter()
+            .any(|s| &s.id == id && s.status != "exited");
+        if !still_valid {
+            existing_id = None;
+        }
+    }
+
+    let session_id = match existing_id {
+        Some(id) => {
+            send_request(&writer, &Request::Attach { id: id.clone() })?;
+            id
+        }
+        None => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            send_request(
+                &writer,
+                &Request::CreateSession {
+                    workspace_path: home.clone(),
+                    cwd: home,
+                    command: None,
+                },
+            )?;
+            // The daemon's very next reply to a CreateSession request is
+            // SessionCreated — read it synchronously here, on the same
+            // boot_reader used for the ListSessions check above, before the
+            // background loop below starts consuming everything else on
+            // this stream.
+            let resp: Response = read_message(&mut boot_reader)?
+                .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during startup"))?;
+            let id = match resp {
+                Response::SessionCreated { id } => id,
+                other => anyhow::bail!("expected SessionCreated, got {other:?}"),
+            };
+            crate::config::save(
+                &config_dir,
+                &crate::config::AppConfig { session_id: Some(id.clone()) },
+            )?;
+            send_request(&writer, &Request::Attach { id: id.clone() })?;
+            id
+        }
+    };
+
+    app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
+    app_handle.manage(ActiveSessionId(Mutex::new(Some(session_id.clone()))));
+    app_handle.emit("session-ready", &session_id)?;
+
+    let mut reader = BufReader::new(reader_stream);
+    let reader_app_handle = app_handle.clone();
+    std::thread::spawn(move || {
+        // Wait for the frontend to confirm its listeners are registered
+        // before reading — and therefore emitting — anything from the
+        // daemon (see FrontendReady's doc comment for why). Bounded: an
+        // unbounded wait here would leave the daemon's connection-handling
+        // thread blocked mid-write on a full scrollback replay (the
+        // AF_UNIX socket buffer is much smaller than the replay can be),
+        // which backs up through the session's writer mutex into the PTY
+        // pump and can stall the user's actual shell — worse than the
+        // small chance of an early emit being missed if the frontend is
+        // simply slow rather than broken.
+        let gate_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if reader_app_handle
+                .state::<FrontendReady>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            if Instant::now() >= gate_deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        loop {
+            let resp: Option<Response> = match read_message(&mut reader) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = reader_app_handle.emit("daemon-error", e.to_string());
+                    break;
+                }
+            };
+            let Some(resp) = resp else {
+                let _ = reader_app_handle.emit("daemon-error", "daemon closed the connection");
+                break;
+            };
+            match resp {
+                Response::Output { id, data } => {
+                    let _ = reader_app_handle.emit("pty-output", (id, data));
+                }
+                Response::SessionExited { id, exit_code } => {
+                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
+                }
+                Response::Error { message } => {
+                    let _ = reader_app_handle.emit("daemon-error", message);
+                }
+                _ => {}
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn write_input(
+    data: String,
+    state: State<DaemonConnection>,
+    session: State<ActiveSessionId>,
+) -> Result<(), String> {
+    let id = session
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "no active session".to_string())?;
+    send_request(&state.writer, &Request::WriteInput { id, data }).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resize_session(
+    cols: u16,
+    rows: u16,
+    state: State<DaemonConnection>,
+    session: State<ActiveSessionId>,
+) -> Result<(), String> {
+    let id = session
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "no active session".to_string())?;
+    send_request(&state.writer, &Request::ResizeSession { id, cols, rows }).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_current_session(session: State<ActiveSessionId>) -> Option<String> {
+    session.0.lock().unwrap().clone()
+}
+```
+
+### Complete replacement: `app/src-tauri/src/lib.rs`
+
+```rust
+mod config;
+mod daemon;
+mod session;
+
+use tauri::{Emitter, Manager};
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
+        .manage(session::BootstrapError(std::sync::Mutex::new(None)))
+        .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Err(e) = session::bootstrap(handle.clone()) {
+                    let message = e.to_string();
+                    *handle.state::<session::BootstrapError>().0.lock().unwrap() = Some(message.clone());
+                    let _ = handle.emit("daemon-error", message);
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            session::write_input,
+            session::resize_session,
+            session::get_current_session,
+            session::signal_frontend_ready,
+            session::get_bootstrap_error
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+```
+
+(The scaffold's `greet` command is removed — it was already unused, since Task 6 replaced `+page.svelte`'s content entirely.)
+
+### Targeted edit: `app/src-tauri/src/config.rs`
+
+Replace the `load` function with:
+
+```rust
+pub fn load(config_dir: &Path) -> anyhow::Result<AppConfig> {
+    let path = config_path(config_dir);
+    if !path.exists() {
+        return Ok(AppConfig::default());
+    }
+    let contents = std::fs::read_to_string(&path)?;
+    // A corrupted/unparseable config file is treated the same as "no
+    // saved session" rather than a startup error — a stale or missing
+    // session id is already normal, expected behavior (see the
+    // ListSessions check in session::bootstrap), not something that
+    // should block launch.
+    Ok(serde_json::from_str(&contents).unwrap_or_default())
+}
+```
+
+`save` and everything else in this file stays as-is. Add one new test to the
+`#[cfg(test)] mod tests` block, alongside the existing three:
+
+```rust
+    #[test]
+    fn load_treats_malformed_json_as_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(dir.path()), "{not valid json").unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config, AppConfig::default());
+    }
+```
+
+### Complete replacement: `app/src/lib/Terminal.svelte`
+
+```svelte
+<script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { Terminal } from "@xterm/xterm";
+  import { FitAddon } from "@xterm/addon-fit";
+  import "@xterm/xterm/css/xterm.css";
+
+  let container: HTMLDivElement;
+  let status: "connecting" | "ready" | "exited" | "error" = "connecting";
+  let errorMessage = "";
+  let exitCode: number | null = null;
+
+  let term: Terminal;
+  let fitAddon: FitAddon;
+  let currentSessionId: string | null = null;
+  const unlisteners: UnlistenFn[] = [];
+
+  function sendResize() {
+    if (!fitAddon) return;
+    fitAddon.fit();
+    const { cols, rows } = term;
+    invoke("resize_session", { cols, rows }).catch(() => {});
+  }
+
+  function handleSessionReady(id: string) {
+    if (status !== "connecting") return; // already handled — see below
+    currentSessionId = id;
+    status = "ready";
+    // Input is only wired up once a session actually exists. Attaching
+    // onData unconditionally at mount time, before any session exists, is
+    // exactly the bug this restructuring exists to avoid: a keystroke that
+    // arrives before the session is ready would fail server-side ("no
+    // active session"), and naively treating that failure as a fatal error
+    // would permanently mask a perfectly working terminal — the "error"
+    // status leaving "connecting" would block this very function's own
+    // guard above from ever running once the session genuinely becomes
+    // ready.
+    term.onData((data) => {
+      invoke("write_input", { data }).catch((e) => {
+        status = "error";
+        errorMessage = String(e);
+      });
+    });
+    sendResize();
+    term.focus();
+  }
+
+  // Repeatedly polls for either a ready session or a bootstrap failure,
+  // since bootstrap() can fail before any listener exists to catch its
+  // daemon-error emit — the same class of startup race the event listeners
+  // below are hardened against. Gives up after ~7.5s with a clear timeout
+  // message rather than leaving "Connecting…" up forever.
+  async function pollForStartupState() {
+    const maxAttempts = 15;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (status !== "connecting") return; // resolved via an event meanwhile
+      const [id, bootstrapError] = await Promise.all([
+        invoke<string | null>("get_current_session").catch(() => null),
+        invoke<string | null>("get_bootstrap_error").catch(() => null),
+      ]);
+      if (bootstrapError) {
+        status = "error";
+        errorMessage = bootstrapError;
+        return;
+      }
+      if (id) {
+        handleSessionReady(id);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (status === "connecting") {
+      status = "error";
+      errorMessage = "Timed out waiting for the daemon to become reachable.";
+    }
+  }
+
+  onMount(async () => {
+    term = new Terminal({ convertEol: false });
+    fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(container);
+    fitAddon.fit();
+
+    window.addEventListener("resize", sendResize);
+
+    // Register every listener before anything else async (all four in one
+    // Promise.all, not sequential awaits), so none of them can miss an
+    // event bootstrap() emits from its background thread before this
+    // component finishes mounting. The signal in `finally` fires even if
+    // listener registration itself fails, so the backend's reader thread
+    // (which waits on this signal, bounded — see session.rs) is never left
+    // waiting on a signal that silently never comes.
+    try {
+      const [unlistenReady, unlistenOutput, unlistenExited, unlistenError] =
+        await Promise.all([
+          listen<string>("session-ready", (event) => {
+            handleSessionReady(event.payload);
+          }),
+          listen<[string, string]>("pty-output", (event) => {
+            const [id, data] = event.payload;
+            // Deliberately falsy-tolerant (not `if (id !== currentSessionId) return;`):
+            // currentSessionId is null until handleSessionReady runs, and this
+            // guard must not drop output just because status is still
+            // "connecting" — that's exactly the bug this whole fix wave exists
+            // to prevent. Don't "simplify" this comparison.
+            if (currentSessionId && id !== currentSessionId) return;
+            term.write(data);
+          }),
+          listen<[string, number]>("session-exited", (event) => {
+            const [id, code] = event.payload;
+            if (currentSessionId && id !== currentSessionId) return;
+            status = "exited";
+            exitCode = code;
+          }),
+          listen<string>("daemon-error", (event) => {
+            status = "error";
+            errorMessage = event.payload;
+          }),
+        ]);
+      unlisteners.push(unlistenReady, unlistenOutput, unlistenExited, unlistenError);
+    } finally {
+      invoke("signal_frontend_ready").catch(() => {});
+    }
+
+    pollForStartupState();
+  });
+
+  onDestroy(() => {
+    window.removeEventListener("resize", sendResize);
+    unlisteners.forEach((unlisten) => unlisten());
+    term?.dispose();
+  });
+</script>
+
+<div class="terminal-page">
+  {#if status === "connecting"}
+    <div class="overlay">
+      <p>Connecting…</p>
+    </div>
+  {:else if status === "error"}
+    <div class="overlay">
+      <p>Couldn't connect to the daemon.</p>
+      <p class="detail">{errorMessage}</p>
+    </div>
+  {:else if status === "exited"}
+    <div class="overlay">
+      <p>Session exited (code {exitCode}).</p>
+    </div>
+  {/if}
+  <div class="terminal-container" bind:this={container}></div>
+</div>
+
+<style>
+  .terminal-page {
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    background: #1e1e1e;
+    position: relative;
+  }
+  .terminal-container {
+    width: 100%;
+    height: 100%;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #eee;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 10;
+    font-family: monospace;
+  }
+  .detail {
+    opacity: 0.7;
+    font-size: 0.85em;
+  }
+</style>
+```
