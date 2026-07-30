@@ -42,6 +42,8 @@
         {sessionId.slice(0, 8)}
         <span
           class="close"
+          aria-label="Close Tab"
+          title="Close Tab"
           onclick={async (e) => {
             e.stopPropagation();
             if (await confirmTabClose(sessionId)) {
