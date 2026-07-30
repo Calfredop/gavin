@@ -36,6 +36,121 @@ fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Resul
     write_message(&mut *writer.lock().unwrap(), req)
 }
 
+/// A second, dedicated connection to the daemon, used only for one-shot
+/// request/response commands (ListSessions/CreateSession/KillSession).
+/// Kept separate from the streaming connection (DaemonConnection) whose
+/// background thread continuously reads Output/SessionExited off the
+/// socket — reading a CreateSession reply off *that* connection would
+/// race the relay thread for bytes, with no way to tell which reply
+/// belongs to which request. The Mutex serializes this connection's own
+/// request-then-response cycles, one at a time, which is what makes
+/// correlation unambiguous without the daemon protocol needing a
+/// request-id field.
+pub struct CommandConnection(pub Mutex<UnixStream>);
+
+fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Response> {
+    let mut stream = conn.lock().unwrap();
+    write_message(&mut *stream, req)?;
+    let mut reader = BufReader::new(&mut *stream);
+    read_message(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("daemon closed the command connection"))
+}
+
+#[cfg(test)]
+mod command_connection_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// Spins up a minimal fake daemon: accepts one connection, then for
+    /// each response given, reads exactly one Request and replies with
+    /// that Response, in order. Returns the connected client-side
+    /// UnixStream ready to pass to send_command.
+    fn fake_daemon_replying_with(responses: Vec<Response>) -> (UnixStream, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("fake.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            for response in responses {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let _req: Request = read_message(&mut reader).unwrap().unwrap();
+                write_message(&mut stream, &response).unwrap();
+            }
+        });
+
+        let client = UnixStream::connect(&socket_path).unwrap();
+        (client, dir)
+    }
+
+    #[test]
+    fn send_command_round_trips_a_request_and_response() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::SessionCreated {
+            id: "new-session-id".to_string(),
+        }]);
+        let conn = Mutex::new(client);
+
+        let resp = send_command(
+            &conn,
+            &Request::CreateSession {
+                workspace_path: "/tmp".to_string(),
+                cwd: "/tmp".to_string(),
+                command: None,
+            },
+        )
+        .unwrap();
+
+        match resp {
+            Response::SessionCreated { id } => assert_eq!(id, "new-session-id"),
+            other => panic!("expected SessionCreated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_command_returns_the_error_response() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::Error {
+            message: "unknown session: xyz".to_string(),
+        }]);
+        let conn = Mutex::new(client);
+
+        let resp = send_command(&conn, &Request::KillSession { id: "xyz".to_string() }).unwrap();
+
+        match resp {
+            Response::Error { message } => assert_eq!(message, "unknown session: xyz"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn send_command_sequential_calls_dont_cross_streams() {
+        // Two calls in a row on the same connection must each get their own
+        // reply, in order -- this is the whole reason CommandConnection
+        // exists as a separate, mutex-serialized connection.
+        let (client, _dir) = fake_daemon_replying_with(vec![
+            Response::SessionCreated { id: "session-0".to_string() },
+            Response::SessionCreated { id: "session-1".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+
+        let make_req = || Request::CreateSession {
+            workspace_path: "/tmp".to_string(),
+            cwd: "/tmp".to_string(),
+            command: None,
+        };
+
+        let first = send_command(&conn, &make_req()).unwrap();
+        let second = send_command(&conn, &make_req()).unwrap();
+
+        match (first, second) {
+            (Response::SessionCreated { id: id0 }, Response::SessionCreated { id: id1 }) => {
+                assert_eq!(id0, "session-0");
+                assert_eq!(id1, "session-1");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+}
+
 /// Connects to (or spawns) the daemon, creates or reattaches to the saved
 /// session, registers Tauri-managed state for the commands below, and
 /// spawns a background thread that relays every subsequent daemon message
@@ -208,4 +323,40 @@ pub fn resize_session(
 #[tauri::command]
 pub fn get_current_session(session: State<ActiveSessionId>) -> Option<String> {
     session.0.lock().unwrap().clone()
+}
+
+/// Shared by the create_session command below and, starting in Task 3,
+/// resolve_layout's per-tab fallback for stale/exited saved session ids —
+/// defined once here rather than duplicated, since both are exactly
+/// "create a fresh session at $HOME and return its id."
+fn create_fresh_session(command_conn: &Mutex<UnixStream>) -> anyhow::Result<String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let resp = send_command(
+        command_conn,
+        &Request::CreateSession {
+            workspace_path: home.clone(),
+            cwd: home,
+            command: None,
+        },
+    )?;
+    match resp {
+        Response::SessionCreated { id } => Ok(id),
+        other => anyhow::bail!("expected SessionCreated, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub fn create_session(state: State<CommandConnection>) -> Result<String, String> {
+    create_fresh_session(&state.0).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::KillSession { id: session_id })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
