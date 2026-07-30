@@ -923,6 +923,30 @@ function setError(message: string): void {
   layoutState.update((s) => ({ ...s, status: "error", errorMessage: message }));
 }
 
+// Shared by every action below that ends in "mutate the tree, then
+// persist it" -- extracted so that pattern exists exactly once instead of
+// once per action.
+async function persistLayout(tree: LayoutNode): Promise<void> {
+  try {
+    await backend.setLayout(tree);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+// Shared by every action that creates exactly one fresh session before
+// mutating the tree (splitPane, addTab, newSessionFromEmpty). Returns null
+// -- having already called setError -- on failure, so callers just check
+// for null rather than duplicating their own try/catch.
+async function createFreshSession(): Promise<string | null> {
+  try {
+    return await backend.createSession();
+  } catch (e) {
+    setError(String(e));
+    return null;
+  }
+}
+
 const unlisteners: UnlistenFn[] = [];
 
 export async function bootstrap(): Promise<void> {
@@ -987,39 +1011,21 @@ async function pollForStartupState(): Promise<void> {
 export async function splitPane(targetSessionId: string, direction: "row" | "column"): Promise<void> {
   const state = get(layoutState);
   if (!state.tree) return;
-  let newId: string;
-  try {
-    newId = await backend.createSession();
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
+  const newId = await createFreshSession();
+  if (!newId) return;
   const tree = layout.splitLeaf(state.tree, targetSessionId, direction, newId);
   layoutState.update((s) => ({ ...s, tree, focusedSessionId: newId }));
-  try {
-    await backend.setLayout(tree);
-  } catch (e) {
-    setError(String(e));
-  }
+  await persistLayout(tree);
 }
 
 export async function addTab(targetSessionId: string): Promise<void> {
   const state = get(layoutState);
   if (!state.tree) return;
-  let newId: string;
-  try {
-    newId = await backend.createSession();
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
+  const newId = await createFreshSession();
+  if (!newId) return;
   const tree = layout.addTab(state.tree, targetSessionId, newId);
   layoutState.update((s) => ({ ...s, tree, focusedSessionId: newId }));
-  try {
-    await backend.setLayout(tree);
-  } catch (e) {
-    setError(String(e));
-  }
+  await persistLayout(tree);
 }
 
 export async function closeSession(sessionId: string): Promise<void> {
@@ -1049,7 +1055,7 @@ export function handleSessionExited(sessionId: string): void {
       : state.focusedSessionId;
   layoutState.update((s) => ({ ...s, tree, focusedSessionId }));
   if (tree) {
-    void backend.setLayout(tree).catch((e) => setError(String(e)));
+    void persistLayout(tree);
   }
 }
 
@@ -1058,11 +1064,7 @@ export async function switchToTab(sessionId: string): Promise<void> {
   if (!state.tree) return;
   const tree = layout.switchTab(state.tree, sessionId);
   layoutState.update((s) => ({ ...s, tree, focusedSessionId: sessionId }));
-  try {
-    await backend.setLayout(tree);
-  } catch (e) {
-    setError(String(e));
-  }
+  await persistLayout(tree);
 }
 
 export function focusPane(sessionId: string): void {
@@ -1074,11 +1076,7 @@ export async function resizePane(splitPath: number[], sizes: number[]): Promise<
   if (!state.tree) return;
   const tree = layout.resizeSplit(state.tree, splitPath, sizes);
   layoutState.update((s) => ({ ...s, tree }));
-  try {
-    await backend.setLayout(tree);
-  } catch (e) {
-    setError(String(e));
-  }
+  await persistLayout(tree);
 }
 
 export async function applyPreset(
@@ -1100,28 +1098,15 @@ export async function applyPreset(
   // committed -- unlike closeSession, applying a preset is spec'd as an
   // already-deliberate action, so one stuck kill shouldn't block it.
   await Promise.all(oldIds.map((id) => backend.killSession(id).catch(() => {})));
-  try {
-    await backend.setLayout(tree);
-  } catch (e) {
-    setError(String(e));
-  }
+  await persistLayout(tree);
 }
 
 export async function newSessionFromEmpty(): Promise<void> {
-  let newId: string;
-  try {
-    newId = await backend.createSession();
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
+  const newId = await createFreshSession();
+  if (!newId) return;
   const tree = layout.presetSingle(newId);
   layoutState.update((s) => ({ ...s, tree, focusedSessionId: newId }));
-  try {
-    await backend.setLayout(tree);
-  } catch (e) {
-    setError(String(e));
-  }
+  await persistLayout(tree);
 }
 ```
 
