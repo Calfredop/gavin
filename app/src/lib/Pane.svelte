@@ -4,7 +4,7 @@
   import TerminalPane from "./TerminalPane.svelte";
   import { layoutState, switchToTab, addTab, closeSession, focusPane } from "./layoutState";
   import { confirmTabClose } from "./confirmClose";
-  import { X, Plus } from "lucide-svelte";
+  import { X, Plus } from "@lucide/svelte";
 
   let { leaf }: { leaf: Extract<LayoutNode, { type: "leaf" }> } = $props();
 

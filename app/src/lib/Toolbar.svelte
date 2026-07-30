@@ -2,7 +2,7 @@
   import { layoutState, splitPane, closePane, applyPreset } from "./layoutState";
   import { presetSingle, presetSideBySide, presetGrid2x2 } from "./layout";
   import { confirmPaneClose } from "./confirmClose";
-  import { Columns2, Rows2, X, Square, Grid2x2 } from "lucide-svelte";
+  import { Columns2, Rows2, X, Square, Grid2x2 } from "@lucide/svelte";
 
   async function split(direction: "row" | "column"): Promise<void> {
     const id = $layoutState.focusedSessionId;
