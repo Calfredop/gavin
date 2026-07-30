@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   findLeafPath,
   getNodeAtPath,
+  isLastTabInPane,
   splitLeaf,
   addTab,
   closeTab,
@@ -65,6 +66,37 @@ describe("getNodeAtPath", () => {
       ],
     };
     expect(getNodeAtPath(tree, [1])).toEqual({ type: "leaf", tabs: ["b"], activeTabIndex: 0 });
+  });
+});
+
+describe("isLastTabInPane", () => {
+  it("returns true when the session is the only tab in its leaf", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    expect(isLastTabInPane(tree, "a")).toBe(true);
+  });
+
+  it("returns false when the session shares its leaf with other tabs", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 0 };
+    expect(isLastTabInPane(tree, "a")).toBe(false);
+  });
+
+  it("returns false for a session id not present in the tree", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    expect(isLastTabInPane(tree, "missing")).toBe(false);
+  });
+
+  it("checks the correct leaf when nested inside a split", () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
+        { type: "leaf", tabs: ["b", "c"], activeTabIndex: 0 },
+      ],
+    };
+    expect(isLastTabInPane(tree, "a")).toBe(true);
+    expect(isLastTabInPane(tree, "b")).toBe(false);
   });
 });
 

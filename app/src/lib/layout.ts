@@ -22,6 +22,13 @@ export function getNodeAtPath(node: LayoutNode, path: number[]): LayoutNode {
   return current;
 }
 
+export function isLastTabInPane(tree: LayoutNode, sessionId: string): boolean {
+  const path = findLeafPath(tree, sessionId);
+  if (!path) return false;
+  const leaf = getNodeAtPath(tree, path);
+  return leaf.type === "leaf" && leaf.tabs.length === 1;
+}
+
 function normalizeSizes(sizes: number[]): number[] {
   const total = sizes.reduce((sum, s) => sum + s, 0);
   return total > 0 ? sizes.map((s) => s / total) : sizes.map(() => 1 / sizes.length);
