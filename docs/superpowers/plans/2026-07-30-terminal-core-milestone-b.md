@@ -619,7 +619,7 @@ fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Resul
 /// spawns a background thread that relays every subsequent daemon message
 /// to the frontend as a Tauri event. Called once from the app's setup hook.
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
-    let socket_path = crate::daemon::socket_path();
+    let socket_path = protocol::socket_path();
     let stream = crate::daemon::connect_or_spawn(
         &socket_path,
         Duration::from_secs(3),
