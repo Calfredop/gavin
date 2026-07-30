@@ -363,8 +363,14 @@ fn create_fresh_session(command_conn: &Mutex<UnixStream>) -> anyhow::Result<Stri
 }
 
 #[tauri::command]
-pub fn create_session(state: State<CommandConnection>) -> Result<String, String> {
-    create_fresh_session(&state.0).map_err(|e| e.to_string())
+pub fn create_session(
+    command_state: State<CommandConnection>,
+    daemon_state: State<DaemonConnection>,
+) -> Result<String, String> {
+    let id = create_fresh_session(&command_state.0).map_err(|e| e.to_string())?;
+    send_request(&daemon_state.writer, &Request::Attach { id: id.clone() })
+        .map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 #[tauri::command]
