@@ -89,10 +89,12 @@
 <div class="pane-wrapper">
   <div class="tab-bar">
     {#each leaf.tabs as sessionId (sessionId)}
-      <button class="tab" class:active={sessionId === active} onclick={() => switchToTab(sessionId)}>
-        {#if sessionId === active && isFocused}
-          <span class="focus-dot"></span>
-        {/if}
+      <button
+        class="tab"
+        class:active={sessionId === active}
+        class:focused={sessionId === active && isFocused}
+        onclick={() => switchToTab(sessionId)}
+      >
         {#if editingSessionId === sessionId}
           <input
             class="tab-label-input"
@@ -165,7 +167,12 @@
     gap: 6px;
     padding: 4px 8px;
     background: transparent;
+    /* border-top is always present (transparent when inactive) so toggling
+       the indicator on/off never changes the tab's box height -- box-sizing
+       keeps that same 2px folded into the height in both states. */
     border: none;
+    border-top: 2px solid transparent;
+    box-sizing: border-box;
     color: #aaa;
     font-family: monospace;
     font-size: 0.8em;
@@ -175,12 +182,8 @@
     background: #1e1e1e;
     color: #fff;
   }
-  .focus-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #4a9eff;
-    flex: 0 0 auto;
+  .tab.focused {
+    border-top-color: #4a9eff;
   }
   .tab-label {
     max-width: 120px;
@@ -208,6 +211,8 @@
   .new-tab {
     background: transparent;
     border: none;
+    border-top: 2px solid transparent;
+    box-sizing: border-box;
     color: #aaa;
     cursor: pointer;
     padding: 4px 8px;
