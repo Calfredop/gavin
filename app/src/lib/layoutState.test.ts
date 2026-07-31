@@ -323,6 +323,7 @@ describe("createWorkspace", () => {
     expect(state.workspaces).toHaveLength(1);
     expect(state.workspaces[0].name).toBe("My Project");
     expect(state.activeWorkspaceId).toBe(state.workspaces[0].id);
+    expect(state.focusedSessionId).toBe(null);
     expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, state.workspaces[0].id);
   });
 });
@@ -338,12 +339,28 @@ describe("renameWorkspace", () => {
 });
 
 describe("switchWorkspace", () => {
-  it("updates activeWorkspaceId and persists", async () => {
-    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+  it("updates activeWorkspaceId and recomputes focusedSessionId", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"]))]), ws("ws-2", [page("page-2", leaf(["x"]))])],
+      "ws-1",
+      "a"
+    );
 
     await switchWorkspace("ws-2");
 
-    expect(get(layoutState).activeWorkspaceId).toBe("ws-2");
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-2");
+    expect(state.focusedSessionId).toBe("x");
+  });
+
+  it("sets focusedSessionId to null when switching to an empty workspace", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))]), ws("ws-2", [])], "ws-1", "a");
+
+    await switchWorkspace("ws-2");
+
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-2");
+    expect(state.focusedSessionId).toBe(null);
   });
 });
 
@@ -406,16 +423,18 @@ describe("renamePage", () => {
 });
 
 describe("switchPage", () => {
-  it("updates the target workspace's activePageId", async () => {
+  it("updates the target workspace's activePageId and recomputes focusedSessionId", async () => {
     setState(
       [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1")],
       "ws-1",
-      null
+      "a"
     );
 
     await switchPage("ws-1", "page-2");
 
-    expect(get(layoutState).workspaces[0].activePageId).toBe("page-2");
+    const state = get(layoutState);
+    expect(state.workspaces[0].activePageId).toBe("page-2");
+    expect(state.focusedSessionId).toBe("b");
   });
 });
 

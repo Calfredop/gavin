@@ -369,7 +369,7 @@ export async function createWorkspace(name: string): Promise<void> {
   const state = get(layoutState);
   const id = crypto.randomUUID();
   const data = workspace.createWorkspace(state, id, name);
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, activeWorkspaceId: data.activeWorkspaceId }));
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, activeWorkspaceId: data.activeWorkspaceId, focusedSessionId: initialFocusedSessionId(data) }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
 
@@ -383,7 +383,7 @@ export async function renameWorkspace(workspaceId: string, name: string): Promis
 export async function switchWorkspace(workspaceId: string): Promise<void> {
   const state = get(layoutState);
   const data = workspace.switchWorkspace(state, workspaceId);
-  layoutState.update((s) => ({ ...s, activeWorkspaceId: data.activeWorkspaceId }));
+  layoutState.update((s) => ({ ...s, activeWorkspaceId: data.activeWorkspaceId, focusedSessionId: initialFocusedSessionId(data) }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
 
@@ -467,7 +467,7 @@ export async function renamePage(workspaceId: string, pageId: string, name: stri
 export async function switchPage(workspaceId: string, pageId: string): Promise<void> {
   const state = get(layoutState);
   const data = workspace.switchPage(state, workspaceId, pageId);
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: initialFocusedSessionId(data) }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
 
