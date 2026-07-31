@@ -5,6 +5,8 @@
   import { layoutState, switchToTab, addTab, closeSession, focusPane } from "./layoutState";
   import { confirmTabClose } from "./confirmClose";
   import { X, Plus } from "@lucide/svelte";
+  import Tooltip from "./Tooltip.svelte";
+  import { folderName } from "./paths";
 
   let { leaf }: { leaf: Extract<LayoutNode, { type: "leaf" }> } = $props();
 
@@ -20,6 +22,15 @@
     for (const id of leaf.tabs) {
       paneRefs[id]?.fit();
     }
+  }
+
+  function tabLabel(sessionId: string): string {
+    const cwd = $layoutState.cwdBySessionId[sessionId];
+    return cwd ? folderName(cwd) : sessionId.slice(0, 8);
+  }
+
+  function tabTooltip(sessionId: string): string {
+    return $layoutState.cwdBySessionId[sessionId] ?? sessionId;
   }
 
   // onMount, not a $effect gated on containerEl -- containerEl is a plain
@@ -39,7 +50,9 @@
   <div class="tab-bar">
     {#each leaf.tabs as sessionId (sessionId)}
       <button class="tab" class:active={sessionId === active} onclick={() => switchToTab(sessionId)}>
-        {sessionId.slice(0, 8)}
+        <Tooltip text={tabTooltip(sessionId)}>
+          <span class="tab-label">{tabLabel(sessionId)}</span>
+        </Tooltip>
         <span
           class="close"
           aria-label="Close Tab"
@@ -103,6 +116,12 @@
   .tab.active {
     background: #1e1e1e;
     color: #fff;
+  }
+  .tab-label {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .close {
     opacity: 0.6;
