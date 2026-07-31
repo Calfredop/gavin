@@ -1,0 +1,169 @@
+import { describe, it, expect } from "vitest";
+import type { LayoutNode } from "./layout";
+import {
+  createWorkspace,
+  renameWorkspace,
+  switchWorkspace,
+  removeWorkspace,
+  createPage,
+  renamePage,
+  switchPage,
+  removePage,
+  updatePageLayout,
+  getActiveWorkspace,
+  getActivePage,
+  getActiveTree,
+  allSessionIdsInWorkspace,
+  type WorkspacesData,
+  type Workspace,
+} from "./workspace";
+
+function leaf(tabs: string[]): LayoutNode {
+  return { type: "leaf", tabs, activeTabIndex: 0 };
+}
+
+const empty: WorkspacesData = { workspaces: [], activeWorkspaceId: null };
+
+describe("createWorkspace", () => {
+  it("appends a new empty workspace and makes it active", () => {
+    const state = createWorkspace(empty, "ws-1", "My Project");
+    expect(state.workspaces).toEqual([{ id: "ws-1", name: "My Project", pages: [], activePageId: null }]);
+    expect(state.activeWorkspaceId).toBe("ws-1");
+  });
+});
+
+describe("renameWorkspace", () => {
+  it("updates only the matching workspace's name", () => {
+    const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
+    const renamed = renameWorkspace(state, "ws-1", "A renamed");
+    expect(renamed.workspaces.map((w) => w.name)).toEqual(["A renamed", "B"]);
+  });
+});
+
+describe("switchWorkspace", () => {
+  it("updates only activeWorkspaceId", () => {
+    const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
+    const switched = switchWorkspace(state, "ws-1");
+    expect(switched.activeWorkspaceId).toBe("ws-1");
+    expect(switched.workspaces).toEqual(state.workspaces);
+  });
+});
+
+describe("removeWorkspace", () => {
+  it("removes the workspace and falls back to the first remaining one when it was active", () => {
+    const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
+    const removed = removeWorkspace(state, "ws-2");
+    expect(removed.workspaces.map((w) => w.id)).toEqual(["ws-1"]);
+    expect(removed.activeWorkspaceId).toBe("ws-1");
+  });
+
+  it("falls back to null when the last workspace is removed", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const removed = removeWorkspace(state, "ws-1");
+    expect(removed.workspaces).toEqual([]);
+    expect(removed.activeWorkspaceId).toBeNull();
+  });
+
+  it("leaves activeWorkspaceId untouched when removing a non-active workspace", () => {
+    const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
+    const switched = switchWorkspace(state, "ws-1");
+    const removed = removeWorkspace(switched, "ws-2");
+    expect(removed.activeWorkspaceId).toBe("ws-1");
+  });
+});
+
+describe("createPage", () => {
+  it("appends a page to the target workspace and makes it that workspace's active page", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const withPage = createPage(state, "ws-1", "page-1", "Page 1", leaf(["s1"]));
+    expect(withPage.workspaces[0].pages).toEqual([
+      { id: "page-1", name: "Page 1", layout: leaf(["s1"]), focusedSessionId: null },
+    ]);
+    expect(withPage.workspaces[0].activePageId).toBe("page-1");
+  });
+});
+
+describe("renamePage", () => {
+  it("updates only the matching page's name", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["s1"]));
+    state = createPage(state, "ws-1", "page-2", "Page 2", leaf(["s2"]));
+    const renamed = renamePage(state, "ws-1", "page-1", "Renamed");
+    expect(renamed.workspaces[0].pages.map((p) => p.name)).toEqual(["Renamed", "Page 2"]);
+  });
+});
+
+describe("switchPage", () => {
+  it("updates only the target workspace's activePageId", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["s1"]));
+    state = createPage(state, "ws-1", "page-2", "Page 2", leaf(["s2"]));
+    const switched = switchPage(state, "ws-1", "page-1");
+    expect(switched.workspaces[0].activePageId).toBe("page-1");
+  });
+});
+
+describe("removePage", () => {
+  it("removes the page and falls back to the first remaining page when it was active", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["s1"]));
+    state = createPage(state, "ws-1", "page-2", "Page 2", leaf(["s2"]));
+    const removed = removePage(state, "ws-1", "page-2");
+    expect(removed.workspaces[0].pages.map((p) => p.id)).toEqual(["page-1"]);
+    expect(removed.workspaces[0].activePageId).toBe("page-1");
+  });
+
+  it("falls back to null when the workspace's last page is removed, leaving the workspace itself in place", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["s1"]));
+    const removed = removePage(state, "ws-1", "page-1");
+    expect(removed.workspaces).toEqual([{ id: "ws-1", name: "A", pages: [], activePageId: null }]);
+  });
+});
+
+describe("updatePageLayout", () => {
+  it("replaces only the target page's layout", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["s1"]));
+    const updated = updatePageLayout(state, "ws-1", "page-1", leaf(["s1", "s2"]));
+    expect(updated.workspaces[0].pages[0].layout).toEqual(leaf(["s1", "s2"]));
+  });
+});
+
+describe("getActiveWorkspace / getActivePage / getActiveTree", () => {
+  it("returns null for all three when there are no workspaces", () => {
+    expect(getActiveWorkspace(empty)).toBeNull();
+    expect(getActivePage(empty)).toBeNull();
+    expect(getActiveTree(empty)).toBeNull();
+  });
+
+  it("returns the active workspace, its active page, and that page's tree", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["s1"]));
+
+    expect(getActiveWorkspace(state)?.id).toBe("ws-1");
+    expect(getActivePage(state)?.id).toBe("page-1");
+    expect(getActiveTree(state)).toEqual(leaf(["s1"]));
+  });
+
+  it("returns null for the page/tree when the active workspace has no pages", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    expect(getActivePage(state)).toBeNull();
+    expect(getActiveTree(state)).toBeNull();
+  });
+});
+
+describe("allSessionIdsInWorkspace", () => {
+  it("flattens session ids across every page", () => {
+    const workspace: Workspace = {
+      id: "ws-1",
+      name: "A",
+      pages: [
+        { id: "page-1", name: "Page 1", layout: leaf(["s1", "s2"]), focusedSessionId: null },
+        { id: "page-2", name: "Page 2", layout: leaf(["s3"]), focusedSessionId: null },
+      ],
+      activePageId: "page-1",
+    };
+    expect(allSessionIdsInWorkspace(workspace)).toEqual(["s1", "s2", "s3"]);
+  });
+});
