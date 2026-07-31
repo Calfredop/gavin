@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { layoutState, splitPane, closePane, applyPreset } from "./layoutState";
   import { presetSingle, presetSideBySide, presetGrid2x2 } from "./layout";
   import { confirmPaneClose } from "./confirmClose";
@@ -11,6 +12,15 @@
   onMount(async () => {
     macOS = await isMacOS();
   });
+
+  // data-tauri-drag-region alone is unreliable depending on the webview
+  // version -- startDragging() is the documented, directly-controlled
+  // mechanism and is what actually makes the bar draggable. Left-click
+  // only, so this doesn't hijack right-click/middle-click.
+  function startDrag(event: MouseEvent): void {
+    if (event.button !== 0) return;
+    getCurrentWindow().startDragging();
+  }
 
   async function split(direction: "row" | "column"): Promise<void> {
     const id = $layoutState.focusedSessionId;
@@ -57,11 +67,11 @@
 <div class="titlebar">
   {#if macOS}
     <WindowControls {macOS} />
-    <div class="drag-spacer" data-tauri-drag-region></div>
+    <div class="drag-spacer" data-tauri-drag-region onmousedown={startDrag}></div>
     <div class="actions">{@render actions()}</div>
   {:else}
     <div class="actions">{@render actions()}</div>
-    <div class="drag-spacer" data-tauri-drag-region></div>
+    <div class="drag-spacer" data-tauri-drag-region onmousedown={startDrag}></div>
     <WindowControls {macOS} />
   {/if}
 </div>

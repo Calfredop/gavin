@@ -75,6 +75,7 @@
     margin: 0;
     padding: 0;
     overflow: hidden;
+    user-select: none;
   }
   .app {
     width: 100vw;
@@ -83,6 +84,8 @@
     background: #1e1e1e;
     display: flex;
     flex-direction: column;
+    border-radius: 10px;
+    overflow: hidden;
   }
   .tree {
     flex: 1 1 auto;

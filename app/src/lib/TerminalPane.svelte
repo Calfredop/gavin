@@ -64,4 +64,14 @@
   .pane:not(.inactive) {
     z-index: 1;
   }
+  /* Defensive: xterm.js's own selection/copy already runs through its
+     internal buffer (term.getSelection(), used by clipboard.ts), not the
+     browser's native selection -- so the app-wide `user-select: none`
+     shouldn't affect it at all. Re-enabling it here explicitly costs
+     nothing and removes any risk that some xterm-internal DOM node (e.g.
+     its accessibility helpers) turns out to depend on it after all. */
+  :global(.xterm),
+  :global(.xterm *) {
+    user-select: text;
+  }
 </style>
