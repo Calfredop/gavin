@@ -1,5 +1,9 @@
+use crate::config::Workspace;
+#[cfg(test)]
+use crate::config::Page;
 use crate::layout::LayoutNode;
 use protocol::{read_message, socket_path, write_message, Request, Response};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
@@ -11,33 +15,51 @@ pub struct DaemonConnection {
     writer: Arc<Mutex<UnixStream>>,
 }
 
-pub struct CurrentLayout(pub Mutex<LayoutNode>);
+/// The frontend's whole view of workspace/page state, sent over IPC (the
+/// return value of `get_workspaces_state`, and the payload of the
+/// `workspaces-ready` event). camelCase to match the frontend's TypeScript
+/// naming -- the same reason `Workspace`/`Page` themselves use it, and the
+/// same reason `LayoutNode` already renames `active_tab_index`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacesData {
+    pub workspaces: Vec<Workspace>,
+    pub active_workspace_id: Option<String>,
+}
+
+pub struct WorkspacesState(pub Mutex<WorkspacesData>);
 
 /// User-assigned session display names, keyed by session id. Independent
-/// Tauri-managed state from `CurrentLayout`, but both persist into the
+/// Tauri-managed state from `WorkspacesState`, but both persist into the
 /// same `AppConfig` -- every command that saves one must read the other's
-/// current value too (see `set_layout`/`set_session_name`), or it would
-/// silently reset the other field to empty on every save.
+/// current value too (see `set_workspaces_state`/`set_session_name`), or it
+/// would silently reset the other field to empty on every save.
 pub struct SessionNames(pub Mutex<HashMap<String, String>>);
 
 #[tauri::command]
-pub fn get_current_layout(state: State<CurrentLayout>) -> LayoutNode {
+pub fn get_workspaces_state(state: State<WorkspacesState>) -> WorkspacesData {
     state.0.lock().unwrap().clone()
 }
 
 #[tauri::command]
-pub fn set_layout(
-    layout: LayoutNode,
+pub fn set_workspaces_state(
+    workspaces: Vec<Workspace>,
+    active_workspace_id: Option<String>,
     app_handle: AppHandle,
-    state: State<CurrentLayout>,
+    state: State<WorkspacesState>,
     names_state: State<SessionNames>,
 ) -> Result<(), String> {
-    *state.0.lock().unwrap() = layout.clone();
+    let data = WorkspacesData { workspaces, active_workspace_id };
+    *state.0.lock().unwrap() = data.clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     crate::config::save(
         &config_dir,
-        &crate::config::AppConfig { layout: Some(layout), session_names, ..Default::default() },
+        &crate::config::AppConfig {
+            workspaces: data.workspaces,
+            active_workspace_id: data.active_workspace_id,
+            session_names,
+        },
     )
     .map_err(|e| e.to_string())
 }
@@ -52,7 +74,7 @@ pub fn set_session_name(
     session_id: String,
     name: String,
     app_handle: AppHandle,
-    layout_state: State<CurrentLayout>,
+    workspaces_state: State<WorkspacesState>,
     names_state: State<SessionNames>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
@@ -68,11 +90,15 @@ pub fn set_session_name(
         }
         names.clone()
     };
-    let layout = layout_state.0.lock().unwrap().clone();
+    let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     crate::config::save(
         &config_dir,
-        &crate::config::AppConfig { layout: Some(layout), session_names, ..Default::default() },
+        &crate::config::AppConfig {
+            workspaces: data.workspaces,
+            active_workspace_id: data.active_workspace_id,
+            session_names,
+        },
     )
     .map_err(|e| e.to_string())
 }
@@ -149,44 +175,53 @@ fn resolve_sessions(
     }
 }
 
-/// Loads the persisted layout (or builds a fresh single-pane default if
-/// none was saved) and resolves every session id it references against
-/// the daemon's actual live sessions, replacing any that are stale.
-fn resolve_layout(
-    command_conn: &Mutex<UnixStream>,
-    saved: Option<LayoutNode>,
-) -> anyhow::Result<LayoutNode> {
-    match saved {
-        Some(mut layout) => {
-            let resp = send_command(command_conn, &Request::ListSessions)?;
-            let valid_ids: HashSet<String> = match resp {
-                Response::SessionList { sessions } => sessions
-                    .into_iter()
-                    .filter(|s| s.status != "exited")
-                    .map(|s| s.id)
-                    .collect(),
-                other => anyhow::bail!("expected SessionList, got {other:?}"),
-            };
-            resolve_sessions(&mut layout, command_conn, &valid_ids)?;
-            Ok(layout)
-        }
-        None => {
-            let id = create_fresh_session(command_conn)?;
-            Ok(LayoutNode::Leaf { tabs: vec![id], active_tab_index: 0 })
-        }
+/// Fetches the full session list once and returns the set of ids that are
+/// still alive (not exited). Called at most once per bootstrap, regardless
+/// of how many pages/workspaces need reconciling against it.
+fn list_valid_session_ids(command_conn: &Mutex<UnixStream>) -> anyhow::Result<HashSet<String>> {
+    let resp = send_command(command_conn, &Request::ListSessions)?;
+    match resp {
+        Response::SessionList { sessions } => Ok(sessions
+            .into_iter()
+            .filter(|s| s.status != "exited")
+            .map(|s| s.id)
+            .collect()),
+        other => anyhow::bail!("expected SessionList, got {other:?}"),
     }
 }
 
+/// Resolves every session id referenced by every page of every workspace
+/// against the daemon's actual live sessions, replacing any that are stale
+/// in place. An empty `workspaces` list -- nothing saved yet, or a config
+/// from before this milestone -- is left untouched: no default workspace
+/// or session is auto-created, and `ListSessions` isn't even called.
+fn resolve_workspaces(
+    workspaces: &mut [Workspace],
+    command_conn: &Mutex<UnixStream>,
+) -> anyhow::Result<()> {
+    if workspaces.is_empty() {
+        return Ok(());
+    }
+    let valid_ids = list_valid_session_ids(command_conn)?;
+    for workspace in workspaces.iter_mut() {
+        for page in workspace.pages.iter_mut() {
+            resolve_sessions(&mut page.layout, command_conn, &valid_ids)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
-mod command_connection_tests {
+mod test_support {
     use super::*;
     use std::os::unix::net::UnixListener;
 
     /// Spins up a minimal fake daemon: accepts one connection, then for
     /// each response given, reads exactly one Request and replies with
     /// that Response, in order. Returns the connected client-side
-    /// UnixStream ready to pass to send_command.
-    fn fake_daemon_replying_with(responses: Vec<Response>) -> (UnixStream, tempfile::TempDir) {
+    /// UnixStream ready to pass to send_command. Shared by
+    /// command_connection_tests and resolve_workspaces_tests.
+    pub fn fake_daemon_replying_with(responses: Vec<Response>) -> (UnixStream, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("fake.sock");
         let listener = UnixListener::bind(&socket_path).unwrap();
@@ -203,6 +238,12 @@ mod command_connection_tests {
         let client = UnixStream::connect(&socket_path).unwrap();
         (client, dir)
     }
+}
+
+#[cfg(test)]
+mod command_connection_tests {
+    use super::test_support::fake_daemon_replying_with;
+    use super::*;
 
     #[test]
     fn send_command_round_trips_a_request_and_response() {
@@ -272,13 +313,98 @@ mod command_connection_tests {
     }
 }
 
+#[cfg(test)]
+mod resolve_workspaces_tests {
+    use super::test_support::fake_daemon_replying_with;
+    use super::*;
+
+    fn leaf(tabs: &[&str]) -> LayoutNode {
+        LayoutNode::Leaf { tabs: tabs.iter().map(|s| s.to_string()).collect(), active_tab_index: 0 }
+    }
+
+    fn page(id: &str, layout: LayoutNode) -> Page {
+        Page { id: id.to_string(), name: id.to_string(), layout, focused_session_id: None }
+    }
+
+    fn workspace(id: &str, pages: Vec<Page>) -> Workspace {
+        Workspace { id: id.to_string(), name: id.to_string(), pages, active_page_id: None }
+    }
+
+    fn valid_session(id: &str) -> protocol::SessionSummary {
+        protocol::SessionSummary {
+            id: id.to_string(),
+            workspace_path: "/tmp".to_string(),
+            cwd: "/tmp".to_string(),
+            status: "idle".to_string(),
+            restored: false,
+        }
+    }
+
+    #[test]
+    fn empty_workspaces_makes_no_daemon_calls_at_all() {
+        // Zero queued responses -- if resolve_workspaces called
+        // ListSessions anyway, send_command would hit a connection the fake
+        // daemon thread already closed and error, which the unwrap() below
+        // would turn into a clear panic rather than silently passing.
+        let (client, _dir) = fake_daemon_replying_with(vec![]);
+        let conn = Mutex::new(client);
+        let mut workspaces: Vec<Workspace> = vec![];
+
+        resolve_workspaces(&mut workspaces, &conn).unwrap();
+
+        assert_eq!(workspaces, vec![]);
+    }
+
+    #[test]
+    fn calls_list_sessions_exactly_once_regardless_of_page_count() {
+        // Only one SessionList reply is queued. If resolve_workspaces
+        // called ListSessions more than once (e.g. once per page instead
+        // of once total), the second send_command would hit a connection
+        // the fake daemon thread already closed after its one reply, and
+        // the unwrap() below would panic on that error.
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::SessionList {
+            sessions: vec![valid_session("valid-1"), valid_session("valid-2")],
+        }]);
+        let conn = Mutex::new(client);
+        let mut workspaces = vec![
+            workspace("ws-1", vec![page("page-1", leaf(&["valid-1"]))]),
+            workspace("ws-2", vec![page("page-2", leaf(&["valid-2"]))]),
+        ];
+
+        resolve_workspaces(&mut workspaces, &conn).unwrap();
+
+        assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1"]));
+        assert_eq!(workspaces[1].pages[0].layout, leaf(&["valid-2"]));
+    }
+
+    #[test]
+    fn replaces_stale_session_ids_across_multiple_pages_and_workspaces() {
+        let (client, _dir) = fake_daemon_replying_with(vec![
+            Response::SessionList { sessions: vec![valid_session("valid-1")] },
+            Response::SessionCreated { id: "fresh-a".to_string() },
+            Response::SessionCreated { id: "fresh-b".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+        let mut workspaces = vec![
+            workspace("ws-1", vec![page("page-1", leaf(&["valid-1", "stale-1"]))]),
+            workspace("ws-2", vec![page("page-2", leaf(&["stale-2"]))]),
+        ];
+
+        resolve_workspaces(&mut workspaces, &conn).unwrap();
+
+        assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1", "fresh-a"]));
+        assert_eq!(workspaces[1].pages[0].layout, leaf(&["fresh-b"]));
+    }
+}
+
 /// Connects to (or spawns) the daemon over two connections — one for the
 /// continuous Attach/Output relay, one for one-shot request/response
-/// commands (see CommandConnection's doc comment) — resolves the saved
-/// layout (or builds a fresh default), attaches every session it
-/// references, registers Tauri-managed state for the commands below, and
-/// spawns a background thread that relays every subsequent daemon message
-/// to the frontend as a Tauri event. Called once from the app's setup hook.
+/// commands (see CommandConnection's doc comment) — resolves every page of
+/// every saved workspace (or does nothing if none are saved), attaches every
+/// session it references, registers Tauri-managed state for the commands
+/// below, and spawns a background thread that relays every subsequent daemon
+/// message to the frontend as a Tauri event. Called once from the app's setup
+/// hook.
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let stream_conn = crate::daemon::connect_or_spawn(
         &socket_path(),
@@ -298,21 +424,33 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let config = crate::config::load(&config_dir)?;
     let session_names = config.session_names;
 
-    let layout = resolve_layout(&command_conn, config.layout)?;
+    let mut workspaces = config.workspaces;
+    resolve_workspaces(&mut workspaces, &command_conn)?;
+    let active_workspace_id = config.active_workspace_id;
     crate::config::save(
         &config_dir,
-        &crate::config::AppConfig { layout: Some(layout.clone()), session_names: session_names.clone(), ..Default::default() },
+        &crate::config::AppConfig {
+            workspaces: workspaces.clone(),
+            active_workspace_id: active_workspace_id.clone(),
+            session_names: session_names.clone(),
+        },
     )?;
 
-    for id in layout.all_session_ids() {
+    let all_session_ids: Vec<String> = workspaces
+        .iter()
+        .flat_map(|w| w.pages.iter())
+        .flat_map(|p| p.layout.all_session_ids())
+        .collect();
+    for id in all_session_ids {
         send_request(&writer, &Request::Attach { id })?;
     }
 
     app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
     app_handle.manage(CommandConnection(command_conn));
-    app_handle.manage(CurrentLayout(Mutex::new(layout.clone())));
+    let workspaces_data = WorkspacesData { workspaces, active_workspace_id };
+    app_handle.manage(WorkspacesState(Mutex::new(workspaces_data.clone())));
     app_handle.manage(SessionNames(Mutex::new(session_names)));
-    app_handle.emit("layout-ready", &layout)?;
+    app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     let mut reader = BufReader::new(reader_stream);
     let reader_app_handle = app_handle.clone();
@@ -394,10 +532,9 @@ pub fn resize_session(
         .map_err(|e| e.to_string())
 }
 
-/// Shared by the create_session command below and, starting in Task 3,
-/// resolve_layout's per-tab fallback for stale/exited saved session ids —
-/// defined once here rather than duplicated, since both are exactly
-/// "create a fresh session at $HOME and return its id."
+/// Shared by the create_session command below and resolve_sessions's
+/// per-tab fallback (via resolve_workspaces) -- both are exactly "create a
+/// fresh session at $HOME and return its id."
 fn create_fresh_session(command_conn: &Mutex<UnixStream>) -> anyhow::Result<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let resp = send_command(

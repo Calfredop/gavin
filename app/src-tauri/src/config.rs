@@ -28,19 +28,15 @@ pub struct Workspace {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AppConfig {
-    // TEMPORARY for this milestone's Part 1: kept only so session.rs keeps
-    // compiling until a later task migrates every reader/writer over to
-    // `workspaces` and removes this field for good. Do not build anything
-    // new on top of it.
-    pub layout: Option<LayoutNode>,
     #[serde(default)]
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
     pub active_workspace_id: Option<String>,
     /// User-assigned display names, keyed by session id. Independent of
-    /// `layout`/`workspaces` (a session can be renamed regardless of where
-    /// it sits) -- callers that persist one must always carry the others'
-    /// current value along too, or they'll silently reset them to empty.
+    /// `workspaces` (a session can be renamed regardless of which
+    /// page/workspace it sits in) -- callers that persist one must always
+    /// carry the other's current value along too, or they'll silently
+    /// reset it to empty.
     #[serde(default)]
     pub session_names: HashMap<String, String>,
 }
@@ -106,16 +102,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = load(dir.path()).unwrap();
         assert_eq!(config, AppConfig::default());
-        assert_eq!(config.layout, None);
+        assert_eq!(config.workspaces, Vec::new());
     }
 
     #[test]
     fn save_then_load_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let config = AppConfig {
-            layout: Some(sample_layout()),
-            workspaces: vec![],
-            active_workspace_id: None,
+            workspaces: vec![sample_workspace()],
+            active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -125,14 +120,13 @@ mod tests {
     }
 
     #[test]
-    fn session_names_roundtrip_alongside_layout() {
+    fn session_names_roundtrip_alongside_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut session_names = HashMap::new();
         session_names.insert("abc-123".to_string(), "my project".to_string());
         let config = AppConfig {
-            layout: Some(sample_layout()),
-            workspaces: vec![],
-            active_workspace_id: None,
+            workspaces: vec![sample_workspace()],
+            active_workspace_id: Some("workspace-1".to_string()),
             session_names,
         };
         save(dir.path(), &config).unwrap();
@@ -145,10 +139,28 @@ mod tests {
     #[test]
     fn load_defaults_session_names_when_field_is_absent_from_an_older_config_file() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(dir.path()), r#"{"layout": null}"#).unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [], "active_workspace_id": null}"#,
+        )
+        .unwrap();
 
         let config = load(dir.path()).unwrap();
         assert_eq!(config.session_names, HashMap::new());
+    }
+
+    #[test]
+    fn load_defaults_workspaces_and_active_workspace_id_when_absent_from_an_older_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Mirrors a genuine config.json from before this milestone -- only
+        // `layout`/`session_names` existed. `layout`'s value here is
+        // irrelevant: the field no longer exists on AppConfig at all, so
+        // serde silently drops it rather than reading it into anything.
+        std::fs::write(config_path(dir.path()), r#"{"layout": null, "session_names": {}}"#).unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.workspaces, Vec::new());
+        assert_eq!(config.active_workspace_id, None);
     }
 
     #[test]
@@ -156,9 +168,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("nested").join("config-dir");
         let config = AppConfig {
-            layout: Some(sample_layout()),
-            workspaces: vec![],
-            active_workspace_id: None,
+            workspaces: vec![sample_workspace()],
+            active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
         };
         save(&nested, &config).unwrap();
@@ -173,35 +184,5 @@ mod tests {
 
         let config = load(dir.path()).unwrap();
         assert_eq!(config, AppConfig::default());
-    }
-
-    #[test]
-    fn workspaces_roundtrip_alongside_the_old_layout_field() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = AppConfig {
-            layout: None,
-            workspaces: vec![sample_workspace()],
-            active_workspace_id: Some("workspace-1".to_string()),
-            session_names: HashMap::new(),
-        };
-        save(dir.path(), &config).unwrap();
-
-        let loaded = load(dir.path()).unwrap();
-        assert_eq!(loaded, config);
-        assert_eq!(loaded.active_workspace_id, Some("workspace-1".to_string()));
-        assert_eq!(loaded.workspaces[0].pages[0].id, "page-1");
-    }
-
-    #[test]
-    fn load_defaults_workspaces_and_active_workspace_id_when_absent_from_an_older_config_file() {
-        let dir = tempfile::tempdir().unwrap();
-        // Mirrors a genuine config.json from before this milestone -- only
-        // `layout`/`session_names` existed, so `workspaces`/
-        // `active_workspace_id` must default rather than fail to parse.
-        std::fs::write(config_path(dir.path()), r#"{"layout": null, "session_names": {}}"#).unwrap();
-
-        let config = load(dir.path()).unwrap();
-        assert_eq!(config.workspaces, Vec::new());
-        assert_eq!(config.active_workspace_id, None);
     }
 }
