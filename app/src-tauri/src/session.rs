@@ -37,7 +37,7 @@ pub fn set_layout(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     crate::config::save(
         &config_dir,
-        &crate::config::AppConfig { layout: Some(layout), session_names },
+        &crate::config::AppConfig { layout: Some(layout), session_names, ..Default::default() },
     )
     .map_err(|e| e.to_string())
 }
@@ -72,7 +72,7 @@ pub fn set_session_name(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     crate::config::save(
         &config_dir,
-        &crate::config::AppConfig { layout: Some(layout), session_names },
+        &crate::config::AppConfig { layout: Some(layout), session_names, ..Default::default() },
     )
     .map_err(|e| e.to_string())
 }
@@ -301,7 +301,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let layout = resolve_layout(&command_conn, config.layout)?;
     crate::config::save(
         &config_dir,
-        &crate::config::AppConfig { layout: Some(layout.clone()), session_names: session_names.clone() },
+        &crate::config::AppConfig { layout: Some(layout.clone()), session_names: session_names.clone(), ..Default::default() },
     )?;
 
     for id in layout.all_session_ids() {

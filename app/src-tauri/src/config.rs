@@ -3,15 +3,44 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Page {
+    pub id: String,
+    pub name: String,
+    pub layout: LayoutNode,
+    /// The leaf (pane) last focused while this page was active. Kept in
+    /// sync with the frontend's live focus while this page IS the active
+    /// one; simply retained otherwise. Lets a cross-page "add as tab" drag
+    /// (a later plan) target a well-defined pane even in a page that isn't
+    /// currently rendered.
+    pub focused_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub pages: Vec<Page>,
+    pub active_page_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AppConfig {
+    // TEMPORARY for this milestone's Part 1: kept only so session.rs keeps
+    // compiling until a later task migrates every reader/writer over to
+    // `workspaces` and removes this field for good. Do not build anything
+    // new on top of it.
     pub layout: Option<LayoutNode>,
+    #[serde(default)]
+    pub workspaces: Vec<Workspace>,
+    #[serde(default)]
+    pub active_workspace_id: Option<String>,
     /// User-assigned display names, keyed by session id. Independent of
-    /// `layout` (a session can be renamed regardless of where it sits in
-    /// the tree) -- callers that persist one must always carry the other's
-    /// current value along too, or they'll silently reset it to empty. See
-    /// session.rs's `set_layout`/`set_session_name`, which both read the
-    /// other's live Tauri-managed state before saving.
+    /// `layout`/`workspaces` (a session can be renamed regardless of where
+    /// it sits) -- callers that persist one must always carry the others'
+    /// current value along too, or they'll silently reset them to empty.
     #[serde(default)]
     pub session_names: HashMap<String, String>,
 }
@@ -54,6 +83,24 @@ mod tests {
         }
     }
 
+    fn sample_page() -> Page {
+        Page {
+            id: "page-1".to_string(),
+            name: "Page 1".to_string(),
+            layout: sample_layout(),
+            focused_session_id: None,
+        }
+    }
+
+    fn sample_workspace() -> Workspace {
+        Workspace {
+            id: "workspace-1".to_string(),
+            name: "Workspace 1".to_string(),
+            pages: vec![sample_page()],
+            active_page_id: Some("page-1".to_string()),
+        }
+    }
+
     #[test]
     fn load_returns_default_when_no_file_exists() {
         let dir = tempfile::tempdir().unwrap();
@@ -65,7 +112,12 @@ mod tests {
     #[test]
     fn save_then_load_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
-        let config = AppConfig { layout: Some(sample_layout()), session_names: HashMap::new() };
+        let config = AppConfig {
+            layout: Some(sample_layout()),
+            workspaces: vec![],
+            active_workspace_id: None,
+            session_names: HashMap::new(),
+        };
         save(dir.path(), &config).unwrap();
 
         let loaded = load(dir.path()).unwrap();
@@ -77,7 +129,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut session_names = HashMap::new();
         session_names.insert("abc-123".to_string(), "my project".to_string());
-        let config = AppConfig { layout: Some(sample_layout()), session_names };
+        let config = AppConfig {
+            layout: Some(sample_layout()),
+            workspaces: vec![],
+            active_workspace_id: None,
+            session_names,
+        };
         save(dir.path(), &config).unwrap();
 
         let loaded = load(dir.path()).unwrap();
@@ -98,7 +155,12 @@ mod tests {
     fn save_creates_missing_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("nested").join("config-dir");
-        let config = AppConfig { layout: Some(sample_layout()), session_names: HashMap::new() };
+        let config = AppConfig {
+            layout: Some(sample_layout()),
+            workspaces: vec![],
+            active_workspace_id: None,
+            session_names: HashMap::new(),
+        };
         save(&nested, &config).unwrap();
 
         assert!(config_path(&nested).exists());
@@ -111,5 +173,35 @@ mod tests {
 
         let config = load(dir.path()).unwrap();
         assert_eq!(config, AppConfig::default());
+    }
+
+    #[test]
+    fn workspaces_roundtrip_alongside_the_old_layout_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig {
+            layout: None,
+            workspaces: vec![sample_workspace()],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(loaded.active_workspace_id, Some("workspace-1".to_string()));
+        assert_eq!(loaded.workspaces[0].pages[0].id, "page-1");
+    }
+
+    #[test]
+    fn load_defaults_workspaces_and_active_workspace_id_when_absent_from_an_older_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Mirrors a genuine config.json from before this milestone -- only
+        // `layout`/`session_names` existed, so `workspaces`/
+        // `active_workspace_id` must default rather than fail to parse.
+        std::fs::write(config_path(dir.path()), r#"{"layout": null, "session_names": {}}"#).unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.workspaces, Vec::new());
+        assert_eq!(config.active_workspace_id, None);
     }
 }
