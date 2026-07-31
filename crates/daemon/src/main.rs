@@ -1,3 +1,4 @@
+mod osc;
 mod pty;
 mod registry;
 mod server;
