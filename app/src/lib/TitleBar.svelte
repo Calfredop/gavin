@@ -1,8 +1,16 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { layoutState, splitPane, closePane, applyPreset } from "./layoutState";
   import { presetSingle, presetSideBySide, presetGrid2x2 } from "./layout";
   import { confirmPaneClose } from "./confirmClose";
   import { Columns2, Rows2, X, Square, Grid2x2 } from "@lucide/svelte";
+  import WindowControls from "./WindowControls.svelte";
+  import { isMacOS } from "./platform";
+
+  let macOS = $state(false);
+  onMount(async () => {
+    macOS = await isMacOS();
+  });
 
   async function split(direction: "row" | "column"): Promise<void> {
     const id = $layoutState.focusedSessionId;
@@ -28,7 +36,7 @@
   }
 </script>
 
-<div class="toolbar">
+{#snippet actions()}
   <button aria-label="Split Right" title="Split Right" onclick={() => split("row")}>
     <Columns2 size={16} />
   </button>
@@ -44,21 +52,42 @@
     <button onclick={applySideBySide}><Columns2 size={14} /> Side by Side</button>
     <button onclick={applyGrid}><Grid2x2 size={14} /> 2×2 Grid</button>
   </div>
+{/snippet}
+
+<div class="titlebar">
+  {#if macOS}
+    <WindowControls {macOS} />
+    <div class="drag-spacer" data-tauri-drag-region></div>
+    <div class="actions">{@render actions()}</div>
+  {:else}
+    <div class="actions">{@render actions()}</div>
+    <div class="drag-spacer" data-tauri-drag-region></div>
+    <WindowControls {macOS} />
+  {/if}
 </div>
 
 <style>
-  .toolbar {
+  .titlebar {
     display: flex;
-    gap: 8px;
     align-items: center;
-    padding: 4px 8px;
     background: #2a2a2a;
     color: #ccc;
     font-family: sans-serif;
     font-size: 0.8em;
     flex: 0 0 auto;
+    height: 40px;
   }
-  .toolbar button {
+  .drag-spacer {
+    flex: 1 1 auto;
+    height: 100%;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 4px 8px;
+  }
+  .actions button {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -69,13 +98,13 @@
     border-radius: 3px;
     cursor: pointer;
   }
-  .toolbar button:hover {
+  .actions button:hover {
     background: #4a4a4a;
   }
   .presets {
     display: flex;
     gap: 4px;
     align-items: center;
-    margin-left: auto;
+    margin-left: 8px;
   }
 </style>

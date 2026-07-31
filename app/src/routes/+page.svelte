@@ -6,7 +6,7 @@
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
   import LayoutTree from "$lib/LayoutTree.svelte";
-  import Toolbar from "$lib/Toolbar.svelte";
+  import TitleBar from "$lib/TitleBar.svelte";
 
   let closeConfirmed = false;
   let uninstallShortcuts: (() => void) | null = null;
@@ -49,6 +49,7 @@
 </script>
 
 <div class="app">
+  <TitleBar />
   {#if $layoutState.status === "connecting"}
     <div class="overlay">
       <p>Connecting…</p>
@@ -59,7 +60,6 @@
       <p class="detail">{$layoutState.errorMessage}</p>
     </div>
   {:else if $layoutState.tree}
-    <Toolbar />
     <div class="tree">
       <LayoutTree node={$layoutState.tree} path={[]} />
     </div>
