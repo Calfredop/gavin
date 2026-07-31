@@ -98,18 +98,19 @@ impl OscCwdScanner {
         let text = std::str::from_utf8(payload).ok()?;
         let without_scheme = text.strip_prefix("file://")?;
         let path_start = without_scheme.find('/')?;
-        Some(percent_decode(&without_scheme[path_start..]))
+        Some(percent_decode(without_scheme[path_start..].as_bytes()))
     }
 }
 
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
+fn percent_decode(bytes: &[u8]) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(byte);
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
                 i += 3;
                 continue;
             }
@@ -222,5 +223,18 @@ mod tests {
         bytes.push(0x07);
         let result = scanner.feed(&bytes);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn does_not_panic_when_percent_sits_next_to_multibyte_utf8() {
+        let mut scanner = OscCwdScanner::new();
+        let mut bytes = b"\x1b]7;file://host/tmp/50%".to_vec();
+        bytes.extend_from_slice("€rest".as_bytes());
+        bytes.push(0x07);
+        // Must not panic. The exact decoded value isn't the point here (the
+        // literal "%" wasn't valid percent-encoding since '\xe2' isn't a hex
+        // digit, so it passes through unchanged) -- the point is no crash.
+        let result = scanner.feed(&bytes);
+        assert_eq!(result.len(), 1);
     }
 }
