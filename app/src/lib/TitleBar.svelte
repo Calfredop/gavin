@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { layoutState, splitPane, closePane, applyPreset } from "./layoutState";
-  import { presetSingle, presetSideBySide, presetGrid2x2 } from "./layout";
+  import { layoutState, splitPane, closePane, createPage } from "./layoutState";
+  import { presetSingle, presetSideBySide, presetGrid2x2, type LayoutNode } from "./layout";
   import { confirmPaneClose } from "./confirmClose";
+  import { getActiveWorkspace } from "./workspace";
   import { Columns2, Rows2, X, Square, Grid2x2 } from "@lucide/svelte";
   import WindowControls from "./WindowControls.svelte";
   import { isMacOS } from "./platform";
@@ -35,14 +36,26 @@
     }
   }
 
+  // Presets create a new page in the active workspace rather than
+  // replacing the current one -- the one, unified way to add a page,
+  // per this milestone's design.
+  async function createPageWithPreset(
+    buildTree: (freshIds: string[]) => LayoutNode,
+    sessionCount: number
+  ): Promise<void> {
+    const ws = getActiveWorkspace($layoutState);
+    if (!ws) return;
+    await createPage(ws.id, buildTree, sessionCount, `Page ${ws.pages.length + 1}`);
+  }
+
   async function applySingle(): Promise<void> {
-    await applyPreset(([id]) => presetSingle(id), 1);
+    await createPageWithPreset(([id]) => presetSingle(id), 1);
   }
   async function applySideBySide(): Promise<void> {
-    await applyPreset(([a, b]) => presetSideBySide(a, b), 2);
+    await createPageWithPreset(([a, b]) => presetSideBySide(a, b), 2);
   }
   async function applyGrid(): Promise<void> {
-    await applyPreset(([a, b, c, d]) => presetGrid2x2(a, b, c, d), 4);
+    await createPageWithPreset(([a, b, c, d]) => presetGrid2x2(a, b, c, d), 4);
   }
 </script>
 
