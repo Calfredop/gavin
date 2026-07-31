@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { LayoutNode } from "./layout";
+import type { Workspace, WorkspacesData } from "./workspace";
 
 export function createSession(): Promise<string> {
   return invoke("create_session");
@@ -9,12 +9,12 @@ export function killSession(sessionId: string): Promise<void> {
   return invoke("kill_session", { sessionId });
 }
 
-export function getCurrentLayout(): Promise<LayoutNode> {
-  return invoke("get_current_layout");
+export function getWorkspacesState(): Promise<WorkspacesData> {
+  return invoke("get_workspaces_state");
 }
 
-export function setLayout(layout: LayoutNode): Promise<void> {
-  return invoke("set_layout", { layout });
+export function setWorkspacesState(workspaces: Workspace[], activeWorkspaceId: string | null): Promise<void> {
+  return invoke("set_workspaces_state", { workspaces, activeWorkspaceId });
 }
 
 export function writeInput(sessionId: string, data: string): Promise<void> {

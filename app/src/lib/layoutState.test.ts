@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 import type { LayoutNode } from "./layout";
+import type { Page, Workspace } from "./workspace";
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
   killSession: vi.fn(),
-  setLayout: vi.fn(),
-  getCurrentLayout: vi.fn(),
+  getWorkspacesState: vi.fn(),
+  setWorkspacesState: vi.fn(),
   getBootstrapError: vi.fn(),
   writeInput: vi.fn(),
   resizeSession: vi.fn(),
@@ -31,13 +32,38 @@ import {
   handleCwdChanged,
   closePane,
   setSessionName,
+  createWorkspace,
+  renameWorkspace,
+  switchWorkspace,
+  closeWorkspace,
+  createPage,
+  renamePage,
+  switchPage,
+  closePage,
 } from "./layoutState";
 
-function setState(partial: {
-  tree: LayoutNode | null;
-  focusedSessionId: string | null;
-}): void {
-  layoutState.update((s) => ({ ...s, status: "ready", ...partial }));
+function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
+  return { type: "leaf", tabs, activeTabIndex };
+}
+
+function page(id: string, layout: LayoutNode): Page {
+  return { id, name: id, layout, focusedSessionId: null };
+}
+
+function ws(id: string, pages: Page[], activePageId: string | null = pages[0]?.id ?? null): Workspace {
+  return { id, name: id, pages, activePageId };
+}
+
+function setState(workspaces: Workspace[], activeWorkspaceId: string | null, focusedSessionId: string | null): void {
+  layoutState.set({
+    status: "ready",
+    errorMessage: "",
+    workspaces,
+    activeWorkspaceId,
+    focusedSessionId,
+    cwdBySessionId: {},
+    sessionNames: {},
+  });
 }
 
 beforeEach(() => {
@@ -45,7 +71,8 @@ beforeEach(() => {
   layoutState.set({
     status: "connecting",
     errorMessage: "",
-    tree: null,
+    workspaces: [],
+    activeWorkspaceId: null,
     focusedSessionId: null,
     cwdBySessionId: {},
     sessionNames: {},
@@ -53,195 +80,167 @@ beforeEach(() => {
 });
 
 describe("splitPane", () => {
-  it("creates a session, splits the tree around the target, and persists", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: "a" });
+  it("creates a session, splits the active page's tree, and persists", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     vi.mocked(backend.createSession).mockResolvedValue("b");
 
     await splitPane("a", "row");
 
     expect(backend.createSession).toHaveBeenCalledOnce();
     const state = get(layoutState);
-    expect(state.tree).toEqual({
+    expect(state.workspaces[0].pages[0].layout).toEqual({
       type: "split",
       direction: "row",
       sizes: [0.5, 0.5],
-      children: [
-        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
-        { type: "leaf", tabs: ["b"], activeTabIndex: 0 },
-      ],
+      children: [leaf(["a"]), leaf(["b"])],
     });
     expect(state.focusedSessionId).toBe("b");
-    expect(backend.setLayout).toHaveBeenCalledWith(state.tree);
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
   });
 
-  it("surfaces an error and leaves the tree unchanged when create_session fails", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: "a" });
+  it("is a no-op when there is no active page", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    await splitPane("a", "row");
+
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("leaves the tree unchanged and surfaces an error when create_session fails", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     vi.mocked(backend.createSession).mockRejectedValue(new Error("daemon unreachable"));
 
     await splitPane("a", "row");
 
     const state = get(layoutState);
-    expect(state.tree).toEqual(tree);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
     expect(state.status).toBe("error");
-    expect(backend.setLayout).not.toHaveBeenCalled();
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 });
 
 describe("addTab", () => {
-  it("creates a session, appends it as a new active tab, and persists", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: "a" });
+  it("creates a session, appends it as a new active tab in the active page, and persists", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     vi.mocked(backend.createSession).mockResolvedValue("b");
 
     await addTab("a");
 
     const state = get(layoutState);
-    expect(state.tree).toEqual({ type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 });
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a", "b"], 1));
     expect(state.focusedSessionId).toBe("b");
-    expect(backend.setLayout).toHaveBeenCalledWith(state.tree);
   });
 });
 
 describe("closeSession", () => {
-  it("kills the session then removes it from the tree", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 };
-    setState({ tree, focusedSessionId: "b" });
+  it("kills the session then removes it from its page", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "b");
     vi.mocked(backend.killSession).mockResolvedValue(undefined);
 
     await closeSession("b");
 
     expect(backend.killSession).toHaveBeenCalledWith("b");
     const state = get(layoutState);
-    expect(state.tree).toEqual({ type: "leaf", tabs: ["a"], activeTabIndex: 0 });
-    expect(backend.setLayout).toHaveBeenCalledWith(state.tree);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
   });
 
-  it("does not remove the session from the tree when the daemon kill fails", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 };
-    setState({ tree, focusedSessionId: "b" });
+  it("does not remove the session when the daemon kill fails", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "b");
     vi.mocked(backend.killSession).mockRejectedValue(new Error("no such session"));
 
     await closeSession("b");
 
     const state = get(layoutState);
-    expect(state.tree).toEqual(tree);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a", "b"]));
     expect(state.status).toBe("error");
-    expect(backend.setLayout).not.toHaveBeenCalled();
   });
 
-  it("does not persist when closing the tree's very last session", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: "a" });
+  it("removes the whole page when closing its last session, keeping the workspace", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     vi.mocked(backend.killSession).mockResolvedValue(undefined);
 
     await closeSession("a");
 
     const state = get(layoutState);
-    expect(state.tree).toBeNull();
-    expect(backend.setLayout).not.toHaveBeenCalled();
+    expect(state.workspaces).toEqual([ws("ws-1", [], null)]);
   });
 });
 
 describe("handleSessionExited", () => {
-  it("removes the exited session without calling killSession", () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 };
-    setState({ tree, focusedSessionId: "b" });
+  it("finds and removes a session in a non-active page", () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b", "c"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
 
-    handleSessionExited("b");
+    handleSessionExited("c");
 
-    expect(backend.killSession).not.toHaveBeenCalled();
     const state = get(layoutState);
-    expect(state.tree).toEqual({ type: "leaf", tabs: ["a"], activeTabIndex: 0 });
+    expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["b"]));
+    expect(backend.killSession).not.toHaveBeenCalled();
   });
 
-  it("reassigns focus when the focused session is the one that exited", () => {
-    const tree: LayoutNode = {
-      type: "split",
-      direction: "row",
-      sizes: [0.5, 0.5],
-      children: [
-        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
-        { type: "leaf", tabs: ["b"], activeTabIndex: 0 },
-      ],
-    };
-    setState({ tree, focusedSessionId: "b" });
+  it("reassigns focus to the active page's first session when the focused session exits", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
 
-    handleSessionExited("b");
+    handleSessionExited("a");
 
-    const state = get(layoutState);
-    expect(state.focusedSessionId).toBe("a");
+    expect(get(layoutState).focusedSessionId).toBe("b");
   });
 
   it("leaves focus untouched when a background (non-focused) session exits", () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 };
-    setState({ tree, focusedSessionId: "a" });
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "b");
 
-    handleSessionExited("b");
+    handleSessionExited("a");
 
-    const state = get(layoutState);
-    expect(state.focusedSessionId).toBe("a");
+    expect(get(layoutState).focusedSessionId).toBe("b");
   });
 
-  it("is a no-op when called for a session already absent from the tree", () => {
-    // Mirrors the daemon's own session-exited event arriving after
-    // closeSession has already removed the session from the tree --
-    // handleSessionExited must not throw (layout.closeTab throws for an
-    // unknown session id) and must not mutate state or persist.
-    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: "a" });
+  it("is a no-op for a session id absent from every page of every workspace", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
 
     expect(() => handleSessionExited("already-gone")).not.toThrow();
 
     const state = get(layoutState);
-    expect(state.tree).toEqual(tree);
-    expect(state.focusedSessionId).toBe("a");
-    expect(backend.setLayout).not.toHaveBeenCalled();
-    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 });
 
 describe("handleCwdChanged", () => {
   it("records the cwd for a session", () => {
-    layoutState.set({
-      status: "ready",
-      errorMessage: "",
-      tree: null,
-      focusedSessionId: null,
-      cwdBySessionId: {},
-      sessionNames: {},
-    });
+    setState([], null, null);
     handleCwdChanged("a", "/Users/alice/project");
     expect(get(layoutState).cwdBySessionId).toEqual({ a: "/Users/alice/project" });
   });
 
   it("updates an existing session's cwd without disturbing others", () => {
-    layoutState.set({
-      status: "ready",
-      errorMessage: "",
-      tree: null,
-      focusedSessionId: null,
-      cwdBySessionId: { a: "/old/path", b: "/other/path" },
-      sessionNames: {},
-    });
+    layoutState.update((s) => ({ ...s, cwdBySessionId: { a: "/old/path", b: "/other/path" } }));
     handleCwdChanged("a", "/new/path");
     expect(get(layoutState).cwdBySessionId).toEqual({ a: "/new/path", b: "/other/path" });
   });
 });
 
 describe("closePane", () => {
-  it("closes every tab in the pane, killing each session and dropping the whole pane", async () => {
-    const tree: LayoutNode = {
-      type: "split",
-      direction: "row",
-      sizes: [0.5, 0.5],
-      children: [
-        { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 },
-        { type: "leaf", tabs: ["c"], activeTabIndex: 0 },
+  it("closes every tab in the pane, killing each session, and always persists", async () => {
+    setState(
+      [
+        ws("ws-1", [
+          page(
+            "page-1",
+            {
+              type: "split",
+              direction: "row",
+              sizes: [0.5, 0.5],
+              children: [leaf(["a", "b"], 1), leaf(["c"])],
+            }
+          ),
+        ]),
       ],
-    };
-    setState({ tree, focusedSessionId: "b" });
+      "ws-1",
+      "b"
+    );
     vi.mocked(backend.killSession).mockResolvedValue(undefined);
 
     await closePane("b");
@@ -250,79 +249,191 @@ describe("closePane", () => {
     expect(backend.killSession).toHaveBeenCalledWith("b");
     expect(backend.killSession).not.toHaveBeenCalledWith("c");
     const state = get(layoutState);
-    expect(state.tree).toEqual({ type: "leaf", tabs: ["c"], activeTabIndex: 0 });
-    expect(state.focusedSessionId).toBe("c");
-    expect(backend.setLayout).toHaveBeenCalledWith(state.tree);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["c"]));
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
+  });
+
+  it("removes the page (not just clears it) when closing its only pane, and still persists", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closePane("a");
+
+    const state = get(layoutState);
+    expect(state.workspaces).toEqual([ws("ws-1", [], null)]);
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
   });
 
   it("does not throw and does not mutate state when the session id isn't found", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: "a" });
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
 
     await expect(closePane("missing")).resolves.toBeUndefined();
 
-    const state = get(layoutState);
-    expect(state.tree).toEqual(tree);
     expect(backend.killSession).not.toHaveBeenCalled();
-    expect(backend.setLayout).not.toHaveBeenCalled();
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 });
 
 describe("switchToTab", () => {
-  it("updates activeTabIndex and focus, and persists", async () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: "a" });
+  it("updates activeTabIndex within the active page and persists", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
 
     await switchToTab("b");
 
     const state = get(layoutState);
-    expect(state.tree).toEqual({ type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 });
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a", "b"], 1));
     expect(state.focusedSessionId).toBe("b");
-    expect(backend.setLayout).toHaveBeenCalledWith(state.tree);
   });
 });
 
 describe("focusPane", () => {
-  it("updates focus without touching the tree or persisting", () => {
-    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
-    setState({ tree, focusedSessionId: null });
+  it("updates focus without touching workspaces or persisting", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", null);
 
     focusPane("a");
 
-    const state = get(layoutState);
-    expect(state.focusedSessionId).toBe("a");
-    expect(state.tree).toEqual(tree);
-    expect(backend.setLayout).not.toHaveBeenCalled();
+    expect(get(layoutState).focusedSessionId).toBe("a");
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 });
 
 describe("setSessionName", () => {
   it("records a trimmed name and persists it", async () => {
     vi.mocked(backend.setSessionName).mockResolvedValue(undefined);
-
     await setSessionName("a", "  my project  ");
-
     expect(get(layoutState).sessionNames).toEqual({ a: "my project" });
     expect(backend.setSessionName).toHaveBeenCalledWith("a", "my project");
   });
 
-  it("clears the name when given a blank string, without disturbing others", async () => {
-    layoutState.update((s) => ({ ...s, sessionNames: { a: "old name", b: "keep me" } }));
+  it("clears the name when given a blank string", async () => {
+    layoutState.update((s) => ({ ...s, sessionNames: { a: "old name" } }));
     vi.mocked(backend.setSessionName).mockResolvedValue(undefined);
-
     await setSessionName("a", "   ");
-
-    expect(get(layoutState).sessionNames).toEqual({ b: "keep me" });
-    expect(backend.setSessionName).toHaveBeenCalledWith("a", "");
+    expect(get(layoutState).sessionNames).toEqual({});
   });
+});
 
-  it("surfaces an error when the persist call fails, without reverting local state", async () => {
-    vi.mocked(backend.setSessionName).mockRejectedValue(new Error("daemon unreachable"));
+describe("createWorkspace", () => {
+  it("appends a new workspace, makes it active, and persists", async () => {
+    setState([], null, null);
 
-    await setSessionName("a", "my project");
+    await createWorkspace("My Project");
 
     const state = get(layoutState);
-    expect(state.sessionNames).toEqual({ a: "my project" });
-    expect(state.status).toBe("error");
+    expect(state.workspaces).toHaveLength(1);
+    expect(state.workspaces[0].name).toBe("My Project");
+    expect(state.activeWorkspaceId).toBe(state.workspaces[0].id);
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, state.workspaces[0].id);
+  });
+});
+
+describe("renameWorkspace", () => {
+  it("updates only the target workspace's name", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+
+    await renameWorkspace("ws-1", "Renamed");
+
+    expect(get(layoutState).workspaces.map((w) => w.name)).toEqual(["Renamed", "ws-2"]);
+  });
+});
+
+describe("switchWorkspace", () => {
+  it("updates activeWorkspaceId and persists", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+
+    await switchWorkspace("ws-2");
+
+    expect(get(layoutState).activeWorkspaceId).toBe("ws-2");
+  });
+});
+
+describe("closeWorkspace", () => {
+  it("kills every session across every page, then removes the workspace", async () => {
+    setState(
+      [
+        ws("ws-1", [page("page-1", leaf(["a", "b"])), page("page-2", leaf(["c"]))]),
+        ws("ws-2", [page("page-3", leaf(["d"]))]),
+      ],
+      "ws-1",
+      "a"
+    );
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closeWorkspace("ws-1");
+
+    expect(backend.killSession).toHaveBeenCalledWith("a");
+    expect(backend.killSession).toHaveBeenCalledWith("b");
+    expect(backend.killSession).toHaveBeenCalledWith("c");
+    expect(backend.killSession).not.toHaveBeenCalledWith("d");
+    const state = get(layoutState);
+    expect(state.workspaces.map((w) => w.id)).toEqual(["ws-2"]);
+    expect(state.activeWorkspaceId).toBe("ws-2");
+  });
+});
+
+describe("createPage", () => {
+  it("creates N sessions, builds the tree, appends the page to the given workspace, and makes it active", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValueOnce("a").mockResolvedValueOnce("b");
+
+    await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages).toHaveLength(1);
+    expect(state.workspaces[0].pages[0].name).toBe("Page 1");
+    expect(state.workspaces[0].activePageId).toBe(state.workspaces[0].pages[0].id);
+    expect(state.activeWorkspaceId).toBe("ws-1");
+    expect(state.focusedSessionId).toBe("a");
+  });
+
+  it("is a no-op for an unknown workspace id", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    await createPage("missing", ([x]) => leaf([x]), 1, "Page 1");
+
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("renamePage", () => {
+  it("updates only the target page's name", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))])], "ws-1", null);
+
+    await renamePage("ws-1", "page-1", "Renamed");
+
+    expect(get(layoutState).workspaces[0].pages.map((p) => p.name)).toEqual(["Renamed", "page-2"]);
+  });
+});
+
+describe("switchPage", () => {
+  it("updates the target workspace's activePageId", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1")],
+      "ws-1",
+      null
+    );
+
+    await switchPage("ws-1", "page-2");
+
+    expect(get(layoutState).workspaces[0].activePageId).toBe("page-2");
+  });
+});
+
+describe("closePage", () => {
+  it("kills every session in the page, then removes it", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a", "b"])), page("page-2", leaf(["c"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closePage("ws-1", "page-1");
+
+    expect(backend.killSession).toHaveBeenCalledWith("a");
+    expect(backend.killSession).toHaveBeenCalledWith("b");
+    expect(backend.killSession).not.toHaveBeenCalledWith("c");
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages.map((p) => p.id)).toEqual(["page-2"]);
   });
 });

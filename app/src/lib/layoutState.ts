@@ -4,11 +4,14 @@ import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
 import * as terminalRegistry from "./terminalRegistry";
+import * as workspace from "./workspace";
+import type { Workspace, WorkspacesData } from "./workspace";
 
 export interface LayoutState {
   status: "connecting" | "ready" | "error";
   errorMessage: string;
-  tree: LayoutNode | null;
+  workspaces: Workspace[];
+  activeWorkspaceId: string | null;
   focusedSessionId: string | null;
   cwdBySessionId: Record<string, string>;
   sessionNames: Record<string, string>;
@@ -17,7 +20,8 @@ export interface LayoutState {
 const initialState: LayoutState = {
   status: "connecting",
   errorMessage: "",
-  tree: null,
+  workspaces: [],
+  activeWorkspaceId: null,
   focusedSessionId: null,
   cwdBySessionId: {},
   sessionNames: {},
@@ -29,21 +33,30 @@ function setError(message: string): void {
   layoutState.update((s) => ({ ...s, status: "error", errorMessage: message }));
 }
 
-// Shared by every action below that ends in "mutate the tree, then
-// persist it" -- extracted so that pattern exists exactly once instead of
-// once per action.
-async function persistLayout(tree: LayoutNode): Promise<void> {
+// The first session id in the active page's tree, in tree order -- used
+// to pick a sensible focus target whenever the active page changes out
+// from under the current focus (bootstrap, or after removing whatever was
+// focused).
+function initialFocusedSessionId(data: WorkspacesData): string | null {
+  const tree = workspace.getActiveTree(data);
+  return tree ? (layout.allSessionIds(tree)[0] ?? null) : null;
+}
+
+// Shared by every action below that ends in "mutate the active page's
+// tree, then persist the whole workspaces array" -- extracted so that
+// pattern exists exactly once instead of once per action.
+async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: string | null): Promise<void> {
   try {
-    await backend.setLayout(tree);
+    await backend.setWorkspacesState(workspaces, activeWorkspaceId);
   } catch (e) {
     setError(String(e));
   }
 }
 
 // Shared by every action that creates exactly one fresh session before
-// mutating the tree (splitPane, addTab, newSessionFromEmpty). Returns null
-// -- having already called setError -- on failure, so callers just check
-// for null rather than duplicating their own try/catch.
+// mutating a tree (splitPane, addTab). Returns null -- having already
+// called setError -- on failure, so callers just check for null rather
+// than duplicating their own try/catch.
 async function createFreshSession(): Promise<string | null> {
   try {
     return await backend.createSession();
@@ -53,18 +66,31 @@ async function createFreshSession(): Promise<string | null> {
   }
 }
 
+// The active page's identity plus its current tree, or null if there's no
+// active workspace, no active page, or either id is stale. Every
+// tree-mutating action below starts by calling this.
+function activePageLocation(
+  state: WorkspacesData
+): { workspaceId: string; pageId: string; tree: LayoutNode } | null {
+  const ws = workspace.getActiveWorkspace(state);
+  const page = ws && workspace.getActivePage(state);
+  if (!ws || !page) return null;
+  return { workspaceId: ws.id, pageId: page.id, tree: page.layout };
+}
+
 const unlisteners: UnlistenFn[] = [];
 
 export async function bootstrap(): Promise<void> {
   unlisteners.push(
-    await listen<LayoutNode>("layout-ready", (event) => {
+    await listen<WorkspacesData>("workspaces-ready", (event) => {
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
         return {
           ...s,
           status: "ready",
-          tree: event.payload,
-          focusedSessionId: layout.allSessionIds(event.payload)[0] ?? null,
+          workspaces: event.payload.workspaces,
+          activeWorkspaceId: event.payload.activeWorkspaceId,
+          focusedSessionId: initialFocusedSessionId(event.payload),
         };
       });
     })
@@ -109,18 +135,32 @@ async function pollForStartupState(): Promise<void> {
   const maxAttempts = 15;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (get(layoutState).status !== "connecting") return;
-    const [tree, bootstrapError] = await Promise.all([
-      backend.getCurrentLayout().catch(() => null),
+    const [data, bootstrapError] = await Promise.all([
+      backend.getWorkspacesState().catch(() => null),
       backend.getBootstrapError().catch(() => null),
     ]);
     if (bootstrapError) {
       setError(bootstrapError);
       return;
     }
-    if (tree) {
+    // `data` is `null` only when the invoke itself rejected (WorkspacesState
+    // isn't managed yet -- bootstrap still running). An empty
+    // `{workspaces: [], activeWorkspaceId: null}` is a real, resolved
+    // object -- and therefore truthy -- so checking `data` itself (not a
+    // field on it, like `data.workspaces.length`) is what correctly treats
+    // "no workspaces yet" as ready rather than as still-connecting. See
+    // get_workspaces_state's own doc comment on the Rust side for the same
+    // rule stated from that side of the boundary.
+    if (data) {
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
-        return { ...s, status: "ready", tree, focusedSessionId: layout.allSessionIds(tree)[0] ?? null };
+        return {
+          ...s,
+          status: "ready",
+          workspaces: data.workspaces,
+          activeWorkspaceId: data.activeWorkspaceId,
+          focusedSessionId: initialFocusedSessionId(data),
+        };
       });
       return;
     }
@@ -133,27 +173,29 @@ async function pollForStartupState(): Promise<void> {
 
 export async function splitPane(targetSessionId: string, direction: "row" | "column"): Promise<void> {
   const state = get(layoutState);
-  if (!state.tree) return;
+  const location = activePageLocation(state);
+  if (!location) return;
   const newId = await createFreshSession();
   if (!newId) return;
-  const tree = layout.splitLeaf(state.tree, targetSessionId, direction, newId);
-  layoutState.update((s) => ({ ...s, tree, focusedSessionId: newId }));
-  await persistLayout(tree);
+  const newTree = layout.splitLeaf(location.tree, targetSessionId, direction, newId);
+  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
+  layoutState.update((s) => ({ ...s, workspaces, focusedSessionId: newId }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
 export async function addTab(targetSessionId: string): Promise<void> {
   const state = get(layoutState);
-  if (!state.tree) return;
+  const location = activePageLocation(state);
+  if (!location) return;
   const newId = await createFreshSession();
   if (!newId) return;
-  const tree = layout.addTab(state.tree, targetSessionId, newId);
-  layoutState.update((s) => ({ ...s, tree, focusedSessionId: newId }));
-  await persistLayout(tree);
+  const newTree = layout.addTab(location.tree, targetSessionId, newId);
+  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
+  layoutState.update((s) => ({ ...s, workspaces, focusedSessionId: newId }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
 export async function closeSession(sessionId: string): Promise<void> {
-  const state = get(layoutState);
-  if (!state.tree) return;
   try {
     await backend.killSession(sessionId);
   } catch (e) {
@@ -166,38 +208,49 @@ export async function closeSession(sessionId: string): Promise<void> {
 // Shared by closeSession (after a successful daemon-side kill) and the
 // session-exited event listener (the session is already dead, so no
 // killSession call happens here) -- both cases mean "remove this session
-// from the tree." See Global Constraints for why the empty-tree case
-// deliberately skips persistence.
-//
-// Guarded against sessions already absent from the tree: closeSession
-// removes the session from the tree immediately after a successful kill,
-// but the daemon separately emits its own session-exited event once the
-// session actually dies, re-entering this function for an id that's
-// already gone. Without the findLeafPath guard below, layout.closeTab
-// would throw (it assumes the session is present), and that throw would
-// escape uncaught from inside a Tauri event callback. applyPreset's old-
-// session cleanup can trigger this same double-removal path too.
+// from wherever it lives." Searches every page of every workspace, not
+// just the active one -- a session-exited event can arrive for a session
+// in a currently-invisible page, since inactive pages/workspaces keep
+// their sessions running the same as inactive tabs always have. If
+// removing it empties that page's tree entirely, the whole page is
+// removed too (see workspace.ts's updatePageLayout doc comment for why
+// there's no "clear the layout" alternative).
 export function handleSessionExited(sessionId: string): void {
   const state = get(layoutState);
-  if (!state.tree) return;
-  if (!layout.findLeafPath(state.tree, sessionId)) return;
-  const tree = layout.closeTab(state.tree, sessionId);
-  const focusedSessionId =
-    state.focusedSessionId === sessionId
-      ? (tree ? (layout.allSessionIds(tree)[0] ?? null) : null)
-      : state.focusedSessionId;
-  layoutState.update((s) => ({ ...s, tree, focusedSessionId }));
-  terminalRegistry.destroyTerminal(sessionId);
-  if (tree) {
-    void persistLayout(tree);
+  let found: { workspaceId: string; pageId: string; page: { layout: LayoutNode } } | null = null;
+  for (const ws of state.workspaces) {
+    for (const page of ws.pages) {
+      if (layout.findLeafPath(page.layout, sessionId)) {
+        found = { workspaceId: ws.id, pageId: page.id, page };
+        break;
+      }
+    }
+    if (found) break;
   }
+  if (!found) return;
+
+  const newTree = layout.closeTab(found.page.layout, sessionId);
+  const updated = newTree
+    ? workspace.updatePageLayout(state, found.workspaceId, found.pageId, newTree)
+    : workspace.removePage(state, found.workspaceId, found.pageId);
+
+  const focusedSessionId =
+    state.focusedSessionId === sessionId ? initialFocusedSessionId(updated) : state.focusedSessionId;
+
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: updated.workspaces,
+    activeWorkspaceId: updated.activeWorkspaceId,
+    focusedSessionId,
+  }));
+  terminalRegistry.destroyTerminal(sessionId);
+  void persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 
 // Shared by the "cwd-changed" event listener in bootstrap() and this
-// file's own tests -- mirrors handleSessionExited's pattern of being both
-// an event callback and independently testable. Entries are never removed
-// when a session closes; a stale in-memory map entry per session that ever
-// existed in one app run is not a meaningful memory concern.
+// file's own tests. Entries are never removed when a session closes; a
+// stale in-memory map entry per session that ever existed in one app run
+// is not a meaningful memory concern.
 export function handleCwdChanged(sessionId: string, cwd: string): void {
   layoutState.update((s) => ({ ...s, cwdBySessionId: { ...s.cwdBySessionId, [sessionId]: cwd } }));
 }
@@ -227,76 +280,55 @@ export async function setSessionName(sessionId: string, name: string): Promise<v
 
 export async function switchToTab(sessionId: string): Promise<void> {
   const state = get(layoutState);
-  if (!state.tree) return;
-  const tree = layout.switchTab(state.tree, sessionId);
-  layoutState.update((s) => ({ ...s, tree, focusedSessionId: sessionId }));
-  await persistLayout(tree);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const newTree = layout.switchTab(location.tree, sessionId);
+  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
+  layoutState.update((s) => ({ ...s, workspaces, focusedSessionId: sessionId }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
 export function focusPane(sessionId: string): void {
   layoutState.update((s) => ({ ...s, focusedSessionId: sessionId }));
 }
 
-// Updates the tree's sizes without persisting -- used for live visual
-// feedback while a divider drag is in progress. Call commitLayout() once,
-// on drag-end, to actually persist; calling backend.setLayout on every
-// pointermove would flood the daemon with writes and risks out-of-order
-// completions leaving a stale mid-drag size persisted instead of the final
-// one.
+// Updates the active page's sizes without persisting -- used for live
+// visual feedback while a divider drag is in progress. Call
+// commitLayout() once, on drag-end, to actually persist.
 export function previewResizePane(splitPath: number[], sizes: number[]): void {
   const state = get(layoutState);
-  if (!state.tree) return;
-  const tree = layout.resizeSplit(state.tree, splitPath, sizes);
-  layoutState.update((s) => ({ ...s, tree }));
+  const location = activePageLocation(state);
+  if (!location) return;
+  const newTree = layout.resizeSplit(location.tree, splitPath, sizes);
+  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
+  layoutState.update((s) => ({ ...s, workspaces }));
 }
 
-// Persists whatever the current tree is. Call once after a batch of
-// previewResizePane calls (e.g. on pointerup), not per intermediate step.
+// Persists whatever the current workspaces array is. Call once after a
+// batch of previewResizePane calls (e.g. on pointerup), not per
+// intermediate step.
 export async function commitLayout(): Promise<void> {
   const state = get(layoutState);
-  if (!state.tree) return;
-  await persistLayout(state.tree);
+  if (!activePageLocation(state)) return;
+  await persistWorkspaces(state.workspaces, state.activeWorkspaceId);
 }
 
-export async function applyPreset(
-  buildTree: (freshIds: string[]) => LayoutNode,
-  sessionCount: number
-): Promise<void> {
-  const state = get(layoutState);
-  const oldIds = state.tree ? layout.allSessionIds(state.tree) : [];
-  let freshIds: string[];
-  try {
-    freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession()));
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
-  const tree = buildTree(freshIds);
-  layoutState.update((s) => ({ ...s, tree, focusedSessionId: freshIds[0] ?? null }));
-  // Old sessions are killed best-effort *after* the new tree is already
-  // committed -- unlike closeSession, applying a preset is spec'd as an
-  // already-deliberate action, so one stuck kill shouldn't block it.
-  await Promise.all(
-    oldIds.map((id) =>
-      backend
-        .killSession(id)
-        .catch(() => {})
-        .finally(() => terminalRegistry.destroyTerminal(id))
-    )
-  );
-  await persistLayout(tree);
-}
-
-// Closes every tab in the pane containing anySessionId -- distinct from
-// closeSession (which closes just the one named session). Used by the
-// toolbar's "Close Pane" button; Cmd+W intentionally stays scoped to a
-// single tab via closeSession, per the design spec.
+// Closes every tab in the pane (within the active page) containing
+// anySessionId -- distinct from closeSession (which closes just the one
+// named session). Used by the toolbar's "Close Pane" button; Cmd+W stays
+// scoped to a single tab via closeSession.
+//
+// Unlike the old single-tree model, this always persists the result --
+// there's no "tree became null, can't persist null" case to skip anymore,
+// since Page.layout is never null and an emptied page is removed via
+// removePage rather than set to some unrepresentable empty value.
 export async function closePane(anySessionId: string): Promise<void> {
   const state = get(layoutState);
-  if (!state.tree) return;
-  const path = layout.findLeafPath(state.tree, anySessionId);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const path = layout.findLeafPath(location.tree, anySessionId);
   if (!path) return;
-  const leaf = layout.getNodeAtPath(state.tree, path);
+  const leaf = layout.getNodeAtPath(location.tree, path);
   if (leaf.type !== "leaf") return;
   const sessionIds = [...leaf.tabs];
 
@@ -309,27 +341,167 @@ export async function closePane(anySessionId: string): Promise<void> {
     }
   }
 
-  let tree: LayoutNode | null = state.tree;
+  let tree: LayoutNode | null = location.tree;
   for (const id of sessionIds) {
     if (!tree) break;
     tree = layout.closeTab(tree, id);
     terminalRegistry.destroyTerminal(id);
   }
 
+  const updated = tree
+    ? workspace.updatePageLayout(state, location.workspaceId, location.pageId, tree)
+    : workspace.removePage(state, location.workspaceId, location.pageId);
+
   const focusedSessionId = sessionIds.includes(state.focusedSessionId ?? "")
-    ? (tree ? (layout.allSessionIds(tree)[0] ?? null) : null)
+    ? initialFocusedSessionId(updated)
     : state.focusedSessionId;
 
-  layoutState.update((s) => ({ ...s, tree, focusedSessionId }));
-  if (tree) {
-    void persistLayout(tree);
-  }
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: updated.workspaces,
+    activeWorkspaceId: updated.activeWorkspaceId,
+    focusedSessionId,
+  }));
+  await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 
-export async function newSessionFromEmpty(): Promise<void> {
-  const newId = await createFreshSession();
-  if (!newId) return;
-  const tree = layout.presetSingle(newId);
-  layoutState.update((s) => ({ ...s, tree, focusedSessionId: newId }));
-  await persistLayout(tree);
+export async function createWorkspace(name: string): Promise<void> {
+  const state = get(layoutState);
+  const id = crypto.randomUUID();
+  const data = workspace.createWorkspace(state, id, name);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, activeWorkspaceId: data.activeWorkspaceId }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+export async function renameWorkspace(workspaceId: string, name: string): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.renameWorkspace(state, workspaceId, name);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+export async function switchWorkspace(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.switchWorkspace(state, workspaceId);
+  layoutState.update((s) => ({ ...s, activeWorkspaceId: data.activeWorkspaceId }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+// Kills every session across every page of the workspace, then removes
+// it -- the same escalation as closePane, one level up. Confirm-before
+// prompting is the caller's (Sidebar.svelte's) responsibility, matching
+// how confirmPaneClose/confirmTabClose already work.
+export async function closeWorkspace(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+  const sessionIds = workspace.allSessionIdsInWorkspace(ws);
+
+  for (const id of sessionIds) {
+    try {
+      await backend.killSession(id);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+  }
+  for (const id of sessionIds) {
+    terminalRegistry.destroyTerminal(id);
+  }
+
+  const data = workspace.removeWorkspace(state, workspaceId);
+  const focusedSessionId = sessionIds.includes(state.focusedSessionId ?? "")
+    ? initialFocusedSessionId(data)
+    : state.focusedSessionId;
+
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    activeWorkspaceId: data.activeWorkspaceId,
+    focusedSessionId,
+  }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+// Creates N fresh daemon sessions, builds a tree via buildTree (typically
+// one of layout.ts's preset generators), and appends it as a new page to
+// the given workspace -- always an explicit workspaceId, never "whichever
+// workspace happens to be active," so a caller (e.g. Sidebar.svelte's
+// per-workspace "+" button) can add a page to a workspace without first
+// switching to it. The new page (and its workspace) become active,
+// mirroring "a new tab becomes the active one" elsewhere in this app.
+export async function createPage(
+  workspaceId: string,
+  buildTree: (freshIds: string[]) => LayoutNode,
+  sessionCount: number,
+  name: string
+): Promise<void> {
+  const state = get(layoutState);
+  if (!state.workspaces.some((w) => w.id === workspaceId)) return;
+  let freshIds: string[];
+  try {
+    freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession()));
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  const tree = buildTree(freshIds);
+  const pageId = crypto.randomUUID();
+  const data = workspace.createPage(state, workspaceId, pageId, name, tree);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    activeWorkspaceId: workspaceId,
+    focusedSessionId: freshIds[0] ?? null,
+  }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+export async function renamePage(workspaceId: string, pageId: string, name: string): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.renamePage(state, workspaceId, pageId, name);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+export async function switchPage(workspaceId: string, pageId: string): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.switchPage(state, workspaceId, pageId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+// Kills every session in the page, then removes it -- same escalation as
+// closeWorkspace, one level down. Confirm-before prompting is the
+// caller's responsibility.
+export async function closePage(workspaceId: string, pageId: string): Promise<void> {
+  const state = get(layoutState);
+  const page = state.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === pageId);
+  if (!page) return;
+  const sessionIds = layout.allSessionIds(page.layout);
+
+  for (const id of sessionIds) {
+    try {
+      await backend.killSession(id);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+  }
+  for (const id of sessionIds) {
+    terminalRegistry.destroyTerminal(id);
+  }
+
+  const data = workspace.removePage(state, workspaceId, pageId);
+  const focusedSessionId = sessionIds.includes(state.focusedSessionId ?? "")
+    ? initialFocusedSessionId(data)
+    : state.focusedSessionId;
+
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    activeWorkspaceId: data.activeWorkspaceId,
+    focusedSessionId,
+  }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
