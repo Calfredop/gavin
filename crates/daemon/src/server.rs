@@ -125,17 +125,17 @@ impl SessionManager {
             if record.status == SessionStatus::Exited {
                 continue;
             }
-            if !std::path::Path::new(&record.cwd).is_dir() {
+            if !std::path::Path::new(&record.workspace_path).is_dir() {
                 eprintln!(
-                    "skipping recovery of session {} — cwd no longer exists: {}",
-                    record.id, record.cwd
+                    "skipping recovery of session {} — workspace_path no longer exists: {}",
+                    record.id, record.workspace_path
                 );
                 continue;
             }
             // A single bad leftover record (e.g. its command is no longer
             // executable) must not abort recovery of every session after it
             // in the list. Log and move on instead of propagating with `?`.
-            match PtySession::spawn(&record.cwd, record.command.as_deref()) {
+            match PtySession::spawn(&record.workspace_path, record.command.as_deref()) {
                 Ok(pty) => {
                     sessions.insert(record.id.clone(), pty);
                     if let Err(e) = self.registry.lock().unwrap().mark_restored(&record.id) {
@@ -144,8 +144,8 @@ impl SessionManager {
                 }
                 Err(e) => {
                     eprintln!(
-                        "failed to recover session {} (cwd {}): {e}",
-                        record.id, record.cwd
+                        "failed to recover session {} (workspace_path {}): {e}",
+                        record.id, record.workspace_path
                     );
                 }
             }
@@ -781,7 +781,7 @@ mod tests {
             registry
                 .insert(&SessionRecord {
                     id: "leftover-1".to_string(),
-                    workspace_path: "/tmp/ws".to_string(),
+                    workspace_path: "/tmp".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
@@ -814,5 +814,41 @@ mod tests {
             collected.push_str(&String::from_utf8_lossy(&buf[..n]));
             assert!(std::time::Instant::now() < deadline, "got: {collected}");
         }
+    }
+
+    #[test]
+    fn recover_uses_workspace_path_not_the_live_tracked_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+
+        // Simulate a session whose live-tracked cwd (via OSC 7) has drifted
+        // to a directory that no longer exists by the time the daemon
+        // restarts -- recovery must still succeed, using the stable
+        // workspace_path, not the (possibly stale/gone) live cwd.
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "leftover-2".to_string(),
+                    workspace_path: "/tmp".to_string(),
+                    cwd: "/tmp/this-directory-does-not-exist-xyz".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    status: SessionStatus::Idle,
+                    restored: false,
+                })
+                .unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+        let manager = SessionManager::new(registry);
+
+        manager.recover().unwrap();
+
+        let sessions = manager.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].restored, true,
+            "session should have been recovered despite its stale live-tracked cwd"
+        );
     }
 }
