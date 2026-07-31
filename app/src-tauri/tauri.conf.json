@@ -15,8 +15,7 @@
         "title": "gavin",
         "width": 1000,
         "height": 700,
-        "decorations": false,
-        "transparent": true
+        "decorations": false
       }
     ],
     "security": {

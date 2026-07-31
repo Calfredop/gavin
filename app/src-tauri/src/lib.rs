@@ -1,6 +1,7 @@
 mod config;
 mod daemon;
 mod layout;
+mod mac_window;
 mod session;
 
 use tauri::{Emitter, Manager};
@@ -15,6 +16,11 @@ pub fn run() {
         .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                mac_window::round_window_corners(&window, 10.0);
+            }
+
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 if let Err(e) = session::bootstrap(handle.clone()) {
