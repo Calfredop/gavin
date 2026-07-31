@@ -26,6 +26,7 @@ import {
   switchToTab,
   focusPane,
   handleSessionExited,
+  handleCwdChanged,
   closePane,
 } from "./layoutState";
 
@@ -38,7 +39,13 @@ function setState(partial: {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  layoutState.set({ status: "connecting", errorMessage: "", tree: null, focusedSessionId: null });
+  layoutState.set({
+    status: "connecting",
+    errorMessage: "",
+    tree: null,
+    focusedSessionId: null,
+    cwdBySessionId: {},
+  });
 });
 
 describe("splitPane", () => {
@@ -188,6 +195,32 @@ describe("handleSessionExited", () => {
     expect(state.focusedSessionId).toBe("a");
     expect(backend.setLayout).not.toHaveBeenCalled();
     expect(backend.killSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleCwdChanged", () => {
+  it("records the cwd for a session", () => {
+    layoutState.set({
+      status: "ready",
+      errorMessage: "",
+      tree: null,
+      focusedSessionId: null,
+      cwdBySessionId: {},
+    });
+    handleCwdChanged("a", "/Users/alice/project");
+    expect(get(layoutState).cwdBySessionId).toEqual({ a: "/Users/alice/project" });
+  });
+
+  it("updates an existing session's cwd without disturbing others", () => {
+    layoutState.set({
+      status: "ready",
+      errorMessage: "",
+      tree: null,
+      focusedSessionId: null,
+      cwdBySessionId: { a: "/old/path", b: "/other/path" },
+    });
+    handleCwdChanged("a", "/new/path");
+    expect(get(layoutState).cwdBySessionId).toEqual({ a: "/new/path", b: "/other/path" });
   });
 });
 

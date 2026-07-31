@@ -10,6 +10,7 @@ export interface LayoutState {
   errorMessage: string;
   tree: LayoutNode | null;
   focusedSessionId: string | null;
+  cwdBySessionId: Record<string, string>;
 }
 
 const initialState: LayoutState = {
@@ -17,6 +18,7 @@ const initialState: LayoutState = {
   errorMessage: "",
   tree: null,
   focusedSessionId: null,
+  cwdBySessionId: {},
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -73,6 +75,11 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(
     await listen<string>("daemon-error", (event) => {
       setError(event.payload);
+    })
+  );
+  unlisteners.push(
+    await listen<[string, string]>("cwd-changed", (event) => {
+      handleCwdChanged(event.payload[0], event.payload[1]);
     })
   );
 
@@ -170,6 +177,15 @@ export function handleSessionExited(sessionId: string): void {
   if (tree) {
     void persistLayout(tree);
   }
+}
+
+// Shared by the "cwd-changed" event listener in bootstrap() and this
+// file's own tests -- mirrors handleSessionExited's pattern of being both
+// an event callback and independently testable. Entries are never removed
+// when a session closes; a stale in-memory map entry per session that ever
+// existed in one app run is not a meaningful memory concern.
+export function handleCwdChanged(sessionId: string, cwd: string): void {
+  layoutState.update((s) => ({ ...s, cwdBySessionId: { ...s.cwdBySessionId, [sessionId]: cwd } }));
 }
 
 export async function switchToTab(sessionId: string): Promise<void> {
