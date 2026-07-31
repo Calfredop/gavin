@@ -116,6 +116,36 @@ impl Registry {
         }
         Ok(result)
     }
+
+    pub fn update_cwd(&self, id: &str, cwd: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET cwd = ?1 WHERE id = ?2",
+            params![cwd, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get(&self, id: &str) -> anyhow::Result<Option<SessionRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workspace_path, cwd, command, status, restored FROM sessions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            let status_str: String = row.get(4)?;
+            let restored: i64 = row.get(5)?;
+            Ok(SessionRecord {
+                id: row.get(0)?,
+                workspace_path: row.get(1)?,
+                cwd: row.get(2)?,
+                command: row.get(3)?,
+                status: SessionStatus::from_str(&status_str),
+                restored: restored != 0,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,5 +223,30 @@ mod tests {
         let sessions = registry.list().unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "s1");
+    }
+
+    #[test]
+    fn update_cwd_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+
+        registry.update_cwd("s1", "/Users/alice/new-project").unwrap();
+
+        let sessions = registry.list().unwrap();
+        assert_eq!(sessions[0].cwd, "/Users/alice/new-project");
+    }
+
+    #[test]
+    fn get_returns_the_matching_record_or_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+
+        let found = registry.get("s1").unwrap();
+        assert_eq!(found.map(|r| r.id), Some("s1".to_string()));
+
+        let missing = registry.get("does-not-exist").unwrap();
+        assert!(missing.is_none());
     }
 }
