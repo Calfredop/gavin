@@ -33,15 +33,6 @@ function setError(message: string): void {
   layoutState.update((s) => ({ ...s, status: "error", errorMessage: message }));
 }
 
-// The first session id in the active page's tree, in tree order -- used
-// to pick a sensible focus target whenever the active page changes out
-// from under the current focus (bootstrap, or after removing whatever was
-// focused).
-function initialFocusedSessionId(data: WorkspacesData): string | null {
-  const tree = workspace.getActiveTree(data);
-  return tree ? (layout.allSessionIds(tree)[0] ?? null) : null;
-}
-
 // Shared by every action below that ends in "mutate the active page's
 // tree, then persist the whole workspaces array" -- extracted so that
 // pattern exists exactly once instead of once per action.
@@ -85,12 +76,13 @@ export async function bootstrap(): Promise<void> {
     await listen<WorkspacesData>("workspaces-ready", (event) => {
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
+        const resolved = workspace.resolveActiveFocus(event.payload);
         return {
           ...s,
           status: "ready",
-          workspaces: event.payload.workspaces,
-          activeWorkspaceId: event.payload.activeWorkspaceId,
-          focusedSessionId: initialFocusedSessionId(event.payload),
+          workspaces: resolved.state.workspaces,
+          activeWorkspaceId: resolved.state.activeWorkspaceId,
+          focusedSessionId: resolved.focusedSessionId,
         };
       });
     })
@@ -154,12 +146,13 @@ async function pollForStartupState(): Promise<void> {
     if (data) {
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
+        const resolved = workspace.resolveActiveFocus(data);
         return {
           ...s,
           status: "ready",
-          workspaces: data.workspaces,
-          activeWorkspaceId: data.activeWorkspaceId,
-          focusedSessionId: initialFocusedSessionId(data),
+          workspaces: resolved.state.workspaces,
+          activeWorkspaceId: resolved.state.activeWorkspaceId,
+          focusedSessionId: resolved.focusedSessionId,
         };
       });
       return;
@@ -178,9 +171,10 @@ export async function splitPane(targetSessionId: string, direction: "row" | "col
   const newId = await createFreshSession();
   if (!newId) return;
   const newTree = layout.splitLeaf(location.tree, targetSessionId, direction, newId);
-  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
-  layoutState.update((s) => ({ ...s, workspaces, focusedSessionId: newId }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, newId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: newId }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
 export async function addTab(targetSessionId: string): Promise<void> {
@@ -190,9 +184,10 @@ export async function addTab(targetSessionId: string): Promise<void> {
   const newId = await createFreshSession();
   if (!newId) return;
   const newTree = layout.addTab(location.tree, targetSessionId, newId);
-  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
-  layoutState.update((s) => ({ ...s, workspaces, focusedSessionId: newId }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, newId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: newId }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
 export async function closeSession(sessionId: string): Promise<void> {
@@ -230,12 +225,16 @@ export function handleSessionExited(sessionId: string): void {
   if (!found) return;
 
   const newTree = layout.closeTab(found.page.layout, sessionId);
-  const updated = newTree
+  let updated = newTree
     ? workspace.updatePageLayout(state, found.workspaceId, found.pageId, newTree)
     : workspace.removePage(state, found.workspaceId, found.pageId);
 
-  const focusedSessionId =
-    state.focusedSessionId === sessionId ? initialFocusedSessionId(updated) : state.focusedSessionId;
+  let focusedSessionId = state.focusedSessionId;
+  if (state.focusedSessionId === sessionId) {
+    const resolved = workspace.resolveActiveFocus(updated);
+    updated = resolved.state;
+    focusedSessionId = resolved.focusedSessionId;
+  }
 
   layoutState.update((s) => ({
     ...s,
@@ -283,13 +282,19 @@ export async function switchToTab(sessionId: string): Promise<void> {
   const location = activePageLocation(state);
   if (!location) return;
   const newTree = layout.switchTab(location.tree, sessionId);
-  const workspaces = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree).workspaces;
-  layoutState.update((s) => ({ ...s, workspaces, focusedSessionId: sessionId }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, sessionId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: sessionId }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
 export function focusPane(sessionId: string): void {
-  layoutState.update((s) => ({ ...s, focusedSessionId: sessionId }));
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  const workspaces = location
+    ? workspace.setPageFocus(state, location.workspaceId, location.pageId, sessionId).workspaces
+    : state.workspaces;
+  layoutState.update((s) => ({ ...s, workspaces, focusedSessionId: sessionId }));
 }
 
 // Updates the active page's sizes without persisting -- used for live
@@ -348,13 +353,16 @@ export async function closePane(anySessionId: string): Promise<void> {
     terminalRegistry.destroyTerminal(id);
   }
 
-  const updated = tree
+  let updated = tree
     ? workspace.updatePageLayout(state, location.workspaceId, location.pageId, tree)
     : workspace.removePage(state, location.workspaceId, location.pageId);
 
-  const focusedSessionId = sessionIds.includes(state.focusedSessionId ?? "")
-    ? initialFocusedSessionId(updated)
-    : state.focusedSessionId;
+  let focusedSessionId = state.focusedSessionId;
+  if (sessionIds.includes(state.focusedSessionId ?? "")) {
+    const resolved = workspace.resolveActiveFocus(updated);
+    updated = resolved.state;
+    focusedSessionId = resolved.focusedSessionId;
+  }
 
   layoutState.update((s) => ({
     ...s,
@@ -369,8 +377,14 @@ export async function createWorkspace(name: string): Promise<void> {
   const state = get(layoutState);
   const id = crypto.randomUUID();
   const data = workspace.createWorkspace(state, id, name);
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, activeWorkspaceId: data.activeWorkspaceId, focusedSessionId: initialFocusedSessionId(data) }));
-  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  const resolved = workspace.resolveActiveFocus(data);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: resolved.state.workspaces,
+    activeWorkspaceId: resolved.state.activeWorkspaceId,
+    focusedSessionId: resolved.focusedSessionId,
+  }));
+  await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
 export async function renameWorkspace(workspaceId: string, name: string): Promise<void> {
@@ -382,9 +396,15 @@ export async function renameWorkspace(workspaceId: string, name: string): Promis
 
 export async function switchWorkspace(workspaceId: string): Promise<void> {
   const state = get(layoutState);
-  const data = workspace.switchWorkspace(state, workspaceId);
-  layoutState.update((s) => ({ ...s, activeWorkspaceId: data.activeWorkspaceId, focusedSessionId: initialFocusedSessionId(data) }));
-  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  const switched = workspace.switchWorkspace(state, workspaceId);
+  const resolved = workspace.resolveActiveFocus(switched);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: resolved.state.workspaces,
+    activeWorkspaceId: resolved.state.activeWorkspaceId,
+    focusedSessionId: resolved.focusedSessionId,
+  }));
+  await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
 // Kills every session across every page of the workspace, then removes
@@ -409,18 +429,21 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
     terminalRegistry.destroyTerminal(id);
   }
 
-  const data = workspace.removeWorkspace(state, workspaceId);
-  const focusedSessionId = sessionIds.includes(state.focusedSessionId ?? "")
-    ? initialFocusedSessionId(data)
-    : state.focusedSessionId;
+  let updated = workspace.removeWorkspace(state, workspaceId);
+  let focusedSessionId = state.focusedSessionId;
+  if (sessionIds.includes(state.focusedSessionId ?? "")) {
+    const resolved = workspace.resolveActiveFocus(updated);
+    updated = resolved.state;
+    focusedSessionId = resolved.focusedSessionId;
+  }
 
   layoutState.update((s) => ({
     ...s,
-    workspaces: data.workspaces,
-    activeWorkspaceId: data.activeWorkspaceId,
+    workspaces: updated.workspaces,
+    activeWorkspaceId: updated.activeWorkspaceId,
     focusedSessionId,
   }));
-  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 
 // Creates N fresh daemon sessions, builds a tree via buildTree (typically
@@ -447,12 +470,14 @@ export async function createPage(
   }
   const tree = buildTree(freshIds);
   const pageId = crypto.randomUUID();
-  const data = workspace.createPage(state, workspaceId, pageId, name, tree);
+  const created = workspace.createPage(state, workspaceId, pageId, name, tree);
+  const focusedSessionId = freshIds[0] ?? null;
+  const data = workspace.setPageFocus(created, workspaceId, pageId, focusedSessionId);
   layoutState.update((s) => ({
     ...s,
     workspaces: data.workspaces,
     activeWorkspaceId: workspaceId,
-    focusedSessionId: freshIds[0] ?? null,
+    focusedSessionId,
   }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
@@ -466,9 +491,16 @@ export async function renamePage(workspaceId: string, pageId: string, name: stri
 
 export async function switchPage(workspaceId: string, pageId: string): Promise<void> {
   const state = get(layoutState);
-  const data = workspace.switchPage(state, workspaceId, pageId);
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: initialFocusedSessionId(data) }));
-  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  const switchedPage = workspace.switchPage(state, workspaceId, pageId);
+  const switched = workspace.switchWorkspace(switchedPage, workspaceId);
+  const resolved = workspace.resolveActiveFocus(switched);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: resolved.state.workspaces,
+    activeWorkspaceId: resolved.state.activeWorkspaceId,
+    focusedSessionId: resolved.focusedSessionId,
+  }));
+  await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
 // Kills every session in the page, then removes it -- same escalation as
@@ -492,16 +524,19 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
     terminalRegistry.destroyTerminal(id);
   }
 
-  const data = workspace.removePage(state, workspaceId, pageId);
-  const focusedSessionId = sessionIds.includes(state.focusedSessionId ?? "")
-    ? initialFocusedSessionId(data)
-    : state.focusedSessionId;
+  let updated = workspace.removePage(state, workspaceId, pageId);
+  let focusedSessionId = state.focusedSessionId;
+  if (sessionIds.includes(state.focusedSessionId ?? "")) {
+    const resolved = workspace.resolveActiveFocus(updated);
+    updated = resolved.state;
+    focusedSessionId = resolved.focusedSessionId;
+  }
 
   layoutState.update((s) => ({
     ...s,
-    workspaces: data.workspaces,
-    activeWorkspaceId: data.activeWorkspaceId,
+    workspaces: updated.workspaces,
+    activeWorkspaceId: updated.activeWorkspaceId,
     focusedSessionId,
   }));
-  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }

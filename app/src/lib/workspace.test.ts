@@ -14,8 +14,12 @@ import {
   getActivePage,
   getActiveTree,
   allSessionIdsInWorkspace,
+  resolveFocusForPage,
+  setPageFocus,
+  resolveActiveFocus,
   type WorkspacesData,
   type Workspace,
+  type Page,
 } from "./workspace";
 
 function leaf(tabs: string[]): LayoutNode {
@@ -165,5 +169,42 @@ describe("allSessionIdsInWorkspace", () => {
       activePageId: "page-1",
     };
     expect(allSessionIdsInWorkspace(workspace)).toEqual(["s1", "s2", "s3"]);
+  });
+});
+
+describe("resolveFocusForPage / setPageFocus / resolveActiveFocus", () => {
+  it("resolveFocusForPage prefers the page's own remembered focus when it's still valid", () => {
+    const p: Page = { id: "page-1", name: "Page 1", layout: leaf(["a", "b"]), focusedSessionId: "b" };
+    expect(resolveFocusForPage(p)).toBe("b");
+  });
+
+  it("resolveFocusForPage falls back to the first session when the remembered focus is stale", () => {
+    const p: Page = { id: "page-1", name: "Page 1", layout: leaf(["a", "b"]), focusedSessionId: "gone" };
+    expect(resolveFocusForPage(p)).toBe("a");
+  });
+
+  it("resolveFocusForPage returns null for a null page", () => {
+    expect(resolveFocusForPage(null)).toBeNull();
+  });
+
+  it("setPageFocus updates only the target page's focusedSessionId", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a"]));
+    const updated = setPageFocus(state, "ws-1", "page-1", "a");
+    expect(updated.workspaces[0].pages[0].focusedSessionId).toBe("a");
+  });
+
+  it("resolveActiveFocus resolves and stores focus for the active page", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a", "b"]));
+    const result = resolveActiveFocus(state);
+    expect(result.focusedSessionId).toBe("a");
+    expect(result.state.workspaces[0].pages[0].focusedSessionId).toBe("a");
+  });
+
+  it("resolveActiveFocus returns null when there is no active page", () => {
+    const result = resolveActiveFocus(empty);
+    expect(result.focusedSessionId).toBeNull();
+    expect(result.state).toEqual(empty);
   });
 });

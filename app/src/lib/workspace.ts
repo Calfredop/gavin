@@ -131,6 +131,55 @@ export function getActiveTree(state: WorkspacesData): LayoutNode | null {
   return getActivePage(state)?.layout ?? null;
 }
 
+// Resolves what focus should be for a given page: its own previously
+// remembered focusedSessionId if that session is still present in its
+// tree, otherwise the first session in tree order. Returns null for a
+// page with no sessions (or no page at all).
+export function resolveFocusForPage(page: Page | null): string | null {
+  if (!page) return null;
+  if (page.focusedSessionId && allSessionIds(page.layout).includes(page.focusedSessionId)) {
+    return page.focusedSessionId;
+  }
+  return allSessionIds(page.layout)[0] ?? null;
+}
+
+// Sets one page's remembered focus -- called whenever the app's live
+// focus lands on a session in that page, so the page "remembers" it even
+// after becoming inactive (unlike the app-wide, ephemeral
+// LayoutState.focusedSessionId, which only ever reflects the currently
+// visible page).
+export function setPageFocus(
+  state: WorkspacesData,
+  workspaceId: string,
+  pageId: string,
+  sessionId: string | null
+): WorkspacesData {
+  return {
+    ...state,
+    workspaces: state.workspaces.map((w) =>
+      w.id === workspaceId
+        ? { ...w, pages: w.pages.map((p) => (p.id === pageId ? { ...p, focusedSessionId: sessionId } : p)) }
+        : w
+    ),
+  };
+}
+
+// Recomputes focus for whatever page is active in `state` (preferring
+// that page's own remembered focus, falling back to its first session),
+// writes the result onto that page via setPageFocus so it survives the
+// page becoming inactive again, and returns both the updated state and
+// the resolved session id in one step. Used by every action that changes
+// which page is active, or that removes whatever the focused session was.
+export function resolveActiveFocus(
+  state: WorkspacesData
+): { state: WorkspacesData; focusedSessionId: string | null } {
+  const ws = getActiveWorkspace(state);
+  const page = getActivePage(state);
+  if (!ws || !page) return { state, focusedSessionId: null };
+  const focusedSessionId = resolveFocusForPage(page);
+  return { state: setPageFocus(state, ws.id, page.id, focusedSessionId), focusedSessionId };
+}
+
 export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
   return workspace.pages.flatMap((p) => allSessionIds(p.layout));
 }

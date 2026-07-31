@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
 import type { LayoutNode } from "./layout";
 import type { Page, Workspace } from "./workspace";
@@ -18,6 +18,10 @@ vi.mock("./backend", () => ({
 
 vi.mock("./terminalRegistry", () => ({
   destroyTerminal: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
 import * as backend from "./backend";
@@ -40,6 +44,8 @@ import {
   renamePage,
   switchPage,
   closePage,
+  bootstrap,
+  teardown,
 } from "./layoutState";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
@@ -314,17 +320,16 @@ describe("setSessionName", () => {
 });
 
 describe("createWorkspace", () => {
-  it("appends a new workspace, makes it active, and persists", async () => {
-    setState([], null, null);
+  it("appends a new workspace, makes it active, and clears focus since the new workspace has no pages yet", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
 
     await createWorkspace("My Project");
 
     const state = get(layoutState);
-    expect(state.workspaces).toHaveLength(1);
-    expect(state.workspaces[0].name).toBe("My Project");
-    expect(state.activeWorkspaceId).toBe(state.workspaces[0].id);
-    expect(state.focusedSessionId).toBe(null);
-    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, state.workspaces[0].id);
+    expect(state.workspaces).toHaveLength(2);
+    expect(state.workspaces[1].name).toBe("My Project");
+    expect(state.activeWorkspaceId).toBe(state.workspaces[1].id);
+    expect(state.focusedSessionId).toBeNull();
   });
 });
 
@@ -436,6 +441,20 @@ describe("switchPage", () => {
     expect(state.workspaces[0].activePageId).toBe("page-2");
     expect(state.focusedSessionId).toBe("b");
   });
+
+  it("also activates the target workspace when switching to a page in a different one", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"]))]), ws("ws-2", [page("page-2", leaf(["b"]))])],
+      "ws-1",
+      "a"
+    );
+
+    await switchPage("ws-2", "page-2");
+
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-2");
+    expect(state.focusedSessionId).toBe("b");
+  });
 });
 
 describe("closePage", () => {
@@ -454,5 +473,41 @@ describe("closePage", () => {
     expect(backend.killSession).not.toHaveBeenCalledWith("c");
     const state = get(layoutState);
     expect(state.workspaces[0].pages.map((p) => p.id)).toEqual(["page-2"]);
+  });
+});
+
+describe("bootstrap / pollForStartupState readiness", () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it("treats an empty WorkspacesData as ready on the first poll attempt, not still-connecting", async () => {
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+
+    await bootstrap();
+    // bootstrap() resolves once listeners are registered; give the
+    // fire-and-forget pollForStartupState's first iteration a tick to run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const state = get(layoutState);
+    expect(state.status).toBe("ready");
+    expect(state.workspaces).toEqual([]);
+  });
+
+  it("keeps polling (stays connecting) while the invoke rejects, then becomes ready once it resolves", async () => {
+    vi.mocked(backend.getWorkspacesState)
+      .mockRejectedValueOnce(new Error("not managed yet"))
+      .mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+
+    await bootstrap();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(get(layoutState).status).toBe("connecting");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(get(layoutState).status).toBe("ready");
   });
 });

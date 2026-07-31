@@ -82,9 +82,9 @@ describe("confirmPageClose", () => {
   it("always prompts and reports the page's session count", async () => {
     setActivePage([ws("ws-1", [page("page-1", leaf(["a", "b"])), page("page-2", leaf(["c"]))])], "ws-1");
     vi.mocked(confirm).mockResolvedValue(true);
-    const result = await confirmPageClose("ws-1", "page-1");
+    const result = await confirmPageClose("ws-1", "page-2");
     expect(result).toBe(true);
-    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("2 terminal sessions");
+    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("1 terminal session ");
   });
 
   it("propagates a decline", async () => {

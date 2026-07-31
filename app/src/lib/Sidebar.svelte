@@ -29,7 +29,7 @@
   let pageEditInput: HTMLInputElement | null = $state(null);
 
   function isExpanded(workspaceId: string): boolean {
-    return expanded.has(workspaceId) || workspaceId === $layoutState.activeWorkspaceId;
+    return expanded.has(workspaceId);
   }
 
   function toggleExpand(workspaceId: string): void {
@@ -100,6 +100,13 @@
     if (!ws) return;
     void createPage(workspaceId, ([id]) => presetSingle(id), 1, `Page ${ws.pages.length + 1}`);
   }
+
+  $effect(() => {
+    const activeId = $layoutState.activeWorkspaceId;
+    if (activeId && !expanded.has(activeId)) {
+      expanded = new Set(expanded).add(activeId);
+    }
+  });
 
   $effect(() => {
     if (creatingWorkspace && newWorkspaceInput) {
@@ -194,7 +201,7 @@
             title="Close Workspace"
             onclick={async () => {
               if (await confirmWorkspaceClose(ws.id)) {
-                closeWorkspace(ws.id);
+                void closeWorkspace(ws.id);
               }
             }}
           >
@@ -235,7 +242,7 @@
                   title="Close Page"
                   onclick={async () => {
                     if (await confirmPageClose(ws.id, page.id)) {
-                      closePage(ws.id, page.id);
+                      void closePage(ws.id, page.id);
                     }
                   }}
                 >
