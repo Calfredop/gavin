@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn load_defaults_session_names_when_field_is_absent_from_an_older_config_file() {
+    fn load_defaults_session_names_when_the_field_is_absent() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             config_path(dir.path()),
@@ -152,15 +152,41 @@ mod tests {
     #[test]
     fn load_defaults_workspaces_and_active_workspace_id_when_absent_from_an_older_config_file() {
         let dir = tempfile::tempdir().unwrap();
-        // Mirrors a genuine config.json from before this milestone -- only
-        // `layout`/`session_names` existed. `layout`'s value here is
-        // irrelevant: the field no longer exists on AppConfig at all, so
-        // serde silently drops it rather than reading it into anything.
-        std::fs::write(config_path(dir.path()), r#"{"layout": null, "session_names": {}}"#).unwrap();
+        // Mirrors a genuine config.json from before this milestone: a real
+        // (non-empty) layout tree and session_names map, no workspaces key at
+        // all. layout's value is irrelevant -- the field no longer exists on
+        // AppConfig, so serde silently drops it -- but session_names MUST
+        // survive, since it's the one piece of user data this migration is
+        // required to carry forward.
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"layout": {"type": "leaf", "tabs": ["abc-123"], "activeTabIndex": 0}, "session_names": {"abc-123": "my project"}}"#,
+        )
+        .unwrap();
 
         let config = load(dir.path()).unwrap();
         assert_eq!(config.workspaces, Vec::new());
         assert_eq!(config.active_workspace_id, None);
+        assert_eq!(config.session_names.get("abc-123"), Some(&"my project".to_string()));
+    }
+
+    #[test]
+    fn workspace_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let json = serde_json::to_value(&sample_workspace()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "workspace-1",
+                "name": "Workspace 1",
+                "pages": [{
+                    "id": "page-1",
+                    "name": "Page 1",
+                    "layout": { "type": "leaf", "tabs": ["abc-123"], "activeTabIndex": 0 },
+                    "focusedSessionId": null
+                }],
+                "activePageId": "page-1"
+            })
+        );
     }
 
     #[test]

@@ -1,6 +1,4 @@
 use crate::config::Workspace;
-#[cfg(test)]
-use crate::config::Page;
 use crate::layout::LayoutNode;
 use protocol::{read_message, socket_path, write_message, Request, Response};
 use serde::Serialize;
@@ -36,6 +34,46 @@ pub struct WorkspacesState(pub Mutex<WorkspacesData>);
 /// would silently reset the other field to empty on every save.
 pub struct SessionNames(pub Mutex<HashMap<String, String>>);
 
+/// Persists workspace/page state and session names together -- the only
+/// two things that make up AppConfig. Centralizing this is what makes
+/// the "always carry both along, or you'll silently reset one" rule
+/// (see SessionNames's doc comment) structural rather than just
+/// documented: every save site funnels through here instead of each
+/// independently reconstructing the AppConfig literal.
+fn persist_workspaces(
+    config_dir: &std::path::Path,
+    data: &WorkspacesData,
+    session_names: HashMap<String, String>,
+) -> anyhow::Result<()> {
+    crate::config::save(
+        config_dir,
+        &crate::config::AppConfig {
+            workspaces: data.workspaces.clone(),
+            active_workspace_id: data.active_workspace_id.clone(),
+            session_names,
+        },
+    )
+}
+
+#[cfg(test)]
+mod workspaces_data_tests {
+    use super::*;
+
+    #[test]
+    fn workspaces_data_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json, serde_json::json!({ "workspaces": [], "activeWorkspaceId": null }));
+    }
+}
+
+/// Returns the current workspace/page state. An empty `WorkspacesData`
+/// (`workspaces: []`) is a normal, permanent steady state -- e.g. every
+/// user's first launch after this migration, before they've created any
+/// workspace -- not a "not ready yet" signal. The only reliable
+/// not-ready signal is this command's invoke rejecting outright (the
+/// state hasn't been `manage`d yet, i.e. `bootstrap` hasn't finished) --
+/// callers must not infer readiness from whether the payload is empty.
 #[tauri::command]
 pub fn get_workspaces_state(state: State<WorkspacesState>) -> WorkspacesData {
     state.0.lock().unwrap().clone()
@@ -53,15 +91,7 @@ pub fn set_workspaces_state(
     *state.0.lock().unwrap() = data.clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    crate::config::save(
-        &config_dir,
-        &crate::config::AppConfig {
-            workspaces: data.workspaces,
-            active_workspace_id: data.active_workspace_id,
-            session_names,
-        },
-    )
-    .map_err(|e| e.to_string())
+    persist_workspaces(&config_dir, &data, session_names).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -92,15 +122,7 @@ pub fn set_session_name(
     };
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    crate::config::save(
-        &config_dir,
-        &crate::config::AppConfig {
-            workspaces: data.workspaces,
-            active_workspace_id: data.active_workspace_id,
-            session_names,
-        },
-    )
-    .map_err(|e| e.to_string())
+    persist_workspaces(&config_dir, &data, session_names).map_err(|e| e.to_string())
 }
 
 /// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
@@ -317,6 +339,7 @@ mod command_connection_tests {
 mod resolve_workspaces_tests {
     use super::test_support::fake_daemon_replying_with;
     use super::*;
+    use crate::config::Page;
 
     fn leaf(tabs: &[&str]) -> LayoutNode {
         LayoutNode::Leaf { tabs: tabs.iter().map(|s| s.to_string()).collect(), active_tab_index: 0 }
@@ -427,16 +450,11 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let mut workspaces = config.workspaces;
     resolve_workspaces(&mut workspaces, &command_conn)?;
     let active_workspace_id = config.active_workspace_id;
-    crate::config::save(
-        &config_dir,
-        &crate::config::AppConfig {
-            workspaces: workspaces.clone(),
-            active_workspace_id: active_workspace_id.clone(),
-            session_names: session_names.clone(),
-        },
-    )?;
+    let workspaces_data = WorkspacesData { workspaces, active_workspace_id };
+    persist_workspaces(&config_dir, &workspaces_data, session_names.clone())?;
 
-    let all_session_ids: Vec<String> = workspaces
+    let all_session_ids: Vec<String> = workspaces_data
+        .workspaces
         .iter()
         .flat_map(|w| w.pages.iter())
         .flat_map(|p| p.layout.all_session_ids())
@@ -447,7 +465,6 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 
     app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
     app_handle.manage(CommandConnection(command_conn));
-    let workspaces_data = WorkspacesData { workspaces, active_workspace_id };
     app_handle.manage(WorkspacesState(Mutex::new(workspaces_data.clone())));
     app_handle.manage(SessionNames(Mutex::new(session_names)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
