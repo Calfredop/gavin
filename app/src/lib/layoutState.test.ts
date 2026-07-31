@@ -11,6 +11,8 @@ vi.mock("./backend", () => ({
   writeInput: vi.fn(),
   resizeSession: vi.fn(),
   signalFrontendReady: vi.fn(),
+  getSessionNames: vi.fn(),
+  setSessionName: vi.fn(),
 }));
 
 vi.mock("./terminalRegistry", () => ({
@@ -28,6 +30,7 @@ import {
   handleSessionExited,
   handleCwdChanged,
   closePane,
+  setSessionName,
 } from "./layoutState";
 
 function setState(partial: {
@@ -45,6 +48,7 @@ beforeEach(() => {
     tree: null,
     focusedSessionId: null,
     cwdBySessionId: {},
+    sessionNames: {},
   });
 });
 
@@ -206,6 +210,7 @@ describe("handleCwdChanged", () => {
       tree: null,
       focusedSessionId: null,
       cwdBySessionId: {},
+      sessionNames: {},
     });
     handleCwdChanged("a", "/Users/alice/project");
     expect(get(layoutState).cwdBySessionId).toEqual({ a: "/Users/alice/project" });
@@ -218,6 +223,7 @@ describe("handleCwdChanged", () => {
       tree: null,
       focusedSessionId: null,
       cwdBySessionId: { a: "/old/path", b: "/other/path" },
+      sessionNames: {},
     });
     handleCwdChanged("a", "/new/path");
     expect(get(layoutState).cwdBySessionId).toEqual({ a: "/new/path", b: "/other/path" });
@@ -287,5 +293,36 @@ describe("focusPane", () => {
     expect(state.focusedSessionId).toBe("a");
     expect(state.tree).toEqual(tree);
     expect(backend.setLayout).not.toHaveBeenCalled();
+  });
+});
+
+describe("setSessionName", () => {
+  it("records a trimmed name and persists it", async () => {
+    vi.mocked(backend.setSessionName).mockResolvedValue(undefined);
+
+    await setSessionName("a", "  my project  ");
+
+    expect(get(layoutState).sessionNames).toEqual({ a: "my project" });
+    expect(backend.setSessionName).toHaveBeenCalledWith("a", "my project");
+  });
+
+  it("clears the name when given a blank string, without disturbing others", async () => {
+    layoutState.update((s) => ({ ...s, sessionNames: { a: "old name", b: "keep me" } }));
+    vi.mocked(backend.setSessionName).mockResolvedValue(undefined);
+
+    await setSessionName("a", "   ");
+
+    expect(get(layoutState).sessionNames).toEqual({ b: "keep me" });
+    expect(backend.setSessionName).toHaveBeenCalledWith("a", "");
+  });
+
+  it("surfaces an error when the persist call fails, without reverting local state", async () => {
+    vi.mocked(backend.setSessionName).mockRejectedValue(new Error("daemon unreachable"));
+
+    await setSessionName("a", "my project");
+
+    const state = get(layoutState);
+    expect(state.sessionNames).toEqual({ a: "my project" });
+    expect(state.status).toBe("error");
   });
 });

@@ -2,7 +2,14 @@
   import { onMount } from "svelte";
   import type { LayoutNode } from "./layout";
   import TerminalPane from "./TerminalPane.svelte";
-  import { layoutState, switchToTab, addTab, closeSession, focusPane } from "./layoutState";
+  import {
+    layoutState,
+    switchToTab,
+    addTab,
+    closeSession,
+    focusPane,
+    setSessionName,
+  } from "./layoutState";
   import { confirmTabClose } from "./confirmClose";
   import { X, Plus } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
@@ -18,6 +25,15 @@
   );
   const active = $derived(leaf.tabs[leaf.activeTabIndex]);
 
+  // $state, not plain `let` -- editInput is a bind:this target read inside
+  // the $effect below, and only $state reads establish reactivity there
+  // (see the tabLabel/onMount comment above for the same lesson applied to
+  // containerEl, which deliberately does NOT need this because its consumer
+  // is onMount, not an $effect).
+  let editingSessionId: string | null = $state(null);
+  let editValue = $state("");
+  let editInput: HTMLInputElement | null = $state(null);
+
   export function fitAll(): void {
     for (const id of leaf.tabs) {
       paneRefs[id]?.fit();
@@ -25,13 +41,37 @@
   }
 
   function tabLabel(sessionId: string): string {
+    const customName = $layoutState.sessionNames[sessionId];
+    if (customName) return customName;
     const cwd = $layoutState.cwdBySessionId[sessionId];
     return cwd ? folderName(cwd) : sessionId.slice(0, 8);
   }
 
   function tabTooltip(sessionId: string): string {
-    return $layoutState.cwdBySessionId[sessionId] ?? sessionId;
+    return $layoutState.sessionNames[sessionId] ?? $layoutState.cwdBySessionId[sessionId] ?? sessionId;
   }
+
+  function startEditing(sessionId: string): void {
+    editingSessionId = sessionId;
+    editValue = tabLabel(sessionId);
+  }
+
+  function commitEdit(): void {
+    if (editingSessionId === null) return;
+    void setSessionName(editingSessionId, editValue);
+    editingSessionId = null;
+  }
+
+  function cancelEdit(): void {
+    editingSessionId = null;
+  }
+
+  $effect(() => {
+    if (editingSessionId !== null && editInput) {
+      editInput.focus();
+      editInput.select();
+    }
+  });
 
   // onMount, not a $effect gated on containerEl -- containerEl is a plain
   // `let` (bind:this target), so reading it inside $effect would never
@@ -46,13 +86,35 @@
   });
 </script>
 
-<div class="pane-wrapper" class:focused={isFocused}>
+<div class="pane-wrapper">
   <div class="tab-bar">
     {#each leaf.tabs as sessionId (sessionId)}
       <button class="tab" class:active={sessionId === active} onclick={() => switchToTab(sessionId)}>
-        <Tooltip text={tabTooltip(sessionId)}>
-          <span class="tab-label">{tabLabel(sessionId)}</span>
-        </Tooltip>
+        {#if sessionId === active && isFocused}
+          <span class="focus-dot"></span>
+        {/if}
+        {#if editingSessionId === sessionId}
+          <input
+            class="tab-label-input"
+            bind:this={editInput}
+            bind:value={editValue}
+            onclick={(e) => e.stopPropagation()}
+            onblur={commitEdit}
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitEdit();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelEdit();
+              }
+            }}
+          />
+        {:else}
+          <Tooltip text={tabTooltip(sessionId)}>
+            <span class="tab-label" ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span>
+          </Tooltip>
+        {/if}
         <span
           class="close"
           aria-label="Close Tab"
@@ -90,11 +152,7 @@
     flex-direction: column;
     width: 100%;
     height: 100%;
-    border: 1px solid transparent;
     box-sizing: border-box;
-  }
-  .pane-wrapper.focused {
-    border-color: #4a9eff;
   }
   .tab-bar {
     display: flex;
@@ -117,11 +175,29 @@
     background: #1e1e1e;
     color: #fff;
   }
+  .focus-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4a9eff;
+    flex: 0 0 auto;
+  }
   .tab-label {
     max-width: 120px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .tab-label-input {
+    max-width: 120px;
+    width: 100px;
+    background: #111;
+    color: #fff;
+    border: 1px solid #4a9eff;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 1em;
+    padding: 0 2px;
   }
   .close {
     opacity: 0.6;

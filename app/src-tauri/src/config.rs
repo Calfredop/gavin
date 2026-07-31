@@ -1,10 +1,19 @@
 use crate::layout::LayoutNode;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AppConfig {
     pub layout: Option<LayoutNode>,
+    /// User-assigned display names, keyed by session id. Independent of
+    /// `layout` (a session can be renamed regardless of where it sits in
+    /// the tree) -- callers that persist one must always carry the other's
+    /// current value along too, or they'll silently reset it to empty. See
+    /// session.rs's `set_layout`/`set_session_name`, which both read the
+    /// other's live Tauri-managed state before saving.
+    #[serde(default)]
+    pub session_names: HashMap<String, String>,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -56,7 +65,7 @@ mod tests {
     #[test]
     fn save_then_load_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
-        let config = AppConfig { layout: Some(sample_layout()) };
+        let config = AppConfig { layout: Some(sample_layout()), session_names: HashMap::new() };
         save(dir.path(), &config).unwrap();
 
         let loaded = load(dir.path()).unwrap();
@@ -64,10 +73,32 @@ mod tests {
     }
 
     #[test]
+    fn session_names_roundtrip_alongside_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session_names = HashMap::new();
+        session_names.insert("abc-123".to_string(), "my project".to_string());
+        let config = AppConfig { layout: Some(sample_layout()), session_names };
+        save(dir.path(), &config).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(loaded.session_names.get("abc-123"), Some(&"my project".to_string()));
+    }
+
+    #[test]
+    fn load_defaults_session_names_when_field_is_absent_from_an_older_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(dir.path()), r#"{"layout": null}"#).unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.session_names, HashMap::new());
+    }
+
+    #[test]
     fn save_creates_missing_parent_directories() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("nested").join("config-dir");
-        let config = AppConfig { layout: Some(sample_layout()) };
+        let config = AppConfig { layout: Some(sample_layout()), session_names: HashMap::new() };
         save(&nested, &config).unwrap();
 
         assert!(config_path(&nested).exists());

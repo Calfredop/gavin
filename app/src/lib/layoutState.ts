@@ -11,6 +11,7 @@ export interface LayoutState {
   tree: LayoutNode | null;
   focusedSessionId: string | null;
   cwdBySessionId: Record<string, string>;
+  sessionNames: Record<string, string>;
 }
 
 const initialState: LayoutState = {
@@ -19,6 +20,7 @@ const initialState: LayoutState = {
   tree: null,
   focusedSessionId: null,
   cwdBySessionId: {},
+  sessionNames: {},
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -82,6 +84,18 @@ export async function bootstrap(): Promise<void> {
       handleCwdChanged(event.payload[0], event.payload[1]);
     })
   );
+
+  // Session names are frontend-set, never externally/daemon-driven, so
+  // there's no live event for them (unlike cwd) -- a one-shot fetch is
+  // sufficient. Best-effort: a failure here just means renamed tabs show
+  // their fallback label until the next successful rename, not a reason
+  // to block startup.
+  void backend
+    .getSessionNames()
+    .then((sessionNames) => {
+      layoutState.update((s) => ({ ...s, sessionNames }));
+    })
+    .catch(() => {});
 
   void pollForStartupState();
 }
@@ -186,6 +200,29 @@ export function handleSessionExited(sessionId: string): void {
 // existed in one app run is not a meaningful memory concern.
 export function handleCwdChanged(sessionId: string, cwd: string): void {
   layoutState.update((s) => ({ ...s, cwdBySessionId: { ...s.cwdBySessionId, [sessionId]: cwd } }));
+}
+
+// A blank (or whitespace-only) name clears the override rather than
+// setting an empty string -- the tab falls back to its cwd-based label
+// (or the session-id fragment) again. Updates local state immediately
+// (the rename UI closes right away); the persist call is best-effort,
+// matching every other action's error-surfacing pattern.
+export async function setSessionName(sessionId: string, name: string): Promise<void> {
+  const trimmed = name.trim();
+  layoutState.update((s) => {
+    const sessionNames = { ...s.sessionNames };
+    if (trimmed) {
+      sessionNames[sessionId] = trimmed;
+    } else {
+      delete sessionNames[sessionId];
+    }
+    return { ...s, sessionNames };
+  });
+  try {
+    await backend.setSessionName(sessionId, trimmed);
+  } catch (e) {
+    setError(String(e));
+  }
 }
 
 export async function switchToTab(sessionId: string): Promise<void> {

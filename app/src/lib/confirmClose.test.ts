@@ -14,7 +14,14 @@ beforeEach(() => {
 });
 
 function setTree(tree: LayoutNode): void {
-  layoutState.set({ status: "ready", errorMessage: "", tree, focusedSessionId: null, cwdBySessionId: {} });
+  layoutState.set({
+    status: "ready",
+    errorMessage: "",
+    tree,
+    focusedSessionId: null,
+    cwdBySessionId: {},
+    sessionNames: {},
+  });
 }
 
 describe("confirmTabClose", () => {

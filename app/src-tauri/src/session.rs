@@ -1,6 +1,6 @@
 use crate::layout::LayoutNode;
 use protocol::{read_message, socket_path, write_message, Request, Response};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -13,6 +13,13 @@ pub struct DaemonConnection {
 
 pub struct CurrentLayout(pub Mutex<LayoutNode>);
 
+/// User-assigned session display names, keyed by session id. Independent
+/// Tauri-managed state from `CurrentLayout`, but both persist into the
+/// same `AppConfig` -- every command that saves one must read the other's
+/// current value too (see `set_layout`/`set_session_name`), or it would
+/// silently reset the other field to empty on every save.
+pub struct SessionNames(pub Mutex<HashMap<String, String>>);
+
 #[tauri::command]
 pub fn get_current_layout(state: State<CurrentLayout>) -> LayoutNode {
     state.0.lock().unwrap().clone()
@@ -23,11 +30,51 @@ pub fn set_layout(
     layout: LayoutNode,
     app_handle: AppHandle,
     state: State<CurrentLayout>,
+    names_state: State<SessionNames>,
 ) -> Result<(), String> {
     *state.0.lock().unwrap() = layout.clone();
+    let session_names = names_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    crate::config::save(&config_dir, &crate::config::AppConfig { layout: Some(layout) })
-        .map_err(|e| e.to_string())
+    crate::config::save(
+        &config_dir,
+        &crate::config::AppConfig { layout: Some(layout), session_names },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_session_names(state: State<SessionNames>) -> HashMap<String, String> {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn set_session_name(
+    session_id: String,
+    name: String,
+    app_handle: AppHandle,
+    layout_state: State<CurrentLayout>,
+    names_state: State<SessionNames>,
+) -> Result<(), String> {
+    // An empty (or whitespace-only) name clears the override rather than
+    // persisting an empty string -- there's no separate "clear" command,
+    // this is the one way a rename can be undone.
+    let session_names = {
+        let mut names = names_state.0.lock().unwrap();
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            names.remove(&session_id);
+        } else {
+            names.insert(session_id, trimmed.to_string());
+        }
+        names.clone()
+    };
+    let layout = layout_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    crate::config::save(
+        &config_dir,
+        &crate::config::AppConfig { layout: Some(layout), session_names },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
@@ -249,11 +296,12 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 
     let config_dir = app_handle.path().app_config_dir()?;
     let config = crate::config::load(&config_dir)?;
+    let session_names = config.session_names;
 
     let layout = resolve_layout(&command_conn, config.layout)?;
     crate::config::save(
         &config_dir,
-        &crate::config::AppConfig { layout: Some(layout.clone()) },
+        &crate::config::AppConfig { layout: Some(layout.clone()), session_names: session_names.clone() },
     )?;
 
     for id in layout.all_session_ids() {
@@ -263,6 +311,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
     app_handle.manage(CommandConnection(command_conn));
     app_handle.manage(CurrentLayout(Mutex::new(layout.clone())));
+    app_handle.manage(SessionNames(Mutex::new(session_names)));
     app_handle.emit("layout-ready", &layout)?;
 
     let mut reader = BufReader::new(reader_stream);

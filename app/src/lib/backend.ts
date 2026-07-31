@@ -25,6 +25,14 @@ export function resizeSession(sessionId: string, cols: number, rows: number): Pr
   return invoke("resize_session", { sessionId, cols, rows });
 }
 
+export function getSessionNames(): Promise<Record<string, string>> {
+  return invoke("get_session_names");
+}
+
+export function setSessionName(sessionId: string, name: string): Promise<void> {
+  return invoke("set_session_name", { sessionId, name });
+}
+
 export function signalFrontendReady(): Promise<void> {
   return invoke("signal_frontend_ready");
 }

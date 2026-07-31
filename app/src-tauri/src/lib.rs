@@ -38,6 +38,8 @@ pub fn run() {
             session::kill_session,
             session::get_current_layout,
             session::set_layout,
+            session::get_session_names,
+            session::set_session_name,
             session::signal_frontend_ready,
             session::get_bootstrap_error
         ])
