@@ -1,4 +1,5 @@
 use protocol::{read_message, write_message, Request, Response, SessionSummary};
+use crate::osc::OscCwdScanner;
 use crate::pty::PtySession;
 use crate::registry::{Registry, SessionRecord, SessionStatus};
 use std::collections::{HashMap, VecDeque};
@@ -153,6 +154,26 @@ impl SessionManager {
     }
 
     pub fn attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<UnixStream>>) {
+        // Send the session's current known cwd immediately, before anything
+        // else -- this gives a fresh Attach's frontend an instant baseline
+        // (launch directory, or the last OSC-7-reported directory) without
+        // needing a separate query command; live updates arrive the same
+        // way, via the same CwdChanged variant, as OSC 7 sequences are seen.
+        //
+        // The lookup is bound to an owned value in its own `let` first,
+        // rather than inlined into the `if let` scrutinee below: Rust
+        // extends a MutexGuard temporary created in an `if let` condition
+        // across the whole body, which would otherwise keep `registry`
+        // locked for the blocking write -- violating this file's rule of
+        // never holding a lock across blocking I/O.
+        let baseline_cwd = self.registry.lock().unwrap().get(id).ok().flatten().map(|r| r.cwd);
+        if let Some(cwd) = baseline_cwd {
+            let _ = write_message(
+                &mut *writer.lock().unwrap(),
+                &Response::CwdChanged { id: id.to_string(), cwd },
+            );
+        }
+
         // Replay buffered output BEFORE registering the writer, so a
         // concurrently-running pump thread (this session may already be
         // attached elsewhere) can't interleave live output ahead of history.
@@ -210,6 +231,7 @@ impl SessionManager {
             // through a multi-byte UTF-8 character — carried to the next
             // read instead of being lossily corrupted at the chunk boundary.
             let mut pending: Vec<u8> = Vec::new();
+            let mut osc_scanner = OscCwdScanner::new();
 
             loop {
                 match reader.read(&mut buf) {
@@ -224,6 +246,19 @@ impl SessionManager {
                             ring.extend(buf[..n].iter().copied());
                             while ring.len() > OUTPUT_BUFFER_CAP {
                                 ring.pop_front();
+                            }
+                        }
+
+                        for cwd in osc_scanner.feed(&buf[..n]) {
+                            if let Err(e) = manager.registry.lock().unwrap().update_cwd(&id, &cwd) {
+                                eprintln!("failed to persist cwd for session {id}: {e}");
+                            }
+                            let target = manager.attached_writers.lock().unwrap().get(&id).cloned();
+                            if let Some(w) = target {
+                                let _ = write_message(
+                                    &mut *w.lock().unwrap(),
+                                    &Response::CwdChanged { id: id.clone(), cwd },
+                                );
                             }
                         }
 
@@ -652,6 +687,86 @@ mod tests {
             &Request::ResizeSession { id: "does-not-exist".to_string(), cols: 80, rows: 24 },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn attach_sends_a_baseline_cwd_changed_with_the_launch_directory() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let resp: Response = read_message(&mut reader).unwrap().unwrap();
+        match resp {
+            Response::CwdChanged { id: rid, cwd } => {
+                assert_eq!(rid, id);
+                assert_eq!(cwd, "/tmp");
+            }
+            other => panic!("expected CwdChanged as the first message after Attach, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_relays_cwd_changed_when_pty_output_contains_osc7() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '\\033]7;file://host/tmp/from-osc7\\007'\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut found = false;
+        while std::time::Instant::now() < deadline {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::CwdChanged { id: rid, cwd } = resp {
+                if rid == id && cwd == "/tmp/from-osc7" {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "never saw the expected CwdChanged for the printf'd OSC 7 sequence");
     }
 
     #[test]
