@@ -5,10 +5,12 @@ import {
   renameWorkspace,
   switchWorkspace,
   removeWorkspace,
+  reorderWorkspace,
   createPage,
   renamePage,
   switchPage,
   removePage,
+  movePage,
   updatePageLayout,
   getActiveWorkspace,
   getActivePage,
@@ -206,5 +208,78 @@ describe("resolveFocusForPage / setPageFocus / resolveActiveFocus", () => {
     const result = resolveActiveFocus(empty);
     expect(result.focusedSessionId).toBeNull();
     expect(result.state).toEqual(empty);
+  });
+});
+
+describe("reorderWorkspace", () => {
+  it("moves a workspace to a later index", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createWorkspace(state, "ws-2", "B");
+    state = createWorkspace(state, "ws-3", "C");
+    const reordered = reorderWorkspace(state, "ws-1", 2);
+    expect(reordered.workspaces.map((w) => w.id)).toEqual(["ws-2", "ws-3", "ws-1"]);
+  });
+
+  it("moves a workspace to an earlier index", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createWorkspace(state, "ws-2", "B");
+    state = createWorkspace(state, "ws-3", "C");
+    const reordered = reorderWorkspace(state, "ws-3", 0);
+    expect(reordered.workspaces.map((w) => w.id)).toEqual(["ws-3", "ws-1", "ws-2"]);
+  });
+
+  it("is a no-op when the workspace id isn't found", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    expect(reorderWorkspace(state, "missing", 0)).toEqual(state);
+  });
+});
+
+describe("movePage", () => {
+  it("reorders a page within its own workspace when source and target workspace match", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a"]));
+    state = createPage(state, "ws-1", "page-2", "Page 2", leaf(["b"]));
+    state = createPage(state, "ws-1", "page-3", "Page 3", leaf(["c"]));
+    const moved = movePage(state, "page-1", "ws-1", 2);
+    expect(moved.workspaces[0].pages.map((p) => p.id)).toEqual(["page-2", "page-3", "page-1"]);
+  });
+
+  it("moves a page to a different workspace, inserting at the target index", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createWorkspace(state, "ws-2", "B");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a"]));
+    state = createPage(state, "ws-2", "page-2", "Page 2", leaf(["b"]));
+    const moved = movePage(state, "page-1", "ws-2", 0);
+    expect(moved.workspaces[0].pages.map((p) => p.id)).toEqual([]);
+    expect(moved.workspaces[1].pages.map((p) => p.id)).toEqual(["page-1", "page-2"]);
+  });
+
+  it("falls back the source workspace's activePageId to a sibling when the moved page was active", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createWorkspace(state, "ws-2", "B");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a"]));
+    state = createPage(state, "ws-1", "page-2", "Page 2", leaf(["b"]));
+    const moved = movePage(state, "page-2", "ws-2", 0);
+    expect(moved.workspaces[0].activePageId).toBe("page-1");
+  });
+
+  it("falls back to null when moving a source workspace's only (active) page away", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createWorkspace(state, "ws-2", "B");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a"]));
+    const moved = movePage(state, "page-1", "ws-2", 0);
+    expect(moved.workspaces[0].activePageId).toBeNull();
+  });
+
+  it("is a no-op when the page id isn't found", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createWorkspace(state, "ws-2", "B");
+    expect(movePage(state, "missing", "ws-2", 0)).toEqual(state);
+  });
+
+  it("is a no-op when the target workspace id isn't found", () => {
+    let state = createWorkspace(empty, "ws-1", "A");
+    state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a"]));
+    expect(movePage(state, "page-1", "missing", 0)).toEqual(state);
   });
 });

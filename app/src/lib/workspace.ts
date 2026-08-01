@@ -47,6 +47,19 @@ export function removeWorkspace(state: WorkspacesData, workspaceId: string): Wor
   return { workspaces, activeWorkspaceId };
 }
 
+// Moves a workspace to a new index within the workspaces array. Clamped
+// to the valid range. A no-op (returns state unchanged in effect) if
+// workspaceId isn't found or targetIndex already matches its position.
+export function reorderWorkspace(state: WorkspacesData, workspaceId: string, targetIndex: number): WorkspacesData {
+  const currentIndex = state.workspaces.findIndex((w) => w.id === workspaceId);
+  if (currentIndex === -1) return state;
+  const workspaces = [...state.workspaces];
+  const [moved] = workspaces.splice(currentIndex, 1);
+  const clamped = Math.max(0, Math.min(targetIndex, workspaces.length));
+  workspaces.splice(clamped, 0, moved);
+  return { ...state, workspaces };
+}
+
 export function createPage(
   state: WorkspacesData,
   workspaceId: string,
@@ -95,6 +108,53 @@ export function removePage(state: WorkspacesData, workspaceId: string, pageId: s
       return { ...w, pages, activePageId };
     }),
   };
+}
+
+// Moves a page to a new position -- either within its current workspace
+// (reorder) or into a different workspace (move). Both are the same
+// operation, differing only in whether the source and target workspace
+// ids happen to match. If the moved page was its source workspace's
+// active page, that workspace's activePageId falls back to a sibling (or
+// null) -- the same rule removePage already uses. The target workspace's
+// own activePageId is left untouched by the move itself (a caller that
+// wants the moved page to also become active, e.g. because it was the
+// one the user was looking at, does that separately via switchWorkspace/
+// switchPage).
+export function movePage(
+  state: WorkspacesData,
+  pageId: string,
+  targetWorkspaceId: string,
+  targetIndex: number
+): WorkspacesData {
+  const sourceWorkspace = state.workspaces.find((w) => w.pages.some((p) => p.id === pageId));
+  if (!sourceWorkspace) return state;
+  const page = sourceWorkspace.pages.find((p) => p.id === pageId);
+  if (!page) return state;
+  const targetWorkspace = state.workspaces.find((w) => w.id === targetWorkspaceId);
+  if (!targetWorkspace) return state;
+
+  const workspaces = state.workspaces.map((w) => {
+    if (w.id === sourceWorkspace.id && w.id === targetWorkspaceId) {
+      const pages = w.pages.filter((p) => p.id !== pageId);
+      const clamped = Math.max(0, Math.min(targetIndex, pages.length));
+      pages.splice(clamped, 0, page);
+      return { ...w, pages };
+    }
+    if (w.id === sourceWorkspace.id) {
+      const pages = w.pages.filter((p) => p.id !== pageId);
+      const activePageId = w.activePageId === pageId ? (pages[0]?.id ?? null) : w.activePageId;
+      return { ...w, pages, activePageId };
+    }
+    if (w.id === targetWorkspaceId) {
+      const pages = [...w.pages];
+      const clamped = Math.max(0, Math.min(targetIndex, pages.length));
+      pages.splice(clamped, 0, page);
+      return { ...w, pages };
+    }
+    return w;
+  });
+
+  return { ...state, workspaces };
 }
 
 // The one primitive every tree-mutating layoutState.ts action goes
