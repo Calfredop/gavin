@@ -540,3 +540,126 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
   }));
   await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
+
+export type DropTarget =
+  | { kind: "page"; workspaceId: string; pageId: string; mode: "left" | "right" | "top" | "bottom" | "center" }
+  | { kind: "workspace"; workspaceId: string };
+
+// Moves a whole pane (source.kind === "pane") or a single tab
+// (source.kind === "tab") from wherever it currently lives to the given
+// target. Handles cross-page and same-page moves uniformly -- when
+// source and target page happen to be identical, detach+graft still
+// applies, they just both land on that one page's own layout, producing
+// a single write instead of two. Dropping onto a workspace (not a
+// specific page) always creates a brand-new page there; dropping onto a
+// page either grafts a new split in one of 4 directions, or merges as a
+// new tab into that page's remembered focused pane (mode "center"). No
+// daemon calls are ever made -- this is pure restructuring of the
+// already-loaded workspaces array, then a persist.
+export async function movePaneOrTab(
+  source: { kind: "pane" | "tab"; workspaceId: string; pageId: string; sessionId: string },
+  target: DropTarget
+): Promise<void> {
+  const state = get(layoutState);
+  const sourcePage = state.workspaces
+    .find((w) => w.id === source.workspaceId)
+    ?.pages.find((p) => p.id === source.pageId);
+  if (!sourcePage) return;
+
+  // No explicit "same page = no-op" guard here, deliberately: a page can
+  // hold multiple panes (e.g. a 2x2 grid), and dragging one pane onto
+  // another pane *within that same page* is a legitimate rearrangement,
+  // not a no-op -- it produces a genuinely different tree (detach pane A,
+  // graft it back in next to pane B in the chosen direction). The one
+  // truly degenerate case -- detaching a page's ONLY pane and dropping it
+  // back onto that same, now-just-removed page -- is already handled
+  // correctly below without a special case: after workspace.removePage
+  // runs, that page id no longer exists in `data` at all, so the
+  // `if (!targetPage) return;` check further down fails to find it and
+  // the whole operation aborts cleanly, before anything is written to the
+  // store or persisted.
+  const detachResult =
+    source.kind === "pane"
+      ? layout.detachLeaf(sourcePage.layout, source.sessionId)
+      : layout.detachTab(sourcePage.layout, source.sessionId);
+  if (!detachResult) return;
+  const { tree: sourceTreeAfterDetach, detached } = detachResult;
+
+  let data = sourceTreeAfterDetach
+    ? workspace.updatePageLayout(state, source.workspaceId, source.pageId, sourceTreeAfterDetach)
+    : workspace.removePage(state, source.workspaceId, source.pageId);
+
+  if (target.kind === "workspace") {
+    const targetWs = data.workspaces.find((w) => w.id === target.workspaceId);
+    if (!targetWs) return;
+    const pageId = crypto.randomUUID();
+    data = workspace.createPage(
+      data,
+      target.workspaceId,
+      pageId,
+      `Page ${targetWs.pages.length + 1}`,
+      detached
+    );
+  } else {
+    const targetPage = data.workspaces
+      .find((w) => w.id === target.workspaceId)
+      ?.pages.find((p) => p.id === target.pageId);
+    if (!targetPage) return;
+    const newTargetTree =
+      target.mode === "center"
+        ? layout.mergeIntoActivePane(targetPage.layout, targetPage.focusedSessionId, detached)
+        : layout.graftLeaf(targetPage.layout, detached, target.mode);
+    data = workspace.updatePageLayout(data, target.workspaceId, target.pageId, newTargetTree);
+  }
+
+  const resolved = workspace.resolveActiveFocus(data);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: resolved.state.workspaces,
+    activeWorkspaceId: resolved.state.activeWorkspaceId,
+    focusedSessionId: resolved.focusedSessionId,
+  }));
+  await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
+}
+
+// Reorders a tab within its own pane's tab bar -- always scoped to the
+// active page, since dragging to reorder only ever happens on something
+// currently rendered on screen.
+export async function reorderTabWithinPane(sessionId: string, targetIndex: number): Promise<void> {
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const newTree = layout.moveTabWithinLeaf(location.tree, sessionId, targetIndex);
+  const data = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
+export async function reorderWorkspaceAction(workspaceId: string, targetIndex: number): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.reorderWorkspace(state, workspaceId, targetIndex);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
+// Moves a page to a new position (reorder within its workspace, or move
+// to a different one). If the moved page was the currently active one,
+// the app follows it -- activeWorkspaceId (and that workspace's own
+// activePageId) switch to keep showing the same page, rather than
+// silently changing what's on screen out from under the user mid-drag.
+export async function movePageAction(pageId: string, targetWorkspaceId: string, targetIndex: number): Promise<void> {
+  const state = get(layoutState);
+  const wasActivePage = workspace.getActivePage(state)?.id === pageId;
+  let data = workspace.movePage(state, pageId, targetWorkspaceId, targetIndex);
+  if (wasActivePage) {
+    data = workspace.switchWorkspace(workspace.switchPage(data, targetWorkspaceId, pageId), targetWorkspaceId);
+  }
+  const resolved = workspace.resolveActiveFocus(data);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: resolved.state.workspaces,
+    activeWorkspaceId: resolved.state.activeWorkspaceId,
+    focusedSessionId: resolved.focusedSessionId,
+  }));
+  await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
+}

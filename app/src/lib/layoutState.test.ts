@@ -44,6 +44,10 @@ import {
   renamePage,
   switchPage,
   closePage,
+  movePaneOrTab,
+  reorderTabWithinPane,
+  reorderWorkspaceAction,
+  movePageAction,
   bootstrap,
   teardown,
 } from "./layoutState";
@@ -473,6 +477,223 @@ describe("closePage", () => {
     expect(backend.killSession).not.toHaveBeenCalledWith("c");
     const state = get(layoutState);
     expect(state.workspaces[0].pages.map((p) => p.id)).toEqual(["page-2"]);
+  });
+});
+
+describe("movePaneOrTab", () => {
+  it("moves a whole pane (all its tabs together) to a different page, grafting right", async () => {
+    // page-1 has TWO panes: a 2-tab leaf ["a","b"] and a separate 1-tab
+    // leaf ["z"]. Dragging the pane anchored at "a" must detach the
+    // WHOLE leaf it belongs to -- both "a" and "b" together -- not just
+    // "a" alone, since detachLeaf detaches the entire pane a session id
+    // is found in.
+    setState(
+      [
+        ws(
+          "ws-1",
+          [
+            page("page-1", {
+              type: "split",
+              direction: "row",
+              sizes: [0.5, 0.5],
+              children: [leaf(["a", "b"]), leaf(["z"])],
+            }),
+            page("page-2", leaf(["c"])),
+          ],
+          "page-1"
+        ),
+      ],
+      "ws-1",
+      "a"
+    );
+
+    await movePaneOrTab(
+      { kind: "pane", workspaceId: "ws-1", pageId: "page-1", sessionId: "a" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-2", mode: "right" }
+    );
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["z"]));
+    expect(state.workspaces[0].pages[1].layout).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [leaf(["c"]), leaf(["a", "b"])],
+    });
+  });
+
+  it("removes the source page entirely when detaching its only pane", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+
+    await movePaneOrTab(
+      { kind: "pane", workspaceId: "ws-1", pageId: "page-1", sessionId: "a" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-2", mode: "left" }
+    );
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages.map((p) => p.id)).toEqual(["page-2"]);
+  });
+
+  it("moves a single tab, merging it as a new tab via mode center", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a", "b"])), page("page-2", leaf(["c"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+
+    await movePaneOrTab(
+      { kind: "tab", workspaceId: "ws-1", pageId: "page-1", sessionId: "b" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-2", mode: "center" }
+    );
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
+    expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["c", "b"], 1));
+  });
+
+  it("creates a new page when the drop target is a workspace, not a specific page", async () => {
+    // Same reasoning as the previous test: page-1 needs two SEPARATE
+    // panes for detaching one of them to leave the page non-empty and to
+    // correctly carry both of the detached pane's tabs together.
+    setState(
+      [
+        ws("ws-1", [
+          page("page-1", {
+            type: "split",
+            direction: "row",
+            sizes: [0.5, 0.5],
+            children: [leaf(["a", "b"]), leaf(["z"])],
+          }),
+        ]),
+        ws("ws-2", []),
+      ],
+      "ws-1",
+      "a"
+    );
+
+    await movePaneOrTab(
+      { kind: "pane", workspaceId: "ws-1", pageId: "page-1", sessionId: "a" },
+      { kind: "workspace", workspaceId: "ws-2" }
+    );
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["z"]));
+    expect(state.workspaces[1].pages).toHaveLength(1);
+    expect(state.workspaces[1].pages[0].layout).toEqual(leaf(["a", "b"]));
+  });
+
+  it("is a no-op when the whole page's only pane is dropped back onto that same, now-empty page", async () => {
+    // page-1's tree is a single leaf holding both "a" and "b" -- one
+    // pane, two tabs -- so dragging that whole pane detaches the page's
+    // entire tree, removing the page. There's no page left to graft back
+    // into, so this resolves via the natural "target page not found"
+    // fallback, not an explicit same-page guard (see movePaneOrTab's own
+    // comment on why there isn't one).
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+
+    await movePaneOrTab(
+      { kind: "pane", workspaceId: "ws-1", pageId: "page-1", sessionId: "a" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "right" }
+    );
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toEqual(leaf(["a", "b"]));
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  it("rearranges panes within the same page when the page has more than one pane", async () => {
+    // page-1 has TWO panes (two separate leaves, "a" and "b"), unlike the
+    // single-pane-two-tabs case above -- dragging pane "a" onto the same
+    // page is a genuine rearrangement here (detach "a", the page still
+    // has "b" left, graft "a" back in next to it), not a no-op.
+    setState(
+      [
+        ws(
+          "ws-1",
+          [
+            page("page-1", {
+              type: "split",
+              direction: "row",
+              sizes: [0.5, 0.5],
+              children: [leaf(["a"]), leaf(["b"])],
+            }),
+          ]
+        ),
+      ],
+      "ws-1",
+      "a"
+    );
+
+    await movePaneOrTab(
+      { kind: "pane", workspaceId: "ws-1", pageId: "page-1", sessionId: "a" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "bottom" }
+    );
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual({
+      type: "split",
+      direction: "column",
+      sizes: [0.5, 0.5],
+      children: [leaf(["b"]), leaf(["a"])],
+    });
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+  });
+});
+
+describe("reorderTabWithinPane", () => {
+  it("reorders a tab within the active page's pane and persists", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b", "c"], 0))])], "ws-1", "a");
+
+    await reorderTabWithinPane("a", 2);
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toEqual(leaf(["b", "c", "a"], 2));
+  });
+});
+
+describe("reorderWorkspaceAction", () => {
+  it("reorders workspaces and persists", async () => {
+    setState([ws("ws-1", []), ws("ws-2", []), ws("ws-3", [])], "ws-1", null);
+
+    await reorderWorkspaceAction("ws-3", 0);
+
+    expect(get(layoutState).workspaces.map((w) => w.id)).toEqual(["ws-3", "ws-1", "ws-2"]);
+  });
+});
+
+describe("movePageAction", () => {
+  it("moves a non-active page without changing activeWorkspaceId", async () => {
+    setState(
+      [
+        ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1"),
+        ws("ws-2", []),
+      ],
+      "ws-1",
+      "a"
+    );
+
+    await movePageAction("page-2", "ws-2", 0);
+
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-1");
+    expect(state.workspaces[1].pages.map((p) => p.id)).toEqual(["page-2"]);
+  });
+
+  it("follows the moved page when it was the active one", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"]))], "page-1"), ws("ws-2", [])],
+      "ws-1",
+      "a"
+    );
+
+    await movePageAction("page-1", "ws-2", 0);
+
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-2");
+    expect(state.workspaces[1].activePageId).toBe("page-1");
+    expect(state.focusedSessionId).toBe("a");
   });
 });
 
