@@ -1,6 +1,8 @@
+export type Direction = "row" | "column";
+
 export type LayoutNode =
   | { type: "leaf"; tabs: string[]; activeTabIndex: number }
-  | { type: "split"; direction: "row" | "column"; children: LayoutNode[]; sizes: number[] };
+  | { type: "split"; direction: Direction; children: LayoutNode[]; sizes: number[] };
 
 export function findLeafPath(node: LayoutNode, sessionId: string, path: number[] = []): number[] | null {
   if (node.type === "leaf") {
@@ -101,6 +103,103 @@ export function closeTab(tree: LayoutNode, sessionId: string): LayoutNode | null
       leaf.activeTabIndex > removedIndex ? leaf.activeTabIndex - 1 : Math.min(leaf.activeTabIndex, tabs.length - 1);
     return { type: "leaf", tabs, activeTabIndex };
   });
+}
+
+// Locates the leaf containing anchorSessionId and removes it from the
+// tree entirely (reusing replaceAtPath's existing collapse-on-null
+// mechanics -- the same removal path closeTab already relies on),
+// returning both the resulting tree (possibly null, if that leaf was the
+// whole tree) and the detached leaf intact, ready to be grafted
+// elsewhere. Returns null if anchorSessionId isn't in the tree at all.
+export function detachLeaf(
+  tree: LayoutNode,
+  anchorSessionId: string
+): { tree: LayoutNode | null; detached: Extract<LayoutNode, { type: "leaf" }> } | null {
+  const path = findLeafPath(tree, anchorSessionId);
+  if (!path) return null;
+  const detached = getNodeAtPath(tree, path);
+  if (detached.type !== "leaf") return null;
+  const newTree = replaceAtPath(tree, path, () => null);
+  return { tree: newTree, detached };
+}
+
+// Removes one tab from its leaf -- collapsing the leaf if it was the last
+// tab (identical to closeTab's own removal semantics) -- and returns a
+// new standalone single-tab leaf holding the removed session as the
+// "detached" piece. Returns null if sessionId isn't in the tree.
+export function detachTab(
+  tree: LayoutNode,
+  sessionId: string
+): { tree: LayoutNode | null; detached: Extract<LayoutNode, { type: "leaf" }> } | null {
+  if (!findLeafPath(tree, sessionId)) return null;
+  const newTree = closeTab(tree, sessionId);
+  const detached: LayoutNode = { type: "leaf", tabs: [sessionId], activeTabIndex: 0 };
+  return { tree: newTree, detached };
+}
+
+export type GraftMode = "left" | "right" | "top" | "bottom";
+
+// Grafts `incoming` onto `targetTree`. If targetTree is null (an empty
+// page), incoming simply becomes the whole tree. Otherwise wraps the
+// existing tree and incoming into a new top-level split -- left/right
+// produce a row split, top/bottom a column split; left/top place
+// incoming first in the children array (so it renders on that side),
+// right/bottom place it last.
+export function graftLeaf(
+  targetTree: LayoutNode | null,
+  incoming: Extract<LayoutNode, { type: "leaf" }>,
+  mode: GraftMode
+): LayoutNode {
+  if (!targetTree) return incoming;
+  const direction: Direction = mode === "left" || mode === "right" ? "row" : "column";
+  const children: LayoutNode[] =
+    mode === "left" || mode === "top" ? [incoming, targetTree] : [targetTree, incoming];
+  return { type: "split", direction, children, sizes: [0.5, 0.5] };
+}
+
+// Appends every tab from `incoming` onto the leaf identified by
+// targetFocusedSessionId (falling back to the tree's first leaf if that
+// id isn't present, or is null), mirroring addTab's "new tab becomes
+// active" behavior for the last of incoming's tabs.
+export function mergeIntoActivePane(
+  targetTree: LayoutNode,
+  targetFocusedSessionId: string | null,
+  incoming: Extract<LayoutNode, { type: "leaf" }>
+): LayoutNode {
+  const anchorId =
+    targetFocusedSessionId && findLeafPath(targetTree, targetFocusedSessionId)
+      ? targetFocusedSessionId
+      : allSessionIds(targetTree)[0];
+  if (anchorId === undefined) return targetTree;
+  const path = findLeafPath(targetTree, anchorId);
+  if (!path) return targetTree;
+  return (
+    replaceAtPath(targetTree, path, (node) => {
+      if (node.type !== "leaf") return node;
+      return { type: "leaf", tabs: [...node.tabs, ...incoming.tabs], activeTabIndex: node.tabs.length };
+    }) ?? targetTree
+  );
+}
+
+// Reorders a tab within its own leaf's tabs array, keeping activeTabIndex
+// pointing at whichever session was active before the move (which may or
+// may not be the session that just moved).
+export function moveTabWithinLeaf(tree: LayoutNode, sessionId: string, targetIndex: number): LayoutNode {
+  const path = findLeafPath(tree, sessionId);
+  if (!path) return tree;
+  return (
+    replaceAtPath(tree, path, (node) => {
+      if (node.type !== "leaf") return node;
+      const activeId = node.tabs[node.activeTabIndex];
+      const currentIndex = node.tabs.indexOf(sessionId);
+      if (currentIndex === -1) return node;
+      const tabs = [...node.tabs];
+      tabs.splice(currentIndex, 1);
+      const clampedTarget = Math.max(0, Math.min(targetIndex, tabs.length));
+      tabs.splice(clampedTarget, 0, sessionId);
+      return { type: "leaf", tabs, activeTabIndex: tabs.indexOf(activeId) };
+    }) ?? tree
+  );
 }
 
 export function switchTab(tree: LayoutNode, sessionId: string): LayoutNode {

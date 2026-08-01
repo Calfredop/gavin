@@ -6,6 +6,11 @@ import {
   splitLeaf,
   addTab,
   closeTab,
+  detachLeaf,
+  detachTab,
+  graftLeaf,
+  mergeIntoActivePane,
+  moveTabWithinLeaf,
   switchTab,
   resizeSplit,
   allSessionIds,
@@ -359,5 +364,182 @@ describe("presets", () => {
         },
       ],
     });
+  });
+});
+
+describe("detachLeaf", () => {
+  it("removes a leaf from a split, returning the shrunken tree and the detached leaf", () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
+        { type: "leaf", tabs: ["b", "c"], activeTabIndex: 0 },
+      ],
+    };
+    const result = detachLeaf(tree, "a");
+    expect(result).not.toBeNull();
+    expect(result?.tree).toEqual({ type: "leaf", tabs: ["b", "c"], activeTabIndex: 0 });
+    expect(result?.detached).toEqual({ type: "leaf", tabs: ["a"], activeTabIndex: 0 });
+  });
+
+  it("returns a null tree when detaching the whole tree's only leaf", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const result = detachLeaf(tree, "a");
+    expect(result?.tree).toBeNull();
+    expect(result?.detached).toEqual({ type: "leaf", tabs: ["a"], activeTabIndex: 0 });
+  });
+
+  it("returns null when the session isn't in the tree", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    expect(detachLeaf(tree, "z")).toBeNull();
+  });
+});
+
+describe("detachTab", () => {
+  it("removes one tab from a multi-tab leaf, returning it as a standalone detached leaf", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 };
+    const result = detachTab(tree, "b");
+    expect(result?.tree).toEqual({ type: "leaf", tabs: ["a"], activeTabIndex: 0 });
+    expect(result?.detached).toEqual({ type: "leaf", tabs: ["b"], activeTabIndex: 0 });
+  });
+
+  it("collapses to null when detaching the last tab in a leaf", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const result = detachTab(tree, "a");
+    expect(result?.tree).toBeNull();
+    expect(result?.detached).toEqual({ type: "leaf", tabs: ["a"], activeTabIndex: 0 });
+  });
+
+  it("returns null when the session isn't in the tree", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    expect(detachTab(tree, "z")).toBeNull();
+  });
+});
+
+describe("graftLeaf", () => {
+  const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+
+  it("becomes the whole tree when the target is null (an empty page)", () => {
+    expect(graftLeaf(null, incoming, "right")).toEqual(incoming);
+  });
+
+  it("wraps into a row split with incoming last, for mode right", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    expect(graftLeaf(target, incoming, "right")).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [target, incoming],
+    });
+  });
+
+  it("wraps into a row split with incoming first, for mode left", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    expect(graftLeaf(target, incoming, "left")).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [incoming, target],
+    });
+  });
+
+  it("wraps into a column split for mode top/bottom", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    expect(graftLeaf(target, incoming, "bottom")).toEqual({
+      type: "split",
+      direction: "column",
+      sizes: [0.5, 0.5],
+      children: [target, incoming],
+    });
+    expect(graftLeaf(target, incoming, "top")).toEqual({
+      type: "split",
+      direction: "column",
+      sizes: [0.5, 0.5],
+      children: [incoming, target],
+    });
+  });
+});
+
+describe("mergeIntoActivePane", () => {
+  it("appends incoming's tabs onto the leaf matching targetFocusedSessionId", () => {
+    const target: LayoutNode = {
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
+        { type: "leaf", tabs: ["b"], activeTabIndex: 0 },
+      ],
+    };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    const result = mergeIntoActivePane(target, "b", incoming);
+    expect(result).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
+        { type: "leaf", tabs: ["b", "new"], activeTabIndex: 1 },
+      ],
+    });
+  });
+
+  it("falls back to the tree's first leaf when targetFocusedSessionId is null", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(mergeIntoActivePane(target, null, incoming)).toEqual({
+      type: "leaf",
+      tabs: ["a", "new"],
+      activeTabIndex: 1,
+    });
+  });
+
+  it("falls back to the tree's first leaf when targetFocusedSessionId is stale", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(mergeIntoActivePane(target, "gone", incoming)).toEqual({
+      type: "leaf",
+      tabs: ["a", "new"],
+      activeTabIndex: 1,
+    });
+  });
+
+  it("merges multiple incoming tabs at once", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["x", "y"], activeTabIndex: 0 };
+    expect(mergeIntoActivePane(target, "a", incoming)).toEqual({
+      type: "leaf",
+      tabs: ["a", "x", "y"],
+      activeTabIndex: 1,
+    });
+  });
+});
+
+describe("moveTabWithinLeaf", () => {
+  it("moves a tab to a later index, keeping the same session active", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b", "c"], activeTabIndex: 1 };
+    expect(moveTabWithinLeaf(tree, "a", 2)).toEqual({ type: "leaf", tabs: ["b", "c", "a"], activeTabIndex: 0 });
+  });
+
+  it("moves a tab to an earlier index", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b", "c"], activeTabIndex: 0 };
+    expect(moveTabWithinLeaf(tree, "c", 0)).toEqual({ type: "leaf", tabs: ["c", "a", "b"], activeTabIndex: 1 });
+  });
+
+  it("moving the active tab itself keeps it active at its new position", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b", "c"], activeTabIndex: 0 };
+    expect(moveTabWithinLeaf(tree, "a", 2)).toEqual({ type: "leaf", tabs: ["b", "c", "a"], activeTabIndex: 2 });
+  });
+
+  it("clamps an out-of-range target index", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 0 };
+    expect(moveTabWithinLeaf(tree, "a", 99)).toEqual({ type: "leaf", tabs: ["b", "a"], activeTabIndex: 1 });
+  });
+
+  it("is a no-op when the session isn't in the tree", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 0 };
+    expect(moveTabWithinLeaf(tree, "z", 0)).toEqual(tree);
   });
 });
