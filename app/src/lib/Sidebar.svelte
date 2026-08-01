@@ -101,10 +101,22 @@
     void createPage(workspaceId, ([id]) => presetSingle(id), 1, `Page ${ws.pages.length + 1}`);
   }
 
+  // Auto-expands a workspace the first time it becomes active, without
+  // fighting a later manual collapse. Gating on activeId actually
+  // *changing* (via lastSyncedActiveId, a plain closure var -- it's
+  // effect-internal bookkeeping, not rendered, so it doesn't need $state)
+  // means `expanded` is only read when activeId itself just changed, not
+  // on every run this effect happens to see -- reading `expanded` inside
+  // an effect that also writes it otherwise re-triggers itself and
+  // silently reverts the very collapse it just observed.
+  let lastSyncedActiveId: string | null = null;
   $effect(() => {
     const activeId = $layoutState.activeWorkspaceId;
-    if (activeId && !expanded.has(activeId)) {
-      expanded = new Set(expanded).add(activeId);
+    if (activeId && activeId !== lastSyncedActiveId) {
+      lastSyncedActiveId = activeId;
+      if (!expanded.has(activeId)) {
+        expanded = new Set(expanded).add(activeId);
+      }
     }
   });
 
