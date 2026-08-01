@@ -13,6 +13,17 @@
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   import { presetSingle } from "./layout";
   import { ChevronRight, ChevronDown, Plus, X } from "@lucide/svelte";
+  import {
+    setDragPayload,
+    getDragKind,
+    getDragPayload,
+    computeDropZone,
+    computeReorderPosition,
+    type DropZone,
+    type ReorderPosition,
+  } from "./dragDrop";
+  import { movePaneOrTab, reorderWorkspaceAction, movePageAction } from "./layoutState";
+  import type { Workspace, Page } from "./workspace";
 
   let expanded: Set<string> = $state(new Set());
 
@@ -27,6 +38,24 @@
   let editingPageId: string | null = $state(null);
   let pageEditValue = $state("");
   let pageEditInput: HTMLInputElement | null = $state(null);
+
+  // Tracks which row is currently being hovered during a drag, and how --
+  // recomputed fresh on every dragover, so a stale highlight left behind
+  // by an imperfect dragleave (a well-known HTML5 DnD fragility -- it
+  // fires when the pointer crosses a CHILD element's boundary too, not
+  // just when truly leaving the row) gets corrected the moment the
+  // pointer moves onto whatever row is actually now under it. Cleared
+  // unconditionally on dragend/drop so nothing lingers after the
+  // operation completes.
+  type HoverState =
+    | { targetId: string; kind: "reorder"; position: ReorderPosition }
+    | { targetId: string; kind: "zone"; zone: DropZone }
+    | { targetId: string; kind: "append" };
+  let hoverState: HoverState | null = $state(null);
+
+  function clearHover(): void {
+    hoverState = null;
+  }
 
   function isExpanded(workspaceId: string): boolean {
     return expanded.has(workspaceId);
@@ -101,6 +130,83 @@
     void createPage(workspaceId, ([id]) => presetSingle(id), 1, `Page ${ws.pages.length + 1}`);
   }
 
+  function handleWorkspaceDragStart(event: DragEvent, workspaceId: string): void {
+    setDragPayload(event, { kind: "workspace", workspaceId });
+  }
+
+  function handleWorkspaceDragOver(event: DragEvent, workspaceId: string): void {
+    const kind = getDragKind(event);
+    if (!kind) return;
+    event.preventDefault();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (kind === "workspace" || kind === "page") {
+      hoverState = { targetId: workspaceId, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };
+    } else {
+      hoverState = { targetId: workspaceId, kind: "append" };
+    }
+  }
+
+  async function handleWorkspaceDrop(event: DragEvent, ws: Workspace, index: number): Promise<void> {
+    event.preventDefault();
+    const payload = getDragPayload(event);
+    clearHover();
+    if (!payload) return;
+    if (payload.kind === "workspace") {
+      // Simple index/index+1 relative to the currently rendered array --
+      // an approximation (dragging past an immediate neighbor can land
+      // one position off in edge cases, since reorderWorkspace removes
+      // the moved item before re-inserting, which can shift indices).
+      // Acceptable for a first cut of a manually-tested drag interaction;
+      // refine later if it feels wrong in practice.
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const position = computeReorderPosition(rect, event.clientY);
+      const targetIndex = position === "before" ? index : index + 1;
+      await reorderWorkspaceAction(payload.workspaceId, targetIndex);
+    } else if (payload.kind === "page") {
+      await movePageAction(payload.pageId, ws.id, ws.pages.length);
+    } else {
+      await movePaneOrTab(
+        { kind: payload.kind, workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
+        { kind: "workspace", workspaceId: ws.id }
+      );
+    }
+  }
+
+  function handlePageDragStart(event: DragEvent, workspaceId: string, pageId: string): void {
+    setDragPayload(event, { kind: "page", workspaceId, pageId });
+  }
+
+  function handlePageDragOver(event: DragEvent, pageId: string): void {
+    const kind = getDragKind(event);
+    if (!kind || kind === "workspace") return;
+    event.preventDefault();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (kind === "page") {
+      hoverState = { targetId: pageId, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };
+    } else {
+      hoverState = { targetId: pageId, kind: "zone", zone: computeDropZone(rect, event.clientX, event.clientY) };
+    }
+  }
+
+  async function handlePageDrop(event: DragEvent, ws: Workspace, page: Page, index: number): Promise<void> {
+    event.preventDefault();
+    const payload = getDragPayload(event);
+    clearHover();
+    if (!payload || payload.kind === "workspace") return;
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    if (payload.kind === "page") {
+      const position = computeReorderPosition(rect, event.clientY);
+      const targetIndex = position === "before" ? index : index + 1;
+      await movePageAction(payload.pageId, ws.id, targetIndex);
+    } else {
+      const zone = computeDropZone(rect, event.clientX, event.clientY);
+      await movePaneOrTab(
+        { kind: payload.kind, workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
+        { kind: "page", workspaceId: ws.id, pageId: page.id, mode: zone }
+      );
+    }
+  }
+
   // Auto-expands a workspace the first time it becomes active, without
   // fighting a later manual collapse. Gating on activeId actually
   // *changing* (via lastSyncedActiveId, a plain closure var -- it's
@@ -166,9 +272,25 @@
     />
   {/if}
   <div class="workspace-list">
-    {#each $layoutState.workspaces as ws (ws.id)}
+    {#each $layoutState.workspaces as ws, wsIndex (ws.id)}
       <div class="workspace-row-group">
-        <div class="workspace-row" class:active={ws.id === $layoutState.activeWorkspaceId}>
+        <div
+          class="workspace-row"
+          class:active={ws.id === $layoutState.activeWorkspaceId}
+          class:drop-before={hoverState?.targetId === ws.id &&
+            hoverState.kind === "reorder" &&
+            hoverState.position === "before"}
+          class:drop-after={hoverState?.targetId === ws.id &&
+            hoverState.kind === "reorder" &&
+            hoverState.position === "after"}
+          class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
+          draggable="true"
+          ondragstart={(e) => handleWorkspaceDragStart(e, ws.id)}
+          ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
+          ondragleave={clearHover}
+          ondragend={clearHover}
+          ondrop={(e) => handleWorkspaceDrop(e, ws, wsIndex)}
+        >
           <button
             class="expand-toggle"
             aria-label={isExpanded(ws.id) ? "Collapse" : "Expand"}
@@ -222,8 +344,38 @@
         </div>
         {#if isExpanded(ws.id)}
           <div class="page-list">
-            {#each ws.pages as page (page.id)}
-              <div class="page-row" class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}>
+            {#each ws.pages as page, pageIndex (page.id)}
+              <div
+                class="page-row"
+                class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}
+                class:drop-before={hoverState?.targetId === page.id &&
+                  hoverState.kind === "reorder" &&
+                  hoverState.position === "before"}
+                class:drop-after={hoverState?.targetId === page.id &&
+                  hoverState.kind === "reorder" &&
+                  hoverState.position === "after"}
+                class:drop-zone-left={hoverState?.targetId === page.id &&
+                  hoverState.kind === "zone" &&
+                  hoverState.zone === "left"}
+                class:drop-zone-right={hoverState?.targetId === page.id &&
+                  hoverState.kind === "zone" &&
+                  hoverState.zone === "right"}
+                class:drop-zone-top={hoverState?.targetId === page.id &&
+                  hoverState.kind === "zone" &&
+                  hoverState.zone === "top"}
+                class:drop-zone-bottom={hoverState?.targetId === page.id &&
+                  hoverState.kind === "zone" &&
+                  hoverState.zone === "bottom"}
+                class:drop-zone-center={hoverState?.targetId === page.id &&
+                  hoverState.kind === "zone" &&
+                  hoverState.zone === "center"}
+                draggable="true"
+                ondragstart={(e) => handlePageDragStart(e, ws.id, page.id)}
+                ondragover={(e) => handlePageDragOver(e, page.id)}
+                ondragleave={clearHover}
+                ondragend={clearHover}
+                ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
+              >
                 {#if editingPageId === page.id}
                   <input
                     class="page-name-input"
@@ -365,6 +517,32 @@
   .page-row.active {
     background: #1e1e1e;
     color: #fff;
+  }
+  .workspace-row.drop-before,
+  .page-row.drop-before {
+    box-shadow: inset 0 2px 0 0 #4a9eff;
+  }
+  .workspace-row.drop-after,
+  .page-row.drop-after {
+    box-shadow: inset 0 -2px 0 0 #4a9eff;
+  }
+  .workspace-row.drop-append {
+    background: #2d4a6a;
+  }
+  .page-row.drop-zone-left {
+    box-shadow: inset 2px 0 0 0 #4a9eff;
+  }
+  .page-row.drop-zone-right {
+    box-shadow: inset -2px 0 0 0 #4a9eff;
+  }
+  .page-row.drop-zone-top {
+    box-shadow: inset 0 2px 0 0 #4a9eff;
+  }
+  .page-row.drop-zone-bottom {
+    box-shadow: inset 0 -2px 0 0 #4a9eff;
+  }
+  .page-row.drop-zone-center {
+    background: #2d4a6a;
   }
   .page-name {
     flex: 1 1 auto;
