@@ -2,6 +2,7 @@ mod osc;
 mod pty;
 mod registry;
 mod server;
+mod status;
 
 use registry::Registry;
 use server::SessionManager;
