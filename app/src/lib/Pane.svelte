@@ -14,6 +14,15 @@
   import { X, Plus } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
   import { folderName } from "./paths";
+  import {
+    setDragPayload,
+    getDragKind,
+    getDragPayload,
+    computeDropZone,
+    type DropZone,
+  } from "./dragDrop";
+  import { movePaneOrTab, reorderTabWithinPane } from "./layoutState";
+  import { getActiveWorkspace, getActivePage } from "./workspace";
 
   let { leaf }: { leaf: Extract<LayoutNode, { type: "leaf" }> } = $props();
 
@@ -33,6 +42,14 @@
   let editingSessionId: string | null = $state(null);
   let editValue = $state("");
   let editInput: HTMLInputElement | null = $state(null);
+
+  // Hover feedback for the two different drop surfaces this pane offers:
+  // contentDropZone for the 5-zone overlay on .content (grafting from
+  // elsewhere, cross-page or same-page), tabReorderState for the
+  // before/after insertion indicator when dragging a tab across this
+  // pane's own tab-bar.
+  let contentDropZone: DropZone | null = $state(null);
+  let tabReorderState: { sessionId: string; position: "before" | "after" } | null = $state(null);
 
   export function fitAll(): void {
     for (const id of leaf.tabs) {
@@ -66,6 +83,99 @@
     editingSessionId = null;
   }
 
+  function activeLocation(): { workspaceId: string; pageId: string } | null {
+    const ws = getActiveWorkspace($layoutState);
+    const page = getActivePage($layoutState);
+    if (!ws || !page) return null;
+    return { workspaceId: ws.id, pageId: page.id };
+  }
+
+  function handlePaneDragStart(event: DragEvent): void {
+    const location = activeLocation();
+    if (!location) return;
+    setDragPayload(event, { kind: "pane", workspaceId: location.workspaceId, pageId: location.pageId, sessionId: active });
+  }
+
+  function handleTabDragStart(event: DragEvent, sessionId: string): void {
+    // Prevents this event from also triggering the parent .tab-bar's own
+    // dragstart handler via bubbling -- see this task's module-level note
+    // on why that would silently turn a single-tab drag into a
+    // whole-pane drag.
+    event.stopPropagation();
+    const location = activeLocation();
+    if (!location) return;
+    setDragPayload(event, { kind: "tab", workspaceId: location.workspaceId, pageId: location.pageId, sessionId });
+  }
+
+  function handleTabDragOver(event: DragEvent, sessionId: string): void {
+    if (getDragKind(event) !== "tab") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = (event.clientX - rect.left) / rect.width;
+    tabReorderState = { sessionId, position: x < 0.5 ? "before" : "after" };
+  }
+
+  function clearTabReorder(): void {
+    tabReorderState = null;
+  }
+
+  async function handleTabDrop(event: DragEvent, sessionId: string, index: number): Promise<void> {
+    event.preventDefault();
+    event.stopPropagation();
+    const payload = getDragPayload(event);
+    tabReorderState = null;
+    if (!payload || payload.kind !== "tab") return;
+    const location = activeLocation();
+    if (!location) return;
+    if (
+      leaf.tabs.includes(payload.sessionId) &&
+      payload.workspaceId === location.workspaceId &&
+      payload.pageId === location.pageId
+    ) {
+      // Reordering within this same pane's own tab bar.
+      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+      const x = (event.clientX - rect.left) / rect.width;
+      const targetIndex = x < 0.5 ? index : index + 1;
+      await reorderTabWithinPane(payload.sessionId, targetIndex);
+    } else {
+      // A tab from elsewhere, dropped onto a specific tab in this pane --
+      // merge it in as a new tab here, same as dropping on .content's
+      // center zone.
+      await movePaneOrTab(
+        { kind: "tab", workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
+        { kind: "page", workspaceId: location.workspaceId, pageId: location.pageId, mode: "center" }
+      );
+    }
+  }
+
+  function handleContentDragOver(event: DragEvent): void {
+    const kind = getDragKind(event);
+    if (kind !== "pane" && kind !== "tab") return;
+    event.preventDefault();
+    const rect = containerEl.getBoundingClientRect();
+    contentDropZone = computeDropZone(rect, event.clientX, event.clientY);
+  }
+
+  function clearContentDrop(): void {
+    contentDropZone = null;
+  }
+
+  async function handleContentDrop(event: DragEvent): Promise<void> {
+    event.preventDefault();
+    const payload = getDragPayload(event);
+    clearContentDrop();
+    if (!payload || (payload.kind !== "pane" && payload.kind !== "tab")) return;
+    const location = activeLocation();
+    if (!location) return;
+    const rect = containerEl.getBoundingClientRect();
+    const zone = computeDropZone(rect, event.clientX, event.clientY);
+    await movePaneOrTab(
+      { kind: payload.kind, workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
+      { kind: "page", workspaceId: location.workspaceId, pageId: location.pageId, mode: zone }
+    );
+  }
+
   $effect(() => {
     if (editingSessionId !== null && editInput) {
       editInput.focus();
@@ -87,12 +197,20 @@
 </script>
 
 <div class="pane-wrapper">
-  <div class="tab-bar">
-    {#each leaf.tabs as sessionId (sessionId)}
+  <div class="tab-bar" draggable="true" ondragstart={handlePaneDragStart}>
+    {#each leaf.tabs as sessionId, tabIndex (sessionId)}
       <button
         class="tab"
         class:active={sessionId === active}
         class:focused={sessionId === active && isFocused}
+        class:drop-before={tabReorderState?.sessionId === sessionId && tabReorderState.position === "before"}
+        class:drop-after={tabReorderState?.sessionId === sessionId && tabReorderState.position === "after"}
+        draggable="true"
+        ondragstart={(e) => handleTabDragStart(e, sessionId)}
+        ondragover={(e) => handleTabDragOver(e, sessionId)}
+        ondragleave={clearTabReorder}
+        ondragend={clearTabReorder}
+        ondrop={(e) => handleTabDrop(e, sessionId, tabIndex)}
         onclick={() => switchToTab(sessionId)}
       >
         {#if editingSessionId === sessionId}
@@ -136,7 +254,20 @@
       <Plus size={14} />
     </button>
   </div>
-  <div class="content" bind:this={containerEl} onmousedown={() => focusPane(active)}>
+  <div
+    class="content"
+    class:drop-zone-left={contentDropZone === "left"}
+    class:drop-zone-right={contentDropZone === "right"}
+    class:drop-zone-top={contentDropZone === "top"}
+    class:drop-zone-bottom={contentDropZone === "bottom"}
+    class:drop-zone-center={contentDropZone === "center"}
+    bind:this={containerEl}
+    onmousedown={() => focusPane(active)}
+    ondragover={handleContentDragOver}
+    ondragleave={clearContentDrop}
+    ondragend={clearContentDrop}
+    ondrop={handleContentDrop}
+  >
     {#each leaf.tabs as sessionId (sessionId)}
       <TerminalPane
         bind:this={paneRefs[sessionId]}
@@ -185,6 +316,12 @@
   .tab.focused {
     border-top-color: #4a9eff;
   }
+  .tab.drop-before {
+    box-shadow: inset 2px 0 0 0 #4a9eff;
+  }
+  .tab.drop-after {
+    box-shadow: inset -2px 0 0 0 #4a9eff;
+  }
   .tab-label {
     max-width: 120px;
     overflow: hidden;
@@ -221,5 +358,31 @@
     position: relative;
     flex: 1 1 auto;
     overflow: hidden;
+  }
+  .content.drop-zone-left::after,
+  .content.drop-zone-right::after,
+  .content.drop-zone-top::after,
+  .content.drop-zone-bottom::after,
+  .content.drop-zone-center::after {
+    content: "";
+    position: absolute;
+    background: rgba(74, 158, 255, 0.35);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .content.drop-zone-left::after {
+    inset: 0 75% 0 0;
+  }
+  .content.drop-zone-right::after {
+    inset: 0 0 0 75%;
+  }
+  .content.drop-zone-top::after {
+    inset: 0 0 75% 0;
+  }
+  .content.drop-zone-bottom::after {
+    inset: 75% 0 0 0;
+  }
+  .content.drop-zone-center::after {
+    inset: 25%;
   }
 </style>
