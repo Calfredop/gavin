@@ -539,6 +539,9 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 Response::CwdChanged { id, cwd } => {
                     let _ = reader_app_handle.emit("cwd-changed", (id, cwd));
                 }
+                Response::StatusChanged { id, status } => {
+                    let _ = reader_app_handle.emit("session-status-changed", (id, status));
+                }
                 Response::Error { message } => {
                     let _ = reader_app_handle.emit("daemon-error", message);
                 }
