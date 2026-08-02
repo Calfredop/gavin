@@ -17,6 +17,14 @@ pub struct Page {
     pub focused_session_id: Option<String>,
 }
 
+/// Well-known id for the always-present "Unfiled" pseudo-workspace -- a
+/// pinned, non-closable, non-renameable workspace for pages the user
+/// hasn't organized into a real workspace yet. `session.rs`'s bootstrap()
+/// ensures a workspace with this exact id always exists. Must match the
+/// frontend's own copy of this constant exactly
+/// (app/src/lib/workspace.ts's UNFILED_WORKSPACE_ID).
+pub const UNFILED_WORKSPACE_ID: &str = "__unfiled__";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {

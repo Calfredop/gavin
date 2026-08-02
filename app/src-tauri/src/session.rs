@@ -448,8 +448,30 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let session_names = config.session_names;
 
     let mut workspaces = config.workspaces;
+    // A truly fresh install (no config.json yet, or one from before this
+    // feature) has zero workspaces -- in that case the app should open
+    // directly into the newly-created Unfiled workspace rather than the
+    // usual "no workspace, create one" empty state. An install that
+    // already has real workspaces keeps whatever was active, and Unfiled
+    // is just silently added to the list without disturbing it.
+    let had_no_workspaces = workspaces.is_empty();
+    if !workspaces.iter().any(|w| w.id == crate::config::UNFILED_WORKSPACE_ID) {
+        workspaces.insert(
+            0,
+            Workspace {
+                id: crate::config::UNFILED_WORKSPACE_ID.to_string(),
+                name: "Unfiled".to_string(),
+                pages: vec![],
+                active_page_id: None,
+            },
+        );
+    }
     resolve_workspaces(&mut workspaces, &command_conn)?;
-    let active_workspace_id = config.active_workspace_id;
+    let active_workspace_id = if had_no_workspaces {
+        Some(crate::config::UNFILED_WORKSPACE_ID.to_string())
+    } else {
+        config.active_workspace_id
+    };
     let workspaces_data = WorkspacesData { workspaces, active_workspace_id };
     persist_workspaces(&config_dir, &workspaces_data, session_names.clone())?;
 

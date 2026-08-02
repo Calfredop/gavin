@@ -20,6 +20,13 @@ export interface WorkspacesData {
   activeWorkspaceId: string | null;
 }
 
+// Well-known id for the always-present "Unfiled" pseudo-workspace -- a
+// pinned, non-closable, non-renameable workspace for pages the user
+// hasn't organized into a real workspace yet. The Rust bootstrap ensures
+// a workspace with this exact id always exists in WorkspacesData; must
+// match config.rs's own copy of this constant exactly.
+export const UNFILED_WORKSPACE_ID = "__unfiled__";
+
 export function createWorkspace(state: WorkspacesData, id: string, name: string): WorkspacesData {
   const workspace: Workspace = { id, name, pages: [], activePageId: null };
   return { workspaces: [...state.workspaces, workspace], activeWorkspaceId: id };
@@ -41,6 +48,7 @@ export function switchWorkspace(state: WorkspacesData, workspaceId: string): Wor
 // silent-fallback rule already used throughout this app for stale/removed
 // ids.
 export function removeWorkspace(state: WorkspacesData, workspaceId: string): WorkspacesData {
+  if (workspaceId === UNFILED_WORKSPACE_ID) return state;
   const workspaces = state.workspaces.filter((w) => w.id !== workspaceId);
   const activeWorkspaceId =
     state.activeWorkspaceId === workspaceId ? (workspaces[0]?.id ?? null) : state.activeWorkspaceId;

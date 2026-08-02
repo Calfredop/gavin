@@ -19,6 +19,7 @@ import {
   resolveFocusForPage,
   setPageFocus,
   resolveActiveFocus,
+  UNFILED_WORKSPACE_ID,
   type WorkspacesData,
   type Workspace,
   type Page,
@@ -75,6 +76,11 @@ describe("removeWorkspace", () => {
     const switched = switchWorkspace(state, "ws-1");
     const removed = removeWorkspace(switched, "ws-2");
     expect(removed.activeWorkspaceId).toBe("ws-1");
+  });
+
+  it("is a no-op when targeting the pinned Unfiled workspace", () => {
+    const state = createWorkspace(empty, UNFILED_WORKSPACE_ID, "Unfiled");
+    expect(removeWorkspace(state, UNFILED_WORKSPACE_ID)).toEqual(state);
   });
 });
 
