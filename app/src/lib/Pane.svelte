@@ -199,7 +199,7 @@
 </script>
 
 <div class="pane-wrapper">
-  <div class="tab-bar" draggable="true" ondragstart={handlePaneDragStart}>
+  <div class="tab-bar" draggable={editingSessionId === null} ondragstart={handlePaneDragStart}>
     {#each leaf.tabs as sessionId, tabIndex (sessionId)}
       <button
         class="tab"
