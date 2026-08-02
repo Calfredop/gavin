@@ -262,11 +262,22 @@ impl SessionManager {
         // across the whole body, which would otherwise keep `registry`
         // locked for the blocking write -- violating this file's rule of
         // never holding a lock across blocking I/O.
-        let baseline_cwd = self.registry.lock().unwrap().get(id).ok().flatten().map(|r| r.cwd);
-        if let Some(cwd) = baseline_cwd {
+        // Both baselines (cwd and status) come from the same single
+        // registry lookup, extending the existing lock-across-blocking-io
+        // rule the comment above this block already established: the
+        // lookup is bound to an owned value in its own `let` first,
+        // rather than inlined into the `if let` scrutinee, so the
+        // MutexGuard temporary doesn't get lifetime-extended across the
+        // blocking writes below.
+        let baseline_record = self.registry.lock().unwrap().get(id).ok().flatten();
+        if let Some(record) = baseline_record {
             let _ = write_message(
                 &mut *writer.lock().unwrap(),
-                &Response::CwdChanged { id: id.to_string(), cwd },
+                &Response::CwdChanged { id: id.to_string(), cwd: record.cwd },
+            );
+            let _ = write_message(
+                &mut *writer.lock().unwrap(),
+                &Response::StatusChanged { id: id.to_string(), status: record.status.as_str().to_string() },
             );
         }
 
@@ -857,6 +868,44 @@ mod tests {
                 assert_eq!(cwd, "/tmp");
             }
             other => panic!("expected CwdChanged as the first message after Attach, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_sends_a_baseline_status_changed_immediately_after_the_baseline_cwd_changed() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+
+        let first: Response = read_message(&mut reader).unwrap().unwrap();
+        assert!(matches!(first, Response::CwdChanged { .. }), "expected CwdChanged first, got {first:?}");
+
+        let second: Response = read_message(&mut reader).unwrap().unwrap();
+        match second {
+            Response::StatusChanged { id: rid, status } => {
+                assert_eq!(rid, id);
+                assert_eq!(status, "idle");
+            }
+            other => panic!("expected StatusChanged as the second message after Attach, got {other:?}"),
         }
     }
 
