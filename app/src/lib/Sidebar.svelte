@@ -149,6 +149,11 @@
     // a dragged workspace has nowhere meaningful to land on it -- ignore.
     if (kind === "workspace" && workspaceId === UNFILED_WORKSPACE_ID) return;
     event.preventDefault();
+    // Without an explicit dropEffect, the browser shows the "copy" (+)
+    // cursor even though setDragPayload set effectAllowed to "move" --
+    // dropEffect has to be set on the target's dragover, not just
+    // effectAllowed on the source's dragstart.
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (kind === "workspace" || kind === "page") {
       hoverState = { targetId: workspaceId, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };
@@ -196,6 +201,7 @@
     const kind = getDragKind(event);
     if (!kind || kind === "workspace") return;
     event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (kind === "page") {
       hoverState = { targetId: pageId, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };

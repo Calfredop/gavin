@@ -111,6 +111,11 @@
     if (getDragKind(event) !== "tab") return;
     event.preventDefault();
     event.stopPropagation();
+    // Without an explicit dropEffect, the browser shows the "copy" (+)
+    // cursor even though setDragPayload set effectAllowed to "move" --
+    // dropEffect has to be set on the target's dragover, not just
+    // effectAllowed on the source's dragstart.
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const x = (event.clientX - rect.left) / rect.width;
     tabReorderState = { sessionId, position: x < 0.5 ? "before" : "after" };
@@ -155,6 +160,7 @@
     const kind = getDragKind(event);
     if (kind !== "pane" && kind !== "tab") return;
     event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const rect = containerEl.getBoundingClientRect();
     contentDropZone = computeDropZone(rect, event.clientX, event.clientY);
   }
