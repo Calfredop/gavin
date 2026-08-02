@@ -53,6 +53,14 @@ struct HeuristicInner {
     last_activity: Instant,
     /// True = the heuristic currently considers this session Working.
     heuristic_working: bool,
+    /// True once a bare BEL has fired WaitingForInput and nothing has
+    /// ended it yet. The companion thread's quiet-period idle check must
+    /// not downgrade WaitingForInput to Idle just because output has
+    /// also stopped -- that's the expected, common case (the shell IS
+    /// quiet because it's waiting on the user), not a signal the wait is
+    /// over. Cleared only by renewed output activity, in the same
+    /// reactive block that would otherwise re-fire Working.
+    waiting_for_input: bool,
     /// Set false right before the pump thread's final Exited update, so
     /// the companion thread stops polling promptly once the session
     /// ends rather than spinning forever on a dead session.
@@ -98,8 +106,12 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
         if !inner.running {
             return;
         }
-        if !inner.heuristic_working {
-            // Already considered idle; nothing to re-check.
+        if !inner.heuristic_working || inner.waiting_for_input {
+            // Already considered idle, or currently waiting for input --
+            // waiting_for_input can only be cleared by renewed output
+            // activity (handled in the pump loop's reactive check) or a
+            // permanent switch to OSC-133-only detection; a quiet period
+            // alone must never silently downgrade it to idle.
             continue;
         }
         if inner.last_activity.elapsed() >= HEURISTIC_QUIET_PERIOD {
@@ -275,10 +287,15 @@ impl SessionManager {
                 &mut *writer.lock().unwrap(),
                 &Response::CwdChanged { id: id.to_string(), cwd: record.cwd },
             );
-            let _ = write_message(
-                &mut *writer.lock().unwrap(),
-                &Response::StatusChanged { id: id.to_string(), status: record.status.as_str().to_string() },
-            );
+            // StatusChanged is never sent for Exited -- SessionExited
+            // already covers session death, and the frontend's status
+            // union has no "exited" member.
+            if record.status != SessionStatus::Exited {
+                let _ = write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::StatusChanged { id: id.to_string(), status: record.status.as_str().to_string() },
+                );
+            }
         }
 
         // Replay buffered output BEFORE registering the writer, so a
@@ -344,6 +361,7 @@ impl SessionManager {
                 inner: Mutex::new(HeuristicInner {
                     last_activity: Instant::now(),
                     heuristic_working: false, // sessions start Idle
+                    waiting_for_input: false,
                     running: true,
                 }),
                 seen_osc133: AtomicBool::new(false),
@@ -382,13 +400,20 @@ impl SessionManager {
                         {
                             let mut inner = heuristic.inner.lock().unwrap();
                             inner.last_activity = Instant::now();
-                            if !heuristic.seen_osc133.load(Ordering::SeqCst) && !inner.heuristic_working {
-                                // Was idle (or never yet working), now has
-                                // fresh output -- fire Working. Emitted
-                                // while still holding `inner` so this can
-                                // never be reordered relative to a
-                                // concurrent companion-thread decision.
+                            if !heuristic.seen_osc133.load(Ordering::SeqCst)
+                                && (!inner.heuristic_working || inner.waiting_for_input)
+                            {
+                                // Was idle, waiting for input, or never
+                                // yet working -- now has fresh output,
+                                // fire Working. Emitted while still
+                                // holding `inner` so this can never be
+                                // reordered relative to a concurrent
+                                // companion-thread decision. Renewed
+                                // output activity is what ends
+                                // waiting_for_input in heuristic mode, so
+                                // this also clears that flag.
                                 inner.heuristic_working = true;
+                                inner.waiting_for_input = false;
                                 persist_and_emit_status(&manager, &id, SessionStatus::Working);
                             }
                         }
@@ -404,6 +429,7 @@ impl SessionManager {
                                     persist_and_emit_status(&manager, &id, SessionStatus::Working);
                                 }
                                 StatusEvent::WaitingForInput => {
+                                    heuristic.inner.lock().unwrap().waiting_for_input = true;
                                     persist_and_emit_status(&manager, &id, SessionStatus::WaitingForInput);
                                 }
                             }
@@ -910,6 +936,64 @@ mod tests {
     }
 
     #[test]
+    fn attach_never_sends_a_baseline_status_changed_for_an_exited_session() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        // Attach once, then make the shell exit so the pump thread's
+        // teardown persists SessionStatus::Exited to the registry (this
+        // does not remove the registry record -- only kill_session does).
+        let mut stream1 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
+
+        let mut reader1 = BufReader::new(stream1.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline && !exited {
+            let resp: Response = read_message(&mut reader1).unwrap().unwrap();
+            if let Response::SessionExited { id: rid, .. } = resp {
+                if rid == id {
+                    exited = true;
+                }
+            }
+        }
+        assert!(exited, "session never reported SessionExited");
+
+        // Now attach a second, fresh connection to the now-exited
+        // session and confirm the baseline never includes StatusChanged.
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+
+        let mut reader2 = BufReader::new(stream2.try_clone().unwrap());
+        reader2.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        loop {
+            match read_message::<_, Response>(&mut reader2) {
+                Ok(Some(Response::StatusChanged { id: rid, .. })) if rid == id => {
+                    panic!("attach() sent a baseline StatusChanged for an exited session");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
+            }
+        }
+    }
+
+    #[test]
     fn attach_relays_cwd_changed_when_pty_output_contains_osc7() {
         let (socket_path, _dir) = start_test_server();
 
@@ -1162,6 +1246,76 @@ mod tests {
                 }
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
+            }
+        }
+    }
+
+    #[test]
+    fn waiting_for_input_survives_a_full_quiet_period_in_heuristic_mode() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        // No OSC 133 markers at all -- stays in heuristic mode for its
+        // whole life. Rings a bare bell, then genuinely blocks on `read`
+        // with nothing else printed -- unlike a bare `printf '\007'\n`
+        // alone, this doesn't return control to the interactive shell
+        // (which would otherwise immediately redraw its own PS1 prompt
+        // right after the bell, and that redraw is itself legitimate
+        // "renewed output activity" that correctly ends waiting_for_input
+        // by this fix's own design -- see HeuristicInner::waiting_for_input's
+        // doc comment). This mirrors the real scenario the fix targets:
+        // a program (e.g. a confirmation prompt) that dings a bell and
+        // then sits fully silent waiting on stdin, with no shell prompt
+        // reappearing until the user responds.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput { id: id.clone(), data: "printf '\\007'; read _unused\n".to_string() },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_waiting = false;
+        while std::time::Instant::now() < deadline && !saw_waiting {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::StatusChanged { id: rid, status } = resp {
+                if rid == id && status == "waiting_for_input" {
+                    saw_waiting = true;
+                }
+            }
+        }
+        assert!(saw_waiting, "never saw the initial waiting_for_input from the bare BEL");
+
+        // Wait well past HEURISTIC_QUIET_PERIOD (2s) with no further
+        // output -- before the fix, the companion thread would silently
+        // downgrade this to idle. Drain anything that arrives in a
+        // bounded window afterward and assert none of it is that.
+        std::thread::sleep(Duration::from_secs(3));
+        reader.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    assert_ne!(status, "idle", "heuristic silently downgraded waiting_for_input to idle after a quiet period");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
             }
         }
     }

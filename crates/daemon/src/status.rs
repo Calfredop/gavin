@@ -1,9 +1,27 @@
 use std::time::Duration;
 
 /// Cap on how many bytes of a single OSC sequence's number or payload
-/// this scanner will accumulate before giving up and resetting to Idle --
-/// the same runaway-sequence protection OscCwdScanner already has.
+/// this scanner will actually retain. A sequence longer than this is
+/// still tracked and scanned for its terminator -- only bytes beyond the
+/// cap are discarded rather than buffered, so a legitimate but long
+/// BEL-terminated sequence (OSC 8 hyperlinks with long URLs, OSC 52
+/// clipboard writes, OSC 1337 inline images) is still correctly consumed
+/// and its own terminator is never misclassified as a standalone
+/// attention-bell. This cap only bounds memory -- it does not abandon
+/// the sequence; see MAX_SEQUENCE_SCAN_LEN for that.
 const MAX_SEQUENCE_LEN: usize = 256;
+
+/// Hard backstop against a sequence that never terminates at all -- a
+/// corrupted stream, or deliberately malicious input. Far larger than
+/// any realistic legitimate OSC sequence, so it only triggers for
+/// genuinely pathological input. Unlike MAX_SEQUENCE_LEN, exceeding this
+/// really does abandon the sequence and reset to Idle, mirroring
+/// osc.rs's own cap-then-reset-to-Idle behavior, so the scanner can't be
+/// left stuck waiting indefinitely for a terminator that may never come.
+/// Tracked via a running total-bytes-consumed counter (ScanState::InOsc's
+/// `scanned` field) independent of MAX_SEQUENCE_LEN's buffer cap, since
+/// the buffers themselves stop growing at that cap.
+const MAX_SEQUENCE_SCAN_LEN: usize = 65536;
 
 /// Emitted by `StatusScanner::feed` for each status-relevant signal found
 /// in a chunk of raw PTY output, in the order they occurred.
@@ -42,7 +60,7 @@ enum ScanState {
     SawEsc,
     /// Inside an OSC sequence: accumulating the OSC number until the
     /// first `;`, then the payload until a BEL or ST (ESC \) terminator.
-    InOsc { number: Vec<u8>, in_payload: bool, payload: Vec<u8>, saw_esc: bool },
+    InOsc { number: Vec<u8>, in_payload: bool, payload: Vec<u8>, saw_esc: bool, scanned: usize },
 }
 
 impl StatusScanner {
@@ -70,6 +88,7 @@ impl StatusScanner {
                             in_payload: false,
                             payload: Vec::new(),
                             saw_esc: false,
+                            scanned: 0,
                         };
                     } else if b == 0x1b {
                         // A stray repeated ESC before the introducer --
@@ -84,7 +103,18 @@ impl StatusScanner {
                         self.state = ScanState::Idle;
                     }
                 }
-                ScanState::InOsc { number, in_payload, payload, saw_esc } => {
+                ScanState::InOsc { number, in_payload, payload, saw_esc, scanned } => {
+                    *scanned += 1;
+                    if *scanned > MAX_SEQUENCE_SCAN_LEN {
+                        // Never found a terminator after an extremely
+                        // long run -- give up rather than stay stuck
+                        // forever. This byte is dropped rather than
+                        // reprocessed from Idle, matching how the
+                        // scanner already treats any other abandoned
+                        // sequence.
+                        self.state = ScanState::Idle;
+                        continue;
+                    }
                     if *saw_esc {
                         if b == b'\\' {
                             Self::emit_if_133(number, payload, &mut found);
@@ -102,8 +132,8 @@ impl StatusScanner {
                                 self.state = ScanState::Idle;
                             } else if b == 0x1b {
                                 *saw_esc = true;
-                            } else if Self::push_byte(number, in_payload, payload, b) {
-                                self.state = ScanState::Idle;
+                            } else {
+                                Self::push_byte(number, in_payload, payload, b);
                             }
                         }
                         continue;
@@ -115,8 +145,8 @@ impl StatusScanner {
                         *saw_esc = true;
                     } else if !*in_payload && b == b';' {
                         *in_payload = true;
-                    } else if Self::push_byte(number, in_payload, payload, b) {
-                        self.state = ScanState::Idle;
+                    } else {
+                        Self::push_byte(number, in_payload, payload, b);
                     }
                 }
             }
@@ -124,36 +154,31 @@ impl StatusScanner {
         found
     }
 
-    /// Pushes a byte into the number or payload buffer as appropriate.
-    /// Returns true if the sequence exceeded MAX_SEQUENCE_LEN and should
-    /// be abandoned (caller must reset state to Idle) -- mirrors
-    /// osc.rs's own cap-then-reset-to-Idle behavior, so a
-    /// malformed/runaway sequence can't grow forever NOR leave the
-    /// scanner stuck waiting indefinitely for a terminator that may
-    /// never come.
-    fn push_byte(number: &mut Vec<u8>, in_payload: &mut bool, payload: &mut Vec<u8>, b: u8) -> bool {
+    /// Pushes a byte into the number or payload buffer as appropriate,
+    /// silently discarding bytes beyond MAX_SEQUENCE_LEN rather than
+    /// growing the buffer further -- the sequence keeps being scanned
+    /// for its terminator regardless; only accumulation stops. (The
+    /// separate MAX_SEQUENCE_SCAN_LEN backstop in feed() is what
+    /// eventually abandons a sequence that truly never terminates.)
+    fn push_byte(number: &mut Vec<u8>, in_payload: &mut bool, payload: &mut Vec<u8>, b: u8) {
         if *in_payload {
-            if payload.len() >= MAX_SEQUENCE_LEN {
-                return true;
+            if payload.len() < MAX_SEQUENCE_LEN {
+                payload.push(b);
             }
-            payload.push(b);
         } else if b.is_ascii_digit() {
-            if number.len() >= MAX_SEQUENCE_LEN {
-                return true;
+            if number.len() < MAX_SEQUENCE_LEN {
+                number.push(b);
             }
-            number.push(b);
         } else {
             // Malformed OSC-number syntax (a non-digit before any ';')
             // -- be lenient: start treating everything as payload from
             // here, so the terminator is still found correctly even
             // though this sequence won't be recognized as OSC 133.
             *in_payload = true;
-            if payload.len() >= MAX_SEQUENCE_LEN {
-                return true;
+            if payload.len() < MAX_SEQUENCE_LEN {
+                payload.push(b);
             }
-            payload.push(b);
         }
-        false
     }
 
     fn emit_if_133(number: &[u8], payload: &[u8], found: &mut Vec<StatusEvent>) {
@@ -172,10 +197,10 @@ impl StatusScanner {
 
 /// How long a session must go without any new PTY output before the
 /// output-activity heuristic (used only while a session has never seen a
-/// valid OSC 133 marker) considers it idle again. Re-exported from this
-/// module since it's the detection layer's own concept, even though the
-/// actual timer mechanism lives in server.rs (see that file's own
-/// heuristic-timer wiring, added in Task 3 of this plan).
+/// valid OSC 133 marker) considers it idle again. Defined here since
+/// it's the detection layer's own concept, even though the actual timer
+/// mechanism lives in server.rs (see that file's own heuristic-timer
+/// wiring, added in Task 3 of this plan).
 pub const HEURISTIC_QUIET_PERIOD: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
@@ -289,7 +314,11 @@ mod tests {
     fn abandons_a_sequence_that_never_terminates_without_growing_forever() {
         let mut scanner = StatusScanner::new();
         let mut huge = b"\x1b]133;C".to_vec();
-        huge.extend(std::iter::repeat(b'x').take(10_000));
+        // Well past MAX_SEQUENCE_SCAN_LEN (65536) -- MAX_SEQUENCE_LEN
+        // alone (256) no longer abandons a sequence, only stops growing
+        // its buffer, so this must exceed the larger backstop to
+        // actually exercise the abandon-and-reset-to-Idle path.
+        huge.extend(std::iter::repeat(b'x').take(100_000));
         let result = scanner.feed(&huge);
         assert!(result.is_empty());
         // The scanner must have genuinely recovered to Idle -- proven by
@@ -301,6 +330,25 @@ mod tests {
         // be consumed as a (wrong) terminator for the abandoned sequence
         // and produce no event at all.
         assert_eq!(scanner.feed(&[0x07]), vec![StatusEvent::WaitingForInput]);
+    }
+
+    #[test]
+    fn a_long_bel_terminated_sequence_past_max_sequence_len_is_not_misclassified_as_a_standalone_bell() {
+        // OSC 8 hyperlinks and OSC 52 clipboard writes routinely exceed
+        // MAX_SEQUENCE_LEN (256 bytes of retained payload) while staying
+        // nowhere near MAX_SEQUENCE_SCAN_LEN -- the sequence must still
+        // be correctly recognized as an OSC sequence (an unrecognized
+        // command, since it's OSC 52 not 133), and its own terminating
+        // BEL must not leak through as a standalone attention-bell. This
+        // is the regression this fix exists to close: before it,
+        // exceeding MAX_SEQUENCE_LEN reset the scanner to Idle
+        // mid-sequence, so this exact BEL would have fired a spurious
+        // WaitingForInput.
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]52;c;".to_vec();
+        bytes.extend(std::iter::repeat(b'A').take(1000)); // a long fake base64 clipboard payload
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![]);
     }
 
     #[test]
