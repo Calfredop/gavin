@@ -2,11 +2,14 @@ use protocol::{read_message, write_message, Request, Response, SessionSummary};
 use crate::osc::OscCwdScanner;
 use crate::pty::PtySession;
 use crate::registry::{Registry, SessionRecord, SessionStatus};
+use crate::status::{StatusEvent, StatusScanner, HEURISTIC_QUIET_PERIOD};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// Cap on how much recent output is retained per session for replay to a
@@ -14,6 +17,87 @@ use uuid::Uuid;
 /// running). A rolling window, not a per-attach diff — every Attach replays
 /// whatever's currently buffered, regardless of what a previous Attach saw.
 const OUTPUT_BUFFER_CAP: usize = 64 * 1024;
+
+/// How often the heuristic idle-timeout companion thread (see
+/// spawn_heuristic_idle_timer) wakes to check whether a session has gone
+/// quiet -- granularity of HEURISTIC_QUIET_PERIOD, not a hard
+/// real-time guarantee.
+const HEURISTIC_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Shared between a session's pump thread and its heuristic idle-timeout
+/// companion thread (spawn_heuristic_idle_timer). The pump thread's
+/// blocking `reader.read()` loop has no way to notice "N seconds of
+/// silence" on its own -- it only wakes when bytes actually arrive -- so
+/// a separate thread is needed to detect that condition and fire the
+/// idle transition itself.
+struct HeuristicState {
+    last_activity: Mutex<Instant>,
+    /// Set true the first time this session's StatusScanner reports any
+    /// OSC 133 marker -- once true, the heuristic (both the reactive
+    /// "bytes arrived -> working" check in the pump loop below, and the
+    /// companion thread's idle-timeout check) permanently stops applying
+    /// for this session, per the one-way switching rule.
+    seen_osc133: AtomicBool,
+    /// Only meaningful while `!seen_osc133`. True = the heuristic
+    /// currently considers this session Working. Both the pump thread
+    /// and the companion thread read and write this, so neither fires a
+    /// redundant or conflicting transition.
+    heuristic_working: AtomicBool,
+    /// Set false right before the pump thread's final Exited update, so
+    /// the companion thread stops polling promptly once the session ends
+    /// rather than spinning forever on a dead session.
+    running: AtomicBool,
+}
+
+/// Persists a status transition and, if a client is currently attached,
+/// relays it live via Response::StatusChanged -- the same
+/// persist-then-relay shape spawn_pump's existing cwd handling already
+/// uses for Response::CwdChanged, factored out here since this plan adds
+/// three separate call sites for it (OSC 133 events, bare-BEL events, and
+/// the heuristic timer).
+fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: SessionStatus) {
+    let status_str = status.as_str();
+    if let Err(e) = manager.registry.lock().unwrap().update_status(id, status) {
+        eprintln!("failed to persist status for session {id}: {e}");
+    }
+    let target = manager.attached_writers.lock().unwrap().get(id).cloned();
+    if let Some(w) = target {
+        let _ = write_message(
+            &mut *w.lock().unwrap(),
+            &Response::StatusChanged { id: id.to_string(), status: status_str.to_string() },
+        );
+    }
+}
+
+/// Spawned once per session pump (see spawn_pump), alongside it. Polls
+/// `heuristic.last_activity` every HEURISTIC_POLL_INTERVAL; once
+/// HEURISTIC_QUIET_PERIOD has elapsed with no new output AND this session
+/// has never seen a valid OSC 133 marker, fires an Idle transition.
+/// Exits promptly once the session either switches permanently to
+/// OSC-133-only detection (seen_osc133) or ends (running set false).
+fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heuristic: Arc<HeuristicState>) {
+    let manager = Arc::clone(manager);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(HEURISTIC_POLL_INTERVAL);
+        if !heuristic.running.load(Ordering::SeqCst) {
+            return;
+        }
+        if heuristic.seen_osc133.load(Ordering::SeqCst) {
+            // Permanently switched to OSC-133-only detection -- nothing
+            // left for this thread to ever do for this session again.
+            return;
+        }
+        if !heuristic.heuristic_working.load(Ordering::SeqCst) {
+            // Already considered idle; nothing to re-check.
+            continue;
+        }
+        let quiet_for = heuristic.last_activity.lock().unwrap().elapsed();
+        if quiet_for >= HEURISTIC_QUIET_PERIOD {
+            heuristic.heuristic_working.store(false, Ordering::SeqCst);
+            persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+        }
+    });
+}
 
 pub struct SessionManager {
     registry: Mutex<Registry>,
@@ -232,6 +316,14 @@ impl SessionManager {
             // read instead of being lossily corrupted at the chunk boundary.
             let mut pending: Vec<u8> = Vec::new();
             let mut osc_scanner = OscCwdScanner::new();
+            let mut status_scanner = StatusScanner::new();
+            let heuristic = Arc::new(HeuristicState {
+                last_activity: Mutex::new(Instant::now()),
+                seen_osc133: AtomicBool::new(false),
+                heuristic_working: AtomicBool::new(false), // sessions start Idle
+                running: AtomicBool::new(true),
+            });
+            spawn_heuristic_idle_timer(&manager, id.clone(), Arc::clone(&heuristic));
 
             loop {
                 match reader.read(&mut buf) {
@@ -259,6 +351,34 @@ impl SessionManager {
                                     &mut *w.lock().unwrap(),
                                     &Response::CwdChanged { id: id.clone(), cwd },
                                 );
+                            }
+                        }
+
+                        *heuristic.last_activity.lock().unwrap() = Instant::now();
+                        if !heuristic.seen_osc133.load(Ordering::SeqCst)
+                            && !heuristic.heuristic_working.swap(true, Ordering::SeqCst)
+                        {
+                            // Was idle (or never yet working), now has
+                            // fresh output -- fire Working. swap() both
+                            // reads the old value and sets the new one
+                            // atomically, so a concurrent companion-thread
+                            // idle check can't race this into firing twice.
+                            persist_and_emit_status(&manager, &id, SessionStatus::Working);
+                        }
+
+                        for event in status_scanner.feed(&buf[..n]) {
+                            match event {
+                                StatusEvent::Idle => {
+                                    heuristic.seen_osc133.store(true, Ordering::SeqCst);
+                                    persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+                                }
+                                StatusEvent::Working => {
+                                    heuristic.seen_osc133.store(true, Ordering::SeqCst);
+                                    persist_and_emit_status(&manager, &id, SessionStatus::Working);
+                                }
+                                StatusEvent::WaitingForInput => {
+                                    persist_and_emit_status(&manager, &id, SessionStatus::WaitingForInput);
+                                }
                             }
                         }
 
@@ -296,6 +416,7 @@ impl SessionManager {
                 }
             }
 
+            heuristic.running.store(false, Ordering::SeqCst);
             let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
             if let Err(e) = manager.registry.lock().unwrap().update_status(&id, SessionStatus::Exited) {
                 eprintln!("failed to persist exited status for session {id}: {e}");
@@ -767,6 +888,217 @@ mod tests {
             }
         }
         assert!(found, "never saw the expected CwdChanged for the printf'd OSC 7 sequence");
+    }
+
+    #[test]
+    fn relays_status_changed_when_pty_output_contains_an_osc_133_command_executed_marker() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '\\033]133;C\\007'\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut found = false;
+        while std::time::Instant::now() < deadline {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::StatusChanged { id: rid, status } = resp {
+                if rid == id && status == "working" {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "never saw the expected StatusChanged{{status:\"working\"}} for the printf'd OSC 133 C marker");
+    }
+
+    #[test]
+    fn relays_status_changed_when_pty_output_contains_a_bare_bel() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream2,
+            &Request::WriteInput { id: id.clone(), data: "printf '\\007'\n".to_string() },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut found = false;
+        while std::time::Instant::now() < deadline {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::StatusChanged { id: rid, status } = resp {
+                if rid == id && status == "waiting_for_input" {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "never saw the expected StatusChanged{{status:\"waiting_for_input\"}} for the printf'd bare BEL");
+    }
+
+    #[test]
+    fn heuristic_fires_working_promptly_then_idle_after_a_real_quiet_period() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        // Plain output with no OSC 133 markers at all -- this session
+        // stays in heuristic mode for its whole life.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput { id: id.clone(), data: "echo heuristic_test\n".to_string() },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut statuses: Vec<String> = Vec::new();
+        // HEURISTIC_QUIET_PERIOD is 2 real seconds; give this a generous
+        // deadline (this project's tests already accept multi-second real
+        // waits for timing-dependent behavior, e.g. the existing OSC 7
+        // test's 5-second deadline -- no time-mocking is used anywhere in
+        // this codebase).
+        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        let mut saw_working_then_idle = false;
+        while std::time::Instant::now() < deadline {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::StatusChanged { id: rid, status } = resp {
+                if rid == id {
+                    statuses.push(status.clone());
+                    if statuses.contains(&"working".to_string()) && status == "idle" {
+                        saw_working_then_idle = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_working_then_idle,
+            "expected a \"working\" StatusChanged followed eventually by \"idle\", got: {statuses:?}"
+        );
+    }
+
+    #[test]
+    fn heuristic_permanently_stops_once_a_real_osc_133_marker_has_been_seen() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        // A real OSC 133 "C" marker, followed by plain output with no
+        // further markers -- once this session has seen OSC 133 once,
+        // the heuristic must never fire again, even after a full quiet
+        // period elapses.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '\\033]133;C\\007'; echo done_working\n".to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut saw_working = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && !saw_working {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::StatusChanged { id: rid, status } = resp {
+                if rid == id && status == "working" {
+                    saw_working = true;
+                }
+            }
+        }
+        assert!(saw_working, "never saw the initial \"working\" from the OSC 133 C marker");
+
+        // Wait well past HEURISTIC_QUIET_PERIOD (2s) with no further OSC
+        // 133 marker -- if the heuristic incorrectly re-activated, it
+        // would fire a spurious "idle" here. Drain anything that arrives
+        // in a bounded window afterward and assert none of it is that.
+        std::thread::sleep(Duration::from_secs(3));
+        reader.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    assert_ne!(status, "idle", "heuristic fired a spurious idle after OSC 133 was already seen");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
+            }
+        }
     }
 
     #[test]
