@@ -39,6 +39,7 @@ pub enum Response {
     Output { id: String, data: String },
     SessionExited { id: String, exit_code: i32 },
     CwdChanged { id: String, cwd: String },
+    StatusChanged { id: String, status: String },
     Ok,
     Error { message: String },
 }
@@ -175,6 +176,27 @@ mod tests {
             Response::CwdChanged { id, cwd } => {
                 assert_eq!(id, "s1");
                 assert_eq!(cwd, "/Users/alice/project");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_changed_response_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let resp = Response::StatusChanged {
+            id: "s1".to_string(),
+            status: "working".to_string(),
+        };
+        write_message(&mut buf, &resp).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Response::StatusChanged { id, status } => {
+                assert_eq!(id, "s1");
+                assert_eq!(status, "working");
             }
             other => panic!("wrong variant: {other:?}"),
         }
