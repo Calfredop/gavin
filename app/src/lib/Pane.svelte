@@ -141,10 +141,12 @@
     } else {
       // A tab from elsewhere, dropped onto a specific tab in this pane --
       // merge it in as a new tab here, same as dropping on .content's
-      // center zone.
+      // center zone. targetSessionId: active pins the merge to THIS
+      // pane specifically, not wherever the page's remembered focus
+      // happens to point.
       await movePaneOrTab(
         { kind: "tab", workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
-        { kind: "page", workspaceId: location.workspaceId, pageId: location.pageId, mode: "center" }
+        { kind: "page", workspaceId: location.workspaceId, pageId: location.pageId, mode: "center", targetSessionId: active }
       );
     }
   }
@@ -172,7 +174,7 @@
     const zone = computeDropZone(rect, event.clientX, event.clientY);
     await movePaneOrTab(
       { kind: payload.kind, workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
-      { kind: "page", workspaceId: location.workspaceId, pageId: location.pageId, mode: zone }
+      { kind: "page", workspaceId: location.workspaceId, pageId: location.pageId, mode: zone, targetSessionId: active }
     );
   }
 
@@ -205,7 +207,7 @@
         class:focused={sessionId === active && isFocused}
         class:drop-before={tabReorderState?.sessionId === sessionId && tabReorderState.position === "before"}
         class:drop-after={tabReorderState?.sessionId === sessionId && tabReorderState.position === "after"}
-        draggable="true"
+        draggable={editingSessionId !== sessionId}
         ondragstart={(e) => handleTabDragStart(e, sessionId)}
         ondragover={(e) => handleTabDragOver(e, sessionId)}
         ondragleave={clearTabReorder}

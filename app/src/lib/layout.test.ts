@@ -9,6 +9,7 @@ import {
   detachLeaf,
   detachTab,
   graftLeaf,
+  graftLeafAt,
   mergeIntoActivePane,
   moveTabWithinLeaf,
   switchTab,
@@ -459,6 +460,53 @@ describe("graftLeaf", () => {
       sizes: [0.5, 0.5],
       children: [incoming, target],
     });
+  });
+});
+
+describe("graftLeafAt", () => {
+  it("grafts at the specific pane identified by anchorSessionId, not the whole tree", () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
+        { type: "leaf", tabs: ["b"], activeTabIndex: 0 },
+      ],
+    };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    const result = graftLeafAt(tree, "b", incoming, "right");
+    expect(result).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "leaf", tabs: ["a"], activeTabIndex: 0 },
+        {
+          type: "split",
+          direction: "row",
+          sizes: [0.5, 0.5],
+          children: [{ type: "leaf", tabs: ["b"], activeTabIndex: 0 }, incoming],
+        },
+      ],
+    });
+  });
+
+  it("respects mode ordering the same way graftLeaf does", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(graftLeafAt(tree, "a", incoming, "top")).toEqual({
+      type: "split",
+      direction: "column",
+      sizes: [0.5, 0.5],
+      children: [incoming, tree],
+    });
+  });
+
+  it("falls back to graftLeaf's whole-tree behavior when the anchor isn't found", () => {
+    const tree: LayoutNode = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(graftLeafAt(tree, "missing", incoming, "right")).toEqual(graftLeaf(tree, incoming, "right"));
   });
 });
 

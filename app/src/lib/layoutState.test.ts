@@ -641,6 +641,79 @@ describe("movePaneOrTab", () => {
     });
     expect(backend.setWorkspacesState).toHaveBeenCalled();
   });
+
+  it("merges into the specifically targeted pane when targetSessionId is given, not just the page's remembered focus", async () => {
+    // page-1 has two panes: leaf(["a1","a2"]) and leaf(["b1"]). The
+    // page's own remembered focusedSessionId is null (page()'s default),
+    // so without the fix this would fall back to the tree's first
+    // session ("a1") -- the fix under test is that explicitly targeting
+    // "b1" lands the merge there instead.
+    setState(
+      [
+        ws("ws-1", [
+          page("page-1", {
+            type: "split",
+            direction: "row",
+            sizes: [0.5, 0.5],
+            children: [leaf(["a1", "a2"]), leaf(["b1"])],
+          }),
+        ]),
+      ],
+      "ws-1",
+      "a1"
+    );
+
+    await movePaneOrTab(
+      { kind: "tab", workspaceId: "ws-1", pageId: "page-1", sessionId: "a2" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "center", targetSessionId: "b1" }
+    );
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [leaf(["a1"]), leaf(["b1", "a2"], 1)],
+    });
+  });
+
+  it("grafts at the specific pane via targetSessionId on a 3+-pane page, not the whole page", async () => {
+    // A 2x2 grid: dragging pane "c" onto pane "d"'s right edge should
+    // split just d's location, not wrap the entire grid.
+    setState(
+      [
+        ws("ws-1", [
+          page("page-1", {
+            type: "split",
+            direction: "column",
+            sizes: [0.5, 0.5],
+            children: [
+              { type: "split", direction: "row", sizes: [0.5, 0.5], children: [leaf(["a"]), leaf(["b"])] },
+              { type: "split", direction: "row", sizes: [0.5, 0.5], children: [leaf(["c"]), leaf(["d"])] },
+            ],
+          }),
+        ]),
+      ],
+      "ws-1",
+      "c"
+    );
+
+    await movePaneOrTab(
+      { kind: "pane", workspaceId: "ws-1", pageId: "page-1", sessionId: "c" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "right", targetSessionId: "d" }
+    );
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual({
+      type: "split",
+      direction: "column",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "split", direction: "row", sizes: [0.5, 0.5], children: [leaf(["a"]), leaf(["b"])] },
+        { type: "split", direction: "row", sizes: [0.5, 0.5], children: [leaf(["d"]), leaf(["c"])] },
+      ],
+    });
+  });
 });
 
 describe("reorderTabWithinPane", () => {

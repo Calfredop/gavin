@@ -157,6 +157,30 @@ export function graftLeaf(
   return { type: "split", direction, children, sizes: [0.5, 0.5] };
 }
 
+// Like graftLeaf, but wraps a split at the SPECIFIC leaf identified by
+// anchorSessionId within the tree, rather than always wrapping the whole
+// tree at its root -- so grafting onto one pane of a multi-pane page (a
+// 2x2 grid, say) only affects that one pane, not the entire page layout.
+// Falls back to graftLeaf's whole-tree behavior if anchorSessionId isn't
+// found (e.g. it was the same session just detached as part of this same
+// move, so it no longer exists anywhere in the tree).
+export function graftLeafAt(
+  tree: LayoutNode,
+  anchorSessionId: string,
+  incoming: Extract<LayoutNode, { type: "leaf" }>,
+  mode: GraftMode
+): LayoutNode {
+  const path = findLeafPath(tree, anchorSessionId);
+  if (!path) return graftLeaf(tree, incoming, mode);
+  const direction: Direction = mode === "left" || mode === "right" ? "row" : "column";
+  return (
+    replaceAtPath(tree, path, (node) => {
+      const children: LayoutNode[] = mode === "left" || mode === "top" ? [incoming, node] : [node, incoming];
+      return { type: "split", direction, children, sizes: [0.5, 0.5] };
+    }) ?? tree
+  );
+}
+
 // Appends every tab from `incoming` onto the leaf identified by
 // targetFocusedSessionId (falling back to the tree's first leaf if that
 // id isn't present, or is null), mirroring addTab's "new tab becomes

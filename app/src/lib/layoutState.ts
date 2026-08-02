@@ -542,7 +542,19 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
 }
 
 export type DropTarget =
-  | { kind: "page"; workspaceId: string; pageId: string; mode: "left" | "right" | "top" | "bottom" | "center" }
+  | {
+      kind: "page";
+      workspaceId: string;
+      pageId: string;
+      mode: "left" | "right" | "top" | "bottom" | "center";
+      // The specific pane within the target page this drop was aimed at,
+      // if known (e.g. Pane.svelte always knows its own active tab).
+      // Sidebar drops have no specific pane in mind -- the target page
+      // isn't rendered while dragging from the sidebar -- so they omit
+      // this, and movePaneOrTab falls back to the page's own remembered
+      // focus, exactly as it did before this field existed.
+      targetSessionId?: string;
+    }
   | { kind: "workspace"; workspaceId: string };
 
 // Moves a whole pane (source.kind === "pane") or a single tab
@@ -605,10 +617,25 @@ export async function movePaneOrTab(
       .find((w) => w.id === target.workspaceId)
       ?.pages.find((p) => p.id === target.pageId);
     if (!targetPage) return;
+    // If a specific pane was targeted and it's still present in the
+    // (already-detached) target tree, aim the graft/merge at exactly
+    // that pane. Otherwise fall back to the page's remembered focus
+    // (mergeIntoActivePane's own existing fallback) or a whole-tree graft
+    // (graftLeaf) -- the same behavior this had before targetSessionId
+    // existed, still correct for Sidebar-originated drops which never
+    // set it.
+    const hasValidTarget =
+      target.targetSessionId !== undefined && layout.findLeafPath(targetPage.layout, target.targetSessionId) !== null;
     const newTargetTree =
       target.mode === "center"
-        ? layout.mergeIntoActivePane(targetPage.layout, targetPage.focusedSessionId, detached)
-        : layout.graftLeaf(targetPage.layout, detached, target.mode);
+        ? layout.mergeIntoActivePane(
+            targetPage.layout,
+            hasValidTarget ? (target.targetSessionId as string) : targetPage.focusedSessionId,
+            detached
+          )
+        : hasValidTarget
+          ? layout.graftLeafAt(targetPage.layout, target.targetSessionId as string, detached, target.mode)
+          : layout.graftLeaf(targetPage.layout, detached, target.mode);
     data = workspace.updatePageLayout(data, target.workspaceId, target.pageId, newTargetTree);
   }
 
