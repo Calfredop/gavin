@@ -25,28 +25,38 @@ const OUTPUT_BUFFER_CAP: usize = 64 * 1024;
 const HEURISTIC_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Shared between a session's pump thread and its heuristic idle-timeout
-/// companion thread (spawn_heuristic_idle_timer). The pump thread's
-/// blocking `reader.read()` loop has no way to notice "N seconds of
-/// silence" on its own -- it only wakes when bytes actually arrive -- so
-/// a separate thread is needed to detect that condition and fire the
-/// idle transition itself.
+/// companion thread (spawn_heuristic_idle_timer). last_activity,
+/// heuristic_working, and running all live behind one lock so a
+/// thread's full read-decide-mutate-emit sequence can never interleave
+/// with the other thread's -- splitting these across separate atomics
+/// let the pump's "bytes arrived" transition and the companion's "gone
+/// quiet" transition each act on a stale snapshot of the other,
+/// sometimes emitting Idle after Working even though real activity was
+/// ongoing (and letting a stale Idle land after teardown). Both threads
+/// hold this lock across their persist_and_emit_status call too, so
+/// emission order can never contradict decision order.
 struct HeuristicState {
-    last_activity: Mutex<Instant>,
+    inner: Mutex<HeuristicInner>,
     /// Set true the first time this session's StatusScanner reports any
     /// OSC 133 marker -- once true, the heuristic (both the reactive
     /// "bytes arrived -> working" check in the pump loop below, and the
     /// companion thread's idle-timeout check) permanently stops applying
-    /// for this session, per the one-way switching rule.
+    /// for this session, per the one-way switching rule. Kept as its
+    /// own atomic rather than folded into HeuristicInner: it's
+    /// write-once, and every reader is safe seeing a stale `false` by
+    /// one instruction, since last_activity is refreshed on every
+    /// incoming byte regardless of source.
     seen_osc133: AtomicBool,
-    /// Only meaningful while `!seen_osc133`. True = the heuristic
-    /// currently considers this session Working. Both the pump thread
-    /// and the companion thread read and write this, so neither fires a
-    /// redundant or conflicting transition.
-    heuristic_working: AtomicBool,
+}
+
+struct HeuristicInner {
+    last_activity: Instant,
+    /// True = the heuristic currently considers this session Working.
+    heuristic_working: bool,
     /// Set false right before the pump thread's final Exited update, so
-    /// the companion thread stops polling promptly once the session ends
-    /// rather than spinning forever on a dead session.
-    running: AtomicBool,
+    /// the companion thread stops polling promptly once the session
+    /// ends rather than spinning forever on a dead session.
+    running: bool,
 }
 
 /// Persists a status transition and, if a client is currently attached,
@@ -70,7 +80,7 @@ fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: Sess
 }
 
 /// Spawned once per session pump (see spawn_pump), alongside it. Polls
-/// `heuristic.last_activity` every HEURISTIC_POLL_INTERVAL; once
+/// `heuristic.inner` every HEURISTIC_POLL_INTERVAL; once
 /// HEURISTIC_QUIET_PERIOD has elapsed with no new output AND this session
 /// has never seen a valid OSC 133 marker, fires an Idle transition.
 /// Exits promptly once the session either switches permanently to
@@ -79,21 +89,23 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
     let manager = Arc::clone(manager);
     std::thread::spawn(move || loop {
         std::thread::sleep(HEURISTIC_POLL_INTERVAL);
-        if !heuristic.running.load(Ordering::SeqCst) {
-            return;
-        }
         if heuristic.seen_osc133.load(Ordering::SeqCst) {
             // Permanently switched to OSC-133-only detection -- nothing
             // left for this thread to ever do for this session again.
             return;
         }
-        if !heuristic.heuristic_working.load(Ordering::SeqCst) {
+        let mut inner = heuristic.inner.lock().unwrap();
+        if !inner.running {
+            return;
+        }
+        if !inner.heuristic_working {
             // Already considered idle; nothing to re-check.
             continue;
         }
-        let quiet_for = heuristic.last_activity.lock().unwrap().elapsed();
-        if quiet_for >= HEURISTIC_QUIET_PERIOD {
-            heuristic.heuristic_working.store(false, Ordering::SeqCst);
+        if inner.last_activity.elapsed() >= HEURISTIC_QUIET_PERIOD {
+            inner.heuristic_working = false;
+            // Emitted while still holding `inner` so this can never be
+            // reordered relative to a concurrent pump-thread decision.
             persist_and_emit_status(&manager, &id, SessionStatus::Idle);
         }
     });
@@ -318,10 +330,12 @@ impl SessionManager {
             let mut osc_scanner = OscCwdScanner::new();
             let mut status_scanner = StatusScanner::new();
             let heuristic = Arc::new(HeuristicState {
-                last_activity: Mutex::new(Instant::now()),
+                inner: Mutex::new(HeuristicInner {
+                    last_activity: Instant::now(),
+                    heuristic_working: false, // sessions start Idle
+                    running: true,
+                }),
                 seen_osc133: AtomicBool::new(false),
-                heuristic_working: AtomicBool::new(false), // sessions start Idle
-                running: AtomicBool::new(true),
             });
             spawn_heuristic_idle_timer(&manager, id.clone(), Arc::clone(&heuristic));
 
@@ -354,16 +368,18 @@ impl SessionManager {
                             }
                         }
 
-                        *heuristic.last_activity.lock().unwrap() = Instant::now();
-                        if !heuristic.seen_osc133.load(Ordering::SeqCst)
-                            && !heuristic.heuristic_working.swap(true, Ordering::SeqCst)
                         {
-                            // Was idle (or never yet working), now has
-                            // fresh output -- fire Working. swap() both
-                            // reads the old value and sets the new one
-                            // atomically, so a concurrent companion-thread
-                            // idle check can't race this into firing twice.
-                            persist_and_emit_status(&manager, &id, SessionStatus::Working);
+                            let mut inner = heuristic.inner.lock().unwrap();
+                            inner.last_activity = Instant::now();
+                            if !heuristic.seen_osc133.load(Ordering::SeqCst) && !inner.heuristic_working {
+                                // Was idle (or never yet working), now has
+                                // fresh output -- fire Working. Emitted
+                                // while still holding `inner` so this can
+                                // never be reordered relative to a
+                                // concurrent companion-thread decision.
+                                inner.heuristic_working = true;
+                                persist_and_emit_status(&manager, &id, SessionStatus::Working);
+                            }
                         }
 
                         for event in status_scanner.feed(&buf[..n]) {
@@ -416,7 +432,7 @@ impl SessionManager {
                 }
             }
 
-            heuristic.running.store(false, Ordering::SeqCst);
+            heuristic.inner.lock().unwrap().running = false;
             let exit_code = manager.exit_code_for(&id).ok().flatten().unwrap_or(-1);
             if let Err(e) = manager.registry.lock().unwrap().update_status(&id, SessionStatus::Exited) {
                 eprintln!("failed to persist exited status for session {id}: {e}");
