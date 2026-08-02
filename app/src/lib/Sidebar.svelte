@@ -23,7 +23,7 @@
     type ReorderPosition,
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction } from "./layoutState";
-  import type { Workspace, Page } from "./workspace";
+  import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
 
   let expanded: Set<string> = $state(new Set());
 
@@ -56,6 +56,14 @@
   function clearHover(): void {
     hoverState = null;
   }
+
+  // The pinned Unfiled workspace is always rendered first, separately
+  // from the reorderable list -- these two derived values split
+  // $layoutState.workspaces accordingly. unfiledWorkspace is null only
+  // before bootstrap's first workspaces-ready/poll response arrives
+  // (the Rust side always creates it once ready).
+  const unfiledWorkspace = $derived($layoutState.workspaces.find((w) => w.id === UNFILED_WORKSPACE_ID) ?? null);
+  const regularWorkspaces = $derived($layoutState.workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID));
 
   function isExpanded(workspaceId: string): boolean {
     return expanded.has(workspaceId);
@@ -137,6 +145,9 @@
   function handleWorkspaceDragOver(event: DragEvent, workspaceId: string): void {
     const kind = getDragKind(event);
     if (!kind) return;
+    // The pinned Unfiled workspace isn't part of the reorderable list, so
+    // a dragged workspace has nowhere meaningful to land on it -- ignore.
+    if (kind === "workspace" && workspaceId === UNFILED_WORKSPACE_ID) return;
     event.preventDefault();
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (kind === "workspace" || kind === "page") {
@@ -146,12 +157,16 @@
     }
   }
 
-  async function handleWorkspaceDrop(event: DragEvent, ws: Workspace, index: number): Promise<void> {
+  async function handleWorkspaceDrop(event: DragEvent, ws: Workspace): Promise<void> {
     event.preventDefault();
     const payload = getDragPayload(event);
     clearHover();
     if (!payload) return;
     if (payload.kind === "workspace") {
+      if (ws.id === UNFILED_WORKSPACE_ID) return;
+      // Looked up live from the authoritative array (not a loop index
+      // passed in) so this is correct regardless of whether the pinned
+      // Unfiled workspace occupies a slot ahead of this row or not.
       // Simple index/index+1 relative to the currently rendered array --
       // an approximation (dragging past an immediate neighbor can land
       // one position off in edge cases, since reorderWorkspace removes
@@ -160,7 +175,8 @@
       // refine later if it feels wrong in practice.
       const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
       const position = computeReorderPosition(rect, event.clientY);
-      const targetIndex = position === "before" ? index : index + 1;
+      const currentIndex = $layoutState.workspaces.findIndex((w) => w.id === ws.id);
+      const targetIndex = position === "before" ? currentIndex : currentIndex + 1;
       await reorderWorkspaceAction(payload.workspaceId, targetIndex);
     } else if (payload.kind === "page") {
       await movePageAction(payload.pageId, ws.id, ws.pages.length);
@@ -247,6 +263,71 @@
   });
 </script>
 
+{#snippet pageList(ws: Workspace)}
+  <div class="page-list">
+    {#each ws.pages as page, pageIndex (page.id)}
+      <div
+        class="page-row"
+        class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}
+        class:drop-before={hoverState?.targetId === page.id &&
+          hoverState.kind === "reorder" &&
+          hoverState.position === "before"}
+        class:drop-after={hoverState?.targetId === page.id &&
+          hoverState.kind === "reorder" &&
+          hoverState.position === "after"}
+        class:drop-zone-left={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "left"}
+        class:drop-zone-right={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "right"}
+        class:drop-zone-top={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "top"}
+        class:drop-zone-bottom={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "bottom"}
+        class:drop-zone-center={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "center"}
+        draggable={editingPageId !== page.id}
+        ondragstart={(e) => handlePageDragStart(e, ws.id, page.id)}
+        ondragover={(e) => handlePageDragOver(e, page.id)}
+        ondragleave={clearHover}
+        ondragend={clearHover}
+        ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
+      >
+        {#if editingPageId === page.id}
+          <input
+            class="page-name-input"
+            bind:this={pageEditInput}
+            bind:value={pageEditValue}
+            onclick={(e) => e.stopPropagation()}
+            onblur={commitPageEdit}
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitPageEdit();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelPageEdit();
+              }
+            }}
+          />
+        {:else}
+          <span
+            class="page-name"
+            ondblclick={() => startEditingPage(page.id, page.name)}
+            onclick={() => switchPage(ws.id, page.id)}
+          >{page.name}</span>
+        {/if}
+        <button
+          class="close-page"
+          aria-label="Close Page"
+          title="Close Page"
+          onclick={async () => {
+            if (await confirmPageClose(ws.id, page.id)) {
+              void closePage(ws.id, page.id);
+            }
+          }}
+        >
+          <X size={10} />
+        </button>
+      </div>
+    {/each}
+  </div>
+{/snippet}
+
 <div class="sidebar">
   <div class="sidebar-header">
     <span>Workspaces</span>
@@ -272,7 +353,40 @@
     />
   {/if}
   <div class="workspace-list">
-    {#each $layoutState.workspaces as ws, wsIndex (ws.id)}
+    {#if unfiledWorkspace}
+      {@const ws = unfiledWorkspace}
+      <div class="workspace-row-group">
+        <div
+          class="workspace-row pinned"
+          class:active={ws.id === $layoutState.activeWorkspaceId}
+          class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
+          ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
+          ondragleave={clearHover}
+          ondragend={clearHover}
+          ondrop={(e) => handleWorkspaceDrop(e, ws)}
+        >
+          <button
+            class="expand-toggle"
+            aria-label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+            onclick={() => toggleExpand(ws.id)}
+          >
+            {#if isExpanded(ws.id)}
+              <ChevronDown size={12} />
+            {:else}
+              <ChevronRight size={12} />
+            {/if}
+          </button>
+          <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
+          <button class="add-page" aria-label="New Page" title="New Page" onclick={() => quickAddPage(ws.id)}>
+            <Plus size={12} />
+          </button>
+        </div>
+        {#if isExpanded(ws.id)}
+          {@render pageList(ws)}
+        {/if}
+      </div>
+    {/if}
+    {#each regularWorkspaces as ws (ws.id)}
       <div class="workspace-row-group">
         <div
           class="workspace-row"
@@ -284,12 +398,12 @@
             hoverState.kind === "reorder" &&
             hoverState.position === "after"}
           class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
-          draggable="true"
+          draggable={editingWorkspaceId !== ws.id}
           ondragstart={(e) => handleWorkspaceDragStart(e, ws.id)}
           ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
           ondragleave={clearHover}
           ondragend={clearHover}
-          ondrop={(e) => handleWorkspaceDrop(e, ws, wsIndex)}
+          ondrop={(e) => handleWorkspaceDrop(e, ws)}
         >
           <button
             class="expand-toggle"
@@ -343,78 +457,7 @@
           </button>
         </div>
         {#if isExpanded(ws.id)}
-          <div class="page-list">
-            {#each ws.pages as page, pageIndex (page.id)}
-              <div
-                class="page-row"
-                class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}
-                class:drop-before={hoverState?.targetId === page.id &&
-                  hoverState.kind === "reorder" &&
-                  hoverState.position === "before"}
-                class:drop-after={hoverState?.targetId === page.id &&
-                  hoverState.kind === "reorder" &&
-                  hoverState.position === "after"}
-                class:drop-zone-left={hoverState?.targetId === page.id &&
-                  hoverState.kind === "zone" &&
-                  hoverState.zone === "left"}
-                class:drop-zone-right={hoverState?.targetId === page.id &&
-                  hoverState.kind === "zone" &&
-                  hoverState.zone === "right"}
-                class:drop-zone-top={hoverState?.targetId === page.id &&
-                  hoverState.kind === "zone" &&
-                  hoverState.zone === "top"}
-                class:drop-zone-bottom={hoverState?.targetId === page.id &&
-                  hoverState.kind === "zone" &&
-                  hoverState.zone === "bottom"}
-                class:drop-zone-center={hoverState?.targetId === page.id &&
-                  hoverState.kind === "zone" &&
-                  hoverState.zone === "center"}
-                draggable="true"
-                ondragstart={(e) => handlePageDragStart(e, ws.id, page.id)}
-                ondragover={(e) => handlePageDragOver(e, page.id)}
-                ondragleave={clearHover}
-                ondragend={clearHover}
-                ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
-              >
-                {#if editingPageId === page.id}
-                  <input
-                    class="page-name-input"
-                    bind:this={pageEditInput}
-                    bind:value={pageEditValue}
-                    onclick={(e) => e.stopPropagation()}
-                    onblur={commitPageEdit}
-                    onkeydown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        commitPageEdit();
-                      } else if (e.key === "Escape") {
-                        e.preventDefault();
-                        cancelPageEdit();
-                      }
-                    }}
-                  />
-                {:else}
-                  <span
-                    class="page-name"
-                    ondblclick={() => startEditingPage(page.id, page.name)}
-                    onclick={() => switchPage(ws.id, page.id)}
-                  >{page.name}</span>
-                {/if}
-                <button
-                  class="close-page"
-                  aria-label="Close Page"
-                  title="Close Page"
-                  onclick={async () => {
-                    if (await confirmPageClose(ws.id, page.id)) {
-                      void closePage(ws.id, page.id);
-                    }
-                  }}
-                >
-                  <X size={10} />
-                </button>
-              </div>
-            {/each}
-          </div>
+          {@render pageList(ws)}
         {/if}
       </div>
     {/each}
@@ -472,6 +515,15 @@
   }
   .workspace-row.active {
     background: #2a2a2a;
+  }
+  .workspace-row.pinned {
+    font-style: italic;
+    color: #999;
+    border-bottom: 1px solid #333;
+    margin-bottom: 2px;
+  }
+  .workspace-row.pinned.active {
+    color: #ccc;
   }
   .expand-toggle {
     background: transparent;
