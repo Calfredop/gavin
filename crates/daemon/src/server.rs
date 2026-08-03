@@ -189,17 +189,23 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
 fn update_session_repo_mapping(manager: &Arc<SessionManager>, id: &str, cwd: &str) {
     let new_root = crate::git_status::resolve_repo_root(cwd);
 
-    let old_root = {
-        let mut map = manager.session_repo_root.lock().unwrap();
-        let old = map.get(id).cloned();
-        if old == new_root {
-            return;
-        }
-        match &new_root {
-            Some(root) => map.insert(id.to_string(), root.clone()),
-            None => map.remove(id),
-        };
-        old
+    // Held across the whole read-decide-mutate-register/unregister
+    // sequence below (not just the map update) so this function is
+    // atomic per session id -- `register_session_with_repo`/
+    // `unregister_session_from_repo` never touch `session_repo_root`
+    // themselves, so this can't deadlock, and without it two concurrent
+    // callers for the same session (as Task 5's `attach()` call site
+    // will introduce alongside this one) could interleave their
+    // mapped_sessions add/remove out of order relative to this map's
+    // own final state.
+    let mut map = manager.session_repo_root.lock().unwrap();
+    let old_root = map.get(id).cloned();
+    if old_root == new_root {
+        return;
+    }
+    match &new_root {
+        Some(root) => map.insert(id.to_string(), root.clone()),
+        None => map.remove(id),
     };
 
     if let Some(old) = old_root {
@@ -274,8 +280,16 @@ fn spawn_repo_poller(manager: &Arc<SessionManager>, repo_root: String, poller: A
         let poller = Arc::clone(&poller);
         std::thread::spawn(move || loop {
             std::thread::sleep(GIT_STATUS_BACKSTOP_INTERVAL);
-            if !manager.repo_pollers.lock().unwrap().contains_key(&repo_root) {
-                return; // this root's poller was torn down; stop looping
+            // Checks THIS poller instance's own liveness (zero mapped
+            // sessions), not whether the shared map still has an entry
+            // under `repo_root` -- that key could since have been
+            // reassigned to an unrelated, newer `RepoPoller` (a session
+            // left, then a different session entered the same repo
+            // root before this thread's next wake), in which case
+            // `contains_key` would stay true forever and this thread
+            // would loop on its own orphaned poller indefinitely.
+            if poller.inner.lock().unwrap().mapped_sessions.is_empty() {
+                return; // this poller was torn down; stop looping
             }
             trigger_recheck(&manager, &repo_root, &poller);
         });
@@ -305,12 +319,30 @@ fn spawn_repo_poller(manager: &Arc<SessionManager>, repo_root: String, poller: A
 fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller: &Arc<RepoPoller>) {
     let manager = Arc::clone(manager);
     let repo_root_owned = repo_root.to_string();
-    let poller_for_callback = Arc::clone(poller);
+    // A `Weak` reference, not a strong `Arc::clone` -- this callback lives
+    // inside the `Debouncer` we're about to store in `poller.debouncer`,
+    // so a strong clone here would create a genuine reference cycle
+    // (`poller.debouncer` -> `Debouncer` -> this closure -> strong
+    // `Arc<RepoPoller>` -> back to `poller.debouncer`) that would keep
+    // `RepoPoller`'s strong count above zero forever, so `Drop` (the only
+    // thing that sends the `Debouncer`'s internal `Shutdown` signal) would
+    // never run, leaking its background thread, its `RecommendedWatcher`,
+    // and every OS-level watch it holds for the daemon's entire remaining
+    // lifetime -- an orphaned watch that keeps firing `git status` forever
+    // for a repo no session cares about anymore, exactly the cmux #2722
+    // `.git/index.lock` contention bug this whole design exists to avoid.
+    let poller_for_callback = Arc::downgrade(poller);
     let debounce_result = notify_debouncer_mini::new_debouncer(
         GIT_STATUS_DEBOUNCE,
         move |res: notify_debouncer_mini::DebounceEventResult| {
             if res.is_ok() {
-                trigger_recheck(&manager, &repo_root_owned, &poller_for_callback);
+                // If this fires after teardown has begun (the poller's
+                // last strong `Arc` was already dropped), `.upgrade()`
+                // returns `None` and this is a silent no-op -- correct,
+                // since there's nothing left to recheck.
+                if let Some(poller) = poller_for_callback.upgrade() {
+                    trigger_recheck(&manager, &repo_root_owned, &poller);
+                }
             }
         },
     );
@@ -356,7 +388,6 @@ fn trigger_recheck(manager: &Arc<SessionManager>, repo_root: &str, poller: &Arc<
         return;
     }
     let status = crate::git_status::run_git_status(repo_root);
-    poller.checking.store(false, Ordering::SeqCst);
 
     let mapped: Vec<String> = {
         let mut inner = poller.inner.lock().unwrap();
@@ -372,6 +403,15 @@ fn trigger_recheck(manager: &Arc<SessionManager>, repo_root: &str, poller: &Arc<
             );
         }
     }
+
+    // `checking` stays true for the ENTIRE run-git-status + mutate-inner
+    // + emit-to-sessions sequence, not just the subprocess call -- so a
+    // second concurrent `trigger_recheck` (fs-watch vs. OSC-133-idle vs.
+    // backstop timer can each call this) can't start, finish, and emit
+    // its own (possibly staler) result while this call's mutate-and-emit
+    // is still in flight, which could otherwise let a fresher result be
+    // raced by a staler one's later write.
+    poller.checking.store(false, Ordering::SeqCst);
 }
 
 /// Piggybacks on the existing OSC-133 idle-marker detection in
