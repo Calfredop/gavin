@@ -66,8 +66,17 @@ pub fn parse_porcelain_v2(output: &str) -> Option<ParsedGitStatus> {
 /// silent-degradation convention: no status, no user-facing error, no
 /// distinction made between "definitely not a repo" and "couldn't check").
 pub fn resolve_repo_root(cwd: &str) -> Option<String> {
+    // No `--path-format=absolute`: `--show-toplevel`'s output is already
+    // unconditionally absolute (git's own docs describe it as "the (by
+    // default, absolute) path of the top-level directory"), so the flag
+    // bought nothing -- and `--path-format` only exists from git 2.31
+    // onward, so passing it would silently raise this feature's minimum
+    // git version: an older git treats an unrecognized trailing option as
+    // a revision argument, exits non-zero, and this function would then
+    // return `None` for every session on that machine with nothing logged
+    // to explain why.
     let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel", "--path-format=absolute"])
+        .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
