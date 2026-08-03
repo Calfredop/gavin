@@ -616,37 +616,44 @@ impl SessionManager {
                 &mut *writer.lock().unwrap(),
                 &Response::CwdChanged { id: id.to_string(), cwd: record.cwd.clone() },
             );
-            // StatusChanged is never sent for Exited -- SessionExited
-            // already covers session death, and the frontend's status
-            // union has no "exited" member.
+            // Git-status mapping/baseline is skipped for Exited sessions
+            // too, for the same reason StatusChanged is: no pump thread
+            // will ever run for an exited session (reader_for fails and
+            // the pump's error path never calls
+            // unregister_session_repo_mapping), so establishing a mapping
+            // here would leak that repo's poller -- its filesystem watch
+            // and 3-minute backstop timer thread -- permanently. This is
+            // reachable without any race: recover() explicitly preserves
+            // Exited registry rows across daemon restarts, and attaching
+            // to an already-exited session is an existing supported flow.
             if record.status != SessionStatus::Exited {
                 let _ = write_message(
                     &mut *writer.lock().unwrap(),
                     &Response::StatusChanged { id: id.to_string(), status: record.status.as_str().to_string() },
                 );
-            }
-            // Establishes this session's repo mapping even if it never
-            // emits a single OSC 7 cwd report (Task 4's own wiring is
-            // purely reactive to *live* changes) -- runs synchronously
-            // (cheap `git rev-parse`, same tolerance as the existing
-            // registry read just above), but never runs `git status`
-            // itself inline; see register_session_with_repo's own note.
-            update_session_repo_mapping(self, id, &record.cwd);
-            let cached_status = {
-                let repo_root = self.session_repo_root.lock().unwrap().get(id).cloned();
-                repo_root.and_then(|root| {
-                    self.repo_pollers
-                        .lock()
-                        .unwrap()
-                        .get(&root)
-                        .and_then(|poller| poller.inner.lock().unwrap().last_status.clone())
-                })
-            };
-            if let Some(status) = cached_status {
-                let _ = write_message(
-                    &mut *writer.lock().unwrap(),
-                    &Response::GitStatusChanged { id: id.to_string(), status: Some(status) },
-                );
+                // Establishes this session's repo mapping even if it never
+                // emits a single OSC 7 cwd report (Task 4's own wiring is
+                // purely reactive to *live* changes) -- runs synchronously
+                // (cheap `git rev-parse`, same tolerance as the existing
+                // registry read just above), but never runs `git status`
+                // itself inline; see register_session_with_repo's own note.
+                update_session_repo_mapping(self, id, &record.cwd);
+                let cached_status = {
+                    let repo_root = self.session_repo_root.lock().unwrap().get(id).cloned();
+                    repo_root.and_then(|root| {
+                        self.repo_pollers
+                            .lock()
+                            .unwrap()
+                            .get(&root)
+                            .and_then(|poller| poller.inner.lock().unwrap().last_status.clone())
+                    })
+                };
+                if let Some(status) = cached_status {
+                    let _ = write_message(
+                        &mut *writer.lock().unwrap(),
+                        &Response::GitStatusChanged { id: id.to_string(), status: Some(status) },
+                    );
+                }
             }
         }
 
@@ -1341,6 +1348,81 @@ mod tests {
             match read_message::<_, Response>(&mut reader2) {
                 Ok(Some(Response::StatusChanged { id: rid, .. })) if rid == id => {
                     panic!("attach() sent a baseline StatusChanged for an exited session");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
+            }
+        }
+    }
+
+    #[test]
+    fn attach_never_establishes_a_repo_mapping_or_sends_git_status_changed_for_an_exited_session() {
+        // Created inside a real git repo (unlike the /tmp-based exited-
+        // session test above) specifically so that, absent the Exited
+        // gate around attach()'s git-status baseline block, a repo
+        // mapping WOULD get established and a poller WOULD get spawned
+        // for this repo root on the second attach below.
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_path = repo_dir.path().to_str().unwrap().to_string();
+
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: repo_path.clone(),
+                    cwd: repo_path.clone(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        // Attach once, then make the shell exit so the pump thread's
+        // teardown persists SessionStatus::Exited to the registry (this
+        // does not remove the registry record -- only kill_session does).
+        // Teardown also calls unregister_session_repo_mapping before
+        // persisting Exited, so no mapping is left over from this first
+        // attach either.
+        let mut stream1 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
+
+        let mut reader1 = BufReader::new(stream1.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline && !exited {
+            let resp: Response = read_message(&mut reader1).unwrap().unwrap();
+            if let Response::SessionExited { id: rid, .. } = resp {
+                if rid == id {
+                    exited = true;
+                }
+            }
+        }
+        assert!(exited, "session never reported SessionExited");
+
+        // Now attach a second, fresh connection to the now-exited session
+        // and confirm no GitStatusChanged is ever sent -- before the fix,
+        // attach()'s unconditional update_session_repo_mapping call would
+        // establish a mapping and spawn a poller here even though no pump
+        // thread will ever run for this session to tear it back down
+        // again, leaking that poller (its filesystem watch and 3-minute
+        // backstop timer thread) permanently.
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+
+        let mut reader2 = BufReader::new(stream2.try_clone().unwrap());
+        reader2.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        loop {
+            match read_message::<_, Response>(&mut reader2) {
+                Ok(Some(Response::GitStatusChanged { id: rid, .. })) if rid == id => {
+                    panic!("attach() sent a baseline GitStatusChanged for an exited session");
                 }
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
