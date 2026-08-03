@@ -251,3 +251,50 @@ export function resolveActiveFocus(
 export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
   return workspace.pages.flatMap((p) => allSessionIds(p.layout));
 }
+
+// A single session's git status, mirroring crates/protocol's GitStatus
+// wire shape exactly (camelCase, per its own #[serde(rename_all =
+// "camelCase")]). repoRoot identifies the repo by canonical filesystem
+// path, not by branch name -- two unrelated repos could coincidentally
+// both be on a branch called "main".
+export interface GitStatus {
+  repoRoot: string;
+  branch: string;
+  dirty: boolean;
+  ahead: number;
+  behind: number;
+  hasUpstream: boolean;
+}
+
+// The sidebar's own three-way branching rule for a page's git status, per
+// the design spec: zero distinct repos among the page's sessions means no
+// indicator at all; exactly one means that repo's status is shown
+// directly on the page row; two or more means an expand toggle instead of
+// picking one arbitrary repo to show. Sidebar.svelte renders one row per
+// SESSION when expanded (not one row per repo), so this type only needs
+// to carry the repo count for that branch, not a full per-repo breakdown.
+export type PageGitSummary =
+  | { kind: "none" }
+  | { kind: "single"; status: GitStatus }
+  | { kind: "multiple"; repoCount: number };
+
+// Groups a page's sessions' git statuses by repoRoot. Sessions with no
+// git repo (a null or entirely missing gitStatusById entry) are ignored,
+// not counted as a distinct "no repo" group of their own. Real business
+// logic, not template rendering -- extracted here so it's independently
+// testable rather than living inline in Sidebar.svelte, per this
+// milestone's own testing note (unlike the previous milestone's UI-only
+// tasks, which had no branching logic of their own to test).
+export function summarizePageGitStatus(
+  page: Page,
+  gitStatusById: Record<string, GitStatus | null>
+): PageGitSummary {
+  const byRepoRoot = new Map<string, GitStatus>();
+  for (const id of allSessionIds(page.layout)) {
+    const status = gitStatusById[id];
+    if (status) byRepoRoot.set(status.repoRoot, status);
+  }
+  if (byRepoRoot.size === 0) return { kind: "none" };
+  if (byRepoRoot.size === 1) return { kind: "single", status: [...byRepoRoot.values()][0] };
+  return { kind: "multiple", repoCount: byRepoRoot.size };
+}

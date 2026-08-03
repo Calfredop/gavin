@@ -20,13 +20,24 @@ import {
   setPageFocus,
   resolveActiveFocus,
   UNFILED_WORKSPACE_ID,
+  summarizePageGitStatus,
   type WorkspacesData,
   type Workspace,
   type Page,
+  type GitStatus,
+  type PageGitSummary,
 } from "./workspace";
 
 function leaf(tabs: string[]): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex: 0 };
+}
+
+function page(id: string, layout: LayoutNode): Page {
+  return { id, name: id, layout, focusedSessionId: null };
+}
+
+function gitStatus(repoRoot: string, overrides: Partial<GitStatus> = {}): GitStatus {
+  return { repoRoot, branch: "main", dirty: false, ahead: 0, behind: 0, hasUpstream: false, ...overrides };
 }
 
 const empty: WorkspacesData = { workspaces: [], activeWorkspaceId: null };
@@ -287,5 +298,45 @@ describe("movePage", () => {
     let state = createWorkspace(empty, "ws-1", "A");
     state = createPage(state, "ws-1", "page-1", "Page 1", leaf(["a"]));
     expect(movePage(state, "page-1", "missing", 0)).toEqual(state);
+  });
+});
+
+describe("summarizePageGitStatus", () => {
+  it("returns none when no session in the page has a git repo (empty map)", () => {
+    const p = page("p1", leaf(["a", "b"]));
+    expect(summarizePageGitStatus(p, {})).toEqual({ kind: "none" });
+  });
+
+  it("returns none when every session's status is explicitly null", () => {
+    const p = page("p1", leaf(["a", "b"]));
+    expect(summarizePageGitStatus(p, { a: null, b: null })).toEqual({ kind: "none" });
+  });
+
+  it("returns single when every session with a repo shares the same repoRoot", () => {
+    const p = page("p1", leaf(["a", "b"]));
+    const status = gitStatus("/repo");
+    expect(summarizePageGitStatus(p, { a: status, b: status })).toEqual({ kind: "single", status });
+  });
+
+  it("returns single when only some sessions have a repo, and the rest are null or missing", () => {
+    const p = page("p1", leaf(["a", "b", "c"]));
+    const status = gitStatus("/repo");
+    expect(summarizePageGitStatus(p, { a: status, b: null })).toEqual({ kind: "single", status });
+  });
+
+  it("returns multiple with the correct distinct repo count when sessions span different repos", () => {
+    const p = page("p1", leaf(["a", "b", "c"]));
+    const result = summarizePageGitStatus(p, {
+      a: gitStatus("/repo-a"),
+      b: gitStatus("/repo-b"),
+      c: gitStatus("/repo-a"),
+    });
+    expect(result).toEqual({ kind: "multiple", repoCount: 2 });
+  });
+
+  it("ignores sessions not present in the page's own layout", () => {
+    const p = page("p1", leaf(["a"]));
+    const result = summarizePageGitStatus(p, { a: gitStatus("/repo-a"), stranger: gitStatus("/repo-b") });
+    expect(result).toEqual({ kind: "single", status: gitStatus("/repo-a") });
   });
 });
