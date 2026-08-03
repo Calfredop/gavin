@@ -17,7 +17,20 @@ export function setWorkspacesState(workspaces: Workspace[], activeWorkspaceId: s
   return invoke("set_workspaces_state", { workspaces, activeWorkspaceId });
 }
 
+// Set once by layoutState.ts's bootstrap() -- both real input paths in
+// this app (terminalRegistry.ts's per-keystroke term.onData, and
+// clipboard.ts's paste action) already call writeInput directly, so
+// hooking in here is the one choke point that covers both without either
+// of those modules needing to import layoutState.ts back (which would be
+// circular, since layoutState.ts already imports terminalRegistry.ts).
+let onWriteInput: ((sessionId: string) => void) | null = null;
+
+export function setOnWriteInputHook(handler: (sessionId: string) => void): void {
+  onWriteInput = handler;
+}
+
 export function writeInput(sessionId: string, data: string): Promise<void> {
+  onWriteInput?.(sessionId);
   return invoke("write_input", { sessionId, data });
 }
 

@@ -10,6 +10,7 @@ vi.mock("./backend", () => ({
   setWorkspacesState: vi.fn(),
   getBootstrapError: vi.fn(),
   writeInput: vi.fn(),
+  setOnWriteInputHook: vi.fn(),
   resizeSession: vi.fn(),
   signalFrontendReady: vi.fn(),
   getSessionNames: vi.fn(),
@@ -42,6 +43,8 @@ import {
   handleCwdChanged,
   handleSessionStatusChanged,
   handleGitStatusChanged,
+  handleSessionRestored,
+  clearRestoredMarker,
   closePane,
   setSessionName,
   createWorkspace,
@@ -83,6 +86,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     sessionNames: {},
     sessionStatusById: {},
     gitStatusById: {},
+    restoredSessionIds: new Set(),
   });
 }
 
@@ -98,6 +102,7 @@ beforeEach(() => {
     sessionNames: {},
     sessionStatusById: {},
     gitStatusById: {},
+    restoredSessionIds: new Set(),
   });
 });
 
@@ -305,6 +310,37 @@ describe("handleGitStatusChanged", () => {
     handleGitStatusChanged("a", statusA);
     handleGitStatusChanged("b", statusB);
     expect(get(layoutState).gitStatusById).toEqual({ a: statusA, b: statusB });
+  });
+});
+
+describe("handleSessionRestored and clearRestoredMarker", () => {
+  it("adds a session id when restored", () => {
+    handleSessionRestored("a");
+    expect(get(layoutState).restoredSessionIds.has("a")).toBe(true);
+  });
+
+  it("tracks independent sessions independently", () => {
+    handleSessionRestored("a");
+    handleSessionRestored("b");
+    expect(get(layoutState).restoredSessionIds).toEqual(new Set(["a", "b"]));
+  });
+
+  it("adding the same id twice is idempotent", () => {
+    handleSessionRestored("a");
+    handleSessionRestored("a");
+    expect(get(layoutState).restoredSessionIds).toEqual(new Set(["a"]));
+  });
+
+  it("clearRestoredMarker removes just that session's id", () => {
+    handleSessionRestored("a");
+    handleSessionRestored("b");
+    clearRestoredMarker("a");
+    expect(get(layoutState).restoredSessionIds).toEqual(new Set(["b"]));
+  });
+
+  it("clearRestoredMarker on a session that was never restored is a harmless no-op", () => {
+    clearRestoredMarker("never-restored");
+    expect(get(layoutState).restoredSessionIds).toEqual(new Set());
   });
 });
 

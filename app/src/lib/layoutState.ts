@@ -21,6 +21,7 @@ export interface LayoutState {
   sessionNames: Record<string, string>;
   sessionStatusById: Record<string, SessionStatus>;
   gitStatusById: Record<string, GitStatus | null>;
+  restoredSessionIds: Set<string>;
 }
 
 const initialState: LayoutState = {
@@ -33,6 +34,7 @@ const initialState: LayoutState = {
   sessionNames: {},
   sessionStatusById: {},
   gitStatusById: {},
+  restoredSessionIds: new Set(),
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -120,6 +122,13 @@ export async function bootstrap(): Promise<void> {
       handleGitStatusChanged(event.payload[0], event.payload[1]);
     })
   );
+  unlisteners.push(
+    await listen<string>("session-restored", (event) => {
+      handleSessionRestored(event.payload);
+    })
+  );
+
+  backend.setOnWriteInputHook((sessionId) => clearRestoredMarker(sessionId));
 
   // Session names are frontend-set, never externally/daemon-driven, so
   // there's no live event for them (unlike cwd) -- a one-shot fetch is
@@ -296,6 +305,29 @@ export function handleSessionStatusChanged(sessionId: string, status: SessionSta
 // entries are never removed on session exit.
 export function handleGitStatusChanged(sessionId: string, status: GitStatus | null): void {
   layoutState.update((s) => ({ ...s, gitStatusById: { ...s.gitStatusById, [sessionId]: status } }));
+}
+
+// Shared by the "session-restored" event listener in bootstrap() and this
+// file's own tests. Entries are added, never auto-removed by the passage
+// of time -- clearRestoredMarker (below) is the only thing that removes
+// one, driven by the user actually typing into (or pasting into) that
+// specific session.
+export function handleSessionRestored(sessionId: string): void {
+  layoutState.update((s) => ({ ...s, restoredSessionIds: new Set(s.restoredSessionIds).add(sessionId) }));
+}
+
+// Called via backend.ts's writeInput hook on every single keystroke and
+// paste across every session in the app -- checked against the current
+// state BEFORE calling layoutState.update, so the overwhelmingly common
+// case (a session that was never restored, or was already cleared) never
+// triggers a store update or a new Set allocation at all.
+export function clearRestoredMarker(sessionId: string): void {
+  if (!get(layoutState).restoredSessionIds.has(sessionId)) return;
+  layoutState.update((s) => {
+    const next = new Set(s.restoredSessionIds);
+    next.delete(sessionId);
+    return { ...s, restoredSessionIds: next };
+  });
 }
 
 // A blank (or whitespace-only) name clears the override rather than
