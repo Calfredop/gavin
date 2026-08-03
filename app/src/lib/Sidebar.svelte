@@ -397,6 +397,10 @@
             {#if formatAheadBehind(gitSummary.status)}
               <span class="git-ahead-behind">{formatAheadBehind(gitSummary.status)}</span>
             {/if}
+          {:else if gitSummary.kind === "multiple"}
+            <!-- Always plural: summarizePageGitStatus only returns "multiple"
+                 when the distinct repo count is 2 or more. -->
+            <span class="git-repo-count">{gitSummary.repoCount} repos</span>
           {/if}
           {#if waitingForInputCount(page) > 0}
             <span class="waiting-badge">{waitingForInputCount(page)}</span>
@@ -696,6 +700,13 @@
     border: 1px solid #d9a648;
   }
   .git-ahead-behind {
+    flex: 0 1 auto;
+    overflow: hidden;
+    white-space: nowrap;
+    color: #999;
+    font-size: 0.9em;
+  }
+  .git-repo-count {
     flex: 0 1 auto;
     overflow: hidden;
     white-space: nowrap;
