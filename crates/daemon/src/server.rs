@@ -86,6 +86,31 @@ const GIT_STATUS_BACKSTOP_INTERVAL: Duration = Duration::from_secs(180);
 /// than one recheck per individual write event.
 const GIT_STATUS_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Hard floor on how often a given repo root's `git status` may actually
+/// run, across ALL three trigger sources combined. Do not remove this as
+/// unnecessary complexity: without it, the filesystem watch alone can
+/// out-poll the very design this whole module exists to avoid. The
+/// debouncer above flushes roughly once per `GIT_STATUS_DEBOUNCE` for as
+/// long as events keep arriving, and its callback runs `trigger_recheck`
+/// synchronously -- so sustained churn inside the watched working tree (a
+/// `cargo build` writing `target/`, `npm install` writing
+/// `node_modules/`, a watch-mode bundler; none of which are excluded from
+/// the working-tree watch) would otherwise degenerate into a `git status`
+/// every ~500ms for the whole duration of that build. That is a *higher*
+/// `.git/index.lock`-touching rate than the ~5-second blind polling loop
+/// that caused cmux's manaflow-ai/cmux#2722 and #4779 (other tools
+/// watching the same repo broken; users' own concurrent git commands
+/// interfered with) -- the exact failure this design's three-trigger
+/// structure was chosen to prevent.
+///
+/// Enforced by *sleeping out* the remainder rather than skipping the
+/// check, so the final event of a burst is never silently dropped; every
+/// caller of `trigger_recheck` already runs on a thread that is not the
+/// PTY pump (the debouncer's own thread, the backstop timer's own thread,
+/// and the thread `trigger_recheck_for_session` spawns), so blocking here
+/// stalls nothing user-visible.
+const MIN_RECHECK_INTERVAL: Duration = Duration::from_secs(5);
+
 /// One shared poller per unique repo root -- not per session. The first
 /// session that resolves to a given repo root causes one of these to be
 /// created (see `register_session_with_repo`); the last session mapped to
@@ -114,6 +139,12 @@ struct RepoPoller {
 struct RepoPollerInner {
     mapped_sessions: HashSet<String>,
     last_status: Option<GitStatus>,
+    /// When a `git status` for this repo root last actually ran (whatever
+    /// its result, and whether or not the result differed from the
+    /// previous one) -- the basis for MIN_RECHECK_INTERVAL's floor.
+    /// `None` until the very first check completes, so a brand-new
+    /// poller's first check never waits.
+    last_checked: Option<Instant>,
 }
 
 /// Persists a status transition and, if a client is currently attached,
@@ -186,6 +217,12 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
 /// tolerated inline the same way the existing synchronous SQLite
 /// `update_cwd` write already is in this same loop) -- but never runs
 /// `run_git_status` itself inline; see `register_session_with_repo`.
+///
+/// On any real transition, notifies this session's own attached client
+/// with a `Response::GitStatusChanged` carrying the new root's cached
+/// status (or `None`, when the session is no longer in a repo at all) --
+/// see the comment at the bottom of the body for why that notification
+/// can't come from anywhere else.
 fn update_session_repo_mapping(manager: &Arc<SessionManager>, id: &str, cwd: &str) {
     let new_root = crate::git_status::resolve_repo_root(cwd);
 
@@ -208,11 +245,51 @@ fn update_session_repo_mapping(manager: &Arc<SessionManager>, id: &str, cwd: &st
         None => map.remove(id),
     };
 
-    if let Some(old) = old_root {
-        unregister_session_from_repo(manager, id, &old);
+    if let Some(old) = &old_root {
+        unregister_session_from_repo(manager, id, old);
     }
-    if let Some(new) = new_root {
-        register_session_with_repo(manager, id, &new);
+    if let Some(new) = &new_root {
+        register_session_with_repo(manager, id, new);
+    }
+
+    // Dropped explicitly here, before the lookup + blocking write below --
+    // holding it through register/unregister above is deliberate (see the
+    // comment on its acquisition), and safe because neither of those ever
+    // touches `session_repo_root` itself; it must not be held any further
+    // than this, matching this file's rule of never holding a lock across
+    // blocking I/O.
+    drop(map);
+
+    // Without this, a session that LEAVES a repo (cd'd out entirely, or
+    // moved to a different one) would never get another GitStatusChanged
+    // after this point: `trigger_recheck` only emits to sessions still
+    // present in *that* poller's `mapped_sessions`, and this session
+    // either has no mapping at all now (`new_root` is None) or is mapped
+    // to a poller it was not registered with until a moment ago. That
+    // would leave the frontend showing the previous repo's last-known
+    // status forever, with no event able to clear it -- and `Option`
+    // exists on this event's payload precisely so `None` can say "not in
+    // a repo".
+    //
+    // Sent unconditionally, including `status: None` -- unlike attach()'s
+    // baseline block, which only sends when it has something (silence
+    // there is a valid "nothing known yet"). This one is a *change*
+    // notification for a mapping that just transitioned, so the client
+    // genuinely needs to hear it even when the new state is "no repo".
+    let new_status = new_root.as_ref().and_then(|root| {
+        manager
+            .repo_pollers
+            .lock()
+            .unwrap()
+            .get(root)
+            .and_then(|poller| poller.inner.lock().unwrap().last_status.clone())
+    });
+    let target = manager.attached_writers.lock().unwrap().get(id).cloned();
+    if let Some(w) = target {
+        let _ = write_message(
+            &mut *w.lock().unwrap(),
+            &Response::GitStatusChanged { id: id.to_string(), status: new_status },
+        );
     }
 }
 
@@ -225,18 +302,32 @@ fn update_session_repo_mapping(manager: &Arc<SessionManager>, id: &str, cwd: &st
 /// `attach()`'s baseline logic in Task 5) on a `git status` subprocess.
 fn register_session_with_repo(manager: &Arc<SessionManager>, id: &str, repo_root: &str) {
     let mut pollers = manager.repo_pollers.lock().unwrap();
-    if !pollers.contains_key(repo_root) {
-        let poller = Arc::new(RepoPoller {
-            checking: AtomicBool::new(false),
-            inner: Mutex::new(RepoPollerInner { mapped_sessions: HashSet::new(), last_status: None }),
-            debouncer: Mutex::new(None),
-        });
-        pollers.insert(repo_root.to_string(), Arc::clone(&poller));
-        let manager = Arc::clone(manager);
-        let repo_root = repo_root.to_string();
-        std::thread::spawn(move || spawn_repo_poller(&manager, repo_root, poller));
+    if let Some(existing) = pollers.get(repo_root) {
+        // An existing poller was constructed for some *other*, earlier
+        // session, so this one still has to be added separately.
+        existing.inner.lock().unwrap().mapped_sessions.insert(id.to_string());
+        return;
     }
-    pollers.get(repo_root).unwrap().inner.lock().unwrap().mapped_sessions.insert(id.to_string());
+    // `mapped_sessions` is seeded with this session id at construction
+    // rather than inserted afterward: the thread spawned just below runs
+    // its own first `trigger_recheck` immediately, and if that won the
+    // race against a separate follow-up insert it would emit to an empty
+    // mapped-sessions set, so the very session that caused this poller to
+    // exist would miss the first result (delayed to the next fs-watch /
+    // OSC-133-idle / backstop trigger -- avoidable, so avoided).
+    let poller = Arc::new(RepoPoller {
+        checking: AtomicBool::new(false),
+        inner: Mutex::new(RepoPollerInner {
+            mapped_sessions: HashSet::from([id.to_string()]),
+            last_status: None,
+            last_checked: None,
+        }),
+        debouncer: Mutex::new(None),
+    });
+    pollers.insert(repo_root.to_string(), Arc::clone(&poller));
+    let manager = Arc::clone(manager);
+    let repo_root = repo_root.to_string();
+    std::thread::spawn(move || spawn_repo_poller(&manager, repo_root, poller));
 }
 
 /// Unregisters `id` from `repo_root`'s mapped-sessions set, tearing the
@@ -362,12 +453,25 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
     };
 
     let git_dir = std::path::Path::new(repo_root).join(".git");
-    let _ = debouncer.watcher().watch(&git_dir.join("HEAD"), notify::RecursiveMode::NonRecursive);
-    let _ = debouncer.watcher().watch(&git_dir.join("index"), notify::RecursiveMode::NonRecursive);
+    // A NonRecursive watch on the `.git` directory itself, not on
+    // `.git/HEAD` / `.git/index` individually: git replaces both files via
+    // lockfile-plus-rename (`index.lock` renamed over `index`, and the
+    // same pattern for HEAD on many checkout paths), and on Linux
+    // `inotify` watches inodes rather than paths -- a rename-over-target
+    // orphans the watch on the old, now-unlinked inode, so a per-file
+    // watch here would silently stop firing after the very first commit
+    // or checkout (macOS's FSEvents backend is directory-granular and
+    // unaffected, which is why this never surfaces in local testing).
+    // Watching the containing directory NonRecursively catches
+    // HEAD/index/ORIG_HEAD/MERGE_HEAD etc. being replaced regardless of
+    // how git swaps them in, and still never recurses into
+    // `.git/objects/` -- preserving this design's original intent.
+    let _ = debouncer.watcher().watch(&git_dir, notify::RecursiveMode::NonRecursive);
     // refs is a directory tree (refs/heads/<branch>, etc.) -- a new
     // branch or commit can create files nested under it, so this one
-    // specifically needs Recursive, unlike HEAD/index which are plain
-    // files.
+    // specifically still needs its own Recursive watch; the NonRecursive
+    // watch on `.git` above only sees `refs/` itself being replaced, not
+    // files nested inside it.
     let _ = debouncer.watcher().watch(&git_dir.join("refs"), notify::RecursiveMode::Recursive);
 
     // repo_root itself, non-recursively, to notice new/deleted top-level
@@ -388,19 +492,53 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
 
 /// Shared by all three trigger sources (filesystem watch, backstop timer,
 /// and the reactive OSC-133-idle hook in `spawn_pump`). Runs at most one
-/// `git status` at a time per repo root (via `checking`), caches the
-/// result, and emits `Response::GitStatusChanged` to every session
-/// currently mapped to this root that has an attached writer.
+/// `git status` at a time per repo root (via `checking`) and no more often
+/// than MIN_RECHECK_INTERVAL (see that constant -- the floor is load-
+/// bearing, not incidental), caches the result, and emits
+/// `Response::GitStatusChanged` to every session currently mapped to this
+/// root that has an attached writer -- but only when the result actually
+/// differs from the last one this root produced.
+///
+/// May block for up to MIN_RECHECK_INTERVAL plus the `git status` timeout;
+/// every caller already runs on a thread that is not a session's PTY pump.
 fn trigger_recheck(manager: &Arc<SessionManager>, repo_root: &str, poller: &Arc<RepoPoller>) {
     if poller.checking.swap(true, Ordering::SeqCst) {
         return;
     }
+
+    // Sleep out whatever remains of MIN_RECHECK_INTERVAL since this repo
+    // root's last actual check, rather than skipping outright -- see that
+    // constant's own doc comment for both why the floor exists at all and
+    // why waiting (rather than dropping the trigger) is the right shape
+    // here. `checking` is already held for the duration, so concurrent
+    // triggers still collapse into this one instead of queueing behind it.
+    let wait = {
+        let inner = poller.inner.lock().unwrap();
+        inner.last_checked.map(|t| MIN_RECHECK_INTERVAL.saturating_sub(t.elapsed()))
+    };
+    if let Some(wait) = wait {
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
+        }
+    }
+
     let status = crate::git_status::run_git_status(repo_root);
 
+    // Emit only on an actual change -- this event is `GitStatusChanged`,
+    // not `GitStatusPolled`, and three independent triggers (plus the
+    // backstop) would otherwise re-send byte-identical payloads to every
+    // mapped session indefinitely. `last_checked`, unlike `last_status`,
+    // updates on every check regardless of the outcome: it paces the
+    // subprocess, not the event.
     let mapped: Vec<String> = {
         let mut inner = poller.inner.lock().unwrap();
-        inner.last_status = status.clone();
-        inner.mapped_sessions.iter().cloned().collect()
+        inner.last_checked = Some(Instant::now());
+        if status == inner.last_status {
+            Vec::new()
+        } else {
+            inner.last_status = status.clone();
+            inner.mapped_sessions.iter().cloned().collect()
+        }
     };
     for id in mapped {
         let target = manager.attached_writers.lock().unwrap().get(&id).cloned();
@@ -617,15 +755,20 @@ impl SessionManager {
                 &Response::CwdChanged { id: id.to_string(), cwd: record.cwd.clone() },
             );
             // Git-status mapping/baseline is skipped for Exited sessions
-            // too, for the same reason StatusChanged is: no pump thread
-            // will ever run for an exited session (reader_for fails and
-            // the pump's error path never calls
-            // unregister_session_repo_mapping), so establishing a mapping
-            // here would leak that repo's poller -- its filesystem watch
-            // and 3-minute backstop timer thread -- permanently. This is
-            // reachable without any race: recover() explicitly preserves
-            // Exited registry rows across daemon restarts, and attaching
-            // to an already-exited session is an existing supported flow.
+            // too, for the same reason StatusChanged is: there is nothing
+            // live to map. Establishing a mapping here would spawn (or
+            // join) a repo poller on behalf of a session that may never
+            // get a pump thread at all to tear it back down again --
+            // specifically after a daemon restart, where recover() skips
+            // Exited rows entirely, so `sessions` holds no entry, and the
+            // pump's reader_for call would fail outright. (Within one
+            // daemon lifetime an exited session still has its `sessions`
+            // entry -- only kill_session removes it -- so its pump does
+            // spawn, hits EOF immediately, and its normal teardown
+            // unregisters correctly.) The pump's error path now also
+            // unregisters as a backstop, but this gate keeps the daemon
+            // from doing the pointless work in the first place, and
+            // attaching to an already-exited session is a supported flow.
             if record.status != SessionStatus::Exited {
                 let _ = write_message(
                     &mut *writer.lock().unwrap(),
@@ -705,6 +848,20 @@ impl SessionManager {
                     if let Some(w) = removed {
                         let _ = write_message(&mut *w.lock().unwrap(), &Response::Error { message: e.to_string() });
                     }
+                    // The normal teardown at the bottom of this thread is
+                    // unreachable from here, so the repo mapping attach()
+                    // just established (it runs
+                    // update_session_repo_mapping before spawning this
+                    // thread) would otherwise leak -- along with the repo
+                    // poller, its filesystem watch, and its 3-minute
+                    // backstop thread, permanently, once per attach.
+                    // Reachable with no race at all: recover() leaves a
+                    // registry row at its ORIGINAL, non-Exited status when
+                    // PtySession::spawn fails for it (e.g. its command is
+                    // no longer executable), so attach()'s Exited gate
+                    // doesn't apply, yet `sessions` has no entry and
+                    // reader_for below fails.
+                    unregister_session_repo_mapping(&manager, &id);
                     return;
                 }
             };
@@ -716,6 +873,16 @@ impl SessionManager {
             let mut pending: Vec<u8> = Vec::new();
             let mut osc_scanner = OscCwdScanner::new();
             let mut status_scanner = StatusScanner::new();
+            // The last cwd this session reported via OSC 7, used purely to
+            // skip a redundant `update_session_repo_mapping` (and with it
+            // the `git rev-parse` subprocess fork inside it) when the
+            // reported directory hasn't actually changed -- standard shell
+            // integrations emit OSC 7 on EVERY prompt, not just on `cd`,
+            // and OscCwdScanner deliberately reports every one of them.
+            // Session-local and single-threaded (only this session's own
+            // pump thread reads or writes it), so unlike
+            // `session_repo_root` it needs no place in SessionManager.
+            let mut last_cwd_seen: Option<String> = None;
             let heuristic = Arc::new(HeuristicState {
                 inner: Mutex::new(HeuristicInner {
                     last_activity: Instant::now(),
@@ -754,7 +921,10 @@ impl SessionManager {
                                     &Response::CwdChanged { id: id.clone(), cwd: cwd.clone() },
                                 );
                             }
-                            update_session_repo_mapping(&manager, &id, &cwd);
+                            if last_cwd_seen.as_deref() != Some(cwd.as_str()) {
+                                update_session_repo_mapping(&manager, &id, &cwd);
+                                last_cwd_seen = Some(cwd.clone());
+                            }
                         }
 
                         {
@@ -2052,6 +2222,341 @@ mod tests {
             let n = reader.read(&mut buf).unwrap();
             collected.push_str(&String::from_utf8_lossy(&buf[..n]));
             assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
+    }
+
+    /// A `SessionManager` with nothing else attached to it, for the tests
+    /// below that drive `trigger_recheck`/`attach` directly rather than
+    /// over the socket.
+    fn bare_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        Arc::new(SessionManager::new(registry))
+    }
+
+    fn bare_poller() -> Arc<RepoPoller> {
+        Arc::new(RepoPoller {
+            checking: AtomicBool::new(false),
+            inner: Mutex::new(RepoPollerInner {
+                mapped_sessions: HashSet::new(),
+                last_status: None,
+                last_checked: None,
+            }),
+            debouncer: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn trigger_recheck_waits_out_the_minimum_interval_before_running_a_second_check() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_root = repo_dir.path().to_str().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = bare_manager(&dir);
+        let poller = bare_poller();
+
+        // The very first check for a repo root has no previous check to
+        // pace itself against, so it must not wait at all.
+        let started = std::time::Instant::now();
+        trigger_recheck(&manager, repo_root, &poller);
+        let first_elapsed = started.elapsed();
+        assert!(
+            first_elapsed < Duration::from_secs(2),
+            "the first check for a repo root must not wait out any floor, but took {first_elapsed:?}"
+        );
+
+        // The second one, immediately after, must sleep out the remainder
+        // of MIN_RECHECK_INTERVAL rather than firing another `git status`
+        // straight away (and must not skip the check outright either --
+        // it still updates last_checked, asserted below).
+        let started = std::time::Instant::now();
+        trigger_recheck(&manager, repo_root, &poller);
+        let second_elapsed = started.elapsed();
+        assert!(
+            second_elapsed >= MIN_RECHECK_INTERVAL - Duration::from_millis(250),
+            "a second check within MIN_RECHECK_INTERVAL must wait it out, but returned after {second_elapsed:?}"
+        );
+        assert!(
+            poller.inner.lock().unwrap().last_checked.is_some(),
+            "the check must still have actually run after the wait"
+        );
+    }
+
+    #[test]
+    fn trigger_recheck_does_not_re_emit_an_unchanged_status() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_root = repo_dir.path().to_str().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let manager = bare_manager(&dir);
+        let poller = bare_poller();
+
+        // A session mapped to this root with a live "client" on the other
+        // end of a socketpair, so emitted responses are directly readable.
+        let (client, server_side) = UnixStream::pair().unwrap();
+        // Set before anything can close the far end: on macOS,
+        // SO_RCVTIMEO on a socketpair whose peer has already been dropped
+        // fails with EINVAL.
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        poller.inner.lock().unwrap().mapped_sessions.insert("s1".to_string());
+        manager
+            .attached_writers
+            .lock()
+            .unwrap()
+            .insert("s1".to_string(), Arc::new(Mutex::new(server_side)));
+
+        // Two checks back to back with nothing touching the repo in
+        // between: identical results, so only the first is an actual
+        // change and only it may be emitted.
+        trigger_recheck(&manager, repo_root, &poller);
+        trigger_recheck(&manager, repo_root, &poller);
+
+        let mut reader = BufReader::new(client);
+        let mut emitted = 0;
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::GitStatusChanged { status: Some(status), .. })) => {
+                    assert_eq!(status.branch, "main");
+                    emitted += 1;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert_eq!(emitted, 1, "an unchanged status must not be re-emitted on every recheck");
+    }
+
+    #[test]
+    fn a_session_that_leaves_a_git_repo_receives_a_git_status_changed_with_no_status() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_path = repo_dir.path().to_str().unwrap().to_string();
+        // A directory that is deliberately not a repo, and not under one.
+        let plain_dir = tempfile::tempdir().unwrap();
+        let plain_path = plain_dir.path().to_str().unwrap().to_string();
+
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: plain_path.clone(),
+                    cwd: plain_path.clone(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: format!("printf '\\033]7;file://host{repo_path}\\007'\n"),
+            },
+        )
+        .unwrap();
+
+        // First get into the repo, so there is a stale indicator to clear.
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut in_repo = false;
+        while std::time::Instant::now() < deadline && !in_repo {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::GitStatusChanged { id: rid, status: Some(_) } = resp {
+                in_repo = rid == id;
+            }
+        }
+        assert!(in_repo, "never saw the session's status for the repo it moved into");
+
+        // Now leave it entirely.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: format!("printf '\\033]7;file://host{plain_path}\\007'\n"),
+            },
+        )
+        .unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut cleared = false;
+        while std::time::Instant::now() < deadline && !cleared {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::GitStatusChanged { id: rid, status: None } = resp {
+                cleared = rid == id;
+            }
+        }
+        assert!(
+            cleared,
+            "a session that cd'd out of a git repo never received GitStatusChanged{{status: None}}, \
+             so its client could never clear the stale indicator"
+        );
+    }
+
+    #[test]
+    fn a_session_that_moves_between_repos_receives_the_new_repos_git_status() {
+        let repo_a = tempfile::tempdir().unwrap();
+        init_test_repo(repo_a.path());
+        let repo_a_path = repo_a.path().to_str().unwrap().to_string();
+        let repo_b = tempfile::tempdir().unwrap();
+        init_test_repo(repo_b.path());
+        let repo_b_path = repo_b.path().to_str().unwrap().to_string();
+        let plain_dir = tempfile::tempdir().unwrap();
+        let plain_path = plain_dir.path().to_str().unwrap().to_string();
+
+        let (socket_path, _dir) = start_test_server();
+
+        let make_session = |cwd: &str| {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: cwd.to_string(),
+                    cwd: cwd.to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+        let attach = |id: &str| {
+            let stream = UnixStream::connect(&socket_path).unwrap();
+            write_message(&mut &stream, &Request::Attach { id: id.to_string() }).unwrap();
+            stream
+        };
+        let report_cwd = |stream: &UnixStream, id: &str, path: &str| {
+            write_message(
+                &mut &*stream,
+                &Request::WriteInput {
+                    id: id.to_string(),
+                    data: format!("printf '\\033]7;file://host{path}\\007'\n"),
+                },
+            )
+            .unwrap();
+        };
+        let wait_for_status_in = |reader: &mut BufReader<UnixStream>, id: &str, root: &std::path::Path| {
+            let want = std::fs::canonicalize(root).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while std::time::Instant::now() < deadline {
+                let resp: Response = read_message(reader).unwrap().unwrap();
+                if let Response::GitStatusChanged { id: rid, status: Some(status) } = resp {
+                    if rid == id && std::fs::canonicalize(&status.repo_root).unwrap() == want {
+                        return;
+                    }
+                }
+            }
+            panic!("never saw a GitStatusChanged for {id} reporting repo root {want:?}");
+        };
+
+        // Session B goes into repo B first, purely so repo B's poller
+        // already has a cached status by the time session A arrives.
+        let id_b = make_session(&plain_path);
+        let stream_b = attach(&id_b);
+        report_cwd(&stream_b, &id_b, &repo_b_path);
+        let mut reader_b = BufReader::new(stream_b.try_clone().unwrap());
+        wait_for_status_in(&mut reader_b, &id_b, repo_b.path());
+
+        // Session A starts out in repo A...
+        let id_a = make_session(&plain_path);
+        let stream_a = attach(&id_a);
+        report_cwd(&stream_a, &id_a, &repo_a_path);
+        let mut reader_a = BufReader::new(stream_a.try_clone().unwrap());
+        wait_for_status_in(&mut reader_a, &id_a, repo_a.path());
+
+        // ...and then moves straight into repo B, which must produce a
+        // GitStatusChanged carrying repo B's status -- repo B's poller
+        // fires no fresh check for a session merely joining it, so
+        // without the mapping-change notification nothing would ever tell
+        // session A's client it is now looking at a different repo.
+        report_cwd(&stream_a, &id_a, &repo_b_path);
+        wait_for_status_in(&mut reader_a, &id_a, repo_b.path());
+    }
+
+    #[test]
+    fn attaching_after_a_failed_recovery_spawn_leaves_no_repo_mapping_or_poller_behind() {
+        // recover() leaves a registry row at its ORIGINAL, non-Exited
+        // status when PtySession::spawn fails for it, and no `sessions`
+        // entry -- so attach()'s Exited gate does not apply, the mapping
+        // gets established, a poller gets spawned, and then the pump's
+        // reader_for call fails. Without the error arm's own
+        // unregister_session_repo_mapping, both leak permanently, once
+        // per attach.
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_path = repo_dir.path().to_str().unwrap().to_string();
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "failed-spawn-1".to_string(),
+                    workspace_path: repo_path.clone(),
+                    cwd: repo_path.clone(),
+                    command: Some("/nonexistent/definitely-not-an-executable-xyz".to_string()),
+                    status: SessionStatus::Idle,
+                    restored: false,
+                })
+                .unwrap();
+        }
+
+        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+        manager.recover().unwrap();
+        assert!(
+            manager.sessions.lock().unwrap().get("failed-spawn-1").is_none(),
+            "test premise broken: the command was expected to fail to spawn"
+        );
+        assert_eq!(
+            manager.registry.lock().unwrap().get("failed-spawn-1").unwrap().unwrap().status,
+            SessionStatus::Idle,
+            "test premise broken: recover() is expected to leave the row's original status alone"
+        );
+
+        let (client, server_side) = UnixStream::pair().unwrap();
+        // Set before attach, not after: the pump's error arm drops the
+        // far end of this pair, and on macOS SO_RCVTIMEO on a socketpair
+        // whose peer has already been dropped fails with EINVAL.
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        manager.attach("failed-spawn-1", Arc::new(Mutex::new(server_side)));
+
+        // The pump thread's error arm runs asynchronously, so poll for it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let mapped = manager.session_repo_root.lock().unwrap().contains_key("failed-spawn-1");
+            let pollers = manager.repo_pollers.lock().unwrap().len();
+            if !mapped && pollers == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "attach to a session with no live PTY leaked its repo mapping ({mapped}) \
+                 and/or {pollers} poller(s)"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        // And nothing git-status-shaped was ever sent to this client.
+        let mut reader = BufReader::new(client);
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::GitStatusChanged { .. })) => {
+                    panic!("a session with no live PTY received a GitStatusChanged");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
         }
     }
 
