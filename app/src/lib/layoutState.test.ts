@@ -405,10 +405,26 @@ describe("switchToSessionInPage", () => {
     expect(state.focusedSessionId).toBe("b2");
   });
 
+  it("switches workspace when the target session lives in a different, inactive workspace", async () => {
+    setState(
+      [
+        ws("ws-1", [page("page-a", leaf(["a1"]))], "page-a"),
+        ws("ws-2", [page("page-b", leaf(["b1", "b2"]))], "page-b"),
+      ],
+      "ws-1",
+      "a1"
+    );
+    await switchToSessionInPage("ws-2", "page-b", "b2");
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-2");
+    expect(state.focusedSessionId).toBe("b2");
+  });
+
   it("does nothing when the page doesn't exist", async () => {
     setState([ws("ws-1", [page("page-a", leaf(["a1"]))])], "ws-1", "a1");
     await switchToSessionInPage("ws-1", "no-such-page", "a1");
     expect(get(layoutState).focusedSessionId).toBe("a1");
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
   it("persists the updated workspaces state", async () => {

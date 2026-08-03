@@ -340,6 +340,14 @@ export async function switchToTab(sessionId: string): Promise<void> {
 // session rows (Sidebar.svelte), where each row targets one specific
 // session that may not already be its page's active tab, and that page
 // may not even be the currently active one.
+//
+// Ordering below is load-bearing: resolveActiveFocus reads
+// getActiveWorkspace/getActivePage, so it must run AFTER switchPage/
+// switchWorkspace, not before -- hoisting it above them would silently
+// resolve focus against the OLD active page and leave the clicked
+// session unfocused, with no test failure in any case where the target
+// page/workspace was already active (the only cases the single-workspace
+// tests originally covered).
 export async function switchToSessionInPage(workspaceId: string, pageId: string, sessionId: string): Promise<void> {
   const state = get(layoutState);
   const page = state.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === pageId);

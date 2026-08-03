@@ -674,7 +674,7 @@
     text-align: center;
   }
   .git-branch {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
     max-width: 80px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -696,7 +696,9 @@
     border: 1px solid #d9a648;
   }
   .git-ahead-behind {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    overflow: hidden;
+    white-space: nowrap;
     color: #999;
     font-size: 0.9em;
   }

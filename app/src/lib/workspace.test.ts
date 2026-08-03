@@ -25,7 +25,6 @@ import {
   type Workspace,
   type Page,
   type GitStatus,
-  type PageGitSummary,
 } from "./workspace";
 
 function leaf(tabs: string[]): LayoutNode {
