@@ -40,8 +40,28 @@ pub enum Response {
     SessionExited { id: String, exit_code: i32 },
     CwdChanged { id: String, cwd: String },
     StatusChanged { id: String, status: String },
+    GitStatusChanged { id: String, status: Option<GitStatus> },
     Ok,
     Error { message: String },
+}
+
+/// A session's git status, deduped daemon-side by repo root (many sessions
+/// in the same repo share one of these). Crosses directly through to the
+/// frontend via the Tauri event `session.rs`'s relay emits, unlike
+/// `SessionSummary` below (which is only ever consumed Rust-side and
+/// reconciled into other frontend-facing shapes) -- so unlike
+/// `SessionSummary`, this needs camelCase field names to match the
+/// frontend's own TypeScript naming, verified by the roundtrip test below
+/// rather than assumed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    pub repo_root: String,
+    pub branch: String,
+    pub dirty: bool,
+    pub ahead: u32,
+    pub behind: u32,
+    pub has_upstream: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -197,6 +217,79 @@ mod tests {
             Response::StatusChanged { id, status } => {
                 assert_eq!(id, "s1");
                 assert_eq!(status, "working");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_status_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let status = GitStatus {
+            repo_root: "/Users/alice/project".to_string(),
+            branch: "main".to_string(),
+            dirty: true,
+            ahead: 2,
+            behind: 0,
+            has_upstream: true,
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "repoRoot": "/Users/alice/project",
+                "branch": "main",
+                "dirty": true,
+                "ahead": 2,
+                "behind": 0,
+                "hasUpstream": true
+            })
+        );
+    }
+
+    #[test]
+    fn git_status_changed_response_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let resp = Response::GitStatusChanged {
+            id: "s1".to_string(),
+            status: Some(GitStatus {
+                repo_root: "/tmp/repo".to_string(),
+                branch: "main".to_string(),
+                dirty: false,
+                ahead: 0,
+                behind: 0,
+                has_upstream: false,
+            }),
+        };
+        write_message(&mut buf, &resp).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Response::GitStatusChanged { id, status } => {
+                assert_eq!(id, "s1");
+                let status = status.unwrap();
+                assert_eq!(status.repo_root, "/tmp/repo");
+                assert_eq!(status.branch, "main");
+                assert_eq!(status.dirty, false);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn git_status_changed_response_roundtrips_with_none_status() {
+        let mut buf = Vec::new();
+        let resp = Response::GitStatusChanged { id: "s1".to_string(), status: None };
+        write_message(&mut buf, &resp).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Response::GitStatusChanged { id, status } => {
+                assert_eq!(id, "s1");
+                assert_eq!(status, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }
