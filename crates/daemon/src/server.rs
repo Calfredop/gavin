@@ -260,7 +260,15 @@ fn unregister_session_from_repo(manager: &Arc<SessionManager>, id: &str, repo_ro
 /// called from `spawn_pump`'s teardown when a session exits, mirroring
 /// how `attached_writers`/`heuristic` are also cleaned up there.
 fn unregister_session_repo_mapping(manager: &Arc<SessionManager>, id: &str) {
-    let old_root = manager.session_repo_root.lock().unwrap().remove(id);
+    // Held across the whole remove+unregister sequence (not just the map
+    // update), mirroring update_session_repo_mapping's own fix -- this
+    // function's only caller (spawn_pump's session-exit teardown) can now
+    // race a concurrent attach() call to update_session_repo_mapping for
+    // the same session id, and without this the two could interleave and
+    // leave session_repo_root inconsistent with the poller's own
+    // mapped_sessions bookkeeping.
+    let mut map = manager.session_repo_root.lock().unwrap();
+    let old_root = map.remove(id);
     if let Some(root) = old_root {
         unregister_session_from_repo(manager, id, &root);
     }
@@ -606,7 +614,7 @@ impl SessionManager {
         if let Some(record) = baseline_record {
             let _ = write_message(
                 &mut *writer.lock().unwrap(),
-                &Response::CwdChanged { id: id.to_string(), cwd: record.cwd },
+                &Response::CwdChanged { id: id.to_string(), cwd: record.cwd.clone() },
             );
             // StatusChanged is never sent for Exited -- SessionExited
             // already covers session death, and the frontend's status
@@ -615,6 +623,29 @@ impl SessionManager {
                 let _ = write_message(
                     &mut *writer.lock().unwrap(),
                     &Response::StatusChanged { id: id.to_string(), status: record.status.as_str().to_string() },
+                );
+            }
+            // Establishes this session's repo mapping even if it never
+            // emits a single OSC 7 cwd report (Task 4's own wiring is
+            // purely reactive to *live* changes) -- runs synchronously
+            // (cheap `git rev-parse`, same tolerance as the existing
+            // registry read just above), but never runs `git status`
+            // itself inline; see register_session_with_repo's own note.
+            update_session_repo_mapping(self, id, &record.cwd);
+            let cached_status = {
+                let repo_root = self.session_repo_root.lock().unwrap().get(id).cloned();
+                repo_root.and_then(|root| {
+                    self.repo_pollers
+                        .lock()
+                        .unwrap()
+                        .get(&root)
+                        .and_then(|poller| poller.inner.lock().unwrap().last_status.clone())
+                })
+            };
+            if let Some(status) = cached_status {
+                let _ = write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::GitStatusChanged { id: id.to_string(), status: Some(status) },
                 );
             }
         }
@@ -1825,6 +1856,74 @@ mod tests {
             }
         }
         assert!(saw_output, "never even saw the echoed output -- test setup itself may be broken");
+    }
+
+    #[test]
+    fn attach_sends_a_baseline_git_status_changed_when_a_cached_status_already_exists() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_test_repo(repo_dir.path());
+        let repo_path = repo_dir.path().to_str().unwrap().to_string();
+
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: repo_path.clone(),
+                    cwd: repo_path.clone(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        // First attach: establishes the repo mapping via attach()'s own
+        // update_session_repo_mapping call, and waits for the poller's
+        // very first check (spawned in the background) to actually land
+        // before detaching, so the SECOND attach below has something
+        // real to find already cached.
+        {
+            let mut stream1 = UnixStream::connect(&socket_path).unwrap();
+            write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
+            let mut reader = BufReader::new(stream1.try_clone().unwrap());
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut found = false;
+            while std::time::Instant::now() < deadline {
+                let resp: Response = read_message(&mut reader).unwrap().unwrap();
+                if let Response::GitStatusChanged { id: rid, status: Some(_) } = resp {
+                    if rid == id {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            assert!(found, "first attach never produced a live GitStatusChanged to seed the cache");
+        }
+
+        // Second attach, a fresh connection: this is what actually
+        // exercises the baseline path (a cache already populated by the
+        // first attach above), not a fresh live check.
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        let mut reader2 = BufReader::new(stream2.try_clone().unwrap());
+
+        let first: Response = read_message(&mut reader2).unwrap().unwrap();
+        assert!(matches!(first, Response::CwdChanged { .. }), "expected CwdChanged first, got {first:?}");
+        let second: Response = read_message(&mut reader2).unwrap().unwrap();
+        assert!(matches!(second, Response::StatusChanged { .. }), "expected StatusChanged second, got {second:?}");
+        let third: Response = read_message(&mut reader2).unwrap().unwrap();
+        match third {
+            Response::GitStatusChanged { id: rid, status: Some(status) } => {
+                assert_eq!(rid, id);
+                assert_eq!(status.branch, "main");
+            }
+            other => panic!("expected a baseline GitStatusChanged third, got {other:?}"),
+        }
     }
 
     #[test]
