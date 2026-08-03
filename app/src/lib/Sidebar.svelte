@@ -23,7 +23,7 @@
     type ReorderPosition,
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction } from "./layoutState";
-  import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
+  import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, type Workspace, type Page, type GitStatus } from "./workspace";
 
   let expanded: Set<string> = $state(new Set());
 
@@ -75,6 +75,26 @@
 
   function workspaceWaitingForInputCount(ws: Workspace): number {
     return ws.pages.reduce((sum, page) => sum + waitingForInputCount(page), 0);
+  }
+
+  function pageGitSummary(page: Page) {
+    return summarizePageGitStatus(page, $layoutState.gitStatusById);
+  }
+
+  // ahead/behind are only meaningful (and only shown) when hasUpstream is
+  // true, and only the non-zero side(s) are shown -- "main" alone when
+  // fully up to date with its upstream, "main ↑2" when only ahead,
+  // "main ↑2 ↓1" when diverged. Not extracted to workspace.ts: this is
+  // presentational string formatting, not branching business logic (see
+  // this plan's Global Constraints on what needed its own pure-function
+  // test), matching this file's existing local-helper precedent
+  // (waitingForInputCount and friends are template-local too).
+  function formatAheadBehind(status: GitStatus): string {
+    if (!status.hasUpstream) return "";
+    const parts: string[] = [];
+    if (status.ahead > 0) parts.push(`↑${status.ahead}`);
+    if (status.behind > 0) parts.push(`↓${status.behind}`);
+    return parts.join(" ");
   }
 
   function isExpanded(workspaceId: string): boolean {
@@ -284,6 +304,7 @@
 {#snippet pageList(ws: Workspace)}
   <div class="page-list">
     {#each ws.pages as page, pageIndex (page.id)}
+      {@const gitSummary = pageGitSummary(page)}
       <div
         class="page-row"
         class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}
@@ -328,6 +349,17 @@
             ondblclick={() => startEditingPage(page.id, page.name)}
             onclick={() => switchPage(ws.id, page.id)}
           >{page.name}</span>
+        {/if}
+        {#if gitSummary.kind === "single"}
+          <span class="git-branch">{gitSummary.status.branch}</span>
+          <span
+            class="git-dot"
+            class:dirty={gitSummary.status.dirty}
+            class:clean={!gitSummary.status.dirty}
+          ></span>
+          {#if formatAheadBehind(gitSummary.status)}
+            <span class="git-ahead-behind">{formatAheadBehind(gitSummary.status)}</span>
+          {/if}
         {/if}
         {#if waitingForInputCount(page) > 0}
           <span class="waiting-badge">{waitingForInputCount(page)}</span>
@@ -576,6 +608,33 @@
     line-height: 1.4;
     min-width: 14px;
     text-align: center;
+  }
+  .git-branch {
+    flex: 0 0 auto;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #999;
+  }
+  .git-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+  }
+  .git-dot.dirty {
+    background: #d9a648;
+  }
+  .git-dot.clean {
+    background: transparent;
+    border: 1px solid #d9a648;
+  }
+  .git-ahead-behind {
+    flex: 0 0 auto;
+    color: #999;
+    font-size: 0.9em;
   }
   .add-page,
   .close-workspace,
