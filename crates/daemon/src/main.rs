@@ -1,3 +1,4 @@
+mod git_status;
 mod osc;
 mod pty;
 mod registry;
