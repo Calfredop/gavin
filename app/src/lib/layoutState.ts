@@ -6,6 +6,10 @@ import * as backend from "./backend";
 import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
 import type { Workspace, WorkspacesData } from "./workspace";
+import { sessionLabel } from "./paths";
+import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
+
+export type { SessionStatus };
 
 export interface LayoutState {
   status: "connecting" | "ready" | "error";
@@ -15,6 +19,7 @@ export interface LayoutState {
   focusedSessionId: string | null;
   cwdBySessionId: Record<string, string>;
   sessionNames: Record<string, string>;
+  sessionStatusById: Record<string, SessionStatus>;
 }
 
 const initialState: LayoutState = {
@@ -25,6 +30,7 @@ const initialState: LayoutState = {
   focusedSessionId: null,
   cwdBySessionId: {},
   sessionNames: {},
+  sessionStatusById: {},
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -100,6 +106,11 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(
     await listen<[string, string]>("cwd-changed", (event) => {
       handleCwdChanged(event.payload[0], event.payload[1]);
+    })
+  );
+  unlisteners.push(
+    await listen<[string, SessionStatus]>("session-status-changed", (event) => {
+      handleSessionStatusChanged(event.payload[0], event.payload[1]);
     })
   );
 
@@ -252,6 +263,21 @@ export function handleSessionExited(sessionId: string): void {
 // is not a meaningful memory concern.
 export function handleCwdChanged(sessionId: string, cwd: string): void {
   layoutState.update((s) => ({ ...s, cwdBySessionId: { ...s.cwdBySessionId, [sessionId]: cwd } }));
+}
+
+// Shared by the "session-status-changed" event listener in bootstrap() and
+// this file's own tests. Reads the *previous* status before overwriting
+// the map -- undefined for a session's first-ever status report -- and
+// hands both values plus a resolved display label to notifications.ts,
+// which decides whether the specific transition is worth an OS
+// notification. Like handleCwdChanged, entries are never removed on
+// session exit.
+export function handleSessionStatusChanged(sessionId: string, status: SessionStatus): void {
+  const state = get(layoutState);
+  const previousStatus = state.sessionStatusById[sessionId];
+  layoutState.update((s) => ({ ...s, sessionStatusById: { ...s.sessionStatusById, [sessionId]: status } }));
+  const label = sessionLabel(state.sessionNames, state.cwdBySessionId, sessionId);
+  void maybeNotifyStatusChange(sessionId, previousStatus, status, label);
 }
 
 // A blank (or whitespace-only) name clears the override rather than

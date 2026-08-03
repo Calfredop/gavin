@@ -24,7 +24,12 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+vi.mock("./notifications", () => ({
+  maybeNotifyStatusChange: vi.fn(),
+}));
+
 import * as backend from "./backend";
+import * as notifications from "./notifications";
 import {
   layoutState,
   splitPane,
@@ -34,6 +39,7 @@ import {
   focusPane,
   handleSessionExited,
   handleCwdChanged,
+  handleSessionStatusChanged,
   closePane,
   setSessionName,
   createWorkspace,
@@ -73,6 +79,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     focusedSessionId,
     cwdBySessionId: {},
     sessionNames: {},
+    sessionStatusById: {},
   });
 }
 
@@ -86,6 +93,7 @@ beforeEach(() => {
     focusedSessionId: null,
     cwdBySessionId: {},
     sessionNames: {},
+    sessionStatusById: {},
   });
 });
 
@@ -229,6 +237,39 @@ describe("handleCwdChanged", () => {
     layoutState.update((s) => ({ ...s, cwdBySessionId: { a: "/old/path", b: "/other/path" } }));
     handleCwdChanged("a", "/new/path");
     expect(get(layoutState).cwdBySessionId).toEqual({ a: "/new/path", b: "/other/path" });
+  });
+});
+
+describe("handleSessionStatusChanged", () => {
+  it("stores the new status under the session's id", () => {
+    handleSessionStatusChanged("a", "working");
+    expect(get(layoutState).sessionStatusById["a"]).toBe("working");
+  });
+
+  it("overwrites a previous status for the same session", () => {
+    handleSessionStatusChanged("a", "working");
+    handleSessionStatusChanged("a", "idle");
+    expect(get(layoutState).sessionStatusById["a"]).toBe("idle");
+  });
+
+  it("leaves other sessions' statuses untouched", () => {
+    handleSessionStatusChanged("a", "working");
+    handleSessionStatusChanged("b", "waiting_for_input");
+    expect(get(layoutState).sessionStatusById).toEqual({ a: "working", b: "waiting_for_input" });
+  });
+
+  it("hands the previous and new status to maybeNotifyStatusChange, before overwriting the map", () => {
+    handleSessionStatusChanged("a", "working");
+    handleSessionStatusChanged("a", "idle");
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a");
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a");
+  });
+
+  it("resolves the notification label via sessionNames, falling back the same way tab labels do", () => {
+    setState([], null, null);
+    layoutState.update((s) => ({ ...s, sessionNames: { a: "my-session" } }));
+    handleSessionStatusChanged("a", "waiting_for_input");
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledWith("a", undefined, "waiting_for_input", "my-session");
   });
 });
 

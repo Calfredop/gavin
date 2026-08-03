@@ -35,6 +35,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     focusedSessionId: null,
     cwdBySessionId: {},
     sessionNames: {},
+    sessionStatusById: {},
   });
 }
 
