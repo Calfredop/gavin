@@ -11,7 +11,7 @@
     setSessionName,
   } from "./layoutState";
   import { confirmTabClose } from "./confirmClose";
-  import { X, Plus } from "@lucide/svelte";
+  import { X, Plus, RotateCw } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
   import { sessionLabel } from "./paths";
   import {
@@ -275,6 +275,14 @@
             title={gitDot?.dirty ? "Uncommitted changes" : "Clean"}
           ></span>
         {/if}
+        {#if $layoutState.restoredSessionIds.has(sessionId)}
+          <span
+            class="restored-badge"
+            title="This session's shell was freshly restarted after the daemon restarted"
+          >
+            <RotateCw size={10} />
+          </span>
+        {/if}
         <span
           class="close"
           aria-label="Close Tab"
@@ -393,6 +401,12 @@
   .git-dot.clean {
     background: transparent;
     border: 1px solid #d9a648;
+  }
+  .restored-badge {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    color: #8bc98b;
   }
   .tab-label-input {
     max-width: 120px;
