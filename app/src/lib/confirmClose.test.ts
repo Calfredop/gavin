@@ -36,6 +36,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     cwdBySessionId: {},
     sessionNames: {},
     sessionStatusById: {},
+    gitStatusById: {},
   });
 }
 

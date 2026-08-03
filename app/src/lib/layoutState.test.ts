@@ -40,6 +40,7 @@ import {
   handleSessionExited,
   handleCwdChanged,
   handleSessionStatusChanged,
+  handleGitStatusChanged,
   closePane,
   setSessionName,
   createWorkspace,
@@ -80,6 +81,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     cwdBySessionId: {},
     sessionNames: {},
     sessionStatusById: {},
+    gitStatusById: {},
   });
 }
 
@@ -94,6 +96,7 @@ beforeEach(() => {
     cwdBySessionId: {},
     sessionNames: {},
     sessionStatusById: {},
+    gitStatusById: {},
   });
 });
 
@@ -270,6 +273,37 @@ describe("handleSessionStatusChanged", () => {
     layoutState.update((s) => ({ ...s, sessionNames: { a: "my-session" } }));
     handleSessionStatusChanged("a", "waiting_for_input");
     expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledWith("a", undefined, "waiting_for_input", "my-session");
+  });
+});
+
+describe("handleGitStatusChanged", () => {
+  it("sets a session's git status", () => {
+    const status = { repoRoot: "/repo", branch: "main", dirty: true, ahead: 0, behind: 0, hasUpstream: false };
+    handleGitStatusChanged("a", status);
+    expect(get(layoutState).gitStatusById["a"]).toEqual(status);
+  });
+
+  it("overwrites a session's previous git status", () => {
+    const dirty = { repoRoot: "/repo", branch: "main", dirty: true, ahead: 0, behind: 0, hasUpstream: false };
+    const clean = { ...dirty, dirty: false };
+    handleGitStatusChanged("a", dirty);
+    handleGitStatusChanged("a", clean);
+    expect(get(layoutState).gitStatusById["a"]).toEqual(clean);
+  });
+
+  it("can be set to null (the session left its repo, or never had one)", () => {
+    const status = { repoRoot: "/repo", branch: "main", dirty: true, ahead: 0, behind: 0, hasUpstream: false };
+    handleGitStatusChanged("a", status);
+    handleGitStatusChanged("a", null);
+    expect(get(layoutState).gitStatusById["a"]).toBeNull();
+  });
+
+  it("tracks independent sessions independently", () => {
+    const statusA = { repoRoot: "/repo-a", branch: "main", dirty: false, ahead: 0, behind: 0, hasUpstream: false };
+    const statusB = { repoRoot: "/repo-b", branch: "dev", dirty: true, ahead: 1, behind: 0, hasUpstream: true };
+    handleGitStatusChanged("a", statusA);
+    handleGitStatusChanged("b", statusB);
+    expect(get(layoutState).gitStatusById).toEqual({ a: statusA, b: statusB });
   });
 });
 

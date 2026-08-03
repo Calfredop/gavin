@@ -5,7 +5,7 @@ import * as layout from "./layout";
 import * as backend from "./backend";
 import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
-import type { Workspace, WorkspacesData } from "./workspace";
+import type { Workspace, WorkspacesData, GitStatus } from "./workspace";
 import { sessionLabel } from "./paths";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 
@@ -20,6 +20,7 @@ export interface LayoutState {
   cwdBySessionId: Record<string, string>;
   sessionNames: Record<string, string>;
   sessionStatusById: Record<string, SessionStatus>;
+  gitStatusById: Record<string, GitStatus | null>;
 }
 
 const initialState: LayoutState = {
@@ -31,6 +32,7 @@ const initialState: LayoutState = {
   cwdBySessionId: {},
   sessionNames: {},
   sessionStatusById: {},
+  gitStatusById: {},
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -111,6 +113,11 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(
     await listen<[string, SessionStatus]>("session-status-changed", (event) => {
       handleSessionStatusChanged(event.payload[0], event.payload[1]);
+    })
+  );
+  unlisteners.push(
+    await listen<[string, GitStatus | null]>("git-status-changed", (event) => {
+      handleGitStatusChanged(event.payload[0], event.payload[1]);
     })
   );
 
@@ -278,6 +285,17 @@ export function handleSessionStatusChanged(sessionId: string, status: SessionSta
   layoutState.update((s) => ({ ...s, sessionStatusById: { ...s.sessionStatusById, [sessionId]: status } }));
   const label = sessionLabel(state.sessionNames, state.cwdBySessionId, sessionId);
   void maybeNotifyStatusChange(sessionId, previousStatus, status, label);
+}
+
+// Shared by the "git-status-changed" event listener in bootstrap() and
+// this file's own tests. Unlike handleSessionStatusChanged, there is no
+// previous-value read and no notification side effect -- git status
+// changes are frequent (every fs-watch trigger, every OSC-133 idle
+// prompt) and were never in scope for OS notifications, only the in-app
+// dot/sidebar display. Like handleCwdChanged/handleSessionStatusChanged,
+// entries are never removed on session exit.
+export function handleGitStatusChanged(sessionId: string, status: GitStatus | null): void {
+  layoutState.update((s) => ({ ...s, gitStatusById: { ...s.gitStatusById, [sessionId]: status } }));
 }
 
 // A blank (or whitespace-only) name clears the override rather than
