@@ -89,6 +89,12 @@ impl Registry {
         Ok(())
     }
 
+    pub fn clear_restored(&self, id: &str) -> anyhow::Result<()> {
+        self.conn
+            .execute("UPDATE sessions SET restored = 0 WHERE id = ?1 AND restored = 1", params![id])?;
+        Ok(())
+    }
+
     pub fn remove(&self, id: &str) -> anyhow::Result<()> {
         self.conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         Ok(())
@@ -198,6 +204,31 @@ mod tests {
 
         let sessions = registry.list().unwrap();
         assert_eq!(sessions[0].restored, true);
+    }
+
+    #[test]
+    fn clear_restored_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.mark_restored("s1").unwrap();
+
+        registry.clear_restored("s1").unwrap();
+
+        let sessions = registry.list().unwrap();
+        assert_eq!(sessions[0].restored, false);
+    }
+
+    #[test]
+    fn clear_restored_on_an_already_clear_record_is_a_harmless_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+
+        registry.clear_restored("s1").unwrap();
+
+        let sessions = registry.list().unwrap();
+        assert_eq!(sessions[0].restored, false);
     }
 
     #[test]

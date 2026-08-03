@@ -41,6 +41,7 @@ pub enum Response {
     CwdChanged { id: String, cwd: String },
     StatusChanged { id: String, status: String },
     GitStatusChanged { id: String, status: Option<GitStatus> },
+    SessionRestored { id: String },
     Ok,
     Error { message: String },
 }
@@ -272,6 +273,23 @@ mod tests {
                 assert_eq!(status.repo_root, "/tmp/repo");
                 assert_eq!(status.branch, "main");
                 assert_eq!(status.dirty, false);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_restored_response_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let resp = Response::SessionRestored { id: "s1".to_string() };
+        write_message(&mut buf, &resp).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Response::SessionRestored { id } => {
+                assert_eq!(id, "s1");
             }
             other => panic!("wrong variant: {other:?}"),
         }

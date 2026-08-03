@@ -667,6 +667,9 @@ impl SessionManager {
             session.writer_handle()
         };
         writer.lock().unwrap().write_all(data)?;
+        if let Err(e) = self.registry.lock().unwrap().clear_restored(id) {
+            eprintln!("failed to clear restored flag for session {id}: {e}");
+        }
         Ok(())
     }
 
@@ -771,6 +774,20 @@ impl SessionManager {
                 &mut *writer.lock().unwrap(),
                 &Response::CwdChanged { id: id.to_string(), cwd: record.cwd.clone() },
             );
+            // Sent regardless of status (unlike StatusChanged/git-status
+            // just below) -- restored is orthogonal to the session's
+            // current status, and an Exited record never reaches this
+            // point via a normal attach anyway (Task 1/3 keep it that
+            // way), so gating on status here would just be dead code, not
+            // a safety requirement. Nothing is sent when restored is
+            // false, mirroring GitStatusChanged's own "silence is a valid
+            // baseline" convention.
+            if record.restored {
+                let _ = write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::SessionRestored { id: id.to_string() },
+                );
+            }
             // Git-status mapping/baseline is skipped for Exited sessions
             // too, for the same reason StatusChanged is: there is nothing
             // live to map. Establishing a mapping here would spawn (or
@@ -2773,6 +2790,101 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "registry never self-healed to Exited");
             std::thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    #[test]
+    fn attach_sends_a_session_restored_baseline_right_after_cwd_changed_when_restored_is_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "restored-1".to_string(),
+                    workspace_path: "/tmp".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    status: SessionStatus::Idle,
+                    restored: true,
+                })
+                .unwrap();
+        }
+        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+
+        let (client, server_side) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        manager.attach("restored-1", Arc::new(Mutex::new(server_side)));
+
+        let mut reader = BufReader::new(client);
+        let first: Response = read_message(&mut reader).unwrap().unwrap();
+        assert!(matches!(first, Response::CwdChanged { .. }), "expected CwdChanged first, got {first:?}");
+        let second: Response = read_message(&mut reader).unwrap().unwrap();
+        match second {
+            Response::SessionRestored { id } => assert_eq!(id, "restored-1"),
+            other => panic!("expected SessionRestored right after CwdChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_never_sends_session_restored_when_restored_is_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "not-restored-1".to_string(),
+                    workspace_path: "/tmp".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    status: SessionStatus::Idle,
+                    restored: false,
+                })
+                .unwrap();
+        }
+        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+
+        let (client, server_side) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        manager.attach("not-restored-1", Arc::new(Mutex::new(server_side)));
+
+        let mut reader = BufReader::new(client);
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::SessionRestored { .. })) => {
+                    panic!("SessionRestored must never be sent when restored is false");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+    }
+
+    #[test]
+    fn write_input_clears_the_restored_flag() {
+        // Drives SessionManager directly rather than over the socket: a
+        // session created via Request::CreateSession is always fresh and
+        // never restored, so `restored: true` needs to be established
+        // directly first, which only the in-process manager makes
+        // convenient.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        let manager = SessionManager::new(Registry::open(&db_path).unwrap());
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
+        manager.registry.lock().unwrap().mark_restored(&id).unwrap();
+        assert_eq!(
+            manager.registry.lock().unwrap().get(&id).unwrap().unwrap().restored,
+            true,
+            "test premise broken: mark_restored should have set restored"
+        );
+
+        manager.write_input(&id, b"echo hi\n").unwrap();
+
+        assert_eq!(
+            manager.registry.lock().unwrap().get(&id).unwrap().unwrap().restored,
+            false,
+            "write_input must clear the restored flag"
+        );
     }
 
     #[test]
