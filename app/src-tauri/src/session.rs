@@ -507,6 +507,40 @@ mod resolve_workspaces_tests {
             other => panic!("expected the second request to be CreateSession, got {other:?}"),
         }
     }
+
+    #[test]
+    fn falls_back_to_home_when_the_last_known_cwd_is_rejected_instead_of_failing_the_whole_bootstrap() {
+        // The exact scenario recover()'s own workspace_path-missing fix
+        // produces: an exited record whose last-known cwd no longer
+        // exists, so the daemon rejects the first CreateSession attempt.
+        // Before the fallback, this Error propagated all the way up
+        // through resolve_workspaces -- this test is what would have
+        // failed (via the unwrap() below) had that regression shipped.
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::SessionList {
+                sessions: vec![exited_session("exited-2", "/definitely/does/not/exist/anywhere")],
+            },
+            Response::Error { message: "cwd does not exist or is not a directory".to_string() },
+            Response::SessionCreated { id: "fresh-c".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+        let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-2"]))])];
+
+        resolve_workspaces(&mut workspaces, &conn).unwrap();
+
+        assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-c"]));
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 3, "expected the rejected attempt plus a fallback retry at $HOME");
+        let home = std::env::var("HOME").unwrap();
+        match &requests[1] {
+            Request::CreateSession { cwd, .. } => assert_eq!(cwd, "/definitely/does/not/exist/anywhere"),
+            other => panic!("expected the second request to be the rejected CreateSession, got {other:?}"),
+        }
+        match &requests[2] {
+            Request::CreateSession { cwd, .. } => assert_eq!(cwd, &home),
+            other => panic!("expected the third request to be the $HOME fallback, got {other:?}"),
+        }
+    }
 }
 
 /// Connects to (or spawns) the daemon over two connections — one for the
@@ -670,18 +704,39 @@ pub fn resize_session(
 }
 
 /// Shared by the create_session command below and resolve_sessions's
-/// per-tab fallback (via resolve_workspaces) -- both are exactly "create a
-/// fresh session at $HOME and return its id."
+/// per-tab fallback (via resolve_workspaces) -- "create a fresh session at
+/// the given cwd (or $HOME when there is none), and return its id."
+///
+/// A `cwd` from a stale registry record (resolve_sessions's last-known-cwd
+/// case) can point at a directory that no longer exists -- exactly the
+/// scenario recover() itself marks Exited when a session's workspace_path
+/// vanishes. The daemon's own create_session rejects a non-directory cwd,
+/// and that Error would otherwise propagate all the way up through
+/// resolve_workspaces into bootstrap(), which turns any Err into an
+/// app-wide "daemon-error" event -- the exact whole-app-blanking failure
+/// mode this milestone exists to avoid, except now hit on every
+/// subsequent launch (persist_workspaces never runs to fix up the config,
+/// since it's gated on resolve_workspaces succeeding). So a rejected
+/// non-$HOME target falls back to $HOME once before giving up for real.
 fn create_fresh_session(command_conn: &Mutex<UnixStream>, cwd: Option<&str>) -> anyhow::Result<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    let target = cwd.map(str::to_string).unwrap_or(home);
+    let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
+
     let resp = send_command(
         command_conn,
-        &Request::CreateSession {
-            workspace_path: target.clone(),
-            cwd: target,
-            command: None,
-        },
+        &Request::CreateSession { workspace_path: target.clone(), cwd: target.clone(), command: None },
+    )?;
+    match resp {
+        Response::SessionCreated { id } => return Ok(id),
+        Response::Error { message } if target != home => {
+            eprintln!("failed to recreate session at last-known cwd {target}, falling back to $HOME: {message}");
+        }
+        other => anyhow::bail!("expected SessionCreated, got {other:?}"),
+    }
+
+    let resp = send_command(
+        command_conn,
+        &Request::CreateSession { workspace_path: home.clone(), cwd: home.clone(), command: None },
     )?;
     match resp {
         Response::SessionCreated { id } => Ok(id),
