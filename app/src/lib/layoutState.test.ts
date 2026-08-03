@@ -36,6 +36,7 @@ import {
   addTab,
   closeSession,
   switchToTab,
+  switchToSessionInPage,
   focusPane,
   handleSessionExited,
   handleCwdChanged,
@@ -368,6 +369,52 @@ describe("switchToTab", () => {
     const state = get(layoutState);
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a", "b"], 1));
     expect(state.focusedSessionId).toBe("b");
+  });
+});
+
+describe("switchToSessionInPage", () => {
+  it("switches workspace and page, and makes the target session the active tab and focus", async () => {
+    const treeA = leaf(["a1", "a2"]);
+    const treeB = leaf(["b1"]);
+    setState(
+      [ws("ws-1", [page("page-a", treeA), page("page-b", treeB)], "page-a")],
+      "ws-1",
+      "a1"
+    );
+    await switchToSessionInPage("ws-1", "page-a", "a2");
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-1");
+    expect(state.focusedSessionId).toBe("a2");
+    const pageA = state.workspaces[0].pages.find((p) => p.id === "page-a");
+    expect(pageA?.layout).toEqual(leaf(["a1", "a2"], 1));
+    expect(pageA?.focusedSessionId).toBe("a2");
+  });
+
+  it("switches to a different page's own tab when the target session lives there", async () => {
+    const treeA = leaf(["a1"]);
+    const treeB = leaf(["b1", "b2"]);
+    setState(
+      [ws("ws-1", [page("page-a", treeA), page("page-b", treeB)], "page-a")],
+      "ws-1",
+      "a1"
+    );
+    await switchToSessionInPage("ws-1", "page-b", "b2");
+    const state = get(layoutState);
+    const wsAfter = state.workspaces[0];
+    expect(wsAfter.activePageId).toBe("page-b");
+    expect(state.focusedSessionId).toBe("b2");
+  });
+
+  it("does nothing when the page doesn't exist", async () => {
+    setState([ws("ws-1", [page("page-a", leaf(["a1"]))])], "ws-1", "a1");
+    await switchToSessionInPage("ws-1", "no-such-page", "a1");
+    expect(get(layoutState).focusedSessionId).toBe("a1");
+  });
+
+  it("persists the updated workspaces state", async () => {
+    setState([ws("ws-1", [page("page-a", leaf(["a1", "a2"]))])], "ws-1", "a1");
+    await switchToSessionInPage("ws-1", "page-a", "a2");
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
   });
 });
 

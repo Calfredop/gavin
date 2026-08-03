@@ -13,6 +13,7 @@
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   import { presetSingle, allSessionIds } from "./layout";
   import { ChevronRight, ChevronDown, Plus, X } from "@lucide/svelte";
+  import { sessionLabel } from "./paths";
   import {
     setDragPayload,
     getDragKind,
@@ -22,10 +23,32 @@
     type DropZone,
     type ReorderPosition,
   } from "./dragDrop";
-  import { movePaneOrTab, reorderWorkspaceAction, movePageAction } from "./layoutState";
+  import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
   import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, type Workspace, type Page, type GitStatus } from "./workspace";
 
   let expanded: Set<string> = $state(new Set());
+
+  // Tracks which pages currently have their multi-repo git detail
+  // expanded -- unrelated to `expanded` above (that Set tracks which
+  // WORKSPACES show their page list; this one tracks which PAGES show
+  // their per-session git detail). Kept separate rather than reusing one
+  // Set, since workspace ids and page ids are different concepts that
+  // happen to both be strings.
+  let expandedPagesGit: Set<string> = $state(new Set());
+
+  function isPageGitExpanded(pageId: string): boolean {
+    return expandedPagesGit.has(pageId);
+  }
+
+  function togglePageGitExpand(pageId: string): void {
+    const next = new Set(expandedPagesGit);
+    if (next.has(pageId)) {
+      next.delete(pageId);
+    } else {
+      next.add(pageId);
+    }
+    expandedPagesGit = next;
+  }
 
   let creatingWorkspace = $state(false);
   let newWorkspaceName = $state("");
@@ -305,77 +328,118 @@
   <div class="page-list">
     {#each ws.pages as page, pageIndex (page.id)}
       {@const gitSummary = pageGitSummary(page)}
-      <div
-        class="page-row"
-        class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}
-        class:drop-before={hoverState?.targetId === page.id &&
-          hoverState.kind === "reorder" &&
-          hoverState.position === "before"}
-        class:drop-after={hoverState?.targetId === page.id &&
-          hoverState.kind === "reorder" &&
-          hoverState.position === "after"}
-        class:drop-zone-left={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "left"}
-        class:drop-zone-right={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "right"}
-        class:drop-zone-top={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "top"}
-        class:drop-zone-bottom={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "bottom"}
-        class:drop-zone-center={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "center"}
-        draggable={editingPageId !== page.id}
-        ondragstart={(e) => handlePageDragStart(e, ws.id, page.id)}
-        ondragover={(e) => handlePageDragOver(e, page.id)}
-        ondragleave={clearHover}
-        ondragend={clearHover}
-        ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
-      >
-        {#if editingPageId === page.id}
-          <input
-            class="page-name-input"
-            bind:this={pageEditInput}
-            bind:value={pageEditValue}
-            onclick={(e) => e.stopPropagation()}
-            onblur={commitPageEdit}
-            onkeydown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitPageEdit();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancelPageEdit();
+      <div class="page-row-group">
+        <div
+          class="page-row"
+          class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}
+          class:drop-before={hoverState?.targetId === page.id &&
+            hoverState.kind === "reorder" &&
+            hoverState.position === "before"}
+          class:drop-after={hoverState?.targetId === page.id &&
+            hoverState.kind === "reorder" &&
+            hoverState.position === "after"}
+          class:drop-zone-left={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "left"}
+          class:drop-zone-right={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "right"}
+          class:drop-zone-top={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "top"}
+          class:drop-zone-bottom={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "bottom"}
+          class:drop-zone-center={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "center"}
+          draggable={editingPageId !== page.id}
+          ondragstart={(e) => handlePageDragStart(e, ws.id, page.id)}
+          ondragover={(e) => handlePageDragOver(e, page.id)}
+          ondragleave={clearHover}
+          ondragend={clearHover}
+          ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
+        >
+          {#if gitSummary.kind === "multiple"}
+            <button
+              class="git-expand-toggle"
+              aria-label={isPageGitExpanded(page.id) ? "Collapse git detail" : "Expand git detail"}
+              onclick={() => togglePageGitExpand(page.id)}
+            >
+              {#if isPageGitExpanded(page.id)}
+                <ChevronDown size={10} />
+              {:else}
+                <ChevronRight size={10} />
+              {/if}
+            </button>
+          {/if}
+          {#if editingPageId === page.id}
+            <input
+              class="page-name-input"
+              bind:this={pageEditInput}
+              bind:value={pageEditValue}
+              onclick={(e) => e.stopPropagation()}
+              onblur={commitPageEdit}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitPageEdit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelPageEdit();
+                }
+              }}
+            />
+          {:else}
+            <span
+              class="page-name"
+              ondblclick={() => startEditingPage(page.id, page.name)}
+              onclick={() => switchPage(ws.id, page.id)}
+            >{page.name}</span>
+          {/if}
+          {#if gitSummary.kind === "single"}
+            <span class="git-branch">{gitSummary.status.branch}</span>
+            <span
+              class="git-dot"
+              class:dirty={gitSummary.status.dirty}
+              class:clean={!gitSummary.status.dirty}
+            ></span>
+            {#if formatAheadBehind(gitSummary.status)}
+              <span class="git-ahead-behind">{formatAheadBehind(gitSummary.status)}</span>
+            {/if}
+          {/if}
+          {#if waitingForInputCount(page) > 0}
+            <span class="waiting-badge">{waitingForInputCount(page)}</span>
+          {/if}
+          <button
+            class="close-page"
+            aria-label="Close Page"
+            title="Close Page"
+            onclick={async () => {
+              if (await confirmPageClose(ws.id, page.id)) {
+                void closePage(ws.id, page.id);
               }
             }}
-          />
-        {:else}
-          <span
-            class="page-name"
-            ondblclick={() => startEditingPage(page.id, page.name)}
-            onclick={() => switchPage(ws.id, page.id)}
-          >{page.name}</span>
+          >
+            <X size={10} />
+          </button>
+        </div>
+        {#if gitSummary.kind === "multiple" && isPageGitExpanded(page.id)}
+          <div class="page-git-detail">
+            {#each allSessionIds(page.layout) as sessionId (sessionId)}
+              {@const sessionStatus = $layoutState.gitStatusById[sessionId]}
+              <div
+                class="git-session-row"
+                onclick={() => switchToSessionInPage(ws.id, page.id, sessionId)}
+              >
+                <span class="git-session-label">
+                  {sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId)}
+                </span>
+                {#if sessionStatus}
+                  <span class="git-branch">{sessionStatus.branch}</span>
+                  <span
+                    class="git-dot"
+                    class:dirty={sessionStatus.dirty}
+                    class:clean={!sessionStatus.dirty}
+                  ></span>
+                  {#if formatAheadBehind(sessionStatus)}
+                    <span class="git-ahead-behind">{formatAheadBehind(sessionStatus)}</span>
+                  {/if}
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
-        {#if gitSummary.kind === "single"}
-          <span class="git-branch">{gitSummary.status.branch}</span>
-          <span
-            class="git-dot"
-            class:dirty={gitSummary.status.dirty}
-            class:clean={!gitSummary.status.dirty}
-          ></span>
-          {#if formatAheadBehind(gitSummary.status)}
-            <span class="git-ahead-behind">{formatAheadBehind(gitSummary.status)}</span>
-          {/if}
-        {/if}
-        {#if waitingForInputCount(page) > 0}
-          <span class="waiting-badge">{waitingForInputCount(page)}</span>
-        {/if}
-        <button
-          class="close-page"
-          aria-label="Close Page"
-          title="Close Page"
-          onclick={async () => {
-            if (await confirmPageClose(ws.id, page.id)) {
-              void closePage(ws.id, page.id);
-            }
-          }}
-        >
-          <X size={10} />
-        </button>
       </div>
     {/each}
   </div>
@@ -698,5 +762,36 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .git-expand-toggle {
+    background: transparent;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    flex: 0 0 auto;
+  }
+  .page-git-detail {
+    display: flex;
+    flex-direction: column;
+  }
+  .git-session-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px 2px 44px;
+    cursor: pointer;
+    font-size: 0.9em;
+  }
+  .git-session-row:hover {
+    background: #1e1e1e;
+  }
+  .git-session-label {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #999;
   }
 </style>

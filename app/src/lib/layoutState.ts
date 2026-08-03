@@ -332,6 +332,33 @@ export async function switchToTab(sessionId: string): Promise<void> {
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
+// Makes sessionId's own page (and workspace) active, and that session
+// itself the active tab within its pane AND the page's remembered focus
+// -- unlike switchPage alone (which falls back to the page's own
+// last-remembered focus, or its first session, not necessarily the one
+// that was actually clicked). Used by the sidebar's expanded multi-repo
+// session rows (Sidebar.svelte), where each row targets one specific
+// session that may not already be its page's active tab, and that page
+// may not even be the currently active one.
+export async function switchToSessionInPage(workspaceId: string, pageId: string, sessionId: string): Promise<void> {
+  const state = get(layoutState);
+  const page = state.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === pageId);
+  if (!page) return;
+  const newTree = layout.switchTab(page.layout, sessionId);
+  const withTree = workspace.updatePageLayout(state, workspaceId, pageId, newTree);
+  const withFocus = workspace.setPageFocus(withTree, workspaceId, pageId, sessionId);
+  const switchedPage = workspace.switchPage(withFocus, workspaceId, pageId);
+  const switched = workspace.switchWorkspace(switchedPage, workspaceId);
+  const resolved = workspace.resolveActiveFocus(switched);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: resolved.state.workspaces,
+    activeWorkspaceId: resolved.state.activeWorkspaceId,
+    focusedSessionId: resolved.focusedSessionId,
+  }));
+  await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
+}
+
 export function focusPane(sessionId: string): void {
   const state = get(layoutState);
   const location = activePageLocation(state);
