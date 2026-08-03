@@ -11,7 +11,7 @@
     closePage,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
-  import { presetSingle } from "./layout";
+  import { presetSingle, allSessionIds } from "./layout";
   import { ChevronRight, ChevronDown, Plus, X } from "@lucide/svelte";
   import {
     setDragPayload,
@@ -64,6 +64,18 @@
   // (the Rust side always creates it once ready).
   const unfiledWorkspace = $derived($layoutState.workspaces.find((w) => w.id === UNFILED_WORKSPACE_ID) ?? null);
   const regularWorkspaces = $derived($layoutState.workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID));
+
+  // The count this plan's sidebar badges show -- waiting_for_input only,
+  // never a generic aggregate across all three states (see this plan's
+  // Global Constraints: "working" is background information, not
+  // something a badge needs to draw the eye to).
+  function waitingForInputCount(page: Page): number {
+    return allSessionIds(page.layout).filter((id) => $layoutState.sessionStatusById[id] === "waiting_for_input").length;
+  }
+
+  function workspaceWaitingForInputCount(ws: Workspace): number {
+    return ws.pages.reduce((sum, page) => sum + waitingForInputCount(page), 0);
+  }
 
   function isExpanded(workspaceId: string): boolean {
     return expanded.has(workspaceId);
@@ -317,6 +329,9 @@
             onclick={() => switchPage(ws.id, page.id)}
           >{page.name}</span>
         {/if}
+        {#if waitingForInputCount(page) > 0}
+          <span class="waiting-badge">{waitingForInputCount(page)}</span>
+        {/if}
         <button
           class="close-page"
           aria-label="Close Page"
@@ -383,6 +398,9 @@
             {/if}
           </button>
           <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
+          {#if workspaceWaitingForInputCount(ws) > 0}
+            <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
+          {/if}
           <button class="add-page" aria-label="New Page" title="New Page" onclick={() => quickAddPage(ws.id)}>
             <Plus size={12} />
           </button>
@@ -445,6 +463,9 @@
               ondblclick={() => startEditingWorkspace(ws.id, ws.name)}
               onclick={() => switchWorkspace(ws.id)}
             >{ws.name}</span>
+          {/if}
+          {#if workspaceWaitingForInputCount(ws) > 0}
+            <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
           {/if}
           <button class="add-page" aria-label="New Page" title="New Page" onclick={() => quickAddPage(ws.id)}>
             <Plus size={12} />
@@ -544,6 +565,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .waiting-badge {
+    flex: 0 0 auto;
+    background: #e0524a;
+    color: #fff;
+    border-radius: 8px;
+    padding: 0 5px;
+    font-size: 0.85em;
+    line-height: 1.4;
+    min-width: 14px;
+    text-align: center;
   }
   .add-page,
   .close-workspace,
