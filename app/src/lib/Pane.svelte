@@ -13,7 +13,7 @@
   import { confirmTabClose } from "./confirmClose";
   import { X, Plus } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
-  import { folderName } from "./paths";
+  import { sessionLabel } from "./paths";
   import {
     setDragPayload,
     getDragKind,
@@ -58,10 +58,7 @@
   }
 
   function tabLabel(sessionId: string): string {
-    const customName = $layoutState.sessionNames[sessionId];
-    if (customName) return customName;
-    const cwd = $layoutState.cwdBySessionId[sessionId];
-    return cwd ? folderName(cwd) : sessionId.slice(0, 8);
+    return sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId);
   }
 
   function tabTooltip(sessionId: string): string {
