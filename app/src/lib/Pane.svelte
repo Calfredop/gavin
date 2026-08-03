@@ -65,6 +65,18 @@
     return $layoutState.sessionNames[sessionId] ?? $layoutState.cwdBySessionId[sessionId] ?? sessionId;
   }
 
+  // idle intentionally returns null here -- no dot at all is the idle
+  // indicator, not a neutral-colored one (see this plan's Global
+  // Constraints). waiting_for_input is "request attention" in the UI --
+  // the internal/data-model name stays unchanged, matching the existing
+  // Rust enum.
+  function tabStatusDot(sessionId: string): { class: string; title: string } | null {
+    const status = $layoutState.sessionStatusById[sessionId];
+    if (status === "working") return { class: "status-working", title: "Working" };
+    if (status === "waiting_for_input") return { class: "status-waiting", title: "Request attention" };
+    return null;
+  }
+
   function startEditing(sessionId: string): void {
     editingSessionId = sessionId;
     editValue = tabLabel(sessionId);
@@ -240,6 +252,10 @@
             <span class="tab-label" ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span>
           </Tooltip>
         {/if}
+        {#if tabStatusDot(sessionId)}
+          {@const dot = tabStatusDot(sessionId)}
+          <span class="status-dot {dot?.class}" title={dot?.title}></span>
+        {/if}
         <span
           class="close"
           aria-label="Close Tab"
@@ -332,6 +348,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .status-dot.status-working {
+    background: #4a9eff;
+  }
+  .status-dot.status-waiting {
+    background: #e0524a;
   }
   .tab-label-input {
     max-width: 120px;
