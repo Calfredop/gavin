@@ -77,6 +77,16 @@
     return null;
   }
 
+  // Filled when dirty, hollow (outlined) when clean, absent entirely when
+  // this session has no git repo -- no branch name, no ahead/behind, and
+  // no tooltip here; that detail lives entirely in the sidebar (see this
+  // plan's Global Constraints).
+  function tabGitDot(sessionId: string): { dirty: boolean } | null {
+    const status = $layoutState.gitStatusById[sessionId];
+    if (!status) return null;
+    return { dirty: status.dirty };
+  }
+
   function startEditing(sessionId: string): void {
     editingSessionId = sessionId;
     editValue = tabLabel(sessionId);
@@ -256,6 +266,15 @@
           {@const dot = tabStatusDot(sessionId)}
           <span class="status-dot {dot?.class}" title={dot?.title}></span>
         {/if}
+        {#if tabGitDot(sessionId)}
+          {@const gitDot = tabGitDot(sessionId)}
+          <span
+            class="git-dot"
+            class:dirty={gitDot?.dirty}
+            class:clean={!gitDot?.dirty}
+            title={gitDot?.dirty ? "Uncommitted changes" : "Clean"}
+          ></span>
+        {/if}
         <span
           class="close"
           aria-label="Close Tab"
@@ -360,6 +379,20 @@
   }
   .status-dot.status-waiting {
     background: #e0524a;
+  }
+  .git-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+  }
+  .git-dot.dirty {
+    background: #d9a648;
+  }
+  .git-dot.clean {
+    background: transparent;
+    border: 1px solid #d9a648;
   }
   .tab-label-input {
     max-width: 120px;
