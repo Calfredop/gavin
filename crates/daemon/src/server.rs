@@ -19,6 +19,17 @@ use uuid::Uuid;
 /// whatever's currently buffered, regardless of what a previous Attach saw.
 const OUTPUT_BUFFER_CAP: usize = 64 * 1024;
 
+/// Sent as the exit_code of a Response::SessionExited that isn't really an
+/// exit at all -- it's spawn_pump's reader_for failing to find any live
+/// process for this session id (no PTY was ever running for it in THIS
+/// daemon process). Distinct from the -1 "exit code genuinely unknown"
+/// sentinel used elsewhere in this file (see exit_code_for's own callers),
+/// so the two different "we don't have a real exit code" cases stay
+/// distinguishable in logs/diagnostics even though the frontend doesn't
+/// currently branch on the value -- it reuses the exact same
+/// SessionExited handling as any other exit either way.
+const ATTACH_FAILURE_EXIT_CODE: i32 = -2;
+
 /// How often the heuristic idle-timeout companion thread (see
 /// spawn_heuristic_idle_timer) wakes to check whether a session has gone
 /// quiet -- granularity of HEURISTIC_QUIET_PERIOD, not a hard
@@ -705,6 +716,9 @@ impl SessionManager {
                     "skipping recovery of session {} — workspace_path no longer exists: {}",
                     record.id, record.workspace_path
                 );
+                if let Err(e) = self.registry.lock().unwrap().update_status(&record.id, SessionStatus::Exited) {
+                    eprintln!("failed to mark session {} exited: {e}", record.id);
+                }
                 continue;
             }
             // A single bad leftover record (e.g. its command is no longer
@@ -722,6 +736,9 @@ impl SessionManager {
                         "failed to recover session {} (workspace_path {}): {e}",
                         record.id, record.workspace_path
                     );
+                    if let Err(e) = self.registry.lock().unwrap().update_status(&record.id, SessionStatus::Exited) {
+                        eprintln!("failed to mark session {} exited: {e}", record.id);
+                    }
                 }
             }
         }
@@ -835,6 +852,7 @@ impl SessionManager {
             let mut reader = match manager.reader_for(&id) {
                 Ok(r) => r,
                 Err(e) => {
+                    eprintln!("attach failed for session {id}: {e}");
                     // Atomically take-and-remove in one lock acquisition. Getting the
                     // writer and removing the entry as two separate lock acquisitions
                     // would leave a window where a concurrent Attach for this same id
@@ -846,7 +864,13 @@ impl SessionManager {
                     // always gets notified no matter how the race lands.
                     let removed = manager.attached_writers.lock().unwrap().remove(&id);
                     if let Some(w) = removed {
-                        let _ = write_message(&mut *w.lock().unwrap(), &Response::Error { message: e.to_string() });
+                        let _ = write_message(
+                            &mut *w.lock().unwrap(),
+                            &Response::SessionExited { id: id.clone(), exit_code: ATTACH_FAILURE_EXIT_CODE },
+                        );
+                    }
+                    if let Err(e) = manager.registry.lock().unwrap().update_status(&id, SessionStatus::Exited) {
+                        eprintln!("failed to mark session {id} exited after a failed attach: {e}");
                     }
                     // The normal teardown at the bottom of this thread is
                     // unreachable from here, so the repo mapping attach()
@@ -1736,6 +1760,70 @@ mod tests {
     }
 
     #[test]
+    fn relays_status_changed_when_pty_output_contains_an_osc777_notification() {
+        // The end-to-end path for the signal a real Claude Code session
+        // actually emits when it needs the user: an OSC 777 desktop
+        // notification (what it sends under TERM_PROGRAM=ghostty). The
+        // bare-BEL test above covers only the Apple_Terminal case.
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        // A genuinely blocking read after the notification, so the
+        // heuristic's renewed-output-activity rule can't clear
+        // waiting_for_input before the assertion runs -- the same reason
+        // the bare-BEL test above pairs its printf with a `read`.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "printf '\\033]777;notify;Claude Code;Claude needs your permission\\007'; read _unused\n"
+                    .to_string(),
+            },
+        )
+        .unwrap();
+
+        // A read timeout so a regression fails at the deadline instead of
+        // blocking forever: once the shell reaches its blocking `read`, no
+        // further messages arrive, and this loop's deadline is only
+        // consulted between messages.
+        stream2.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut found = false;
+        while std::time::Instant::now() < deadline {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status }))
+                    if rid == id && status == "waiting_for_input" =>
+                {
+                    found = true;
+                    break;
+                }
+                Ok(_) => {}
+                // A timeout tick -- keep waiting until the deadline.
+                Err(_) => {}
+            }
+        }
+        assert!(found, "never saw the expected StatusChanged{{status:\"waiting_for_input\"}} for the OSC 777 notification");
+    }
+
+    #[test]
     fn heuristic_fires_working_promptly_then_idle_after_a_real_quiet_period() {
         let (socket_path, _dir) = start_test_server();
 
@@ -2520,8 +2608,8 @@ mod tests {
         );
         assert_eq!(
             manager.registry.lock().unwrap().get("failed-spawn-1").unwrap().unwrap().status,
-            SessionStatus::Idle,
-            "test premise broken: recover() is expected to leave the row's original status alone"
+            SessionStatus::Exited,
+            "test premise broken: recover() is now expected to mark a failed-spawn record Exited"
         );
 
         let (client, server_side) = UnixStream::pair().unwrap();
@@ -2557,6 +2645,133 @@ mod tests {
                 Ok(Some(_)) => continue,
                 Ok(None) | Err(_) => break,
             }
+        }
+    }
+
+    #[test]
+    fn recover_marks_a_failed_spawn_record_exited_instead_of_leaving_it_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "failed-spawn-2".to_string(),
+                    workspace_path: "/tmp".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/nonexistent/definitely-not-an-executable-xyz".to_string()),
+                    status: SessionStatus::Idle,
+                    restored: false,
+                })
+                .unwrap();
+        }
+
+        let manager = SessionManager::new(Registry::open(&db_path).unwrap());
+        manager.recover().unwrap();
+
+        assert!(
+            manager.sessions.lock().unwrap().get("failed-spawn-2").is_none(),
+            "test premise broken: the command was expected to fail to spawn"
+        );
+        assert_eq!(
+            manager.registry.lock().unwrap().get("failed-spawn-2").unwrap().unwrap().status,
+            SessionStatus::Exited,
+            "a failed-spawn record must now be marked Exited, not left at its pre-crash status"
+        );
+    }
+
+    #[test]
+    fn recover_marks_a_missing_workspace_path_record_exited_instead_of_leaving_it_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "missing-workspace-1".to_string(),
+                    workspace_path: "/definitely/does/not/exist/anywhere".to_string(),
+                    cwd: "/definitely/does/not/exist/anywhere".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    status: SessionStatus::Working,
+                    restored: false,
+                })
+                .unwrap();
+        }
+
+        let manager = SessionManager::new(Registry::open(&db_path).unwrap());
+        manager.recover().unwrap();
+
+        assert!(manager.sessions.lock().unwrap().get("missing-workspace-1").is_none());
+        assert_eq!(
+            manager.registry.lock().unwrap().get("missing-workspace-1").unwrap().unwrap().status,
+            SessionStatus::Exited,
+            "a record whose workspace_path no longer exists must also be marked Exited"
+        );
+    }
+
+    #[test]
+    fn attach_to_a_registry_record_with_no_live_pty_sends_a_scoped_session_exited_not_a_bare_error() {
+        // Constructs the general "registry says alive, no live process"
+        // case directly, independent of any specific real-world cause --
+        // recover()'s own two failure-to-recover avenues are now closed by
+        // the fixes above (both mark the record Exited immediately), so
+        // this is the defensive path spawn_pump's error arm exists for
+        // regardless of how it's reached (a future, currently
+        // unanticipated cause; a narrow timing race; etc.).
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "no-live-pty-1".to_string(),
+                    workspace_path: "/tmp".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                    status: SessionStatus::Idle,
+                    restored: false,
+                })
+                .unwrap();
+        }
+        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+        // No recover() call -- `sessions` genuinely has no entry for this
+        // id, simulating whatever unanticipated cause reaches this arm.
+
+        let (client, server_side) = UnixStream::pair().unwrap();
+        // Set before attach, not after: the pump's error arm drops the far
+        // end of this pair, and on macOS SO_RCVTIMEO on a socketpair whose
+        // peer has already been dropped fails with EINVAL.
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        manager.attach("no-live-pty-1", Arc::new(Mutex::new(server_side)));
+
+        let mut reader = BufReader::new(client);
+        let mut saw_scoped_exit = false;
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::SessionExited { id, exit_code })) if id == "no-live-pty-1" => {
+                    assert_eq!(exit_code, ATTACH_FAILURE_EXIT_CODE);
+                    saw_scoped_exit = true;
+                    break;
+                }
+                Ok(Some(Response::Error { message })) => {
+                    panic!("expected a scoped SessionExited, got a bare Error: {message}");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(saw_scoped_exit, "never received a scoped SessionExited for the failed attach");
+
+        // And it self-heals: the registry now reflects Exited too, so the
+        // *next* launch's reconciliation (Task 3) can cleanly replace it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let status = manager.registry.lock().unwrap().get("no-live-pty-1").unwrap().unwrap().status;
+            if status == SessionStatus::Exited {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "registry never self-healed to Exited");
+            std::thread::sleep(Duration::from_millis(25));
         }
     }
 
