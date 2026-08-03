@@ -2,7 +2,7 @@ use crate::config::Workspace;
 use crate::layout::LayoutNode;
 use protocol::{read_message, socket_path, write_message, Request, Response};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -177,37 +177,42 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
 fn resolve_sessions(
     node: &mut LayoutNode,
     command_conn: &Mutex<UnixStream>,
-    valid_ids: &HashSet<String>,
+    all_sessions: &HashMap<String, protocol::SessionSummary>,
 ) -> anyhow::Result<()> {
     match node {
         LayoutNode::Leaf { tabs, .. } => {
             for id in tabs.iter_mut() {
-                if !valid_ids.contains(id.as_str()) {
-                    *id = create_fresh_session(command_conn)?;
+                let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
+                if !is_valid {
+                    let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
+                    *id = create_fresh_session(command_conn, last_known_cwd)?;
                 }
             }
             Ok(())
         }
         LayoutNode::Split { children, .. } => {
             for child in children.iter_mut() {
-                resolve_sessions(child, command_conn, valid_ids)?;
+                resolve_sessions(child, command_conn, all_sessions)?;
             }
             Ok(())
         }
     }
 }
 
-/// Fetches the full session list once and returns the set of ids that are
-/// still alive (not exited). Called at most once per bootstrap, regardless
-/// of how many pages/workspaces need reconciling against it.
-fn list_valid_session_ids(command_conn: &Mutex<UnixStream>) -> anyhow::Result<HashSet<String>> {
+/// Fetches the full session list once -- every record, exited ones
+/// included -- keyed by id. Called at most once per bootstrap, regardless
+/// of how many pages/workspaces need reconciling against it. Exited
+/// records are kept (not filtered out here) so `resolve_sessions` can look
+/// up an exited session's own last-known `cwd` before replacing it, rather
+/// than falling back to `$HOME`.
+fn list_valid_session_ids(
+    command_conn: &Mutex<UnixStream>,
+) -> anyhow::Result<HashMap<String, protocol::SessionSummary>> {
     let resp = send_command(command_conn, &Request::ListSessions)?;
     match resp {
-        Response::SessionList { sessions } => Ok(sessions
-            .into_iter()
-            .filter(|s| s.status != "exited")
-            .map(|s| s.id)
-            .collect()),
+        Response::SessionList { sessions } => {
+            Ok(sessions.into_iter().map(|s| (s.id.clone(), s)).collect())
+        }
         other => anyhow::bail!("expected SessionList, got {other:?}"),
     }
 }
@@ -224,10 +229,10 @@ fn resolve_workspaces(
     if workspaces.is_empty() {
         return Ok(());
     }
-    let valid_ids = list_valid_session_ids(command_conn)?;
+    let all_sessions = list_valid_session_ids(command_conn)?;
     for workspace in workspaces.iter_mut() {
         for page in workspace.pages.iter_mut() {
-            resolve_sessions(&mut page.layout, command_conn, &valid_ids)?;
+            resolve_sessions(&mut page.layout, command_conn, &all_sessions)?;
         }
     }
     Ok(())
@@ -259,6 +264,35 @@ mod test_support {
 
         let client = UnixStream::connect(&socket_path).unwrap();
         (client, dir)
+    }
+
+    /// Like `fake_daemon_replying_with`, but also captures every request
+    /// the fake daemon receives, in order, into the returned `Vec` (shared
+    /// via `Arc<Mutex<...>>` since the daemon thread and the test both
+    /// need it) -- for tests that need to assert not just the final
+    /// resolved state, but specifically what was SENT to get there (e.g.
+    /// which `cwd` a `CreateSession` request carried).
+    pub fn fake_daemon_capturing_requests(
+        responses: Vec<Response>,
+    ) -> (UnixStream, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("fake.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured);
+
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            for response in responses {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let req: Request = read_message(&mut reader).unwrap().unwrap();
+                captured_clone.lock().unwrap().push(req);
+                write_message(&mut stream, &response).unwrap();
+            }
+        });
+
+        let client = UnixStream::connect(&socket_path).unwrap();
+        (client, captured, dir)
     }
 }
 
@@ -337,6 +371,7 @@ mod command_connection_tests {
 
 #[cfg(test)]
 mod resolve_workspaces_tests {
+    use super::test_support::fake_daemon_capturing_requests;
     use super::test_support::fake_daemon_replying_with;
     use super::*;
     use crate::config::Page;
@@ -359,6 +394,16 @@ mod resolve_workspaces_tests {
             workspace_path: "/tmp".to_string(),
             cwd: "/tmp".to_string(),
             status: "idle".to_string(),
+            restored: false,
+        }
+    }
+
+    fn exited_session(id: &str, cwd: &str) -> protocol::SessionSummary {
+        protocol::SessionSummary {
+            id: id.to_string(),
+            workspace_path: cwd.to_string(),
+            cwd: cwd.to_string(),
+            status: "exited".to_string(),
             restored: false,
         }
     }
@@ -417,6 +462,50 @@ mod resolve_workspaces_tests {
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1", "fresh-a"]));
         assert_eq!(workspaces[1].pages[0].layout, leaf(&["fresh-b"]));
+    }
+
+    #[test]
+    fn replaces_an_exited_session_at_its_own_last_known_cwd_not_home() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::SessionList {
+                sessions: vec![exited_session("exited-1", "/Users/alice/project")],
+            },
+            Response::SessionCreated { id: "fresh-a".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+        let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-1"]))])];
+
+        resolve_workspaces(&mut workspaces, &conn).unwrap();
+
+        assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-a"]));
+        let requests = captured.lock().unwrap();
+        match &requests[1] {
+            Request::CreateSession { cwd, workspace_path, .. } => {
+                assert_eq!(cwd, "/Users/alice/project");
+                assert_eq!(workspace_path, "/Users/alice/project");
+            }
+            other => panic!("expected the second request to be CreateSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn falls_back_to_home_only_when_the_id_has_no_registry_record_at_all() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::SessionList { sessions: vec![] },
+            Response::SessionCreated { id: "fresh-b".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+        let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["unknown-id"]))])];
+
+        resolve_workspaces(&mut workspaces, &conn).unwrap();
+
+        assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-b"]));
+        let requests = captured.lock().unwrap();
+        let home = std::env::var("HOME").unwrap();
+        match &requests[1] {
+            Request::CreateSession { cwd, .. } => assert_eq!(cwd, &home),
+            other => panic!("expected the second request to be CreateSession, got {other:?}"),
+        }
     }
 }
 
@@ -545,6 +634,9 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 Response::GitStatusChanged { id, status } => {
                     let _ = reader_app_handle.emit("git-status-changed", (id, status));
                 }
+                Response::SessionRestored { id } => {
+                    let _ = reader_app_handle.emit("session-restored", id);
+                }
                 Response::Error { message } => {
                     let _ = reader_app_handle.emit("daemon-error", message);
                 }
@@ -580,13 +672,14 @@ pub fn resize_session(
 /// Shared by the create_session command below and resolve_sessions's
 /// per-tab fallback (via resolve_workspaces) -- both are exactly "create a
 /// fresh session at $HOME and return its id."
-fn create_fresh_session(command_conn: &Mutex<UnixStream>) -> anyhow::Result<String> {
+fn create_fresh_session(command_conn: &Mutex<UnixStream>, cwd: Option<&str>) -> anyhow::Result<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    let target = cwd.map(str::to_string).unwrap_or(home);
     let resp = send_command(
         command_conn,
         &Request::CreateSession {
-            workspace_path: home.clone(),
-            cwd: home,
+            workspace_path: target.clone(),
+            cwd: target,
             command: None,
         },
     )?;
@@ -601,7 +694,7 @@ pub fn create_session(
     command_state: State<CommandConnection>,
     daemon_state: State<DaemonConnection>,
 ) -> Result<String, String> {
-    let id = create_fresh_session(&command_state.0).map_err(|e| e.to_string())?;
+    let id = create_fresh_session(&command_state.0, None).map_err(|e| e.to_string())?;
     send_request(&daemon_state.writer, &Request::Attach { id: id.clone() })
         .map_err(|e| e.to_string())?;
     Ok(id)
