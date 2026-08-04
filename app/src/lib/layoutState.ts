@@ -607,6 +607,60 @@ export async function createPage(
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
 
+// Creates a fresh session for a kanban card link, homing it in the given
+// workspace: added as a new tab on the workspace's active page if it has
+// one, or a freshly created single-pane page (mirroring createPage's own
+// default preset) if the workspace has zero pages yet. Unlike
+// splitPane/addTab, this always targets an explicit workspaceId rather
+// than "whichever page/workspace is currently active" -- the kanban hub
+// this is called from is not necessarily showing a terminal view at all.
+// cwd/command mirror SessionLink's own shape ("" / null both mean
+// "use the default"), converted to undefined here -- the one place that
+// conversion happens, so every caller (create-new, re-launch) can just
+// pass a SessionLink's fields straight through.
+export async function createSessionForCard(
+  workspaceId: string,
+  cwd: string,
+  command: string | null
+): Promise<string | null> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return null;
+
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(cwd || undefined, command ?? undefined);
+  } catch (e) {
+    setError(String(e));
+    return null;
+  }
+
+  if (ws.pages.length === 0) {
+    const pageId = crypto.randomUUID();
+    const created = workspace.createPage(state, workspaceId, pageId, "Page 1", layout.presetSingle(sessionId));
+    const data = workspace.setPageFocus(created, workspaceId, pageId, sessionId);
+    layoutState.update((s) => ({
+      ...s,
+      workspaces: data.workspaces,
+      activeWorkspaceId: workspaceId,
+      focusedSessionId: sessionId,
+    }));
+    await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+    return sessionId;
+  }
+
+  const pageId = ws.activePageId ?? ws.pages[0].id;
+  const page = ws.pages.find((p) => p.id === pageId);
+  if (!page) return sessionId;
+  const anchor = layout.allSessionIds(page.layout)[0];
+  const newTree = anchor ? layout.addTab(page.layout, anchor, sessionId) : layout.presetSingle(sessionId);
+  const withTree = workspace.updatePageLayout(state, workspaceId, pageId, newTree);
+  const data = workspace.setPageFocus(withTree, workspaceId, pageId, sessionId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  return sessionId;
+}
+
 export async function renamePage(workspaceId: string, pageId: string, name: string): Promise<void> {
   const state = get(layoutState);
   const data = workspace.renamePage(state, workspaceId, pageId, name);

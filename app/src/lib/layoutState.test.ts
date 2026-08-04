@@ -55,6 +55,7 @@ import {
   switchWorkspaceView,
   closeWorkspace,
   createPage,
+  createSessionForCard,
   renamePage,
   switchPage,
   closePage,
@@ -615,6 +616,69 @@ describe("createPage", () => {
 
     await createPage("missing", ([x]) => leaf([x]), 1, "Page 1");
 
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("createSessionForCard", () => {
+  it("creates a page and homes the session there when the workspace has zero pages", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("s1");
+
+    const sessionId = await createSessionForCard("ws-1", "", null);
+
+    expect(sessionId).toBe("s1");
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages).toHaveLength(1);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["s1"]));
+    expect(state.focusedSessionId).toBe("s1");
+  });
+
+  it("adds a tab to the workspace's active page when it already has pages", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.createSession).mockResolvedValue("s1");
+
+    const sessionId = await createSessionForCard("ws-1", "/tmp", "npm test");
+
+    expect(sessionId).toBe("s1");
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a", "s1"], 1));
+  });
+
+  it("passes a non-blank cwd/command straight through to backend.createSession", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.createSession).mockResolvedValue("s1");
+
+    await createSessionForCard("ws-1", "/tmp/project", "npm test");
+
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/project", "npm test");
+  });
+
+  it("converts a blank cwd and a null command to undefined for backend.createSession", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("s1");
+
+    await createSessionForCard("ws-1", "", null);
+
+    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it("returns null and surfaces an error when session creation fails", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockRejectedValue(new Error("daemon unreachable"));
+
+    const sessionId = await createSessionForCard("ws-1", "", null);
+
+    expect(sessionId).toBeNull();
+    expect(get(layoutState).status).toBe("error");
+  });
+
+  it("is a no-op for an unknown workspace id", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    const sessionId = await createSessionForCard("missing", "", null);
+
+    expect(sessionId).toBeNull();
     expect(backend.createSession).not.toHaveBeenCalled();
   });
 });
