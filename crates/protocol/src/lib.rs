@@ -29,6 +29,17 @@ pub enum Request {
     Attach {
         id: String,
     },
+    GetBoard {
+        workspace_id: String,
+    },
+    SetBoard {
+        workspace_id: String,
+        columns: Vec<Column>,
+        labels: Vec<Label>,
+    },
+    DeleteBoard {
+        workspace_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +53,7 @@ pub enum Response {
     StatusChanged { id: String, status: String },
     GitStatusChanged { id: String, status: Option<GitStatus> },
     SessionRestored { id: String },
+    Board { columns: Vec<Column>, labels: Vec<Label> },
     Ok,
     Error { message: String },
 }
@@ -72,6 +84,73 @@ pub struct SessionSummary {
     pub cwd: String,
     pub status: String,
     pub restored: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    None,
+    Low,
+    Medium,
+    High,
+    Urgent,
+}
+
+impl Priority {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Priority::None => "none",
+            Priority::Low => "low",
+            Priority::Medium => "medium",
+            Priority::High => "high",
+            Priority::Urgent => "urgent",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "low" => Priority::Low,
+            "medium" => Priority::Medium,
+            "high" => Priority::High,
+            "urgent" => Priority::Urgent,
+            _ => Priority::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Label {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Card {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub label_ids: Vec<String>,
+    pub priority: Priority,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Column {
+    pub id: String,
+    pub name: String,
+    pub position: i64,
+    pub cards: Vec<Card>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Board {
+    pub columns: Vec<Column>,
+    pub labels: Vec<Label>,
 }
 
 pub fn write_message<W: Write, T: Serialize>(writer: &mut W, msg: &T) -> anyhow::Result<()> {
@@ -311,5 +390,147 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn get_board_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::GetBoard { workspace_id: "ws-1".to_string() };
+        write_message(&mut buf, &req).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Request::GetBoard { workspace_id } => assert_eq!(workspace_id, "ws-1"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_board_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::SetBoard {
+            workspace_id: "ws-1".to_string(),
+            columns: vec![Column {
+                id: "col-1".to_string(),
+                name: "To Do".to_string(),
+                position: 0,
+                cards: vec![Card {
+                    id: "card-1".to_string(),
+                    title: "Write plan".to_string(),
+                    description: "".to_string(),
+                    label_ids: vec!["label-1".to_string()],
+                    priority: Priority::High,
+                    position: 0,
+                }],
+            }],
+            labels: vec![Label {
+                id: "label-1".to_string(),
+                name: "urgent".to_string(),
+                color: "#ff0000".to_string(),
+            }],
+        };
+        write_message(&mut buf, &req).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Request::SetBoard { workspace_id, columns, labels } => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(columns.len(), 1);
+                assert_eq!(columns[0].cards[0].priority, Priority::High);
+                assert_eq!(labels.len(), 1);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_board_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::DeleteBoard { workspace_id: "ws-1".to_string() };
+        write_message(&mut buf, &req).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Request::DeleteBoard { workspace_id } => assert_eq!(workspace_id, "ws-1"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn board_response_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let resp = Response::Board {
+            columns: vec![Column {
+                id: "col-1".to_string(),
+                name: "Done".to_string(),
+                position: 0,
+                cards: vec![],
+            }],
+            labels: vec![],
+        };
+        write_message(&mut buf, &resp).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
+
+        match decoded {
+            Response::Board { columns, labels } => {
+                assert_eq!(columns.len(), 1);
+                assert_eq!(columns[0].name, "Done");
+                assert_eq!(labels.len(), 0);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn card_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let card = Card {
+            id: "card-1".to_string(),
+            title: "Write plan".to_string(),
+            description: "details".to_string(),
+            label_ids: vec!["label-1".to_string()],
+            priority: Priority::Urgent,
+            position: 2,
+        };
+        let json = serde_json::to_value(&card).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "card-1",
+                "title": "Write plan",
+                "description": "details",
+                "labelIds": ["label-1"],
+                "priority": "urgent",
+                "position": 2
+            })
+        );
+    }
+
+    #[test]
+    fn priority_serializes_to_lowercase_strings() {
+        assert_eq!(serde_json::to_value(Priority::None).unwrap(), serde_json::json!("none"));
+        assert_eq!(serde_json::to_value(Priority::Low).unwrap(), serde_json::json!("low"));
+        assert_eq!(serde_json::to_value(Priority::Medium).unwrap(), serde_json::json!("medium"));
+        assert_eq!(serde_json::to_value(Priority::High).unwrap(), serde_json::json!("high"));
+        assert_eq!(serde_json::to_value(Priority::Urgent).unwrap(), serde_json::json!("urgent"));
+    }
+
+    #[test]
+    fn priority_as_str_and_from_str_round_trip_every_variant() {
+        for p in [Priority::None, Priority::Low, Priority::Medium, Priority::High, Priority::Urgent] {
+            assert_eq!(Priority::from_str(p.as_str()), p);
+        }
+    }
+
+    #[test]
+    fn priority_from_str_defaults_to_none_for_an_unrecognized_value() {
+        assert_eq!(Priority::from_str("not-a-real-priority"), Priority::None);
     }
 }
