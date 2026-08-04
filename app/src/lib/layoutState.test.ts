@@ -16,6 +16,7 @@ vi.mock("./backend", () => ({
   signalFrontendReady: vi.fn(),
   getSessionNames: vi.fn(),
   setSessionName: vi.fn(),
+  deleteBoard: vi.fn(),
 }));
 
 vi.mock("./terminalRegistry", () => ({
@@ -582,6 +583,15 @@ describe("closeWorkspace", () => {
     const state = get(layoutState);
     expect(state.workspaces.map((w) => w.id)).toEqual(["ws-2"]);
     expect(state.activeWorkspaceId).toBe("ws-2");
+  });
+
+  it("deletes the workspace's kanban board", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closeWorkspace("ws-1");
+
+    expect(backend.deleteBoard).toHaveBeenCalledWith("ws-1");
   });
 });
 

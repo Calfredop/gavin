@@ -547,6 +547,13 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
     terminalRegistry.destroyTerminal(id);
   }
 
+  try {
+    await backend.deleteBoard(workspaceId);
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+
   let updated = workspace.removeWorkspace(state, workspaceId);
   let focusedSessionId = state.focusedSessionId;
   if (sessionIds.includes(state.focusedSessionId ?? "")) {
