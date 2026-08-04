@@ -10,10 +10,19 @@ export type DragPayload =
   | { kind: "workspace"; workspaceId: string }
   | { kind: "page"; workspaceId: string; pageId: string }
   | { kind: "pane"; workspaceId: string; pageId: string; sessionId: string }
-  | { kind: "tab"; workspaceId: string; pageId: string; sessionId: string };
+  | { kind: "tab"; workspaceId: string; pageId: string; sessionId: string }
+  | { kind: "kanban-card"; cardId: string; sourceColumnId: string }
+  | { kind: "kanban-column"; columnId: string };
 
 const DRAG_TYPE_PREFIX = "application/x-gavin-drag-";
-const DRAG_KINDS: readonly DragPayload["kind"][] = ["workspace", "page", "pane", "tab"];
+const DRAG_KINDS: readonly DragPayload["kind"][] = [
+  "workspace",
+  "page",
+  "pane",
+  "tab",
+  "kanban-card",
+  "kanban-column",
+];
 
 export function setDragPayload(event: DragEvent, payload: DragPayload): void {
   if (!event.dataTransfer) return;
