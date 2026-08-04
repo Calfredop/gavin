@@ -2,7 +2,7 @@ use crate::config::Workspace;
 use crate::layout::LayoutNode;
 use protocol::{read_message, socket_path, write_message, Board, Column, Label, Request, Response};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -212,14 +212,23 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
 /// (stale, exited, or never existed) with a freshly created session — the
 /// same silent, normal fallback Milestone B established for its one
 /// session, now applied uniformly to every tab in every pane.
+/// Ids in `file_tab_ids` are file-viewer tabs, not terminal sessions --
+/// they're skipped entirely. The daemon has never heard of them, so
+/// without this check every persisted file tab would be treated as a
+/// stale session and silently replaced by a freshly spawned shell on
+/// every single launch.
 fn resolve_sessions(
     node: &mut LayoutNode,
     command_conn: &Mutex<UnixStream>,
     all_sessions: &HashMap<String, protocol::SessionSummary>,
+    file_tab_ids: &HashSet<String>,
 ) -> anyhow::Result<()> {
     match node {
         LayoutNode::Leaf { tabs, .. } => {
             for id in tabs.iter_mut() {
+                if file_tab_ids.contains(id.as_str()) {
+                    continue;
+                }
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
                 if !is_valid {
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
@@ -230,7 +239,7 @@ fn resolve_sessions(
         }
         LayoutNode::Split { children, .. } => {
             for child in children.iter_mut() {
-                resolve_sessions(child, command_conn, all_sessions)?;
+                resolve_sessions(child, command_conn, all_sessions, file_tab_ids)?;
             }
             Ok(())
         }
@@ -263,14 +272,26 @@ fn list_valid_session_ids(
 fn resolve_workspaces(
     workspaces: &mut [Workspace],
     command_conn: &Mutex<UnixStream>,
+    file_tab_ids: &HashSet<String>,
 ) -> anyhow::Result<()> {
     if workspaces.is_empty() {
+        return Ok(());
+    }
+    // Every tab across every page is a file tab -- there are no sessions to
+    // reconcile, so skip the ListSessions round-trip entirely (matching the
+    // empty-workspaces early return above).
+    let has_any_session_tab = workspaces
+        .iter()
+        .flat_map(|w| w.pages.iter())
+        .flat_map(|p| p.layout.all_session_ids())
+        .any(|id| !file_tab_ids.contains(&id));
+    if !has_any_session_tab {
         return Ok(());
     }
     let all_sessions = list_valid_session_ids(command_conn)?;
     for workspace in workspaces.iter_mut() {
         for page in workspace.pages.iter_mut() {
-            resolve_sessions(&mut page.layout, command_conn, &all_sessions)?;
+            resolve_sessions(&mut page.layout, command_conn, &all_sessions, file_tab_ids)?;
         }
     }
     Ok(())
@@ -426,6 +447,43 @@ mod resolve_workspaces_tests {
         Workspace { id: id.to_string(), name: id.to_string(), pages, active_page_id: None, active_view: None }
     }
 
+    fn no_file_tabs() -> HashSet<String> {
+        HashSet::new()
+    }
+
+    #[test]
+    fn a_file_tab_id_is_left_alone_not_replaced_with_a_fresh_session() {
+        // Zero queued responses: if resolve_workspaces treated the file tab
+        // as a stale session it would try to CreateSession and hang/fail on
+        // the empty queue. A workspace whose only tab is a file tab must
+        // not even call ListSessions.
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![]);
+        let conn = Mutex::new(client);
+        let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1"]))])];
+        let file_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
+
+        resolve_workspaces(&mut workspaces, &conn, &file_tab_ids).unwrap();
+
+        assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1"]));
+        assert!(captured.lock().unwrap().is_empty(), "no daemon calls at all for a file-tab-only workspace");
+    }
+
+    #[test]
+    fn a_file_tab_alongside_a_stale_session_leaves_the_file_tab_and_replaces_only_the_session() {
+        let (client, _captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::SessionList { sessions: vec![] },
+            Response::SessionCreated { id: "fresh-a".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+        let mut workspaces =
+            vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1", "stale-session"]))])];
+        let file_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
+
+        resolve_workspaces(&mut workspaces, &conn, &file_tab_ids).unwrap();
+
+        assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1", "fresh-a"]));
+    }
+
     fn valid_session(id: &str) -> protocol::SessionSummary {
         protocol::SessionSummary {
             id: id.to_string(),
@@ -456,7 +514,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces: Vec<Workspace> = vec![];
 
-        resolve_workspaces(&mut workspaces, &conn).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
 
         assert_eq!(workspaces, vec![]);
     }
@@ -477,7 +535,7 @@ mod resolve_workspaces_tests {
             workspace("ws-2", vec![page("page-2", leaf(&["valid-2"]))]),
         ];
 
-        resolve_workspaces(&mut workspaces, &conn).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1"]));
         assert_eq!(workspaces[1].pages[0].layout, leaf(&["valid-2"]));
@@ -496,7 +554,7 @@ mod resolve_workspaces_tests {
             workspace("ws-2", vec![page("page-2", leaf(&["stale-2"]))]),
         ];
 
-        resolve_workspaces(&mut workspaces, &conn).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1", "fresh-a"]));
         assert_eq!(workspaces[1].pages[0].layout, leaf(&["fresh-b"]));
@@ -513,7 +571,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-1"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-a"]));
         let requests = captured.lock().unwrap();
@@ -535,7 +593,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["unknown-id"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-b"]));
         let requests = captured.lock().unwrap();
@@ -564,7 +622,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-2"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-c"]));
         let requests = captured.lock().unwrap();
@@ -659,7 +717,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             },
         );
     }
-    resolve_workspaces(&mut workspaces, &command_conn)?;
+    let file_tab_ids: HashSet<String> = file_tabs.keys().cloned().collect();
+    resolve_workspaces(&mut workspaces, &command_conn, &file_tab_ids)?;
     let active_workspace_id = if had_no_workspaces {
         Some(crate::config::UNFILED_WORKSPACE_ID.to_string())
     } else {
@@ -673,6 +732,9 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         .iter()
         .flat_map(|w| w.pages.iter())
         .flat_map(|p| p.layout.all_session_ids())
+        // A file tab id is not a session -- the daemon has never heard of
+        // it, so Attaching would fail for an id that was never a session.
+        .filter(|id| !file_tab_ids.contains(id))
         .collect();
     for id in all_session_ids {
         send_request(&writer, &Request::Attach { id })?;
