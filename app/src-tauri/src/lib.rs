@@ -41,6 +41,8 @@ pub fn run() {
             session::set_workspaces_state,
             session::get_session_names,
             session::set_session_name,
+            session::get_file_tabs,
+            session::set_file_tabs,
             session::signal_frontend_ready,
             session::get_bootstrap_error,
             session::get_board,

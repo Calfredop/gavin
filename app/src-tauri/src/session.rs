@@ -44,6 +44,7 @@ fn persist_workspaces(
     config_dir: &std::path::Path,
     data: &WorkspacesData,
     session_names: HashMap<String, String>,
+    file_tabs: HashMap<String, String>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -51,9 +52,17 @@ fn persist_workspaces(
             workspaces: data.workspaces.clone(),
             active_workspace_id: data.active_workspace_id.clone(),
             session_names,
+            file_tabs,
         },
     )
 }
+
+/// Open file-viewer tabs (tab id -> absolute path). Independent
+/// Tauri-managed state from `WorkspacesState`/`SessionNames`, but all
+/// three persist into the same `AppConfig` -- every command that saves one
+/// must read the others' current values too, or it would silently reset
+/// them to empty on every save.
+pub struct FileTabs(pub Mutex<HashMap<String, String>>);
 
 #[cfg(test)]
 mod workspaces_data_tests {
@@ -86,12 +95,14 @@ pub fn set_workspaces_state(
     app_handle: AppHandle,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id };
     *state.0.lock().unwrap() = data.clone();
     let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names).map_err(|e| e.to_string())
+    persist_workspaces(&config_dir, &data, session_names, file_tabs).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -106,6 +117,7 @@ pub fn set_session_name(
     app_handle: AppHandle,
     workspaces_state: State<WorkspacesState>,
     names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -120,9 +132,35 @@ pub fn set_session_name(
         }
         names.clone()
     };
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names).map_err(|e| e.to_string())
+    persist_workspaces(&config_dir, &data, session_names, file_tabs).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_file_tabs(state: State<FileTabs>) -> HashMap<String, String> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Replaces the whole file-tab map. Whole-map rather than per-tab
+/// (unlike `set_session_name`) because Part 2's callers always mutate it
+/// alongside a pane-tree change they're already persisting wholesale --
+/// there is no "rename one file tab" operation the way there is for
+/// session names.
+#[tauri::command]
+pub fn set_file_tabs(
+    file_tabs: HashMap<String, String>,
+    app_handle: AppHandle,
+    workspaces_state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+) -> Result<(), String> {
+    *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let data = workspaces_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(&config_dir, &data, session_names, file_tabs).map_err(|e| e.to_string())
 }
 
 /// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
@@ -599,6 +637,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let config_dir = app_handle.path().app_config_dir()?;
     let config = crate::config::load(&config_dir)?;
     let session_names = config.session_names;
+    let file_tabs = config.file_tabs;
 
     let mut workspaces = config.workspaces;
     // A truly fresh install (no config.json yet, or one from before this
@@ -627,7 +666,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.active_workspace_id
     };
     let workspaces_data = WorkspacesData { workspaces, active_workspace_id };
-    persist_workspaces(&config_dir, &workspaces_data, session_names.clone())?;
+    persist_workspaces(&config_dir, &workspaces_data, session_names.clone(), file_tabs.clone())?;
 
     let all_session_ids: Vec<String> = workspaces_data
         .workspaces
@@ -643,6 +682,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(CommandConnection(command_conn));
     app_handle.manage(WorkspacesState(Mutex::new(workspaces_data.clone())));
     app_handle.manage(SessionNames(Mutex::new(session_names)));
+    app_handle.manage(FileTabs(Mutex::new(file_tabs)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     let mut reader = BufReader::new(reader_stream);

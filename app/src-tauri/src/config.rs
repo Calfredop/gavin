@@ -48,6 +48,15 @@ pub struct AppConfig {
     /// reset it to empty.
     #[serde(default)]
     pub session_names: HashMap<String, String>,
+    /// Open file-viewer tabs, keyed by tab id (the same opaque id space as
+    /// session ids in the pane tree's `tabs` array -- a tab id appearing
+    /// here means "this tab shows a file," not "this is a terminal
+    /// session"). Value is the file's absolute path. Like `session_names`,
+    /// this persists alongside `workspaces` and must always be carried
+    /// through `persist_workspaces` rather than reconstructed, or it will
+    /// silently reset to empty on the next save.
+    #[serde(default)]
+    pub file_tabs: HashMap<String, String>,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -122,6 +131,7 @@ mod tests {
             workspaces: vec![sample_workspace()],
             active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -138,6 +148,7 @@ mod tests {
             workspaces: vec![sample_workspace()],
             active_workspace_id: Some("workspace-1".to_string()),
             session_names,
+            file_tabs: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -157,6 +168,43 @@ mod tests {
 
         let config = load(dir.path()).unwrap();
         assert_eq!(config.session_names, HashMap::new());
+    }
+
+    #[test]
+    fn file_tabs_roundtrip_alongside_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file_tabs = HashMap::new();
+        file_tabs.insert("tab-1".to_string(), "/Users/alice/project/README.md".to_string());
+        let config = AppConfig {
+            workspaces: vec![sample_workspace()],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs,
+        };
+        save(dir.path(), &config).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(
+            loaded.file_tabs.get("tab-1"),
+            Some(&"/Users/alice/project/README.md".to_string())
+        );
+    }
+
+    #[test]
+    fn load_defaults_file_tabs_when_the_field_is_absent_from_an_older_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real config.json from before the file viewer shipped: has
+        // workspaces and session_names, no file_tabs key at all.
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [], "active_workspace_id": null, "session_names": {"abc-123": "my project"}}"#,
+        )
+        .unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.file_tabs, HashMap::new());
+        assert_eq!(config.session_names.get("abc-123"), Some(&"my project".to_string()));
     }
 
     #[test]
@@ -224,6 +272,7 @@ mod tests {
             workspaces: vec![sample_workspace()],
             active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
         };
         save(&nested, &config).unwrap();
 
