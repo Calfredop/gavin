@@ -4,6 +4,9 @@ import {
   updateCard,
   moveCard,
   deleteCard,
+  linkSession,
+  unlinkSession,
+  updateSessionLink,
   addLabel,
   updateLabel,
   deleteLabel,
@@ -88,6 +91,45 @@ describe("deleteCard", () => {
     const b = board([{ id: "c1", cards: [card("card-1", 0), card("card-2", 1)] }]);
     const updated = deleteCard(b, "card-1");
     expect(updated.columns[0].cards.map((c) => c.id)).toEqual(["card-2"]);
+  });
+});
+
+describe("linkSession", () => {
+  it("sets the card's sessionLink", () => {
+    const b = board([{ id: "c1", cards: [card("card-1", 0)] }]);
+    const link = { sessionId: "s1", cwd: "/tmp", command: null };
+    const updated = linkSession(b, "card-1", link);
+    expect(updated.columns[0].cards[0].sessionLink).toEqual(link);
+  });
+
+  it("leaves other cards untouched", () => {
+    const b = board([{ id: "c1", cards: [card("card-1", 0), card("card-2", 1)] }]);
+    const updated = linkSession(b, "card-1", { sessionId: "s1", cwd: "/tmp", command: null });
+    expect(updated.columns[0].cards[1].sessionLink).toBeUndefined();
+  });
+});
+
+describe("unlinkSession", () => {
+  it("clears the card's sessionLink", () => {
+    const linked = { ...card("card-1", 0), sessionLink: { sessionId: "s1", cwd: "/tmp", command: null } };
+    const b = board([{ id: "c1", cards: [linked] }]);
+    const updated = unlinkSession(b, "card-1");
+    expect(updated.columns[0].cards[0].sessionLink).toBeUndefined();
+  });
+});
+
+describe("updateSessionLink", () => {
+  it("replaces the sessionId while preserving cwd/command", () => {
+    const linked = { ...card("card-1", 0), sessionLink: { sessionId: "old", cwd: "/tmp/project", command: "npm test" } };
+    const b = board([{ id: "c1", cards: [linked] }]);
+    const updated = updateSessionLink(b, "card-1", "new");
+    expect(updated.columns[0].cards[0].sessionLink).toEqual({ sessionId: "new", cwd: "/tmp/project", command: "npm test" });
+  });
+
+  it("is a no-op when the card has no existing link", () => {
+    const b = board([{ id: "c1", cards: [card("card-1", 0)] }]);
+    const updated = updateSessionLink(b, "card-1", "new");
+    expect(updated.columns[0].cards[0].sessionLink).toBeUndefined();
   });
 });
 

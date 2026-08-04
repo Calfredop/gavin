@@ -6,6 +6,12 @@ export interface Label {
   color: string;
 }
 
+export interface SessionLink {
+  sessionId: string;
+  cwd: string;
+  command: string | null;
+}
+
 export interface Card {
   id: string;
   title: string;
@@ -13,6 +19,7 @@ export interface Card {
   labelIds: string[];
   priority: Priority;
   position: number;
+  sessionLink?: SessionLink;
 }
 
 export interface Column {
@@ -81,6 +88,41 @@ export function deleteCard(board: Board, cardId: string): Board {
     columns: board.columns.map((c) => ({
       ...c,
       cards: c.cards.filter((card) => card.id !== cardId).map((card, i) => ({ ...card, position: i })),
+    })),
+  };
+}
+
+export function linkSession(board: Board, cardId: string, sessionLink: SessionLink): Board {
+  return {
+    ...board,
+    columns: board.columns.map((c) => ({
+      ...c,
+      cards: c.cards.map((card) => (card.id === cardId ? { ...card, sessionLink } : card)),
+    })),
+  };
+}
+
+export function unlinkSession(board: Board, cardId: string): Board {
+  return {
+    ...board,
+    columns: board.columns.map((c) => ({
+      ...c,
+      cards: c.cards.map((card) => (card.id === cardId ? { ...card, sessionLink: undefined } : card)),
+    })),
+  };
+}
+
+// Replaces just the linked sessionId, preserving the remembered cwd/command
+// -- used by "re-launch," which recreates a session at the same cwd/command
+// as the one that exited, then points the card at the fresh id.
+export function updateSessionLink(board: Board, cardId: string, sessionId: string): Board {
+  return {
+    ...board,
+    columns: board.columns.map((c) => ({
+      ...c,
+      cards: c.cards.map((card) =>
+        card.id === cardId && card.sessionLink ? { ...card, sessionLink: { ...card.sessionLink, sessionId } } : card
+      ),
     })),
   };
 }
