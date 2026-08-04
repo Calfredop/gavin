@@ -13,6 +13,7 @@ export interface Workspace {
   name: string;
   pages: Page[];
   activePageId: string | null;
+  activeView?: string;
 }
 
 export interface WorkspacesData {
@@ -187,6 +188,17 @@ export function updatePageLayout(
 
 export function getActiveWorkspace(state: WorkspacesData): Workspace | null {
   return state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? null;
+}
+
+export function getActiveView(ws: Workspace): string {
+  return ws.activeView ?? "terminal";
+}
+
+export function switchWorkspaceView(state: WorkspacesData, workspaceId: string, view: string): WorkspacesData {
+  return {
+    ...state,
+    workspaces: state.workspaces.map((w) => (w.id === workspaceId ? { ...w, activeView: view } : w)),
+  };
 }
 
 export function getActivePage(state: WorkspacesData): Page | null {

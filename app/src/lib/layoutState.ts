@@ -518,6 +518,13 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
   await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
+export async function switchWorkspaceView(workspaceId: string, view: string): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.switchWorkspaceView(state, workspaceId, view);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
 // Kills every session across every page of the workspace, then removes
 // it -- the same escalation as closePane, one level up. Confirm-before
 // prompting is the caller's (Sidebar.svelte's) responsibility, matching

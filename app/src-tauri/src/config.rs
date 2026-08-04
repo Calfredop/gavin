@@ -32,6 +32,7 @@ pub struct Workspace {
     pub name: String,
     pub pages: Vec<Page>,
     pub active_page_id: Option<String>,
+    pub active_view: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -102,6 +103,7 @@ mod tests {
             name: "Workspace 1".to_string(),
             pages: vec![sample_page()],
             active_page_id: Some("page-1".to_string()),
+            active_view: None,
         }
     }
 
@@ -179,6 +181,22 @@ mod tests {
     }
 
     #[test]
+    fn load_defaults_a_workspaces_active_view_to_none_when_absent_from_an_older_workspace_object() {
+        let dir = tempfile::tempdir().unwrap();
+        // Mirrors a real pre-this-milestone Workspace object: has
+        // activePageId, has no activeView key at all.
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.workspaces.len(), 1);
+        assert_eq!(config.workspaces[0].active_view, None);
+    }
+
+    #[test]
     fn workspace_serializes_to_the_camel_case_shape_the_frontend_expects() {
         let json = serde_json::to_value(&sample_workspace()).unwrap();
         assert_eq!(
@@ -192,7 +210,8 @@ mod tests {
                     "layout": { "type": "leaf", "tabs": ["abc-123"], "activeTabIndex": 0 },
                     "focusedSessionId": null
                 }],
-                "activePageId": "page-1"
+                "activePageId": "page-1",
+                "activeView": null
             })
         );
     }

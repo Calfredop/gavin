@@ -15,6 +15,8 @@ import {
   getActiveWorkspace,
   getActivePage,
   getActiveTree,
+  getActiveView,
+  switchWorkspaceView,
   allSessionIdsInWorkspace,
   resolveFocusForPage,
   setPageFocus,
@@ -63,6 +65,34 @@ describe("switchWorkspace", () => {
     const switched = switchWorkspace(state, "ws-1");
     expect(switched.activeWorkspaceId).toBe("ws-1");
     expect(switched.workspaces).toEqual(state.workspaces);
+  });
+});
+
+describe("getActiveView", () => {
+  it("defaults to terminal when activeView is unset", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    expect(getActiveView(state.workspaces[0])).toBe("terminal");
+  });
+
+  it("returns the workspace's own activeView when set", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const w = { ...state.workspaces[0], activeView: "kanban" };
+    expect(getActiveView(w)).toBe("kanban");
+  });
+});
+
+describe("switchWorkspaceView", () => {
+  it("sets the given workspace's activeView, leaving others untouched", () => {
+    const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
+    const updated = switchWorkspaceView(state, "ws-1", "kanban");
+    expect(getActiveView(updated.workspaces[0])).toBe("kanban");
+    expect(getActiveView(updated.workspaces[1])).toBe("terminal");
+  });
+
+  it("is a no-op when the workspace id doesn't exist", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const updated = switchWorkspaceView(state, "does-not-exist", "kanban");
+    expect(updated).toEqual(state);
   });
 });
 

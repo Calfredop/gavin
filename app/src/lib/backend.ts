@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
+import type { Board, Column, Label } from "./kanban";
 
 export function createSession(): Promise<string> {
   return invoke("create_session");
@@ -52,4 +53,16 @@ export function signalFrontendReady(): Promise<void> {
 
 export function getBootstrapError(): Promise<string | null> {
   return invoke("get_bootstrap_error");
+}
+
+export function getBoard(workspaceId: string): Promise<Board> {
+  return invoke("get_board", { workspaceId });
+}
+
+export function setBoard(workspaceId: string, columns: Column[], labels: Label[]): Promise<void> {
+  return invoke("set_board", { workspaceId, columns, labels });
+}
+
+export function deleteBoard(workspaceId: string): Promise<void> {
+  return invoke("delete_board", { workspaceId });
 }

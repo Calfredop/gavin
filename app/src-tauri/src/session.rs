@@ -385,7 +385,7 @@ mod resolve_workspaces_tests {
     }
 
     fn workspace(id: &str, pages: Vec<Page>) -> Workspace {
-        Workspace { id: id.to_string(), name: id.to_string(), pages, active_page_id: None }
+        Workspace { id: id.to_string(), name: id.to_string(), pages, active_page_id: None, active_view: None }
     }
 
     fn valid_session(id: &str) -> protocol::SessionSummary {
@@ -586,6 +586,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 name: "Unfiled".to_string(),
                 pages: vec![],
                 active_page_id: None,
+                active_view: None,
             },
         );
     }

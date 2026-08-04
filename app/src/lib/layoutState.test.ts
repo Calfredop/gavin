@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
 import type { LayoutNode } from "./layout";
 import type { Page, Workspace } from "./workspace";
+import { getActiveView } from "./workspace";
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
@@ -50,6 +51,7 @@ import {
   createWorkspace,
   renameWorkspace,
   switchWorkspace,
+  switchWorkspaceView,
   closeWorkspace,
   createPage,
   renamePage,
@@ -544,6 +546,18 @@ describe("switchWorkspace", () => {
     const state = get(layoutState);
     expect(state.activeWorkspaceId).toBe("ws-2");
     expect(state.focusedSessionId).toBe(null);
+  });
+});
+
+describe("switchWorkspaceView", () => {
+  it("persists the new activeView for the given workspace", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await switchWorkspaceView("ws-1", "kanban");
+
+    const state = get(layoutState);
+    expect(getActiveView(state.workspaces[0])).toBe("kanban");
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
   });
 });
 
