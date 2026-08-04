@@ -41,7 +41,34 @@ impl KanbanStore {
                 PRIMARY KEY (card_id, label_id)
             );",
         )?;
+        Self::add_session_link_columns_if_missing(&conn)?;
         Ok(Self { conn })
+    }
+
+    // CREATE TABLE IF NOT EXISTS only applies the current schema to a
+    // brand-new database -- a kanban_cards table left over from before
+    // these three columns existed is untouched by it, silently missing
+    // them forever (this is exactly what broke an existing install after
+    // the columns shipped: "no such column: session_link_session_id").
+    // SQLite has no "ADD COLUMN IF NOT EXISTS," so this checks each
+    // column's presence via PRAGMA table_info first and only adds what's
+    // actually missing -- safe to call on every open, whether the table is
+    // brand new (already has all three via the CREATE TABLE above, so this
+    // is a no-op) or pre-existing (backfills them once, then is a no-op on
+    // every later open too).
+    fn add_session_link_columns_if_missing(conn: &Connection) -> anyhow::Result<()> {
+        let mut existing = std::collections::HashSet::new();
+        let mut stmt = conn.prepare("PRAGMA table_info(kanban_cards)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            existing.insert(row?);
+        }
+        for column in ["session_link_session_id", "session_link_cwd", "session_link_command"] {
+            if !existing.contains(column) {
+                conn.execute(&format!("ALTER TABLE kanban_cards ADD COLUMN {column} TEXT"), [])?;
+            }
+        }
+        Ok(())
     }
 
     /// If this workspace has never had a board (no `kanban_boards` row),
@@ -403,5 +430,49 @@ mod tests {
         let mut store = KanbanStore::open(&db_path).unwrap();
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.columns[0].name, "Persisted");
+    }
+
+    #[test]
+    fn open_backfills_session_link_columns_onto_a_pre_existing_table_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("kanban.sqlite");
+        // Simulate a database created before the session_link_* columns
+        // existed -- the exact shape CREATE TABLE IF NOT EXISTS alone
+        // leaves permanently broken.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE kanban_boards (workspace_id TEXT PRIMARY KEY);
+                 CREATE TABLE kanban_columns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL);
+                 CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, column_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, priority TEXT NOT NULL, position INTEGER NOT NULL);
+                 CREATE TABLE kanban_labels (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, color TEXT NOT NULL);
+                 CREATE TABLE kanban_card_labels (card_id TEXT NOT NULL, label_id TEXT NOT NULL, PRIMARY KEY (card_id, label_id));",
+            )
+            .unwrap();
+        }
+
+        let mut store = KanbanStore::open(&db_path).unwrap();
+        let mut linked_card = card("card-1", "Run tests", vec![], 0);
+        linked_card.session_link = Some(SessionLink {
+            session_id: "session-1".to_string(),
+            cwd: "/tmp".to_string(),
+            command: None,
+        });
+        store.replace_board("ws-1", &[column("c1", "To Do", 0, vec![linked_card])], &[]).unwrap();
+
+        let board = store.get_board("ws-1").unwrap();
+        assert_eq!(board.columns[0].cards[0].session_link.as_ref().unwrap().session_id, "session-1");
+    }
+
+    #[test]
+    fn open_is_idempotent_when_session_link_columns_already_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("kanban.sqlite");
+        KanbanStore::open(&db_path).unwrap();
+
+        // Re-opening (e.g. a normal app restart) must not error trying to
+        // add the same columns twice.
+        let reopened = KanbanStore::open(&db_path);
+        assert!(reopened.is_ok());
     }
 }
