@@ -128,6 +128,14 @@ pub struct Label {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionLink {
+    pub session_id: String,
+    pub cwd: String,
+    pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Card {
     pub id: String,
     pub title: String,
@@ -135,6 +143,7 @@ pub struct Card {
     pub label_ids: Vec<String>,
     pub priority: Priority,
     pub position: i64,
+    pub session_link: Option<SessionLink>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -423,6 +432,7 @@ mod tests {
                     label_ids: vec!["label-1".to_string()],
                     priority: Priority::High,
                     position: 0,
+                    session_link: None,
                 }],
             }],
             labels: vec![Label {
@@ -498,6 +508,7 @@ mod tests {
             label_ids: vec!["label-1".to_string()],
             priority: Priority::Urgent,
             position: 2,
+            session_link: None,
         };
         let json = serde_json::to_value(&card).unwrap();
         assert_eq!(
@@ -508,9 +519,52 @@ mod tests {
                 "description": "details",
                 "labelIds": ["label-1"],
                 "priority": "urgent",
-                "position": 2
+                "position": 2,
+                "sessionLink": null
             })
         );
+    }
+
+    #[test]
+    fn session_link_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let link = SessionLink {
+            session_id: "session-1".to_string(),
+            cwd: "/Users/alice/project".to_string(),
+            command: Some("npm test".to_string()),
+        };
+        let json = serde_json::to_value(&link).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "sessionId": "session-1",
+                "cwd": "/Users/alice/project",
+                "command": "npm test"
+            })
+        );
+    }
+
+    #[test]
+    fn card_with_session_link_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let card = Card {
+            id: "card-1".to_string(),
+            title: "Run tests".to_string(),
+            description: "".to_string(),
+            label_ids: vec![],
+            priority: Priority::None,
+            position: 0,
+            session_link: Some(SessionLink {
+                session_id: "session-1".to_string(),
+                cwd: "/tmp".to_string(),
+                command: None,
+            }),
+        };
+        write_message(&mut buf, &card).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Card = read_message(&mut cursor).unwrap().unwrap();
+
+        assert_eq!(decoded.session_link.unwrap().session_id, "session-1");
     }
 
     #[test]
