@@ -264,6 +264,25 @@ export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
   return workspace.pages.flatMap((p) => allSessionIds(p.layout));
 }
 
+// Searches every workspace's every page for sessionId, fresh at call time
+// (never cached) -- a card's sessionLink only stores a bare sessionId, and
+// this is how "jump to session"/"is this session still alive" resolve
+// which workspace/page currently hosts it, since a tab can move between
+// pages and workspaces after a card links to it.
+export function findSessionLocation(
+  state: WorkspacesData,
+  sessionId: string
+): { workspaceId: string; pageId: string } | null {
+  for (const ws of state.workspaces) {
+    for (const page of ws.pages) {
+      if (allSessionIds(page.layout).includes(sessionId)) {
+        return { workspaceId: ws.id, pageId: page.id };
+      }
+    }
+  }
+  return null;
+}
+
 // A single session's git status, mirroring crates/protocol's GitStatus
 // wire shape exactly (camelCase, per its own #[serde(rename_all =
 // "camelCase")]). repoRoot identifies the repo by canonical filesystem

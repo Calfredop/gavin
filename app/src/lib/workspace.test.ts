@@ -18,6 +18,7 @@ import {
   getActiveView,
   switchWorkspaceView,
   allSessionIdsInWorkspace,
+  findSessionLocation,
   resolveFocusForPage,
   setPageFocus,
   resolveActiveFocus,
@@ -217,6 +218,35 @@ describe("allSessionIdsInWorkspace", () => {
       activePageId: "page-1",
     };
     expect(allSessionIdsInWorkspace(workspace)).toEqual(["s1", "s2", "s3"]);
+  });
+});
+
+describe("findSessionLocation", () => {
+  it("finds a session in its own workspace", () => {
+    const state: WorkspacesData = {
+      workspaces: [{ id: "ws-1", name: "A", pages: [page("page-1", leaf(["s1", "s2"]))], activePageId: "page-1" }],
+      activeWorkspaceId: "ws-1",
+    };
+    expect(findSessionLocation(state, "s2")).toEqual({ workspaceId: "ws-1", pageId: "page-1" });
+  });
+
+  it("finds a session after it's moved to a different workspace", () => {
+    const state: WorkspacesData = {
+      workspaces: [
+        { id: "ws-1", name: "A", pages: [page("page-1", leaf(["s1"]))], activePageId: "page-1" },
+        { id: "ws-2", name: "B", pages: [page("page-2", leaf(["s2"]))], activePageId: "page-2" },
+      ],
+      activeWorkspaceId: "ws-1",
+    };
+    expect(findSessionLocation(state, "s2")).toEqual({ workspaceId: "ws-2", pageId: "page-2" });
+  });
+
+  it("returns null for a session that's exited or not present in any page", () => {
+    const state: WorkspacesData = {
+      workspaces: [{ id: "ws-1", name: "A", pages: [page("page-1", leaf(["s1"]))], activePageId: "page-1" }],
+      activeWorkspaceId: "ws-1",
+    };
+    expect(findSessionLocation(state, "gone")).toBeNull();
   });
 });
 
