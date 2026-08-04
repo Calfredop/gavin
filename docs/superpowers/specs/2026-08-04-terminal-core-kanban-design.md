@@ -21,25 +21,47 @@ be genuinely extensible rather than a two-way `if` hardcoding Terminal vs.
 Kanban.
 
 This spec covers two things together, since a tab framework with nothing
-but the pre-existing Terminal view has no user-visible value on its own:
+but a hub of feature-tabs has no user-visible value on its own:
 
-1. A **workspace-level tab framework** (a small view registry + tab bar).
-2. The **Kanban board** itself, as the framework's first new tab.
+1. A **hub view framework** (a small registry + a hub tab bar).
+2. The **Kanban board** itself, as the hub's first tab.
 
 Notes, PRD, Archive, and Settings are explicitly out of scope — each is
-its own future spec, added to the registry later without touching Terminal
-or Kanban's code.
+its own future spec, added to the registry later without touching Kanban's
+own code.
+
+**Amendment (corrects the first shipped version of this spec):** the hub
+was originally designed as a tab bar shown above *every* page, spanning
+Terminal alongside Kanban. After that shipped, the user corrected the
+architecture: the hub should be reached via one pinned, icon-only entry
+point in the sidebar (separate from the regular page list), not a tab bar
+that clutters every ordinary terminal page. Terminal isn't a hub tab at
+all — it's what regular pages already show, unchanged. See Architecture
+section 1 for the corrected design. This amendment deliberately avoided
+making the hub a literal `Page` object: every regular `Page.layout` is a
+required, non-null `LayoutNode` read at 18+ call sites across
+`layoutState.ts`/`workspace.ts`/`Sidebar.svelte`, none of which tolerate
+`null` — a hub-as-Page would have forced either a sweeping nullability
+change across all of them, or a placeholder layout that risks leaking a
+phantom "session" into aggregate functions like `allSessionIdsInWorkspace`
+(which `closeWorkspace` would then try to kill on the daemon). The hub
+instead reuses the already-shipped `activeView` field as a pure UI toggle,
+with no `Page`/`LayoutNode` changes at all.
 
 ## Goals
 
-- Selecting a workspace shows a tab bar with (today) two tabs: Terminal
-  and Kanban. Terminal is the existing pane-tree content-area experience,
-  unchanged, just relocated under a tab — the sidebar's page list itself
-  doesn't move or change.
-- The sidebar's page list stays visible and functional regardless of
-  which tab is active. Clicking a page switches the active tab back to
-  Terminal (if needed) and makes that page active — pages remain a
-  Terminal-specific concept, not a peer of Kanban.
+- A workspace's sidebar gets one pinned, icon-only, non-closable,
+  non-renameable row (a home icon) above its regular page list, present
+  for every real workspace except the pinned Unfiled pseudo-workspace.
+  Clicking it enters the hub — today, just Kanban; later, PRD/Settings
+  join it as sibling tabs within the hub itself.
+  Regular pages are completely unaffected: clicking one shows its
+  pane-tree directly, exactly as before this milestone, with no tab bar
+  at all. Terminal is not a hub tab and never appears in the hub's own
+  tab bar.
+- The sidebar's page list and the new home row are both always visible
+  regardless of which one is currently active. Clicking a page switches
+  back out of the hub (if it was active) and makes that page active.
 - One kanban board per workspace. Custom columns (add/rename/reorder/
   delete), seeded with To Do / In Progress / Done on creation. Cards have
   a title, a free-text/markdown description, a priority
@@ -72,37 +94,52 @@ or Kanban's code.
 
 ## Architecture
 
-### 1. The workspace-view registry (frontend)
+### 1. The hub view registry (frontend)
 
-A small, static registry drives the tab bar:
+A small, static registry drives the hub's own internal tab bar — it does
+**not** include Terminal:
 
 ```ts
-interface WorkspaceView {
-  id: string;             // "terminal" | "kanban" | ...
+interface HubView {
+  id: string;             // "kanban" | ...
   label: string;
   icon: ComponentType;
-  component: ComponentType;
+  component: ComponentType<{ workspaceId: string }>;
 }
 ```
 
-Two entries ship now: `terminal` (wraps the existing content-area
-`LayoutTree` rendering, unchanged — the registry only governs the content
-area, not the sidebar) and `kanban` (the new board). Adding a
-future tab means adding one registry entry and its own component — no
-change to Terminal's or Kanban's own code, which is the whole point of
-building a registry instead of a two-armed `if`.
+One entry ships now: `kanban`. Adding a future hub tab (PRD, Settings)
+means adding one registry entry and its own component — no change to
+Kanban's own code, which is the whole point of building a registry
+instead of a two-armed `if`.
 
-`Workspace` (in `app/src/lib/workspace.ts`) gains one new field:
-`activeView: string` (defaults to `"terminal"`), persisted the same way
-`activePageId` already is — same local config file, same mechanism, no
-new persistence path for this piece. This is lightweight UI state, not
-kanban's actual data.
+`Workspace` (in `app/src/lib/workspace.ts`) keeps the `activeView: string`
+field already shipped (defaults to `"terminal"`), persisted the same way
+`activePageId` already is. It now means something more specific than
+originally designed: `"terminal"` means "show the active page's
+pane-tree, no hub UI at all"; any other value is a hub-tab id, meaning
+"show the hub, with that tab active." No `Page`/`LayoutNode` change of
+any kind — the hub is not a `Page` object, has no id in `ws.pages`, and
+never touches `layout.ts`.
 
-`+page.svelte`'s content area changes from directly rendering
-`LayoutTree` to rendering a tab bar plus whichever view's component is
-active for `activeWorkspace.activeView`. Clicking a page row in the
-sidebar sets `activeView` back to `"terminal"` (if it wasn't already)
-in addition to its existing behavior of setting the active page.
+`+page.svelte`'s content area becomes a three-way split: no active
+workspace → the existing "New Workspace" button; `activeView === "terminal"`
+→ `TerminalView.svelte` (the pre-existing pane-tree-or-empty-state
+rendering, extracted into its own component but otherwise unchanged),
+with no tab bar shown at all; anything else → the hub's own small tab bar
+(iterating the `HubView` registry) plus whichever hub component is
+active, looked up dynamically by id.
+
+`Sidebar.svelte` renders one new pinned row per real workspace (skipping
+Unfiled), above that workspace's regular page list — a home icon, no
+name, not part of `ws.pages`, mirroring how the pinned Unfiled
+*workspace* row itself is never part of the real workspace array.
+Clicking it sets `activeView` to the first `HubView` registry entry
+(today, always `"kanban"`) unless the hub is already active. Clicking a
+regular page sets `activeView` back to `"terminal"` (already shipped) in
+addition to its existing behavior. A page row's own "active" highlighting
+now also requires `activeView === "terminal"`; the new home row is
+"active" whenever `activeView !== "terminal"`.
 
 ### 2. Kanban data model & protocol (shared types)
 
