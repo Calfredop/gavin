@@ -32,17 +32,28 @@ pub enum StatusEvent {
     WaitingForInput,
 }
 
-/// Watches a stream of raw PTY output bytes for two independent signals:
-/// OSC 133 shell-integration markers (A/B/C/D -> idle/working) and a bare
-/// terminal BEL byte outside of any escape sequence (-> waiting_for_input).
+/// Watches a stream of raw PTY output bytes for three independent signals:
+/// OSC 133 shell-integration markers (A/B/C/D -> idle/working), desktop
+/// notification sequences (OSC 9 / 99 / 777 -> waiting_for_input), and a
+/// bare terminal BEL byte outside of any escape sequence
+/// (-> waiting_for_input).
 ///
-/// OSC sequences are tracked GENERICALLY (any number, not just 133) --
-/// this is deliberate, not incidental complexity. OSC 7 (cwd, see
-/// osc.rs) and OSC 133 both legally use BEL as an alternative terminator
-/// to ESC \ -- a BEL that's actually terminating some other OSC sequence
-/// must never be misclassified as a standalone attention-bell. Only when
-/// the accumulated OSC number is specifically "133" is the payload
-/// parsed as a status command.
+/// The notification sequences matter because a bare BEL is NOT the
+/// universal "needs attention" signal it looks like. Claude Code, for
+/// one, picks its notification channel from `TERM_PROGRAM` and rings a
+/// bare BEL only under Apple_Terminal -- under iTerm2 it sends OSC 9,
+/// under ghostty OSC 777, under kitty OSC 99, and under an unrecognized
+/// or absent TERM_PROGRAM it sends nothing at all. Since a session's
+/// TERM_PROGRAM is inherited from whatever launched the GUI (this daemon
+/// only ever sets TERM), a BEL-only detector misses the signal in most
+/// real environments. See this module's tests for the captured bytes.
+///
+/// OSC sequences are tracked GENERICALLY (any number, not just the ones
+/// above) -- this is deliberate, not incidental complexity. OSC 7 (cwd,
+/// see osc.rs) and OSC 133 both legally use BEL as an alternative
+/// terminator to ESC \ -- a BEL that's actually terminating some other
+/// OSC sequence must never be misclassified as a standalone
+/// attention-bell. Only a recognized number's payload is interpreted.
 ///
 /// Never mutates or strips the bytes it's fed -- callers forward the
 /// original stream unchanged; this only watches. State is carried across
@@ -117,7 +128,7 @@ impl StatusScanner {
                     }
                     if *saw_esc {
                         if b == b'\\' {
-                            Self::emit_if_133(number, payload, &mut found);
+                            Self::emit_for_sequence(number, payload, &mut found);
                             self.state = ScanState::Idle;
                         } else {
                             // The prior ESC wasn't actually the start of
@@ -128,7 +139,7 @@ impl StatusScanner {
                             }
                             *saw_esc = false;
                             if b == 0x07 {
-                                Self::emit_if_133(number, payload, &mut found);
+                                Self::emit_for_sequence(number, payload, &mut found);
                                 self.state = ScanState::Idle;
                             } else if b == 0x1b {
                                 *saw_esc = true;
@@ -139,7 +150,7 @@ impl StatusScanner {
                         continue;
                     }
                     if b == 0x07 {
-                        Self::emit_if_133(number, payload, &mut found);
+                        Self::emit_for_sequence(number, payload, &mut found);
                         self.state = ScanState::Idle;
                     } else if b == 0x1b {
                         *saw_esc = true;
@@ -181,16 +192,63 @@ impl StatusScanner {
         }
     }
 
-    fn emit_if_133(number: &[u8], payload: &[u8], found: &mut Vec<StatusEvent>) {
-        if number != b"133" {
-            return;
-        }
-        let Some(&command) = payload.first() else { return };
-        match command {
-            b'A' | b'B' => found.push(StatusEvent::Idle),
-            b'C' => found.push(StatusEvent::Working),
-            b'D' => found.push(StatusEvent::Idle),
+    /// Turns a completed OSC sequence into a status event, if it carries
+    /// one. Two independent families are recognized: OSC 133 shell
+    /// integration (idle/working), and the desktop-notification sequences
+    /// below (waiting_for_input).
+    fn emit_for_sequence(number: &[u8], payload: &[u8], found: &mut Vec<StatusEvent>) {
+        match number {
+            b"133" => {
+                let Some(&command) = payload.first() else { return };
+                match command {
+                    b'A' | b'B' => found.push(StatusEvent::Idle),
+                    b'C' => found.push(StatusEvent::Working),
+                    b'D' => found.push(StatusEvent::Idle),
+                    _ => {}
+                }
+            }
+            b"9" | b"99" | b"777" if Self::is_attention_notification(number, payload) => {
+                found.push(StatusEvent::WaitingForInput);
+            }
             _ => {}
+        }
+    }
+
+    /// Whether a desktop-notification OSC sequence is a genuine
+    /// "something needs your attention" signal.
+    ///
+    /// A terminal emulator would raise an OS notification here; gavin
+    /// instead treats it as the session asking for the user. This is a
+    /// strictly better signal than a bare BEL: it is explicit, carries a
+    /// message, and cannot be confused with a readline error beep.
+    ///
+    /// Each number is overloaded by some tool for non-notification
+    /// purposes, so each gets its own guard -- a false positive here
+    /// paints a session red and fires an OS notification for nothing.
+    fn is_attention_notification(number: &[u8], payload: &[u8]) -> bool {
+        // The metadata/subcommand field: everything up to the first ';'.
+        let head = match payload.iter().position(|&b| b == b';') {
+            Some(i) => &payload[..i],
+            None => payload,
+        };
+        match number {
+            // rxvt-unicode / ghostty: OSC 777 ; notify ; title ; body
+            // Other subcommands exist (e.g. `precmd`) and mean nothing here.
+            b"777" => head == b"notify",
+            // iTerm2: OSC 9 ; <message>. ConEmu and Windows Terminal
+            // overload the same number for progress (9;4;...) and cwd
+            // (9;9;...), which are numeric subcommands rather than
+            // human-readable text -- exclude those, and empty payloads.
+            b"9" => !head.is_empty() && !head.iter().all(|b| b.is_ascii_digit()),
+            // kitty: OSC 99 ; <metadata> ; <payload>. One logical
+            // notification arrives as several chunks, so emit for exactly
+            // one of them: skip continuation chunks (`d=0`, more to come)
+            // and pure-action chunks (`a=`, which carry no message).
+            b"99" => {
+                let meta = String::from_utf8_lossy(head);
+                !meta.split(':').any(|f| f == "d=0" || f.starts_with("a="))
+            }
+            _ => false,
         }
     }
 }
@@ -268,10 +326,117 @@ mod tests {
 
     #[test]
     fn an_osc_number_other_than_133_or_7_is_structurally_tracked_but_produces_no_event() {
+        // OSC 4 (color palette query) carries no status meaning at all.
+        // NOTE: this test used to use OSC 9 for this purpose. OSC 9 is now
+        // deliberately recognized as a desktop-notification sequence (see
+        // osc9_iterm2_notification_maps_to_waiting_for_input below), so an
+        // inert number is used here instead.
         let mut scanner = StatusScanner::new();
-        let mut bytes = b"\x1b]9;some notification text".to_vec();
+        let mut bytes = b"\x1b]4;1;rgb:ff/00/00".to_vec();
         bytes.push(0x07);
         assert_eq!(scanner.feed(&bytes), vec![]);
+    }
+
+    // --- Desktop-notification OSC sequences -> waiting_for_input ---
+    //
+    // Every byte string in the tests below was captured from the real
+    // Claude Code CLI (2.1.220) running on a PTY, by varying only
+    // TERM_PROGRAM. Claude Code picks its notification channel from that
+    // variable, so the *same* prompt emits a different sequence per
+    // terminal -- and emits a bare BEL only for Apple_Terminal. gavin's
+    // daemon never sets TERM_PROGRAM, so it inherits whatever launched the
+    // GUI, which is why the bare-BEL-only heuristic missed these entirely.
+
+    #[test]
+    fn osc777_notify_maps_to_waiting_for_input() {
+        // Captured with TERM_PROGRAM=ghostty.
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]777;notify;Claude Code;Claude needs your permission".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::WaitingForInput]);
+    }
+
+    #[test]
+    fn osc777_with_a_non_notify_subcommand_produces_no_event() {
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]777;precmd".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![]);
+    }
+
+    #[test]
+    fn osc9_iterm2_notification_maps_to_waiting_for_input() {
+        // Captured with TERM_PROGRAM=iTerm.app.
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]9;Claude needs your permission".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::WaitingForInput]);
+    }
+
+    #[test]
+    fn osc9_conemu_progress_subcommand_is_not_treated_as_a_notification() {
+        // ConEmu/Windows Terminal overload OSC 9 for progress reporting
+        // (9;4;<state>;<pct>) and cwd (9;9;<path>). Those are numeric
+        // subcommands, not human-readable notification text -- a build tool
+        // driving a progress bar must not paint every session red.
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]9;4;1;60".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![]);
+    }
+
+    #[test]
+    fn osc9_with_an_empty_payload_produces_no_event() {
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]9;".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![]);
+    }
+
+    #[test]
+    fn kitty_osc99_notification_burst_fires_waiting_for_input_exactly_once() {
+        // Captured with TERM_PROGRAM=kitty. Claude Code sends ONE logical
+        // notification as THREE ST-terminated OSC 99 chunks: a d=0 title
+        // chunk, a body chunk, and a closing d=1:a=focus action chunk.
+        // Emitting per-chunk would fire three status transitions -- and
+        // therefore three OS notifications -- for a single prompt.
+        let mut scanner = StatusScanner::new();
+        let bytes = b"\x1b]99;i=291:d=0:p=title;Claude Code\x1b\\\
+\x1b]99;i=291:p=body;Claude needs your permission\x1b\\\
+\x1b]99;i=291:d=1:a=focus;\x1b\\"
+            .to_vec();
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::WaitingForInput]);
+    }
+
+    #[test]
+    fn a_notification_osc_terminator_is_still_not_a_standalone_bell() {
+        // The notification sequences above are BEL-terminated. That BEL is
+        // a delimiter; it must produce exactly one event (from the
+        // sequence's meaning), never a second one from the bell itself.
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]777;notify;t;m".to_vec();
+        bytes.push(0x07);
+        bytes.extend_from_slice(b"ordinary output");
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::WaitingForInput]);
+    }
+
+    #[test]
+    fn a_notification_sequence_split_across_feeds_is_still_detected() {
+        let full = {
+            let mut b = b"\x1b]777;notify;Claude Code;Claude needs your permission".to_vec();
+            b.push(0x07);
+            b
+        };
+        for split_at in 0..=full.len() {
+            let mut scanner = StatusScanner::new();
+            let mut found = scanner.feed(&full[..split_at]);
+            found.extend(scanner.feed(&full[split_at..]));
+            assert_eq!(
+                found,
+                vec![StatusEvent::WaitingForInput],
+                "failed when split at byte {split_at}"
+            );
+        }
     }
 
     #[test]
@@ -379,3 +544,4 @@ mod tests {
         assert_eq!(scanner.feed(&bytes), vec![StatusEvent::Idle]);
     }
 }
+

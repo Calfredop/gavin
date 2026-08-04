@@ -28,6 +28,34 @@ impl PtySession {
         // full-screen TUI, including the AI coding agents this app hosts.
         cmd.env("TERM", "xterm-256color");
 
+        // Pin the terminal identity instead of letting it leak in from
+        // whatever launched the GUI. Tools choose how to signal "I need
+        // you" from TERM_PROGRAM: Claude Code, for instance, rings a bare
+        // BEL only under Apple_Terminal, sends OSC 9 under iTerm2, OSC 777
+        // under ghostty, OSC 99 under kitty -- and sends NOTHING AT ALL
+        // when TERM_PROGRAM is unset or unrecognized, which is exactly the
+        // case when this app is launched from Finder rather than a
+        // terminal. Leaving it inherited makes waiting-for-input detection
+        // depend on how the app happened to be started. status.rs decodes
+        // the resulting sequences.
+        //
+        // "ghostty" is chosen deliberately over the alternatives:
+        //   - it emits a single, self-describing OSC 777 notification
+        //     (kitty splits one notification across three OSC 99 chunks),
+        //   - it does not affect color-depth detection, which consults
+        //     TERM_PROGRAM_VERSION only for iTerm2 and Apple_Terminal,
+        //   - claiming "Apple_Terminal" would make tools shell out to
+        //     osascript to talk to a Terminal.app that isn't there,
+        //   - and it is what this daemon already inherited in practice
+        //     when launched from a terminal, so it is the best-tested
+        //     value rather than a new untested identity.
+        // Revisit if a hosted tool starts sending sequences xterm.js
+        // cannot render (the kitty graphics protocol being the main risk).
+        cmd.env("TERM_PROGRAM", "ghostty");
+        // An inherited version string from some *other* terminal would
+        // contradict the pin above; drop it rather than invent one.
+        cmd.env_remove("TERM_PROGRAM_VERSION");
+
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
 
@@ -118,6 +146,70 @@ mod tests {
             }
         }
         collected
+    }
+
+    // `std::env::set_var` mutates the whole process's environment, which
+    // every test in this binary shares -- cargo test runs tests on many
+    // threads by default, so an unsynchronized set_var here could race a
+    // concurrent std::env::var read anywhere else in the suite. Only the
+    // two tests below touch real process env vars; they take this lock for
+    // the duration of the mutation so they can't race *each other*, and
+    // restore the var afterward so no polluted value leaks into any test
+    // that runs later. This does not (and cannot, without a much larger
+    // change) guard against every other concurrently-running test in the
+    // binary -- accepted as a low-probability residual risk, same as any
+    // other project's typical tolerance for this well-known Rust hazard.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn spawn_pins_term_program_regardless_of_what_the_daemon_inherited() {
+        // The daemon inherits its environment from whatever launched the
+        // GUI, so without this pin a session's TERM_PROGRAM is "iTerm.app"
+        // when started from iTerm, absent when started from Finder, and so
+        // on. Tools pick their notification mechanism from this variable --
+        // Claude Code emits OSC 777 under ghostty, OSC 9 under iTerm2, and
+        // NOTHING AT ALL when it is unset -- so leaving it inherited makes
+        // waiting-for-input detection silently depend on how the app was
+        // launched. See status.rs for the detection side.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("TERM_PROGRAM", "some-other-terminal");
+
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh")).unwrap();
+        let mut reader = session.reader().unwrap();
+        // The marker is assembled by printf at runtime, so the literal
+        // needle below cannot appear in the shell's own echo of this
+        // command -- otherwise the read would return on the echo and the
+        // assertion would race the real output.
+        session
+            .write_input(b"printf 'TP%s=[%s]\\n' MARK \"$TERM_PROGRAM\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "TPMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        std::env::remove_var("TERM_PROGRAM");
+        assert!(output.contains("TPMARK=[ghostty]"), "got: {output}");
+    }
+
+    #[test]
+    fn spawn_clears_an_inherited_term_program_version() {
+        // TERM_PROGRAM is pinned above, so a TERM_PROGRAM_VERSION left over
+        // from a different terminal would be an incoherent pair. It is not
+        // replaced with a fake version because the only thing that reads it
+        // (color-depth detection) consults it solely for iTerm2 and
+        // Apple_Terminal, neither of which we claim to be.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("TERM_PROGRAM_VERSION", "9.9.9-inherited");
+
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh")).unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'TPV%s=[%s]\\n' MARK \"$TERM_PROGRAM_VERSION\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "TPVMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        std::env::remove_var("TERM_PROGRAM_VERSION");
+        assert!(output.contains("TPVMARK=[]"), "got: {output}");
     }
 
     #[test]
