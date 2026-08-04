@@ -42,7 +42,10 @@ pub fn run() {
             session::get_session_names,
             session::set_session_name,
             session::signal_frontend_ready,
-            session::get_bootstrap_error
+            session::get_bootstrap_error,
+            session::get_board,
+            session::set_board,
+            session::delete_board
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

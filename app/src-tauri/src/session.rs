@@ -1,6 +1,6 @@
 use crate::config::Workspace;
 use crate::layout::LayoutNode;
-use protocol::{read_message, socket_path, write_message, Request, Response};
+use protocol::{read_message, socket_path, write_message, Board, Column, Label, Request, Response};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -763,5 +763,145 @@ pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Resu
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+fn get_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<Board> {
+    let resp = send_command(command_conn, &Request::GetBoard { workspace_id })?;
+    match resp {
+        Response::Board { columns, labels } => Ok(Board { columns, labels }),
+        other => anyhow::bail!("expected Board, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub fn get_board(workspace_id: String, state: State<CommandConnection>) -> Result<Board, String> {
+    get_board_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+}
+
+fn set_board_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+    columns: Vec<Column>,
+    labels: Vec<Label>,
+) -> anyhow::Result<()> {
+    let resp = send_command(command_conn, &Request::SetBoard { workspace_id, columns, labels })?;
+    match resp {
+        Response::Ok => Ok(()),
+        other => anyhow::bail!("expected Ok, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub fn set_board(
+    workspace_id: String,
+    columns: Vec<Column>,
+    labels: Vec<Label>,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    set_board_impl(&state.0, workspace_id, columns, labels).map_err(|e| e.to_string())
+}
+
+fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<()> {
+    let resp = send_command(command_conn, &Request::DeleteBoard { workspace_id })?;
+    match resp {
+        Response::Ok => Ok(()),
+        other => anyhow::bail!("expected Ok, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub fn delete_board(workspace_id: String, state: State<CommandConnection>) -> Result<(), String> {
+    delete_board_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod kanban_command_tests {
+    use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with};
+    use super::*;
+
+    #[test]
+    fn get_board_impl_returns_the_boards_columns_and_labels() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::Board {
+            columns: vec![Column { id: "c1".to_string(), name: "To Do".to_string(), position: 0, cards: vec![] }],
+            labels: vec![Label { id: "l1".to_string(), name: "urgent".to_string(), color: "#f00".to_string() }],
+        }]);
+        let conn = Mutex::new(client);
+
+        let board = get_board_impl(&conn, "ws-1".to_string()).unwrap();
+
+        assert_eq!(board.columns.len(), 1);
+        assert_eq!(board.columns[0].name, "To Do");
+        assert_eq!(board.labels.len(), 1);
+    }
+
+    #[test]
+    fn get_board_impl_sends_the_given_workspace_id() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::Board { columns: vec![], labels: vec![] }]);
+        let conn = Mutex::new(client);
+
+        get_board_impl(&conn, "ws-42".to_string()).unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::GetBoard { workspace_id } => assert_eq!(workspace_id, "ws-42"),
+            other => panic!("expected GetBoard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_board_impl_propagates_a_daemon_error() {
+        let (client, _dir) =
+            fake_daemon_replying_with(vec![Response::Error { message: "board fetch failed".to_string() }]);
+        let conn = Mutex::new(client);
+
+        let result = get_board_impl(&conn, "ws-1".to_string());
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_board_impl_sends_the_given_columns_and_labels() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::Ok]);
+        let conn = Mutex::new(client);
+        let columns = vec![Column { id: "c1".to_string(), name: "Only".to_string(), position: 0, cards: vec![] }];
+
+        set_board_impl(&conn, "ws-1".to_string(), columns.clone(), vec![]).unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::SetBoard { workspace_id, columns: sent_columns, .. } => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(sent_columns.len(), 1);
+                assert_eq!(sent_columns[0].name, "Only");
+            }
+            other => panic!("expected SetBoard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_board_impl_propagates_a_daemon_error() {
+        let (client, _dir) =
+            fake_daemon_replying_with(vec![Response::Error { message: "board save failed".to_string() }]);
+        let conn = Mutex::new(client);
+
+        let result = set_board_impl(&conn, "ws-1".to_string(), vec![], vec![]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delete_board_impl_sends_the_given_workspace_id() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::Ok]);
+        let conn = Mutex::new(client);
+
+        delete_board_impl(&conn, "ws-1".to_string()).unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::DeleteBoard { workspace_id } => assert_eq!(workspace_id, "ws-1"),
+            other => panic!("expected DeleteBoard, got {other:?}"),
+        }
     }
 }
