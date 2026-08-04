@@ -106,3 +106,56 @@ export function deleteLabel(board: Board, labelId: string): Board {
     })),
   };
 }
+
+export function addColumn(board: Board, column: Column): Board {
+  return { ...board, columns: [...board.columns, column] };
+}
+
+export function renameColumn(board: Board, columnId: string, name: string): Board {
+  return {
+    ...board,
+    columns: board.columns.map((c) => (c.id === columnId ? { ...c, name } : c)),
+  };
+}
+
+export function reorderColumn(board: Board, columnId: string, targetIndex: number): Board {
+  const currentIndex = board.columns.findIndex((c) => c.id === columnId);
+  if (currentIndex === -1) return board;
+  const columns = [...board.columns];
+  const [moved] = columns.splice(currentIndex, 1);
+  const clamped = Math.max(0, Math.min(targetIndex, columns.length));
+  columns.splice(clamped, 0, moved);
+  return { ...board, columns: columns.map((c, i) => ({ ...c, position: i })) };
+}
+
+export function deleteColumnCascade(board: Board, columnId: string): Board {
+  return {
+    ...board,
+    columns: board.columns.filter((c) => c.id !== columnId).map((c, i) => ({ ...c, position: i })),
+  };
+}
+
+// Moves every card currently in sourceColumnId to the end of
+// targetColumnId's card list, leaving sourceColumnId empty. Callers that
+// want to relocate-then-delete (the "move cards" branch of the
+// delete-non-empty-column prompt) call this first, then
+// deleteColumnCascade on the now-empty source -- two composed primitives
+// rather than one combined function, so each stays independently
+// testable and reusable (a future "merge two columns" feature could use
+// this alone, without deleting anything).
+export function moveCardsOutOfColumn(board: Board, sourceColumnId: string, targetColumnId: string): Board {
+  const source = board.columns.find((c) => c.id === sourceColumnId);
+  if (!source) return board;
+  const movingCards = source.cards;
+  return {
+    ...board,
+    columns: board.columns.map((c) => {
+      if (c.id === sourceColumnId) return { ...c, cards: [] };
+      if (c.id === targetColumnId) {
+        const cards = [...c.cards, ...movingCards];
+        return { ...c, cards: cards.map((card, i) => ({ ...card, position: i })) };
+      }
+      return c;
+    }),
+  };
+}

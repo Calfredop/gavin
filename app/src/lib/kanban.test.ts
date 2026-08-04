@@ -7,6 +7,11 @@ import {
   addLabel,
   updateLabel,
   deleteLabel,
+  addColumn,
+  renameColumn,
+  reorderColumn,
+  deleteColumnCascade,
+  moveCardsOutOfColumn,
   type Board,
   type Card,
   type Label,
@@ -114,5 +119,63 @@ describe("deleteLabel", () => {
     const b = board([{ id: "c1", cards: [card("card-1", 0, ["l1", "l2"])] }], [label("l1", "urgent")]);
     const updated = deleteLabel(b, "l1");
     expect(updated.columns[0].cards[0].labelIds).toEqual(["l2"]);
+  });
+});
+
+describe("addColumn", () => {
+  it("appends the column to the board", () => {
+    const b = board([{ id: "c1", cards: [] }]);
+    const updated = addColumn(b, { id: "c2", name: "New", position: 1, cards: [] });
+    expect(updated.columns.map((c) => c.id)).toEqual(["c1", "c2"]);
+  });
+});
+
+describe("renameColumn", () => {
+  it("renames the given column, leaving others untouched", () => {
+    const b = board([{ id: "c1", cards: [] }, { id: "c2", cards: [] }]);
+    const updated = renameColumn(b, "c1", "Renamed");
+    expect(updated.columns[0].name).toBe("Renamed");
+    expect(updated.columns[1].name).toBe("c2");
+  });
+});
+
+describe("reorderColumn", () => {
+  it("moves a column to the given index", () => {
+    const b = board([{ id: "a", cards: [] }, { id: "b", cards: [] }, { id: "c", cards: [] }]);
+    const updated = reorderColumn(b, "c", 0);
+    expect(updated.columns.map((c) => c.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("reindexes position after reordering", () => {
+    const b = board([{ id: "a", cards: [] }, { id: "b", cards: [] }]);
+    const updated = reorderColumn(b, "b", 0);
+    expect(updated.columns.map((c) => c.position)).toEqual([0, 1]);
+  });
+});
+
+describe("deleteColumnCascade", () => {
+  it("removes the column and every card inside it", () => {
+    const b = board([
+      { id: "c1", cards: [card("card-1", 0)] },
+      { id: "c2", cards: [] },
+    ]);
+    const updated = deleteColumnCascade(b, "c1");
+    expect(updated.columns.map((c) => c.id)).toEqual(["c2"]);
+  });
+});
+
+describe("moveCardsOutOfColumn", () => {
+  it("relocates every card from source to the end of target, then the caller deletes the empty source", () => {
+    const b = board([
+      { id: "c1", cards: [card("card-1", 0), card("card-2", 1)] },
+      { id: "c2", cards: [card("existing", 0)] },
+    ]);
+    const moved = moveCardsOutOfColumn(b, "c1", "c2");
+    expect(moved.columns[0].cards).toEqual([]);
+    expect(moved.columns[1].cards.map((c) => c.id)).toEqual(["existing", "card-1", "card-2"]);
+
+    const updated = deleteColumnCascade(moved, "c1");
+    expect(updated.columns.map((c) => c.id)).toEqual(["c2"]);
+    expect(updated.columns[0].cards.map((c) => c.id)).toEqual(["existing", "card-1", "card-2"]);
   });
 });
