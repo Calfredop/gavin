@@ -2,12 +2,11 @@
   import { onMount, onDestroy } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { confirm } from "@tauri-apps/plugin-dialog";
-  import { layoutState, bootstrap, teardown, createWorkspace, createPage } from "$lib/layoutState";
+  import { layoutState, bootstrap, teardown, createWorkspace, switchWorkspaceView } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
-  import { getActiveWorkspace, getActiveTree } from "$lib/workspace";
-  import { presetSingle } from "$lib/layout";
-  import LayoutTree from "$lib/LayoutTree.svelte";
+  import { getActiveWorkspace, getActiveView } from "$lib/workspace";
+  import { WORKSPACE_VIEWS } from "$lib/workspaceViews";
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
 
@@ -16,7 +15,8 @@
   let unlistenClose: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
-  const activeTree = $derived(getActiveTree($layoutState));
+  const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
+  const activeViewDef = $derived(WORKSPACE_VIEWS.find((v) => v.id === activeView) ?? WORKSPACE_VIEWS[0]);
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -27,12 +27,6 @@
 
   async function createFirstWorkspace(): Promise<void> {
     await createWorkspace("Workspace 1");
-  }
-
-  async function addPageToActiveWorkspace(): Promise<void> {
-    const ws = activeWorkspace;
-    if (!ws) return;
-    await createPage(ws.id, ([id]) => presetSingle(id), 1, `Page ${ws.pages.length + 1}`);
   }
 
   onMount(async () => {
@@ -82,13 +76,24 @@
         <div class="overlay">
           <button onclick={createFirstWorkspace}>New Workspace</button>
         </div>
-      {:else if !activeTree}
-        <div class="overlay">
-          <button onclick={addPageToActiveWorkspace}>New Page</button>
-        </div>
       {:else}
-        <div class="tree">
-          <LayoutTree node={activeTree} path={[]} />
+        <div class="content">
+          <div class="tabs">
+            {#each WORKSPACE_VIEWS as view (view.id)}
+              <button
+                type="button"
+                class="tab"
+                class:active={activeView === view.id}
+                onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
+              >
+                <view.icon size={14} />
+                {view.label}
+              </button>
+            {/each}
+          </div>
+          <div class="view">
+            <activeViewDef.component workspaceId={activeWorkspace.id} />
+          </div>
         </div>
       {/if}
     </div>
@@ -118,8 +123,39 @@
     flex-direction: row;
     min-height: 0;
   }
-  .tree {
+  .content {
     flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 6px 10px 0;
+    flex: 0 0 auto;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #999;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.85em;
+  }
+  .tab.active {
+    color: #eee;
+    border-bottom-color: #d9a648;
+  }
+  .view {
+    flex: 1 1 auto;
+    min-height: 0;
     position: relative;
   }
   .overlay {

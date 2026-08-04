@@ -2,6 +2,7 @@
   import {
     layoutState,
     switchWorkspace,
+    switchWorkspaceView,
     switchPage,
     createWorkspace,
     renameWorkspace,
@@ -393,7 +394,10 @@
             <span
               class="page-name"
               ondblclick={() => startEditingPage(page.id, page.name)}
-              onclick={() => switchPage(ws.id, page.id)}
+              onclick={() => {
+                switchWorkspaceView(ws.id, "terminal");
+                switchPage(ws.id, page.id);
+              }}
             >{page.name}</span>
           {/if}
           {#if gitSummary.kind === "single"}
@@ -433,7 +437,10 @@
               {@const sessionStatus = $layoutState.gitStatusById[sessionId]}
               <div
                 class="git-session-row"
-                onclick={() => switchToSessionInPage(ws.id, page.id, sessionId)}
+                onclick={() => {
+                  switchWorkspaceView(ws.id, "terminal");
+                  switchToSessionInPage(ws.id, page.id, sessionId);
+                }}
               >
                 <span class="git-session-label">
                   {sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId)}
