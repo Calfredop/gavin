@@ -1,4 +1,5 @@
-use protocol::{read_message, write_message, GitStatus, Request, Response, SessionSummary};
+use protocol::{read_message, write_message, Board, Column, GitStatus, Label, Request, Response, SessionSummary};
+use crate::kanban::KanbanStore;
 use crate::osc::OscCwdScanner;
 use crate::pty::PtySession;
 use crate::registry::{Registry, SessionRecord, SessionStatus};
@@ -593,6 +594,7 @@ fn trigger_recheck_for_session(manager: &Arc<SessionManager>, id: &str) {
 
 pub struct SessionManager {
     registry: Mutex<Registry>,
+    kanban: Mutex<KanbanStore>,
     sessions: Mutex<HashMap<String, PtySession>>,
     attached_writers: Mutex<HashMap<String, Arc<Mutex<UnixStream>>>>,
     output_buffers: Mutex<HashMap<String, VecDeque<u8>>>,
@@ -607,9 +609,10 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn new(registry: Registry) -> Self {
+    pub fn new(registry: Registry, kanban: KanbanStore) -> Self {
         Self {
             registry: Mutex::new(registry),
+            kanban: Mutex::new(kanban),
             sessions: Mutex::new(HashMap::new()),
             attached_writers: Mutex::new(HashMap::new()),
             output_buffers: Mutex::new(HashMap::new()),
@@ -656,6 +659,18 @@ impl SessionManager {
                 restored: r.restored,
             })
             .collect())
+    }
+
+    pub fn get_board(&self, workspace_id: &str) -> anyhow::Result<Board> {
+        self.kanban.lock().unwrap().get_board(workspace_id)
+    }
+
+    pub fn set_board(&self, workspace_id: &str, columns: Vec<Column>, labels: Vec<Label>) -> anyhow::Result<()> {
+        self.kanban.lock().unwrap().replace_board(workspace_id, &columns, &labels)
+    }
+
+    pub fn delete_board(&self, workspace_id: &str) -> anyhow::Result<()> {
+        self.kanban.lock().unwrap().delete_board(workspace_id)
     }
 
     pub fn write_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
@@ -1073,6 +1088,13 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .resize_session(&id, cols, rows)
             .map(|_| Response::Ok),
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
+        Request::GetBoard { workspace_id } => manager
+            .get_board(&workspace_id)
+            .map(|board| Response::Board { columns: board.columns, labels: board.labels }),
+        Request::SetBoard { workspace_id, columns, labels } => manager
+            .set_board(&workspace_id, columns, labels)
+            .map(|_| Response::Ok),
+        Request::DeleteBoard { workspace_id } => manager.delete_board(&workspace_id).map(|_| Response::Ok),
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
     };
 
@@ -1143,7 +1165,8 @@ mod tests {
         let db_path = dir.path().join("registry.sqlite");
 
         let registry = Registry::open(&db_path).unwrap();
-        let manager = Arc::new(SessionManager::new(registry));
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = Arc::new(SessionManager::new(registry, kanban));
 
         let server_socket_path = socket_path.clone();
         std::thread::spawn(move || {
@@ -1400,6 +1423,76 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn get_board_request_returns_the_default_seed_for_a_new_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban);
+
+        let resp = handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".to_string() });
+
+        match resp {
+            Response::Board { columns, labels } => {
+                assert_eq!(columns.len(), 3);
+                assert!(labels.is_empty());
+            }
+            other => panic!("expected Board, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_board_then_get_board_round_trips_through_handle_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban);
+        let columns =
+            vec![Column { id: "c1".to_string(), name: "Only column".to_string(), position: 0, cards: vec![] }];
+
+        let set_resp = handle_request(
+            &manager,
+            Request::SetBoard { workspace_id: "ws-1".to_string(), columns: columns.clone(), labels: vec![] },
+        );
+        assert!(matches!(set_resp, Response::Ok));
+
+        let get_resp = handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".to_string() });
+        match get_resp {
+            Response::Board { columns: got, .. } => {
+                assert_eq!(got.len(), 1);
+                assert_eq!(got[0].name, "Only column");
+            }
+            other => panic!("expected Board, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delete_board_request_removes_the_board_and_a_later_get_reseeds_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban);
+        handle_request(
+            &manager,
+            Request::SetBoard {
+                workspace_id: "ws-1".to_string(),
+                columns: vec![Column { id: "c1".to_string(), name: "Custom".to_string(), position: 0, cards: vec![] }],
+                labels: vec![],
+            },
+        );
+
+        let delete_resp = handle_request(&manager, Request::DeleteBoard { workspace_id: "ws-1".to_string() });
+        assert!(matches!(delete_resp, Response::Ok));
+
+        let get_resp = handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".to_string() });
+        match get_resp {
+            Response::Board { columns, .. } => {
+                assert_eq!(columns.len(), 3, "should reseed fresh defaults, not the deleted custom column");
+            }
+            other => panic!("expected Board, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2305,7 +2398,8 @@ mod tests {
         }
 
         let registry = Registry::open(&db_path).unwrap();
-        let manager = SessionManager::new(registry);
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban);
 
         manager.recover().unwrap();
 
@@ -2335,7 +2429,8 @@ mod tests {
     /// over the socket.
     fn bare_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
         let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
-        Arc::new(SessionManager::new(registry))
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        Arc::new(SessionManager::new(registry, kanban))
     }
 
     fn bare_poller() -> Arc<RepoPoller> {
@@ -2617,7 +2712,10 @@ mod tests {
                 .unwrap();
         }
 
-        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+        let manager = Arc::new(SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+        ));
         manager.recover().unwrap();
         assert!(
             manager.sessions.lock().unwrap().get("failed-spawn-1").is_none(),
@@ -2683,7 +2781,10 @@ mod tests {
                 .unwrap();
         }
 
-        let manager = SessionManager::new(Registry::open(&db_path).unwrap());
+        let manager = SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+        );
         manager.recover().unwrap();
 
         assert!(
@@ -2715,7 +2816,10 @@ mod tests {
                 .unwrap();
         }
 
-        let manager = SessionManager::new(Registry::open(&db_path).unwrap());
+        let manager = SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+        );
         manager.recover().unwrap();
 
         assert!(manager.sessions.lock().unwrap().get("missing-workspace-1").is_none());
@@ -2750,7 +2854,10 @@ mod tests {
                 })
                 .unwrap();
         }
-        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+        let manager = Arc::new(SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+        ));
         // No recover() call -- `sessions` genuinely has no entry for this
         // id, simulating whatever unanticipated cause reaches this arm.
 
@@ -2809,7 +2916,10 @@ mod tests {
                 })
                 .unwrap();
         }
-        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+        let manager = Arc::new(SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+        ));
 
         let (client, server_side) = UnixStream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
@@ -2842,7 +2952,10 @@ mod tests {
                 })
                 .unwrap();
         }
-        let manager = Arc::new(SessionManager::new(Registry::open(&db_path).unwrap()));
+        let manager = Arc::new(SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+        ));
 
         let (client, server_side) = UnixStream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
@@ -2869,7 +2982,10 @@ mod tests {
         // convenient.
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("registry.sqlite");
-        let manager = SessionManager::new(Registry::open(&db_path).unwrap());
+        let manager = SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+        );
         let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
         manager.registry.lock().unwrap().mark_restored(&id).unwrap();
         assert_eq!(
@@ -2911,7 +3027,8 @@ mod tests {
         }
 
         let registry = Registry::open(&db_path).unwrap();
-        let manager = SessionManager::new(registry);
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban);
 
         manager.recover().unwrap();
 
