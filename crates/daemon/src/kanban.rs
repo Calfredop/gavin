@@ -1,4 +1,4 @@
-use protocol::{Board, Card, Column, Label, Priority};
+use protocol::{Board, Card, Column, Label, Priority, SessionLink};
 use rusqlite::{params, Connection};
 
 pub struct KanbanStore {
@@ -24,7 +24,10 @@ impl KanbanStore {
                 title TEXT NOT NULL,
                 description TEXT NOT NULL,
                 priority TEXT NOT NULL,
-                position INTEGER NOT NULL
+                position INTEGER NOT NULL,
+                session_link_session_id TEXT,
+                session_link_cwd TEXT,
+                session_link_command TEXT
             );
             CREATE TABLE IF NOT EXISTS kanban_labels (
                 id TEXT PRIMARY KEY,
@@ -107,11 +110,20 @@ impl KanbanStore {
 
     fn read_cards(&self, column_id: &str) -> anyhow::Result<Vec<Card>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, description, priority, position FROM kanban_cards
-             WHERE column_id = ?1 ORDER BY position",
+            "SELECT id, title, description, priority, position,
+                    session_link_session_id, session_link_cwd, session_link_command
+             FROM kanban_cards WHERE column_id = ?1 ORDER BY position",
         )?;
         let rows = stmt.query_map(params![column_id], |row| {
             let priority_str: String = row.get(3)?;
+            let link_session_id: Option<String> = row.get(5)?;
+            let link_cwd: Option<String> = row.get(6)?;
+            let link_command: Option<String> = row.get(7)?;
+            let session_link = link_session_id.map(|session_id| SessionLink {
+                session_id,
+                cwd: link_cwd.unwrap_or_default(),
+                command: link_command,
+            });
             Ok(Card {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -119,6 +131,7 @@ impl KanbanStore {
                 priority: Priority::from_str(&priority_str),
                 position: row.get(4)?,
                 label_ids: Vec::new(),
+                session_link,
             })
         })?;
         let mut cards = Vec::new();
@@ -188,10 +201,20 @@ impl KanbanStore {
                 params![column.id, workspace_id, column.name, column.position],
             )?;
             for card in &column.cards {
+                let (link_session_id, link_cwd, link_command): (Option<&str>, Option<&str>, Option<&str>) =
+                    match &card.session_link {
+                        Some(link) => (Some(link.session_id.as_str()), Some(link.cwd.as_str()), link.command.as_deref()),
+                        None => (None, None, None),
+                    };
                 tx.execute(
-                    "INSERT INTO kanban_cards (id, column_id, title, description, priority, position)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![card.id, column.id, card.title, card.description, card.priority.as_str(), card.position],
+                    "INSERT INTO kanban_cards
+                     (id, column_id, title, description, priority, position,
+                      session_link_session_id, session_link_cwd, session_link_command)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        card.id, column.id, card.title, card.description, card.priority.as_str(), card.position,
+                        link_session_id, link_cwd, link_command
+                    ],
                 )?;
                 for label_id in &card.label_ids {
                     tx.execute(
@@ -234,6 +257,7 @@ mod tests {
             label_ids: label_ids.into_iter().map(str::to_string).collect(),
             priority: Priority::Medium,
             position,
+            session_link: None,
         }
     }
 
@@ -301,6 +325,39 @@ mod tests {
         assert_eq!(board.columns[0].cards[0].id, "card-a", "must come back in position order, not insertion order");
         assert_eq!(board.columns[0].cards[0].label_ids, vec!["l1".to_string()]);
         assert_eq!(board.columns[0].cards[1].id, "card-b");
+    }
+
+    #[test]
+    fn replace_board_persists_a_cards_session_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let mut linked_card = card("card-1", "Run tests", vec![], 0);
+        linked_card.session_link = Some(SessionLink {
+            session_id: "session-1".to_string(),
+            cwd: "/tmp/project".to_string(),
+            command: Some("npm test".to_string()),
+        });
+        let columns = vec![column("c1", "To Do", 0, vec![linked_card])];
+
+        store.replace_board("ws-1", &columns, &[]).unwrap();
+
+        let board = store.get_board("ws-1").unwrap();
+        let link = board.columns[0].cards[0].session_link.as_ref().unwrap();
+        assert_eq!(link.session_id, "session-1");
+        assert_eq!(link.cwd, "/tmp/project");
+        assert_eq!(link.command, Some("npm test".to_string()));
+    }
+
+    #[test]
+    fn replace_board_persists_a_card_with_no_session_link_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let columns = vec![column("c1", "To Do", 0, vec![card("card-1", "Plain card", vec![], 0)])];
+
+        store.replace_board("ws-1", &columns, &[]).unwrap();
+
+        let board = store.get_board("ws-1").unwrap();
+        assert_eq!(board.columns[0].cards[0].session_link, None);
     }
 
     #[test]
