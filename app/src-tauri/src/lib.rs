@@ -1,5 +1,6 @@
 mod config;
 mod daemon;
+mod fileviewer;
 mod layout;
 mod mac_window;
 mod session;
@@ -43,6 +44,9 @@ pub fn run() {
             session::set_session_name,
             session::get_file_tabs,
             session::set_file_tabs,
+            fileviewer::read_file_for_viewer,
+            fileviewer::resolve_path_under_cursor,
+            fileviewer::viewable_extensions,
             session::signal_frontend_ready,
             session::get_bootstrap_error,
             session::get_board,
