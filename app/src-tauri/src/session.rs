@@ -28,16 +28,17 @@ pub struct WorkspacesData {
 pub struct WorkspacesState(pub Mutex<WorkspacesData>);
 
 /// User-assigned session display names, keyed by session id. Independent
-/// Tauri-managed state from `WorkspacesState`, but both persist into the
-/// same `AppConfig` -- every command that saves one must read the other's
-/// current value too (see `set_workspaces_state`/`set_session_name`), or it
-/// would silently reset the other field to empty on every save.
+/// Tauri-managed state from `WorkspacesState`/`FileTabs`, but all three
+/// persist into the same `AppConfig` -- every command that saves one must
+/// read the others' current values too (see `set_workspaces_state`/
+/// `set_session_name`/`set_file_tabs`), or it would silently reset the
+/// other fields to empty on every save.
 pub struct SessionNames(pub Mutex<HashMap<String, String>>);
 
-/// Persists workspace/page state and session names together -- the only
-/// two things that make up AppConfig. Centralizing this is what makes
-/// the "always carry both along, or you'll silently reset one" rule
-/// (see SessionNames's doc comment) structural rather than just
+/// Persists workspace/page state, session names, and file tabs together --
+/// the three things that make up AppConfig. Centralizing this is what
+/// makes the "always carry the others along, or you'll silently reset one"
+/// rule (see SessionNames's doc comment) structural rather than just
 /// documented: every save site funnels through here instead of each
 /// independently reconstructing the AppConfig literal.
 fn persist_workspaces(
