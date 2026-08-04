@@ -6,7 +6,8 @@
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
   import { getActiveWorkspace, getActiveView } from "$lib/workspace";
-  import { WORKSPACE_VIEWS } from "$lib/workspaceViews";
+  import { HUB_VIEWS } from "$lib/workspaceViews";
+  import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
 
@@ -16,7 +17,7 @@
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
-  const activeViewDef = $derived(WORKSPACE_VIEWS.find((v) => v.id === activeView) ?? WORKSPACE_VIEWS[0]);
+  const activeViewDef = $derived(HUB_VIEWS.find((v) => v.id === activeView) ?? HUB_VIEWS[0]);
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -76,10 +77,14 @@
         <div class="overlay">
           <button onclick={createFirstWorkspace}>New Workspace</button>
         </div>
+      {:else if activeView === "terminal"}
+        <div class="view">
+          <TerminalView workspaceId={activeWorkspace.id} />
+        </div>
       {:else}
         <div class="content">
           <div class="tabs">
-            {#each WORKSPACE_VIEWS as view (view.id)}
+            {#each HUB_VIEWS as view (view.id)}
               <button
                 type="button"
                 class="tab"

@@ -1,16 +1,14 @@
 import type { Component } from "svelte";
-import { Terminal, Kanban } from "@lucide/svelte";
-import TerminalView from "./TerminalView.svelte";
+import { Kanban } from "@lucide/svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
 
-export interface WorkspaceView {
+export interface HubView {
   id: string;
   label: string;
   icon: Component;
   component: Component<{ workspaceId: string }>;
 }
 
-export const WORKSPACE_VIEWS: WorkspaceView[] = [
-  { id: "terminal", label: "Terminal", icon: Terminal, component: TerminalView },
+export const HUB_VIEWS: HubView[] = [
   { id: "kanban", label: "Kanban", icon: Kanban, component: KanbanBoard },
 ];
