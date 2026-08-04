@@ -71,6 +71,7 @@
     <CardDetailModal
       card={openCard}
       labels={board.labels}
+      {workspaceId}
       onSave={(patch) => void updateCardAction(workspaceId, openCard.id, patch)}
       onClose={() => (openCardId = null)}
     />
