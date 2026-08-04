@@ -13,8 +13,9 @@
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   import { presetSingle, allSessionIds } from "./layout";
-  import { ChevronRight, ChevronDown, Plus, X } from "@lucide/svelte";
+  import { ChevronRight, ChevronDown, Plus, X, House } from "@lucide/svelte";
   import { sessionLabel } from "./paths";
+  import { HUB_VIEWS } from "./workspaceViews";
   import {
     setDragPayload,
     getDragKind,
@@ -25,7 +26,7 @@
     type ReorderPosition,
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
-  import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, type Workspace, type Page, type GitStatus } from "./workspace";
+  import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, getActiveView, type Workspace, type Page, type GitStatus } from "./workspace";
 
   let expanded: Set<string> = $state(new Set());
 
@@ -334,14 +335,26 @@
   });
 </script>
 
-{#snippet pageList(ws: Workspace)}
+{#snippet pageList(ws: Workspace, showHomeRow: boolean)}
   <div class="page-list">
+    {#if showHomeRow}
+      <div
+        class="page-row home"
+        class:active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
+        onclick={() => switchWorkspaceView(ws.id, HUB_VIEWS[0].id)}
+        role="button"
+        tabindex="0"
+        title="Hub"
+      >
+        <House size={14} />
+      </div>
+    {/if}
     {#each ws.pages as page, pageIndex (page.id)}
       {@const gitSummary = pageGitSummary(page)}
       <div class="page-row-group">
         <div
           class="page-row"
-          class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId}
+          class:active={ws.id === $layoutState.activeWorkspaceId && page.id === ws.activePageId && getActiveView(ws) === "terminal"}
           class:drop-before={hoverState?.targetId === page.id &&
             hoverState.kind === "reorder" &&
             hoverState.position === "before"}
@@ -522,7 +535,7 @@
           </button>
         </div>
         {#if isExpanded(ws.id)}
-          {@render pageList(ws)}
+          {@render pageList(ws, false)}
         {/if}
       </div>
     {/if}
@@ -600,7 +613,7 @@
           </button>
         </div>
         {#if isExpanded(ws.id)}
-          {@render pageList(ws)}
+          {@render pageList(ws, true)}
         {/if}
       </div>
     {/each}
@@ -759,6 +772,13 @@
   .page-row.active {
     background: #1e1e1e;
     color: #fff;
+  }
+  .page-row.home {
+    justify-content: center;
+    color: #999;
+  }
+  .page-row.home.active {
+    color: #eee;
   }
   .workspace-row.drop-before,
   .page-row.drop-before {
