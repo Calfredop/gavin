@@ -14,6 +14,9 @@ import {
   retryFetchBoard,
   addCardAction,
   deleteColumnCascadeAction,
+  linkSessionAction,
+  unlinkSessionAction,
+  updateSessionLinkAction,
 } from "./kanbanState";
 import type { Board } from "./kanban";
 
@@ -84,6 +87,94 @@ describe("addCardAction", () => {
 
     expect(get(kanbanState)["ws-1"]).toBeUndefined();
     expect(backend.setBoard).not.toHaveBeenCalled();
+  });
+});
+
+describe("linkSessionAction", () => {
+  it("mutates local state immediately and persists via setBoard", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue({
+      columns: [
+        {
+          id: "c1",
+          name: "To Do",
+          position: 0,
+          cards: [{ id: "card-1", title: "Card", description: "", labelIds: [], priority: "none", position: 0 }],
+        },
+      ],
+      labels: [],
+    });
+    await fetchBoard("ws-1");
+
+    await linkSessionAction("ws-1", "card-1", { sessionId: "s1", cwd: "/tmp", command: null });
+
+    expect(get(kanbanState)["ws-1"].columns[0].cards[0].sessionLink).toEqual({
+      sessionId: "s1",
+      cwd: "/tmp",
+      command: null,
+    });
+    expect(backend.setBoard).toHaveBeenCalledWith("ws-1", get(kanbanState)["ws-1"].columns, []);
+  });
+});
+
+describe("unlinkSessionAction", () => {
+  it("clears the card's sessionLink and persists", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue({
+      columns: [
+        {
+          id: "c1",
+          name: "To Do",
+          position: 0,
+          cards: [
+            {
+              id: "card-1",
+              title: "Card",
+              description: "",
+              labelIds: [],
+              priority: "none",
+              position: 0,
+              sessionLink: { sessionId: "s1", cwd: "/tmp", command: null },
+            },
+          ],
+        },
+      ],
+      labels: [],
+    });
+    await fetchBoard("ws-1");
+
+    await unlinkSessionAction("ws-1", "card-1");
+
+    expect(get(kanbanState)["ws-1"].columns[0].cards[0].sessionLink).toBeUndefined();
+  });
+});
+
+describe("updateSessionLinkAction", () => {
+  it("replaces the linked sessionId and persists", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue({
+      columns: [
+        {
+          id: "c1",
+          name: "To Do",
+          position: 0,
+          cards: [
+            {
+              id: "card-1",
+              title: "Card",
+              description: "",
+              labelIds: [],
+              priority: "none",
+              position: 0,
+              sessionLink: { sessionId: "old", cwd: "/tmp", command: null },
+            },
+          ],
+        },
+      ],
+      labels: [],
+    });
+    await fetchBoard("ws-1");
+
+    await updateSessionLinkAction("ws-1", "card-1", "new");
+
+    expect(get(kanbanState)["ws-1"].columns[0].cards[0].sessionLink?.sessionId).toBe("new");
   });
 });
 

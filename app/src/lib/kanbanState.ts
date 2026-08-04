@@ -1,7 +1,7 @@
 import { writable, get } from "svelte/store";
 import * as backend from "./backend";
 import * as kanban from "./kanban";
-import type { Board, Card, Column, Label } from "./kanban";
+import type { Board, Card, Column, Label, SessionLink } from "./kanban";
 
 export const kanbanState = writable<Record<string, Board>>({});
 
@@ -76,6 +76,18 @@ export function moveCardAction(
 
 export function deleteCardAction(workspaceId: string, cardId: string): Promise<void> {
   return mutateAndPersist(workspaceId, (b) => kanban.deleteCard(b, cardId));
+}
+
+export function linkSessionAction(workspaceId: string, cardId: string, sessionLink: SessionLink): Promise<void> {
+  return mutateAndPersist(workspaceId, (b) => kanban.linkSession(b, cardId, sessionLink));
+}
+
+export function unlinkSessionAction(workspaceId: string, cardId: string): Promise<void> {
+  return mutateAndPersist(workspaceId, (b) => kanban.unlinkSession(b, cardId));
+}
+
+export function updateSessionLinkAction(workspaceId: string, cardId: string, sessionId: string): Promise<void> {
+  return mutateAndPersist(workspaceId, (b) => kanban.updateSessionLink(b, cardId, sessionId));
 }
 
 export function addColumnAction(workspaceId: string, column: Column): Promise<void> {
