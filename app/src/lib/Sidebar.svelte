@@ -341,7 +341,10 @@
       <div
         class="page-row home"
         class:active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
-        onclick={() => switchWorkspaceView(ws.id, HUB_VIEWS[0].id)}
+        onclick={() => {
+          switchWorkspace(ws.id);
+          switchWorkspaceView(ws.id, HUB_VIEWS[0].id);
+        }}
         role="button"
         tabindex="0"
         title="Hub"
