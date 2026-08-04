@@ -1,4 +1,5 @@
 mod git_status;
+mod kanban;
 mod osc;
 mod pty;
 mod registry;
