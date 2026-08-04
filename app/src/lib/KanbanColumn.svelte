@@ -2,6 +2,7 @@
   import type { Column, Label } from "./kanban";
   import KanbanCard from "./KanbanCard.svelte";
   import DeleteColumnPrompt from "./DeleteColumnPrompt.svelte";
+  import DeleteCardWithSessionPrompt from "./DeleteCardWithSessionPrompt.svelte";
   import { setDragPayload, getDragKind, getDragPayload, computeReorderPosition } from "./dragDrop";
   import {
     moveCardAction,
@@ -9,7 +10,10 @@
     renameColumnAction,
     deleteColumnCascadeAction,
     moveCardsOutOfColumnAndDeleteAction,
+    deleteCardAction,
   } from "./kanbanState";
+  import { layoutState, closeSession } from "./layoutState";
+  import { findSessionLocation } from "./workspace";
 
   interface Props {
     workspaceId: string;
@@ -24,6 +28,7 @@
   let editingName = $state(false);
   let nameDraft = $state(column.name);
   let showDeletePrompt = $state(false);
+  let pendingDeleteCardId = $state<string | null>(null);
 
   function startRename(): void {
     nameDraft = column.name;
@@ -82,6 +87,25 @@
       showDeletePrompt = true;
     }
   }
+
+  function requestDeleteCard(cardId: string): void {
+    const target = column.cards.find((c) => c.id === cardId);
+    const location = target?.sessionLink ? findSessionLocation($layoutState, target.sessionLink.sessionId) : null;
+    if (location) {
+      pendingDeleteCardId = cardId;
+    } else {
+      void deleteCardAction(workspaceId, cardId);
+    }
+  }
+
+  async function confirmDeleteCard(): Promise<void> {
+    const cardId = pendingDeleteCardId;
+    pendingDeleteCardId = null;
+    if (!cardId) return;
+    const target = column.cards.find((c) => c.id === cardId);
+    if (target?.sessionLink) await closeSession(target.sessionLink.sessionId);
+    await deleteCardAction(workspaceId, cardId);
+  }
 </script>
 
 <div
@@ -117,7 +141,13 @@
           e.stopPropagation();
         }}
       >
-        <KanbanCard {card} columnId={column.id} {labels} onOpen={() => onOpenCard(card.id)} />
+        <KanbanCard
+          {card}
+          columnId={column.id}
+          {labels}
+          onOpen={() => onOpenCard(card.id)}
+          onDelete={() => requestDeleteCard(card.id)}
+        />
       </div>
     {/each}
   </div>
@@ -139,6 +169,10 @@
     }}
     onCancel={() => (showDeletePrompt = false)}
   />
+{/if}
+
+{#if pendingDeleteCardId}
+  <DeleteCardWithSessionPrompt onConfirm={confirmDeleteCard} onCancel={() => (pendingDeleteCardId = null)} />
 {/if}
 
 <style>
