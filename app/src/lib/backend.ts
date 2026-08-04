@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 
-export function createSession(): Promise<string> {
-  return invoke("create_session");
+export function createSession(cwd?: string, command?: string): Promise<string> {
+  return invoke("create_session", { cwd, command });
 }
 
 export function killSession(sessionId: string): Promise<void> {

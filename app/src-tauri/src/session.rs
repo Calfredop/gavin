@@ -185,7 +185,7 @@ fn resolve_sessions(
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
                 if !is_valid {
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
-                    *id = create_fresh_session(command_conn, last_known_cwd)?;
+                    *id = create_fresh_session(command_conn, last_known_cwd, None)?;
                 }
             }
             Ok(())
@@ -541,6 +541,36 @@ mod resolve_workspaces_tests {
             other => panic!("expected the third request to be the $HOME fallback, got {other:?}"),
         }
     }
+
+    #[test]
+    fn create_fresh_session_with_no_command_sends_none() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = Mutex::new(client);
+
+        create_fresh_session(&conn, Some("/tmp"), None).unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::CreateSession { command, .. } => assert_eq!(command, &None),
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_fresh_session_threads_an_explicit_command_through() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = Mutex::new(client);
+
+        create_fresh_session(&conn, Some("/tmp"), Some("npm test")).unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::CreateSession { command, .. } => assert_eq!(command, &Some("npm test".to_string())),
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+    }
 }
 
 /// Connects to (or spawns) the daemon over two connections — one for the
@@ -719,13 +749,18 @@ pub fn resize_session(
 /// subsequent launch (persist_workspaces never runs to fix up the config,
 /// since it's gated on resolve_workspaces succeeding). So a rejected
 /// non-$HOME target falls back to $HOME once before giving up for real.
-fn create_fresh_session(command_conn: &Mutex<UnixStream>, cwd: Option<&str>) -> anyhow::Result<String> {
+fn create_fresh_session(
+    command_conn: &Mutex<UnixStream>,
+    cwd: Option<&str>,
+    command: Option<&str>,
+) -> anyhow::Result<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
+    let command = command.map(str::to_string);
 
     let resp = send_command(
         command_conn,
-        &Request::CreateSession { workspace_path: target.clone(), cwd: target.clone(), command: None },
+        &Request::CreateSession { workspace_path: target.clone(), cwd: target.clone(), command: command.clone() },
     )?;
     match resp {
         Response::SessionCreated { id } => return Ok(id),
@@ -737,7 +772,7 @@ fn create_fresh_session(command_conn: &Mutex<UnixStream>, cwd: Option<&str>) -> 
 
     let resp = send_command(
         command_conn,
-        &Request::CreateSession { workspace_path: home.clone(), cwd: home.clone(), command: None },
+        &Request::CreateSession { workspace_path: home.clone(), cwd: home.clone(), command },
     )?;
     match resp {
         Response::SessionCreated { id } => Ok(id),
@@ -747,10 +782,13 @@ fn create_fresh_session(command_conn: &Mutex<UnixStream>, cwd: Option<&str>) -> 
 
 #[tauri::command]
 pub fn create_session(
+    cwd: Option<String>,
+    command: Option<String>,
     command_state: State<CommandConnection>,
     daemon_state: State<DaemonConnection>,
 ) -> Result<String, String> {
-    let id = create_fresh_session(&command_state.0, None).map_err(|e| e.to_string())?;
+    let id = create_fresh_session(&command_state.0, cwd.as_deref(), command.as_deref())
+        .map_err(|e| e.to_string())?;
     send_request(&daemon_state.writer, &Request::Attach { id: id.clone() })
         .map_err(|e| e.to_string())?;
     Ok(id)
