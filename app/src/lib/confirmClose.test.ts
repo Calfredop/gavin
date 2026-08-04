@@ -38,6 +38,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     sessionStatusById: {},
     gitStatusById: {},
     restoredSessionIds: new Set(),
+    fileTabsById: {},
   });
 }
 

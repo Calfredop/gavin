@@ -17,6 +17,7 @@ vi.mock("./backend", () => ({
   getSessionNames: vi.fn(),
   setSessionName: vi.fn(),
   deleteBoard: vi.fn(),
+  getFileTabs: vi.fn(),
 }));
 
 vi.mock("./terminalRegistry", () => ({
@@ -91,6 +92,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     sessionStatusById: {},
     gitStatusById: {},
     restoredSessionIds: new Set(),
+    fileTabsById: {},
   });
 }
 
@@ -107,6 +109,7 @@ beforeEach(() => {
     sessionStatusById: {},
     gitStatusById: {},
     restoredSessionIds: new Set(),
+    fileTabsById: {},
   });
 });
 
@@ -680,6 +683,22 @@ describe("createSessionForCard", () => {
 
     expect(sessionId).toBeNull();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("bootstrap file tab hydration", () => {
+  it("hydrates fileTabsById from the backend on bootstrap", async () => {
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockResolvedValue({ "tab-1": "/tmp/README.md" });
+
+    await bootstrap();
+    await vi.waitFor(() => {
+      expect(get(layoutState).fileTabsById["tab-1"]).toEqual({ path: "/tmp/README.md" });
+    });
+
+    teardown();
   });
 });
 

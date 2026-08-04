@@ -11,6 +11,13 @@ import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 
 export type { SessionStatus };
 
+// A pane tab that shows a file instead of a terminal session. Keyed by
+// the same opaque tab-id space session ids live in -- a tab id present in
+// fileTabsById is a file tab, one absent from it is a terminal session.
+export interface FileTab {
+  path: string;
+}
+
 export interface LayoutState {
   status: "connecting" | "ready" | "error";
   errorMessage: string;
@@ -22,6 +29,7 @@ export interface LayoutState {
   sessionStatusById: Record<string, SessionStatus>;
   gitStatusById: Record<string, GitStatus | null>;
   restoredSessionIds: Set<string>;
+  fileTabsById: Record<string, FileTab>;
 }
 
 const initialState: LayoutState = {
@@ -35,6 +43,7 @@ const initialState: LayoutState = {
   sessionStatusById: {},
   gitStatusById: {},
   restoredSessionIds: new Set(),
+  fileTabsById: {},
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -139,6 +148,21 @@ export async function bootstrap(): Promise<void> {
     .getSessionNames()
     .then((sessionNames) => {
       layoutState.update((s) => ({ ...s, sessionNames }));
+    })
+    .catch(() => {});
+
+  // Like session names: frontend-owned, never externally driven, so a
+  // one-shot fetch is sufficient -- no live event. Best-effort, matching
+  // getSessionNames: a failure means file tabs render their error state
+  // until the next successful load, not a reason to block startup.
+  void backend
+    .getFileTabs()
+    .then((fileTabs) => {
+      const fileTabsById: Record<string, FileTab> = {};
+      for (const [tabId, path] of Object.entries(fileTabs)) {
+        fileTabsById[tabId] = { path };
+      }
+      layoutState.update((s) => ({ ...s, fileTabsById }));
     })
     .catch(() => {});
 

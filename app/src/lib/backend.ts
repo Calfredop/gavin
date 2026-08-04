@@ -10,6 +10,34 @@ export function killSession(sessionId: string): Promise<void> {
   return invoke("kill_session", { sessionId });
 }
 
+export function getFileTabs(): Promise<Record<string, string>> {
+  return invoke("get_file_tabs");
+}
+
+export function setFileTabs(fileTabs: Record<string, string>): Promise<void> {
+  return invoke("set_file_tabs", { fileTabs });
+}
+
+export function readFileForViewer(path: string): Promise<{ content: string; truncated: boolean }> {
+  return invoke("read_file_for_viewer", { path });
+}
+
+export function resolvePathUnderCursor(candidate: string, cwd: string): Promise<string | null> {
+  return invoke("resolve_path_under_cursor", { candidate, cwd });
+}
+
+export function viewableExtensions(): Promise<string[]> {
+  return invoke("viewable_extensions");
+}
+
+export function watchFileForViewer(path: string): Promise<void> {
+  return invoke("watch_file_for_viewer", { path });
+}
+
+export function unwatchFileForViewer(path: string): Promise<void> {
+  return invoke("unwatch_file_for_viewer", { path });
+}
+
 export function getWorkspacesState(): Promise<WorkspacesData> {
   return invoke("get_workspaces_state");
 }
