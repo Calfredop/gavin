@@ -17,6 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
+        .manage(fileviewer::FileWatchers::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -47,6 +48,8 @@ pub fn run() {
             fileviewer::read_file_for_viewer,
             fileviewer::resolve_path_under_cursor,
             fileviewer::viewable_extensions,
+            fileviewer::watch_file_for_viewer,
+            fileviewer::unwatch_file_for_viewer,
             session::signal_frontend_ready,
             session::get_bootstrap_error,
             session::get_board,

@@ -64,6 +64,8 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "notify",
+ "notify-debouncer-mini",
  "objc2-app-kit",
  "objc2-quartz-core",
  "protocol",
