@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import type { LayoutNode } from "./layout";
   import TerminalPane from "./TerminalPane.svelte";
+  import FileViewerPane from "./FileViewerPane.svelte";
   import {
     layoutState,
     switchToTab,
@@ -13,7 +14,7 @@
   import { confirmTabClose } from "./confirmClose";
   import { X, Plus, RotateCw } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
-  import { sessionLabel } from "./paths";
+  import { sessionLabel, folderName } from "./paths";
   import {
     setDragPayload,
     getDragKind,
@@ -57,11 +58,22 @@
     }
   }
 
+  function fileTabPath(tabId: string): string | null {
+    return $layoutState.fileTabsById[tabId]?.path ?? null;
+  }
+
   function tabLabel(sessionId: string): string {
+    const path = fileTabPath(sessionId);
+    // A file tab's label is always its filename -- exact, known
+    // information, unlike a terminal's cwd-derived guess, which is why it
+    // is also not renameable (see the startEditing guard below).
+    if (path) return folderName(path);
     return sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId);
   }
 
   function tabTooltip(sessionId: string): string {
+    const path = fileTabPath(sessionId);
+    if (path) return path;
     return $layoutState.sessionNames[sessionId] ?? $layoutState.cwdBySessionId[sessionId] ?? sessionId;
   }
 
@@ -88,6 +100,8 @@
   }
 
   function startEditing(sessionId: string): void {
+    // File tabs are never renameable -- their label is the filename.
+    if (fileTabPath(sessionId)) return;
     editingSessionId = sessionId;
     editValue = tabLabel(sessionId);
   }
@@ -317,12 +331,20 @@
     ondrop={handleContentDrop}
   >
     {#each leaf.tabs as sessionId (sessionId)}
-      <TerminalPane
-        bind:this={paneRefs[sessionId]}
-        {sessionId}
-        visible={sessionId === active}
-        focused={sessionId === $layoutState.focusedSessionId}
-      />
+      {#if fileTabPath(sessionId)}
+        <FileViewerPane
+          bind:this={paneRefs[sessionId]}
+          path={fileTabPath(sessionId) ?? ""}
+          visible={sessionId === active}
+        />
+      {:else}
+        <TerminalPane
+          bind:this={paneRefs[sessionId]}
+          {sessionId}
+          visible={sessionId === active}
+          focused={sessionId === $layoutState.focusedSessionId}
+        />
+      {/if}
     {/each}
   </div>
 </div>
