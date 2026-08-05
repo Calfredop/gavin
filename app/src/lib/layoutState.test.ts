@@ -27,6 +27,7 @@ vi.mock("./backend", () => ({
 
 vi.mock("./terminalRegistry", () => ({
   destroyTerminal: vi.fn(),
+  setCwdForLinks: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({

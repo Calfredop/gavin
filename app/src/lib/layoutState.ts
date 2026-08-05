@@ -351,6 +351,10 @@ export function handleSessionExited(sessionId: string): void {
 // stale in-memory map entry per session that ever existed in one app run
 // is not a meaningful memory concern.
 export function handleCwdChanged(sessionId: string, cwd: string): void {
+  // Mirrored into terminalRegistry too: its xterm link provider resolves
+  // relative paths against this cwd synchronously, so it can't read the
+  // store (and can't import this module back -- that would be circular).
+  terminalRegistry.setCwdForLinks(sessionId, cwd);
   layoutState.update((s) => ({ ...s, cwdBySessionId: { ...s.cwdBySessionId, [sessionId]: cwd } }));
 }
 
