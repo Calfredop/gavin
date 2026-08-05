@@ -4,6 +4,13 @@ import { layoutState } from "./layoutState";
 import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds } from "./layout";
 import { getActiveTree, allSessionIdsInWorkspace } from "./workspace";
 
+// A file tab is not a terminal session: closing one ends no process, so
+// it must never appear in a "N terminal sessions will end" count, and a
+// pane/page/workspace holding only file tabs needs no prompt at all.
+function sessionTabsOnly(ids: string[], fileTabsById: Record<string, { path: string }>): string[] {
+  return ids.filter((id) => !fileTabsById[id]);
+}
+
 // Prompts before closing a single tab, but only when doing so would empty
 // its pane -- closing a tab that leaves siblings behind needs no prompt,
 // exactly as it behaves today. Always operates on the active page's tree,
@@ -11,6 +18,8 @@ import { getActiveTree, allSessionIdsInWorkspace } from "./workspace";
 // Returns whether the caller should proceed with closeSession(sessionId).
 export async function confirmTabClose(sessionId: string): Promise<boolean> {
   const state = get(layoutState);
+  // Closing a file tab ends no process -- nothing to warn about.
+  if (state.fileTabsById[sessionId]) return true;
   const tree = getActiveTree(state);
   if (!tree || !isLastTabInPane(tree, sessionId)) return true;
   return confirm("Close this tab? It's the last one in this pane, so the pane will close too.", {
@@ -29,7 +38,7 @@ export async function confirmPaneClose(anySessionId: string): Promise<boolean> {
   const path = findLeafPath(tree, anySessionId);
   if (!path) return true;
   const leaf = getNodeAtPath(tree, path);
-  const count = leaf.type === "leaf" ? leaf.tabs.length : 0;
+  const count = leaf.type === "leaf" ? sessionTabsOnly(leaf.tabs, state.fileTabsById).length : 0;
   return confirm(`Close this pane? ${count} terminal session${count === 1 ? "" : "s"} will end.`, {
     title: "gavin",
   });
@@ -43,7 +52,7 @@ export async function confirmPageClose(workspaceId: string, pageId: string): Pro
   const state = get(layoutState);
   const page = state.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === pageId);
   if (!page) return true;
-  const count = allSessionIds(page.layout).length;
+  const count = sessionTabsOnly(allSessionIds(page.layout), state.fileTabsById).length;
   return confirm(`Close this page? ${count} terminal session${count === 1 ? "" : "s"} will end.`, {
     title: "gavin",
   });
@@ -56,7 +65,7 @@ export async function confirmWorkspaceClose(workspaceId: string): Promise<boolea
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return true;
-  const count = allSessionIdsInWorkspace(ws).length;
+  const count = sessionTabsOnly(allSessionIdsInWorkspace(ws), state.fileTabsById).length;
   return confirm(`Close this workspace? ${count} terminal session${count === 1 ? "" : "s"} will end.`, {
     title: "gavin",
   });

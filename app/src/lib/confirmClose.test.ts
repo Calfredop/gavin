@@ -116,3 +116,51 @@ describe("confirmWorkspaceClose", () => {
     expect(await confirmWorkspaceClose("ws-1")).toBe(false);
   });
 });
+
+describe("file tabs are not counted as terminal sessions", () => {
+  it("confirmTabClose does not prompt when closing a file tab that is alone in its pane", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["file-1"]))])], "ws-1");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+
+    const proceed = await confirmTabClose("file-1");
+
+    expect(proceed).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("confirmPaneClose counts only real sessions", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(confirm).mockResolvedValue(true);
+
+    await confirmPaneClose("a");
+
+    expect(confirm).toHaveBeenCalledWith("Close this pane? 1 terminal session will end.", {
+      title: "gavin",
+    });
+  });
+
+  it("confirmPageClose counts only real sessions", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(confirm).mockResolvedValue(true);
+
+    await confirmPageClose("ws-1", "page-1");
+
+    expect(confirm).toHaveBeenCalledWith("Close this page? 1 terminal session will end.", {
+      title: "gavin",
+    });
+  });
+
+  it("confirmWorkspaceClose counts only real sessions", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(confirm).mockResolvedValue(true);
+
+    await confirmWorkspaceClose("ws-1");
+
+    expect(confirm).toHaveBeenCalledWith("Close this workspace? 1 terminal session will end.", {
+      title: "gavin",
+    });
+  });
+});
