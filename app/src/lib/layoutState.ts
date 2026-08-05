@@ -76,6 +76,30 @@ async function createFreshSession(): Promise<string | null> {
   }
 }
 
+// Every close path (tab, pane, page, workspace) ends the tabs it owns.
+// A file tab is not a session -- killing it would ask the daemon to kill
+// an id it has never heard of -- so it gets its watcher torn down instead.
+// Returns false (having already called setError) if a real session kill
+// failed, so callers can bail exactly as they do today.
+async function endTabs(tabIds: string[], fileTabsById: Record<string, FileTab>): Promise<boolean> {
+  for (const id of tabIds) {
+    const fileTab = fileTabsById[id];
+    if (fileTab) {
+      // Best-effort: a watcher that's already gone (or was never
+      // started because the file read failed) must not block the close.
+      await backend.unwatchFileForViewer(fileTab.path).catch(() => {});
+      continue;
+    }
+    try {
+      await backend.killSession(id);
+    } catch (e) {
+      setError(String(e));
+      return false;
+    }
+  }
+  return true;
+}
+
 // The active page's identity plus its current tree, or null if there's no
 // active workspace, no active page, or either id is stale. Every
 // tree-mutating action below starts by calling this.
@@ -228,6 +252,35 @@ export async function splitPane(targetSessionId: string, direction: "row" | "col
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
+// Opens `path` as a new file tab, split beside the pane holding
+// `anchorSessionId` -- the cmd+click-a-path flow's entry point. Mirrors
+// splitPane exactly, except the new tab is a file tab (a fresh opaque id
+// recorded in fileTabsById) rather than a freshly spawned session, so no
+// create_session call happens at all.
+export async function openFileInSplit(anchorSessionId: string, path: string): Promise<void> {
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const tabId = crypto.randomUUID();
+  const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
+  const fileTabsById = { ...state.fileTabsById, [tabId]: { path } };
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, fileTabsById }));
+
+  const asPathMap: Record<string, string> = {};
+  for (const [id, tab] of Object.entries(fileTabsById)) {
+    asPathMap[id] = tab.path;
+  }
+  try {
+    await backend.setFileTabs(asPathMap);
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
 export async function addTab(targetSessionId: string): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
@@ -242,12 +295,8 @@ export async function addTab(targetSessionId: string): Promise<void> {
 }
 
 export async function closeSession(sessionId: string): Promise<void> {
-  try {
-    await backend.killSession(sessionId);
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
+  const state = get(layoutState);
+  if (!(await endTabs([sessionId], state.fileTabsById))) return;
   handleSessionExited(sessionId);
 }
 
@@ -472,14 +521,7 @@ export async function closePane(anySessionId: string): Promise<void> {
   if (leaf.type !== "leaf") return;
   const sessionIds = [...leaf.tabs];
 
-  for (const id of sessionIds) {
-    try {
-      await backend.killSession(id);
-    } catch (e) {
-      setError(String(e));
-      return;
-    }
-  }
+  if (!(await endTabs(sessionIds, state.fileTabsById))) return;
 
   let tree: LayoutNode | null = location.tree;
   for (const id of sessionIds) {
@@ -559,14 +601,7 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
   if (!ws) return;
   const sessionIds = workspace.allSessionIdsInWorkspace(ws);
 
-  for (const id of sessionIds) {
-    try {
-      await backend.killSession(id);
-    } catch (e) {
-      setError(String(e));
-      return;
-    }
-  }
+  if (!(await endTabs(sessionIds, state.fileTabsById))) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }
@@ -715,14 +750,7 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
   if (!page) return;
   const sessionIds = layout.allSessionIds(page.layout);
 
-  for (const id of sessionIds) {
-    try {
-      await backend.killSession(id);
-    } catch (e) {
-      setError(String(e));
-      return;
-    }
-  }
+  if (!(await endTabs(sessionIds, state.fileTabsById))) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }

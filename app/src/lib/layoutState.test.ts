@@ -18,6 +18,11 @@ vi.mock("./backend", () => ({
   setSessionName: vi.fn(),
   deleteBoard: vi.fn(),
   getFileTabs: vi.fn(),
+  setFileTabs: vi.fn(),
+  // Resolved by default: endTabs calls .catch() on this, so a bare
+  // vi.fn() returning undefined would throw rather than exercise the
+  // real best-effort path.
+  unwatchFileForViewer: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./terminalRegistry", () => ({
@@ -57,6 +62,7 @@ import {
   closeWorkspace,
   createPage,
   createSessionForCard,
+  openFileInSplit,
   renamePage,
   switchPage,
   closePage,
@@ -683,6 +689,87 @@ describe("createSessionForCard", () => {
 
     expect(sessionId).toBeNull();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("openFileInSplit", () => {
+  it("splits the anchor's pane with a new file tab and persists both the tree and the file-tab map", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await openFileInSplit("a", "/tmp/README.md");
+
+    const state = get(layoutState);
+    const tree = state.workspaces[0].pages[0].layout;
+    expect(tree.type).toBe("split");
+    if (tree.type !== "split") throw new Error("expected a split");
+    // The anchor keeps its own leaf; the new file tab gets the sibling leaf.
+    expect(tree.children[0]).toEqual(leaf(["a"]));
+    const newLeaf = tree.children[1];
+    if (newLeaf.type !== "leaf") throw new Error("expected a leaf");
+    const newTabId = newLeaf.tabs[0];
+    expect(state.fileTabsById[newTabId]).toEqual({ path: "/tmp/README.md" });
+    expect(backend.setFileTabs).toHaveBeenCalledWith({ [newTabId]: "/tmp/README.md" });
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    // A file tab is never a terminal session.
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when there is no active page", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    await openFileInSplit("a", "/tmp/README.md");
+
+    expect(backend.setFileTabs).not.toHaveBeenCalled();
+  });
+});
+
+describe("closing file tabs", () => {
+  it("closeSession unwatches a file tab instead of killing a session", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1", "a");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+
+    await closeSession("file-1");
+
+    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(backend.unwatchFileForViewer).toHaveBeenCalledWith("/tmp/a.md");
+    expect(get(layoutState).workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
+  });
+
+  it("closePane kills only the session tabs and unwatches only the file tabs", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1", "a");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closePane("a");
+
+    expect(backend.killSession).toHaveBeenCalledTimes(1);
+    expect(backend.killSession).toHaveBeenCalledWith("a");
+    expect(backend.unwatchFileForViewer).toHaveBeenCalledWith("/tmp/a.md");
+  });
+
+  it("closeWorkspace kills only the session tabs and unwatches only the file tabs", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1", "a");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+    vi.mocked(backend.deleteBoard).mockResolvedValue(undefined);
+
+    await closeWorkspace("ws-1");
+
+    expect(backend.killSession).toHaveBeenCalledTimes(1);
+    expect(backend.killSession).toHaveBeenCalledWith("a");
+    expect(backend.unwatchFileForViewer).toHaveBeenCalledWith("/tmp/a.md");
+  });
+
+  it("closePage kills only the session tabs and unwatches only the file tabs", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1", "a");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closePage("ws-1", "page-1");
+
+    expect(backend.killSession).toHaveBeenCalledTimes(1);
+    expect(backend.killSession).toHaveBeenCalledWith("a");
+    expect(backend.unwatchFileForViewer).toHaveBeenCalledWith("/tmp/a.md");
   });
 });
 
