@@ -894,6 +894,7 @@ impl SessionManager {
                     // whatever is currently registered (possibly a writer from a
                     // concurrent Attach that raced in first), so the right writer
                     // always gets notified no matter how the race lands.
+                    manager.output_buffers.lock().unwrap().remove(&id);
                     let removed = manager.attached_writers.lock().unwrap().remove(&id);
                     if let Some(w) = removed {
                         let _ = write_message(
@@ -1069,6 +1070,13 @@ impl SessionManager {
             if let Some(w) = removed {
                 let _ = write_message(&mut *w.lock().unwrap(), &Response::SessionExited { id: id.clone(), exit_code });
             }
+            // The scrollback ring is per-session state like the writer above,
+            // and this is the one place that runs for BOTH a natural exit and
+            // a kill_session (which makes the pump's read return 0). Dropping
+            // it here is what stops up to OUTPUT_BUFFER_CAP bytes per session
+            // leaking for the daemon's whole lifetime, and also stops a dead
+            // session's stale history replaying to a later Attach.
+            manager.output_buffers.lock().unwrap().remove(&id);
         });
     }
 }
@@ -2599,6 +2607,48 @@ mod tests {
             cleared,
             "a session that cd'd out of a git repo never received GitStatusChanged{{status: None}}, \
              so its client could never clear the stale indicator"
+        );
+    }
+
+    #[test]
+    fn killing_a_session_frees_its_scrollback_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = bare_manager(&dir);
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
+
+        // Attaching spawns the pump, which is what fills the ring buffer.
+        let (client, server_side) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        manager.attach(&id, Arc::new(Mutex::new(server_side)));
+
+        // Drive some output so the buffer is genuinely non-empty -- a test
+        // that passed against an always-empty map would prove nothing.
+        manager.write_input(&id, b"echo hello\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if manager.output_buffers.lock().unwrap().get(&id).is_some_and(|b| !b.is_empty()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            manager.output_buffers.lock().unwrap().get(&id).is_some_and(|b| !b.is_empty()),
+            "precondition: the pump should have buffered some output"
+        );
+
+        manager.kill_session(&id).unwrap();
+
+        // The pump notices the closed pty and tears down asynchronously.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if !manager.output_buffers.lock().unwrap().contains_key(&id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !manager.output_buffers.lock().unwrap().contains_key(&id),
+            "the scrollback ring must be dropped on teardown, not leaked for the daemon's lifetime"
         );
     }
 
