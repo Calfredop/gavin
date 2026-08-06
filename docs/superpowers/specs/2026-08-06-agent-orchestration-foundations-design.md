@@ -221,12 +221,19 @@ pub struct GavinTree {
 
 Requests:
 
-- `WatchGavinRoot { workspace_id, root_path }` — idempotent; performs an initial
-  scan, starts the watcher, replies with the typed tree response.
-- `UnwatchGavinRoot { workspace_id }` — tears down the watcher; replies `Ok`.
-- `GetGavinTree { workspace_id }` — fresh scan, typed tree reply.
-- `InitGavinRoot { root_path }` — scaffolds `.gavin-root` (§1); replies `Ok`.
-- `CreateGavinContext { parent_folder }` — scaffolds `.gavin` (§1); replies `Ok`.
+- `WatchGavinRoot { workspace_id, root_path }` — idempotent; sent on the
+  **streaming** connection (intercepted in `handle_connection` like `Attach`, since
+  the daemon must capture that connection's writer for pushes). No request/reply
+  exists on that connection — the initial scan arrives as the **first
+  `GavinTreeChanged` push**.
+- `UnwatchGavinRoot { workspace_id }` — command connection; tears down the watcher;
+  replies `Ok`.
+- `GetGavinTree { workspace_id }` — command connection; fresh scan, typed tree reply
+  (`Error` if the workspace isn't watched).
+- `InitGavinRoot { root_path, workspace_name }` — command connection; scaffolds
+  `.gavin-root` (§1, workspace name substituted into the PRD template); replies `Ok`.
+- `CreateGavinContext { parent_folder }` — command connection; scaffolds `.gavin`
+  (§1); replies `Ok`.
 
 Responses: a typed reply variant `GavinTreeSnapshot { workspace_id, tree: GavinTree }`
 (the `Board` precedent), and the push event
@@ -320,9 +327,12 @@ Conventions: tempdir-based Rust unit tests; socket-level daemon integration test
   honors exclusions and depth cap, deep `.gavin-root` ignored, both-markers edge);
   scaffolding (creates all pieces, never overwrites, completes partials);
   config.toml parse + fallbacks.
-- **Integration (daemon)**: `WatchGavinRoot` → snapshot reply; touch a plan file →
-  debounce-aware `GavinTreeChanged` arrives; unchanged rescan emits nothing;
-  `UnwatchGavinRoot` stops events; missing root → `root_missing: true`.
+- **Integration (daemon)**: `WatchGavinRoot` → the initial `GavinTreeChanged` push
+  arrives; touch a plan file → a second, debounce-aware push arrives; missing root →
+  `root_missing: true`; `GetGavinTree` snapshot reply (+ `Error` when unwatched).
+  Unchanged-rescan-emits-nothing and teardown-stops-emission are covered at the
+  unit level via a `UnixStream::pair` with a read timeout (deadline-safe negative
+  assertions).
 - **Frontend (Vitest, mocked backend)**: bootstrap registers rooted workspaces only;
   tree lands in per-workspace state; `setWorkspaceRoot` persists + watches (+
   unwatches on rebind).
