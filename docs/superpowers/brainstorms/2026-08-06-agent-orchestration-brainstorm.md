@@ -137,6 +137,15 @@ below-3→5, below-4→6, below-7 folded into 3.)
   svelte-check caught it; fixed by extending the excluded-kinds guard. Manual GUI
   smoke test pending (user-performed).
 
+- **Wire-level smoke pass (2026-08-06, `62bdd43`):** a live 15-check run against
+  the real daemon binary (isolated $HOME/socket) covering the smoke checklist's
+  non-visual layer — init scaffolding, live pushes, surgical writes, agent-style
+  edits, context add/remove, root vanish/heal. **Found a real spec violation no
+  unit test caught:** the watcher's event filter (`.gavin*` segments only) could
+  never match the root's own rename event, so `root_missing` was never pushed and
+  the "Root not found" banner could never appear. Fixed (root-path arm in the
+  filter) + socket-level regression test. Rendered-UI steps remain user-verified.
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
