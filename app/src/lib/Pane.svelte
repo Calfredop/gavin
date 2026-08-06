@@ -3,6 +3,7 @@
   import type { LayoutNode } from "./layout";
   import TerminalPane from "./TerminalPane.svelte";
   import FileViewerPane from "./FileViewerPane.svelte";
+  import BoardPane from "./BoardPane.svelte";
   import {
     layoutState,
     switchToTab,
@@ -10,9 +11,12 @@
     closeSession,
     focusPane,
     setSessionName,
+    openBoardInSplit,
   } from "./layoutState";
+  import { gavinTrees } from "./gavinState";
+  import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
-  import { X, Plus, RotateCw } from "@lucide/svelte";
+  import { X, Plus, RotateCw, Kanban } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
   import { sessionLabel, folderName } from "./paths";
   import {
@@ -62,7 +66,24 @@
     return $layoutState.fileTabsById[tabId]?.path ?? null;
   }
 
+  function boardTab(tabId: string): { workspaceId: string; contextFolder: string } | null {
+    return $layoutState.boardTabsById[tabId] ?? null;
+  }
+
+  // A board tab's label names its context, live from the tree (folder
+  // basename fallback) -- exact information like a file tab's filename,
+  // and equally not renameable.
+  function boardTabLabel(tabId: string): string {
+    const tab = boardTab(tabId);
+    if (!tab) return tabId;
+    const name =
+      $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name ??
+      (tab.contextFolder.split("/").at(-1) || tab.contextFolder);
+    return `${name} · board`;
+  }
+
   function tabLabel(sessionId: string): string {
+    if (boardTab(sessionId)) return boardTabLabel(sessionId);
     const path = fileTabPath(sessionId);
     // A file tab's label is always its filename -- exact, known
     // information, unlike a terminal's cwd-derived guess, which is why it
@@ -72,10 +93,23 @@
   }
 
   function tabTooltip(sessionId: string): string {
+    const tab = boardTab(sessionId);
+    if (tab) return tab.contextFolder;
     const path = fileTabPath(sessionId);
     if (path) return path;
     return $layoutState.sessionNames[sessionId] ?? $layoutState.cwdBySessionId[sessionId] ?? sessionId;
   }
+
+  // The active terminal tab's nearest gavin context, if any -- drives the
+  // board icon at the end of the tab bar. Follows the LIVE cwd; the tab a
+  // click opens is then pinned to the context captured at that moment.
+  const activeBoardContext = $derived.by(() => {
+    if (fileTabPath(active) || boardTab(active)) return null;
+    const ws = getActiveWorkspace($layoutState);
+    if (!ws) return null;
+    const ctx = nearestContext($gavinTrees[ws.id], $layoutState.cwdBySessionId[active]);
+    return ctx ? { workspaceId: ws.id, folderPath: ctx.folderPath, name: ctx.name } : null;
+  });
 
   // idle intentionally returns null here -- no dot at all is the idle
   // indicator, not a neutral-colored one (see this plan's Global
@@ -100,8 +134,8 @@
   }
 
   function startEditing(sessionId: string): void {
-    // File tabs are never renameable -- their label is the filename.
-    if (fileTabPath(sessionId)) return;
+    // File and board tabs are never renameable -- their labels are exact.
+    if (fileTabPath(sessionId) || boardTab(sessionId)) return;
     editingSessionId = sessionId;
     editValue = tabLabel(sessionId);
   }
@@ -315,6 +349,16 @@
     <button class="new-tab" aria-label="New Tab" title="New Tab" onclick={() => addTab(active)}>
       <Plus size={14} />
     </button>
+    {#if activeBoardContext}
+      <button
+        class="new-tab"
+        aria-label="Open context board"
+        title={`Open board · ${activeBoardContext.name}`}
+        onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
+      >
+        <Kanban size={14} />
+      </button>
+    {/if}
   </div>
   <div
     class="content"
@@ -331,7 +375,14 @@
     ondrop={handleContentDrop}
   >
     {#each leaf.tabs as sessionId (sessionId)}
-      {#if fileTabPath(sessionId)}
+      {#if boardTab(sessionId)}
+        <BoardPane
+          bind:this={paneRefs[sessionId]}
+          workspaceId={boardTab(sessionId)?.workspaceId ?? ""}
+          contextFolder={boardTab(sessionId)?.contextFolder ?? ""}
+          visible={sessionId === active}
+        />
+      {:else if fileTabPath(sessionId)}
         <FileViewerPane
           bind:this={paneRefs[sessionId]}
           path={fileTabPath(sessionId) ?? ""}
