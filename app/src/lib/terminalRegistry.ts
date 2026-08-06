@@ -57,7 +57,13 @@ async function activatePath(resolvedPath: string, sessionId: string): Promise<vo
     await openFileInSplit(sessionId, resolvedPath);
     return;
   }
-  await openPath(resolvedPath).catch(() => {});
+  // No error UI reaches a terminal pane, but log rather than swallow --
+  // a silent no-op here is indistinguishable from "the click didn't
+  // register," which is how the missing opener:allow-open-path
+  // capability originally presented.
+  await openPath(resolvedPath).catch((e) => {
+    console.error(`failed to open ${resolvedPath} externally:`, e);
+  });
 }
 
 function registerPathLinks(term: Terminal, sessionId: string): void {

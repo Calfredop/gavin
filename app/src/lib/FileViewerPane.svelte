@@ -51,8 +51,16 @@
     return escapeHtml(content);
   });
 
+  // Surfaces its failure rather than swallowing it: this is a
+  // user-initiated action, and a silent no-op gives no clue why nothing
+  // happened (exactly how the missing opener:allow-open-path capability
+  // originally presented).
   async function openExternally(): Promise<void> {
-    await openPath(path).catch(() => {});
+    try {
+      await openPath(path);
+    } catch (e) {
+      error = `Couldn't open externally: ${e instanceof Error ? e.message : e}`;
+    }
   }
 
   onMount(async () => {
@@ -161,6 +169,9 @@
     max-width: 900px;
     line-height: 1.6;
     user-select: text;
+    /* Prose reads better proportional; the app is otherwise monospace.
+       Code blocks inside stay monospace via the :global(code) rule below. */
+    font-family: sans-serif;
   }
   .markdown :global(pre) {
     background: #2a2a2a;
