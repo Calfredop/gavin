@@ -8,6 +8,7 @@ import * as workspace from "./workspace";
 import type { Workspace, WorkspacesData, GitStatus } from "./workspace";
 import { sessionLabel } from "./paths";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
+import { initGavinListeners, watchRootedWorkspaces } from "./gavinState";
 
 export type { SessionStatus };
 
@@ -154,6 +155,7 @@ export async function bootstrap(): Promise<void> {
           focusedSessionId: resolved.focusedSessionId,
         };
       });
+      watchRootedWorkspaces(event.payload.workspaces);
     })
   );
   unlisteners.push(
@@ -186,6 +188,10 @@ export async function bootstrap(): Promise<void> {
       handleSessionRestored(event.payload);
     })
   );
+  // Registered before any watchGavinRoot can fire (the two ready paths
+  // below) -- gavin-tree-changed pushes with no listener would be lost,
+  // not buffered.
+  unlisteners.push(await initGavinListeners());
 
   backend.setOnWriteInputHook((sessionId) => clearRestoredMarker(sessionId));
 
@@ -256,6 +262,7 @@ async function pollForStartupState(): Promise<void> {
           focusedSessionId: resolved.focusedSessionId,
         };
       });
+      watchRootedWorkspaces(data.workspaces);
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -263,6 +270,22 @@ async function pollForStartupState(): Promise<void> {
   if (get(layoutState).status === "connecting") {
     setError("Timed out waiting for the daemon to become reachable.");
   }
+}
+
+// Binds (or re-binds) a workspace to a root directory: persists the new
+// rootPath, tears down the old watch when the root actually changed, and
+// starts the new one. Init (scaffolding) happens BEFORE this is called --
+// see WorkspaceRootControl -- so the first push already sees the skeleton.
+export async function setWorkspaceRoot(workspaceId: string, rootPath: string): Promise<void> {
+  const state = get(layoutState);
+  const previous = state.workspaces.find((w) => w.id === workspaceId)?.rootPath;
+  const workspaces = state.workspaces.map((w) => (w.id === workspaceId ? { ...w, rootPath } : w));
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  if (previous && previous !== rootPath) {
+    await backend.unwatchGavinRoot(workspaceId).catch(() => {});
+  }
+  void backend.watchGavinRoot(workspaceId, rootPath).catch(() => {});
 }
 
 export async function splitPane(targetSessionId: string, direction: "row" | "column"): Promise<void> {

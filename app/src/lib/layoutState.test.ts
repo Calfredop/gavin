@@ -26,6 +26,10 @@ vi.mock("./backend", () => ({
   // vi.fn() returning undefined would throw rather than exercise the
   // real best-effort path.
   unwatchFileForViewer: vi.fn().mockResolvedValue(undefined),
+  // Resolved by default: setWorkspaceRoot and watchRootedWorkspaces call
+  // .catch() on these.
+  watchGavinRoot: vi.fn().mockResolvedValue(undefined),
+  unwatchGavinRoot: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./terminalRegistry", () => ({
@@ -74,6 +78,7 @@ import {
   reorderTabWithinPane,
   reorderWorkspaceAction,
   movePageAction,
+  setWorkspaceRoot,
   bootstrap,
   teardown,
 } from "./layoutState";
@@ -120,6 +125,30 @@ beforeEach(() => {
     gitStatusById: {},
     restoredSessionIds: new Set(),
     fileTabsById: {},
+  });
+});
+
+describe("setWorkspaceRoot", () => {
+  it("persists the root and starts watching", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    await setWorkspaceRoot("ws-1", "/tmp/root");
+
+    expect(get(layoutState).workspaces[0].rootPath).toBe("/tmp/root");
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    const persisted = vi.mocked(backend.setWorkspacesState).mock.calls.at(-1)![0];
+    expect(persisted.find((w: Workspace) => w.id === "ws-1")?.rootPath).toBe("/tmp/root");
+    expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-1", "/tmp/root");
+    expect(backend.unwatchGavinRoot).not.toHaveBeenCalled();
+  });
+
+  it("unwatches first when re-binding to a different root", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/old" }], "ws-1", null);
+
+    await setWorkspaceRoot("ws-1", "/tmp/new");
+
+    expect(backend.unwatchGavinRoot).toHaveBeenCalledWith("ws-1");
+    expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-1", "/tmp/new");
   });
 });
 

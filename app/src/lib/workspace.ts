@@ -14,6 +14,9 @@ export interface Workspace {
   pages: Page[];
   activePageId: string | null;
   activeView?: string;
+  /// The workspace's bound root directory (agent-orchestration phase).
+  /// Optional; never auto-cleared when the directory goes missing on disk.
+  rootPath?: string;
 }
 
 export interface WorkspacesData {
