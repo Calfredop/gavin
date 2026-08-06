@@ -30,6 +30,9 @@ vi.mock("./backend", () => ({
   // .catch() on these.
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
   unwatchGavinRoot: vi.fn().mockResolvedValue(undefined),
+  getBoardTabs: vi.fn().mockResolvedValue({}),
+  // Resolved by default: pruneBoardTabs calls .catch() on this.
+  setBoardTabs: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("./terminalRegistry", () => ({
@@ -79,6 +82,7 @@ import {
   reorderWorkspaceAction,
   movePageAction,
   setWorkspaceRoot,
+  openBoardInSplit,
   bootstrap,
   teardown,
 } from "./layoutState";
@@ -108,6 +112,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     gitStatusById: {},
     restoredSessionIds: new Set(),
     fileTabsById: {},
+    boardTabsById: {},
   });
 }
 
@@ -125,6 +130,7 @@ beforeEach(() => {
     gitStatusById: {},
     restoredSessionIds: new Set(),
     fileTabsById: {},
+    boardTabsById: {},
   });
 });
 
@@ -149,6 +155,40 @@ describe("setWorkspaceRoot", () => {
 
     expect(backend.unwatchGavinRoot).toHaveBeenCalledWith("ws-1");
     expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-1", "/tmp/new");
+  });
+});
+
+describe("openBoardInSplit", () => {
+  it("splits beside the anchor, records the board tab, persists, spawns nothing", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await openBoardInSplit("a", "ws-1", "/ws/auth");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout.type).toBe("split");
+    const boardTabIds = Object.keys(state.boardTabsById);
+    expect(boardTabIds).toHaveLength(1);
+    expect(state.boardTabsById[boardTabIds[0]]).toEqual({ workspaceId: "ws-1", contextFolder: "/ws/auth" });
+    expect(state.focusedSessionId).toBe(boardTabIds[0]);
+    expect(backend.setBoardTabs).toHaveBeenCalledWith(state.boardTabsById);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("closing board tabs", () => {
+  it("closeSession on a board tab prunes it without killing anything", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "bt-1"]))])], "ws-1", "a");
+    layoutState.update((s) => ({
+      ...s,
+      boardTabsById: { "bt-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" } },
+    }));
+
+    await closeSession("bt-1");
+
+    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(get(layoutState).boardTabsById).toEqual({});
+    expect(backend.setBoardTabs).toHaveBeenCalledWith({});
   });
 });
 

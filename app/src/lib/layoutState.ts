@@ -9,6 +9,7 @@ import type { Workspace, WorkspacesData, GitStatus } from "./workspace";
 import { sessionLabel } from "./paths";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces } from "./gavinState";
+import type { BoardTab } from "./gavin";
 
 export type { SessionStatus };
 
@@ -31,6 +32,7 @@ export interface LayoutState {
   gitStatusById: Record<string, GitStatus | null>;
   restoredSessionIds: Set<string>;
   fileTabsById: Record<string, FileTab>;
+  boardTabsById: Record<string, BoardTab>;
 }
 
 const initialState: LayoutState = {
@@ -45,6 +47,7 @@ const initialState: LayoutState = {
   gitStatusById: {},
   restoredSessionIds: new Set(),
   fileTabsById: {},
+  boardTabsById: {},
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -82,8 +85,13 @@ async function createFreshSession(): Promise<string | null> {
 // an id it has never heard of -- so it gets its watcher torn down instead.
 // Returns false (having already called setError) if a real session kill
 // failed, so callers can bail exactly as they do today.
-async function endTabs(tabIds: string[], fileTabsById: Record<string, FileTab>): Promise<boolean> {
+async function endTabs(
+  tabIds: string[],
+  fileTabsById: Record<string, FileTab>,
+  boardTabsById: Record<string, BoardTab>
+): Promise<boolean> {
   const closedFileTabIds: string[] = [];
+  const closedBoardTabIds: string[] = [];
   for (const id of tabIds) {
     const fileTab = fileTabsById[id];
     if (fileTab) {
@@ -91,6 +99,12 @@ async function endTabs(tabIds: string[], fileTabsById: Record<string, FileTab>):
       // started because the file read failed) must not block the close.
       await backend.unwatchFileForViewer(fileTab.path).catch(() => {});
       closedFileTabIds.push(id);
+      continue;
+    }
+    if (boardTabsById[id]) {
+      // A board tab is not a session and holds no watcher of its own --
+      // tree watching is workspace-level. Prune and persist only.
+      closedBoardTabIds.push(id);
       continue;
     }
     try {
@@ -101,7 +115,19 @@ async function endTabs(tabIds: string[], fileTabsById: Record<string, FileTab>):
     }
   }
   if (closedFileTabIds.length > 0) await pruneFileTabs(closedFileTabIds);
+  if (closedBoardTabIds.length > 0) await pruneBoardTabs(closedBoardTabIds);
   return true;
+}
+
+// Mirrors pruneFileTabs: best-effort persistence, a failed prune costs a
+// stale entry, never a broken close.
+async function pruneBoardTabs(closedIds: string[]): Promise<void> {
+  const remaining: Record<string, BoardTab> = {};
+  for (const [id, tab] of Object.entries(get(layoutState).boardTabsById)) {
+    if (!closedIds.includes(id)) remaining[id] = tab;
+  }
+  layoutState.update((s) => ({ ...s, boardTabsById: remaining }));
+  await backend.setBoardTabs(remaining).catch(() => {});
 }
 
 // Drops closed file tabs from the map and persists the result.
@@ -222,6 +248,14 @@ export async function bootstrap(): Promise<void> {
     })
     .catch(() => {});
 
+  // Like file tabs: frontend-owned, one-shot, best-effort.
+  void backend
+    .getBoardTabs()
+    .then((boardTabsById) => {
+      layoutState.update((s) => ({ ...s, boardTabsById }));
+    })
+    .catch(() => {});
+
   void pollForStartupState();
 }
 
@@ -330,6 +364,33 @@ export async function openFileInSplit(anchorSessionId: string, path: string): Pr
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
+// Opens a context board as a new board tab, split beside the pane holding
+// `anchorSessionId` -- the pane board-icon flow's entry point. Mirrors
+// openFileInSplit exactly, with boardTabsById/setBoardTabs in place of the
+// file-tab map.
+export async function openBoardInSplit(
+  anchorSessionId: string,
+  workspaceId: string,
+  contextFolder: string
+): Promise<void> {
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const tabId = crypto.randomUUID();
+  const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
+  const boardTabsById = { ...state.boardTabsById, [tabId]: { workspaceId, contextFolder } };
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, boardTabsById }));
+  try {
+    await backend.setBoardTabs(boardTabsById);
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
 export async function addTab(targetSessionId: string): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
@@ -345,7 +406,7 @@ export async function addTab(targetSessionId: string): Promise<void> {
 
 export async function closeSession(sessionId: string): Promise<void> {
   const state = get(layoutState);
-  if (!(await endTabs([sessionId], state.fileTabsById))) return;
+  if (!(await endTabs([sessionId], state.fileTabsById, state.boardTabsById))) return;
   handleSessionExited(sessionId);
 }
 
@@ -574,7 +635,7 @@ export async function closePane(anySessionId: string): Promise<void> {
   if (leaf.type !== "leaf") return;
   const sessionIds = [...leaf.tabs];
 
-  if (!(await endTabs(sessionIds, state.fileTabsById))) return;
+  if (!(await endTabs(sessionIds, state.fileTabsById, state.boardTabsById))) return;
 
   let tree: LayoutNode | null = location.tree;
   for (const id of sessionIds) {
@@ -654,7 +715,7 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
   if (!ws) return;
   const sessionIds = workspace.allSessionIdsInWorkspace(ws);
 
-  if (!(await endTabs(sessionIds, state.fileTabsById))) return;
+  if (!(await endTabs(sessionIds, state.fileTabsById, state.boardTabsById))) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }
@@ -803,7 +864,7 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
   if (!page) return;
   const sessionIds = layout.allSessionIds(page.layout);
 
-  if (!(await endTabs(sessionIds, state.fileTabsById))) return;
+  if (!(await endTabs(sessionIds, state.fileTabsById, state.boardTabsById))) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }

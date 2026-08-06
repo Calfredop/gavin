@@ -12,7 +12,8 @@ export type DragPayload =
   | { kind: "pane"; workspaceId: string; pageId: string; sessionId: string }
   | { kind: "tab"; workspaceId: string; pageId: string; sessionId: string }
   | { kind: "kanban-card"; cardId: string; sourceColumnId: string }
-  | { kind: "kanban-column"; columnId: string };
+  | { kind: "kanban-column"; columnId: string }
+  | { kind: "plan-card"; path: string };
 
 const DRAG_TYPE_PREFIX = "application/x-gavin-drag-";
 const DRAG_KINDS: readonly DragPayload["kind"][] = [
@@ -22,6 +23,7 @@ const DRAG_KINDS: readonly DragPayload["kind"][] = [
   "tab",
   "kanban-card",
   "kanban-column",
+  "plan-card",
 ];
 
 export function setDragPayload(event: DragEvent, payload: DragPayload): void {

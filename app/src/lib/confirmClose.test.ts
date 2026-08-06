@@ -39,6 +39,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     gitStatusById: {},
     restoredSessionIds: new Set(),
     fileTabsById: {},
+    boardTabsById: {},
   });
 }
 
@@ -138,6 +139,35 @@ describe("file tabs are not counted as terminal sessions", () => {
     expect(confirm).toHaveBeenCalledWith("Close this pane? 1 terminal session will end.", {
       title: "gavin",
     });
+  });
+
+  it("confirmPaneClose excludes board tabs from the count too", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "file-1", "board-1"]))])], "ws-1");
+    layoutState.update((s) => ({
+      ...s,
+      fileTabsById: { "file-1": { path: "/tmp/a.md" } },
+      boardTabsById: { "board-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" } },
+    }));
+    vi.mocked(confirm).mockResolvedValue(true);
+
+    await confirmPaneClose("a");
+
+    expect(confirm).toHaveBeenCalledWith("Close this pane? 1 terminal session will end.", {
+      title: "gavin",
+    });
+  });
+
+  it("confirmTabClose does not prompt for a board tab alone in its pane", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["board-1"]))])], "ws-1");
+    layoutState.update((s) => ({
+      ...s,
+      boardTabsById: { "board-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" } },
+    }));
+
+    const proceed = await confirmTabClose("board-1");
+
+    expect(proceed).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   it("confirmPageClose counts only real sessions", async () => {

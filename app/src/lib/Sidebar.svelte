@@ -242,10 +242,10 @@
       await reorderWorkspaceAction(payload.workspaceId, targetIndex);
     } else if (payload.kind === "page") {
       await movePageAction(payload.pageId, ws.id, ws.pages.length);
-    } else if (payload.kind === "kanban-card" || payload.kind === "kanban-column") {
-      // Dragging a kanban card/column onto a sidebar workspace row isn't a
-      // meaningful operation -- kanban drag-and-drop is entirely internal
-      // to the Kanban board itself.
+    } else if (payload.kind === "kanban-card" || payload.kind === "kanban-column" || payload.kind === "plan-card") {
+      // Dragging a kanban card/column/plan card onto a sidebar workspace
+      // row isn't a meaningful operation -- board drag-and-drop is
+      // entirely internal to the boards themselves.
       return;
     } else {
       await movePaneOrTab(
@@ -277,10 +277,10 @@
     const payload = getDragPayload(event);
     clearHover();
     if (!payload || payload.kind === "workspace") return;
-    // Dragging a kanban card/column onto a sidebar page row isn't a
-    // meaningful operation -- kanban drag-and-drop is entirely internal to
-    // the Kanban board itself.
-    if (payload.kind === "kanban-card" || payload.kind === "kanban-column") return;
+    // Dragging a kanban card/column/plan card onto a sidebar page row
+    // isn't a meaningful operation -- board drag-and-drop is entirely
+    // internal to the boards themselves.
+    if (payload.kind === "kanban-card" || payload.kind === "kanban-column" || payload.kind === "plan-card") return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (payload.kind === "page") {
       const position = computeReorderPosition(rect, event.clientY);
