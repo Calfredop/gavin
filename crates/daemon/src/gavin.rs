@@ -117,11 +117,11 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
     }
 }
 
-/// Rewrites ONLY the `status:` line (spec §1): replace in place if present,
-/// insert as the block's first line if the block exists without one,
-/// prepend a new block if the file has no frontmatter. Every other byte is
-/// preserved -- including the presence/absence of a trailing newline.
-pub fn write_plan_status(path: &Path, new_status: &str) -> anyhow::Result<()> {
+/// Rewrites ONLY the `{key}:` line (spec §2): replace in place if present,
+/// insert as the block's first line when the block lacks it, prepend a new
+/// block when the file has none. Every other byte is preserved --
+/// including the presence/absence of a trailing newline.
+fn write_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(path)?;
     let had_trailing_newline = content.ends_with('\n');
     let lines: Vec<&str> = content.lines().collect();
@@ -131,19 +131,17 @@ pub fn write_plan_status(path: &Path, new_status: &str) -> anyhow::Result<()> {
     if fm.present {
         // Find the closing marker so we only touch lines inside the block.
         let close = lines.iter().skip(1).position(|l| *l == "---").map(|i| i + 1).unwrap();
-        let status_line = lines[1..close]
+        let field_line = lines[1..close]
             .iter()
-            .position(|l| {
-                l.split_once(':').map(|(k, _)| k.trim() == "status").unwrap_or(false)
-            })
+            .position(|l| l.split_once(':').map(|(k, _)| k.trim() == key).unwrap_or(false))
             .map(|i| i + 1);
         out = lines.iter().map(|l| l.to_string()).collect();
-        match status_line {
-            Some(i) => out[i] = format!("status: {new_status}"),
-            None => out.insert(1, format!("status: {new_status}")),
+        match field_line {
+            Some(i) => out[i] = format!("{key}: {value}"),
+            None => out.insert(1, format!("{key}: {value}")),
         }
     } else {
-        out = vec!["---".to_string(), format!("status: {new_status}"), "---".to_string()];
+        out = vec!["---".to_string(), format!("{key}: {value}"), "---".to_string()];
         out.extend(lines.iter().map(|l| l.to_string()));
     }
 
@@ -153,6 +151,22 @@ pub fn write_plan_status(path: &Path, new_status: &str) -> anyhow::Result<()> {
     }
     std::fs::write(path, rebuilt)?;
     Ok(())
+}
+
+/// The public, validated entry point (and the future MCP tool body). The
+/// allow-list is enforced HERE, not trusted to callers -- this must never
+/// become an arbitrary-line writer.
+pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+    match key {
+        "status" => {} // free text
+        "priority" => {
+            if parse_priority(value).is_none() {
+                anyhow::bail!("invalid priority value: {value}");
+            }
+        }
+        other => anyhow::bail!("field not allowed: {other}"),
+    }
+    write_plan_field(path, key, value)
 }
 
 /// A context's display name from its config.toml. The bool is
@@ -515,12 +529,12 @@ mod tests {
     }
 
     #[test]
-    fn write_plan_status_replaces_only_the_status_line() {
+    fn write_plan_field_replaces_only_the_status_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.md");
         let original = "---\ntitle: Keep me\nstatus: To Do\nowner: alice\n---\n# Body\n\nText.\n";
         std::fs::write(&path, original).unwrap();
-        write_plan_status(&path, "In Progress").unwrap();
+        write_plan_field(&path, "status", "In Progress").unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             after,
@@ -529,11 +543,11 @@ mod tests {
     }
 
     #[test]
-    fn write_plan_status_inserts_into_a_block_that_lacks_one() {
+    fn write_plan_field_inserts_into_a_block_that_lacks_one() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.md");
         std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
-        write_plan_status(&path, "Done").unwrap();
+        write_plan_field(&path, "status", "Done").unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\nstatus: Done\ntitle: T\n---\nbody\n"
@@ -541,14 +555,43 @@ mod tests {
     }
 
     #[test]
-    fn write_plan_status_prepends_a_block_when_none_exists() {
+    fn write_plan_field_prepends_a_block_when_none_exists() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.md");
         std::fs::write(&path, "# Heading only\n").unwrap();
-        write_plan_status(&path, "To Do").unwrap();
+        write_plan_field(&path, "status", "To Do").unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\nstatus: To Do\n---\n# Heading only\n"
+        );
+    }
+
+    #[test]
+    fn write_plan_field_replaces_a_priority_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\nstatus: To Do\npriority: low\n---\nbody\n").unwrap();
+        set_plan_field(&path, "priority", "urgent").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nstatus: To Do\npriority: urgent\n---\nbody\n"
+        );
+    }
+
+    #[test]
+    fn set_plan_field_rejects_disallowed_keys_and_invalid_priorities() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\nstatus: To Do\n---\n").unwrap();
+        assert!(set_plan_field(&path, "title", "x").is_err());
+        assert!(set_plan_field(&path, "priority", "banana").is_err());
+        // Neither failed call may touch the file:
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\nstatus: To Do\n---\n");
+        // Case-insensitive priority is accepted:
+        set_plan_field(&path, "priority", "HIGH").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\npriority: HIGH\nstatus: To Do\n---\n"
         );
     }
 

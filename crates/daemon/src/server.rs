@@ -1157,6 +1157,10 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::create_gavin_context(std::path::Path::new(&parent_folder))
                 .map(|_| Response::Ok)
         }
+        Request::SetPlanFrontmatterField { path, key, value } => {
+            crate::gavin::set_plan_field(std::path::Path::new(&path), &key, &value)
+                .map(|_| Response::Ok)
+        }
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
@@ -1335,6 +1339,36 @@ mod tests {
         let resp = request(
             &mut cmd,
             &Request::GetGavinTree { workspace_id: "never-watched".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn set_plan_frontmatter_field_over_socket_writes_and_rejects() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        let plan = ws_dir.path().join("p.md");
+        std::fs::write(&plan, "---\nstatus: To Do\n---\n# P\n").unwrap();
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+
+        let resp = request(
+            &mut cmd,
+            &Request::SetPlanFrontmatterField {
+                path: plan.to_string_lossy().to_string(),
+                key: "status".to_string(),
+                value: "Done".to_string(),
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), "---\nstatus: Done\n---\n# P\n");
+
+        let resp = request(
+            &mut cmd,
+            &Request::SetPlanFrontmatterField {
+                path: plan.to_string_lossy().to_string(),
+                key: "owner".to_string(),
+                value: "alice".to_string(),
+            },
         );
         assert!(matches!(resp, Response::Error { .. }));
     }

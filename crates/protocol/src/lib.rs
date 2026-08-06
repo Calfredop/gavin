@@ -61,6 +61,14 @@ pub enum Request {
     CreateGavinContext {
         parent_folder: String,
     },
+    /// Writes one frontmatter field of a plan file. The daemon enforces an
+    /// allow-list (status, priority) -- this must never become an
+    /// arbitrary-line writer.
+    SetPlanFrontmatterField {
+        path: String,
+        key: String,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -760,6 +768,27 @@ mod tests {
             Request::InitGavinRoot { root_path, workspace_name } => {
                 assert_eq!(root_path, "/tmp/ws");
                 assert_eq!(workspace_name, "My Workspace");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_plan_frontmatter_field_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::SetPlanFrontmatterField {
+            path: "/tmp/ws/.gavin-root/plans/a.md".to_string(),
+            key: "status".to_string(),
+            value: "In Progress".to_string(),
+        };
+        write_message(&mut buf, &req).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Request::SetPlanFrontmatterField { path, key, value } => {
+                assert_eq!(path, "/tmp/ws/.gavin-root/plans/a.md");
+                assert_eq!(key, "status");
+                assert_eq!(value, "In Progress");
             }
             other => panic!("wrong variant: {other:?}"),
         }
