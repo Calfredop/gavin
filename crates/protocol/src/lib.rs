@@ -40,6 +40,27 @@ pub enum Request {
     DeleteBoard {
         workspace_id: String,
     },
+    /// Sent on the STREAMING connection (intercepted in handle_connection
+    /// like Attach, since the daemon captures that connection's writer for
+    /// pushes). No reply -- the initial scan arrives as the first
+    /// GavinTreeChanged push. Idempotent: re-watching replaces the watcher.
+    WatchGavinRoot {
+        workspace_id: String,
+        root_path: String,
+    },
+    UnwatchGavinRoot {
+        workspace_id: String,
+    },
+    GetGavinTree {
+        workspace_id: String,
+    },
+    InitGavinRoot {
+        root_path: String,
+        workspace_name: String,
+    },
+    CreateGavinContext {
+        parent_folder: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +75,8 @@ pub enum Response {
     GitStatusChanged { id: String, status: Option<GitStatus> },
     SessionRestored { id: String },
     Board { columns: Vec<Column>, labels: Vec<Label> },
+    GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
+    GavinTreeChanged { workspace_id: String, tree: GavinTree },
     Ok,
     Error { message: String },
 }
@@ -160,6 +183,66 @@ pub struct Column {
 pub struct Board {
     pub columns: Vec<Column>,
     pub labels: Vec<Label>,
+}
+
+/// One plan file inside a `.gavin*/plans/` folder, with its frontmatter
+/// parsed (status/priority/title). `parse_warning` covers an unterminated
+/// frontmatter block or an unrecognized priority value -- the plan still
+/// appears, never silently dropped (spec §4). Crosses to the frontend, so
+/// camelCase like GitStatus, verified by a shape test below.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanFileInfo {
+    pub path: String,
+    pub file_name: String,
+    pub title: String,
+    pub status: Option<String>,
+    pub priority: Option<Priority>,
+    pub parse_warning: bool,
+}
+
+/// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
+/// relative to that subfolder (listings are recursive).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MdFileInfo {
+    pub path: String,
+    pub rel_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum GavinContextKind {
+    Root,
+    Context,
+}
+
+/// A folder that contains a `.gavin-root/` (kind Root, only ever directly
+/// under the workspace root) or `.gavin/` (kind Context) directory.
+/// `folder_path` is the CONTAINING folder, not the marker directory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GavinContext {
+    pub folder_path: String,
+    pub kind: GavinContextKind,
+    pub name: String,
+    pub plans: Vec<PlanFileInfo>,
+    pub docs: Vec<MdFileInfo>,
+    pub specs: Vec<MdFileInfo>,
+    pub has_prd: bool,
+    pub config_warning: bool,
+}
+
+/// The full scanned picture of one workspace's bound root. Never
+/// persisted -- re-derived from disk on every scan (the git-status
+/// posture). PartialEq is load-bearing: the watcher change-gates pushes
+/// by comparing whole trees.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GavinTree {
+    pub root_path: String,
+    pub root_missing: bool,
+    pub contexts: Vec<GavinContext>,
 }
 
 pub fn write_message<W: Write, T: Serialize>(writer: &mut W, msg: &T) -> anyhow::Result<()> {
@@ -586,5 +669,119 @@ mod tests {
     #[test]
     fn priority_from_str_defaults_to_none_for_an_unrecognized_value() {
         assert_eq!(Priority::from_str("not-a-real-priority"), Priority::None);
+    }
+
+    fn sample_tree() -> GavinTree {
+        GavinTree {
+            root_path: "/tmp/ws".to_string(),
+            root_missing: false,
+            contexts: vec![GavinContext {
+                folder_path: "/tmp/ws".to_string(),
+                kind: GavinContextKind::Root,
+                name: "ws".to_string(),
+                plans: vec![PlanFileInfo {
+                    path: "/tmp/ws/.gavin-root/plans/a.md".to_string(),
+                    file_name: "a.md".to_string(),
+                    title: "a".to_string(),
+                    status: Some("To Do".to_string()),
+                    priority: Some(Priority::High),
+                    parse_warning: false,
+                }],
+                docs: vec![MdFileInfo {
+                    path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
+                    rel_path: "notes.md".to_string(),
+                }],
+                specs: vec![],
+                has_prd: true,
+                config_warning: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn gavin_tree_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let json = serde_json::to_value(sample_tree()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "rootPath": "/tmp/ws",
+                "rootMissing": false,
+                "contexts": [{
+                    "folderPath": "/tmp/ws",
+                    "kind": "root",
+                    "name": "ws",
+                    "plans": [{
+                        "path": "/tmp/ws/.gavin-root/plans/a.md",
+                        "fileName": "a.md",
+                        "title": "a",
+                        "status": "To Do",
+                        "priority": "high",
+                        "parseWarning": false
+                    }],
+                    "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
+                    "specs": [],
+                    "hasPrd": true,
+                    "configWarning": false
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn watch_gavin_root_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::WatchGavinRoot {
+            workspace_id: "ws-1".to_string(),
+            root_path: "/tmp/ws".to_string(),
+        };
+        write_message(&mut buf, &req).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Request::WatchGavinRoot { workspace_id, root_path } => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(root_path, "/tmp/ws");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_gavin_root_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::InitGavinRoot {
+            root_path: "/tmp/ws".to_string(),
+            workspace_name: "My Workspace".to_string(),
+        };
+        write_message(&mut buf, &req).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Request::InitGavinRoot { root_path, workspace_name } => {
+                assert_eq!(root_path, "/tmp/ws");
+                assert_eq!(workspace_name, "My Workspace");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gavin_tree_changed_response_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let resp = Response::GavinTreeChanged {
+            workspace_id: "ws-1".to_string(),
+            tree: sample_tree(),
+        };
+        write_message(&mut buf, &resp).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Response::GavinTreeChanged { workspace_id, tree } => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(tree.contexts.len(), 1);
+                assert_eq!(tree.contexts[0].plans[0].status.as_deref(), Some("To Do"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }

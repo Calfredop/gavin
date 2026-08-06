@@ -1104,6 +1104,16 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok),
         Request::DeleteBoard { workspace_id } => manager.delete_board(&workspace_id).map(|_| Response::Ok),
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
+        // Stubs until the gavin scanner lands (same branch, next tasks):
+        // explicit arms rather than a catch-all so a future variant still
+        // fails to compile here instead of silently erroring at runtime.
+        Request::WatchGavinRoot { .. }
+        | Request::UnwatchGavinRoot { .. }
+        | Request::GetGavinTree { .. }
+        | Request::InitGavinRoot { .. }
+        | Request::CreateGavinContext { .. } => {
+            Ok(Response::Error { message: "gavin requests not yet implemented".to_string() })
+        }
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
