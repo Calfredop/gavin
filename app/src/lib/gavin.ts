@@ -31,3 +31,10 @@ export interface GavinTree {
   rootMissing: boolean;
   contexts: GavinContext[];
 }
+
+// One persisted board tab: which workspace's board, filtered to which
+// gavin context (mirrors config.rs's BoardTabRecord).
+export interface BoardTab {
+  workspaceId: string;
+  contextFolder: string;
+}

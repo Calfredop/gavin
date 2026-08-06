@@ -46,6 +46,7 @@ fn persist_workspaces(
     data: &WorkspacesData,
     session_names: HashMap<String, String>,
     file_tabs: HashMap<String, String>,
+    board_tabs: HashMap<String, crate::config::BoardTabRecord>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -54,6 +55,7 @@ fn persist_workspaces(
             active_workspace_id: data.active_workspace_id.clone(),
             session_names,
             file_tabs,
+            board_tabs,
         },
     )
 }
@@ -97,13 +99,16 @@ pub fn set_workspaces_state(
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id };
     *state.0.lock().unwrap() = data.clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs).map_err(|e| e.to_string())
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -119,6 +124,7 @@ pub fn set_session_name(
     workspaces_state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -134,9 +140,11 @@ pub fn set_session_name(
         names.clone()
     };
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs).map_err(|e| e.to_string())
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -156,12 +164,45 @@ pub fn set_file_tabs(
     workspaces_state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs).map_err(|e| e.to_string())
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+        .map_err(|e| e.to_string())
+}
+
+/// Open per-context board tabs (tab id -> BoardTabRecord). Same
+/// always-carry persistence contract as FileTabs.
+pub struct BoardTabs(pub Mutex<HashMap<String, crate::config::BoardTabRecord>>);
+
+#[tauri::command]
+pub fn get_board_tabs(state: State<BoardTabs>) -> HashMap<String, crate::config::BoardTabRecord> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Replaces the whole board-tab map -- whole-map for the same reason as
+/// set_file_tabs: callers always mutate it alongside a pane-tree change
+/// they're already persisting wholesale.
+#[tauri::command]
+pub fn set_board_tabs(
+    board_tabs: HashMap<String, crate::config::BoardTabRecord>,
+    app_handle: AppHandle,
+    workspaces_state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+) -> Result<(), String> {
+    *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let data = workspaces_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+        .map_err(|e| e.to_string())
 }
 
 /// Set once (`AtomicBool`, not a one-shot channel — a one-shot signal sent
@@ -213,7 +254,7 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
 /// (stale, exited, or never existed) with a freshly created session — the
 /// same silent, normal fallback Milestone B established for its one
 /// session, now applied uniformly to every tab in every pane.
-/// Ids in `file_tab_ids` are file-viewer tabs, not terminal sessions --
+/// Ids in `non_session_tab_ids` are file-viewer tabs, not terminal sessions --
 /// they're skipped entirely. The daemon has never heard of them, so
 /// without this check every persisted file tab would be treated as a
 /// stale session and silently replaced by a freshly spawned shell on
@@ -222,12 +263,12 @@ fn resolve_sessions(
     node: &mut LayoutNode,
     command_conn: &Mutex<UnixStream>,
     all_sessions: &HashMap<String, protocol::SessionSummary>,
-    file_tab_ids: &HashSet<String>,
+    non_session_tab_ids: &HashSet<String>,
 ) -> anyhow::Result<()> {
     match node {
         LayoutNode::Leaf { tabs, .. } => {
             for id in tabs.iter_mut() {
-                if file_tab_ids.contains(id.as_str()) {
+                if non_session_tab_ids.contains(id.as_str()) {
                     continue;
                 }
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
@@ -240,7 +281,7 @@ fn resolve_sessions(
         }
         LayoutNode::Split { children, .. } => {
             for child in children.iter_mut() {
-                resolve_sessions(child, command_conn, all_sessions, file_tab_ids)?;
+                resolve_sessions(child, command_conn, all_sessions, non_session_tab_ids)?;
             }
             Ok(())
         }
@@ -273,7 +314,7 @@ fn list_valid_session_ids(
 fn resolve_workspaces(
     workspaces: &mut [Workspace],
     command_conn: &Mutex<UnixStream>,
-    file_tab_ids: &HashSet<String>,
+    non_session_tab_ids: &HashSet<String>,
 ) -> anyhow::Result<()> {
     if workspaces.is_empty() {
         return Ok(());
@@ -285,14 +326,14 @@ fn resolve_workspaces(
         .iter()
         .flat_map(|w| w.pages.iter())
         .flat_map(|p| p.layout.all_session_ids())
-        .any(|id| !file_tab_ids.contains(&id));
+        .any(|id| !non_session_tab_ids.contains(&id));
     if !has_any_session_tab {
         return Ok(());
     }
     let all_sessions = list_valid_session_ids(command_conn)?;
     for workspace in workspaces.iter_mut() {
         for page in workspace.pages.iter_mut() {
-            resolve_sessions(&mut page.layout, command_conn, &all_sessions, file_tab_ids)?;
+            resolve_sessions(&mut page.layout, command_conn, &all_sessions, non_session_tab_ids)?;
         }
     }
     Ok(())
@@ -468,9 +509,9 @@ mod resolve_workspaces_tests {
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![]);
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1"]))])];
-        let file_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
+        let non_session_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
 
-        resolve_workspaces(&mut workspaces, &conn, &file_tab_ids).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1"]));
         assert!(captured.lock().unwrap().is_empty(), "no daemon calls at all for a file-tab-only workspace");
@@ -485,9 +526,9 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces =
             vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1", "stale-session"]))])];
-        let file_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
+        let non_session_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
 
-        resolve_workspaces(&mut workspaces, &conn, &file_tab_ids).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1", "fresh-a"]));
     }
@@ -704,6 +745,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let config = crate::config::load(&config_dir)?;
     let session_names = config.session_names;
     let file_tabs = config.file_tabs;
+    let board_tabs = config.board_tabs;
 
     let mut workspaces = config.workspaces;
     // A truly fresh install (no config.json yet, or one from before this
@@ -726,24 +768,32 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             },
         );
     }
-    let file_tab_ids: HashSet<String> = file_tabs.keys().cloned().collect();
-    resolve_workspaces(&mut workspaces, &command_conn, &file_tab_ids)?;
+    let non_session_tab_ids: HashSet<String> =
+        file_tabs.keys().chain(board_tabs.keys()).cloned().collect();
+    resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids)?;
     let active_workspace_id = if had_no_workspaces {
         Some(crate::config::UNFILED_WORKSPACE_ID.to_string())
     } else {
         config.active_workspace_id
     };
     let workspaces_data = WorkspacesData { workspaces, active_workspace_id };
-    persist_workspaces(&config_dir, &workspaces_data, session_names.clone(), file_tabs.clone())?;
+    persist_workspaces(
+        &config_dir,
+        &workspaces_data,
+        session_names.clone(),
+        file_tabs.clone(),
+        board_tabs.clone(),
+    )?;
 
     let all_session_ids: Vec<String> = workspaces_data
         .workspaces
         .iter()
         .flat_map(|w| w.pages.iter())
         .flat_map(|p| p.layout.all_session_ids())
-        // A file tab id is not a session -- the daemon has never heard of
-        // it, so Attaching would fail for an id that was never a session.
-        .filter(|id| !file_tab_ids.contains(id))
+        // A file or board tab id is not a session -- the daemon has never
+        // heard of it, so Attaching would fail for an id that was never a
+        // session.
+        .filter(|id| !non_session_tab_ids.contains(id))
         .collect();
     for id in all_session_ids {
         send_request(&writer, &Request::Attach { id })?;
@@ -754,6 +804,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(WorkspacesState(Mutex::new(workspaces_data.clone())));
     app_handle.manage(SessionNames(Mutex::new(session_names)));
     app_handle.manage(FileTabs(Mutex::new(file_tabs)));
+    app_handle.manage(BoardTabs(Mutex::new(board_tabs)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     let mut reader = BufReader::new(reader_stream);
@@ -1045,6 +1096,22 @@ pub fn create_gavin_context(
 #[tauri::command]
 pub fn gavin_root_exists(root_path: String) -> bool {
     std::path::Path::new(&root_path).join(".gavin-root").is_dir()
+}
+
+#[tauri::command]
+pub fn set_plan_frontmatter_field(
+    path: String,
+    key: String,
+    value: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::SetPlanFrontmatterField { path, key, value })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
 
 #[cfg(test)]

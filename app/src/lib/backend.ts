@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
-import type { GavinTree } from "./gavin";
+import type { BoardTab, GavinTree } from "./gavin";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -108,6 +108,22 @@ export function createGavinContext(parentFolder: string): Promise<void> {
 
 export function gavinRootExists(rootPath: string): Promise<boolean> {
   return invoke("gavin_root_exists", { rootPath });
+}
+
+export function getBoardTabs(): Promise<Record<string, BoardTab>> {
+  return invoke("get_board_tabs");
+}
+
+export function setBoardTabs(boardTabs: Record<string, BoardTab>): Promise<void> {
+  return invoke("set_board_tabs", { boardTabs });
+}
+
+export function setPlanFrontmatterField(
+  path: string,
+  key: "status" | "priority",
+  value: string
+): Promise<void> {
+  return invoke("set_plan_frontmatter_field", { path, key, value });
 }
 
 export function getBoard(workspaceId: string): Promise<Board> {

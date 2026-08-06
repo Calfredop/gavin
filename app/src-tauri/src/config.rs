@@ -40,6 +40,16 @@ pub struct Workspace {
     pub root_path: Option<String>,
 }
 
+/// One persisted board tab: which workspace's board, filtered to which
+/// gavin context. Crosses to the frontend via get/set_board_tabs, hence
+/// camelCase (verified by the shape test below).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardTabRecord {
+    pub workspace_id: String,
+    pub context_folder: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AppConfig {
     #[serde(default)]
@@ -62,6 +72,12 @@ pub struct AppConfig {
     /// silently reset to empty on the next save.
     #[serde(default)]
     pub file_tabs: HashMap<String, String>,
+    /// Open per-context board tabs, keyed by tab id (same opaque id space
+    /// as session/file tabs in the pane tree). Like file_tabs, persists
+    /// alongside `workspaces` and must always be carried through
+    /// persist_workspaces, or it silently resets to empty on save.
+    #[serde(default)]
+    pub board_tabs: HashMap<String, BoardTabRecord>,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -138,6 +154,7 @@ mod tests {
             active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -155,6 +172,7 @@ mod tests {
             active_workspace_id: Some("workspace-1".to_string()),
             session_names,
             file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -186,6 +204,7 @@ mod tests {
             active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
             file_tabs,
+            board_tabs: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -293,6 +312,7 @@ mod tests {
             active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -307,10 +327,62 @@ mod tests {
             active_workspace_id: Some("workspace-1".to_string()),
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
         };
         save(&nested, &config).unwrap();
 
         assert!(config_path(&nested).exists());
+    }
+
+    #[test]
+    fn board_tabs_roundtrip_alongside_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut board_tabs = HashMap::new();
+        board_tabs.insert(
+            "tab-1".to_string(),
+            BoardTabRecord {
+                workspace_id: "ws-1".to_string(),
+                context_folder: "/Users/alice/project/auth".to_string(),
+            },
+        );
+        let config = AppConfig {
+            workspaces: vec![sample_workspace()],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs,
+        };
+        save(dir.path(), &config).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(loaded.board_tabs.get("tab-1").unwrap().workspace_id, "ws-1");
+    }
+
+    #[test]
+    fn load_defaults_board_tabs_when_the_field_is_absent_from_an_older_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [], "active_workspace_id": null, "file_tabs": {"t": "/a.md"}}"#,
+        )
+        .unwrap();
+
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.board_tabs, HashMap::new());
+        assert_eq!(config.file_tabs.get("t"), Some(&"/a.md".to_string()));
+    }
+
+    #[test]
+    fn board_tab_record_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let record = BoardTabRecord {
+            workspace_id: "ws-1".to_string(),
+            context_folder: "/tmp/ws/auth".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::json!({ "workspaceId": "ws-1", "contextFolder": "/tmp/ws/auth" })
+        );
     }
 
     #[test]
