@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Column, Label } from "./kanban";
+  import type { PlanCardView } from "./planBoard";
   import KanbanCard from "./KanbanCard.svelte";
+  import PlanKanbanCard from "./PlanKanbanCard.svelte";
   import DeleteColumnPrompt from "./DeleteColumnPrompt.svelte";
   import DeleteCardWithSessionPrompt from "./DeleteCardWithSessionPrompt.svelte";
   import { setDragPayload, getDragKind, getDragPayload, computeReorderPosition } from "./dragDrop";
@@ -20,10 +22,14 @@
     column: Column;
     otherColumns: { id: string; name: string }[];
     labels: Label[];
+    planCards: PlanCardView[];
     onOpenCard: (cardId: string) => void;
     onAddCard: () => void;
+    onOpenPlanCard: (path: string) => void;
+    onPlanDrop: (path: string) => void;
   }
-  let { workspaceId, column, otherColumns, labels, onOpenCard, onAddCard }: Props = $props();
+  let { workspaceId, column, otherColumns, labels, planCards, onOpenCard, onAddCard, onOpenPlanCard, onPlanDrop }: Props =
+    $props();
 
   let editingName = $state(false);
   let nameDraft = $state(column.name);
@@ -61,7 +67,7 @@
 
   function handleCardDragOver(event: DragEvent): void {
     const kind = getDragKind(event);
-    if (kind !== "kanban-card") return;
+    if (kind !== "kanban-card" && kind !== "plan-card") return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
   }
@@ -69,7 +75,13 @@
   function handleCardDrop(event: DragEvent, dropIndex: number): void {
     event.preventDefault();
     const payload = getDragPayload(event);
-    if (!payload || payload.kind !== "kanban-card") return;
+    if (!payload) return;
+    if (payload.kind === "plan-card") {
+      // Drop position is ignored: plan ordering is deterministic (spec §1).
+      onPlanDrop(payload.path);
+      return;
+    }
+    if (payload.kind !== "kanban-card") return;
     void moveCardAction(workspaceId, payload.cardId, column.id, dropIndex);
   }
 
@@ -149,6 +161,9 @@
           onDelete={() => requestDeleteCard(card.id)}
         />
       </div>
+    {/each}
+    {#each planCards as plan (plan.id)}
+      <PlanKanbanCard {plan} onOpen={() => onOpenPlanCard(plan.id)} />
     {/each}
   </div>
   <button type="button" class="add-card" onclick={onAddCard}>+ Add card</button>
