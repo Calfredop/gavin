@@ -18,7 +18,9 @@ in `docs/superpowers/specs/`, each followed by its own plan → implementation c
   - a **main coding agent session**, injected with all of gavin's features plus the PRD
     and the CLAUDE.md (or equivalent).
 - The main agent session and spawned ones are injected with the concept of creating a
-  *(sentence cut off in the original message — see Q1)*.
+  *(resolved — see D1: all of it — plans before coding, `.gavin` context folders, and
+  kanban cards/status for their work; the full gavin workflow as one injected
+  discipline)*.
 - All gavin-related files (prompts, tasks, plans, docs, specs, config) live in two folder
   types:
   - **`.gavin-root/`** at the workspace root (most likely the repo root) — that
@@ -78,30 +80,95 @@ Ordered by dependency; each gets its own spec → plan → implementation cycle.
    a hub view.
 4. **Orchestration home** — the composed home page: PRD panel, agent-file panel, main
    agent session, plan explorer, board. Layout/navigation design for the hub.
-5. **Plans ⇄ kanban** — the plan-status model (source of truth!), the root board
+5. **Plans ⇄ kanban** — the plan-status model (frontmatter per D2), the root board
    aggregating all plans, per-session folder-bound boards.
-6. **Agent integration layer** — launching the main agent session with everything
-   injected (PRD, agent file, gavin concepts), spawned sessions inheriting the same,
-   the "create-.gavin"/plan-first skill, possibly a gavin MCP server exposing
-   boards/plans as tools.
+6. **Gavin MCP server** *(promoted to day one by D3)* — daemon-hosted MCP tools for
+   plan CRUD/status, PRD read, `.gavin` folder creation, board access, and session
+   spawning; `gavin-mcp` stdio shim + `.mcp.json` registration.
+7. **Agent integration layer** — launching the main agent session with everything
+   injected (PRD, agent file, the D1 skill, MCP registration), spawned sessions
+   inheriting the same.
 
 ## 4. Open questions (the backlog — asked one at a time)
 
 | # | Question | Status |
 |---|----------|--------|
-| Q1 | The cut-off sentence: agents are "injected with the concept of creating a" — creating what? | **asking** |
-| Q2 | Source of truth for plan status: md frontmatter (files are truth, boards are a view), SQLite (boards are truth), or bidirectional sync? Note agents can only touch files. | open |
-| Q3 | Injection mechanism: skill files written into the repo, a gavin MCP server, launch-command flags/prompt — or a combination? | open |
-| Q4 | Agent scope: Claude Code only for v1 (with an adapter seam for "picked agent equivalent"), or pluggable from day one? | open |
-| Q5 | Workspace ⇄ root binding: chosen at workspace creation? Inferred from sessions? Migration for existing workspaces; Unfiled exempt? Exactly one root per workspace? | open |
-| Q6 | Editor tech: plain textarea vs CodeMirror; edit/preview toggle vs side-by-side for md? | open |
-| Q7 | PRD convention: one `PRD.md` (exact name?) in `.gavin-root/`? Template/scaffold on creation? | open |
-| Q8 | Per-session board binding: session cwd exact match vs nearest-ancestor `.gavin`; where does that board render (hub? pane tab? drawer)? | open |
-| Q9 | `.gavin` creation UX: how much "file explorer" does the home really need vs a "new feature folder" dialog? | open |
-| Q10 | Relationship between the existing free-form workspace board and plan-derived boards: one merged board, or plans as a distinct board/lane? | open |
+| Q1 | The cut-off sentence: agents are "injected with the concept of creating a" — creating what? | **answered → D1** |
+| Q2 | Source of truth for plan status: md frontmatter (files are truth, boards are a view), SQLite (boards are truth), or bidirectional sync? Note agents can only touch files. | **answered → D2** |
+| Q3 | Injection mechanism: skill files written into the repo, a gavin MCP server, launch-command flags/prompt — or a combination? | **answered → D3** |
+| Q4 | Agent scope: Claude Code only for v1 (with an adapter seam for "picked agent equivalent"), or pluggable from day one? | **answered → D4** |
+| Q5 | Workspace ⇄ root binding: chosen at workspace creation? Inferred from sessions? Migration for existing workspaces; Unfiled exempt? Exactly one root per workspace? | **answered → D5** |
+| Q6 | Editor tech: plain textarea vs CodeMirror; edit/preview toggle vs side-by-side for md? Save model: explicit vs autosave? | **answered → D8** |
+| Q7 | PRD convention: one `PRD.md` (exact name?) in `.gavin-root/`? Config file format? | **answered → D9** |
+| Q8 | Per-session board binding: session cwd exact match vs nearest-ancestor `.gavin`; where does that board render (hub? pane tab? drawer)? | **answered → D7** |
+| Q9 | `.gavin` creation UX: how much "file explorer" does the home really need vs a "new feature folder" dialog? | **answered → D10** |
+| Q11 | Home-page composition: how do PRD, agent file, main session, plan explorer, and board share the home's real estate? | **answered → D11** |
+| Q12 | Main agent session lifecycle: manual start vs auto-start; where does it live in the model (page tree vs home-only)? | **asking** |
+| Q10 | Relationship between the existing free-form workspace board and plan-derived boards: one merged board, or plans as a distinct board/lane? | **asking** |
 
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
 
-— nothing decided yet —
+- **D1 (Q1, 2026-08-06):** The injected concept is the **full gavin workflow** — all
+  three: agents create **plans before coding** (a plan .md in the nearest
+  `.gavin*/plans/`), create **`.gavin` context folders** when starting a new
+  feature/subfeature/lib, and create/update **kanban cards/status** so boards mirror
+  their actual work. This discipline is injected into the main session and every
+  spawned one alike.
+- **D2 (Q2, 2026-08-06):** **Files are truth.** Plan status lives in each plan .md's
+  frontmatter (`status:`, priority, …); plan boards are projections the scanner builds
+  from `.gavin*/plans/*.md`; dragging a card between columns writes the frontmatter
+  back to the file. Agents update status by editing the file — no new protocol; the
+  file watcher keeps boards live. Status is git-versioned and travels with the repo.
+  The existing SQLite kanban remains for free-form, non-file-backed cards
+  (coexistence → Q10).
+- **D3 (Q3, 2026-08-06):** **MCP server from day one** (user overrode the staged
+  recommendation — they want agent-side orchestration power immediately). The gavin MCP
+  server is part of this phase's core, likely hosted by the daemon with a thin
+  `gavin-mcp` stdio shim registered in the repo's `.mcp.json`. Tools: plan CRUD +
+  status, PRD read, `.gavin` folder creation/listing, board access, **session
+  spawning** (agents can orchestrate). The injected skill (D1) is still built alongside
+  it — MCP provides the levers, the skill teaches the discipline; both ship day one.
+- **D4 (Q4, 2026-08-06):** **Claude Code first, behind an agent-profile seam.** The
+  workspace config stores a chosen agent profile — instructions filename (CLAUDE.md),
+  skill mechanism, MCP registration format, launch command — and every feature reads
+  the profile. V1 ships only the Claude Code profile; more agents are additive later.
+- **D5 (Q5, 2026-08-06):** **Root binding is optional + explicit.** Folder picker at
+  workspace creation and a "Set workspace root" affordance on the home for existing
+  workspaces. No root → workspace behaves exactly as today; orchestration features
+  light up when a root is set. Unfiled never has a root. Exactly one root per
+  workspace in v1. Stored in app-side config.json.
+- **D6 (Q10, 2026-08-06):** **One merged board.** Plan cards (file-backed projections)
+  join the existing free-form board. **Column ↔ status matched by name**
+  (slug-insensitive): a plan card renders in the column whose name matches its
+  frontmatter `status:`; dragging it to another column writes that column's name into
+  the file; a status with no matching column surfaces as an automatic extra column.
+  Free-form cards stay in SQLite, untouched. Per-session boards reuse the same
+  projection filtered to one `.gavin` folder.
+- **D7 (Q8, 2026-08-06):** **Per-session board = nearest-ancestor `.gavin`, rendered
+  as a sibling split/tab.** Binding walks up from the session's live cwd to the
+  closest `.gavin`, capped at the workspace root — stable while cd-ing deeper. A board
+  icon on the pane (visible only when a binding exists) opens the board as a split/tab
+  next to the terminal, reusing the non-terminal-tab machinery the file viewer
+  introduced. It shows only that folder's plan cards (D6 projection, filtered).
+- **D8 (Q6, 2026-08-06):** **CodeMirror 6 + debounced autosave.** CM6 with markdown
+  highlighting is the shared editor for PRD/CLAUDE.md/plans; preview renders through
+  the existing marked+DOMPurify pipeline. Autosave ~1s after typing stops; external
+  change with a clean editor reloads silently, with a dirty editor raises a conflict
+  prompt. This minimizes conflict windows against concurrent agent writes.
+- **D9 (Q7, 2026-08-06):** **`PRD.md` fixed** at `.gavin-root/PRD.md`, scaffolded from
+  a template when the root is initialized. **Config format is TOML** (`config.toml`)
+  for both `.gavin-root/` and `.gavin/` folders.
+- **D10 (Q9, 2026-08-06):** **Creation lives in the plan explorer.** The explorer tree
+  gains "new `.gavin` here / new plan / new doc" actions, with a real-folder picker
+  only inside the create-`.gavin` flow. No general-purpose file manager.
+- **D11 (Q11, 2026-08-06):** **Home = Mission Control + full-page tabs (A+B hybrid),
+  minimal-underline nav.** One hub tab per feature — Home, PRD, CLAUDE.md, Plans,
+  Board (+ the existing Terminal toggle) — each with a lucide icon (HUB_VIEWS already
+  carries `icon`). The Home tab is a Mission Control grid: main agent session
+  dominant left, PRD peek + mini board stacked right, and a status-tile shortcut row
+  under the grid mirroring the tabs (tiles carry live status). Nav style: flat bar
+  with an accent underline on the active tab; Terminal as a ghost button at the
+  right. Confirmed via visual-companion mockups (`.superpowers/brainstorm/…/content/
+  home-layout*.html`, `nav-bar-styles.html`).
