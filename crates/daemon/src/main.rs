@@ -1,3 +1,4 @@
+mod gavin;
 mod git_status;
 mod kanban;
 mod osc;

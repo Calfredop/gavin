@@ -16,6 +16,7 @@ portable-pty = "0.8"
 protocol = { path = "../protocol" }
 notify = "8"
 notify-debouncer-mini = "0.7"
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

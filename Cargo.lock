@@ -1257,6 +1257,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "tempfile",
+ "toml 0.8.2",
  "uuid",
 ]
 

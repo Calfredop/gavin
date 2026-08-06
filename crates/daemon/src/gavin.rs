@@ -1,0 +1,526 @@
+use protocol::{GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority};
+use std::path::{Path, PathBuf};
+
+pub const GAVIN_ROOT_DIR: &str = ".gavin-root";
+pub const GAVIN_DIR: &str = ".gavin";
+const MAX_SCAN_DEPTH: usize = 12;
+const EXCLUDED_DIRS: &[&str] =
+    &[".git", "node_modules", "target", "dist", "build", ".venv", "venv", "__pycache__"];
+
+const PRD_TEMPLATE: &str = "# {workspace} — Product Requirements\n\n\
+> This PRD is the lead document for development in this workspace. The main agent\n\
+> session reads it first; plans in `.gavin*/plans/` should trace back to it.\n\n\
+## Vision\n\n_What are we building, for whom, and why?_\n\n\
+## Current focus\n\n_The active goals, roughly ordered._\n\n\
+## Out of scope\n\n_Explicit non-goals._\n";
+
+const ROOT_CONFIG_TEMPLATE: &str = "version = 1\n\n[agent]\nprofile = \"claude-code\"\n";
+
+/// Flat `key: value` frontmatter, parsed line-by-line. `fields` keeps only
+/// the recognized pairs; anything else in the block is untouched by
+/// parsing and preserved by `write_plan_status`, which edits lines, never
+/// re-serializes.
+struct Frontmatter {
+    fields: Vec<(String, String)>,
+    /// True iff the file has a complete (opened AND closed) block.
+    present: bool,
+    /// True iff an opening `---` was never closed before EOF.
+    warning: bool,
+}
+
+fn parse_frontmatter(content: &str) -> Frontmatter {
+    let mut lines = content.lines();
+    if lines.next() != Some("---") {
+        return Frontmatter { fields: vec![], present: false, warning: false };
+    }
+    let mut fields = Vec::new();
+    for line in lines {
+        if line == "---" {
+            return Frontmatter { fields, present: true, warning: false };
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim();
+            if !key.is_empty()
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                let mut value = value.trim();
+                for quote in ['"', '\''] {
+                    if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
+                        value = &value[1..value.len() - 1];
+                        break;
+                    }
+                }
+                fields.push((key.to_string(), value.to_string()));
+            }
+        }
+    }
+    // Opening marker, no closing marker before EOF.
+    Frontmatter { fields: vec![], present: false, warning: true }
+}
+
+/// Strict, spelled-out match rather than Priority::from_str: from_str maps
+/// every unrecognized value to Priority::None, which would make a typo'd
+/// `priority: hgih` indistinguishable from a deliberate `priority: none` --
+/// here the typo must surface as a parse warning instead.
+fn parse_priority(value: &str) -> Option<Priority> {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => Some(Priority::None),
+        "low" => Some(Priority::Low),
+        "medium" => Some(Priority::Medium),
+        "high" => Some(Priority::High),
+        "urgent" => Some(Priority::Urgent),
+        _ => None,
+    }
+}
+
+/// Builds a PlanFileInfo from a plan file's path and content. Never fails:
+/// unreadable frontmatter degrades to status None + parse_warning (spec §4
+/// -- an agent writing bad YAML must not be able to crash a scan).
+pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
+    let fm = parse_frontmatter(content);
+    let mut warning = fm.warning;
+    let get = |key: &str| {
+        fm.fields
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+            .filter(|v| !v.is_empty())
+    };
+    let file_name =
+        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_name.clone());
+    let priority = match get("priority") {
+        None => None,
+        Some(raw) => {
+            let parsed = parse_priority(&raw);
+            if parsed.is_none() {
+                warning = true;
+            }
+            parsed
+        }
+    };
+    PlanFileInfo {
+        path: path.to_string_lossy().to_string(),
+        file_name,
+        title: get("title").unwrap_or(stem),
+        status: get("status"),
+        priority,
+        parse_warning: warning,
+    }
+}
+
+/// Rewrites ONLY the `status:` line (spec §1): replace in place if present,
+/// insert as the block's first line if the block exists without one,
+/// prepend a new block if the file has no frontmatter. Every other byte is
+/// preserved -- including the presence/absence of a trailing newline.
+pub fn write_plan_status(path: &Path, new_status: &str) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let had_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<String>;
+
+    let fm = parse_frontmatter(&content);
+    if fm.present {
+        // Find the closing marker so we only touch lines inside the block.
+        let close = lines.iter().skip(1).position(|l| *l == "---").map(|i| i + 1).unwrap();
+        let status_line = lines[1..close]
+            .iter()
+            .position(|l| {
+                l.split_once(':').map(|(k, _)| k.trim() == "status").unwrap_or(false)
+            })
+            .map(|i| i + 1);
+        out = lines.iter().map(|l| l.to_string()).collect();
+        match status_line {
+            Some(i) => out[i] = format!("status: {new_status}"),
+            None => out.insert(1, format!("status: {new_status}")),
+        }
+    } else {
+        out = vec!["---".to_string(), format!("status: {new_status}"), "---".to_string()];
+        out.extend(lines.iter().map(|l| l.to_string()));
+    }
+
+    let mut rebuilt = out.join("\n");
+    if had_trailing_newline || content.is_empty() {
+        rebuilt.push('\n');
+    }
+    std::fs::write(path, rebuilt)?;
+    Ok(())
+}
+
+/// A context's display name from its config.toml. The bool is
+/// config_warning: false for a missing file (absent config is normal),
+/// true only when the file exists but doesn't parse as TOML.
+fn parse_context_name(config_path: &Path) -> (Option<String>, bool) {
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return (None, false),
+    };
+    match content.parse::<toml::Table>() {
+        Ok(table) => {
+            let name = table.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            (name, false)
+        }
+        Err(_) => (None, true),
+    }
+}
+
+fn scaffold_gavin_dir(gavin_dir: &Path) -> anyhow::Result<()> {
+    for sub in ["plans", "docs", "specs"] {
+        let dir = gavin_dir.join(sub);
+        std::fs::create_dir_all(&dir)?;
+        let keep = dir.join(".gitkeep");
+        if !keep.exists() {
+            std::fs::write(&keep, "")?;
+        }
+    }
+    Ok(())
+}
+
+/// Never overwrites: each piece is created only if missing, so this both
+/// completes a partial skeleton and no-ops on a complete one (spec §4).
+pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> {
+    if !root.is_dir() {
+        anyhow::bail!("root does not exist or is not a directory: {}", root.display());
+    }
+    let gavin_dir = root.join(GAVIN_ROOT_DIR);
+    std::fs::create_dir_all(&gavin_dir)?;
+    scaffold_gavin_dir(&gavin_dir)?;
+    let config = gavin_dir.join("config.toml");
+    if !config.exists() {
+        std::fs::write(&config, ROOT_CONFIG_TEMPLATE)?;
+    }
+    let prd = gavin_dir.join("PRD.md");
+    if !prd.exists() {
+        std::fs::write(&prd, PRD_TEMPLATE.replace("{workspace}", workspace_name))?;
+    }
+    Ok(())
+}
+
+pub fn create_gavin_context(parent: &Path) -> anyhow::Result<()> {
+    if !parent.is_dir() {
+        anyhow::bail!("parent does not exist or is not a directory: {}", parent.display());
+    }
+    let gavin_dir = parent.join(GAVIN_DIR);
+    std::fs::create_dir_all(&gavin_dir)?;
+    scaffold_gavin_dir(&gavin_dir)?;
+    let config = gavin_dir.join("config.toml");
+    if !config.exists() {
+        let name = parent.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        std::fs::write(&config, format!("name = \"{name}\"\n"))?;
+    }
+    Ok(())
+}
+
+fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<MdFileInfo>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, base, out);
+            } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+                out.push(MdFileInfo {
+                    path: path.to_string_lossy().to_string(),
+                    rel_path: path
+                        .strip_prefix(base)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .to_string(),
+                });
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    out
+}
+
+fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> GavinContext {
+    let (config_name, config_warning) = parse_context_name(&gavin_dir.join("config.toml"));
+    let folder_name =
+        folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let plans = list_md_files(&gavin_dir.join("plans"))
+        .into_iter()
+        .map(|md| {
+            let path = PathBuf::from(&md.path);
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            plan_file_info(&path, &content)
+        })
+        .collect();
+    GavinContext {
+        folder_path: folder.to_string_lossy().to_string(),
+        kind: kind.clone(),
+        name: config_name.unwrap_or(folder_name),
+        plans,
+        docs: list_md_files(&gavin_dir.join("docs")),
+        specs: list_md_files(&gavin_dir.join("specs")),
+        has_prd: matches!(kind, GavinContextKind::Root) && gavin_dir.join("PRD.md").is_file(),
+        config_warning,
+    }
+}
+
+/// Full scan of one bound root (spec §3). Never fails: a missing root
+/// yields `root_missing: true` with no contexts.
+pub fn scan_root(root: &Path) -> GavinTree {
+    let root_str = root.to_string_lossy().to_string();
+    if !root.is_dir() {
+        return GavinTree { root_path: root_str, root_missing: true, contexts: vec![] };
+    }
+
+    let mut contexts = Vec::new();
+    // Root context: `.gavin-root` recognized ONLY directly under the root.
+    let root_gavin = root.join(GAVIN_ROOT_DIR);
+    let root_has_gavin_root = root_gavin.is_dir();
+    if root_has_gavin_root {
+        contexts.push(build_context(root, &root_gavin, GavinContextKind::Root));
+    }
+
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        skip_gavin_here: bool,
+        contexts: &mut Vec<GavinContext>,
+    ) {
+        if depth > MAX_SCAN_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            // A deep `.gavin-root` is ignored entirely (spec §1 edge rules);
+            // `.gavin` marks its PARENT as a context, and the walker never
+            // descends into `.gavin*` directories themselves.
+            if name == GAVIN_DIR {
+                if !skip_gavin_here {
+                    contexts.push(build_context(dir, &path, GavinContextKind::Context));
+                }
+                continue;
+            }
+            if name == GAVIN_ROOT_DIR
+                || EXCLUDED_DIRS.contains(&name.as_str())
+                || name.starts_with('.')
+            {
+                continue;
+            }
+            walk(&path, depth + 1, false, contexts);
+        }
+    }
+    // Depth 1 = the root's immediate children. skip_gavin_here applies the
+    // spec §1 both-markers rule to the root level only: when `.gavin-root`
+    // exists, a root-level `.gavin` is ignored rather than double-listing
+    // the root folder as two contexts.
+    walk(root, 1, root_has_gavin_root, &mut contexts);
+
+    // Root context first, then by folder path.
+    contexts.sort_by(|a, b| {
+        let a_root = matches!(a.kind, GavinContextKind::Root);
+        let b_root = matches!(b.kind, GavinContextKind::Root);
+        b_root.cmp(&a_root).then(a.folder_path.cmp(&b.folder_path))
+    });
+    GavinTree { root_path: root_str, root_missing: false, contexts }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan(content: &str) -> PlanFileInfo {
+        plan_file_info(Path::new("/tmp/plans/auth-flow.md"), content)
+    }
+
+    #[test]
+    fn plan_with_full_frontmatter_parses_all_fields() {
+        let p = plan("---\nstatus: In Progress\npriority: high\ntitle: Auth rework\n---\n# body\n");
+        assert_eq!(p.status.as_deref(), Some("In Progress"));
+        assert_eq!(p.priority, Some(Priority::High));
+        assert_eq!(p.title, "Auth rework");
+        assert!(!p.parse_warning);
+    }
+
+    #[test]
+    fn plan_without_frontmatter_gets_stem_title_and_no_status() {
+        let p = plan("# just a heading\n");
+        assert_eq!(p.status, None);
+        assert_eq!(p.title, "auth-flow");
+        assert!(!p.parse_warning);
+    }
+
+    #[test]
+    fn unterminated_frontmatter_sets_parse_warning() {
+        let p = plan("---\nstatus: To Do\nno closing marker\n");
+        assert_eq!(p.status, None);
+        assert!(p.parse_warning);
+    }
+
+    #[test]
+    fn quoted_values_are_unquoted_and_unknown_priority_warns() {
+        let p = plan("---\nstatus: \"Review\"\npriority: banana\n---\n");
+        assert_eq!(p.status.as_deref(), Some("Review"));
+        assert_eq!(p.priority, None);
+        assert!(p.parse_warning);
+    }
+
+    #[test]
+    fn unknown_keys_and_comments_are_ignored_without_warning() {
+        let p = plan("---\n# a comment\nowner: alice\nstatus: Done\n---\n");
+        assert_eq!(p.status.as_deref(), Some("Done"));
+        assert!(!p.parse_warning);
+    }
+
+    #[test]
+    fn write_plan_status_replaces_only_the_status_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        let original = "---\ntitle: Keep me\nstatus: To Do\nowner: alice\n---\n# Body\n\nText.\n";
+        std::fs::write(&path, original).unwrap();
+        write_plan_status(&path, "In Progress").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after,
+            "---\ntitle: Keep me\nstatus: In Progress\nowner: alice\n---\n# Body\n\nText.\n"
+        );
+    }
+
+    #[test]
+    fn write_plan_status_inserts_into_a_block_that_lacks_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
+        write_plan_status(&path, "Done").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nstatus: Done\ntitle: T\n---\nbody\n"
+        );
+    }
+
+    #[test]
+    fn write_plan_status_prepends_a_block_when_none_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "# Heading only\n").unwrap();
+        write_plan_status(&path, "To Do").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nstatus: To Do\n---\n# Heading only\n"
+        );
+    }
+
+    #[test]
+    fn init_creates_full_skeleton_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "My WS").unwrap();
+        let g = dir.path().join(GAVIN_ROOT_DIR);
+        assert!(g.join("config.toml").is_file());
+        assert!(g.join("PRD.md").is_file());
+        for sub in ["plans", "docs", "specs"] {
+            assert!(g.join(sub).join(".gitkeep").is_file());
+        }
+        let prd = std::fs::read_to_string(g.join("PRD.md")).unwrap();
+        assert!(prd.starts_with("# My WS — Product Requirements"));
+        init_gavin_root(dir.path(), "My WS").unwrap(); // second run: no-op, no error
+    }
+
+    #[test]
+    fn init_never_overwrites_an_existing_prd() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(g.join("PRD.md"), "my precious prd\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        assert_eq!(std::fs::read_to_string(g.join("PRD.md")).unwrap(), "my precious prd\n");
+        // ...while still completing the missing pieces:
+        assert!(g.join("config.toml").is_file());
+        assert!(g.join("plans").join(".gitkeep").is_file());
+    }
+
+    #[test]
+    fn create_context_scaffolds_with_folder_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let feature = dir.path().join("auth");
+        std::fs::create_dir_all(&feature).unwrap();
+        create_gavin_context(&feature).unwrap();
+        let config = std::fs::read_to_string(feature.join(GAVIN_DIR).join("config.toml")).unwrap();
+        assert_eq!(config, "name = \"auth\"\n");
+    }
+
+    #[test]
+    fn scan_finds_root_and_nested_contexts_root_first() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let feature = dir.path().join("src").join("auth");
+        std::fs::create_dir_all(&feature).unwrap();
+        create_gavin_context(&feature).unwrap();
+        std::fs::write(
+            feature.join(GAVIN_DIR).join("plans").join("login.md"),
+            "---\nstatus: To Do\n---\n# Login\n",
+        )
+        .unwrap();
+
+        let tree = scan_root(dir.path());
+        assert!(!tree.root_missing);
+        assert_eq!(tree.contexts.len(), 2);
+        assert_eq!(tree.contexts[0].kind, GavinContextKind::Root);
+        assert!(tree.contexts[0].has_prd);
+        assert_eq!(tree.contexts[1].name, "auth");
+        assert_eq!(tree.contexts[1].plans.len(), 1);
+        assert_eq!(tree.contexts[1].plans[0].status.as_deref(), Some("To Do"));
+    }
+
+    #[test]
+    fn scan_honors_exclusions_depth_cap_and_deep_gavin_root() {
+        let dir = tempfile::tempdir().unwrap();
+        // Excluded dir: a context inside node_modules must not be found.
+        let hidden = dir.path().join("node_modules").join("pkg");
+        std::fs::create_dir_all(hidden.join(GAVIN_DIR)).unwrap();
+        // Deep .gavin-root: ignored entirely.
+        let deep = dir.path().join("sub");
+        std::fs::create_dir_all(deep.join(GAVIN_ROOT_DIR)).unwrap();
+        // Beyond the depth cap: d1/d2/.../d13/.gavin must not be found.
+        let mut too_deep = dir.path().to_path_buf();
+        for i in 1..=13 {
+            too_deep = too_deep.join(format!("d{i}"));
+        }
+        std::fs::create_dir_all(too_deep.join(GAVIN_DIR)).unwrap();
+
+        let tree = scan_root(dir.path());
+        assert_eq!(tree.contexts.len(), 0);
+    }
+
+    #[test]
+    fn gavin_root_wins_when_root_has_both_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_DIR).join("plans")).unwrap();
+        let tree = scan_root(dir.path());
+        // Only the Root context -- the root-level .gavin is ignored.
+        assert_eq!(tree.contexts.len(), 1);
+        assert_eq!(tree.contexts[0].kind, GavinContextKind::Root);
+    }
+
+    #[test]
+    fn scan_of_missing_root_reports_root_missing() {
+        let tree = scan_root(Path::new("/definitely/not/a/real/path"));
+        assert!(tree.root_missing);
+        assert!(tree.contexts.is_empty());
+    }
+
+    #[test]
+    fn unparseable_config_toml_falls_back_to_folder_name_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let feature = dir.path().join("auth");
+        std::fs::create_dir_all(feature.join(GAVIN_DIR)).unwrap();
+        std::fs::write(feature.join(GAVIN_DIR).join("config.toml"), "not [ valid toml").unwrap();
+        let tree = scan_root(dir.path());
+        assert_eq!(tree.contexts.len(), 1);
+        assert_eq!(tree.contexts[0].name, "auth");
+        assert!(tree.contexts[0].config_warning);
+    }
+}
