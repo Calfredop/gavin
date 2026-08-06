@@ -14,6 +14,10 @@
   let content = $state("");
   let truncated = $state(false);
   let error = $state<string | null>(null);
+  // Kept separate from `error`: failing to hand the file to another app
+  // says nothing about whether we could READ it, so it must not replace
+  // perfectly good content with a "couldn't open this file" screen.
+  let openError = $state<string | null>(null);
   let unlisten: UnlistenFn | null = null;
 
   // Pane.svelte's fitAll() calls fit() on every tab in a pane, terminal or
@@ -57,9 +61,10 @@
   // originally presented).
   async function openExternally(): Promise<void> {
     try {
+      openError = null;
       await openPath(path);
     } catch (e) {
-      error = `Couldn't open externally: ${e instanceof Error ? e.message : e}`;
+      openError = String(e instanceof Error ? e.message : e);
     }
   }
 
@@ -81,6 +86,11 @@
 </script>
 
 <div class="pane" class:inactive={!visible}>
+  {#if openError !== null}
+    <div class="notice error">
+      Couldn't open externally: {openError}
+    </div>
+  {/if}
   {#if error !== null}
     <div class="overlay">
       <p>Couldn't open this file.</p>
@@ -155,6 +165,10 @@
   .notice button {
     margin-top: 0;
     padding: 4px 10px;
+  }
+  .notice.error {
+    background: #3a2020;
+    color: #e0a0a0;
   }
   .code {
     margin: 0;
