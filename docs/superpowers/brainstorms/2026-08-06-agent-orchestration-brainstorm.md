@@ -110,6 +110,12 @@ below-3→5, below-4→6, below-7 folded into 3.)
 | Q12 | Main agent session lifecycle: manual start vs auto-start; where does it live in the model (page tree vs home-only)? | **answered → D12** |
 | Q10 | Relationship between the existing free-form workspace board and plan-derived boards: one merged board, or plans as a distinct board/lane? | **asking** |
 
+## 4b. Sub-project progress
+
+- **1 Foundations — spec written & approved section-by-section (2026-08-06):**
+  `docs/superpowers/specs/2026-08-06-agent-orchestration-foundations-design.md`
+  (convention, root binding, daemon-owned scanner/watcher, error posture, tests).
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
