@@ -445,7 +445,14 @@ mod resolve_workspaces_tests {
     }
 
     fn workspace(id: &str, pages: Vec<Page>) -> Workspace {
-        Workspace { id: id.to_string(), name: id.to_string(), pages, active_page_id: None, active_view: None }
+        Workspace {
+            id: id.to_string(),
+            name: id.to_string(),
+            pages,
+            active_page_id: None,
+            active_view: None,
+            root_path: None,
+        }
     }
 
     fn no_file_tabs() -> HashSet<String> {
@@ -715,6 +722,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 pages: vec![],
                 active_page_id: None,
                 active_view: None,
+                root_path: None,
             },
         );
     }
@@ -804,6 +812,9 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 }
                 Response::SessionRestored { id } => {
                     let _ = reader_app_handle.emit("session-restored", id);
+                }
+                Response::GavinTreeChanged { workspace_id, tree } => {
+                    let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
                 }
                 Response::Error { message } => {
                     let _ = reader_app_handle.emit("daemon-error", message);
@@ -955,6 +966,85 @@ fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> 
 #[tauri::command]
 pub fn delete_board(workspace_id: String, state: State<CommandConnection>) -> Result<(), String> {
     delete_board_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+}
+
+/// Rides the STREAMING connection (fire-and-forget, mirroring
+/// write_input): the daemon intercepts WatchGavinRoot to capture that
+/// connection's writer for pushes, and the initial scan arrives as the
+/// first gavin-tree-changed event rather than a reply.
+#[tauri::command]
+pub fn watch_gavin_root(
+    workspace_id: String,
+    root_path: String,
+    conn: State<DaemonConnection>,
+) -> Result<(), String> {
+    send_request(&conn.writer, &Request::WatchGavinRoot { workspace_id, root_path })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn unwatch_gavin_root(
+    workspace_id: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::UnwatchGavinRoot { workspace_id })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn get_gavin_tree(
+    workspace_id: String,
+    state: State<CommandConnection>,
+) -> Result<protocol::GavinTree, String> {
+    let resp = send_command(&state.0, &Request::GetGavinTree { workspace_id })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::GavinTreeSnapshot { tree, .. } => Ok(tree),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn init_gavin_root(
+    root_path: String,
+    workspace_name: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::InitGavinRoot { root_path, workspace_name })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn create_gavin_context(
+    parent_folder: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::CreateGavinContext { parent_folder })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Local fs probe for the set-root flow's init-vs-bind fork (spec §2) --
+/// the frontend can't stat the disk itself, and watching hasn't started
+/// yet at the moment the picker returns.
+#[tauri::command]
+pub fn gavin_root_exists(root_path: String) -> bool {
+    std::path::Path::new(&root_path).join(".gavin-root").is_dir()
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
+import type { GavinTree } from "./gavin";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -81,6 +82,32 @@ export function signalFrontendReady(): Promise<void> {
 
 export function getBootstrapError(): Promise<string | null> {
   return invoke("get_bootstrap_error");
+}
+
+// Fire-and-forget: rides the streaming connection, so there is no reply --
+// the initial scan arrives as the first gavin-tree-changed event.
+export function watchGavinRoot(workspaceId: string, rootPath: string): Promise<void> {
+  return invoke("watch_gavin_root", { workspaceId, rootPath });
+}
+
+export function unwatchGavinRoot(workspaceId: string): Promise<void> {
+  return invoke("unwatch_gavin_root", { workspaceId });
+}
+
+export function getGavinTree(workspaceId: string): Promise<GavinTree> {
+  return invoke("get_gavin_tree", { workspaceId });
+}
+
+export function initGavinRoot(rootPath: string, workspaceName: string): Promise<void> {
+  return invoke("init_gavin_root", { rootPath, workspaceName });
+}
+
+export function createGavinContext(parentFolder: string): Promise<void> {
+  return invoke("create_gavin_context", { parentFolder });
+}
+
+export function gavinRootExists(rootPath: string): Promise<boolean> {
+  return invoke("gavin_root_exists", { rootPath });
 }
 
 export function getBoard(workspaceId: string): Promise<Board> {

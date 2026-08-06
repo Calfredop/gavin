@@ -54,7 +54,13 @@ pub fn run() {
             session::get_bootstrap_error,
             session::get_board,
             session::set_board,
-            session::delete_board
+            session::delete_board,
+            session::watch_gavin_root,
+            session::unwatch_gavin_root,
+            session::get_gavin_tree,
+            session::init_gavin_root,
+            session::create_gavin_context,
+            session::gavin_root_exists
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

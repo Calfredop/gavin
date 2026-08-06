@@ -33,6 +33,11 @@ pub struct Workspace {
     pub pages: Vec<Page>,
     pub active_page_id: Option<String>,
     pub active_view: Option<String>,
+    /// The workspace's bound root directory (agent-orchestration phase).
+    /// Optional and never auto-cleared: a missing-on-disk root keeps its
+    /// stale value so a remounted volume heals without user action.
+    #[serde(default)]
+    pub root_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -113,6 +118,7 @@ mod tests {
             pages: vec![sample_page()],
             active_page_id: Some("page-1".to_string()),
             active_view: None,
+            root_path: None,
         }
     }
 
@@ -259,9 +265,37 @@ mod tests {
                     "focusedSessionId": null
                 }],
                 "activePageId": "page-1",
-                "activeView": null
+                "activeView": null,
+                "rootPath": null
             })
         );
+    }
+
+    #[test]
+    fn load_defaults_root_path_to_none_when_absent_from_an_older_workspace_object() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.workspaces[0].root_path, None);
+    }
+
+    #[test]
+    fn root_path_roundtrips_through_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.root_path = Some("/Users/alice/project".to_string());
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
     }
 
     #[test]
