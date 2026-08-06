@@ -1,5 +1,10 @@
-use protocol::{GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority};
+use protocol::{
+    GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
+};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 pub const GAVIN_ROOT_DIR: &str = ".gavin-root";
 pub const GAVIN_DIR: &str = ".gavin";
@@ -328,6 +333,140 @@ pub fn scan_root(root: &Path) -> GavinTree {
     GavinTree { root_path: root_str, root_missing: false, contexts }
 }
 
+const RESCAN_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Floor between two full rescans, sleeping out the remainder rather than
+/// skipping -- the RepoPoller lesson: without a floor, sustained
+/// working-tree churn (a build, an install) can drive the debouncer to
+/// flush every 500ms indefinitely.
+const MIN_RESCAN_INTERVAL: Duration = Duration::from_secs(2);
+
+struct WatcherInner {
+    last_tree: Option<GavinTree>,
+    last_scan: Option<Instant>,
+}
+
+/// One per watched workspace root. Owns the debouncer; dropping the
+/// watcher shuts the watch thread down -- which is exactly why the
+/// debouncer callback must hold a Weak, not an Arc (the RepoPoller
+/// reference-cycle Critical: a strong Arc in the callback would keep
+/// `drop` from ever running, leaking the watch thread and OS watches for
+/// the daemon's lifetime).
+pub struct GavinWatcher {
+    pub workspace_id: String,
+    pub root_path: PathBuf,
+    writer: Arc<Mutex<UnixStream>>,
+    inner: Mutex<WatcherInner>,
+    debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+}
+
+impl GavinWatcher {
+    /// Creates the watcher, performs the initial scan, pushes the initial
+    /// GavinTreeChanged, and starts the filesystem watch. Watch-setup
+    /// failure degrades to scan-on-demand (spec §4): the initial push
+    /// still happens and GetGavinTree still works.
+    pub fn start(
+        workspace_id: String,
+        root_path: PathBuf,
+        writer: Arc<Mutex<UnixStream>>,
+    ) -> Arc<Self> {
+        // Canonicalize before watching: FSEvents resolves symlinks, and a
+        // watch registered on a symlinked spelling (macOS's /tmp and
+        // /var/folders both live under /private) can silently never see
+        // its own events. A missing root can't canonicalize -- keep the
+        // given path so scan_root still reports root_missing for it.
+        let root_path = root_path.canonicalize().unwrap_or(root_path);
+        let watcher = Arc::new(GavinWatcher {
+            workspace_id,
+            root_path,
+            writer,
+            inner: Mutex::new(WatcherInner { last_tree: None, last_scan: None }),
+            debouncer: Mutex::new(None),
+        });
+
+        // Arm the watch BEFORE the initial scan+push -- the daemon-side
+        // twin of the Milestone B "event emitted before the listener
+        // exists" race: FSEvents only reports changes made after the
+        // stream starts, so a client that reacts to the initial push by
+        // touching a file could otherwise race the stream startup and
+        // have that change silently missed forever. Arming first closes
+        // the window; a change landing between arming and the initial
+        // scan just triggers a rescan that change-gating dedupes.
+        let weak: Weak<GavinWatcher> = Arc::downgrade(&watcher);
+        let debounce_result = notify_debouncer_mini::new_debouncer(
+            RESCAN_DEBOUNCE,
+            move |res: notify_debouncer_mini::DebounceEventResult| {
+                // After teardown (last strong Arc dropped), upgrade()
+                // returns None and this is a silent no-op.
+                let Some(watcher) = weak.upgrade() else { return };
+                let Ok(events) = res else { return };
+                // Only events touching a `.gavin*` path segment (which
+                // includes creating/removing the marker dirs themselves)
+                // schedule a rescan -- everything else in the tree churns
+                // freely without cost.
+                let relevant = events.iter().any(|e| {
+                    e.path.components().any(|c| {
+                        let s = c.as_os_str().to_string_lossy();
+                        s == GAVIN_DIR || s == GAVIN_ROOT_DIR
+                    })
+                });
+                if relevant {
+                    watcher.rescan_and_push();
+                }
+            },
+        );
+        if let Ok(mut d) = debounce_result {
+            if d.watcher().watch(&watcher.root_path, notify::RecursiveMode::Recursive).is_ok() {
+                *watcher.debouncer.lock().unwrap() = Some(d);
+            }
+        }
+
+        watcher.rescan_and_push();
+        watcher
+    }
+
+    /// The entire floor-check + scan + compare + emit sequence runs under
+    /// one lock (the HeuristicState lesson): two debouncer flushes, or a
+    /// flush racing the initial scan, can never interleave into an
+    /// out-of-order emission.
+    pub fn rescan_and_push(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(last) = inner.last_scan {
+            let elapsed = last.elapsed();
+            if elapsed < MIN_RESCAN_INTERVAL {
+                std::thread::sleep(MIN_RESCAN_INTERVAL - elapsed);
+            }
+        }
+        let tree = scan_root(&self.root_path);
+        inner.last_scan = Some(Instant::now());
+        if inner.last_tree.as_ref() == Some(&tree) {
+            return; // change-gated: identical trees never re-emit
+        }
+        inner.last_tree = Some(tree.clone());
+        let response =
+            Response::GavinTreeChanged { workspace_id: self.workspace_id.clone(), tree };
+        // A dead writer (app restarted) fails silently; the next
+        // WatchGavinRoot from the fresh connection replaces this watcher.
+        let mut writer = self.writer.lock().unwrap();
+        let _ = protocol::write_message(&mut *writer, &response);
+    }
+
+    /// Fresh scan for GetGavinTree -- shares the floor/dedup state so a
+    /// snapshot request can't defeat MIN_RESCAN_INTERVAL, but always
+    /// returns a tree (even when unchanged).
+    pub fn snapshot(&self) -> GavinTree {
+        let mut inner = self.inner.lock().unwrap();
+        if let (Some(last), Some(tree)) = (inner.last_scan, &inner.last_tree) {
+            if last.elapsed() < MIN_RESCAN_INTERVAL {
+                return tree.clone();
+            }
+        }
+        let tree = scan_root(&self.root_path);
+        inner.last_scan = Some(Instant::now());
+        inner.last_tree = Some(tree.clone());
+        tree
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,5 +661,41 @@ mod tests {
         assert_eq!(tree.contexts.len(), 1);
         assert_eq!(tree.contexts[0].name, "auth");
         assert!(tree.contexts[0].config_warning);
+    }
+
+    #[test]
+    fn watcher_pushes_once_per_change_and_stops_after_drop() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
+        let writer = Arc::new(Mutex::new(theirs));
+
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::clone(&writer));
+
+        let mut reader = BufReader::new(ours);
+        // Initial scan pushed exactly once.
+        let first: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        // A manual rescan with NO underlying change must not emit again:
+        // the next read times out instead of yielding a message. (The 2s
+        // floor makes this rescan sleep -- that is the floor working.)
+        watcher.rescan_and_push();
+        let timed_out: Result<Option<Response>, _> = protocol::read_message(&mut reader);
+        assert!(timed_out.is_err(), "change-gating failed: an unchanged rescan emitted");
+
+        // After drop, even a real change must emit nothing.
+        drop(watcher);
+        std::fs::write(
+            dir.path().join(GAVIN_ROOT_DIR).join("plans").join("late.md"),
+            "---\nstatus: To Do\n---\n",
+        )
+        .unwrap();
+        let after_drop: Result<Option<Response>, _> = protocol::read_message(&mut reader);
+        assert!(after_drop.is_err(), "a dropped watcher still emitted");
     }
 }

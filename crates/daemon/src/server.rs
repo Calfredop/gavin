@@ -606,6 +606,11 @@ pub struct SessionManager {
     /// `update_session_repo_mapping` needs to know what to unregister a
     /// session from when its cwd changes again (or it exits).
     session_repo_root: Mutex<HashMap<String, String>>,
+    /// One per workspace with a watched gavin root, keyed by workspace id.
+    /// Replaced wholesale on every WatchGavinRoot (idempotent re-watch,
+    /// and how a restarted app's fresh connection takes over pushes).
+    /// Never persisted, like repo_pollers.
+    gavin_watchers: Mutex<HashMap<String, Arc<crate::gavin::GavinWatcher>>>,
 }
 
 impl SessionManager {
@@ -618,7 +623,33 @@ impl SessionManager {
             output_buffers: Mutex::new(HashMap::new()),
             repo_pollers: Mutex::new(HashMap::new()),
             session_repo_root: Mutex::new(HashMap::new()),
+            gavin_watchers: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn watch_gavin_root(
+        &self,
+        workspace_id: &str,
+        root_path: &str,
+        writer: Arc<Mutex<UnixStream>>,
+    ) {
+        let watcher = crate::gavin::GavinWatcher::start(
+            workspace_id.to_string(),
+            std::path::PathBuf::from(root_path),
+            writer,
+        );
+        // Insert AFTER start: the old watcher (if any) drops here, tearing
+        // down its debouncer thread.
+        self.gavin_watchers.lock().unwrap().insert(workspace_id.to_string(), watcher);
+    }
+
+    pub fn unwatch_gavin_root(&self, workspace_id: &str) {
+        self.gavin_watchers.lock().unwrap().remove(workspace_id);
+    }
+
+    pub fn gavin_tree_snapshot(&self, workspace_id: &str) -> Option<protocol::GavinTree> {
+        let watcher = self.gavin_watchers.lock().unwrap().get(workspace_id).cloned();
+        watcher.map(|w| w.snapshot())
     }
 
     pub fn create_session(
@@ -1104,15 +1135,27 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok),
         Request::DeleteBoard { workspace_id } => manager.delete_board(&workspace_id).map(|_| Response::Ok),
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
-        // Stubs until the gavin scanner lands (same branch, next tasks):
-        // explicit arms rather than a catch-all so a future variant still
-        // fails to compile here instead of silently erroring at runtime.
-        Request::WatchGavinRoot { .. }
-        | Request::UnwatchGavinRoot { .. }
-        | Request::GetGavinTree { .. }
-        | Request::InitGavinRoot { .. }
-        | Request::CreateGavinContext { .. } => {
-            Ok(Response::Error { message: "gavin requests not yet implemented".to_string() })
+        Request::WatchGavinRoot { .. } => {
+            unreachable!("WatchGavinRoot is intercepted in handle_connection")
+        }
+        Request::UnwatchGavinRoot { workspace_id } => {
+            manager.unwatch_gavin_root(&workspace_id);
+            Ok(Response::Ok)
+        }
+        Request::GetGavinTree { workspace_id } => match manager.gavin_tree_snapshot(&workspace_id)
+        {
+            Some(tree) => Ok(Response::GavinTreeSnapshot { workspace_id, tree }),
+            None => Ok(Response::Error {
+                message: format!("no gavin root watched for workspace: {workspace_id}"),
+            }),
+        },
+        Request::InitGavinRoot { root_path, workspace_name } => {
+            crate::gavin::init_gavin_root(std::path::Path::new(&root_path), &workspace_name)
+                .map(|_| Response::Ok)
+        }
+        Request::CreateGavinContext { parent_folder } => {
+            crate::gavin::create_gavin_context(std::path::Path::new(&parent_folder))
+                .map(|_| Response::Ok)
         }
     };
 
@@ -1166,6 +1209,14 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
             continue;
         }
 
+        // Like Attach: needs THIS connection's writer (for tree pushes),
+        // so it can't go through handle_request. No reply -- the initial
+        // scan arrives as the first GavinTreeChanged push.
+        if let Request::WatchGavinRoot { workspace_id, root_path } = req {
+            manager.watch_gavin_root(&workspace_id, &root_path, Arc::clone(&writer));
+            continue;
+        }
+
         let response = handle_request(&manager, req);
         write_message(&mut *writer.lock().unwrap(), &response)?;
     }
@@ -1205,6 +1256,123 @@ mod tests {
         write_message(stream, req).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         read_message(&mut reader).unwrap().unwrap()
+    }
+
+    #[test]
+    fn watch_gavin_root_pushes_initial_tree_then_changes() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut stream,
+            &Request::WatchGavinRoot {
+                workspace_id: "ws-1".to_string(),
+                root_path: ws_dir.path().to_string_lossy().to_string(),
+            },
+        )
+        .unwrap();
+
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let first: Response = read_message(&mut reader).unwrap().unwrap();
+        match &first {
+            Response::GavinTreeChanged { workspace_id, tree } => {
+                assert_eq!(workspace_id, "ws-1");
+                assert!(!tree.root_missing);
+                assert_eq!(tree.contexts.len(), 1);
+                assert!(tree.contexts[0].has_prd);
+            }
+            other => panic!("expected initial GavinTreeChanged, got {other:?}"),
+        }
+
+        // A new plan file must produce a second push. (Debounce 500ms +
+        // 2s floor: the blocking read simply waits them out.)
+        std::fs::write(
+            ws_dir.path().join(".gavin-root").join("plans").join("new.md"),
+            "---\nstatus: To Do\n---\n# New\n",
+        )
+        .unwrap();
+        let second: Response = read_message(&mut reader).unwrap().unwrap();
+        match second {
+            Response::GavinTreeChanged { tree, .. } => {
+                assert_eq!(tree.contexts[0].plans.len(), 1);
+                assert_eq!(tree.contexts[0].plans[0].file_name, "new.md");
+            }
+            other => panic!("expected change push, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watching_a_missing_root_reports_root_missing_and_get_tree_replies() {
+        let (socket_path, _dir) = start_test_server();
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut stream,
+            &Request::WatchGavinRoot {
+                workspace_id: "ws-2".to_string(),
+                root_path: "/definitely/not/real".to_string(),
+            },
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let first: Response = read_message(&mut reader).unwrap().unwrap();
+        match first {
+            Response::GavinTreeChanged { tree, .. } => assert!(tree.root_missing),
+            other => panic!("expected GavinTreeChanged, got {other:?}"),
+        }
+
+        // GetGavinTree over a second (command-style) connection.
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let resp = request(&mut cmd, &Request::GetGavinTree { workspace_id: "ws-2".to_string() });
+        match resp {
+            Response::GavinTreeSnapshot { workspace_id, tree } => {
+                assert_eq!(workspace_id, "ws-2");
+                assert!(tree.root_missing);
+            }
+            other => panic!("expected snapshot, got {other:?}"),
+        }
+        let resp = request(
+            &mut cmd,
+            &Request::GetGavinTree { workspace_id: "never-watched".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn init_and_create_context_over_socket_are_idempotent() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+
+        let resp = request(
+            &mut cmd,
+            &Request::InitGavinRoot { root_path: root.clone(), workspace_name: "WS".to_string() },
+        );
+        assert!(matches!(resp, Response::Ok));
+        let resp = request(
+            &mut cmd,
+            &Request::InitGavinRoot { root_path: root, workspace_name: "WS".to_string() },
+        );
+        assert!(matches!(resp, Response::Ok)); // idempotent second run
+
+        let feature = ws_dir.path().join("auth");
+        std::fs::create_dir_all(&feature).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::CreateGavinContext {
+                parent_folder: feature.to_string_lossy().to_string(),
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+        assert!(feature.join(".gavin").join("config.toml").is_file());
+
+        let resp = request(
+            &mut cmd,
+            &Request::CreateGavinContext { parent_folder: "/not/a/real/dir".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
     }
 
     #[test]
