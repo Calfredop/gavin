@@ -1,0 +1,20 @@
+This file is VIEWABLE but has NO highlighting language.
+
+"log" is in the Rust VIEWABLE_EXTENSIONS list, so cmd+click opens it
+internally. But fileLanguage("plain.log") returns null, so it renders as
+escaped plain text rather than colorized code.
+
+Expected: opens in a pane, monospace, all one colour.
+Bug if: it opens in an external app, or the text is colorized.
+
+2026-08-05 09:14:02 INFO  daemon started, pid 4417
+2026-08-05 09:14:02 DEBUG registry opened at ~/Library/Application Support/gavin
+2026-08-05 09:14:03 WARN  no saved workspaces, seeding Unfiled
+2026-08-05 09:14:07 INFO  session 8f3c1a2b attached
+2026-08-05 09:14:31 ERROR git status timed out after 10s for /Users/me/big-repo
+
+The next line contains characters that MUST be escaped, not interpreted
+as HTML -- if the viewer is injecting raw text into the DOM this will
+render as a heading instead of literal characters:
+
+<h1>if you SEE this as a big heading, escapeHtml is broken</h1>
