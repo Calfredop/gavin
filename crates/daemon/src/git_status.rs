@@ -93,14 +93,22 @@ pub fn resolve_repo_root(cwd: &str) -> Option<String> {
     Some(root.to_string())
 }
 
-/// Runs `git status --porcelain=v2 --branch` in `repo_root`, parses the
-/// result, and returns it -- or `None` if git fails to spawn, exits
-/// non-zero, times out, or produces output `parse_porcelain_v2` can't
-/// make sense of. Never panics; every failure mode degrades to "no status
-/// available."
+/// Runs `git --no-optional-locks status --porcelain=v2 --branch` in
+/// `repo_root`, parses the result, and returns it -- or `None` if git
+/// fails to spawn, exits non-zero, times out, or produces output
+/// `parse_porcelain_v2` can't make sense of. Never panics; every failure
+/// mode degrades to "no status available."
+///
+/// `--no-optional-locks` (git 2.14+) stops `status` from taking
+/// `.git/index.lock` to refresh the index -- the standard mitigation for
+/// exactly the lock contention this whole polling design exists to avoid
+/// (cmux #2722, where naive timer-based polling broke other tools and the
+/// user's own concurrent git commands). It is a TOP-LEVEL git option: it
+/// must come before the subcommand, since `git status --no-optional-locks`
+/// is an "unknown option" error, not a no-op.
 pub fn run_git_status(repo_root: &str) -> Option<protocol::GitStatus> {
     let mut child = Command::new("git")
-        .args(["status", "--porcelain=v2", "--branch"])
+        .args(["--no-optional-locks", "status", "--porcelain=v2", "--branch"])
         .current_dir(repo_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
