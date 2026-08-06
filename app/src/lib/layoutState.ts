@@ -82,12 +82,14 @@ async function createFreshSession(): Promise<string | null> {
 // Returns false (having already called setError) if a real session kill
 // failed, so callers can bail exactly as they do today.
 async function endTabs(tabIds: string[], fileTabsById: Record<string, FileTab>): Promise<boolean> {
+  const closedFileTabIds: string[] = [];
   for (const id of tabIds) {
     const fileTab = fileTabsById[id];
     if (fileTab) {
       // Best-effort: a watcher that's already gone (or was never
       // started because the file read failed) must not block the close.
       await backend.unwatchFileForViewer(fileTab.path).catch(() => {});
+      closedFileTabIds.push(id);
       continue;
     }
     try {
@@ -97,7 +99,31 @@ async function endTabs(tabIds: string[], fileTabsById: Record<string, FileTab>):
       return false;
     }
   }
+  if (closedFileTabIds.length > 0) await pruneFileTabs(closedFileTabIds);
   return true;
+}
+
+// Drops closed file tabs from the map and persists the result.
+//
+// The sibling maps (cwdBySessionId, sessionNames, sessionStatusById) are
+// deliberately never pruned, and this one initially followed them -- but
+// they are in-memory only, whereas file_tabs is written to config.json.
+// Left alone it would accumulate dead ids on disk forever, so the
+// convention that justified not pruning does not actually apply here.
+async function pruneFileTabs(closedIds: string[]): Promise<void> {
+  const remaining: Record<string, FileTab> = {};
+  for (const [id, tab] of Object.entries(get(layoutState).fileTabsById)) {
+    if (!closedIds.includes(id)) remaining[id] = tab;
+  }
+  layoutState.update((s) => ({ ...s, fileTabsById: remaining }));
+
+  const asPathMap: Record<string, string> = {};
+  for (const [id, tab] of Object.entries(remaining)) {
+    asPathMap[id] = tab.path;
+  }
+  // Best-effort, matching how this map is loaded: a failed prune costs a
+  // stale entry, never a broken close.
+  await backend.setFileTabs(asPathMap).catch(() => {});
 }
 
 // The active page's identity plus its current tree, or null if there's no

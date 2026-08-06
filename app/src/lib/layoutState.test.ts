@@ -18,7 +18,10 @@ vi.mock("./backend", () => ({
   setSessionName: vi.fn(),
   deleteBoard: vi.fn(),
   getFileTabs: vi.fn(),
-  setFileTabs: vi.fn(),
+  // Resolved by default: pruneFileTabs calls .catch() on this, so a bare
+  // vi.fn() returning undefined would throw instead of exercising the
+  // real best-effort path.
+  setFileTabs: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: endTabs calls .catch() on this, so a bare
   // vi.fn() returning undefined would throw rather than exercise the
   // real best-effort path.
@@ -734,6 +737,32 @@ describe("closing file tabs", () => {
     expect(backend.killSession).not.toHaveBeenCalled();
     expect(backend.unwatchFileForViewer).toHaveBeenCalledWith("/tmp/a.md");
     expect(get(layoutState).workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
+  });
+
+  it("prunes the closed file tab from fileTabsById and persists the smaller map", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "file-1", "file-2"]))])], "ws-1", "a");
+    layoutState.update((s) => ({
+      ...s,
+      fileTabsById: { "file-1": { path: "/tmp/a.md" }, "file-2": { path: "/tmp/b.md" } },
+    }));
+
+    await closeSession("file-1");
+
+    // Only the closed one goes; the other file tab is untouched.
+    expect(get(layoutState).fileTabsById).toEqual({ "file-2": { path: "/tmp/b.md" } });
+    // Persisted too -- otherwise config.json keeps the dead id forever.
+    expect(backend.setFileTabs).toHaveBeenCalledWith({ "file-2": "/tmp/b.md" });
+  });
+
+  it("does not touch the file-tab map when only terminal sessions close", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closeSession("a");
+
+    expect(backend.setFileTabs).not.toHaveBeenCalled();
+    expect(get(layoutState).fileTabsById).toEqual({ "file-1": { path: "/tmp/a.md" } });
   });
 
   it("closePane kills only the session tabs and unwatches only the file tabs", async () => {
