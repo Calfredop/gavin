@@ -10,6 +10,7 @@
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
+  import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
 
   let closeConfirmed = false;
   let uninstallShortcuts: (() => void) | null = null;
@@ -96,6 +97,7 @@
               </button>
             {/each}
           </div>
+          <WorkspaceRootControl workspace={activeWorkspace} />
           <div class="view">
             <activeViewDef.component workspaceId={activeWorkspace.id} />
           </div>
