@@ -128,6 +128,15 @@ below-3→5, below-4→6, below-7 folded into 3.)
   probe's 300ms arm-to-write gap being the only difference). Fix: arm watch first,
   then initial scan+push; change-gating absorbs the overlap.
 
+- **2 Plans⇄kanban — spec (`1c4c044`), plan (`fb197f8`), implementation COMPLETE
+  (inline, 2026-08-06):** T1 field writer (`0c3e160`), T2 board-tab persistence
+  (`1eea475`), T3 projection (`81f7121`), T4 layout wiring (`6a5288f`), T5 board UI
+  (`1b8c3f3`), T6 board panes (last commit). Verified: 222 Rust + 280 frontend
+  tests, 0 type errors. One integration catch: adding the `plan-card` drag kind
+  broke Sidebar.svelte's negative-exclusion payload narrowing (2 drop handlers) —
+  svelte-check caught it; fixed by extending the excluded-kinds guard. Manual GUI
+  smoke test pending (user-performed).
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
