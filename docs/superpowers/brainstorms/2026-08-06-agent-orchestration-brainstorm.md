@@ -146,6 +146,17 @@ below-3→5, below-4→6, below-7 folded into 3.)
   the "Root not found" banner could never appear. Fixed (root-path arm in the
   filter) + socket-level regression test. Rendered-UI steps remain user-verified.
 
+- **Live incident (2026-08-07):** user's Set-root → Initialize failed with
+  "daemon closed the command connection." Root-caused empirically (ps timeline +
+  socket probe): the daemon running since before the gavin protocol existed
+  can't parse `InitGavinRoot`; serde's parse error tears down the whole
+  connection. Remediated by killing the stale daemon (app relaunch spawns the
+  current binary). **Follow-ups logged, not yet built:** (1) an unparseable
+  request bricks the persistent command connection until app restart —
+  resilience gap; (2) no app↔daemon protocol-version handshake at bootstrap —
+  the systemic fix (detect mismatch, offer restart). Candidate for sub-3 or a
+  standalone patch.
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
