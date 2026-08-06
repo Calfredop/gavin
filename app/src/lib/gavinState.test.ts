@@ -14,7 +14,7 @@ vi.mock("./backend", () => ({
 
 import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
-import { gavinTrees, initGavinListeners, watchRootedWorkspaces, __resetForTesting } from "./gavinState";
+import { gavinTrees, initGavinListeners, watchRootedWorkspaces, patchPlanField, __resetForTesting } from "./gavinState";
 import type { GavinTree } from "./gavin";
 import type { Workspace } from "./workspace";
 
@@ -50,5 +50,37 @@ describe("gavinState", () => {
     watchRootedWorkspaces([ws("ws-1", "/tmp/a")]);
     watchRootedWorkspaces([ws("ws-1", "/tmp/a")]);
     expect(backend.watchGavinRoot).toHaveBeenCalledTimes(1);
+  });
+
+  it("patchPlanField updates only the targeted plan", async () => {
+    await initGavinListeners();
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: { payload: [string, GavinTree] }) => void;
+    const t: GavinTree = {
+      rootPath: "/ws",
+      rootMissing: false,
+      contexts: [
+        {
+          folderPath: "/ws",
+          kind: "root",
+          name: "root",
+          plans: [
+            { path: "/ws/a.md", fileName: "a.md", title: "a", status: "To Do", priority: null, parseWarning: false },
+            { path: "/ws/b.md", fileName: "b.md", title: "b", status: "To Do", priority: null, parseWarning: false },
+          ],
+          docs: [],
+          specs: [],
+          hasPrd: true,
+          configWarning: false,
+        },
+      ],
+    };
+    handler({ payload: ["ws-1", t] });
+    patchPlanField("ws-1", "/ws/a.md", "status", "Done");
+    patchPlanField("ws-1", "/ws/b.md", "priority", "HIGH");
+    const after = get(gavinTrees)["ws-1"].contexts[0].plans;
+    expect(after[0].status).toBe("Done");
+    expect(after[0].priority).toBeNull();
+    expect(after[1].status).toBe("To Do");
+    expect(after[1].priority).toBe("high");
   });
 });
