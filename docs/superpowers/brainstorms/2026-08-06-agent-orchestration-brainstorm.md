@@ -65,9 +65,13 @@ All four original roadmap items are shipped; the platform builds on:
 - **Persistence**: app-side `config.json` (workspaces, layouts, file tabs); daemon data
   dir holds `kanban.sqlite` and session state.
 
-## 3. Proposed decomposition (sub-projects)
+## 3. Decomposition (sub-projects) — **APPROVED as build order, D13**
 
-Ordered by dependency; each gets its own spec → plan → implementation cycle.
+Each gets its own spec → plan → implementation cycle, in this order:
+1 Foundations → 2 Plans⇄kanban → 3 MCP+skill → 4 Markdown editing →
+5 Plan explorer → 6 Orchestration home. (Numbering below predates the
+approved order; the mapping is: below-1→1, below-5→2, below-6→3, below-2→4,
+below-3→5, below-4→6, below-7 folded into 3.)
 
 1. **Foundations: workspace root + `.gavin` discovery** — bind a workspace to a root
    directory (creation flow, migration for existing workspaces, Unfiled exempt); the
@@ -103,7 +107,7 @@ Ordered by dependency; each gets its own spec → plan → implementation cycle.
 | Q8 | Per-session board binding: session cwd exact match vs nearest-ancestor `.gavin`; where does that board render (hub? pane tab? drawer)? | **answered → D7** |
 | Q9 | `.gavin` creation UX: how much "file explorer" does the home really need vs a "new feature folder" dialog? | **answered → D10** |
 | Q11 | Home-page composition: how do PRD, agent file, main session, plan explorer, and board share the home's real estate? | **answered → D11** |
-| Q12 | Main agent session lifecycle: manual start vs auto-start; where does it live in the model (page tree vs home-only)? | **asking** |
+| Q12 | Main agent session lifecycle: manual start vs auto-start; where does it live in the model (page tree vs home-only)? | **answered → D12** |
 | Q10 | Relationship between the existing free-form workspace board and plan-derived boards: one merged board, or plans as a distinct board/lane? | **asking** |
 
 ## 5. Decisions log
@@ -172,3 +176,15 @@ Ordered by dependency; each gets its own spec → plan → implementation cycle.
   with an accent underline on the active tab; Terminal as a ghost button at the
   right. Confirmed via visual-companion mockups (`.superpowers/brainstorm/…/content/
   home-layout*.html`, `nav-bar-styles.html`).
+- **D12 (Q12, 2026-08-06):** **Main agent session: manual start, home-only.** Home's
+  terminal panel shows "Start main agent" when none runs; starting creates a normal
+  daemon PTY at the workspace root running the agent profile's launch command, and
+  the workspace remembers `mainSessionId`. It lives outside the page trees — embedded
+  in Home, expandable from there. If it exits, the panel returns to the start state.
+  No auto-launch, ever (agent launches cost money and attention).
+- **D13 (2026-08-06):** **Decomposition + build order approved:** 1 Foundations
+  (root binding, `.gavin` convention, scaffolding, scanner+watcher) → 2 Plans⇄kanban
+  (frontmatter status, merged board, per-session boards) → 3 MCP server + skill
+  injection (agents join before new UI) → 4 Markdown editing (CodeMirror 6) →
+  5 Plan explorer → 6 Orchestration home (capstone). Each is its own
+  spec → plan → implementation cycle.
