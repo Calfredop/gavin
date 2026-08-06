@@ -200,6 +200,23 @@ below-3→5, below-4→6, below-7 folded into 3.)
   the workspace remembers `mainSessionId`. It lives outside the page trees — embedded
   in Home, expandable from there. If it exits, the panel returns to the start state.
   No auto-launch, ever (agent launches cost money and attention).
+- **D14 (sub-2, 2026-08-06):** **Frontend projection merge.** The SQLite board stays
+  untouched; a pure module merges `gavinTrees[workspaceId]` into display columns at
+  render time (slug-insensitive column↔status matching, auto columns for unknown
+  statuses, plan cards appended after free-form cards). Drag = one new daemon
+  request writing frontmatter; the watcher push is the confirmation channel, with
+  an optimistic local patch bridging the debounce+floor latency.
+- **D15 (sub-2, 2026-08-06):** **Plan priority editable from the board v1** (user
+  override of read-only recommendation): the surgical writer generalizes to a
+  frontmatter field-writer (status + priority); the edit control lives in the plan
+  detail modal.
+- **D16 (sub-2, 2026-08-06):** Plan card click opens a **read-only detail modal**
+  (title/status/priority/context/path/parse-warning + open externally); priority
+  select is its one write control per D15.
+- **D17 (sub-2, 2026-08-06):** **Board tabs persist like file tabs** (user override
+  of transient recommendation): a `board_tabs` map in config.json mirroring
+  `file_tabs`, hydrated on bootstrap, skipped by the Attach loop and
+  session-reconciliation, excluded from close-confirmation counts.
 - **D13 (2026-08-06):** **Decomposition + build order approved:** 1 Foundations
   (root binding, `.gavin` convention, scaffolding, scanner+watcher) → 2 Plans⇄kanban
   (frontmatter status, merged board, per-session boards) → 3 MCP server + skill
