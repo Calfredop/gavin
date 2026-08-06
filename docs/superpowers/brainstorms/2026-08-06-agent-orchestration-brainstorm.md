@@ -115,6 +115,18 @@ below-3→5, below-4→6, below-7 folded into 3.)
 - **1 Foundations — spec written & approved section-by-section (2026-08-06):**
   `docs/superpowers/specs/2026-08-06-agent-orchestration-foundations-design.md`
   (convention, root binding, daemon-owned scanner/watcher, error posture, tests).
+- **1 Foundations — implementation COMPLETE (inline, 2026-08-06).** T1 protocol
+  (`37bdd4c`), T2 file model (`e01ad77`), T3 watcher (`144b1bc`), T4 Tauri layer
+  (`a89b58c`), T5 frontend state (`31a1753`), T6 root-binding UI (`826c36f`).
+  Verified: 215 Rust + 264 frontend tests, 0 type errors, clean build. Manual GUI
+  smoke test pending (user-performed). T3 surfaced a real bug the integration test
+  caught before it shipped: `GavinWatcher::start` emitted the initial tree push
+  BEFORE arming the FSEvents watch, so a client (or agent) reacting to that push by
+  touching a file raced the stream startup and the change was missed forever — the
+  Milestone-B "event before listener" race class, daemon-side. Root-caused
+  empirically (stack sample → probe test proving notify delivers in tempdirs → the
+  probe's 300ms arm-to-write gap being the only difference). Fix: arm watch first,
+  then initial scan+push; change-gating absorbs the overlap.
 
 ## 5. Decisions log
 
