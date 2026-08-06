@@ -416,12 +416,17 @@ impl GavinWatcher {
                 // Only events touching a `.gavin*` path segment (which
                 // includes creating/removing the marker dirs themselves)
                 // schedule a rescan -- everything else in the tree churns
-                // freely without cost.
+                // freely without cost. An event AT the root itself (the
+                // root renamed away or back) must also count: the spec's
+                // root_missing push depends on it, and the segment check
+                // alone can never match the root's own path (found live by
+                // the wire-level smoke test, not by any unit test).
                 let relevant = events.iter().any(|e| {
-                    e.path.components().any(|c| {
-                        let s = c.as_os_str().to_string_lossy();
-                        s == GAVIN_DIR || s == GAVIN_ROOT_DIR
-                    })
+                    e.path == watcher.root_path
+                        || e.path.components().any(|c| {
+                            let s = c.as_os_str().to_string_lossy();
+                            s == GAVIN_DIR || s == GAVIN_ROOT_DIR
+                        })
                 });
                 if relevant {
                     watcher.rescan_and_push();

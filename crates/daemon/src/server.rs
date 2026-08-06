@@ -1344,6 +1344,50 @@ mod tests {
     }
 
     #[test]
+    fn renaming_the_root_away_pushes_root_missing_and_renaming_back_heals() {
+        let (socket_path, _dir) = start_test_server();
+        let holder = tempfile::tempdir().unwrap();
+        let root = holder.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        crate::gavin::init_gavin_root(&root, "WS").unwrap();
+
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut stream,
+            &Request::WatchGavinRoot {
+                workspace_id: "ws-r".to_string(),
+                root_path: root.to_string_lossy().to_string(),
+            },
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let first: Response = read_message(&mut reader).unwrap().unwrap();
+        assert!(matches!(first, Response::GavinTreeChanged { .. }));
+
+        // The rename event's path is the ROOT itself -- no `.gavin`
+        // segment -- so this exercises the event filter's root-path arm
+        // (missing it was a live-found spec violation: the UI's
+        // "Root not found" banner never appeared).
+        let away = holder.path().join("ws-x");
+        std::fs::rename(&root, &away).unwrap();
+        let missing: Response = read_message(&mut reader).unwrap().unwrap();
+        match missing {
+            Response::GavinTreeChanged { tree, .. } => assert!(tree.root_missing),
+            other => panic!("expected root_missing push, got {other:?}"),
+        }
+
+        std::fs::rename(&away, &root).unwrap();
+        let healed: Response = read_message(&mut reader).unwrap().unwrap();
+        match healed {
+            Response::GavinTreeChanged { tree, .. } => {
+                assert!(!tree.root_missing);
+                assert!(tree.contexts[0].has_prd);
+            }
+            other => panic!("expected healed push, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn set_plan_frontmatter_field_over_socket_writes_and_rejects() {
         let (socket_path, _dir) = start_test_server();
         let ws_dir = tempfile::tempdir().unwrap();

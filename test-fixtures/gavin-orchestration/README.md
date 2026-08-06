@@ -47,9 +47,11 @@ control with `cd`. `PLAYGROUND` means the absolute path printed by setup.sh.
 Open a terminal in the `smoke-test` workspace and `cd` to `PLAYGROUND`.
 
 - [ ] **B1 — Card materializes.**
-      `printf -- '---\nstatus: To Do\npriority: high\n---\n# Demo plan\n' > .gavin-root/plans/demo.md`
+      `printf -- '---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n# Demo plan\n' > .gavin-root/plans/demo.md`
       Expect on the hub board within ~3 s: a **dashed** card "Demo plan" in
       *To Do*, with a file glyph, an orange priority dot, and a context badge.
+      (Without a `title:` key the card would show the filename stem, `demo` —
+      by design.)
 - [ ] **B2 — Drag writes the file.** Drag the card to *In Progress*. Expect:
       it stays there (no snap-back), and
       `cat .gavin-root/plans/demo.md` shows `status: In Progress` with every
@@ -60,7 +62,7 @@ Open a terminal in the `smoke-test` workspace and `cd` to `PLAYGROUND`.
       columns. Drag the card into *Done*. Expect: the auto column dissolves and
       the file now says `status: Done`.
 - [ ] **B4 — Agent-style live edit.**
-      `printf -- '---\nstatus: To Do\n---\n# Demo plan\n' > .gavin-root/plans/demo.md`
+      `printf -- '---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n# Demo plan\n' > .gavin-root/plans/demo.md`
       (simulates an agent rewriting the file). Expect: the card moves back to
       *To Do* by itself within ~3 s.
 - [ ] **B5 — Detail modal + priority write.** Click the demo card. Expect: a
