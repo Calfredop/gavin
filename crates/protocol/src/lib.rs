@@ -5,6 +5,14 @@ use std::io::{BufRead, Read, Write};
 /// can't grow the daemon's read buffer unbounded.
 const MAX_LINE_BYTES: u64 = 1024 * 1024;
 
+/// Bumped on ANY wire-breaking change. The daemon reports it via
+/// Request::GetProtocolVersion; the app (at bootstrap) and gavin-mcp (at
+/// connect) probe it and turn mismatches -- including the
+/// connection-close an older daemon produces when it can't parse the
+/// probe at all -- into actionable "restart the daemon" errors instead of
+/// mysteries (see the 2026-08-07 stale-daemon incident).
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
@@ -69,6 +77,35 @@ pub enum Request {
         key: String,
         value: String,
     },
+    /// Stateless scan -- no watch required (gavin-mcp's gavin_get_tree).
+    ScanGavinRoot {
+        root_path: String,
+    },
+    ReadPrd {
+        root_path: String,
+    },
+    /// Canonical plan authoring for agents. Validated daemon-side; never
+    /// overwrites.
+    CreatePlan {
+        context_folder: String,
+        file_name: String,
+        title: String,
+        status: Option<String>,
+        priority: Option<String>,
+        body: Option<String>,
+    },
+    /// The SQLite board of the WATCHED workspace whose root matches.
+    GetBoardByRoot {
+        root_path: String,
+    },
+    /// Creates a session and pushes AgentSessionSpawned on the watching
+    /// app connection (D19: spawning requires the workspace to be open).
+    SpawnAgentSession {
+        root_path: String,
+        cwd: String,
+        command: String,
+    },
+    GetProtocolVersion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +122,11 @@ pub enum Response {
     Board { columns: Vec<Column>, labels: Vec<Label> },
     GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
     GavinTreeChanged { workspace_id: String, tree: GavinTree },
+    GavinTreeScanned { tree: GavinTree },
+    PrdContent { content: String },
+    PlanCreated { path: String },
+    AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
+    ProtocolVersion { version: u32 },
     Ok,
     Error { message: String },
 }
@@ -789,6 +831,97 @@ mod tests {
                 assert_eq!(path, "/tmp/ws/.gavin-root/plans/a.md");
                 assert_eq!(key, "status");
                 assert_eq!(value, "In Progress");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protocol_version_is_one_until_a_breaking_change_bumps_it() {
+        assert_eq!(PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn create_plan_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::CreatePlan {
+            context_folder: "/ws/auth".to_string(),
+            file_name: "login.md".to_string(),
+            title: "Login flow".to_string(),
+            status: Some("In Progress".to_string()),
+            priority: Some("high".to_string()),
+            body: Some("Body text".to_string()),
+        };
+        write_message(&mut buf, &req).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Request::CreatePlan { context_folder, file_name, title, status, priority, body } => {
+                assert_eq!(context_folder, "/ws/auth");
+                assert_eq!(file_name, "login.md");
+                assert_eq!(title, "Login flow");
+                assert_eq!(status.as_deref(), Some("In Progress"));
+                assert_eq!(priority.as_deref(), Some("high"));
+                assert_eq!(body.as_deref(), Some("Body text"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_agent_session_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::SpawnAgentSession {
+            root_path: "/ws".to_string(),
+            cwd: "/ws/auth".to_string(),
+            command: "claude".to_string(),
+        };
+        write_message(&mut buf, &req).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Request::SpawnAgentSession { root_path, cwd, command } => {
+                assert_eq!(root_path, "/ws");
+                assert_eq!(cwd, "/ws/auth");
+                assert_eq!(command, "claude");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protocol_version_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::GetProtocolVersion).unwrap();
+        write_message(&mut buf, &Response::ProtocolVersion { version: PROTOCOL_VERSION }).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let req: Request = read_message(&mut cursor).unwrap().unwrap();
+        assert!(matches!(req, Request::GetProtocolVersion));
+        let resp: Response = read_message(&mut cursor).unwrap().unwrap();
+        match resp {
+            Response::ProtocolVersion { version } => assert_eq!(version, PROTOCOL_VERSION),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_session_spawned_response_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let resp = Response::AgentSessionSpawned {
+            workspace_id: "ws-1".to_string(),
+            session_id: "s-1".to_string(),
+            cwd: "/ws".to_string(),
+            command: "claude".to_string(),
+        };
+        write_message(&mut buf, &resp).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(session_id, "s-1");
+                assert_eq!(cwd, "/ws");
+                assert_eq!(command, "claude");
             }
             other => panic!("wrong variant: {other:?}"),
         }

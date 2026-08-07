@@ -1161,6 +1161,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::set_plan_field(std::path::Path::new(&path), &key, &value)
                 .map(|_| Response::Ok)
         }
+        // Stubs until the gavin MCP handlers land (same branch, next tasks):
+        Request::ScanGavinRoot { .. }
+        | Request::ReadPrd { .. }
+        | Request::CreatePlan { .. }
+        | Request::GetBoardByRoot { .. }
+        | Request::SpawnAgentSession { .. }
+        | Request::GetProtocolVersion => {
+            Ok(Response::Error { message: "gavin mcp requests not yet implemented".to_string() })
+        }
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })

@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/daemon", "crates/protocol", "app/src-tauri"]
+members = ["crates/daemon", "crates/protocol", "crates/gavin-mcp", "app/src-tauri"]
