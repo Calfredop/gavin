@@ -79,6 +79,70 @@ mod workspaces_data_tests {
     }
 }
 
+// These tests run under debug_assertions (cargo test defaults to the dev
+// profile), so they cover the dev arm of the smoke-test reconciliation;
+// the release strip arm is compile-gated on the same single cfg! condition.
+#[cfg(test)]
+mod smoketest_tests {
+    use super::*;
+
+    #[test]
+    fn reconcile_appends_the_smoketest_workspace_once() {
+        let mut workspaces = vec![];
+        reconcile_smoketest_workspace(&mut workspaces);
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].id, crate::config::SMOKETEST_WORKSPACE_ID);
+        assert_eq!(workspaces[0].name, "Smoke Test");
+        reconcile_smoketest_workspace(&mut workspaces);
+        assert_eq!(workspaces.len(), 1, "must not duplicate on later launches");
+    }
+
+    #[test]
+    fn reconcile_preserves_an_existing_smoketest_workspace_and_its_root() {
+        let mut workspaces = vec![Workspace {
+            id: crate::config::SMOKETEST_WORKSPACE_ID.to_string(),
+            name: "Smoke Test".to_string(),
+            pages: vec![],
+            active_page_id: None,
+            active_view: None,
+            root_path: Some("/tmp/scratch".to_string()),
+        }];
+        reconcile_smoketest_workspace(&mut workspaces);
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].root_path.as_deref(), Some("/tmp/scratch"));
+    }
+
+    #[test]
+    fn seed_writes_fixtures_into_an_initialized_root_and_rejects_a_bare_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+
+        // Bare folder: refused with a pointer to the init flow.
+        assert!(seed_smoke_test_data(root.clone()).is_err());
+
+        std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
+        seed_smoke_test_data(root.clone()).unwrap();
+        for f in ["demo.md", "stray.md", "broken.md"] {
+            assert!(dir.path().join(".gavin-root").join("plans").join(f).is_file());
+        }
+        assert!(dir
+            .path()
+            .join("src")
+            .join("auth")
+            .join(".gavin")
+            .join("plans")
+            .join("login.md")
+            .is_file());
+
+        // Idempotent: a re-seed (the reset) succeeds and restores content.
+        std::fs::write(dir.path().join(".gavin-root").join("plans").join("demo.md"), "mangled").unwrap();
+        seed_smoke_test_data(root).unwrap();
+        let demo =
+            std::fs::read_to_string(dir.path().join(".gavin-root").join("plans").join("demo.md")).unwrap();
+        assert!(demo.starts_with("---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n"));
+    }
+}
+
 /// Returns the current workspace/page state. An empty `WorkspacesData`
 /// (`workspaces: []`) is a normal, permanent steady state -- e.g. every
 /// user's first launch after this migration, before they've created any
@@ -726,6 +790,28 @@ mod resolve_workspaces_tests {
 /// below, and spawns a background thread that relays every subsequent daemon
 /// message to the frontend as a Tauri event. Called once from the app's setup
 /// hook.
+/// Dev builds always offer a "Smoke Test" workspace (appended at the end,
+/// preserved if it already exists -- including its bound root); release
+/// builds strip it so a dev config.json can never leak it into prod. It is
+/// an ordinary, closable workspace: closing it just means the next dev
+/// launch recreates it empty.
+fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
+    if cfg!(debug_assertions) {
+        if !workspaces.iter().any(|w| w.id == crate::config::SMOKETEST_WORKSPACE_ID) {
+            workspaces.push(Workspace {
+                id: crate::config::SMOKETEST_WORKSPACE_ID.to_string(),
+                name: "Smoke Test".to_string(),
+                pages: vec![],
+                active_page_id: None,
+                active_view: None,
+                root_path: None,
+            });
+        }
+    } else {
+        workspaces.retain(|w| w.id != crate::config::SMOKETEST_WORKSPACE_ID);
+    }
+}
+
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let stream_conn = crate::daemon::connect_or_spawn(
         &socket_path(),
@@ -768,6 +854,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             },
         );
     }
+    reconcile_smoketest_workspace(&mut workspaces);
     let non_session_tab_ids: HashSet<String> =
         file_tabs.keys().chain(board_tabs.keys()).cloned().collect();
     resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids)?;
@@ -1096,6 +1183,51 @@ pub fn create_gavin_context(
 #[tauri::command]
 pub fn gavin_root_exists(root_path: String) -> bool {
     std::path::Path::new(&root_path).join(".gavin-root").is_dir()
+}
+
+/// Dev-only: writes the smoke-test demo fixtures into an already-initialized
+/// root. Idempotent -- re-seeding overwrites the demo files (that IS the
+/// reset). The live watcher turns each write into board updates, so this
+/// also exercises the whole push pipeline end to end.
+#[tauri::command]
+pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("seed_smoke_test_data is dev-only".to_string());
+    }
+    let root = std::path::Path::new(&root_path);
+    let gavin_root = root.join(".gavin-root");
+    if !gavin_root.is_dir() {
+        return Err("initialize gavin in this folder first (Set root… → Initialize)".to_string());
+    }
+    let err = |e: std::io::Error| e.to_string();
+    let plans = gavin_root.join("plans");
+    std::fs::create_dir_all(&plans).map_err(err)?;
+    std::fs::write(
+        plans.join("demo.md"),
+        "---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n# Demo plan\n\n\
+         Drag me between columns -- the status line in this file follows.\n",
+    )
+    .map_err(err)?;
+    std::fs::write(
+        plans.join("stray.md"),
+        "---\ntitle: Stray status\nstatus: Shipped\n---\n# Stray\n\n\
+         My status matches no column, so I live in an auto column until dragged out.\n",
+    )
+    .map_err(err)?;
+    std::fs::write(
+        plans.join("broken.md"),
+        "---\nstatus: To Do\nthis frontmatter never closes\n",
+    )
+    .map_err(err)?;
+    let auth_plans = root.join("src").join("auth").join(".gavin").join("plans");
+    std::fs::create_dir_all(&auth_plans).map_err(err)?;
+    std::fs::write(
+        auth_plans.join("login.md"),
+        "---\ntitle: Login flow\nstatus: To Do\n---\n# Login flow\n\n\
+         cd into src/auth in a terminal to see the pane's board icon.\n",
+    )
+    .map_err(err)?;
+    Ok(())
 }
 
 #[tauri::command]

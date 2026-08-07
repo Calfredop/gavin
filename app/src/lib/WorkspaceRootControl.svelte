@@ -3,7 +3,7 @@
   import { setWorkspaceRoot } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import * as backend from "./backend";
-  import { UNFILED_WORKSPACE_ID, type Workspace } from "./workspace";
+  import { UNFILED_WORKSPACE_ID, SMOKETEST_WORKSPACE_ID, type Workspace } from "./workspace";
   import Modal from "./Modal.svelte";
 
   interface Props {
@@ -48,6 +48,26 @@
     pendingRoot = null;
     await setWorkspaceRoot(workspace.id, root);
   }
+
+  // The dev-only Smoke Test workspace's one extra affordance: seed the
+  // bound root with the demo fixture set (idempotent -- re-seeding IS the
+  // reset). Gated twice: this workspace only, dev builds only (the Rust
+  // command additionally refuses outside debug builds).
+  const showSeed = $derived(
+    workspace.id === SMOKETEST_WORKSPACE_ID && import.meta.env.DEV && Boolean(workspace.rootPath) && !rootMissing
+  );
+  let seedNote = $state<string | null>(null);
+
+  async function seedDemoData(): Promise<void> {
+    if (!workspace.rootPath) return;
+    seedNote = null;
+    try {
+      await backend.seedSmokeTestData(workspace.rootPath);
+      seedNote = "Seeded — cards appear within ~3s. Re-click any time to reset the demo files.";
+    } catch (e) {
+      seedNote = `Couldn't seed: ${e}`;
+    }
+  }
 </script>
 
 {#if workspace.id !== UNFILED_WORKSPACE_ID}
@@ -69,6 +89,15 @@
   {/if}
   {#if errorMessage}
     <div class="banner warning"><span>{errorMessage}</span></div>
+  {/if}
+  {#if showSeed}
+    <div class="banner seed">
+      <span>Dev smoke test — seed the bound folder with demo plans (auto column, ⚠ card, auth context).</span>
+      <button type="button" onclick={seedDemoData}>Seed demo data</button>
+    </div>
+    {#if seedNote}
+      <div class="banner seed"><span>{seedNote}</span></div>
+    {/if}
   {/if}
 {/if}
 
@@ -105,6 +134,10 @@
   .banner.warning {
     border-color: #a15c2f;
     color: #e0b08a;
+  }
+  .banner.seed {
+    border-color: #3d5a3d;
+    color: #8bc98b;
   }
   .banner button,
   .actions button {

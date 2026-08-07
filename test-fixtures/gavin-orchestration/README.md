@@ -12,6 +12,13 @@ floor) — that delay is by design, not a bug.
    Your existing terminal sessions restart with fresh shells; that's expected.
 2. `sh test-fixtures/gavin-orchestration/setup.sh`, then launch the app.
 
+Dev builds ship a built-in **Smoke Test** workspace (auto-created at launch,
+absent from release builds; closing it just makes the next dev launch recreate
+it empty) — use it for everything below instead of creating a workspace by
+hand. Once its root is bound, its hub shows a green **Seed demo data** button
+that writes the B1/B3/B6/C1 fixture files in one click (re-click = reset);
+steps below note where seeding replaces hand-typed commands.
+
 All shell commands below run from a terminal *inside gavin* whose cwd you
 control with `cd`. `PLAYGROUND` means the absolute path printed by setup.sh.
 
@@ -19,17 +26,18 @@ control with `cd`. `PLAYGROUND` means the absolute path printed by setup.sh.
 
 ## A. Root binding (Foundations)
 
-- [ ] **A1 — No-root banner.** Create a new workspace named `smoke-test`
-      (sidebar). Open its hub (the Kanban tab). Expect: a slim banner —
-      "No root folder set … **Set root…**".
+- [ ] **A1 — No-root banner.** Open the built-in **Smoke Test** workspace's hub
+      (the Kanban tab). Expect: a slim banner — "No root folder set …
+      **Set root…**" (and no Seed button yet).
 - [ ] **A2 — Unfiled is exempt.** Switch to the Unfiled workspace's hub.
       Expect: **no** banner, ever.
-- [ ] **A3 — Init flow.** Back in `smoke-test`: Set root… → pick the
+- [ ] **A3 — Init flow.** Back in Smoke Test: Set root… → pick the
       `playground` folder → modal "Initialize gavin in this folder?" →
-      **Initialize**. Expect: banner becomes a path chip (`…/playground ⚙`),
-      and on disk `playground/.gavin-root/` now holds `PRD.md`, `config.toml`,
-      `plans/`, `docs/`, `specs/` (each subfolder with a `.gitkeep`). `PRD.md`
-      starts with `# smoke-test — Product Requirements`.
+      **Initialize**. Expect: banner becomes a path chip (`…/playground ⚙`)
+      plus the green **Seed demo data** row, and on disk
+      `playground/.gavin-root/` now holds `PRD.md`, `config.toml`, `plans/`,
+      `docs/`, `specs/` (each subfolder with a `.gitkeep`). `PRD.md` starts
+      with `# Smoke Test — Product Requirements`.
 - [ ] **A4 — Persistence.** Quit and relaunch the app. Expect: the chip is
       still there (no banner flash), and `config.json`
       (`~/Library/Application Support/com.gavin.app/config.json`) contains the
@@ -44,9 +52,12 @@ control with `cd`. `PLAYGROUND` means the absolute path printed by setup.sh.
 
 ## B. Plan cards on the workspace board
 
-Open a terminal in the `smoke-test` workspace and `cd` to `PLAYGROUND`.
+Open a terminal in the Smoke Test workspace and `cd` to `PLAYGROUND`.
+**Fast path:** click **Seed demo data** — it creates B1's `demo.md`, B3's
+`stray.md`, B6's `broken.md`, and C1's `src/auth` context in one go; then treat
+the file-creation commands in those steps as already done.
 
-- [ ] **B1 — Card materializes.**
+- [ ] **B1 — Card materializes.** (Seeded, or:)
       `printf -- '---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n# Demo plan\n' > .gavin-root/plans/demo.md`
       Expect on the hub board within ~3 s: a **dashed** card "Demo plan" in
       *To Do*, with a file glyph, an orange priority dot, and a context badge.
@@ -56,7 +67,7 @@ Open a terminal in the `smoke-test` workspace and `cd` to `PLAYGROUND`.
       it stays there (no snap-back), and
       `cat .gavin-root/plans/demo.md` shows `status: In Progress` with every
       other byte untouched.
-- [ ] **B3 — Auto column.**
+- [ ] **B3 — Auto column.** (Seeded as `stray.md`, or:)
       `printf -- '---\nstatus: Shipped\n---\n# Stray\n' > .gavin-root/plans/stray.md`
       Expect: a dashed **auto column** headed `Shipped` appears after the real
       columns. Drag the card into *Done*. Expect: the auto column dissolves and
@@ -69,7 +80,8 @@ Open a terminal in the `smoke-test` workspace and `cd` to `PLAYGROUND`.
       read-only modal (title, `playground · demo.md`, full path, status). Change
       Priority to `urgent` → `cat` the file: only the `priority:` line changed.
       "Open externally" opens your editor.
-- [ ] **B6 — Broken frontmatter degrades, never crashes.**
+- [ ] **B6 — Broken frontmatter degrades, never crashes.** (Seeded as
+      `broken.md`, or:)
       `printf -- '---\nstatus: To Do\nno closing marker\n' > .gavin-root/plans/broken.md`
       Expect: a card in the **first** column with a ⚠ badge; its modal explains
       the frontmatter has issues. The board stays fully functional.
@@ -79,7 +91,7 @@ Open a terminal in the `smoke-test` workspace and `cd` to `PLAYGROUND`.
 
 ## C. Per-session context boards
 
-- [ ] **C1 — Context + icon.** In the terminal:
+- [ ] **C1 — Context + icon.** (Seeded — just `cd src/auth` — or:)
       `mkdir -p src/auth/.gavin/plans` then
       `printf -- '---\nstatus: To Do\n---\n# Login flow\n' > src/auth/.gavin/plans/login.md`
       and `cd src/auth`. Expect: within ~3 s a **kanban icon** appears at the
@@ -102,8 +114,9 @@ Open a terminal in the `smoke-test` workspace and `cd` to `PLAYGROUND`.
 
 ## D. Cleanup
 
-- [ ] Close the `smoke-test` workspace (expect: the close prompt counts only
-      real terminal sessions). Then `rm -rf` the `playground` folder — it is
+- [ ] Close the Smoke Test workspace (expect: the close prompt counts only
+      real terminal sessions; the workspace respawns empty on the next dev
+      launch — by design). Then `rm -rf` the `playground` folder — it is
       git-ignored, nothing to revert.
 
 ---

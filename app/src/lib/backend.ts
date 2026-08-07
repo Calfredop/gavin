@@ -118,6 +118,10 @@ export function setBoardTabs(boardTabs: Record<string, BoardTab>): Promise<void>
   return invoke("set_board_tabs", { boardTabs });
 }
 
+export function seedSmokeTestData(rootPath: string): Promise<void> {
+  return invoke("seed_smoke_test_data", { rootPath });
+}
+
 export function setPlanFrontmatterField(
   path: string,
   key: "status" | "priority",

@@ -63,7 +63,8 @@ pub fn run() {
             session::gavin_root_exists,
             session::get_board_tabs,
             session::set_board_tabs,
-            session::set_plan_frontmatter_field
+            session::set_plan_frontmatter_field,
+            session::seed_smoke_test_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

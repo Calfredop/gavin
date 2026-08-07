@@ -25,6 +25,13 @@ pub struct Page {
 /// (app/src/lib/workspace.ts's UNFILED_WORKSPACE_ID).
 pub const UNFILED_WORKSPACE_ID: &str = "__unfiled__";
 
+/// Well-known id for the dev-only "Smoke Test" workspace -- ensured at
+/// bootstrap by debug builds, actively stripped by release builds so a dev
+/// config.json can never leak it into prod. Closable: the next dev launch
+/// simply recreates it empty. Must match the frontend's own copy exactly
+/// (app/src/lib/workspace.ts's SMOKETEST_WORKSPACE_ID).
+pub const SMOKETEST_WORKSPACE_ID: &str = "__smoketest__";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {

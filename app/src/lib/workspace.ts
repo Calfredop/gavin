@@ -31,6 +31,11 @@ export interface WorkspacesData {
 // match config.rs's own copy of this constant exactly.
 export const UNFILED_WORKSPACE_ID = "__unfiled__";
 
+// Well-known id for the dev-only "Smoke Test" workspace, ensured by debug
+// builds' Rust bootstrap and stripped by release builds. Must match
+// config.rs's own copy of this constant exactly.
+export const SMOKETEST_WORKSPACE_ID = "__smoketest__";
+
 export function createWorkspace(state: WorkspacesData, id: string, name: string): WorkspacesData {
   const workspace: Workspace = { id, name, pages: [], activePageId: null };
   return { workspaces: [...state.workspaces, workspace], activeWorkspaceId: id };
