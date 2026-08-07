@@ -246,6 +246,23 @@ below-3→5, below-4→6, below-7 folded into 3.)
   of transient recommendation): a `board_tabs` map in config.json mirroring
   `file_tabs`, hydrated on bootstrap, skipped by the Attach loop and
   session-reconciliation, excluded from close-confirmation counts.
+- **D18 (sub-3, 2026-08-07):** **Full CRUD tool suite** (user override of the lean
+  recommendation): spawn_session, get_board, get_tree, set_plan_field PLUS
+  create_plan, read_prd, create_context, init_root — one canonical API; the skill
+  teaches when, tools provide how. create_plan and read_prd are new daemon
+  capabilities.
+- **D19 (sub-3, 2026-08-07):** **MCP-spawned sessions land on an auto-created
+  "Agents" page** of the resolved workspace (daemon pushes an event on the
+  streaming connection; the app inserts the tab). Spawning requires the root to
+  be watched (app open) — an invisible running agent is never allowed.
+- **D20 (sub-3, 2026-08-07):** **Explicit "Set up agent integration" button** on
+  the hub writes .mcp.json + .claude/skills/gavin/SKILL.md + a marked CLAUDE.md
+  pointer section; re-runnable; repo writes stay consented.
+- **D21 (sub-3, 2026-08-07):** **Hand-rolled MCP stdio JSON-RPC** in a new
+  `gavin-mcp` bin crate forwarding to the daemon socket — zero new deps, sync.
+- **D22 (sub-3, 2026-08-07):** **Protocol version handshake included in sub-3**
+  (from the stale-daemon incident): version const + hello check at app bootstrap
+  and shim connect; mismatch → clear "restart the daemon" error.
 - **D13 (2026-08-06):** **Decomposition + build order approved:** 1 Foundations
   (root binding, `.gavin` convention, scaffolding, scanner+watcher) → 2 Plans⇄kanban
   (frontmatter status, merged board, per-session boards) → 3 MCP server + skill
