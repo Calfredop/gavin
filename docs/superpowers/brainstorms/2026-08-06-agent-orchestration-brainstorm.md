@@ -157,6 +157,17 @@ below-3→5, below-4→6, below-7 folded into 3.)
   the systemic fix (detect mismatch, offer restart). Candidate for sub-3 or a
   standalone patch.
 
+- **3 MCP — spec (`27109b4`), Part 1 plan (`c573123`), Part 1 implementation
+  COMPLETE (inline, 2026-08-07):** T1 protocol (`addcbdc`), T2 plan
+  authoring/prd/scan/version (`80ded43`), T3 board-by-root + spawn push
+  (`49ff1f0`), T4 gavin-mcp shim (`9a5208c`). 244 Rust tests green; 11/11
+  scripted end-to-end checks against the real daemon + shim binaries (real MCP
+  conversation, stdout protocol-purity verified). Noted for Part 2's skill text:
+  the shim resolves its root once at startup, so gavin_init_root needs an MCP
+  reconnect to take effect. One pre-existing test flaked once under parallel
+  socket load (ConnectionRefused) and passed in isolation + two full reruns.
+  Part 2 (app landing, setup button, SKILL.md) not yet planned.
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
