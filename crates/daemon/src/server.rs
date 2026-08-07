@@ -652,6 +652,51 @@ impl SessionManager {
         watcher.map(|w| w.snapshot())
     }
 
+    /// The watched workspace whose root matches `root_path`. Watchers
+    /// store canonicalized roots, so the incoming path is canonicalized
+    /// before comparison.
+    fn find_watcher_by_root(&self, root_path: &str) -> Option<Arc<crate::gavin::GavinWatcher>> {
+        let canonical = std::path::Path::new(root_path)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(root_path));
+        self.gavin_watchers
+            .lock()
+            .unwrap()
+            .values()
+            .find(|w| w.root_path == canonical)
+            .cloned()
+    }
+
+    pub fn board_by_root(&self, root_path: &str) -> anyhow::Result<protocol::Board> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.get_board(&watcher.workspace_id)
+    }
+
+    /// D19: spawning requires the workspace to be open (watched) -- an
+    /// agent session the human can't see is never allowed. The push rides
+    /// the watching connection; the app Attaches, then lands it on the
+    /// Agents page (Part 2).
+    pub fn spawn_agent_session(
+        &self,
+        root_path: &str,
+        cwd: &str,
+        command: &str,
+    ) -> anyhow::Result<String> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        let id = self.create_session(root_path, cwd, Some(command))?;
+        watcher.push_response(&Response::AgentSessionSpawned {
+            workspace_id: watcher.workspace_id.clone(),
+            session_id: id.clone(),
+            cwd: cwd.to_string(),
+            command: command.to_string(),
+        });
+        Ok(id)
+    }
+
     pub fn create_session(
         &self,
         workspace_path: &str,
@@ -1180,10 +1225,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::GetProtocolVersion => {
             Ok(Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION })
         }
-        // Stubs until Task 3 lands:
-        Request::GetBoardByRoot { .. } | Request::SpawnAgentSession { .. } => {
-            Ok(Response::Error { message: "gavin mcp requests not yet implemented".to_string() })
-        }
+        Request::GetBoardByRoot { root_path } => manager
+            .board_by_root(&root_path)
+            .map(|board| Response::Board { columns: board.columns, labels: board.labels }),
+        Request::SpawnAgentSession { root_path, cwd, command } => manager
+            .spawn_agent_session(&root_path, &cwd, &command)
+            .map(|id| Response::SessionCreated { id }),
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
@@ -1364,6 +1411,86 @@ mod tests {
             &Request::GetGavinTree { workspace_id: "never-watched".to_string() },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn board_and_spawn_require_a_watched_root() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+
+        let resp = request(&mut cmd, &Request::GetBoardByRoot { root_path: root.clone() });
+        assert!(matches!(resp, Response::Error { .. }));
+        let resp = request(
+            &mut cmd,
+            &Request::SpawnAgentSession {
+                root_path: root,
+                cwd: "/tmp".to_string(),
+                command: "/bin/sh".to_string(),
+            },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn spawn_replies_session_id_and_pushes_on_the_watching_connection() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+
+        // The "app": watches the root on a streaming connection.
+        let mut app = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut app,
+            &Request::WatchGavinRoot { workspace_id: "ws-a".to_string(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut app_reader = BufReader::new(app.try_clone().unwrap());
+        let first: Response = read_message(&mut app_reader).unwrap().unwrap();
+        assert!(matches!(first, Response::GavinTreeChanged { .. }));
+
+        // The "shim": spawns over a command connection.
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::SpawnAgentSession {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                command: "/bin/sh".to_string(),
+            },
+        );
+        let session_id = match resp {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+
+        // The push arrives on the WATCHING connection. (The watcher stores
+        // the canonicalized root, so the pushed cwd echoes the request's
+        // spelling while the match itself is canonical.)
+        let push: Response = read_message(&mut app_reader).unwrap().unwrap();
+        match push {
+            Response::AgentSessionSpawned { workspace_id, session_id: pushed, cwd, command } => {
+                assert_eq!(workspace_id, "ws-a");
+                assert_eq!(pushed, session_id);
+                assert_eq!(cwd, root);
+                assert_eq!(command, "/bin/sh");
+            }
+            other => panic!("expected AgentSessionSpawned, got {other:?}"),
+        }
+
+        // Board happy path now that the root is watched: default seed.
+        let resp = request(&mut cmd, &Request::GetBoardByRoot { root_path: root });
+        match resp {
+            Response::Board { columns, .. } => assert_eq!(columns.len(), 3),
+            other => panic!("expected Board, got {other:?}"),
+        }
+
+        // Tidy the spawned shell.
+        let resp = request(&mut cmd, &Request::KillSession { id: session_id });
+        assert!(matches!(resp, Response::Ok));
     }
 
     #[test]

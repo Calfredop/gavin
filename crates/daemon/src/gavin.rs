@@ -549,6 +549,14 @@ impl GavinWatcher {
         let _ = protocol::write_message(&mut *writer, &response);
     }
 
+    /// Best-effort push on the watching app connection -- same
+    /// dead-writer semantics as rescan_and_push (a restarted app's fresh
+    /// WatchGavinRoot replaces this watcher).
+    pub fn push_response(&self, resp: &Response) {
+        let mut writer = self.writer.lock().unwrap();
+        let _ = protocol::write_message(&mut *writer, resp);
+    }
+
     /// Fresh scan for GetGavinTree -- shares the floor/dedup state so a
     /// snapshot request can't defeat MIN_RESCAN_INTERVAL, but always
     /// returns a tree (even when unchanged).
