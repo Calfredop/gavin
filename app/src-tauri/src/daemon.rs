@@ -47,6 +47,23 @@ pub fn spawn_real_daemon() -> anyhow::Result<std::process::Child> {
     Ok(Command::new(binary).spawn()?)
 }
 
+/// Kills every running gavin-daemon by process name -- the restart
+/// recovery path behind the connection-error overlay.
+///
+/// By NAME, not over the wire: the daemon this exists to replace is one
+/// too old to parse current requests (that is the whole failure being
+/// recovered from), so no protocol-level "shut down" could reach it. The
+/// socket file it leaves behind is removed by the next daemon when it
+/// binds (see run_server), so nothing else needs cleaning up here.
+pub fn kill_running_daemons() -> anyhow::Result<()> {
+    let status = Command::new("pkill").arg("-x").arg("gavin-daemon").status()?;
+    match status.code() {
+        // 1 == "no processes matched", which is a normal already-gone case.
+        Some(0) | Some(1) => Ok(()),
+        other => anyhow::bail!("pkill exited with {other:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

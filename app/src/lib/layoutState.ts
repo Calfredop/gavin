@@ -269,6 +269,26 @@ export function teardown(): void {
   unlisteners.length = 0;
 }
 
+// The connection-error overlay's recovery action: restart the daemon and
+// try the whole startup again. Puts the store back into "connecting"
+// first -- both ready paths (the workspaces-ready listener and
+// pollForStartupState below) ignore payloads unless the status is
+// "connecting", so without this the retry would succeed invisibly.
+export async function retryConnect(): Promise<void> {
+  layoutState.update((s) => ({ ...s, status: "connecting", errorMessage: "" }));
+  try {
+    const reconnected = await backend.restartDaemon();
+    if (!reconnected) {
+      setError("Daemon restarted — quit and relaunch gavin to reconnect.");
+      return;
+    }
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  void pollForStartupState();
+}
+
 async function pollForStartupState(): Promise<void> {
   const maxAttempts = 15;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

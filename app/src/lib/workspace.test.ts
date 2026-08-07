@@ -23,6 +23,8 @@ import {
   setPageFocus,
   resolveActiveFocus,
   UNFILED_WORKSPACE_ID,
+  SMOKETEST_WORKSPACE_ID,
+  showsDevOnlyViews,
   summarizePageGitStatus,
   type WorkspacesData,
   type Workspace,
@@ -397,5 +399,14 @@ describe("summarizePageGitStatus", () => {
     const p = page("p1", leaf(["a"]));
     const result = summarizePageGitStatus(p, { a: gitStatus("/repo-a"), stranger: gitStatus("/repo-b") });
     expect(result).toEqual({ kind: "single", status: gitStatus("/repo-a") });
+  });
+});
+
+describe("showsDevOnlyViews", () => {
+  it("is true only for the Smoke Test workspace in a dev build", () => {
+    expect(showsDevOnlyViews(SMOKETEST_WORKSPACE_ID, true)).toBe(true);
+    expect(showsDevOnlyViews(SMOKETEST_WORKSPACE_ID, false)).toBe(false);
+    expect(showsDevOnlyViews("ws-1", true)).toBe(false);
+    expect(showsDevOnlyViews(UNFILED_WORKSPACE_ID, true)).toBe(false);
   });
 });

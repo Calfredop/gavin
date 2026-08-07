@@ -11,6 +11,7 @@ vi.mock("./backend", () => ({
   getWorkspacesState: vi.fn(),
   setWorkspacesState: vi.fn(),
   getBootstrapError: vi.fn(),
+  restartDaemon: vi.fn(),
   writeInput: vi.fn(),
   setOnWriteInputHook: vi.fn(),
   resizeSession: vi.fn(),
@@ -85,6 +86,7 @@ import {
   setWorkspaceRoot,
   openBoardInSplit,
   handleAgentSessionSpawned,
+  retryConnect,
   bootstrap,
   teardown,
 } from "./layoutState";
@@ -157,6 +159,45 @@ describe("setWorkspaceRoot", () => {
 
     expect(backend.unwatchGavinRoot).toHaveBeenCalledWith("ws-1");
     expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-1", "/tmp/new");
+  });
+});
+
+describe("retryConnect", () => {
+  it("restarts the daemon and comes back ready", async () => {
+    setState([], null, null);
+    layoutState.update((s) => ({ ...s, status: "error", errorMessage: "older than this app" }));
+    vi.mocked(backend.restartDaemon).mockResolvedValue(true);
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+
+    await retryConnect();
+
+    expect(backend.restartDaemon).toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(get(layoutState).status).toBe("ready");
+    });
+  });
+
+  it("asks for a relaunch when the daemon restarted but this app can't rewire", async () => {
+    layoutState.update((s) => ({ ...s, status: "error", errorMessage: "boom" }));
+    vi.mocked(backend.restartDaemon).mockResolvedValue(false);
+
+    await retryConnect();
+
+    const state = get(layoutState);
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toContain("relaunch");
+  });
+
+  it("surfaces a failed restart", async () => {
+    layoutState.update((s) => ({ ...s, status: "error", errorMessage: "boom" }));
+    vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
+
+    await retryConnect();
+
+    const state = get(layoutState);
+    expect(state.status).toBe("error");
+    expect(state.errorMessage).toContain("pkill unavailable");
   });
 });
 

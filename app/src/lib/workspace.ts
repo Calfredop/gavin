@@ -36,6 +36,15 @@ export const UNFILED_WORKSPACE_ID = "__unfiled__";
 // config.rs's own copy of this constant exactly.
 export const SMOKETEST_WORKSPACE_ID = "__smoketest__";
 
+// Whether a workspace should be offered dev-only hub views (the
+// smoke-test checklist): dev builds only, Smoke Test workspace only. Kept
+// here rather than in workspaceViews.ts so it is testable -- that module
+// imports Svelte components, which this project's vitest setup can't
+// process (hence its no-component-tests convention).
+export function showsDevOnlyViews(workspaceId: string, isDev: boolean): boolean {
+  return isDev && workspaceId === SMOKETEST_WORKSPACE_ID;
+}
+
 export function createWorkspace(state: WorkspacesData, id: string, name: string): WorkspacesData {
   const workspace: Workspace = { id, name, pages: [], activePageId: null };
   return { workspaces: [...state.workspaces, workspace], activeWorkspaceId: id };

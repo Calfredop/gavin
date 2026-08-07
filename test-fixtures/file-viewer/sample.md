@@ -46,3 +46,5 @@ Append a line to this file from another terminal and watch it appear here
 within about a second, without touching the pane:
 
     echo '- appended at '"$(date +%T)" >> test-fixtures/file-viewer/sample.md
+- appended at 14:59:22
+- appended at 15:00:00

@@ -53,6 +53,7 @@ pub fn run() {
             fileviewer::unwatch_file_for_viewer,
             session::signal_frontend_ready,
             session::get_bootstrap_error,
+            session::restart_daemon,
             session::get_board,
             session::set_board,
             session::delete_board,

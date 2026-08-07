@@ -290,6 +290,43 @@ pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
     state.0.lock().unwrap().clone()
 }
 
+/// Recovery behind the connection-error overlay: kill whatever daemon is
+/// running (by name -- see kill_running_daemons), clear the stale
+/// bootstrap error, and try bootstrapping again.
+///
+/// Returns whether the app is fully reconnected. `false` means the daemon
+/// was restarted but this app process had ALREADY bootstrapped
+/// successfully earlier: Tauri's `manage` keeps the first value for a
+/// given type, so a second bootstrap can't rewire the existing
+/// connections, and only a relaunch will. That case (a daemon dying
+/// mid-session) is rarer than the one this exists for -- a version
+/// mismatch or missing daemon at startup, where bootstrap failed before
+/// managing anything and a second run wires everything cleanly.
+#[tauri::command]
+pub fn restart_daemon(app_handle: AppHandle) -> Result<bool, String> {
+    let already_bootstrapped = app_handle.try_state::<DaemonConnection>().is_some();
+    crate::daemon::kill_running_daemons().map_err(|e| e.to_string())?;
+    // Let the old process actually exit before connect_or_spawn looks for
+    // a listener, so it doesn't reach a half-dead one.
+    std::thread::sleep(Duration::from_millis(300));
+    if let Some(state) = app_handle.try_state::<BootstrapError>() {
+        *state.0.lock().unwrap() = None;
+    }
+    if already_bootstrapped {
+        // Still respawn the daemon (sessions and the socket come back),
+        // but tell the caller a relaunch is needed to rewire this app.
+        crate::daemon::connect_or_spawn(
+            &socket_path(),
+            Duration::from_secs(3),
+            crate::daemon::spawn_real_daemon,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+    bootstrap(app_handle).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Result<()> {
     write_message(&mut *writer.lock().unwrap(), req)
 }

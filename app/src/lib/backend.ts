@@ -84,6 +84,12 @@ export function getBootstrapError(): Promise<string | null> {
   return invoke("get_bootstrap_error");
 }
 
+// Resolves true when the app is fully reconnected, false when the daemon
+// was restarted but this app process needs a relaunch to rewire.
+export function restartDaemon(): Promise<boolean> {
+  return invoke("restart_daemon");
+}
+
 // Fire-and-forget: rides the streaming connection, so there is no reply --
 // the initial scan arrives as the first gavin-tree-changed event.
 export function watchGavinRoot(workspaceId: string, rootPath: string): Promise<void> {

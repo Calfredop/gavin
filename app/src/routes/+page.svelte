@@ -2,11 +2,18 @@
   import { onMount, onDestroy } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { confirm } from "@tauri-apps/plugin-dialog";
-  import { layoutState, bootstrap, teardown, createWorkspace, switchWorkspaceView } from "$lib/layoutState";
+  import {
+    layoutState,
+    bootstrap,
+    teardown,
+    createWorkspace,
+    switchWorkspaceView,
+    retryConnect,
+  } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
   import { getActiveWorkspace, getActiveView } from "$lib/workspace";
-  import { HUB_VIEWS } from "$lib/workspaceViews";
+  import { visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
@@ -18,7 +25,10 @@
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
-  const activeViewDef = $derived(HUB_VIEWS.find((v) => v.id === activeView) ?? HUB_VIEWS[0]);
+  // Not HUB_VIEWS directly: dev-only views (the smoke-test checklist)
+  // must never appear in a real workspace or a release build.
+  const hubViews = $derived(visibleHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV));
+  const activeViewDef = $derived(hubViews.find((v) => v.id === activeView) ?? hubViews[0]);
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -70,6 +80,7 @@
     <div class="overlay">
       <p>Couldn't connect to the daemon.</p>
       <p class="detail">{$layoutState.errorMessage}</p>
+      <button onclick={retryConnect}>Restart daemon &amp; retry</button>
     </div>
   {:else}
     <div class="body">
@@ -85,7 +96,7 @@
       {:else}
         <div class="content">
           <div class="tabs">
-            {#each HUB_VIEWS as view (view.id)}
+            {#each hubViews as view (view.id)}
               <button
                 type="button"
                 class="tab"

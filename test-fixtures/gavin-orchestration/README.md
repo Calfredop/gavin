@@ -12,6 +12,10 @@ floor) — that delay is by design, not a bug.
    Your existing terminal sessions restart with fresh shells; that's expected.
 2. `sh test-fixtures/gavin-orchestration/setup.sh`, then launch the app.
 
+**Tick-off companion:** the dev Smoke Test workspace has a **Checklist** hub tab
+covering the same ground with per-workspace saved progress. Use it to track a
+pass; use this file for the exact commands and expected output.
+
 Dev builds ship a built-in **Smoke Test** workspace (auto-created at launch,
 absent from release builds; closing it just makes the next dev launch recreate
 it empty) — use it for everything below instead of creating a workspace by
