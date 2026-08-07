@@ -1161,13 +1161,27 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::set_plan_field(std::path::Path::new(&path), &key, &value)
                 .map(|_| Response::Ok)
         }
-        // Stubs until the gavin MCP handlers land (same branch, next tasks):
-        Request::ScanGavinRoot { .. }
-        | Request::ReadPrd { .. }
-        | Request::CreatePlan { .. }
-        | Request::GetBoardByRoot { .. }
-        | Request::SpawnAgentSession { .. }
-        | Request::GetProtocolVersion => {
+        Request::ScanGavinRoot { root_path } => Ok(Response::GavinTreeScanned {
+            tree: crate::gavin::scan_root(std::path::Path::new(&root_path)),
+        }),
+        Request::ReadPrd { root_path } => crate::gavin::read_prd(std::path::Path::new(&root_path))
+            .map(|content| Response::PrdContent { content }),
+        Request::CreatePlan { context_folder, file_name, title, status, priority, body } => {
+            crate::gavin::create_plan_file(
+                std::path::Path::new(&context_folder),
+                &file_name,
+                &title,
+                status.as_deref(),
+                priority.as_deref(),
+                body.as_deref(),
+            )
+            .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
+        }
+        Request::GetProtocolVersion => {
+            Ok(Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION })
+        }
+        // Stubs until Task 3 lands:
+        Request::GetBoardByRoot { .. } | Request::SpawnAgentSession { .. } => {
             Ok(Response::Error { message: "gavin mcp requests not yet implemented".to_string() })
         }
     };
@@ -1393,6 +1407,50 @@ mod tests {
                 assert!(tree.contexts[0].has_prd);
             }
             other => panic!("expected healed push, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scan_prd_create_plan_and_version_over_socket() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+
+        let resp = request(&mut cmd, &Request::GetProtocolVersion);
+        assert!(
+            matches!(resp, Response::ProtocolVersion { version } if version == protocol::PROTOCOL_VERSION)
+        );
+
+        let resp = request(&mut cmd, &Request::ReadPrd { root_path: root.clone() });
+        assert!(matches!(resp, Response::PrdContent { .. }));
+
+        let resp = request(
+            &mut cmd,
+            &Request::CreatePlan {
+                context_folder: root.clone(),
+                file_name: "over-socket.md".to_string(),
+                title: "Over socket".to_string(),
+                status: None,
+                priority: Some("low".to_string()),
+                body: None,
+            },
+        );
+        let created_path = match resp {
+            Response::PlanCreated { path } => path,
+            other => panic!("expected PlanCreated, got {other:?}"),
+        };
+        assert!(std::path::Path::new(&created_path).is_file());
+
+        let resp = request(&mut cmd, &Request::ScanGavinRoot { root_path: root });
+        match resp {
+            Response::GavinTreeScanned { tree } => {
+                assert!(!tree.root_missing);
+                assert_eq!(tree.contexts[0].plans.len(), 1);
+                assert_eq!(tree.contexts[0].plans[0].title, "Over socket");
+            }
+            other => panic!("expected GavinTreeScanned, got {other:?}"),
         }
     }
 

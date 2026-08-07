@@ -153,6 +153,86 @@ fn write_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+const MAX_PRD_BYTES: u64 = 1024 * 1024;
+
+pub fn read_prd(root: &Path) -> anyhow::Result<String> {
+    let prd = root.join(GAVIN_ROOT_DIR).join("PRD.md");
+    if !prd.is_file() {
+        anyhow::bail!("no PRD found at {}", prd.display());
+    }
+    if std::fs::metadata(&prd)?.len() > MAX_PRD_BYTES {
+        anyhow::bail!("PRD exceeds the 1 MB read cap");
+    }
+    Ok(std::fs::read_to_string(&prd)?)
+}
+
+/// Canonical plan authoring for agents (spec §2): everything validated,
+/// nothing ever overwritten. Returns the created file's path.
+pub fn create_plan_file(
+    context_folder: &Path,
+    file_name: &str,
+    title: &str,
+    status: Option<&str>,
+    priority: Option<&str>,
+    body: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    let gavin_dir = if context_folder.join(GAVIN_ROOT_DIR).is_dir() {
+        context_folder.join(GAVIN_ROOT_DIR)
+    } else if context_folder.join(GAVIN_DIR).is_dir() {
+        context_folder.join(GAVIN_DIR)
+    } else {
+        anyhow::bail!(
+            "not a gavin context (no .gavin or .gavin-root): {}",
+            context_folder.display()
+        );
+    };
+
+    let valid_name = file_name.len() > ".md".len()
+        && file_name.ends_with(".md")
+        && file_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !valid_name {
+        anyhow::bail!("file_name must match [A-Za-z0-9._-]+.md, got: {file_name}");
+    }
+
+    let title = title.trim();
+    if title.is_empty() || title.contains('\n') {
+        anyhow::bail!("title must be a non-empty single line");
+    }
+    let status = status.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("To Do");
+    if status.contains('\n') {
+        anyhow::bail!("status must be a single line");
+    }
+    if let Some(p) = priority {
+        if parse_priority(p).is_none() {
+            anyhow::bail!("invalid priority value: {p}");
+        }
+    }
+
+    let plans = gavin_dir.join("plans");
+    std::fs::create_dir_all(&plans)?;
+    let path = plans.join(file_name);
+    if path.exists() {
+        anyhow::bail!("plan file already exists: {}", path.display());
+    }
+
+    let mut content = format!("---\ntitle: {title}\nstatus: {status}\n");
+    if let Some(p) = priority {
+        content.push_str(&format!("priority: {p}\n"));
+    }
+    content.push_str("---\n");
+    match body.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(b) => {
+            content.push_str(b);
+            content.push('\n');
+        }
+        None => content.push_str(&format!("# {title}\n")),
+    }
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
 /// The public, validated entry point (and the future MCP tool body). The
 /// allow-list is enforced HERE, not trusted to callers -- this must never
 /// become an arbitrary-line writer.
@@ -709,6 +789,57 @@ mod tests {
         assert_eq!(tree.contexts.len(), 1);
         assert_eq!(tree.contexts[0].name, "auth");
         assert!(tree.contexts[0].config_warning);
+    }
+
+    #[test]
+    fn create_plan_file_writes_canonical_content_with_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: Auth flow\nstatus: To Do\n---\n# Auth flow\n"
+        );
+        let path2 = create_plan_file(
+            dir.path(),
+            "auth2.md",
+            "Auth 2",
+            Some("In Progress"),
+            Some("high"),
+            Some("Body text"),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path2).unwrap(),
+            "---\ntitle: Auth 2\nstatus: In Progress\npriority: high\n---\nBody text\n"
+        );
+    }
+
+    #[test]
+    fn create_plan_file_validates_and_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        // Not a context:
+        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None).is_err());
+        // Bad names ("../esc.md" doubles as the path-escape guard):
+        for bad in ["", ".md", "no-extension", "sp ace.md", "../esc.md"] {
+            assert!(create_plan_file(dir.path(), bad, "T", None, None, None).is_err(), "{bad}");
+        }
+        // Bad priority / bad title:
+        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None).is_err());
+        // Never overwrites:
+        create_plan_file(dir.path(), "a.md", "T", None, None, None).unwrap();
+        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None);
+        assert!(dup.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn read_prd_returns_content_and_errors_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_prd(dir.path()).is_err());
+        init_gavin_root(dir.path(), "My WS").unwrap();
+        assert!(read_prd(dir.path()).unwrap().starts_with("# My WS — Product Requirements"));
     }
 
     #[test]
