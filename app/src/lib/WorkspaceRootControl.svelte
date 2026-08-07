@@ -68,6 +68,22 @@
       seedNote = `Couldn't seed: ${e}`;
     }
   }
+
+  // Agent integration (D20): available for every rooted, healthy
+  // workspace. Writes are merge-aware and re-runnable (gavin-managed
+  // files updated in place; everything else preserved).
+  let setupNote = $state<string | null>(null);
+
+  async function setupIntegration(): Promise<void> {
+    if (!workspace.rootPath) return;
+    setupNote = null;
+    try {
+      const files = await backend.setupAgentIntegration(workspace.rootPath);
+      setupNote = `Wrote: ${files.map((f) => f.replace(workspace.rootPath + "/", "")).join(", ")} — re-run any time to update.`;
+    } catch (e) {
+      setupNote = `Couldn't set up: ${e}`;
+    }
+  }
 </script>
 
 {#if workspace.id !== UNFILED_WORKSPACE_ID}
@@ -97,6 +113,15 @@
     </div>
     {#if seedNote}
       <div class="banner seed"><span>{seedNote}</span></div>
+    {/if}
+  {/if}
+  {#if workspace.rootPath && !rootMissing}
+    <div class="banner seed">
+      <span>Agent integration — write .mcp.json, the gavin skill, and a CLAUDE.md pointer into this root.</span>
+      <button type="button" onclick={setupIntegration}>Set up / update</button>
+    </div>
+    {#if setupNote}
+      <div class="banner seed"><span>{setupNote}</span></div>
     {/if}
   {/if}
 {/if}
