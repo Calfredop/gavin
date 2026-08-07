@@ -218,6 +218,11 @@ export async function bootstrap(): Promise<void> {
   // below) -- gavin-tree-changed pushes with no listener would be lost,
   // not buffered.
   unlisteners.push(await initGavinListeners());
+  unlisteners.push(
+    await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
+      handleAgentSessionSpawned(event.payload[0], event.payload[1]);
+    })
+  );
 
   backend.setOnWriteInputHook((sessionId) => clearRestoredMarker(sessionId));
 
@@ -454,6 +459,39 @@ export function handleSessionExited(sessionId: string): void {
   }));
   terminalRegistry.destroyTerminal(sessionId);
   void persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
+}
+
+// An MCP-spawned session (daemon push, already Attached by the Rust
+// relay). Lands on the workspace's "Agents" page -- found by name,
+// created with the session as its first tab when absent. Never steals
+// focus (createPage activates the new page, so the previous active page
+// is restored). If the workspace no longer exists, the session is
+// killed: an agent the human can't see is never allowed to keep running.
+export function handleAgentSessionSpawned(workspaceId: string, sessionId: string): void {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) {
+    void backend.killSession(sessionId).catch(() => {});
+    return;
+  }
+  const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
+  const agentsPage = ws.pages.find((p) => p.name === "Agents");
+  let data: WorkspacesData;
+  if (agentsPage) {
+    const anchor = layout.allSessionIds(agentsPage.layout)[0];
+    const newTree = layout.addTab(agentsPage.layout, anchor, sessionId);
+    data = workspace.updatePageLayout(base, workspaceId, agentsPage.id, newTree);
+  } else {
+    const previousActive = ws.activePageId;
+    data = workspace.createPage(base, workspaceId, crypto.randomUUID(), "Agents", {
+      type: "leaf",
+      tabs: [sessionId],
+      activeTabIndex: 0,
+    });
+    if (previousActive) data = workspace.switchPage(data, workspaceId, previousActive);
+  }
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
 // Shared by the "cwd-changed" event listener in bootstrap() and this

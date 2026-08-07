@@ -913,6 +913,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 
     let mut reader = BufReader::new(reader_stream);
     let reader_app_handle = app_handle.clone();
+    let relay_writer = Arc::clone(&writer);
     std::thread::spawn(move || {
         // Wait for the frontend to confirm its listeners are registered
         // before reading — and therefore emitting — anything from the
@@ -970,6 +971,13 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 }
                 Response::GavinTreeChanged { workspace_id, tree } => {
                     let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
+                }
+                Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
+                    // Attach BEFORE emitting: a session nobody attaches
+                    // renders blank forever (the Milestone-C lesson).
+                    let _ = send_request(&relay_writer, &Request::Attach { id: session_id.clone() });
+                    let _ = reader_app_handle
+                        .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
                 }
                 Response::Error { message } => {
                     let _ = reader_app_handle.emit("daemon-error", message);

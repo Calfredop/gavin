@@ -6,7 +6,8 @@ import { getActiveView } from "./workspace";
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
-  killSession: vi.fn(),
+  // Resolved by default: handleAgentSessionSpawned calls .catch() on this.
+  killSession: vi.fn().mockResolvedValue(undefined),
   getWorkspacesState: vi.fn(),
   setWorkspacesState: vi.fn(),
   getBootstrapError: vi.fn(),
@@ -83,6 +84,7 @@ import {
   movePageAction,
   setWorkspaceRoot,
   openBoardInSplit,
+  handleAgentSessionSpawned,
   bootstrap,
   teardown,
 } from "./layoutState";
@@ -155,6 +157,41 @@ describe("setWorkspaceRoot", () => {
 
     expect(backend.unwatchGavinRoot).toHaveBeenCalledWith("ws-1");
     expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-1", "/tmp/new");
+  });
+});
+
+describe("handleAgentSessionSpawned", () => {
+  it("appends to an existing Agents page without changing the active page", () => {
+    const agents = { ...page("agents-1", leaf(["a1"])), name: "Agents" };
+    setState([ws("ws-1", [page("page-1", leaf(["a"])), agents], "page-1")], "ws-1", "a");
+
+    handleAgentSessionSpawned("ws-1", "spawned-1");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["a1", "spawned-1"], 1));
+    expect(state.workspaces[0].activePageId).toBe("page-1");
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.killSession).not.toHaveBeenCalled();
+  });
+
+  it("creates the Agents page when absent, keeping the active page", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))], "page-1")], "ws-1", "a");
+
+    handleAgentSessionSpawned("ws-1", "spawned-1");
+
+    const state = get(layoutState);
+    const agents = state.workspaces[0].pages.find((p) => p.name === "Agents");
+    expect(agents?.layout).toEqual(leaf(["spawned-1"]));
+    expect(state.workspaces[0].activePageId).toBe("page-1");
+  });
+
+  it("kills the session when the workspace no longer exists", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    handleAgentSessionSpawned("ws-gone", "spawned-1");
+
+    expect(backend.killSession).toHaveBeenCalledWith("spawned-1");
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 });
 
