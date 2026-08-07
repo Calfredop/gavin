@@ -166,7 +166,14 @@ below-3→5, below-4→6, below-7 folded into 3.)
   the shim resolves its root once at startup, so gavin_init_root needs an MCP
   reconnect to take effect. One pre-existing test flaked once under parallel
   socket load (ConnectionRefused) and passed in isolation + two full reruns.
-  Part 2 (app landing, setup button, SKILL.md) not yet planned.
+- **3 MCP — Part 2 plan (`b507985`), implementation COMPLETE (inline,
+  2026-08-07):** T1 bootstrap version probe (`531435b`), T2 Attach-first spawn
+  landing on the Agents page with kill-if-unplaceable + no-focus-steal
+  (`6d29e19`), T3 merge-aware agent_setup writes + SKILL.md (`613c1bb`), T4
+  setup UI row (`e7ab0f8`). 250 Rust + 283 frontend tests, 0 type errors. The
+  Vitest bare-vi.fn()-vs-.catch() trap hit a THIRD time (killSession) — caught
+  by the new kill-if-unplaceable test itself; factory default fixed.
+  **Sub-project 3 is fully implemented**; real-agent manual smoke pending.
 
 ## 5. Decisions log
 
