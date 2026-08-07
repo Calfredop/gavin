@@ -306,6 +306,22 @@ fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Resul
 /// request-id field.
 pub struct CommandConnection(pub Mutex<UnixStream>);
 
+/// Spec §4: probe the daemon's protocol version before anything else.
+/// Interprets FAILURE SHAPE -- a daemon older than the probe itself can't
+/// parse the request and closes the connection, which must map to the
+/// same actionable message as an explicit lower version (this turned the
+/// 2026-08-07 stale-daemon incident's mystery close into a named state).
+fn verify_daemon_protocol(command_conn: &Mutex<UnixStream>) -> anyhow::Result<()> {
+    const OLDER: &str = "the gavin daemon is older than this app — restart it (pkill gavin-daemon, then relaunch the gavin app)";
+    match send_command(command_conn, &Request::GetProtocolVersion) {
+        Ok(Response::ProtocolVersion { version }) if version == protocol::PROTOCOL_VERSION => Ok(()),
+        Ok(Response::ProtocolVersion { version }) if version > protocol::PROTOCOL_VERSION => {
+            anyhow::bail!("the gavin daemon is newer than this app — rebuild and restart the app")
+        }
+        Ok(_) | Err(_) => anyhow::bail!(OLDER),
+    }
+}
+
 fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Response> {
     let mut stream = conn.lock().unwrap();
     write_message(&mut *stream, req)?;
@@ -823,6 +839,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     // immediately, no retry/backoff needed.
     let command_stream = UnixStream::connect(socket_path())?;
     let command_conn = Mutex::new(command_stream);
+    verify_daemon_protocol(&command_conn)?;
 
     let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));
     let reader_stream = stream_conn;
@@ -1243,6 +1260,43 @@ pub fn set_plan_frontmatter_field(
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod version_probe_tests {
+    use super::test_support::fake_daemon_replying_with;
+    use super::*;
+
+    #[test]
+    fn matching_version_passes() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::ProtocolVersion {
+            version: protocol::PROTOCOL_VERSION,
+        }]);
+        assert!(verify_daemon_protocol(&Mutex::new(client)).is_ok());
+    }
+
+    #[test]
+    fn newer_daemon_names_the_app_as_stale() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::ProtocolVersion {
+            version: protocol::PROTOCOL_VERSION + 1,
+        }]);
+        let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
+        assert!(err.contains("newer than this app"));
+    }
+
+    #[test]
+    fn unparsed_probe_or_error_reply_names_the_daemon_as_stale() {
+        // An old daemon can't parse the probe at all: closed connection.
+        let (client, _dir) = fake_daemon_replying_with(vec![]);
+        let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
+        assert!(err.contains("older than this app"));
+        // A daemon that replies Error (unknown request) maps the same way.
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::Error {
+            message: "unknown".to_string(),
+        }]);
+        let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
+        assert!(err.contains("older than this app"));
     }
 }
 
