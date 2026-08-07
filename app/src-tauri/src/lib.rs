@@ -1,3 +1,4 @@
+mod agent_setup;
 mod config;
 mod daemon;
 mod fileviewer;
@@ -64,7 +65,8 @@ pub fn run() {
             session::get_board_tabs,
             session::set_board_tabs,
             session::set_plan_frontmatter_field,
-            session::seed_smoke_test_data
+            session::seed_smoke_test_data,
+            agent_setup::setup_agent_integration
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

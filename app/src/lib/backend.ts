@@ -122,6 +122,10 @@ export function seedSmokeTestData(rootPath: string): Promise<void> {
   return invoke("seed_smoke_test_data", { rootPath });
 }
 
+export function setupAgentIntegration(rootPath: string): Promise<string[]> {
+  return invoke("setup_agent_integration", { rootPath });
+}
+
 export function setPlanFrontmatterField(
   path: string,
   key: "status" | "priority",
