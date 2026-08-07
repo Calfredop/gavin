@@ -1262,6 +1262,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gavin-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "gdk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
