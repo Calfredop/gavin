@@ -40,17 +40,67 @@ export async function retryFetchBoard(workspaceId: string): Promise<void> {
   await fetchBoard(workspaceId);
 }
 
+// One save-failure message per workspace, shown as a dismissible banner
+// on the board (distinct from `errors`, which is only for a board we
+// never managed to load).
+export const saveErrors = writable<Record<string, string>>({});
+
+export function dismissSaveError(workspaceId: string): void {
+  saveErrors.update((e) => {
+    if (!(workspaceId in e)) return e;
+    const { [workspaceId]: _removed, ...rest } = e;
+    return rest;
+  });
+}
+
+// In-flight setBoard count per workspace -- refreshBoard must never
+// clobber optimistic state while a save is still resolving.
+const pendingSaves = new Map<string, number>();
+
 // Shared by every mutation action below: applies `mutate` to the
 // workspace's current board (a no-op if it was never fetched -- there is
 // nothing to mutate or persist), writes the result to the store, and
 // persists the whole board via setBoard, matching how pane-tree edits
-// already flow through layoutState.ts to the daemon.
+// already flow through layoutState.ts to the daemon. A failed persist
+// rolls the optimistic update back (spec §3) -- unless a later mutation
+// already replaced it (reference check: every mutation makes a fresh
+// board object, and that later mutation's own setBoard carries this
+// one's change anyway since the whole board is persisted each time).
 async function mutateAndPersist(workspaceId: string, mutate: (board: Board) => Board): Promise<void> {
   const current = get(kanbanState)[workspaceId];
   if (!current) return;
   const updated = mutate(current);
   kanbanState.update((s) => ({ ...s, [workspaceId]: updated }));
-  await backend.setBoard(workspaceId, updated.columns, updated.labels);
+  pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 0) + 1);
+  try {
+    await backend.setBoard(workspaceId, updated.columns, updated.labels);
+    dismissSaveError(workspaceId);
+  } catch (e) {
+    kanbanState.update((s) => (s[workspaceId] === updated ? { ...s, [workspaceId]: current } : s));
+    saveErrors.update((err) => ({
+      ...err,
+      [workspaceId]: String(e instanceof Error ? e.message : e),
+    }));
+  } finally {
+    pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 1) - 1);
+  }
+}
+
+// Re-reads the board from SQLite (spec §3, staleness) -- called on
+// window focus and when a board surface (re)mounts. Skipped while a
+// mutation is in flight, and checked again after the fetch for saves
+// that started meanwhile.
+export async function refreshBoard(workspaceId: string): Promise<void> {
+  if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
+  try {
+    const board = await backend.getBoard(workspaceId);
+    if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
+    kanbanState.update((s) => ({ ...s, [workspaceId]: board }));
+    clearError(workspaceId);
+  } catch {
+    // Keep showing the board we have; the load-error overlay is only
+    // for a board we never managed to load.
+  }
 }
 
 export function addCardAction(workspaceId: string, columnId: string, card: Card): Promise<void> {
