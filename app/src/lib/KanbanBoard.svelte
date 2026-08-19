@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { kanbanState, fetchBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction, moveCardAction } from "./kanbanState";
+  import { kanbanState, fetchBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction, moveCardAction, reorderColumnAction } from "./kanbanState";
   import KanbanColumn from "./KanbanColumn.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
   import PlanKanbanCard from "./PlanKanbanCard.svelte";
@@ -10,7 +10,8 @@
   import { mergePlanCards, type PlanCardView } from "./planBoard";
   import { getDragKind, getDragPayload } from "./dragDrop";
   import { attachBoardDrag } from "./kanbanDragGlue";
-  import type { ActiveDrag } from "./kanbanDrag";
+  import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
+  import { flip } from "svelte/animate";
   import type { DropTarget } from "./pointerDrag";
   import * as backend from "./backend";
 
@@ -31,6 +32,8 @@
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
     if (drag.kind === "card") {
       void moveCardAction(workspaceId, drag.id, drag.target.columnId, drag.target.index);
+    } else if (drag.kind === "column") {
+      void reorderColumnAction(workspaceId, drag.id, drag.target.index);
     }
   }
 
@@ -115,18 +118,25 @@
     </div>
   {/if}
   <div class="board" bind:this={boardEl}>
-    {#each board.columns as column, columnIndex (column.id)}
-      <KanbanColumn
-        {workspaceId}
-        {column}
-        otherColumns={board.columns.filter((c) => c.id !== column.id).map((c) => ({ id: c.id, name: c.name }))}
-        labels={board.labels}
-        planCards={merged?.columns[columnIndex]?.planCards ?? []}
-        onOpenCard={(cardId) => (openCardId = cardId)}
-        onAddCard={() => addCardTo(column.id)}
-        onOpenPlanCard={(path) => (openPlanPath = path)}
-        onPlanDrop={(path) => void setPlanStatus(path, column.name)}
-      />
+    {#each buildColumnSlots(board.columns, (c) => c.id, $dragState) as slot (slot.type === "item" ? slot.item.id : "__ph__")}
+      <div class="column-slot" animate:flip={{ duration: 150 }}>
+        {#if slot.type === "item"}
+          {@const column = slot.item}
+          <KanbanColumn
+            {workspaceId}
+            {column}
+            otherColumns={board.columns.filter((c) => c.id !== column.id).map((c) => ({ id: c.id, name: c.name }))}
+            labels={board.labels}
+            planCards={merged?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
+            onOpenCard={(cardId) => (openCardId = cardId)}
+            onAddCard={() => addCardTo(column.id)}
+            onOpenPlanCard={(path) => (openPlanPath = path)}
+            onPlanDrop={(path) => void setPlanStatus(path, column.name)}
+          />
+        {:else}
+          <div class="column-placeholder"></div>
+        {/if}
+      </div>
     {/each}
     {#each merged?.autoColumns ?? [] as auto (auto.status)}
       <div
@@ -171,6 +181,21 @@
     padding: 16px;
     overflow-x: auto;
     height: 100%;
+    box-sizing: border-box;
+  }
+  /* Wrapper the flip directive needs between the flex strip and the
+     column -- must be layout-transparent. */
+  .column-slot {
+    flex: 0 0 auto;
+    display: flex;
+    max-height: 100%;
+  }
+  .column-placeholder {
+    width: 240px;
+    border: 1px dashed #555;
+    border-radius: 8px;
+    background: #202020;
+    align-self: stretch;
     box-sizing: border-box;
   }
   .add-column {
