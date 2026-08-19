@@ -196,6 +196,14 @@ below-3→5, below-4→6, below-7 folded into 3.)
   deleted, so unreadable-file coverage was not silently dropped. Manual smoke
   (10 new checklist items) pending.
 
+- **5 Plan explorer — spec written & approved section-by-section (2026-08-19):**
+  `docs/superpowers/specs/2026-08-19-agent-orchestration-plan-explorer-design.md`
+  (tree projection, creation flows, metadata panel + allow-list extension,
+  open-in-split, testing). Note carried into the plan: a pre-existing daemon test
+  asserts `title` is a DISALLOWED field — extending the allow-list must rewrite
+  it against a still-disallowed key rather than delete it (same shape as sub-4's
+  missing-file contract change).
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
@@ -327,6 +335,26 @@ below-3→5, below-4→6, below-7 folded into 3.)
   clean buffers reload silently, dirty buffers raise a conflict banner. Pure
   function, unit-tested — the only way to cover it where components can't be.
 
+- **D27 (sub-5, 2026-08-19):** **Plan explorer is a master-detail "Plans" hub
+  tab** — tree left (contexts → Plans/Docs/Specs groups → .md rows, plan rows
+  showing status/priority/⚠), FileEditor right, keyed by selection. Tree is a
+  pure projection of the existing GavinTree: no new scanning, no new backend.
+  Selection held by path, since the tree rebuilds on every watcher push.
+- **D28 (sub-5, 2026-08-19):** **Structured plan metadata panel** (user scope
+  change mid-design: "full edit to files with sync to kanban otherwise the
+  feature is way too crippled"). Title/status/priority controls above the editor
+  for plan files; status options are the board's column names; writes go through
+  the surgical `set_plan_field`, so the allow-list gains `title` (still a fixed
+  allow-list). Optimistic `patchPlanField` moves the card immediately. A panel
+  commit **flushes the editor first**, so the user's own two edit paths never
+  trip sub-4's conflict banner against each other.
+- **D29 (sub-5, 2026-08-19):** **Create only — no rename/delete** (D10 upheld):
+  new plan (daemon `CreatePlan`, validated), new doc/spec (frontend slug +
+  `write_file_for_editor`, deliberately asymmetric because only plans are also
+  created by MCP agents), new context (folder picker + under-root check). New
+  files are selected immediately rather than waiting for the watcher.
+- **D30 (sub-5, 2026-08-19):** Sub-6 embeds this tree and the metadata panel
+  as-is; they are built standalone so placement is the only thing that changes.
 - **D13 (2026-08-06):** **Decomposition + build order approved:** 1 Foundations
   (root binding, `.gavin` convention, scaffolding, scanner+watcher) → 2 Plans⇄kanban
   (frontmatter status, merged board, per-session boards) → 3 MCP server + skill
