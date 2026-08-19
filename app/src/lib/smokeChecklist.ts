@@ -44,11 +44,49 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Board interaction",
+    items: [
+      {
+        id: "drag-threshold",
+        text: "A clean click opens the card modal; a tiny jiggle-and-release does too (no accidental drag)",
+        hint: "Drag starts only after ~5px of movement.",
+      },
+      {
+        id: "drag-placeholder",
+        text: "Dragging shows a dashed placeholder gap that always matches where the card lands",
+        hint: "The old bug: moving a card DOWN in its own column landed one slot too far. Verify that exact case.",
+      },
+      { id: "drag-tilt", text: "The dragged card floats tilted under the cursor and settles into its slot on release" },
+      { id: "drag-escape", text: "Esc during a drag cancels it; the card slides home" },
+      {
+        id: "drag-autoscroll",
+        text: "Dragging near the board's left/right edge scrolls the strip; near a tall column's top/bottom scrolls its list",
+      },
+      { id: "column-reorder", text: "Dragging a column by its header lands it exactly at the placeholder, both directions" },
+      { id: "composer-card", text: "“+ Add card” opens an in-place field: Enter adds and stays, Esc closes, empty adds nothing" },
+      { id: "composer-column", text: "“+ Add column” behaves the same way — no more literal “New column”" },
+      {
+        id: "save-failure",
+        text: "Kill the daemon, drag a card → it snaps back and a “Couldn't save” banner appears; recovery clears it",
+        hint: "pkill -x gavin-daemon, then drag. Restart daemon & retry via the error overlay if needed.",
+      },
+      { id: "board-refresh", text: "Refocusing the window refetches the board (free-form cards no longer go stale)" },
+    ],
+  },
+  {
     title: "Plans on the board",
     items: [
       { id: "seed", text: "“Seed demo data” fills the board within ~3s" },
       { id: "plan-card", text: "Plan cards render dashed, with priority dot and context badge" },
-      { id: "plan-drag", text: "Dragging a card writes only the status: line (check git diff)" },
+      {
+        id: "plan-reorder",
+        text: "Reordering a plan card within its column writes order: lines only, and the order survives the ~3s watcher echo",
+        hint: "First reorder in a column materializes order: for its plan block — that's expected.",
+      },
+      {
+        id: "plan-restatus-order",
+        text: "Dragging a plan card to another column writes status: plus order:, nothing else (check git diff)",
+      },
       { id: "plan-auto-column", text: "An unmatched status (Shipped) makes an auto column; dragging out dissolves it" },
       { id: "plan-live", text: "Editing a plan file in a terminal moves its card by itself" },
       { id: "plan-modal", text: "Card click opens the detail modal; priority change writes the file" },

@@ -69,8 +69,9 @@ the file-creation commands in those steps as already done.
       by design.)
 - [ ] **B2 — Drag writes the file.** Drag the card to *In Progress*. Expect:
       it stays there (no snap-back), and
-      `cat .gavin-root/plans/demo.md` shows `status: In Progress` with every
-      other byte untouched.
+      `cat .gavin-root/plans/demo.md` shows `status: In Progress` (plus an
+      `order:` line when you dropped it at a position among other plan cards)
+      with every other byte untouched.
 - [ ] **B3 — Auto column.** (Seeded as `stray.md`, or:)
       `printf -- '---\nstatus: Shipped\n---\n# Stray\n' > .gavin-root/plans/stray.md`
       Expect: a dashed **auto column** headed `Shipped` appears after the real
@@ -89,9 +90,26 @@ the file-creation commands in those steps as already done.
       `printf -- '---\nstatus: To Do\nno closing marker\n' > .gavin-root/plans/broken.md`
       Expect: a card in the **first** column with a ⚠ badge; its modal explains
       the frontmatter has issues. The board stays fully functional.
-- [ ] **B7 — Free-form cards untouched.** Add a normal card via "+ Add card".
-      Expect: solid border, deletable, drags with position — completely
-      unchanged behavior, and plan cards always render after free-form ones.
+- [ ] **B7 — Free-form cards.** "+ Add card" opens an inline title field
+      (Enter adds and keeps the field, Esc closes, empty adds nothing). The
+      created card has a solid border, is deletable, drags with position, and
+      plan cards always render after free-form ones.
+- [ ] **B8 — Trello-grade drag.** While dragging any card: a tilted floating
+      copy follows the cursor, a dashed placeholder marks the landing slot
+      (verify a **downward** same-column move lands exactly there — the old
+      off-by-one), neighbors slide smoothly, Esc cancels, and dragging near the
+      board's edges auto-scrolls. A clean click still just opens the modal.
+- [ ] **B9 — Plan reorder writes order:.** Drag a plan card above another plan
+      card in the same column. Expect: the order sticks, survives the ~3 s
+      watcher echo, and `git diff` shows only `order:` lines (the first reorder
+      in a column materializes `order:` for its plan block).
+- [ ] **B10 — Column reorder + composer.** Drag a column by its header — it
+      lands exactly at the placeholder in both directions. "+ Add column"
+      opens an inline name field with the same composer keys as B7.
+- [ ] **B11 — Save failure surfaces.** `pkill -x gavin-daemon`, then drag a
+      free-form card. Expect: the card snaps back and a dismissible "Couldn't
+      save" banner appears; after **Restart daemon & retry** the next drag
+      succeeds and clears it.
 
 ## C. Per-session context boards
 
