@@ -1,0 +1,86 @@
+<script lang="ts">
+  import { onDestroy } from "svelte";
+  import { createEditor, type EditorHandle } from "./codeMirror";
+
+  interface Props {
+    // Initial content only: once mounted, the EDITOR owns the buffer.
+    // Pushing `doc` back in on every change would fight the cursor --
+    // the parent uses setDoc() for deliberate reloads instead.
+    doc: string;
+    path: string;
+    readOnly: boolean;
+    onChange: (value: string) => void;
+    onSave: () => void;
+  }
+  let { doc, path, readOnly, onChange, onSave }: Props = $props();
+
+  let host = $state<HTMLDivElement | null>(null);
+  // $state, not a plain let: the readOnly effect below must re-run once
+  // the async mount resolves, otherwise a mode switch made while the
+  // language pack was still loading is silently lost.
+  let handle = $state<EditorHandle | null>(null);
+  let destroyed = false;
+  // Content handed to setDoc before the editor existed. Applied the
+  // moment it does, so a reload or conflict resolution can never be
+  // swallowed by a slow dynamic import.
+  let pendingDoc: string | null = null;
+
+  export function setDoc(text: string): void {
+    if (handle) {
+      handle.setDoc(text);
+    } else {
+      pendingDoc = text;
+    }
+  }
+
+  export function measure(): void {
+    handle?.measure();
+  }
+
+  $effect(() => {
+    if (!host || handle) return;
+    const parent = host;
+    void createEditor({ parent, doc, path, readOnly, onChange, onSave }).then((created) => {
+      // The component may have been destroyed while the language pack
+      // was still loading.
+      if (destroyed) {
+        created.destroy();
+        return;
+      }
+      handle = created;
+      if (pendingDoc !== null) {
+        created.setDoc(pendingDoc);
+        pendingDoc = null;
+      }
+    });
+  });
+
+  // Mode switches reconfigure the live editor rather than remounting it,
+  // so scroll position and undo history survive.
+  $effect(() => {
+    const ro = readOnly;
+    handle?.setReadOnly(ro);
+  });
+
+  onDestroy(() => {
+    destroyed = true;
+    handle?.destroy();
+    handle = null;
+  });
+</script>
+
+<div class="cm-host" bind:this={host}></div>
+
+<style>
+  .cm-host {
+    height: 100%;
+    overflow: hidden;
+  }
+  .cm-host :global(.cm-editor) {
+    height: 100%;
+    font-size: 0.85em;
+  }
+  .cm-host :global(.cm-scroller) {
+    font-family: monospace;
+  }
+</style>
