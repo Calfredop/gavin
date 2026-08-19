@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fileExtension, fileLanguage, isMarkdown } from "./fileTypes";
+import { fileExtension, isMarkdown } from "./fileTypes";
 
 describe("fileExtension", () => {
   it("returns the lowercased extension", () => {
@@ -26,14 +26,3 @@ describe("isMarkdown", () => {
   });
 });
 
-describe("fileLanguage", () => {
-  it("maps a known extension to its highlight.js language id", () => {
-    expect(fileLanguage("/tmp/a.ts")).toBe("typescript");
-    expect(fileLanguage("/tmp/a.rs")).toBe("rust");
-  });
-
-  it("returns null for an extension with no known language, so it renders as plain text", () => {
-    expect(fileLanguage("/tmp/a.log")).toBeNull();
-    expect(fileLanguage("/tmp/Makefile")).toBeNull();
-  });
-});

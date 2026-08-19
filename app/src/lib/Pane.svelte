@@ -16,6 +16,7 @@
   import { gavinTrees } from "./gavinState";
   import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
+  import { dirtyPaths } from "./fileEditing";
   import { X, Plus, RotateCw, Kanban } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
   import { sessionLabel, folderName } from "./paths";
@@ -314,6 +315,9 @@
           {@const dot = tabStatusDot(sessionId)}
           <span class="status-dot {dot?.class}" title={dot?.title}></span>
         {/if}
+        {#if fileTabPath(sessionId) && $dirtyPaths.has(fileTabPath(sessionId) ?? "")}
+          <span class="dirty-dot" title="Unsaved changes"></span>
+        {/if}
         {#if tabGitDot(sessionId)}
           {@const gitDot = tabGitDot(sessionId)}
           <span
@@ -460,6 +464,13 @@
   }
   .status-dot.status-waiting {
     background: #e0524a;
+  }
+  .dirty-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: #d9a648;
   }
   .git-dot {
     width: 6px;
