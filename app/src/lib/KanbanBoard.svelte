@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { kanbanState, fetchBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction, moveCardAction, reorderColumnAction } from "./kanbanState";
+  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction, moveCardAction, reorderColumnAction, saveErrors, dismissSaveError } from "./kanbanState";
   import KanbanColumn from "./KanbanColumn.svelte";
   import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
@@ -27,6 +27,18 @@
   $effect(() => {
     void fetchBoard(workspaceId);
   });
+
+  // Staleness (spec §3): the cached board refetches when the hub board
+  // remounts and when the window regains focus. refreshBoard's in-flight
+  // guard keeps it from clobbering optimistic state.
+  $effect(() => {
+    void refreshBoard(workspaceId);
+    const onFocus = () => void refreshBoard(workspaceId);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  });
+
+  const saveError = $derived($saveErrors[workspaceId] ?? null);
 
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
     if (drag.kind === "card") {
@@ -106,6 +118,12 @@
     <div class="plan-error">
       <span>{planWriteError}</span>
       <button type="button" onclick={() => (planWriteError = null)}>✕</button>
+    </div>
+  {/if}
+  {#if saveError}
+    <div class="plan-error">
+      <span>Couldn't save: {saveError}</span>
+      <button type="button" onclick={() => dismissSaveError(workspaceId)}>✕</button>
     </div>
   {/if}
   <div class="board" bind:this={boardEl}>

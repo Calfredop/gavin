@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { kanbanState, fetchBoard, boardError, retryFetchBoard } from "./kanbanState";
+  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, saveErrors, dismissSaveError } from "./kanbanState";
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type PlanCardView } from "./planBoard";
   import KanbanColumn from "./KanbanColumn.svelte";
@@ -29,6 +29,20 @@
   $effect(() => {
     void fetchBoard(workspaceId);
   });
+
+  // Staleness (spec §3): refetch when this pane is revealed and when the
+  // window regains focus; refreshBoard's in-flight guard keeps it from
+  // clobbering optimistic state.
+  $effect(() => {
+    if (visible) void refreshBoard(workspaceId);
+  });
+  $effect(() => {
+    const onFocus = () => void refreshBoard(workspaceId);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  });
+
+  const saveError = $derived($saveErrors[workspaceId] ?? null);
 
   const board = $derived($kanbanState[workspaceId]);
   const error = $derived(boardError(workspaceId));
@@ -91,6 +105,12 @@
       <div class="plan-error">
         <span>{planWriteError}</span>
         <button type="button" onclick={() => (planWriteError = null)}>✕</button>
+      </div>
+    {/if}
+    {#if saveError}
+      <div class="plan-error">
+        <span>Couldn't save: {saveError}</span>
+        <button type="button" onclick={() => dismissSaveError(workspaceId)}>✕</button>
       </div>
     {/if}
     <div class="columns" bind:this={columnsEl}>
