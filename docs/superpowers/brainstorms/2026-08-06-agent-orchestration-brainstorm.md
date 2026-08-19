@@ -179,7 +179,12 @@ below-3→5, below-4→6, below-7 folded into 3.)
   (2026-08-19):**
   `docs/superpowers/specs/2026-08-19-agent-orchestration-markdown-editing-design.md`
   (component split, three modes, save/echo/conflict, PRD + agent-file hub tabs,
-  testing). Implementation plan next.
+  testing). Plan: `docs/superpowers/plans/2026-08-19-agent-orchestration-markdown-editing.md`
+  (6 tasks). Plan self-review caught two async-mount races before dispatch: the
+  editor mounting with an empty doc because `doc` is initial-content-only and the
+  first read resolves later, and a `readOnly`/`setDoc` change arriving while the
+  language pack was still dynamically importing. Both fixed in the plan text
+  (a `loaded` gate, `$state` handle, and a pendingDoc queue).
 
 ## 5. Decisions log
 
