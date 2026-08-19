@@ -45,6 +45,20 @@ export function showsDevOnlyViews(workspaceId: string, isDev: boolean): boolean 
   return isDev && workspaceId === SMOKETEST_WORKSPACE_ID;
 }
 
+// One place decides whether a hub view is offered, so the rule stays
+// testable -- workspaceViews.ts imports Svelte components, which this
+// project's vitest setup cannot process.
+export function hubViewIsVisible(
+  view: { devOnly?: boolean; requiresRoot?: boolean },
+  workspaceId: string,
+  isDev: boolean,
+  hasRoot: boolean
+): boolean {
+  if (view.devOnly && !showsDevOnlyViews(workspaceId, isDev)) return false;
+  if (view.requiresRoot && !hasRoot) return false;
+  return true;
+}
+
 export function createWorkspace(state: WorkspacesData, id: string, name: string): WorkspacesData {
   const workspace: Workspace = { id, name, pages: [], activePageId: null };
   return { workspaces: [...state.workspaces, workspace], activeWorkspaceId: id };

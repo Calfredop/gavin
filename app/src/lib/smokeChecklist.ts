@@ -56,6 +56,37 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Markdown editing",
+    items: [
+      {
+        id: "edit-modes",
+        text: "A markdown file tab offers Formatted / Plain / Edit; a .rs file offers Plain / Edit",
+      },
+      { id: "edit-autosave", text: "Type in Edit, wait ~1s, check the file on disk — the change is there" },
+      { id: "edit-save-key", text: "⌘S saves immediately; the tab's dirty dot clears" },
+      {
+        id: "edit-external-clean",
+        text: "Edit the file in a terminal while the editor is clean → it reloads silently",
+      },
+      {
+        id: "edit-conflict",
+        text: "Type (don't wait), then edit the same file externally → conflict banner; both buttons behave",
+        hint: "Keep mine = your text wins on the next save; Take theirs = buffer is replaced.",
+      },
+      { id: "edit-plan-card", text: "Editing a plan's status: line here moves its card on the board (~3s)" },
+      { id: "edit-truncated", text: "A >1 MB file offers no Edit mode and says why" },
+      { id: "edit-hub-tabs", text: "PRD and CLAUDE.md tabs appear only with a root bound, and open in Edit" },
+      {
+        id: "edit-creates",
+        text: "With no CLAUDE.md, its tab opens empty and the first save creates the file",
+      },
+      {
+        id: "edit-hidden-pane",
+        text: "Open a file tab, switch to a sibling tab and back — the editor is full height, not collapsed",
+      },
+    ],
+  },
+  {
     title: "Context boards",
     items: [
       { id: "board-icon", text: "cd into a .gavin context → kanban icon appears on the pane tab bar" },

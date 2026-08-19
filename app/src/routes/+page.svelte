@@ -27,7 +27,9 @@
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
   // Not HUB_VIEWS directly: dev-only views (the smoke-test checklist)
   // must never appear in a real workspace or a release build.
-  const hubViews = $derived(visibleHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV));
+  const hubViews = $derived(
+    visibleHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV, Boolean(activeWorkspace?.rootPath))
+  );
   const activeViewDef = $derived(hubViews.find((v) => v.id === activeView) ?? hubViews[0]);
 
   async function quitApp(): Promise<void> {
