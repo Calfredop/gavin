@@ -67,6 +67,7 @@ pub fn run() {
             session::get_board_tabs,
             session::set_board_tabs,
             session::set_plan_frontmatter_field,
+            session::create_plan,
             session::seed_smoke_test_data,
             agent_setup::setup_agent_integration
         ])

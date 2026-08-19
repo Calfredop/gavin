@@ -138,9 +138,20 @@ export function setupAgentIntegration(rootPath: string): Promise<string[]> {
   return invoke("setup_agent_integration", { rootPath });
 }
 
+export function createPlan(
+  contextFolder: string,
+  fileName: string,
+  title: string,
+  status?: string,
+  priority?: string,
+  body?: string
+): Promise<string> {
+  return invoke("create_plan", { contextFolder, fileName, title, status, priority, body });
+}
+
 export function setPlanFrontmatterField(
   path: string,
-  key: "status" | "priority" | "order",
+  key: "status" | "priority" | "order" | "title",
   value: string
 ): Promise<void> {
   return invoke("set_plan_frontmatter_field", { path, key, value });

@@ -1292,6 +1292,32 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Plan authoring from the app (the explorer's "New plan"). Routes
+/// through the same daemon request MCP agents use, so validation and the
+/// never-overwrite guarantee are identical no matter who creates a plan.
+/// Returns the created path.
+#[tauri::command]
+pub fn create_plan(
+    context_folder: String,
+    file_name: String,
+    title: String,
+    status: Option<String>,
+    priority: Option<String>,
+    body: Option<String>,
+    state: State<CommandConnection>,
+) -> Result<String, String> {
+    let resp = send_command(
+        &state.0,
+        &Request::CreatePlan { context_folder, file_name, title, status, priority, body },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::PlanCreated { path } => Ok(path),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
 #[tauri::command]
 pub fn set_plan_frontmatter_field(
     path: String,

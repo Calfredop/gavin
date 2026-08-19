@@ -260,6 +260,11 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()>
                 anyhow::bail!("order must be an integer: {value}");
             }
         }
+        "title" => {
+            if value.trim().is_empty() || value.contains('\n') {
+                anyhow::bail!("title must be a non-empty single line");
+            }
+        }
         other => anyhow::bail!("field not allowed: {other}"),
     }
     write_plan_field(path, key, value)
@@ -722,11 +727,35 @@ mod tests {
     }
 
     #[test]
+    fn set_plan_field_writes_title_surgically_and_rejects_empty_or_multiline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: Old\nstatus: To Do\n---\n# Body\n").unwrap();
+
+        set_plan_field(&path, "title", "New title").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: New title\nstatus: To Do\n---\n# Body\n"
+        );
+
+        assert!(set_plan_field(&path, "title", "   ").is_err());
+        assert!(set_plan_field(&path, "title", "two\nlines").is_err());
+        // Neither rejection touched the file.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: New title\nstatus: To Do\n---\n# Body\n"
+        );
+    }
+
+    #[test]
     fn set_plan_field_rejects_disallowed_keys_and_invalid_priorities() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.md");
         std::fs::write(&path, "---\nstatus: To Do\n---\n").unwrap();
-        assert!(set_plan_field(&path, "title", "x").is_err());
+        // `title` used to be rejected here; it is allowed as of the plan
+        // explorer's metadata panel, so this asserts the rule that
+        // survives -- an arbitrary key is still refused.
+        assert!(set_plan_field(&path, "owner", "alice").is_err());
         assert!(set_plan_field(&path, "priority", "banana").is_err());
         // Neither failed call may touch the file:
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\nstatus: To Do\n---\n");

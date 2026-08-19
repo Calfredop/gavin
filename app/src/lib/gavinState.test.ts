@@ -84,6 +84,36 @@ describe("gavinState", () => {
     expect(after[1].priority).toBe("high");
   });
 
+  it("patchPlanField updates title", async () => {
+    await initGavinListeners();
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: { payload: [string, GavinTree] }) => void;
+    handler({
+      payload: [
+        "ws-1",
+        {
+          rootPath: "/ws",
+          rootMissing: false,
+          contexts: [
+            {
+              folderPath: "/ws",
+              kind: "root",
+              name: "root",
+              plans: [
+                { path: "/ws/a.md", fileName: "a.md", title: "Old", status: "To Do", priority: null, order: null, parseWarning: false },
+              ],
+              docs: [],
+              specs: [],
+              hasPrd: true,
+              configWarning: false,
+            },
+          ],
+        },
+      ],
+    });
+    patchPlanField("ws-1", "/ws/a.md", "title", "New");
+    expect(get(gavinTrees)["ws-1"].contexts[0].plans[0].title).toBe("New");
+  });
+
   it("patchPlanField order stores a number and ignores garbage", async () => {
     await initGavinListeners();
     const handler = vi.mocked(listen).mock.calls[0][1] as (e: { payload: [string, GavinTree] }) => void;
