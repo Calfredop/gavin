@@ -871,6 +871,34 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
     }
 }
 
+/// Clears every `main_session_id` the daemon no longer has (unknown, or
+/// exited). Deliberately CLEARS rather than replacing with a fresh
+/// session, unlike `resolve_sessions` does for page tabs: starting an
+/// agent costs money and attention, so it only ever happens because the
+/// user pressed Start (D12).
+///
+/// Fetches its own session list rather than sharing `resolve_workspaces`'
+/// one: that function skips the round trip entirely when no page tab is a
+/// session, and a workspace can legitimately have a main agent and no
+/// page sessions at all.
+fn reconcile_main_sessions(
+    workspaces: &mut [Workspace],
+    command_conn: &Mutex<UnixStream>,
+) -> anyhow::Result<()> {
+    if !workspaces.iter().any(|w| w.main_session_id.is_some()) {
+        return Ok(());
+    }
+    let sessions = list_valid_session_ids(command_conn)?;
+    for workspace in workspaces.iter_mut() {
+        let Some(id) = workspace.main_session_id.clone() else { continue };
+        let alive = sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
+        if !alive {
+            workspace.main_session_id = None;
+        }
+    }
+    Ok(())
+}
+
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let stream_conn = crate::daemon::connect_or_spawn(
         &socket_path(),
@@ -917,6 +945,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         );
     }
     reconcile_smoketest_workspace(&mut workspaces);
+    reconcile_main_sessions(&mut workspaces, &command_conn)?;
     let non_session_tab_ids: HashSet<String> =
         file_tabs.keys().chain(board_tabs.keys()).cloned().collect();
     resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids)?;
@@ -944,7 +973,12 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         // session.
         .filter(|id| !non_session_tab_ids.contains(id))
         .collect();
-    for id in all_session_ids {
+    // Main agent sessions live outside every page tree by design (D12),
+    // so the page-tree walk above cannot see them -- without this they
+    // reattach to nothing and render blank forever (Milestone C's bug).
+    let main_session_ids: Vec<String> =
+        workspaces_data.workspaces.iter().filter_map(|w| w.main_session_id.clone()).collect();
+    for id in all_session_ids.into_iter().chain(main_session_ids) {
         send_request(&writer, &Request::Attach { id })?;
     }
 
@@ -1339,6 +1373,67 @@ pub fn set_plan_frontmatter_field(
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod main_session_tests {
+    use super::test_support::fake_daemon_replying_with;
+    use super::*;
+
+    fn ws_with_main(id: &str, main: Option<&str>) -> Workspace {
+        Workspace {
+            id: id.to_string(),
+            name: id.to_string(),
+            pages: vec![],
+            active_page_id: None,
+            active_view: None,
+            root_path: Some("/tmp/ws".to_string()),
+            main_session_id: main.map(|m| m.to_string()),
+            agent_command: None,
+        }
+    }
+
+    fn summary(id: &str, status: &str) -> protocol::SessionSummary {
+        protocol::SessionSummary {
+            id: id.to_string(),
+            workspace_path: "/tmp/ws".to_string(),
+            cwd: "/tmp/ws".to_string(),
+            status: status.to_string(),
+            restored: false,
+        }
+    }
+
+    #[test]
+    fn keeps_a_live_main_session() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::SessionList {
+            sessions: vec![summary("agent-1", "idle")],
+        }]);
+        let mut workspaces = vec![ws_with_main("ws-1", Some("agent-1"))];
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        assert_eq!(workspaces[0].main_session_id.as_deref(), Some("agent-1"));
+    }
+
+    #[test]
+    fn clears_an_exited_or_unknown_main_session_without_respawning() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::SessionList {
+            sessions: vec![summary("agent-1", "exited")],
+        }]);
+        let mut workspaces =
+            vec![ws_with_main("ws-1", Some("agent-1")), ws_with_main("ws-2", Some("never-existed"))];
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        assert_eq!(workspaces[0].main_session_id, None);
+        assert_eq!(workspaces[1].main_session_id, None);
+    }
+
+    #[test]
+    fn skips_the_round_trip_when_no_workspace_has_a_main_session() {
+        // An exhausted fake daemon cannot answer, so this passing proves
+        // no ListSessions was sent at all.
+        let (client, _dir) = fake_daemon_replying_with(vec![]);
+        let mut workspaces = vec![ws_with_main("ws-1", None)];
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        assert_eq!(workspaces[0].main_session_id, None);
     }
 }
 
