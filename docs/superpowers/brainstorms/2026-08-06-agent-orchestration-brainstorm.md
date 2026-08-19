@@ -210,6 +210,14 @@ below-3→5, below-4→6, below-7 folded into 3.)
   compile-level errors in my own plan code (`{#each [...] as const as g}` does not
   parse; lucide icon names are compile-time, and `SplitSquareHorizontal` is
   renamed `Columns2`).
+- **5 Plan explorer — implementation COMPLETE (inline, 2026-08-19):** T1 title
+  allow-list + app-side `create_plan` (`aa8158d`), T2 pure projection
+  (`7be6153`), T3 PlanTree (`e030bc9`), T4 Plans hub tab (`bcfa555`), T5 metadata
+  panel + `FileEditor.flush()` (`50b986e`), T6 checklist. 257 Rust + 382 frontend
+  tests, 0 type errors, production build clean. The plan's icon caution paid off
+  in the opposite direction — both `Columns2` and `FolderTree` verified present
+  in the installed @lucide/svelte before use. Manual smoke (11 new items)
+  pending.
 
 ## 5. Decisions log
 
