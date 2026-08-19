@@ -19,7 +19,9 @@
 <!-- Same geometry as KanbanColumn's .column, muted + dashed: these exist
      only so no plan with an unmatched status can ever be invisible. -->
 <div class="auto-column" data-kb-col={key} data-kb-auto>
-  <div class="auto-header" title="Status not matching any column">{status}</div>
+  <div class="auto-header" title="Status not matching any column">
+    {status}<span class="count">{planCards.length}</span>
+  </div>
   <div class="cards" data-kb-cards>
     {#each slots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
@@ -55,6 +57,11 @@
     margin-bottom: 8px;
     user-select: none;
     -webkit-user-select: none;
+  }
+  .count {
+    color: #888;
+    font-size: 0.9em;
+    margin-left: 6px;
   }
   .cards {
     overflow-y: auto;

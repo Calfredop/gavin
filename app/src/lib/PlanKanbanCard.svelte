@@ -45,6 +45,11 @@
     font-size: 0.85em;
     user-select: none;
     -webkit-user-select: none;
+    transition: box-shadow 120ms, border-color 120ms;
+  }
+  .card:hover {
+    border-color: #5e6e5e;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .header {
     display: flex;

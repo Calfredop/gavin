@@ -84,6 +84,11 @@
     font-size: 0.85em;
     user-select: none;
     -webkit-user-select: none;
+    transition: box-shadow 120ms, border-color 120ms;
+  }
+  .card:hover {
+    border-color: #666;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .header {
     display: flex;
@@ -138,6 +143,12 @@
     margin-left: auto;
     padding: 0;
     line-height: 1;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .card:hover .delete,
+  .card:focus-within .delete {
+    opacity: 1;
   }
   .title {
     word-break: break-word;

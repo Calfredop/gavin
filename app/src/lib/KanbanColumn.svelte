@@ -127,6 +127,7 @@
   <div class="header" data-kb-colgrab={mode === "full" ? column.id : undefined}>
     {#if mode === "planOnly"}
       <span class="name readonly">{column.name}</span>
+      <span class="count">{planCards.length}</span>
     {:else if editingName}
       <input
         type="text"
@@ -136,6 +137,7 @@
       />
     {:else}
       <span class="name" onclick={startRename} role="button" tabindex="0">{column.name}</span>
+      <span class="count">{column.cards.length + planCards.length}</span>
     {/if}
     {#if mode === "full"}
       <button type="button" class="delete" aria-label="Delete column" onclick={requestDeleteColumn}>×</button>
@@ -262,6 +264,13 @@
   }
   .header .name.readonly {
     cursor: default;
+  }
+  .count {
+    color: #888;
+    font-weight: normal;
+    font-size: 0.85em;
+    margin-left: 6px;
+    margin-right: auto;
   }
   .delete {
     background: transparent;
