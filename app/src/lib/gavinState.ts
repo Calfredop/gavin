@@ -42,7 +42,7 @@ export function watchRootedWorkspaces(workspaces: Workspace[]): void {
 export function patchPlanField(
   workspaceId: string,
   path: string,
-  key: "status" | "priority",
+  key: "status" | "priority" | "order",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -50,13 +50,13 @@ export function patchPlanField(
     if (!tree) return m;
     const contexts = tree.contexts.map((ctx) => ({
       ...ctx,
-      plans: ctx.plans.map((p) =>
-        p.path === path
-          ? key === "status"
-            ? { ...p, status: value }
-            : { ...p, priority: value.toLowerCase() as PlanFileInfo["priority"] }
-          : p
-      ),
+      plans: ctx.plans.map((p) => {
+        if (p.path !== path) return p;
+        if (key === "status") return { ...p, status: value };
+        if (key === "priority") return { ...p, priority: value.toLowerCase() as PlanFileInfo["priority"] };
+        const n = Number(value);
+        return Number.isFinite(n) ? { ...p, order: n } : p;
+      }),
     }));
     return { ...m, [workspaceId]: { ...tree, contexts } };
   });

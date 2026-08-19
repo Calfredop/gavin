@@ -140,7 +140,7 @@ export function setupAgentIntegration(rootPath: string): Promise<string[]> {
 
 export function setPlanFrontmatterField(
   path: string,
-  key: "status" | "priority",
+  key: "status" | "priority" | "order",
   value: string
 ): Promise<void> {
   return invoke("set_plan_frontmatter_field", { path, key, value });

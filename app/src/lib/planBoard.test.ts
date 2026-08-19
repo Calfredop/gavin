@@ -26,6 +26,7 @@ function plan(fileName: string, status: string | null, overrides: Partial<PlanFi
     title: fileName.replace(/\.md$/, ""),
     status,
     priority: null,
+    order: null,
     parseWarning: false,
     ...overrides,
   };

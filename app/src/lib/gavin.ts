@@ -7,6 +7,7 @@ export interface PlanFileInfo {
   title: string;
   status: string | null;
   priority: "none" | "low" | "medium" | "high" | "urgent" | null;
+  order: number | null;
   parseWarning: boolean;
 }
 
