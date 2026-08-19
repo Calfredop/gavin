@@ -202,7 +202,14 @@ below-3→5, below-4→6, below-7 folded into 3.)
   open-in-split, testing). Note carried into the plan: a pre-existing daemon test
   asserts `title` is a DISALLOWED field — extending the allow-list must rewrite
   it against a still-disallowed key rather than delete it (same shape as sub-4's
-  missing-file contract change).
+  missing-file contract change). Plan:
+  `docs/superpowers/plans/2026-08-19-agent-orchestration-plan-explorer.md`
+  (6 tasks). Grounding found a real gap the spec had assumed away: the daemon
+  supports `CreatePlan` but **no Tauri command wraps it** — only gavin-mcp could
+  create plans, so Task 1 adds the app-side command. Self-review also caught two
+  compile-level errors in my own plan code (`{#each [...] as const as g}` does not
+  parse; lucide icon names are compile-time, and `SplitSquareHorizontal` is
+  renamed `Columns2`).
 
 ## 5. Decisions log
 
