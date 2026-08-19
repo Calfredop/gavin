@@ -19,8 +19,14 @@ export function setFileTabs(fileTabs: Record<string, string>): Promise<void> {
   return invoke("set_file_tabs", { fileTabs });
 }
 
-export function readFileForViewer(path: string): Promise<{ content: string; truncated: boolean }> {
+export function readFileForViewer(
+  path: string
+): Promise<{ content: string; truncated: boolean; exists: boolean }> {
   return invoke("read_file_for_viewer", { path });
+}
+
+export function writeFileForEditor(path: string, content: string): Promise<void> {
+  return invoke("write_file_for_editor", { path, content });
 }
 
 export function resolvePathUnderCursor(candidate: string, cwd: string): Promise<string | null> {

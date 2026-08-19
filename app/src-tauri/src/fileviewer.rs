@@ -32,6 +32,11 @@ pub const VIEWABLE_EXTENSIONS: &[&str] = &[
 pub struct FileContent {
     pub content: String,
     pub truncated: bool,
+    /// False when the path does not exist yet. The PRD/agent-file hub
+    /// tabs open before their file has been created and create it on
+    /// first save, so "missing" is a normal state to render, not an
+    /// error to show.
+    pub exists: bool,
 }
 
 #[tauri::command]
@@ -47,12 +52,31 @@ pub fn viewable_extensions() -> Vec<String> {
 /// unsupported extension and offers to open externally instead.
 #[tauri::command]
 pub fn read_file_for_viewer(path: String) -> Result<FileContent, String> {
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FileContent { content: String::new(), truncated: false, exists: false })
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     let truncated = bytes.len() > MAX_VIEWER_FILE_BYTES;
     let slice = if truncated { &bytes[..MAX_VIEWER_FILE_BYTES] } else { &bytes[..] };
     let content =
         String::from_utf8(slice.to_vec()).map_err(|_| "file is not valid UTF-8 text".to_string())?;
-    Ok(FileContent { content, truncated })
+    Ok(FileContent { content, truncated, exists: true })
+}
+
+/// Writes an editor buffer back to disk, creating the file when absent.
+/// Plain `fs::write`, matching `gavin::write_plan_field`'s convention
+/// rather than introducing temp-file-plus-rename in one place only.
+///
+/// Callers must never invoke this for a truncated read: only a prefix of
+/// an over-cap file was loaded, so writing it back would destroy the
+/// rest. `FileEditor` enforces that by refusing to offer Edit mode at all
+/// when `truncated` is true.
+#[tauri::command]
+pub fn write_file_for_editor(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
 /// Resolves a path-shaped candidate string from terminal output against
@@ -178,7 +202,57 @@ mod tests {
 
         let result = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
 
-        assert_eq!(result, FileContent { content: "hello world".to_string(), truncated: false });
+        assert_eq!(
+            result,
+            FileContent { content: "hello world".to_string(), truncated: false, exists: true }
+        );
+    }
+
+    #[test]
+    fn write_creates_a_missing_file_and_overwrites_an_existing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.md");
+        let p = path.to_string_lossy().to_string();
+
+        write_file_for_editor(p.clone(), "first".to_string()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+
+        write_file_for_editor(p, "second".to_string()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+    }
+
+    #[test]
+    fn write_round_trips_multibyte_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prd.md");
+        let text = "# PRD — vision\n\nemoji: 🚀 accents: éàü\n";
+        write_file_for_editor(path.to_string_lossy().to_string(), text.to_string()).unwrap();
+
+        let read = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(read.content, text);
+        assert!(read.exists);
+        assert!(!read.truncated);
+    }
+
+    #[test]
+    fn write_to_an_unwritable_path_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        // The directory itself is not a writable file target.
+        let result =
+            write_file_for_editor(dir.path().to_string_lossy().to_string(), "x".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reading_a_missing_file_reports_it_absent_instead_of_erroring() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("CLAUDE.md");
+
+        let result = read_file_for_viewer(missing.to_string_lossy().to_string()).unwrap();
+
+        assert!(!result.exists);
+        assert_eq!(result.content, "");
+        assert!(!result.truncated);
     }
 
     #[test]
@@ -212,11 +286,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_missing_file() {
+    fn still_rejects_an_unreadable_file() {
+        // A missing file is NO LONGER an error (see
+        // reading_a_missing_file_reports_it_absent_instead_of_erroring --
+        // the editor's hub tabs open before their file exists). Every
+        // other read failure still is: here, a directory.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("does-not-exist.txt");
 
-        let result = read_file_for_viewer(path.to_string_lossy().to_string());
+        let result = read_file_for_viewer(dir.path().to_string_lossy().to_string());
 
         assert!(result.is_err());
     }

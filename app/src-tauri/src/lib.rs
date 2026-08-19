@@ -51,6 +51,7 @@ pub fn run() {
             fileviewer::viewable_extensions,
             fileviewer::watch_file_for_viewer,
             fileviewer::unwatch_file_for_viewer,
+            fileviewer::write_file_for_editor,
             session::signal_frontend_ready,
             session::get_bootstrap_error,
             session::restart_daemon,
