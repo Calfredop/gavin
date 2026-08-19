@@ -43,3 +43,27 @@ numbered K1… to keep them distinct from the phase log's D-sequence
   (`app/package.json` gained CodeMirror deps — sub-4 file viewer work). This
   session adds no dependencies and its file set barely overlaps; flagged at the
   spec review gate.
+
+## Execution notes (2026-08-19)
+
+- All 20 plan tasks executed inline, one commit per task, on `main`.
+- **Deviation from plan Task 10:** plan cards kept their complete HTML5 drag
+  path until Task 12 instead of half-migrating — `draggable="true"` plus
+  pointer handling on the same element lets the browser's native drag hijack
+  the pointer stream, so each intermediate commit stays fully functional.
+- **planCommitFromMerged** (plan Task 13's shared helper) was pulled forward
+  into Task 12 so the hub never carried a duplicate to be deleted one task
+  later; it landed in `planDrop.ts` with its own tests.
+- Task 6's regression tests passed immediately as the plan predicted: the
+  off-by-one lived in the *callers* (pre-removal indices), never in
+  `moveCard`/`reorderColumn`.
+- Baseline "eight a11y warnings" resolved to three remaining after the
+  rewrites (rename span, nameDraft initial-capture, unused prop) — the other
+  five died with the deleted HTML5 markup. Kanban files now carry 0 warnings;
+  the repo's remaining 31 live in Sidebar/Pane/TitleBar (pre-existing, out of
+  scope).
+- Final automated evidence: `cargo test` 256 pass; `npx vitest run` 366 pass
+  (baseline 291); `npx svelte-check` 0 errors; `vite build` clean.
+- **Outstanding:** the interactive smoke pass (Board interaction section of
+  the in-app checklist, fixture README B7–B11) needs a human at the app — a
+  GUI drag can't be driven from this session.
