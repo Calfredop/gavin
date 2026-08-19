@@ -347,6 +347,66 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
   void backend.watchGavinRoot(workspaceId, rootPath).catch(() => {});
 }
 
+export const DEFAULT_AGENT_COMMAND = "claude";
+
+// Starts the workspace's main agent: a normal daemon session at the
+// workspace root, remembered on the workspace rather than placed in a
+// page tree (D12). Never called automatically.
+export async function startMainAgent(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws?.rootPath || ws.mainSessionId) return;
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(ws.rootPath, ws.agentCommand ?? DEFAULT_AGENT_COMMAND);
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+export async function stopMainAgent(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws?.mainSessionId) return;
+  try {
+    await backend.killSession(ws.mainSessionId);
+  } catch (e) {
+    // A session already gone is not a reason to keep a dead id on screen.
+    setError(String(e));
+  }
+  clearMainSession(workspaceId);
+}
+
+export async function setAgentCommand(workspaceId: string, command: string): Promise<void> {
+  const state = get(layoutState);
+  const trimmed = command.trim();
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, agentCommand: trimmed || undefined } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+function clearMainSession(workspaceId: string): void {
+  const state = get(layoutState);
+  // Captured before the clear, and only destroyed when there was one --
+  // destroyTerminal("") would be a meaningless call.
+  const sessionId = state.workspaces.find((w) => w.id === workspaceId)?.mainSessionId;
+  if (!sessionId) return;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, mainSessionId: undefined } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  terminalRegistry.destroyTerminal(sessionId);
+  void persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
 export async function splitPane(targetSessionId: string, direction: "row" | "column"): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
@@ -447,6 +507,14 @@ export async function closeSession(sessionId: string): Promise<void> {
 // there's no "clear the layout" alternative).
 export function handleSessionExited(sessionId: string): void {
   const state = get(layoutState);
+  // A main agent session lives outside every page tree (D12), so the
+  // search below can never find it -- without this branch its terminal
+  // would sit dead on the home forever.
+  const owningWorkspace = state.workspaces.find((w) => w.mainSessionId === sessionId);
+  if (owningWorkspace) {
+    clearMainSession(owningWorkspace.id);
+    return;
+  }
   let found: { workspaceId: string; pageId: string; page: { layout: LayoutNode } } | null = null;
   for (const ws of state.workspaces) {
     for (const page of ws.pages) {

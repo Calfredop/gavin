@@ -225,8 +225,12 @@ export function getActiveWorkspace(state: WorkspacesData): Workspace | null {
   return state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? null;
 }
 
+// Rooted workspaces land on the orchestration home (D33). A FALLBACK
+// only: clicking any tab -- including the Terminal button -- persists
+// activeView, so an explicit choice always wins and workspaces that
+// already have one never shift.
 export function getActiveView(ws: Workspace): string {
-  return ws.activeView ?? "terminal";
+  return ws.activeView ?? (ws.rootPath ? "home" : "terminal");
 }
 
 export function switchWorkspaceView(state: WorkspacesData, workspaceId: string, view: string): WorkspacesData {

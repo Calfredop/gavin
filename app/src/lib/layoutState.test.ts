@@ -89,6 +89,8 @@ import {
   retryConnect,
   bootstrap,
   teardown,
+  startMainAgent,
+  stopMainAgent,
 } from "./layoutState";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
@@ -1348,5 +1350,61 @@ describe("bootstrap / pollForStartupState readiness", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(get(layoutState).status).toBe("ready");
+  });
+});
+
+describe("main agent session", () => {
+  it("startMainAgent spawns at the root with the configured command and persists", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws", agentCommand: "claude --model opus" }], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("agent-1");
+
+    await startMainAgent("ws-1");
+
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude --model opus");
+    expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+  });
+
+  it("startMainAgent falls back to claude and refuses without a root or when one runs", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("agent-1");
+    await startMainAgent("ws-1");
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude");
+
+    // Already running: no second spawn.
+    await startMainAgent("ws-1");
+    expect(backend.createSession).toHaveBeenCalledOnce();
+
+    // No root: nothing at all.
+    setState([ws("ws-2", [])], "ws-2", null);
+    vi.mocked(backend.createSession).mockClear();
+    await startMainAgent("ws-2");
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("stopMainAgent kills the session and clears the id", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws", mainSessionId: "agent-1" }], "ws-1", null);
+
+    await stopMainAgent("ws-1");
+
+    expect(backend.killSession).toHaveBeenCalledWith("agent-1");
+    expect(get(layoutState).workspaces[0].mainSessionId).toBeUndefined();
+  });
+
+  it("handleSessionExited clears the owning workspace's main session only", async () => {
+    setState(
+      [
+        { ...ws("ws-1", []), mainSessionId: "agent-1" },
+        { ...ws("ws-2", []), mainSessionId: "agent-2" },
+      ],
+      "ws-1",
+      null
+    );
+
+    handleSessionExited("agent-1");
+
+    const after = get(layoutState).workspaces;
+    expect(after[0].mainSessionId).toBeUndefined();
+    expect(after[1].mainSessionId).toBe("agent-2");
   });
 });

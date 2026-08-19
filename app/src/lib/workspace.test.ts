@@ -83,6 +83,18 @@ describe("getActiveView", () => {
     const w = { ...state.workspaces[0], activeView: "kanban" };
     expect(getActiveView(w)).toBe("kanban");
   });
+
+  it("defaults a rooted workspace to home", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const w = { ...state.workspaces[0], rootPath: "/tmp/ws" };
+    expect(getActiveView(w)).toBe("home");
+  });
+
+  it("still honours an explicit view on a rooted workspace", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const w = { ...state.workspaces[0], rootPath: "/tmp/ws", activeView: "terminal" };
+    expect(getActiveView(w)).toBe("terminal");
+  });
 });
 
 describe("switchWorkspaceView", () => {
