@@ -160,6 +160,25 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Orchestration home",
+    items: [
+      { id: "home-default", text: "A rooted workspace opens on Home; one where you last chose another tab still opens there" },
+      { id: "home-start", text: "Start main agent spawns a live agent at the workspace root, visible in the panel" },
+      {
+        id: "home-restart",
+        text: "Quit and relaunch — the agent terminal is still live and scrolling, not blank",
+        hint: "Blank means the bootstrap Attach for main sessions regressed (Milestone C's bug).",
+      },
+      { id: "home-stop", text: "Stop returns the panel to the launcher; the session is gone from the daemon" },
+      { id: "home-external-exit", text: "Kill the agent from a terminal (or type exit) → panel returns to the launcher on its own" },
+      { id: "home-no-respawn", text: "With an agent stopped, relaunching the app does NOT start one" },
+      { id: "home-command", text: "Editing the command (e.g. claude --model opus) persists and is used on the next Start" },
+      { id: "home-summaries", text: "PRD excerpt and board columns/counts match reality; changing the board updates the counts" },
+      { id: "home-tiles", text: "Each of the four tiles navigates to its tab" },
+      { id: "home-resize", text: "Resizing the window keeps the agent terminal correctly sized, not clipped" },
+    ],
+  },
+  {
     title: "Context boards",
     items: [
       { id: "board-icon", text: "cd into a .gavin context → kanban icon appears on the pane tab bar" },
