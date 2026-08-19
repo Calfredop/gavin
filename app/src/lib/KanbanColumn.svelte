@@ -19,15 +19,28 @@
   interface Props {
     workspaceId: string;
     column: Column;
-    otherColumns: { id: string; name: string }[];
-    labels: Label[];
+    // "full" is the hub board; "planOnly" is the per-context BoardPane
+    // (spec §4): plan cards only, read-only header, no composer, no
+    // column dragging -- one component, both surfaces.
+    mode?: "full" | "planOnly";
+    otherColumns?: { id: string; name: string }[];
+    labels?: Label[];
     planCards: PlanCardView[];
-    onOpenCard: (cardId: string) => void;
-    onAddCard: () => void;
+    onOpenCard?: (cardId: string) => void;
+    onAddCard?: () => void;
     onOpenPlanCard: (path: string) => void;
   }
-  let { workspaceId, column, otherColumns, labels, planCards, onOpenCard, onAddCard, onOpenPlanCard }: Props =
-    $props();
+  let {
+    workspaceId,
+    column,
+    mode = "full",
+    otherColumns = [],
+    labels = [],
+    planCards,
+    onOpenCard = () => {},
+    onAddCard = () => {},
+    onOpenPlanCard,
+  }: Props = $props();
 
   let editingName = $state(false);
   let nameDraft = $state(column.name);
@@ -81,9 +94,11 @@
   }
 </script>
 
-<div class="column" data-kb-col={column.id}>
-  <div class="header" data-kb-colgrab={column.id}>
-    {#if editingName}
+<div class="column" class:plan-only={mode === "planOnly"} data-kb-col={column.id}>
+  <div class="header" data-kb-colgrab={mode === "full" ? column.id : undefined}>
+    {#if mode === "planOnly"}
+      <span class="name readonly">{column.name}</span>
+    {:else if editingName}
       <input
         type="text"
         bind:value={nameDraft}
@@ -93,26 +108,30 @@
     {:else}
       <span class="name" onclick={startRename} role="button" tabindex="0">{column.name}</span>
     {/if}
-    <button type="button" class="delete" aria-label="Delete column" onclick={requestDeleteColumn}>×</button>
+    {#if mode === "full"}
+      <button type="button" class="delete" aria-label="Delete column" onclick={requestDeleteColumn}>×</button>
+    {/if}
   </div>
   <div class="cards" data-kb-cards>
-    {#each cardSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
-      <div animate:flip={{ duration: 150 }}>
-        {#if slot.type === "item"}
-          <div data-kb-card={slot.item.id}>
-            <KanbanCard
-              card={slot.item}
-              columnId={column.id}
-              {labels}
-              onOpen={() => onOpenCard(slot.item.id)}
-              onDelete={() => requestDeleteCard(slot.item.id)}
-            />
-          </div>
-        {:else}
-          <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
-        {/if}
-      </div>
-    {/each}
+    {#if mode === "full"}
+      {#each cardSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
+        <div animate:flip={{ duration: 150 }}>
+          {#if slot.type === "item"}
+            <div data-kb-card={slot.item.id}>
+              <KanbanCard
+                card={slot.item}
+                columnId={column.id}
+                {labels}
+                onOpen={() => onOpenCard(slot.item.id)}
+                onDelete={() => requestDeleteCard(slot.item.id)}
+              />
+            </div>
+          {:else}
+            <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
+          {/if}
+        </div>
+      {/each}
+    {/if}
     {#each planSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
@@ -125,7 +144,9 @@
       </div>
     {/each}
   </div>
-  <button type="button" class="add-card" onclick={onAddCard}>+ Add card</button>
+  {#if mode === "full"}
+    <button type="button" class="add-card" onclick={onAddCard}>+ Add card</button>
+  {/if}
 </div>
 
 {#if showDeletePrompt}
@@ -194,6 +215,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .column.plan-only .header {
+    cursor: default;
+  }
+  .header .name.readonly {
+    cursor: default;
   }
   .delete {
     background: transparent;

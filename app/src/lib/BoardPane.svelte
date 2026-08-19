@@ -1,11 +1,15 @@
 <script lang="ts">
   import { kanbanState, fetchBoard, boardError, retryFetchBoard } from "./kanbanState";
-  import { gavinTrees, patchPlanField } from "./gavinState";
+  import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type PlanCardView } from "./planBoard";
-  import PlanKanbanCard from "./PlanKanbanCard.svelte";
+  import KanbanColumn from "./KanbanColumn.svelte";
+  import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
+  import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import PlanDetailModal from "./PlanDetailModal.svelte";
-  import * as backend from "./backend";
-  import { getDragKind, getDragPayload } from "./dragDrop";
+  import { planCommitFromMerged } from "./planDrop";
+  import { attachBoardDrag } from "./kanbanDragGlue";
+  import type { ActiveDrag } from "./kanbanDrag";
+  import type { DropTarget } from "./pointerDrag";
 
   interface Props {
     workspaceId: string;
@@ -20,6 +24,7 @@
 
   let openPlanPath = $state<string | null>(null);
   let planWriteError = $state<string | null>(null);
+  let columnsEl = $state<HTMLElement | null>(null);
 
   $effect(() => {
     void fetchBoard(workspaceId);
@@ -44,26 +49,26 @@
       : null
   );
 
-  async function setPlanStatus(path: string, columnName: string): Promise<void> {
+  function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
+    if (drag.kind !== "plan" || !board || !merged) return;
     planWriteError = null;
-    const fileName = path.split("/").at(-1) ?? path;
-    try {
-      await backend.setPlanFrontmatterField(path, "status", columnName);
-      patchPlanField(workspaceId, path, "status", columnName);
-    } catch (e) {
-      planWriteError = `Couldn't update ${fileName}: ${e}`;
-    }
+    void planCommitFromMerged(workspaceId, drag, board.columns, merged).then((err) => {
+      if (err) planWriteError = err;
+    });
   }
 
-  function allowPlanDrop(event: DragEvent): void {
-    if (getDragKind(event) === "plan-card") event.preventDefault();
-  }
-
-  function dropOn(event: DragEvent, statusName: string): void {
-    event.preventDefault();
-    const payload = getDragPayload(event);
-    if (payload?.kind === "plan-card") void setPlanStatus(payload.path, statusName);
-  }
+  $effect(() => {
+    if (!columnsEl) return;
+    return attachBoardDrag({
+      root: columnsEl,
+      allowCards: false,
+      allowColumns: false,
+      commit: handleDragCommit,
+      click: (kind, id) => {
+        if (kind === "plan") openPlanPath = id;
+      },
+    });
+  });
 </script>
 
 <div class="board-pane" style:display={visible ? "flex" : "none"}>
@@ -88,24 +93,21 @@
         <button type="button" onclick={() => (planWriteError = null)}>✕</button>
       </div>
     {/if}
-    <div class="columns">
+    <div class="columns" bind:this={columnsEl}>
       {#each merged?.columns ?? [] as dc (dc.column.id)}
-        <div class="column" role="list" ondragover={allowPlanDrop} ondrop={(e) => dropOn(e, dc.column.name)}>
-          <div class="header">{dc.column.name}</div>
-          {#each dc.planCards as plan (plan.id)}
-            <PlanKanbanCard {plan} onOpen={() => (openPlanPath = plan.id)} />
-          {/each}
-        </div>
+        <KanbanColumn
+          {workspaceId}
+          column={dc.column}
+          mode="planOnly"
+          planCards={dc.planCards}
+          onOpenPlanCard={(path) => (openPlanPath = path)}
+        />
       {/each}
       {#each merged?.autoColumns ?? [] as auto (auto.status)}
-        <div class="column auto" role="list" ondragover={allowPlanDrop} ondrop={(e) => dropOn(e, auto.status)}>
-          <div class="header">{auto.status}</div>
-          {#each auto.planCards as plan (plan.id)}
-            <PlanKanbanCard {plan} onOpen={() => (openPlanPath = plan.id)} />
-          {/each}
-        </div>
+        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} onOpenPlan={(path) => (openPlanPath = path)} />
       {/each}
     </div>
+    <KanbanDragPreview {board} {merged} labels={board.labels} />
   {/if}
   {#if openPlan}
     <PlanDetailModal plan={openPlan} {workspaceId} onClose={() => (openPlanPath = null)} />
@@ -135,26 +137,7 @@
     flex: 1 1 auto;
     min-height: 0;
     box-sizing: border-box;
-  }
-  .column {
-    background: #252525;
-    border-radius: 8px;
-    padding: 8px;
-    width: 220px;
-    flex: 0 0 auto;
-    align-self: flex-start;
-    max-height: 100%;
-    overflow-y: auto;
-    font-family: monospace;
-    box-sizing: border-box;
-  }
-  .column.auto {
-    border: 1px dashed #555;
-  }
-  .header {
-    color: #ccc;
-    font-size: 0.85em;
-    margin-bottom: 8px;
+    align-items: flex-start;
   }
   .plan-error {
     display: flex;
