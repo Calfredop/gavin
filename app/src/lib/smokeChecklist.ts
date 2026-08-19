@@ -125,6 +125,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Plan explorer",
+    items: [
+      { id: "exp-tab", text: "A Plans tab appears once a root is bound; tree shows contexts → Plans/Docs/Specs" },
+      { id: "exp-meta", text: "Plan rows show status, priority dot, and ⚠ for broken frontmatter" },
+      { id: "exp-select", text: "Clicking a file opens it in the editor on the right" },
+      {
+        id: "exp-new-plan",
+        text: "+ → Plans → title → Enter creates the file, selects it, and it appears on the board (~3s)",
+      },
+      {
+        id: "exp-new-doc",
+        text: "+ → Docs creates a doc; a title with no usable characters shows an inline error instead",
+      },
+      {
+        id: "exp-new-context",
+        text: "“+ context” picker: a folder inside the root scaffolds .gavin; one outside is refused with a reason",
+      },
+      { id: "exp-status", text: "Changing Status in the metadata panel moves the card on the board" },
+      {
+        id: "exp-title",
+        text: "Changing the title updates the card and the tree row — the filename does NOT change",
+      },
+      {
+        id: "exp-no-conflict",
+        text: "Type in the editor, then immediately change Status — NO conflict banner appears",
+        hint: "The panel flushes the editor before writing; a banner here means that flush regressed.",
+      },
+      { id: "exp-vanished", text: "Delete the selected file in a terminal → detail pane says it no longer exists" },
+      {
+        id: "exp-split",
+        text: "The split icon on a file row opens it beside a terminal (hidden with no terminal session)",
+      },
+    ],
+  },
+  {
     title: "Context boards",
     items: [
       { id: "board-icon", text: "cd into a .gavin context → kanban icon appears on the pane tab bar" },
