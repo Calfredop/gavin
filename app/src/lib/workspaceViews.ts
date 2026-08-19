@@ -1,9 +1,10 @@
 import type { Component } from "svelte";
-import { Kanban, ListChecks, FileText, Bot } from "@lucide/svelte";
+import { Kanban, ListChecks, FileText, Bot, FolderTree } from "@lucide/svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
 import SmokeChecklist from "./SmokeChecklist.svelte";
 import PrdHubView from "./PrdHubView.svelte";
 import AgentFileHubView from "./AgentFileHubView.svelte";
+import PlanExplorerHubView from "./PlanExplorerHubView.svelte";
 import { hubViewIsVisible } from "./workspace";
 
 export interface HubView {
@@ -27,6 +28,13 @@ export const HUB_VIEWS: HubView[] = [
     label: "CLAUDE.md",
     icon: Bot,
     component: AgentFileHubView,
+    requiresRoot: true,
+  },
+  {
+    id: "plans",
+    label: "Plans",
+    icon: FolderTree,
+    component: PlanExplorerHubView,
     requiresRoot: true,
   },
   {
