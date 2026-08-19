@@ -175,6 +175,12 @@ below-3→5, below-4→6, below-7 folded into 3.)
   by the new kill-if-unplaceable test itself; factory default fixed.
   **Sub-project 3 is fully implemented**; real-agent manual smoke pending.
 
+- **4 Markdown editing — spec written & approved section-by-section
+  (2026-08-19):**
+  `docs/superpowers/specs/2026-08-19-agent-orchestration-markdown-editing-design.md`
+  (component split, three modes, save/echo/conflict, PRD + agent-file hub tabs,
+  testing). Implementation plan next.
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
@@ -281,6 +287,31 @@ below-3→5, below-4→6, below-7 folded into 3.)
 - **D22 (sub-3, 2026-08-07):** **Protocol version handshake included in sub-3**
   (from the stale-daemon incident): version const + hello check at app bootstrap
   and shim connect; mismatch → clear "restart the daemon" error.
+- **D23 (sub-4, 2026-08-19):** **Every viewable text file is editable; syntax
+  highlighting only — no LSP, no lint, no format.** Costs were researched before
+  deciding: highlighting is hours (CM6 language packs), formatting a day-ish
+  (shell out to prettier/rustfmt — the mess is tool discovery, not execution),
+  linting days per ecosystem plus permanent output-parsing maintenance, and LSP a
+  multi-week sub-project (stdio JSON-RPC client, per-language server lifecycle,
+  incremental doc sync, then server discovery/installation). cmux made the same
+  call explicitly — its editor-tab proposal scopes to "a minimal text editor"
+  with optional highlighting "so the core stays fast and simple", no LSP/lint/
+  format anywhere. Rationale: agents write the code, the human edits docs; and
+  "Open externally" already hands any file to a real editor in one click.
+  Formatting is the cheapest future add-on if wanted.
+- **D24 (sub-4, 2026-08-19):** Sub-4 delivers **file-tab editing AND the PRD +
+  agent-file hub tabs** — the PRD is the phase's lead document and needs a real
+  surface now; it also de-risks sub-6.
+- **D25 (sub-4, 2026-08-19):** **Three-mode quick switch, top right** (user's own
+  formulation): Formatted · Plain · Edit for markdown, Plain · Edit for other
+  text files. Plain is CodeMirror read-only, not a second highlighter, so
+  Plain ↔ Edit is a flag flip — which makes highlight.js dead and removable.
+  Defaults: file tabs open read-first, PRD/agent-file tabs open in Edit.
+- **D26 (sub-4, 2026-08-19):** **Content-based echo suppression**, not
+  time-window: a `file-changed` whose content equals the buffer is ignored,
+  clean buffers reload silently, dirty buffers raise a conflict banner. Pure
+  function, unit-tested — the only way to cover it where components can't be.
+
 - **D13 (2026-08-06):** **Decomposition + build order approved:** 1 Foundations
   (root binding, `.gavin` convention, scaffolding, scanner+watcher) → 2 Plans⇄kanban
   (frontmatter status, merged board, per-session boards) → 3 MCP server + skill
