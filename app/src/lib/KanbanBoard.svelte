@@ -81,20 +81,46 @@
       : null
   );
 
-  function addColumn(): void {
-    const name = "New column";
-    void addColumnAction(workspaceId, {
-      id: crypto.randomUUID(),
-      name,
-      position: board?.columns.length ?? 0,
-      cards: [],
-    });
+  // Inline column composer (spec §6): same contract as the card
+  // composer -- Enter commits and keeps the field open, blur with text
+  // commits and closes, Esc or empty blur closes.
+  let addingColumn = $state(false);
+  let columnDraft = $state("");
+  let columnInputEl = $state<HTMLInputElement | null>(null);
+
+  $effect(() => {
+    if (addingColumn && columnInputEl) columnInputEl.focus();
+  });
+
+  function commitColumnComposer(keepOpen: boolean): void {
+    const name = columnDraft.trim();
+    columnDraft = "";
+    if (name) {
+      void addColumnAction(workspaceId, {
+        id: crypto.randomUUID(),
+        name,
+        position: board?.columns.length ?? 0,
+        cards: [],
+      });
+    }
+    if (!keepOpen) addingColumn = false;
+    else columnInputEl?.focus();
   }
 
-  function addCardTo(columnId: string): void {
+  function handleColumnComposerKeydown(e: KeyboardEvent): void {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitColumnComposer(true);
+    } else if (e.key === "Escape") {
+      columnDraft = "";
+      addingColumn = false;
+    }
+  }
+
+  function addCardTo(columnId: string, title: string): void {
     void addCardAction(workspaceId, columnId, {
       id: crypto.randomUUID(),
-      title: "New card",
+      title,
       description: "",
       labelIds: [],
       priority: "none",
@@ -138,7 +164,7 @@
             labels={board.labels}
             planCards={merged?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
             onOpenCard={(cardId) => (openCardId = cardId)}
-            onAddCard={() => addCardTo(column.id)}
+            onAddCard={(title) => addCardTo(column.id, title)}
             onOpenPlanCard={(path) => (openPlanPath = path)}
           />
         {:else}
@@ -149,7 +175,19 @@
     {#each merged?.autoColumns ?? [] as auto (auto.status)}
       <AutoKanbanColumn status={auto.status} planCards={auto.planCards} onOpenPlan={(path) => (openPlanPath = path)} />
     {/each}
-    <button type="button" class="add-column" onclick={addColumn}>+ Add column</button>
+    {#if addingColumn}
+      <input
+        type="text"
+        class="column-composer"
+        placeholder="Column name…"
+        bind:value={columnDraft}
+        bind:this={columnInputEl}
+        onkeydown={handleColumnComposerKeydown}
+        onblur={() => commitColumnComposer(false)}
+      />
+    {:else}
+      <button type="button" class="add-column" onclick={() => (addingColumn = true)}>+ Add column</button>
+    {/if}
   </div>
   <KanbanDragPreview {board} {merged} labels={board.labels} />
   {#if openCard}
@@ -201,6 +239,18 @@
     width: 240px;
     flex: 0 0 auto;
     align-self: flex-start;
+  }
+  .column-composer {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 8px;
+    color: #eee;
+    font-family: monospace;
+    padding: 10px;
+    width: 240px;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    box-sizing: border-box;
   }
   .plan-error {
     display: flex;

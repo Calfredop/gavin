@@ -27,7 +27,7 @@
     labels?: Label[];
     planCards: PlanCardView[];
     onOpenCard?: (cardId: string) => void;
-    onAddCard?: () => void;
+    onAddCard?: (title: string) => void;
     onOpenPlanCard: (path: string) => void;
   }
   let {
@@ -46,6 +46,35 @@
   let nameDraft = $state(column.name);
   let showDeletePrompt = $state(false);
   let pendingDeleteCardId = $state<string | null>(null);
+
+  // Inline composer (spec §6): "+ Add card" opens a title field in
+  // place. Enter commits and keeps the field open for rapid entry; blur
+  // with text commits and closes; Esc or an empty blur just closes.
+  let composing = $state(false);
+  let composerText = $state("");
+  let composerEl = $state<HTMLTextAreaElement | null>(null);
+
+  $effect(() => {
+    if (composing && composerEl) composerEl.focus();
+  });
+
+  function commitComposer(keepOpen: boolean): void {
+    const title = composerText.trim();
+    composerText = "";
+    if (title) onAddCard(title);
+    if (!keepOpen) composing = false;
+    else composerEl?.focus();
+  }
+
+  function handleComposerKeydown(e: KeyboardEvent): void {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      commitComposer(true);
+    } else if (e.key === "Escape") {
+      composerText = "";
+      composing = false;
+    }
+  }
 
   function startRename(): void {
     nameDraft = column.name;
@@ -145,7 +174,19 @@
     {/each}
   </div>
   {#if mode === "full"}
-    <button type="button" class="add-card" onclick={onAddCard}>+ Add card</button>
+    {#if composing}
+      <textarea
+        class="composer"
+        rows="2"
+        placeholder="Card title…"
+        bind:value={composerText}
+        bind:this={composerEl}
+        onkeydown={handleComposerKeydown}
+        onblur={() => commitComposer(false)}
+      ></textarea>
+    {:else}
+      <button type="button" class="add-card" onclick={() => (composing = true)}>+ Add card</button>
+    {/if}
   {/if}
 </div>
 
@@ -241,5 +282,18 @@
     font-family: monospace;
     text-align: left;
     padding: 4px 0;
+  }
+  .composer {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #eee;
+    font-family: monospace;
+    font-size: 0.85em;
+    padding: 8px;
+    margin-top: 2px;
+    resize: none;
+    width: 100%;
+    box-sizing: border-box;
   }
 </style>
