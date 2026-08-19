@@ -58,6 +58,14 @@
     editor?.measure();
   }
 
+  // Lets an outside writer (the plan metadata panel) land the buffer
+  // before it rewrites one frontmatter line of the same file -- without
+  // this, the panel's write trips the external-change conflict banner
+  // against the user's own unsaved edits.
+  export async function flush(): Promise<void> {
+    await save();
+  }
+
   async function load(): Promise<void> {
     try {
       const result = await backend.readFileForViewer(path);

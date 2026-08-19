@@ -2,7 +2,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
   import { gavinTrees } from "./gavinState";
-  import { fetchBoard } from "./kanbanState";
+  import { fetchBoard, kanbanState } from "./kanbanState";
   import {
     buildExplorerTree,
     isUnderRoot,
@@ -13,6 +13,7 @@
   } from "./planExplorer";
   import PlanTree from "./PlanTree.svelte";
   import FileEditor from "./FileEditor.svelte";
+  import PlanMetadataPanel from "./PlanMetadataPanel.svelte";
   import * as backend from "./backend";
 
   interface Props {
@@ -22,6 +23,7 @@
 
   let selectedPath = $state<string | null>(null);
   let error = $state<string | null>(null);
+  let editor = $state<{ flush: () => Promise<void> } | null>(null);
 
   const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
   const contexts = $derived(buildExplorerTree($gavinTrees[workspaceId]));
@@ -32,6 +34,19 @@
   // push; a file deleted in a terminal must say so rather than leave a
   // stale buffer on screen.
   const selectionVanished = $derived(selectedPath !== null && !allPaths.has(selectedPath));
+
+  const columnNames = $derived(($kanbanState[workspaceId]?.columns ?? []).map((c) => c.name));
+  // The selected file's PlanFileInfo, when it is a plan -- docs and specs
+  // have no frontmatter contract, so they get no panel.
+  const selectedPlan = $derived.by(() => {
+    const tree = $gavinTrees[workspaceId];
+    if (!tree || !selectedPath) return null;
+    for (const ctx of tree.contexts) {
+      const found = ctx.plans.find((p) => p.path === selectedPath);
+      if (found) return found;
+    }
+    return null;
+  });
 
   // The board is needed for the metadata panel's status dropdown;
   // fetchBoard is idempotent, so calling it here means the panel never
@@ -137,7 +152,17 @@
         <div class="empty">This file no longer exists.</div>
       {:else}
         {#key selectedPath}
-          <FileEditor path={selectedPath} />
+          {#if selectedPlan}
+            <PlanMetadataPanel
+              plan={selectedPlan}
+              {workspaceId}
+              {columnNames}
+              onBeforeWrite={async () => {
+                await editor?.flush();
+              }}
+            />
+          {/if}
+          <FileEditor bind:this={editor} path={selectedPath} />
         {/key}
       {/if}
     </div>
