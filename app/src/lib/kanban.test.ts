@@ -84,6 +84,23 @@ describe("moveCard", () => {
     const updated = moveCard(b, "c", "c1", 0);
     expect(updated.columns[0].cards.map((c) => c.id)).toEqual(["c", "a", "b"]);
   });
+
+  // The index contract, pinned (spec §5): targetIndex counts positions in
+  // the target column AFTER the card's removal. A caller that computes an
+  // index against the pre-removal list is off by one when moving a card
+  // down within its own column -- the drag engine always supplies
+  // post-removal indices.
+  it("targetIndex is POST-removal: index 1 puts a before c in [a,b,c]", () => {
+    const b = board([{ id: "c1", cards: [card("a", 0), card("b", 1), card("c", 2)] }]);
+    const updated = moveCard(b, "a", "c1", 1);
+    expect(updated.columns[0].cards.map((c) => c.id)).toEqual(["b", "a", "c"]);
+  });
+
+  it("targetIndex 2 moves a to the end of its own column", () => {
+    const b = board([{ id: "c1", cards: [card("a", 0), card("b", 1), card("c", 2)] }]);
+    const updated = moveCard(b, "a", "c1", 2);
+    expect(updated.columns[0].cards.map((c) => c.id)).toEqual(["b", "c", "a"]);
+  });
 });
 
 describe("deleteCard", () => {
@@ -192,6 +209,13 @@ describe("reorderColumn", () => {
     const b = board([{ id: "a", cards: [] }, { id: "b", cards: [] }]);
     const updated = reorderColumn(b, "b", 0);
     expect(updated.columns.map((c) => c.position)).toEqual([0, 1]);
+  });
+
+  // Same post-removal index contract as moveCard (spec §5).
+  it("targetIndex is POST-removal: index 1 puts x between y and z in [x,y,z]", () => {
+    const b = board([{ id: "x", cards: [] }, { id: "y", cards: [] }, { id: "z", cards: [] }]);
+    const updated = reorderColumn(b, "x", 1);
+    expect(updated.columns.map((c) => c.id)).toEqual(["y", "x", "z"]);
   });
 });
 

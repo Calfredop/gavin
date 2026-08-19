@@ -60,6 +60,12 @@ export function updateCard(
 // inserts it into the target column at targetIndex (clamped) with
 // `position` reindexed there too. Reordering within the same column is
 // the same operation with source and target columns equal.
+//
+// CONTRACT: targetIndex counts positions in the target column AFTER the
+// card's removal. A caller computing an index against the pre-removal
+// list is off by one when moving a card down within its own column --
+// the drag engine's hit-testing excludes the dragged card, so its
+// indices are post-removal by construction.
 export function moveCard(board: Board, cardId: string, targetColumnId: string, targetIndex: number): Board {
   let moved: Card | null = null;
   const withoutCard = board.columns.map((c) => {
@@ -160,6 +166,8 @@ export function renameColumn(board: Board, columnId: string, name: string): Boar
   };
 }
 
+// CONTRACT: targetIndex counts positions AFTER the column's removal --
+// the same post-removal rule as moveCard above.
 export function reorderColumn(board: Board, columnId: string, targetIndex: number): Board {
   const currentIndex = board.columns.findIndex((c) => c.id === columnId);
   if (currentIndex === -1) return board;
