@@ -43,7 +43,9 @@
   }: Props = $props();
 
   let editingName = $state(false);
-  let nameDraft = $state(column.name);
+  // Filled by startRename when editing begins -- initializing from
+  // column.name here would freeze the first render's value.
+  let nameDraft = $state("");
   let showDeletePrompt = $state(false);
   let pendingDeleteCardId = $state<string | null>(null);
 
@@ -136,7 +138,7 @@
         onkeydown={(e) => e.key === "Enter" && commitRename()}
       />
     {:else}
-      <span class="name" onclick={startRename} role="button" tabindex="0">{column.name}</span>
+      <button type="button" class="name" onclick={startRename} title="Rename column">{column.name}</button>
       <span class="count">{column.cards.length + planCards.length}</span>
     {/if}
     {#if mode === "full"}
@@ -151,7 +153,6 @@
             <div data-kb-card={slot.item.id}>
               <KanbanCard
                 card={slot.item}
-                columnId={column.id}
                 {labels}
                 onOpen={() => onOpenCard(slot.item.id)}
                 onDelete={() => requestDeleteCard(slot.item.id)}
@@ -258,6 +259,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    text-align: left;
   }
   .column.plan-only .header {
     cursor: default;

@@ -5,17 +5,11 @@
 
   interface Props {
     card: Card;
-    columnId: string;
     labels: Label[];
     onOpen: () => void;
     onDelete: () => void;
   }
-  let { card, columnId, labels, onOpen, onDelete }: Props = $props();
-
-  // columnId is unused since pointer dragging moved to the delegated
-  // board glue, but stays in the props contract: the preview layer
-  // renders this component detached from any column.
-  void columnId;
+  let { card, labels, onOpen, onDelete }: Props = $props();
 
   const cardLabels = $derived(labels.filter((l) => card.labelIds.includes(l.id)));
 

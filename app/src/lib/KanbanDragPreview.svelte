@@ -89,7 +89,7 @@
     style:width="{$dragState.size.width}px"
   >
     {#if draggedCard}
-      <KanbanCard card={draggedCard} columnId="" {labels} onOpen={noop} onDelete={noop} />
+      <KanbanCard card={draggedCard} {labels} onOpen={noop} onDelete={noop} />
     {:else if draggedPlan}
       <PlanKanbanCard plan={draggedPlan} onOpen={noop} />
     {:else if draggedColumn}
@@ -108,7 +108,7 @@
     style:width="{settle.width}px"
   >
     {#if settle.card}
-      <KanbanCard card={settle.card} columnId="" {labels} onOpen={noop} onDelete={noop} />
+      <KanbanCard card={settle.card} {labels} onOpen={noop} onDelete={noop} />
     {:else if settle.plan}
       <PlanKanbanCard plan={settle.plan} onOpen={noop} />
     {/if}
