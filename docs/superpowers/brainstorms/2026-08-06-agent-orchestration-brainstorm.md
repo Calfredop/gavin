@@ -219,6 +219,14 @@ below-3→5, below-4→6, below-7 folded into 3.)
   in the installed @lucide/svelte before use. Manual smoke (11 new items)
   pending.
 
+- **6 Orchestration home — spec written & approved section-by-section
+  (2026-08-19):**
+  `docs/superpowers/specs/2026-08-19-agent-orchestration-home-design.md`
+  (Home tab + front-door fallback, Mission Control grid, main agent session with
+  the bootstrap Attach gap called out, homeSummary.ts, testing). Grounding
+  confirmed the gap is real: bootstrap's Attach loop walks page trees only, so a
+  session outside them comes back blank — the Milestone-C failure exactly.
+
 ## 5. Decisions log
 
 *(appended as answers land; each links back to its Q#)*
@@ -370,6 +378,21 @@ below-3→5, below-4→6, below-7 folded into 3.)
   files are selected immediately rather than waiting for the watcher.
 - **D30 (sub-5, 2026-08-19):** Sub-6 embeds this tree and the metadata panel
   as-is; they are built standalone so placement is the only thing that changes.
+- **D31 (sub-6, 2026-08-19):** **Mission Control = summaries, not mini-apps.**
+  PRD panel shows first lines (read on mount/activation), board panel shows
+  column names + counts from `boardSummary` over the existing `mergePlanCards`;
+  both click through to the full tab. No watchers, no second board renderer.
+- **D32 (sub-6, 2026-08-19):** **Agent controls are Start/Stop only** — no
+  adopting the session into a page's layout (real layout surgery for a v1).
+- **D33 (sub-6, 2026-08-19):** **Home is the front door for rooted workspaces**
+  (user override of my recommendation): `getActiveView` falls back to "home" when
+  `rootPath` is set. Fallback ONLY — any explicit tab choice persists and wins.
+- **D34 (sub-6, 2026-08-19):** **Launch command editable per workspace** (user
+  override): `Workspace.agentCommand`, defaulting to `claude`, edited on the home
+  panel. Beats a per-profile constant for `claude --model …`, aider, wrappers.
+- **Sub-6 invariant worth remembering:** a stale `mainSessionId` is **cleared,
+  never replaced** — the opposite of gavin's usual stale-session rule, because
+  spawning an agent costs money and attention.
 - **D13 (2026-08-06):** **Decomposition + build order approved:** 1 Foundations
   (root binding, `.gavin` convention, scaffolding, scanner+watcher) → 2 Plans⇄kanban
   (frontmatter status, merged board, per-session boards) → 3 MCP server + skill
