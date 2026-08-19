@@ -185,6 +185,16 @@ below-3→5, below-4→6, below-7 folded into 3.)
   first read resolves later, and a `readOnly`/`setDoc` change arriving while the
   language pack was still dynamically importing. Both fixed in the plan text
   (a `loaded` gate, `$state` handle, and a pendingDoc queue).
+- **4 Markdown editing — implementation COMPLETE (inline, 2026-08-19):** T1
+  CodeMirror deps + lazy language resolution (`fced6b6`), T2 write command +
+  `exists` flag (`14efe97`), T3 pure editing logic (`78564ae`), T4 FileEditor +
+  CodeMirrorView (`46e609e`), T5 pane wrapper + highlight.js removal + dirty dot
+  (`f8046d2`), T6 PRD/agent-file hub tabs (last commit). 254 Rust + 308 frontend
+  tests, 0 type errors, production build clean. One pre-existing test encoded the
+  old "missing file is an error" contract that T2 deliberately changes; it was
+  rewritten to assert the surviving rule (a directory still errors) rather than
+  deleted, so unreadable-file coverage was not silently dropped. Manual smoke
+  (10 new checklist items) pending.
 
 ## 5. Decisions log
 
