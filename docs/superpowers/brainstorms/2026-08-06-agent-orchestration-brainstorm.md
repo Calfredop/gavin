@@ -400,3 +400,46 @@ below-3→5, below-4→6, below-7 folded into 3.)
   injection (agents join before new UI) → 4 Markdown editing (CodeMirror 6) →
   5 Plan explorer → 6 Orchestration home (capstone). Each is its own
   spec → plan → implementation cycle.
+
+## Sub-project 6 shipped — orchestration home (2026-08-19)
+
+Six commits, `e3e852a..c1269bd`, executed inline on `main`:
+
+| Commit | Task |
+| --- | --- |
+| `e3e852a` | `Workspace.main_session_id` + `agent_command` persisted (Rust + TS) |
+| `90bb0cc` | `reconcile_main_sessions` + bootstrap Attach for main sessions |
+| `7c23773` | `homeSummary.ts` — `boardSummary` / `planSummary` / `prdExcerpt` |
+| `8df070d` | `startMainAgent` / `stopMainAgent` / `setAgentCommand`, home front door |
+| `37ce5bb` | `MainAgentPanel.svelte` + `HomeHubView.svelte`, registered first in `HUB_VIEWS` |
+| `c1269bd` | 10-item "Orchestration home" checklist section |
+
+Gates green at `c1269bd`: `cargo test` 262 passing, `vitest` 396 passing,
+`svelte-check` 0 errors, `npm run build` clean.
+
+**Two traps the plan called out, both real:**
+
+- The bootstrap Attach loop walks page trees only, so a main session — which
+  lives outside every tree by D12 — would have reattached to nothing and
+  rendered a permanently blank terminal (Milestone C's exact bug). T2 extends
+  the loop with `main_session_id`s; `home-restart` in the checklist is the
+  manual proof.
+- `handleSessionExited` searches those same trees and returns early when it
+  finds nothing, so an agent exiting on its own would have left a dead id on
+  screen forever. T4 adds an owning-workspace branch ahead of the search.
+
+**Incident (T1, mechanical):** a regex adding the two new fields to every
+`Workspace { .. }` literal used `Some\([^)]*\)`, which stops at the first `)`
+and so skipped `Some("/tmp/scratch".to_string())`. The compiler caught it
+(E0063) — the reason the plan said to let the build, not the grep, be the
+backstop. A second slip put T2's reconciler call inside a test rather than
+`bootstrap` (first textual match won); also caught by the compiler.
+
+**Still pending:** every manual smoke pass, now six sections deep in the dev
+Smoke Test workspace's Checklist tab. The two that matter most here are
+`home-restart` (agent survives a relaunch, not blank) and `home-no-respawn`
+(a stopped agent stays stopped — clearing, never replacing, is the whole
+point of the sub-6 invariant).
+
+**Phase 2 is complete**: all six sub-projects (Foundations → Plans⇄kanban →
+MCP → Markdown editing → Plan explorer → Orchestration home) are shipped.

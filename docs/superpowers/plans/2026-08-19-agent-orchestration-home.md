@@ -29,7 +29,7 @@
 - Modify: every Rust `Workspace` literal site (grep, see Global Constraints)
 - Modify: `app/src/lib/workspace.ts`
 
-- [ ] **Step 1: The fields** — in `config.rs`'s `Workspace`, after `root_path`:
+- [x] **Step 1: The fields** — in `config.rs`'s `Workspace`, after `root_path`:
 
 ```rust
     /// The workspace's running main agent session, deliberately OUTSIDE
@@ -42,9 +42,9 @@
     pub agent_command: Option<String>,
 ```
 
-- [ ] **Step 2: Fix every literal.** Run the grep above and add `main_session_id: None, agent_command: None` to each `Workspace { .. }` construction. Update `workspace_serializes_to_the_camel_case_shape_the_frontend_expects` to expect `"mainSessionId": null, "agentCommand": null`.
+- [x] **Step 2: Fix every literal.** Run the grep above and add `main_session_id: None, agent_command: None` to each `Workspace { .. }` construction. Update `workspace_serializes_to_the_camel_case_shape_the_frontend_expects` to expect `"mainSessionId": null, "agentCommand": null`.
 
-- [ ] **Step 3: Config tests** (`config.rs`, beside the `root_path` ones):
+- [x] **Step 3: Config tests** (`config.rs`, beside the `root_path` ones):
 
 ```rust
     #[test]
@@ -78,7 +78,7 @@
     }
 ```
 
-- [ ] **Step 4: TypeScript** — in `workspace.ts`'s `Workspace` interface, after `rootPath`:
+- [x] **Step 4: TypeScript** — in `workspace.ts`'s `Workspace` interface, after `rootPath`:
 
 ```typescript
   /// The running main agent session (D12) — outside every page tree.
@@ -87,9 +87,9 @@
   agentCommand?: string;
 ```
 
-- [ ] **Step 5: Verify** — `cargo test -p app`, `npx svelte-check`.
+- [x] **Step 5: Verify** — `cargo test -p app`, `npx svelte-check`.
 
-- [ ] **Step 6: Commit** — `git add app && git commit -m "feat(home): persist main agent session id and launch command"`
+- [x] **Step 6: Commit** — `git add app && git commit -m "feat(home): persist main agent session id and launch command"`
 
 ---
 
@@ -101,7 +101,7 @@
 **Interfaces:**
 - Produces: `reconcile_main_sessions(&mut [Workspace], &Mutex<UnixStream>) -> anyhow::Result<()>`, called from `bootstrap` before persisting; main session ids added to the Attach loop.
 
-- [ ] **Step 1: The reconciler** (beside `resolve_workspaces`):
+- [x] **Step 1: The reconciler** (beside `resolve_workspaces`):
 
 ```rust
 /// Clears every `main_session_id` the daemon no longer has (unknown, or
@@ -133,13 +133,13 @@ fn reconcile_main_sessions(
 }
 ```
 
-- [ ] **Step 2: Call it** in `bootstrap`, immediately after the existing `resolve_workspaces(...)?;` line:
+- [x] **Step 2: Call it** in `bootstrap`, immediately after the existing `resolve_workspaces(...)?;` line:
 
 ```rust
     reconcile_main_sessions(&mut workspaces, &command_conn)?;
 ```
 
-- [ ] **Step 3: Attach them.** The Attach loop currently walks page trees only, so a main session would come back blank. After `all_session_ids` is built, extend the iteration:
+- [x] **Step 3: Attach them.** The Attach loop currently walks page trees only, so a main session would come back blank. After `all_session_ids` is built, extend the iteration:
 
 ```rust
     // Main agent sessions live outside every page tree by design (D12),
@@ -154,7 +154,7 @@ fn reconcile_main_sessions(
 
 (replacing the existing `for id in all_session_ids { … }` loop).
 
-- [ ] **Step 4: Tests** (`session.rs`, in the module holding the other `fake_daemon_replying_with` tests):
+- [x] **Step 4: Tests** (`session.rs`, in the module holding the other `fake_daemon_replying_with` tests):
 
 ```rust
 #[cfg(test)]
@@ -219,9 +219,9 @@ mod main_session_tests {
 }
 ```
 
-- [ ] **Step 5: Verify** — `cargo test -p app` green, `cargo build` clean.
+- [x] **Step 5: Verify** — `cargo test -p app` green, `cargo build` clean.
 
-- [ ] **Step 6: Commit** — `git add app && git commit -m "feat(home): attach main agent sessions and clear dead ones at bootstrap"`
+- [x] **Step 6: Commit** — `git add app && git commit -m "feat(home): attach main agent sessions and clear dead ones at bootstrap"`
 
 ---
 
@@ -234,7 +234,7 @@ mod main_session_tests {
 **Interfaces:**
 - Produces (Task 5): `boardSummary(board, tree)`, `planSummary(tree)`, `prdExcerpt(content, maxLines)`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -341,9 +341,9 @@ describe("prdExcerpt", () => {
 });
 ```
 
-- [ ] **Step 2: Run, expect failure.**
+- [x] **Step 2: Run, expect failure.**
 
-- [ ] **Step 3: Implement:**
+- [x] **Step 3: Implement:**
 
 ```typescript
 import type { Board } from "./kanban";
@@ -417,9 +417,9 @@ export function prdExcerpt(content: string, maxLines: number): string[] {
 }
 ```
 
-- [ ] **Step 4: Run** — green.
+- [x] **Step 4: Run** — green.
 
-- [ ] **Step 5: Commit** — `git add app/src/lib/homeSummary.ts app/src/lib/homeSummary.test.ts && git commit -m "feat(home): pure board/plan/prd summaries"`
+- [x] **Step 5: Commit** — `git add app/src/lib/homeSummary.ts app/src/lib/homeSummary.test.ts && git commit -m "feat(home): pure board/plan/prd summaries"`
 
 ---
 
@@ -432,7 +432,7 @@ export function prdExcerpt(content: string, maxLines: number): string[] {
 **Interfaces:**
 - Produces (Task 5): `startMainAgent(workspaceId)`, `stopMainAgent(workspaceId)`, `setAgentCommand(workspaceId, command)`; `getActiveView` defaulting to `home` for rooted workspaces.
 
-- [ ] **Step 1: The front door** (`workspace.ts`):
+- [x] **Step 1: The front door** (`workspace.ts`):
 
 ```typescript
 // Rooted workspaces land on the orchestration home (D33). A FALLBACK
@@ -444,7 +444,7 @@ export function getActiveView(ws: Workspace): string {
 }
 ```
 
-- [ ] **Step 2: Its tests** (`workspace.test.ts`, in the existing `getActiveView` describe):
+- [x] **Step 2: Its tests** (`workspace.test.ts`, in the existing `getActiveView` describe):
 
 ```typescript
   it("defaults a rooted workspace to home", () => {
@@ -460,7 +460,7 @@ export function getActiveView(ws: Workspace): string {
   });
 ```
 
-- [ ] **Step 3: Agent actions** (`layoutState.ts`, near `setWorkspaceRoot`):
+- [x] **Step 3: Agent actions** (`layoutState.ts`, near `setWorkspaceRoot`):
 
 ```typescript
 export const DEFAULT_AGENT_COMMAND = "claude";
@@ -524,7 +524,7 @@ function clearMainSession(workspaceId: string): void {
 }
 ```
 
-- [ ] **Step 4: The exit branch.** `handleSessionExited` searches page trees and returns early for anything it cannot find — a main session is never in one, so it would leave a dead id on screen. Add at the very top of the function, before the page-tree search:
+- [x] **Step 4: The exit branch.** `handleSessionExited` searches page trees and returns early for anything it cannot find — a main session is never in one, so it would leave a dead id on screen. Add at the very top of the function, before the page-tree search:
 
 ```typescript
   // A main agent session lives outside every page tree (D12), so the
@@ -537,7 +537,7 @@ function clearMainSession(workspaceId: string): void {
   }
 ```
 
-- [ ] **Step 5: Tests** (`layoutState.test.ts`):
+- [x] **Step 5: Tests** (`layoutState.test.ts`):
 
 ```typescript
 describe("main agent session", () => {
@@ -599,9 +599,9 @@ describe("main agent session", () => {
 
 (import `startMainAgent`, `stopMainAgent` from `./layoutState`.)
 
-- [ ] **Step 6: Verify** — `npx vitest run` green, `npx svelte-check` clean.
+- [x] **Step 6: Verify** — `npx vitest run` green, `npx svelte-check` clean.
 
-- [ ] **Step 7: Commit** — `git add app/src && git commit -m "feat(home): agent start/stop actions and rooted home default"`
+- [x] **Step 7: Commit** — `git add app/src && git commit -m "feat(home): agent start/stop actions and rooted home default"`
 
 ---
 
@@ -611,7 +611,7 @@ describe("main agent session", () => {
 - Create: `app/src/lib/MainAgentPanel.svelte`, `app/src/lib/HomeHubView.svelte`
 - Modify: `app/src/lib/workspaceViews.ts`
 
-- [ ] **Step 1: The agent panel:**
+- [x] **Step 1: The agent panel:**
 
 ```svelte
 <script lang="ts">
@@ -751,7 +751,7 @@ describe("main agent session", () => {
 </style>
 ```
 
-- [ ] **Step 2: The home view:**
+- [x] **Step 2: The home view:**
 
 ```svelte
 <script lang="ts">
@@ -993,15 +993,15 @@ describe("main agent session", () => {
 </style>
 ```
 
-- [ ] **Step 3: Register it FIRST** in `HUB_VIEWS` (`workspaceViews.ts`) — import `LayoutDashboard` from `@lucide/svelte` (**verify the name exists in the installed package first; a wrong icon name fails the build**) and `HomeHubView`, then put this entry **before** `kanban`:
+- [x] **Step 3: Register it FIRST** in `HUB_VIEWS` (`workspaceViews.ts`) — import `LayoutDashboard` from `@lucide/svelte` (**verify the name exists in the installed package first; a wrong icon name fails the build**) and `HomeHubView`, then put this entry **before** `kanban`:
 
 ```typescript
   { id: "home", label: "Home", icon: LayoutDashboard, component: HomeHubView, requiresRoot: true },
 ```
 
-- [ ] **Step 4: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
+- [x] **Step 4: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
 
-- [ ] **Step 5: Commit** — `git add app/src && git commit -m "feat(home): Mission Control home tab with embedded agent session"`
+- [x] **Step 5: Commit** — `git add app/src && git commit -m "feat(home): Mission Control home tab with embedded agent session"`
 
 ---
 
@@ -1010,7 +1010,7 @@ describe("main agent session", () => {
 **Files:**
 - Modify: `app/src/lib/smokeChecklist.ts`
 
-- [ ] **Step 1: Add the section**, after "Plan explorer":
+- [x] **Step 1: Add the section**, after "Plan explorer":
 
 ```typescript
   {
@@ -1034,11 +1034,11 @@ describe("main agent session", () => {
   },
 ```
 
-- [ ] **Step 2: Full gates** — `cargo test`, `npx vitest run`, `npx svelte-check` (0 errors), `npm run build`.
+- [x] **Step 2: Full gates** — `cargo test`, `npx vitest run`, `npx svelte-check` (0 errors), `npm run build`.
 
-- [ ] **Step 3: Manual smoke** — run the section in the dev Smoke Test workspace. Present results honestly; `home-restart` and `home-no-respawn` are the two that matter most.
+- [ ] **Step 3: Manual smoke** (PENDING — user-run; see the Checklist tab's "Orchestration home" section) — run the section in the dev Smoke Test workspace. Present results honestly; `home-restart` and `home-no-respawn` are the two that matter most.
 
-- [ ] **Step 4: Commit** — `git add app/src && git commit -m "test(home): orchestration home smoke checklist section"`
+- [x] **Step 4: Commit** — `git add app/src && git commit -m "test(home): orchestration home smoke checklist section"`
 
 ---
 
