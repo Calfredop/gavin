@@ -5,10 +5,10 @@
   import PlanKanbanCard from "./PlanKanbanCard.svelte";
   import DeleteColumnPrompt from "./DeleteColumnPrompt.svelte";
   import DeleteCardWithSessionPrompt from "./DeleteCardWithSessionPrompt.svelte";
-  import { setDragPayload, getDragKind, getDragPayload, computeReorderPosition } from "./dragDrop";
+  import { getDragKind, getDragPayload } from "./dragDrop";
+  import { dragState, buildDisplaySlots } from "./kanbanDrag";
+  import { flip } from "svelte/animate";
   import {
-    moveCardAction,
-    reorderColumnAction,
     renameColumnAction,
     deleteColumnCascadeAction,
     moveCardsOutOfColumnAndDeleteAction,
@@ -47,49 +47,21 @@
     if (trimmed && trimmed !== column.name) void renameColumnAction(workspaceId, column.id, trimmed);
   }
 
-  function handleColumnDragStart(event: DragEvent): void {
-    setDragPayload(event, { kind: "kanban-column", columnId: column.id });
+  // Free-form cards render through display slots: while a card drag is
+  // live, the dragged card is hidden and a placeholder occupies the
+  // current target slot; animate:flip slides the rest (spec §1).
+  const cardSlots = $derived(buildDisplaySlots(column.cards, (c) => c.id, $dragState, column.id, "card"));
+
+  // Plan cards still ride the HTML5 path until the pointer engine takes
+  // them over (plan §Task 12).
+  function allowPlanDrop(event: DragEvent): void {
+    if (getDragKind(event) === "plan-card") event.preventDefault();
   }
 
-  function handleColumnDragOver(event: DragEvent): void {
-    const kind = getDragKind(event);
-    if (kind !== "kanban-column") return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  }
-
-  function handleColumnDrop(event: DragEvent): void {
-    event.preventDefault();
-    const payload = getDragPayload(event);
-    if (!payload || payload.kind !== "kanban-column" || payload.columnId === column.id) return;
-    void reorderColumnAction(workspaceId, payload.columnId, column.position);
-  }
-
-  function handleCardDragOver(event: DragEvent): void {
-    const kind = getDragKind(event);
-    if (kind !== "kanban-card" && kind !== "plan-card") return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  }
-
-  function handleCardDrop(event: DragEvent, dropIndex: number): void {
+  function handlePlanDrop(event: DragEvent): void {
     event.preventDefault();
     const payload = getDragPayload(event);
-    if (!payload) return;
-    if (payload.kind === "plan-card") {
-      // Drop position is ignored: plan ordering is deterministic (spec §1).
-      onPlanDrop(payload.path);
-      return;
-    }
-    if (payload.kind !== "kanban-card") return;
-    void moveCardAction(workspaceId, payload.cardId, column.id, dropIndex);
-  }
-
-  function handleCardSlotDragOver(event: DragEvent): "before" | "after" | null {
-    const kind = getDragKind(event);
-    if (kind !== "kanban-card") return null;
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    return computeReorderPosition(rect, event.clientY);
+    if (payload?.kind === "plan-card") onPlanDrop(payload.path);
   }
 
   function requestDeleteColumn(): void {
@@ -120,14 +92,8 @@
   }
 </script>
 
-<div
-  class="column"
-  draggable="true"
-  ondragstart={handleColumnDragStart}
-  ondragover={handleColumnDragOver}
-  ondrop={handleColumnDrop}
->
-  <div class="header">
+<div class="column" data-kb-col={column.id}>
+  <div class="header" data-kb-colgrab={column.id}>
     {#if editingName}
       <input
         type="text"
@@ -140,26 +106,22 @@
     {/if}
     <button type="button" class="delete" aria-label="Delete column" onclick={requestDeleteColumn}>×</button>
   </div>
-  <div class="cards" ondragover={handleCardDragOver} ondrop={(e) => handleCardDrop(e, column.cards.length)}>
-    {#each column.cards as card, index (card.id)}
-      <div
-        ondragover={(e) => {
-          handleCardDragOver(e);
-          e.stopPropagation();
-        }}
-        ondrop={(e) => {
-          const position = handleCardSlotDragOver(e);
-          handleCardDrop(e, position === "before" ? index : index + 1);
-          e.stopPropagation();
-        }}
-      >
-        <KanbanCard
-          {card}
-          columnId={column.id}
-          {labels}
-          onOpen={() => onOpenCard(card.id)}
-          onDelete={() => requestDeleteCard(card.id)}
-        />
+  <div class="cards" data-kb-cards ondragover={allowPlanDrop} ondrop={handlePlanDrop}>
+    {#each cardSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
+      <div animate:flip={{ duration: 150 }}>
+        {#if slot.type === "item"}
+          <div data-kb-card={slot.item.id}>
+            <KanbanCard
+              card={slot.item}
+              columnId={column.id}
+              {labels}
+              onOpen={() => onOpenCard(slot.item.id)}
+              onDelete={() => requestDeleteCard(slot.item.id)}
+            />
+          </div>
+        {:else}
+          <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
+        {/if}
       </div>
     {/each}
     {#each planCards as plan (plan.id)}
@@ -209,6 +171,16 @@
     color: #eee;
     font-family: monospace;
     font-weight: bold;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .slot-placeholder {
+    border: 1px dashed #555;
+    border-radius: 6px;
+    background: #202020;
+    margin-bottom: 6px;
+    box-sizing: border-box;
   }
   .header input {
     background: #1e1e1e;

@@ -1,13 +1,17 @@
 <script lang="ts">
-  import { kanbanState, fetchBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction } from "./kanbanState";
+  import { kanbanState, fetchBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction, moveCardAction } from "./kanbanState";
   import KanbanColumn from "./KanbanColumn.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
   import PlanKanbanCard from "./PlanKanbanCard.svelte";
   import PlanDetailModal from "./PlanDetailModal.svelte";
+  import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import type { Card } from "./kanban";
   import { gavinTrees, patchPlanField } from "./gavinState";
   import { mergePlanCards, type PlanCardView } from "./planBoard";
   import { getDragKind, getDragPayload } from "./dragDrop";
+  import { attachBoardDrag } from "./kanbanDragGlue";
+  import type { ActiveDrag } from "./kanbanDrag";
+  import type { DropTarget } from "./pointerDrag";
   import * as backend from "./backend";
 
   interface Props {
@@ -18,9 +22,30 @@
   let openCardId = $state<string | null>(null);
   let openPlanPath = $state<string | null>(null);
   let planWriteError = $state<string | null>(null);
+  let boardEl = $state<HTMLElement | null>(null);
 
   $effect(() => {
     void fetchBoard(workspaceId);
+  });
+
+  function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
+    if (drag.kind === "card") {
+      void moveCardAction(workspaceId, drag.id, drag.target.columnId, drag.target.index);
+    }
+  }
+
+  $effect(() => {
+    if (!boardEl) return;
+    return attachBoardDrag({
+      root: boardEl,
+      allowCards: true,
+      allowColumns: true,
+      commit: handleDragCommit,
+      click: (kind, id) => {
+        if (kind === "card") openCardId = id;
+        else if (kind === "plan") openPlanPath = id;
+      },
+    });
   });
 
   const board = $derived($kanbanState[workspaceId]);
@@ -89,7 +114,7 @@
       <button type="button" onclick={() => (planWriteError = null)}>✕</button>
     </div>
   {/if}
-  <div class="board">
+  <div class="board" bind:this={boardEl}>
     {#each board.columns as column, columnIndex (column.id)}
       <KanbanColumn
         {workspaceId}
@@ -124,6 +149,7 @@
     {/each}
     <button type="button" class="add-column" onclick={addColumn}>+ Add column</button>
   </div>
+  <KanbanDragPreview {board} {merged} labels={board.labels} />
   {#if openCard}
     <CardDetailModal
       card={openCard}

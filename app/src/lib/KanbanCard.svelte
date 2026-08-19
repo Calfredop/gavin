@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Card, Label } from "./kanban";
-  import { setDragPayload } from "./dragDrop";
   import { layoutState } from "./layoutState";
   import { findSessionLocation } from "./workspace";
 
@@ -13,10 +12,20 @@
   }
   let { card, columnId, labels, onOpen, onDelete }: Props = $props();
 
+  // columnId is unused since pointer dragging moved to the delegated
+  // board glue, but stays in the props contract: the preview layer
+  // renders this component detached from any column.
+  void columnId;
+
   const cardLabels = $derived(labels.filter((l) => card.labelIds.includes(l.id)));
 
-  function handleDragStart(event: DragEvent): void {
-    setDragPayload(event, { kind: "kanban-card", cardId: card.id, sourceColumnId: columnId });
+  // Pointer-driven opening lives in kanbanDragGlue (click-vs-drag
+  // threshold); this covers the keyboard path only.
+  function handleKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpen();
+    }
   }
 
   function handleDelete(event: MouseEvent): void {
@@ -41,7 +50,7 @@
   }
 </script>
 
-<div class="card" draggable="true" ondragstart={handleDragStart} onclick={onOpen} role="button" tabindex="0">
+<div class="card" role="button" tabindex="0" onkeydown={handleKeydown}>
   <div class="header">
     {#if card.priority !== "none"}
       <span class="priority priority-{card.priority}" title="Priority: {card.priority}"></span>
@@ -73,6 +82,8 @@
     color: #eee;
     font-family: monospace;
     font-size: 0.85em;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .header {
     display: flex;
