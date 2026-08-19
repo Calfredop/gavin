@@ -10,8 +10,9 @@ vi.mock("./backend", () => ({
 
 import * as backend from "./backend";
 import { gavinTrees } from "./gavinState";
-import { applyPlanDrop } from "./planDrop";
+import { applyPlanDrop, planCommitFromMerged } from "./planDrop";
 import type { GavinTree, PlanFileInfo } from "./gavin";
+import type { PlanCardView } from "./planBoard";
 
 function planInfo(path: string, status: string | null, order: number | null): PlanFileInfo {
   const fileName = path.split("/").at(-1) ?? path;
@@ -98,6 +99,64 @@ describe("applyPlanDrop", () => {
     expect(planByPath("/p/a.md")?.order).toBe(1024); // first write patched
     expect(planByPath("/p/d.md")?.order).toBeNull(); // failed write not patched
     expect(planByPath("/p/b.md")?.order).toBeNull(); // never attempted
+  });
+
+  it("planCommitFromMerged: drop on an auto column restatuses to the raw status", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    seed([planInfo("/p/d.md", "To Do", null)]);
+    const view = (path: string, order: number | null): PlanCardView => ({
+      id: path,
+      title: path,
+      status: "Blocked",
+      priority: null,
+      order,
+      contextName: "p",
+      fileName: path.split("/").at(-1) ?? path,
+      parseWarning: false,
+    });
+    const err = await planCommitFromMerged(
+      "ws",
+      { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "auto:Blocked", index: 1 } },
+      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
+      { columns: [], autoColumns: [{ status: "Blocked", planCards: [view("/p/q.md", 1024)] }] }
+    );
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/p/d.md", "status", "Blocked"],
+      ["/p/d.md", "order", "2048"],
+    ]);
+  });
+
+  it("planCommitFromMerged: same-column drop skips the status write and excludes the dragged card", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    seed([planInfo("/p/d.md", "To Do", 1024)]);
+    const view = (path: string, order: number | null): PlanCardView => ({
+      id: path,
+      title: path,
+      status: "To Do",
+      priority: null,
+      order,
+      contextName: "p",
+      fileName: path.split("/").at(-1) ?? path,
+      parseWarning: false,
+    });
+    const err = await planCommitFromMerged(
+      "ws",
+      { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col1", index: 0 } },
+      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
+      {
+        columns: [
+          {
+            column: { id: "col1", name: "To Do", position: 0, cards: [] },
+            planCards: [view("/p/d.md", 1024), view("/p/a.md", 2048)],
+          },
+        ],
+        autoColumns: [],
+      }
+    );
+    expect(err).toBeNull();
+    // d.md excluded from the block -> dropping at 0 means "before a.md" -> midpoint of (nothing, 2048).
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([["/p/d.md", "order", "1024"]]);
   });
 
   it("a failed status write skips the order writes entirely", async () => {

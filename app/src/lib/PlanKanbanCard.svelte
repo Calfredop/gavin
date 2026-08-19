@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { PlanCardView } from "./planBoard";
-  import { setDragPayload } from "./dragDrop";
   import { FileText, TriangleAlert } from "@lucide/svelte";
 
   interface Props {
@@ -9,12 +8,17 @@
   }
   let { plan, onOpen }: Props = $props();
 
-  function handleDragStart(event: DragEvent): void {
-    setDragPayload(event, { kind: "plan-card", path: plan.id });
+  // Pointer-driven opening lives in kanbanDragGlue (click-vs-drag
+  // threshold); this covers the keyboard path only.
+  function handleKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpen();
+    }
   }
 </script>
 
-<div class="card" draggable="true" ondragstart={handleDragStart} onclick={onOpen} role="button" tabindex="0">
+<div class="card" role="button" tabindex="0" onkeydown={handleKeydown}>
   <div class="header">
     <span class="glyph" title="Plan file"><FileText size={11} /></span>
     {#if plan.priority && plan.priority !== "none"}
@@ -39,6 +43,8 @@
     color: #eee;
     font-family: monospace;
     font-size: 0.85em;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .header {
     display: flex;

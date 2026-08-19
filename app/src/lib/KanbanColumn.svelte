@@ -5,7 +5,6 @@
   import PlanKanbanCard from "./PlanKanbanCard.svelte";
   import DeleteColumnPrompt from "./DeleteColumnPrompt.svelte";
   import DeleteCardWithSessionPrompt from "./DeleteCardWithSessionPrompt.svelte";
-  import { getDragKind, getDragPayload } from "./dragDrop";
   import { dragState, buildDisplaySlots } from "./kanbanDrag";
   import { flip } from "svelte/animate";
   import {
@@ -26,9 +25,8 @@
     onOpenCard: (cardId: string) => void;
     onAddCard: () => void;
     onOpenPlanCard: (path: string) => void;
-    onPlanDrop: (path: string) => void;
   }
-  let { workspaceId, column, otherColumns, labels, planCards, onOpenCard, onAddCard, onOpenPlanCard, onPlanDrop }: Props =
+  let { workspaceId, column, otherColumns, labels, planCards, onOpenCard, onAddCard, onOpenPlanCard }: Props =
     $props();
 
   let editingName = $state(false);
@@ -47,22 +45,13 @@
     if (trimmed && trimmed !== column.name) void renameColumnAction(workspaceId, column.id, trimmed);
   }
 
-  // Free-form cards render through display slots: while a card drag is
-  // live, the dragged card is hidden and a placeholder occupies the
-  // current target slot; animate:flip slides the rest (spec §1).
+  // Cards render through display slots: while a matching drag is live,
+  // the dragged item is hidden and a placeholder occupies the current
+  // target slot; animate:flip slides the rest (spec §1). Free-form and
+  // plan blocks slot independently -- a card never targets the plan
+  // block and vice versa (spec §2, K4).
   const cardSlots = $derived(buildDisplaySlots(column.cards, (c) => c.id, $dragState, column.id, "card"));
-
-  // Plan cards still ride the HTML5 path until the pointer engine takes
-  // them over (plan §Task 12).
-  function allowPlanDrop(event: DragEvent): void {
-    if (getDragKind(event) === "plan-card") event.preventDefault();
-  }
-
-  function handlePlanDrop(event: DragEvent): void {
-    event.preventDefault();
-    const payload = getDragPayload(event);
-    if (payload?.kind === "plan-card") onPlanDrop(payload.path);
-  }
+  const planSlots = $derived(buildDisplaySlots(planCards, (p) => p.id, $dragState, column.id, "plan"));
 
   function requestDeleteColumn(): void {
     if (column.cards.length === 0) {
@@ -106,7 +95,7 @@
     {/if}
     <button type="button" class="delete" aria-label="Delete column" onclick={requestDeleteColumn}>×</button>
   </div>
-  <div class="cards" data-kb-cards ondragover={allowPlanDrop} ondrop={handlePlanDrop}>
+  <div class="cards" data-kb-cards>
     {#each cardSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
@@ -124,8 +113,16 @@
         {/if}
       </div>
     {/each}
-    {#each planCards as plan (plan.id)}
-      <PlanKanbanCard {plan} onOpen={() => onOpenPlanCard(plan.id)} />
+    {#each planSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
+      <div animate:flip={{ duration: 150 }}>
+        {#if slot.type === "item"}
+          <div data-kb-plan={slot.item.id}>
+            <PlanKanbanCard plan={slot.item} onOpen={() => onOpenPlanCard(slot.item.id)} />
+          </div>
+        {:else}
+          <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
+        {/if}
+      </div>
     {/each}
   </div>
   <button type="button" class="add-card" onclick={onAddCard}>+ Add card</button>

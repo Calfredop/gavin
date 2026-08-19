@@ -1,0 +1,70 @@
+<script lang="ts">
+  import type { PlanCardView } from "./planBoard";
+  import PlanKanbanCard from "./PlanKanbanCard.svelte";
+  import { dragState, buildDisplaySlots } from "./kanbanDrag";
+  import { AUTO_COLUMN_PREFIX } from "./planDrop";
+  import { flip } from "svelte/animate";
+
+  interface Props {
+    status: string;
+    planCards: PlanCardView[];
+    onOpenPlan: (path: string) => void;
+  }
+  let { status, planCards, onOpenPlan }: Props = $props();
+
+  const key = $derived(AUTO_COLUMN_PREFIX + status);
+  const slots = $derived(buildDisplaySlots(planCards, (p) => p.id, $dragState, key, "plan"));
+</script>
+
+<!-- Same geometry as KanbanColumn's .column, muted + dashed: these exist
+     only so no plan with an unmatched status can ever be invisible. -->
+<div class="auto-column" data-kb-col={key} data-kb-auto>
+  <div class="auto-header" title="Status not matching any column">{status}</div>
+  <div class="cards" data-kb-cards>
+    {#each slots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
+      <div animate:flip={{ duration: 150 }}>
+        {#if slot.type === "item"}
+          <div data-kb-plan={slot.item.id}>
+            <PlanKanbanCard plan={slot.item} onOpen={() => onOpenPlan(slot.item.id)} />
+          </div>
+        {:else}
+          <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
+        {/if}
+      </div>
+    {/each}
+  </div>
+</div>
+
+<style>
+  .auto-column {
+    background: #232323;
+    border: 1px dashed #555;
+    border-radius: 8px;
+    padding: 10px;
+    width: 240px;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    max-height: 100%;
+    font-family: monospace;
+    box-sizing: border-box;
+  }
+  .auto-header {
+    color: #bbb;
+    font-size: 0.85em;
+    margin-bottom: 8px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .cards {
+    overflow-y: auto;
+    flex: 1 1 auto;
+  }
+  .slot-placeholder {
+    border: 1px dashed #555;
+    border-radius: 6px;
+    background: #202020;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+  }
+</style>

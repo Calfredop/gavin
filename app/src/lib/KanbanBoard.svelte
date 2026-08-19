@@ -1,19 +1,18 @@
 <script lang="ts">
   import { kanbanState, fetchBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction, moveCardAction, reorderColumnAction } from "./kanbanState";
   import KanbanColumn from "./KanbanColumn.svelte";
+  import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
-  import PlanKanbanCard from "./PlanKanbanCard.svelte";
   import PlanDetailModal from "./PlanDetailModal.svelte";
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import type { Card } from "./kanban";
-  import { gavinTrees, patchPlanField } from "./gavinState";
+  import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type PlanCardView } from "./planBoard";
-  import { getDragKind, getDragPayload } from "./dragDrop";
+  import { planCommitFromMerged } from "./planDrop";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
   import { flip } from "svelte/animate";
   import type { DropTarget } from "./pointerDrag";
-  import * as backend from "./backend";
 
   interface Props {
     workspaceId: string;
@@ -34,6 +33,11 @@
       void moveCardAction(workspaceId, drag.id, drag.target.columnId, drag.target.index);
     } else if (drag.kind === "column") {
       void reorderColumnAction(workspaceId, drag.id, drag.target.index);
+    } else if (drag.kind === "plan" && board && merged) {
+      planWriteError = null;
+      void planCommitFromMerged(workspaceId, drag, board.columns, merged).then((err) => {
+        if (err) planWriteError = err;
+      });
     }
   }
 
@@ -64,19 +68,6 @@
         ) ?? null)
       : null
   );
-
-  // Drop-driven restatus: write first, patch on success only (spec §2) --
-  // a failed write leaves the card where it was and names the file.
-  async function setPlanStatus(path: string, columnName: string): Promise<void> {
-    planWriteError = null;
-    const fileName = path.split("/").at(-1) ?? path;
-    try {
-      await backend.setPlanFrontmatterField(path, "status", columnName);
-      patchPlanField(workspaceId, path, "status", columnName);
-    } catch (e) {
-      planWriteError = `Couldn't update ${fileName}: ${e}`;
-    }
-  }
 
   function addColumn(): void {
     const name = "New column";
@@ -131,7 +122,6 @@
             onOpenCard={(cardId) => (openCardId = cardId)}
             onAddCard={() => addCardTo(column.id)}
             onOpenPlanCard={(path) => (openPlanPath = path)}
-            onPlanDrop={(path) => void setPlanStatus(path, column.name)}
           />
         {:else}
           <div class="column-placeholder"></div>
@@ -139,23 +129,7 @@
       </div>
     {/each}
     {#each merged?.autoColumns ?? [] as auto (auto.status)}
-      <div
-        class="auto-column"
-        role="list"
-        ondragover={(e) => {
-          if (getDragKind(e) === "plan-card") e.preventDefault();
-        }}
-        ondrop={(e) => {
-          e.preventDefault();
-          const payload = getDragPayload(e);
-          if (payload?.kind === "plan-card") void setPlanStatus(payload.path, auto.status);
-        }}
-      >
-        <div class="auto-header" title="Status not matching any column">{auto.status}</div>
-        {#each auto.planCards as plan (plan.id)}
-          <PlanKanbanCard {plan} onOpen={() => (openPlanPath = plan.id)} />
-        {/each}
-      </div>
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} onOpenPlan={(path) => (openPlanPath = path)} />
     {/each}
     <button type="button" class="add-column" onclick={addColumn}>+ Add column</button>
   </div>
@@ -209,27 +183,6 @@
     width: 240px;
     flex: 0 0 auto;
     align-self: flex-start;
-  }
-  /* Same geometry as KanbanColumn's .column, muted + dashed: these exist
-     only so no plan with an unmatched status can ever be invisible. */
-  .auto-column {
-    background: #232323;
-    border: 1px dashed #555;
-    border-radius: 8px;
-    padding: 10px;
-    width: 240px;
-    flex: 0 0 auto;
-    display: flex;
-    flex-direction: column;
-    max-height: 100%;
-    overflow-y: auto;
-    font-family: monospace;
-    box-sizing: border-box;
-  }
-  .auto-header {
-    color: #bbb;
-    font-size: 0.85em;
-    margin-bottom: 8px;
   }
   .plan-error {
     display: flex;
