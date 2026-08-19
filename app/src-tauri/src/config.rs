@@ -45,6 +45,14 @@ pub struct Workspace {
     /// stale value so a remounted volume heals without user action.
     #[serde(default)]
     pub root_path: Option<String>,
+    /// The workspace's running main agent session, deliberately OUTSIDE
+    /// every page tree (D12). Cleared -- never replaced -- when it turns
+    /// out to be dead, so an agent is only ever started deliberately.
+    #[serde(default)]
+    pub main_session_id: Option<String>,
+    /// Launch command for that agent; `claude` when unset (D34).
+    #[serde(default)]
+    pub agent_command: Option<String>,
 }
 
 /// One persisted board tab: which workspace's board, filtered to which
@@ -142,6 +150,8 @@ mod tests {
             active_page_id: Some("page-1".to_string()),
             active_view: None,
             root_path: None,
+            main_session_id: None,
+            agent_command: None,
         }
     }
 
@@ -292,7 +302,9 @@ mod tests {
                 }],
                 "activePageId": "page-1",
                 "activeView": null,
-                "rootPath": null
+                "rootPath": null,
+                "mainSessionId": null,
+                "agentCommand": null
             })
         );
     }
@@ -390,6 +402,36 @@ mod tests {
             serde_json::to_value(&record).unwrap(),
             serde_json::json!({ "workspaceId": "ws-1", "contextFolder": "/tmp/ws/auth" })
         );
+    }
+
+    #[test]
+    fn main_session_and_agent_command_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.main_session_id = Some("session-1".to_string());
+        ws.agent_command = Some("claude --model opus".to_string());
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+    }
+
+    #[test]
+    fn load_defaults_the_agent_fields_when_absent_from_an_older_workspace_object() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+        let config = load(dir.path()).unwrap();
+        assert_eq!(config.workspaces[0].main_session_id, None);
+        assert_eq!(config.workspaces[0].agent_command, None);
     }
 
     #[test]

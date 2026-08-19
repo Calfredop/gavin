@@ -17,6 +17,10 @@ export interface Workspace {
   /// The workspace's bound root directory (agent-orchestration phase).
   /// Optional; never auto-cleared when the directory goes missing on disk.
   rootPath?: string;
+  /// The running main agent session (D12) -- outside every page tree.
+  mainSessionId?: string;
+  /// Launch command for it; "claude" when unset.
+  agentCommand?: string;
 }
 
 export interface WorkspacesData {

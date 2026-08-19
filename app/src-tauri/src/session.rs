@@ -106,6 +106,8 @@ mod smoketest_tests {
             active_page_id: None,
             active_view: None,
             root_path: Some("/tmp/scratch".to_string()),
+            main_session_id: None,
+            agent_command: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -610,6 +612,8 @@ mod resolve_workspaces_tests {
             active_page_id: None,
             active_view: None,
             root_path: None,
+            main_session_id: None,
+            agent_command: None,
         }
     }
 
@@ -858,6 +862,8 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 active_page_id: None,
                 active_view: None,
                 root_path: None,
+                main_session_id: None,
+                agent_command: None,
             });
         }
     } else {
@@ -905,6 +911,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 active_page_id: None,
                 active_view: None,
                 root_path: None,
+                main_session_id: None,
+                agent_command: None,
             },
         );
     }
