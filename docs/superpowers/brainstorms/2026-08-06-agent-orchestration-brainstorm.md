@@ -225,7 +225,8 @@ below-3→5, below-4→6, below-7 folded into 3.)
   (Home tab + front-door fallback, Mission Control grid, main agent session with
   the bootstrap Attach gap called out, homeSummary.ts, testing). Grounding
   confirmed the gap is real: bootstrap's Attach loop walks page trees only, so a
-  session outside them comes back blank — the Milestone-C failure exactly.
+  session outside them comes back blank — the Milestone-C failure exactly. Plan:
+  `docs/superpowers/plans/2026-08-19-agent-orchestration-home.md` (6 tasks).
 
 ## 5. Decisions log
 
