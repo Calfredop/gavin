@@ -6,6 +6,7 @@ export interface PlanCardView {
   title: string;
   status: string | null;
   priority: PlanFileInfo["priority"];
+  order: number | null;
   contextName: string;
   fileName: string;
   parseWarning: boolean;
@@ -35,6 +36,7 @@ function planView(ctx: GavinContext, plan: PlanFileInfo): PlanCardView {
     title: plan.title,
     status: plan.status,
     priority: plan.priority,
+    order: plan.order,
     contextName: ctx.name,
     fileName: plan.fileName,
     parseWarning: plan.parseWarning,
@@ -67,10 +69,17 @@ export function mergePlanCards(
   for (const ctx of contexts) {
     for (const plan of ctx.plans) entries.push({ ctx, plan });
   }
-  entries.sort(
-    (a, b) =>
+  // Manual order first (spec §2): ordered cards ascending, unordered
+  // cards after them in the old deterministic (folder, filename) order.
+  entries.sort((a, b) => {
+    const ao = a.plan.order ?? Number.POSITIVE_INFINITY;
+    const bo = b.plan.order ?? Number.POSITIVE_INFINITY;
+    if (ao < bo) return -1;
+    if (ao > bo) return 1;
+    return (
       a.ctx.folderPath.localeCompare(b.ctx.folderPath) || a.plan.fileName.localeCompare(b.plan.fileName)
-  );
+    );
+  });
 
   const columnBySlug = new Map<string, DisplayColumn>();
   for (const dc of columns) {

@@ -67,6 +67,28 @@ describe("mergePlanCards", () => {
     expect(columns[0].planCards.map((p) => p.fileName)).toEqual(["a.md", "b.md"]);
   });
 
+  it("sorts plan cards by order, unordered last by folder/filename", () => {
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("a.md", "To Do", { order: 2000 }),
+        plan("b.md", "To Do", { order: 1000 }),
+        plan("c.md", "To Do"),
+      ]),
+    ]);
+    const { columns } = mergePlanCards(board, t);
+    expect(columns[0].planCards.map((p) => p.fileName)).toEqual(["b.md", "a.md", "c.md"]);
+    expect(columns[0].planCards.map((p) => p.order)).toEqual([1000, 2000, null]);
+  });
+
+  it("order ties fall back to folder then filename", () => {
+    const t = tree([
+      ctx("/ws/zeta", "zeta", [plan("z.md", "To Do", { order: 1000, path: "/ws/zeta/z.md" })]),
+      ctx("/ws/alpha", "alpha", [plan("a.md", "To Do", { order: 1000, path: "/ws/alpha/a.md" })]),
+    ]);
+    const { columns } = mergePlanCards(board, t);
+    expect(columns[0].planCards.map((p) => p.fileName)).toEqual(["a.md", "z.md"]);
+  });
+
   it("groups unmatched statuses into auto columns after the real ones", () => {
     const t = tree([ctx("/ws", "root", [plan("a.md", "Blocked"), plan("b.md", "blocked"), plan("c.md", "Review")])]);
     const { autoColumns } = mergePlanCards(board, t);
