@@ -107,12 +107,23 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
             parsed
         }
     };
+    let order = match get("order") {
+        None => None,
+        Some(raw) => match raw.trim().parse::<i64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                warning = true;
+                None
+            }
+        },
+    };
     PlanFileInfo {
         path: path.to_string_lossy().to_string(),
         file_name,
         title: get("title").unwrap_or(stem),
         status: get("status"),
         priority,
+        order,
         parse_warning: warning,
     }
 }
@@ -242,6 +253,11 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()>
         "priority" => {
             if parse_priority(value).is_none() {
                 anyhow::bail!("invalid priority value: {value}");
+            }
+        }
+        "order" => {
+            if value.trim().parse::<i64>().is_err() {
+                anyhow::bail!("order must be an integer: {value}");
             }
         }
         other => anyhow::bail!("field not allowed: {other}"),
@@ -612,6 +628,40 @@ mod tests {
         assert_eq!(p.status.as_deref(), Some("Review"));
         assert_eq!(p.priority, None);
         assert!(p.parse_warning);
+    }
+
+    #[test]
+    fn plan_order_parses_integer_and_flags_garbage() {
+        let ok = plan("---\ntitle: A\norder: 2048\n---\n");
+        assert_eq!(ok.order, Some(2048));
+        assert!(!ok.parse_warning);
+
+        let none = plan("---\ntitle: A\n---\n");
+        assert_eq!(none.order, None);
+        assert!(!none.parse_warning);
+
+        let bad = plan("---\ntitle: A\norder: soon\n---\n");
+        assert_eq!(bad.order, None);
+        assert!(bad.parse_warning);
+    }
+
+    #[test]
+    fn set_plan_field_accepts_integer_order_and_rejects_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: T\nstatus: To Do\n---\nbody\n").unwrap();
+        assert!(set_plan_field(&path, "order", "1.5").is_err());
+        assert!(set_plan_field(&path, "order", "soon").is_err());
+        // Neither failed call may touch the file:
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: T\nstatus: To Do\n---\nbody\n"
+        );
+        set_plan_field(&path, "order", "1024").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\norder: 1024\ntitle: T\nstatus: To Do\n---\nbody\n"
+        );
     }
 
     #[test]

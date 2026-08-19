@@ -112,9 +112,9 @@ fn tool_definitions() -> Value {
             "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
             "body": { "type": "string" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status or priority) of a plan file, preserving every other byte.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
-            "key": { "type": "string", "enum": ["status", "priority"] },
+            "key": { "type": "string", "enum": ["status", "priority", "order"] },
             "value": { "type": "string" }
         }, "required": ["path", "key", "value"] } },
         { "name": "gavin_create_context", "description": "Turn a folder into a gavin context (.gavin scaffold) for a feature/library.", "inputSchema": { "type": "object", "properties": {

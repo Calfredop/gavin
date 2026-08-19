@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -236,10 +236,11 @@ pub struct Board {
 }
 
 /// One plan file inside a `.gavin*/plans/` folder, with its frontmatter
-/// parsed (status/priority/title). `parse_warning` covers an unterminated
-/// frontmatter block or an unrecognized priority value -- the plan still
-/// appears, never silently dropped (spec §4). Crosses to the frontend, so
-/// camelCase like GitStatus, verified by a shape test below.
+/// parsed (status/priority/title/order). `parse_warning` covers an
+/// unterminated frontmatter block, an unrecognized priority value, or a
+/// non-integer order -- the plan still appears, never silently dropped
+/// (spec §4). Crosses to the frontend, so camelCase like GitStatus,
+/// verified by a shape test below.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanFileInfo {
@@ -248,6 +249,7 @@ pub struct PlanFileInfo {
     pub title: String,
     pub status: Option<String>,
     pub priority: Option<Priority>,
+    pub order: Option<i64>,
     pub parse_warning: bool,
 }
 
@@ -735,6 +737,7 @@ mod tests {
                     title: "a".to_string(),
                     status: Some("To Do".to_string()),
                     priority: Some(Priority::High),
+                    order: None,
                     parse_warning: false,
                 }],
                 docs: vec![MdFileInfo {
@@ -766,6 +769,7 @@ mod tests {
                         "title": "a",
                         "status": "To Do",
                         "priority": "high",
+                        "order": null,
                         "parseWarning": false
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
@@ -837,8 +841,11 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_one_until_a_breaking_change_bumps_it() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+    fn protocol_version_is_two_until_a_breaking_change_bumps_it() {
+        // v2: PlanFileInfo grew `order`, and set_plan_field accepts the
+        // "order" key -- a pre-order daemon would reject the app's order
+        // writes per-drop, so the mismatch must surface at the handshake.
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 
     #[test]
