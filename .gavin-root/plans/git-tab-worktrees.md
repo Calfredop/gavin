@@ -15,9 +15,10 @@ Plan: `docs/superpowers/plans/2026-08-20-git-tab-worktrees.md`
 
 ## Steps
 
-- [ ] Worktree list parser + add/remove/prune commands + tests; watcher gitdir fix
-- [ ] Store: cwd switching + persisted selection + tests
-- [ ] Switcher component with row actions
-- [ ] Fork dialog (new / existing branch, default sibling path) + agent spawn
-- [ ] Merge back + cleanup dialog; remove (+ force) ; prune
-- [ ] Smoke checklist entries; whole-feature manual pass
+- [x] Worktree list parser + add/remove/prune commands + tests; watcher gitdir fix
+- [x] Store: cwd switching + persisted selection + tests
+- [x] Switcher component with row actions
+- [x] Fork dialog (new / existing branch, default sibling path) + agent spawn
+- [x] Merge back + cleanup dialog; remove (+ force) ; prune
+- [x] Smoke checklist entries
+- [ ] Whole-feature manual pass (Smoke Test workspace → the three “Git tab” sections)

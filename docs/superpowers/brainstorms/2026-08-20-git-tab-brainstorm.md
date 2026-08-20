@@ -119,3 +119,25 @@ dialog + agent spawn, merge back, remove/prune); testing + build order
 smoke-tested once).
 
 Spec: `docs/superpowers/specs/2026-08-20-git-tab-sync-worktrees-design.md`.
+
+## Execution notes — SP2 + SP3 (sync/branches/stashes, worktrees; 2026-08-20)
+
+Both shipped on the SP1 branch `worktree-git-tab-local-changes` so the whole
+Git tab is smoke-tested once. Rust: 49 git tests (17 new, incl. an offline
+bare-remote fetch/pull/push round-trip and a cancellable hung fetch via the
+`ext::` transport); Vitest: 525 total (11 new store/helper tests).
+
+Deviations / notes:
+
+- `stash list --format` uses `%x00` for NUL (log-style formats), not
+  for-each-ref's `%00` — caught by the first real-repo test.
+- The cancel test can't use `sh -c '…'` through `ext::` (git splits the
+  command on whitespace); it writes a sleeper script instead.
+- `gitdir_for` canonicalises both paths (macOS `/var` → `/private/var`).
+- The op bar shows the last stderr line only (no percentage parsing); git's
+  own progress strings are informative enough.
+- Worktree "Remove" of the selected worktree switches the view to the root
+  first; the main worktree row has no remove/merge actions.
+- `GitDiscardDialog` grew `confirmLabel`/`cancelLabel`/`skipLabel` and now
+  serves every destructive confirm (branch delete, stash drop, worktree
+  remove, merge-back cleanup).

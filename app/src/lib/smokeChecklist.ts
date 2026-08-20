@@ -430,6 +430,27 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "git-checkout-dirty", text: "Checkout that would overwrite local changes shows git's refusal verbatim (no auto-stash)" },
     ],
   },
+  {
+    title: "Git tab — worktrees",
+    items: [
+      {
+        id: "wt-fork",
+        text: "Switcher → New worktree…: a new branch + sibling folder is created, the tab switches to it, and an agent session opens there",
+        hint: "Default folder is ../<repo>-<branch>; untick “Start agent here” to skip the session.",
+      },
+      { id: "wt-switch", text: "Switching worktrees changes lists/diff/commit/push targets; the selection survives an app restart" },
+      {
+        id: "wt-watch",
+        text: "Committing inside a linked worktree from a terminal refreshes the tab (the gitdir watcher)",
+      },
+      {
+        id: "wt-merge-back",
+        text: "Merge into <root branch> on a fork merges in the root checkout and offers “Remove & delete”; a conflict switches to the root with Abort available",
+      },
+      { id: "wt-remove-force", text: "Removing a dirty worktree asks again with “Force remove”; “Also delete branch” deletes it" },
+      { id: "wt-prune", text: "rm -rf a worktree folder → it shows “(missing)” and Prune clears it" },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {
