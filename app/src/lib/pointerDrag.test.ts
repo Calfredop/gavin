@@ -11,26 +11,23 @@ import {
 const r = (left: number, top: number, width: number, height: number): Rect => ({ left, top, width, height });
 
 // Two real columns side by side (12px gap) plus one auto column. col1
-// holds free-form cards A y:[0,50) and B y:[56,106) and plan cards
-// P y:[120,170); col2 and the auto column are empty except for plans.
+// holds cards A y:[0,50) and B y:[56,106); the auto column holds Q.
 function columns(): MeasuredColumn[] {
   return [
     {
       id: "col1",
       rect: r(0, 0, 240, 400),
       auto: false,
-      cards: [
+      planCards: [
         { id: "A", rect: r(0, 0, 240, 50) },
         { id: "B", rect: r(0, 56, 240, 50) },
       ],
-      planCards: [{ id: "P", rect: r(0, 120, 240, 50) }],
     },
-    { id: "col2", rect: r(252, 0, 240, 400), auto: false, cards: [], planCards: [] },
+    { id: "col2", rect: r(252, 0, 240, 400), auto: false, planCards: [] },
     {
       id: "auto:Blocked",
       rect: r(504, 0, 240, 400),
       auto: true,
-      cards: [],
       planCards: [{ id: "Q", rect: r(504, 0, 240, 50) }],
     },
   ];
@@ -44,60 +41,97 @@ describe("exceedsThreshold", () => {
   });
 });
 
-describe("computeDropTarget", () => {
+describe("computeDropTarget — column slotting", () => {
   it("slots by card midpoints: above A's mid -> 0, between mids -> 1, below B's mid -> 2", () => {
-    expect(computeDropTarget({ x: 100, y: 10 }, columns(), "card")).toEqual({ columnId: "col1", index: 0 });
-    expect(computeDropTarget({ x: 100, y: 40 }, columns(), "card")).toEqual({ columnId: "col1", index: 1 });
-    expect(computeDropTarget({ x: 100, y: 200 }, columns(), "card")).toEqual({ columnId: "col1", index: 2 });
+    expect(computeDropTarget({ x: 100, y: 10 }, columns())).toEqual({ columnId: "col1", index: 0 });
+    expect(computeDropTarget({ x: 100, y: 40 }, columns())).toEqual({ columnId: "col1", index: 1 });
+    expect(computeDropTarget({ x: 100, y: 200 }, columns())).toEqual({ columnId: "col1", index: 2 });
   });
 
-  it("indices are post-removal by construction: dragged excluded, hovering before the last card's midpoint gives its slot", () => {
-    // Simulates dragging A within col1: measured list is just [B, C'].
-    const cols: MeasuredColumn[] = [
+  it("picks the nearest column when the pointer is in the gap between columns", () => {
+    expect(computeDropTarget({ x: 244, y: 10 }, columns())).toEqual({ columnId: "col1", index: 0 });
+    expect(computeDropTarget({ x: 250, y: 10 }, columns())).toEqual({ columnId: "col2", index: 0 });
+  });
+
+  it("null when farther than maxSnapPx from every column", () => {
+    expect(computeDropTarget({ x: 2000, y: 10 }, columns())).toBeNull();
+    expect(computeDropTarget({ x: -200, y: 10 }, columns())).toBeNull();
+  });
+
+  it("auto columns are plain targets (every drag is a file card now)", () => {
+    expect(computeDropTarget({ x: 600, y: 200 }, columns())).toEqual({ columnId: "auto:Blocked", index: 1 });
+  });
+
+  it("pointer above/below a column still targets it; vertical position only picks the slot", () => {
+    expect(computeDropTarget({ x: 100, y: -50 }, columns())).toEqual({ columnId: "col1", index: 0 });
+    expect(computeDropTarget({ x: 100, y: 900 }, columns())).toEqual({ columnId: "col1", index: 2 });
+  });
+});
+
+describe("computeDropTarget — nesting", () => {
+  // col1: plan P y:[0,100) carrying nest info, card B y:[106,156).
+  function nestColumns(expanded: boolean): MeasuredColumn[] {
+    return [
       {
         id: "col1",
         rect: r(0, 0, 240, 400),
         auto: false,
-        cards: [
-          { id: "B", rect: r(0, 0, 240, 50) },
-          { id: "C", rect: r(0, 56, 240, 50) },
+        planCards: [
+          {
+            id: "P",
+            rect: r(0, 0, 240, 100),
+            nest: expanded
+              ? {
+                  rect: r(8, 60, 224, 36),
+                  children: [
+                    { id: "c1", rect: r(8, 60, 224, 16) },
+                    { id: "c2", rect: r(8, 78, 224, 16) },
+                  ],
+                }
+              : { rect: null, children: [] },
+          },
+          { id: "B", rect: r(0, 106, 240, 50) },
         ],
-        planCards: [],
       },
     ];
-    // Pointer just above C's midpoint -> index 1 -> moveCard(..., 1) => [B, A, C].
-    expect(computeDropTarget({ x: 100, y: 70 }, cols, "card")).toEqual({ columnId: "col1", index: 1 });
-  });
+  }
 
-  it("picks the nearest column when the pointer is in the gap between columns", () => {
-    expect(computeDropTarget({ x: 244, y: 10 }, columns(), "card")).toEqual({ columnId: "col1", index: 0 });
-    expect(computeDropTarget({ x: 250, y: 10 }, columns(), "card")).toEqual({ columnId: "col2", index: 0 });
-  });
-
-  it("null when farther than maxSnapPx from every column", () => {
-    expect(computeDropTarget({ x: 2000, y: 10 }, columns(), "card")).toBeNull();
-    expect(computeDropTarget({ x: -200, y: 10 }, columns(), "card")).toBeNull();
-  });
-
-  it("card drags skip auto columns entirely; plan drags target them", () => {
-    // Pointer squarely over the auto column:
-    expect(computeDropTarget({ x: 600, y: 10 }, columns(), "card")).toBeNull(); // col2's right edge is 108px away
-    expect(computeDropTarget({ x: 600, y: 10 }, columns(), "plan")).toEqual({
-      columnId: "auto:Blocked",
+  it("middle band of a nestable plan targets nest index 0; edge bands slot the column", () => {
+    expect(computeDropTarget({ x: 100, y: 50 }, nestColumns(false))).toEqual({
+      columnId: "col1",
       index: 0,
+      nest: "P",
+    });
+    // Top band (y 10 of 100): before P in the column.
+    expect(computeDropTarget({ x: 100, y: 10 }, nestColumns(false))).toEqual({ columnId: "col1", index: 0 });
+    // Bottom band (y 90): after P.
+    expect(computeDropTarget({ x: 100, y: 90 }, nestColumns(false))).toEqual({ columnId: "col1", index: 1 });
+  });
+
+  it("an expanded nested area slots among the children by midpoint", () => {
+    expect(computeDropTarget({ x: 100, y: 62 }, nestColumns(true))).toEqual({
+      columnId: "col1",
+      index: 0,
+      nest: "P",
+    });
+    expect(computeDropTarget({ x: 100, y: 75 }, nestColumns(true))).toEqual({
+      columnId: "col1",
+      index: 1,
+      nest: "P",
+    });
+    expect(computeDropTarget({ x: 100, y: 92 }, nestColumns(true))).toEqual({
+      columnId: "col1",
+      index: 2,
+      nest: "P",
     });
   });
 
-  it("kind selects the block: plan drag indexes planCards, card drag indexes cards", () => {
-    // y=200 is below P's midpoint (145): plan index 1; card index 2 (below both card mids).
-    expect(computeDropTarget({ x: 100, y: 200 }, columns(), "plan")).toEqual({ columnId: "col1", index: 1 });
-    expect(computeDropTarget({ x: 100, y: 130 }, columns(), "plan")).toEqual({ columnId: "col1", index: 0 });
-    expect(computeDropTarget({ x: 100, y: 200 }, columns(), "card")).toEqual({ columnId: "col1", index: 2 });
-  });
-
-  it("pointer above/below a column still targets it; vertical position only picks the slot", () => {
-    expect(computeDropTarget({ x: 100, y: -50 }, columns(), "card")).toEqual({ columnId: "col1", index: 0 });
-    expect(computeDropTarget({ x: 100, y: 900 }, columns(), "card")).toEqual({ columnId: "col1", index: 2 });
+  it("a plan without nest info never nests (note/plan drags, cross-context)", () => {
+    const cols = nestColumns(false);
+    cols[0].planCards[0].nest = null;
+    // Plain midpoint slotting applies: past P's midpoint (50) -> after P.
+    expect(computeDropTarget({ x: 100, y: 51 }, cols)).toEqual({ columnId: "col1", index: 1 });
+    expect(computeDropTarget({ x: 100, y: 49 }, cols)).toEqual({ columnId: "col1", index: 0 });
   });
 });
 
@@ -125,9 +159,9 @@ describe("autoScrollVelocity", () => {
   });
 
   it("negative near the start edge, max at/past the edge", () => {
-    expect(autoScrollVelocity(20, 0, 1000)).toBe(-6); // half the zone -> half of 12
+    expect(autoScrollVelocity(20, 0, 1000)).toBe(-6);
     expect(autoScrollVelocity(0, 0, 1000)).toBe(-12);
-    expect(autoScrollVelocity(-30, 0, 1000)).toBe(-12); // past the edge clamps
+    expect(autoScrollVelocity(-30, 0, 1000)).toBe(-12);
   });
 
   it("positive near the end edge", () => {

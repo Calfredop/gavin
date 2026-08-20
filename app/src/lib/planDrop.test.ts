@@ -142,7 +142,12 @@ describe("applyPlanDrop", () => {
       "ws",
       { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "auto:Blocked", index: 1 } },
       [{ id: "col1", name: "To Do", position: 0 }],
-      { columns: [], autoColumns: [{ status: "Blocked", planCards: [view("/p/q.md", 1024)] }] }
+      {
+        columns: [
+          { column: { id: "col1", name: "To Do", position: 0 }, planCards: [view("/p/d.md", null)] },
+        ],
+        autoColumns: [{ status: "Blocked", planCards: [view("/p/q.md", 1024)] }],
+      }
     );
     expect(err).toBeNull();
     expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
@@ -245,9 +250,29 @@ describe("applyPlanDrop", () => {
     seed([planInfo("/p/d.md", "To Do", null)]);
     const err = await planCommitFromMerged(
       "ws",
-      { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col1", index: 0 } },
-      [{ id: "col1", name: "To Do", position: 0 }],
-      { columns: [{ column: { id: "col1", name: "To Do", position: 0 }, planCards: [] }], autoColumns: [] }
+      { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col2", index: 0 } },
+      [
+        { id: "col1", name: "To Do", position: 0 },
+        { id: "col2", name: "Done", position: 1 },
+      ],
+      {
+        columns: [
+          {
+            column: { id: "col1", name: "To Do", position: 0 },
+            planCards: [
+              {
+                id: "/p/d.md", title: "d", status: "To Do", priority: null, order: null,
+                kind: "plan" as const, parent: null, parentTitle: null, parentBroken: false,
+                labels: [], checklistDone: 0, checklistTotal: 0,
+                contextName: "p", contextFolder: "/p", fileName: "d.md", parseWarning: false,
+                nestedChildren: [],
+              },
+            ],
+          },
+          { column: { id: "col2", name: "Done", position: 1 }, planCards: [] },
+        ],
+        autoColumns: [],
+      }
     );
     expect(err).toContain("d.md");
     expect(get(dropHold)).toBeNull();
@@ -266,5 +291,118 @@ describe("applyPlanDrop", () => {
     expect(err).toContain("d.md");
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledTimes(1);
     expect(planByPath("/p/d.md")?.status).toBe("To Do");
+  });
+});
+
+describe("nest drops", () => {
+  const view = (
+    path: string,
+    kind: "note" | "task" | "plan",
+    status: string | null,
+    order: number | null,
+    extra: Partial<CardView> = {}
+  ): CardView => ({
+    id: path,
+    title: path,
+    status,
+    priority: null,
+    order,
+    kind,
+    parent: null,
+    parentTitle: null,
+    parentBroken: false,
+    labels: [],
+    checklistDone: 0,
+    checklistTotal: 0,
+    contextName: "p",
+    contextFolder: "/p",
+    fileName: path.split("/").at(-1) ?? path,
+    parseWarning: false,
+    nestedChildren: [],
+    ...extra,
+  });
+
+  function mergedWith(cards: CardView[]) {
+    return {
+      columns: [{ column: { id: "col1", name: "To Do", position: 0 }, planCards: cards }],
+      autoColumns: [],
+    };
+  }
+
+  it("nest: writes parent, removes status, then orders among the children", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    seed([planInfo("/p/t.md", "To Do", null)]);
+    const child = view("/p/c1.md", "task", null, 1024, { parent: "plan.md" });
+    const plan = view("/p/plan.md", "plan", "To Do", null, { nestedChildren: [child] });
+    const task = view("/p/t.md", "task", "To Do", null);
+    const err = await planCommitFromMerged(
+      "ws",
+      { id: "/p/t.md", sourceColumnId: "col1", target: { columnId: "col1", index: 1, nest: "/p/plan.md" } },
+      [{ id: "col1", name: "To Do", position: 0 }],
+      mergedWith([plan, task])
+    );
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/p/t.md", "parent", "plan.md"],
+      ["/p/t.md", "status", ""],
+      ["/p/t.md", "order", "2048"],
+    ]);
+  });
+
+  it("nest: an unchanged parent skips the parent write", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    seed([planInfo("/p/t.md", null, null)]);
+    const child = view("/p/t.md", "task", null, 1024, { parent: "plan.md" });
+    const other = view("/p/c2.md", "task", null, 2048, { parent: "plan.md" });
+    const plan = view("/p/plan.md", "plan", "To Do", null, { nestedChildren: [child, other] });
+    const err = await planCommitFromMerged(
+      "ws",
+      { id: "/p/t.md", sourceColumnId: "col1", target: { columnId: "col1", index: 1, nest: "/p/plan.md" } },
+      [{ id: "col1", name: "To Do", position: 0 }],
+      mergedWith([plan])
+    );
+    expect(err).toBeNull();
+    // Only the order write: parent unchanged, status already absent.
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([["/p/t.md", "order", "3072"]]);
+  });
+
+  it("freeing a nested child into its parent's own column writes the status", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    seed([planInfo("/p/t.md", null, null)]);
+    const child = view("/p/t.md", "task", null, null, { parent: "plan.md" });
+    const plan = view("/p/plan.md", "plan", "To Do", 1024, { nestedChildren: [child] });
+    const err = await planCommitFromMerged(
+      "ws",
+      { id: "/p/t.md", sourceColumnId: "col1", target: { columnId: "col1", index: 1 } },
+      [{ id: "col1", name: "To Do", position: 0 }],
+      mergedWith([plan])
+    );
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/p/t.md", "status", "To Do"],
+      ["/p/t.md", "order", "2048"],
+    ]);
+  });
+
+  it("guards: only tasks nest, only into same-context plans, with no writes", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    const note = view("/p/n.md", "note", "To Do", null);
+    const plan = view("/p/plan.md", "plan", "To Do", null);
+    const otherCtx = view("/q/plan.md", "plan", "To Do", null, { contextFolder: "/q" });
+    const task = view("/p/t.md", "task", "To Do", null);
+    for (const [draggedId, cards] of [
+      ["/p/n.md", [note, plan]],
+      ["/p/t.md", [task, otherCtx]],
+    ] as const) {
+      const err = await planCommitFromMerged(
+        "ws",
+        { id: draggedId, sourceColumnId: "col1", target: { columnId: "col1", index: 0, nest: cards[1].id } },
+        [{ id: "col1", name: "To Do", position: 0 }],
+        mergedWith([...cards])
+      );
+      expect(err).toContain("Only a task can nest");
+    }
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    expect(get(dropHold)).toBeNull();
   });
 });

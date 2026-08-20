@@ -5,10 +5,12 @@
 //
 // Data-attribute contract (rendered by the board components):
 //   [data-kb-col]      column root; value = column id or "auto:<status>"
-//   [data-kb-auto]     present on auto columns (plan drags only)
+//   [data-kb-auto]     present on auto columns
 //   [data-kb-cards]    the scrollable card-list element inside a column
-//   [data-kb-card]     free-form card wrapper; value = card id
-//   [data-kb-plan]     plan card wrapper; value = plan path
+//   [data-kb-plan]     card wrapper; value = the card file's path
+//   [data-kb-kind]     on card wrappers: note | task | plan
+//   [data-kb-ctx]      on card wrappers: the card's context folder
+//   [data-kb-nest]     a plan card's nested area; value = the plan's path
 //   [data-kb-colgrab]  column drag handle (header); value = column id
 
 import { get, writable } from "svelte/store";
@@ -23,7 +25,13 @@ import {
   type DragKind,
   type DragCallbacks,
 } from "./kanbanDrag";
-import { autoScrollVelocity, type Measured, type MeasuredColumn, type DropTarget } from "./pointerDrag";
+import {
+  autoScrollVelocity,
+  type Measured,
+  type MeasuredCard,
+  type MeasuredColumn,
+  type DropTarget,
+} from "./pointerDrag";
 
 // The board root that owns the current (or most recent) drag. Both
 // surfaces can show the same workspace simultaneously; each surface's
@@ -33,7 +41,6 @@ export const activeDragRoot = writable<HTMLElement | null>(null);
 
 export interface BoardDragOptions {
   root: HTMLElement; // also the horizontal scroll container of the column strip
-  allowCards: boolean; // free-form card dragging (hub only)
   allowColumns: boolean; // column dragging (hub only)
   commit: (drag: ActiveDrag & { target: DropTarget }) => void;
   click: (kind: DragKind, id: string) => void;
@@ -44,24 +51,42 @@ function toRect(el: Element): { left: number; top: number; width: number; height
   return { left: r.left, top: r.top, width: r.width, height: r.height };
 }
 
-function measureBoard(root: HTMLElement, draggedId: string): MeasuredColumn[] {
+// nestCtx: the dragged card's context folder when it is a TASK (nest
+// eligibility, card-model spec §2), null otherwise -- plans only get
+// nest info for eligible drags, so the pure hit-testing never needs to
+// know what is being dragged.
+function measureBoard(root: HTMLElement, draggedId: string, nestCtx: string | null): MeasuredColumn[] {
   const columns: MeasuredColumn[] = [];
   for (const colEl of root.querySelectorAll("[data-kb-col]")) {
     const id = colEl.getAttribute("data-kb-col") ?? "";
-    const collect = (attr: string): Measured[] => {
-      const out: Measured[] = [];
-      for (const el of colEl.querySelectorAll(`[${attr}]`)) {
-        const itemId = el.getAttribute(attr) ?? "";
-        if (itemId !== draggedId) out.push({ id: itemId, rect: toRect(el) });
+    const planCards: MeasuredCard[] = [];
+    for (const el of colEl.querySelectorAll("[data-kb-plan]")) {
+      if (el.closest("[data-kb-nest]")) continue; // nested children ride their plan's nest info
+      const itemId = el.getAttribute("data-kb-plan") ?? "";
+      if (itemId === draggedId) continue;
+      const card: MeasuredCard = { id: itemId, rect: toRect(el) };
+      if (
+        nestCtx !== null &&
+        el.getAttribute("data-kb-kind") === "plan" &&
+        el.getAttribute("data-kb-ctx") === nestCtx
+      ) {
+        const nestEl = el.querySelector(`[data-kb-nest]`);
+        const children: Measured[] = [];
+        if (nestEl) {
+          for (const childEl of nestEl.querySelectorAll("[data-kb-plan]")) {
+            const childId = childEl.getAttribute("data-kb-plan") ?? "";
+            if (childId !== draggedId) children.push({ id: childId, rect: toRect(childEl) });
+          }
+        }
+        card.nest = { rect: nestEl ? toRect(nestEl) : null, children };
       }
-      return out;
-    };
+      planCards.push(card);
+    }
     columns.push({
       id,
       rect: toRect(colEl),
       auto: colEl.hasAttribute("data-kb-auto"),
-      cards: collect("data-kb-card"),
-      planCards: collect("data-kb-plan"),
+      planCards,
     });
   }
   return columns;
@@ -96,7 +121,6 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
     const target = e.target as HTMLElement;
     if (target.closest("button, input, a, textarea")) return;
 
-    const cardEl = target.closest("[data-kb-card]");
     const planEl = target.closest("[data-kb-plan]");
     const grabEl = target.closest("[data-kb-colgrab]");
 
@@ -105,22 +129,32 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
     let id: string;
     let sourceColumnId: string | null;
     let sourceIndex: number;
+    let sourceNest: string | null = null;
+    let nestCtx: string | null = null;
 
-    if (cardEl) {
-      if (!opts.allowCards) return;
-      kind = "card";
-      itemEl = cardEl;
-      id = cardEl.getAttribute("data-kb-card") ?? "";
-      const colEl = cardEl.closest("[data-kb-col]");
-      sourceColumnId = colEl?.getAttribute("data-kb-col") ?? null;
-      sourceIndex = colEl ? indexAmongSiblings(colEl, "data-kb-card", cardEl) : 0;
-    } else if (planEl) {
+    if (planEl) {
       kind = "plan";
       itemEl = planEl;
       id = planEl.getAttribute("data-kb-plan") ?? "";
+      // A TASK drag can nest into same-context plans (spec §2).
+      nestCtx = planEl.getAttribute("data-kb-kind") === "task" ? planEl.getAttribute("data-kb-ctx") : null;
+      const nestEl = planEl.closest("[data-kb-nest]");
       const colEl = planEl.closest("[data-kb-col]");
       sourceColumnId = colEl?.getAttribute("data-kb-col") ?? null;
-      sourceIndex = colEl ? indexAmongSiblings(colEl, "data-kb-plan", planEl) : 0;
+      if (nestEl) {
+        sourceNest = nestEl.getAttribute("data-kb-nest");
+        sourceIndex = indexAmongSiblings(nestEl, "data-kb-plan", planEl);
+      } else {
+        // Index among the column's TOP-LEVEL cards only (nested children
+        // live in their plan's frame).
+        let i = 0;
+        for (const sibling of colEl?.querySelectorAll("[data-kb-plan]") ?? []) {
+          if (sibling.closest("[data-kb-nest]")) continue;
+          if (sibling === planEl) break;
+          i += 1;
+        }
+        sourceIndex = i;
+      }
     } else if (grabEl) {
       if (!opts.allowColumns) return;
       kind = "column";
@@ -140,13 +174,13 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
     }
 
     const cbs: DragCallbacks = {
-      measure: () => measureBoard(root, id),
+      measure: () => measureBoard(root, id, nestCtx),
       measureColumns: () => measureColumnStrip(root, id),
       commit: opts.commit,
       click: opts.click,
     };
     activeDragRoot.set(root);
-    beginCandidate(kind, id, sourceColumnId, sourceIndex, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
+    beginCandidate(kind, id, sourceColumnId, sourceIndex, sourceNest, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
     // The gesture is tracked on WINDOW listeners, not on root: the
     // dragged card's wrapper leaves the DOM at activation, and WKWebView
     // then drops the pointerup instead of retargeting it (Chromium

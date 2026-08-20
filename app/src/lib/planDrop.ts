@@ -3,7 +3,7 @@ import { patchPlanField } from "./gavinState";
 import { computeOrderWrites, type OrderedPlanCard } from "./planOrder";
 import { dropHold } from "./kanbanDrag";
 import type { Column } from "./kanban";
-import type { DisplayColumn, AutoColumn } from "./planBoard";
+import type { CardView, DisplayColumn, AutoColumn } from "./planBoard";
 import type { DropTarget } from "./pointerDrag";
 
 export interface PlanDropSpec {
@@ -56,17 +56,13 @@ export async function planCommitFromMerged(
   columns: Column[],
   merged: { columns: DisplayColumn[]; autoColumns: AutoColumn[] }
 ): Promise<string | null> {
-  const targetKey = drag.target.columnId;
-  const isAuto = targetKey.startsWith(AUTO_COLUMN_PREFIX);
-  const planCards = isAuto
-    ? (merged.autoColumns.find((a) => AUTO_COLUMN_PREFIX + a.status === targetKey)?.planCards ?? [])
-    : (merged.columns.find((dc) => dc.column.id === targetKey)?.planCards ?? []);
-  const statusTarget =
-    drag.sourceColumnId === targetKey
-      ? null
-      : isAuto
-        ? targetKey.slice(AUTO_COLUMN_PREFIX.length)
-        : (columns.find((c) => c.id === targetKey)?.name ?? null);
+  const all = [
+    ...merged.columns.flatMap((c) => c.planCards),
+    ...merged.autoColumns.flatMap((a) => a.planCards),
+  ].flatMap((c) => [c, ...c.nestedChildren]);
+  const dragged = all.find((c) => c.id === drag.id);
+  if (!dragged) return "Couldn't resolve the dragged card";
+
   // Hold the drop's visuals (card hidden, placeholder in place) while
   // the writes are in flight: gavinTrees is patched only on success, so
   // without this the card flashes back to its pre-drop slot until the
@@ -75,6 +71,23 @@ export async function planCommitFromMerged(
   // returning to its old slot is the truthful outcome.
   dropHold.set({ kind: "plan", id: drag.id, target: drag.target, size: drag.size });
   try {
+    if (drag.target.nest) {
+      return await applyNestDrop(workspaceId, dragged, drag.target.nest, drag.target.index, all);
+    }
+
+    const targetKey = drag.target.columnId;
+    const isAuto = targetKey.startsWith(AUTO_COLUMN_PREFIX);
+    const planCards = isAuto
+      ? (merged.autoColumns.find((a) => AUTO_COLUMN_PREFIX + a.status === targetKey)?.planCards ?? [])
+      : (merged.columns.find((dc) => dc.column.id === targetKey)?.planCards ?? []);
+    // A nested child being freed (status null) always gets the column's
+    // name -- even its parent's own column (card-model spec §2).
+    const statusTarget =
+      drag.sourceColumnId === targetKey && dragged.status !== null
+        ? null
+        : isAuto
+          ? targetKey.slice(AUTO_COLUMN_PREFIX.length)
+          : (columns.find((c) => c.id === targetKey)?.name ?? null);
     return await applyPlanDrop({
       workspaceId,
       path: drag.id,
@@ -84,5 +97,45 @@ export async function planCommitFromMerged(
     });
   } finally {
     dropHold.set(null);
+  }
+}
+
+// Nest drop (card-model spec §2): parent write (when changed), status
+// removal (when present), then order writes among the plan's nested
+// children. Same patch-on-success/stop-on-failure contract as
+// applyPlanDrop; the ~2.5s watcher push reconciles partial landings.
+async function applyNestDrop(
+  workspaceId: string,
+  dragged: CardView,
+  planPath: string,
+  targetIndex: number,
+  all: CardView[]
+): Promise<string | null> {
+  const plan = all.find((c) => c.id === planPath);
+  if (!plan || plan.kind !== "plan" || dragged.kind !== "task" || plan.contextFolder !== dragged.contextFolder) {
+    return "Only a task can nest into a plan in its own context";
+  }
+  let current = dragged.id;
+  try {
+    if (dragged.parent !== plan.fileName) {
+      await backend.setPlanFrontmatterField(dragged.id, "parent", plan.fileName);
+      patchPlanField(workspaceId, dragged.id, "parent", plan.fileName);
+    }
+    if (dragged.status !== null) {
+      await backend.setPlanFrontmatterField(dragged.id, "status", "");
+      patchPlanField(workspaceId, dragged.id, "status", "");
+    }
+    const siblings = plan.nestedChildren
+      .filter((c) => c.id !== dragged.id)
+      .map((c) => ({ path: c.id, order: c.order }));
+    for (const w of computeOrderWrites(siblings, targetIndex, dragged.id)) {
+      current = w.path;
+      await backend.setPlanFrontmatterField(w.path, "order", String(w.order));
+      patchPlanField(workspaceId, w.path, "order", String(w.order));
+    }
+    return null;
+  } catch (e) {
+    const fileName = current.split("/").at(-1) ?? current;
+    return `Couldn't update ${fileName}: ${e instanceof Error ? e.message : e}`;
   }
 }

@@ -68,7 +68,6 @@
     if (!boardEl) return;
     return attachBoardDrag({
       root: boardEl,
-      allowCards: false,
       allowColumns: true,
       commit: handleDragCommit,
       click: (kind, id) => {

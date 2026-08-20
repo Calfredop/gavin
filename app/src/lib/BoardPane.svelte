@@ -78,7 +78,6 @@
     if (!columnsEl) return;
     return attachBoardDrag({
       root: columnsEl,
-      allowCards: false,
       allowColumns: false,
       commit: handleDragCommit,
       click: (kind, id) => {

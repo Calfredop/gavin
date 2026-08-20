@@ -16,13 +16,18 @@ import {
   type DropTarget,
 } from "./pointerDrag";
 
-export type DragKind = "card" | "plan" | "column";
+// "plan" is any card file drag (all cards are files, card-model spec
+// §1); "column" drags the strip.
+export type DragKind = "plan" | "column";
 
 export interface ActiveDrag {
   kind: DragKind;
-  id: string; // card id / plan path / column id
+  id: string; // card path / column id
   sourceColumnId: string | null; // display-column key at grab; null for column drags
   sourceIndex: number; // index within its block/strip at grab, dragged excluded
+  // The plan the card was nested in at grab (card-model spec §2), null
+  // when it started free-standing or is a column.
+  sourceNest: string | null;
   target: DropTarget | null; // column drags use { columnId: "", index }
   pointer: Point;
   grabOffset: Point; // pointer minus item rect origin at grab
@@ -48,6 +53,10 @@ export interface DropHold {
   size?: { width: number; height: number };
 }
 
+// What the slot builders actually read -- ActiveDrag and DropHold both
+// satisfy it.
+type SlotDrag = DropHold | null;
+
 // Set for the duration of a plan drop's daemon writes (spec §2:
 // gavinTrees is patched only on success, so without this the card would
 // flash back to its pre-drop slot until the writes resolve). Components
@@ -59,6 +68,7 @@ interface Candidate {
   id: string;
   sourceColumnId: string | null;
   sourceIndex: number;
+  sourceNest: string | null;
   start: Point;
   grabOffset: Point;
   size: { width: number; height: number };
@@ -72,6 +82,7 @@ export function beginCandidate(
   id: string,
   sourceColumnId: string | null,
   sourceIndex: number,
+  sourceNest: string | null,
   start: Point,
   itemRect: Rect,
   cbs: DragCallbacks
@@ -81,6 +92,7 @@ export function beginCandidate(
     id,
     sourceColumnId,
     sourceIndex,
+    sourceNest,
     start,
     grabOffset: { x: start.x - itemRect.left, y: start.y - itemRect.top },
     size: { width: itemRect.width, height: itemRect.height },
@@ -93,7 +105,7 @@ function computeTarget(kind: DragKind, pointer: Point): DropTarget | null {
   if (kind === "column") {
     return { columnId: "", index: computeColumnDropIndex(pointer, callbacks.measureColumns()) };
   }
-  return computeDropTarget(pointer, callbacks.measure(), kind);
+  return computeDropTarget(pointer, callbacks.measure());
 }
 
 // `buttons` (when the caller has it) is the PointerEvent.buttons bitmask.
@@ -117,6 +129,7 @@ export function movePointer(p: Point, buttons?: number): void {
     id: candidate.id,
     sourceColumnId: candidate.sourceColumnId,
     sourceIndex: candidate.sourceIndex,
+    sourceNest: candidate.sourceNest,
     target: computeTarget(candidate.kind, p),
     pointer: p,
     grabOffset: candidate.grabOffset,
@@ -149,7 +162,11 @@ export function endPointer(): void {
   const noOp =
     active.kind === "column"
       ? active.target.index === active.sourceIndex
-      : active.target.columnId === active.sourceColumnId && active.target.index === active.sourceIndex;
+      : active.target.nest
+        ? active.target.nest === active.sourceNest && active.target.index === active.sourceIndex
+        : active.sourceNest === null &&
+          active.target.columnId === active.sourceColumnId &&
+          active.target.index === active.sourceIndex;
   if (noOp) return;
   cbs.commit(active as ActiveDrag & { target: DropTarget });
 }
@@ -170,20 +187,41 @@ export type Slot<T> = { type: "item"; item: T } | { type: "placeholder" };
 export function buildDisplaySlots<T>(
   items: T[],
   idOf: (t: T) => string,
-  drag: DropHold | null,
-  columnKey: string,
-  kind: "card" | "plan"
+  drag: SlotDrag,
+  columnKey: string
 ): Slot<T>[] {
-  if (!drag || drag.kind !== kind) return items.map((item) => ({ type: "item", item }));
+  if (!drag || drag.kind !== "plan") return items.map((item) => ({ type: "item", item }));
   const slots: Slot<T>[] = items.filter((item) => idOf(item) !== drag.id).map((item) => ({ type: "item", item }));
-  if (drag.target && drag.target.columnId === columnKey) {
+  // A nest target suppresses every column placeholder -- the card is
+  // leaving column flow; buildNestedSlots renders the gap instead.
+  if (drag.target && !drag.target.nest && drag.target.columnId === columnKey) {
     const at = Math.max(0, Math.min(drag.target.index, slots.length));
     slots.splice(at, 0, { type: "placeholder" });
   }
   return slots;
 }
 
-export function buildColumnSlots<T>(columns: T[], idOf: (t: T) => string, drag: DropHold | null): Slot<T>[] {
+// The nested area's slots (card-model spec §2): the dragged card hidden
+// from the children, a placeholder at the target slot while this plan
+// is the nest target.
+export function buildNestedSlots<T>(
+  children: T[],
+  idOf: (t: T) => string,
+  drag: SlotDrag,
+  planId: string
+): Slot<T>[] {
+  if (!drag || drag.kind !== "plan") return children.map((item) => ({ type: "item", item }));
+  const slots: Slot<T>[] = children
+    .filter((item) => idOf(item) !== drag.id)
+    .map((item) => ({ type: "item", item }));
+  if (drag.target?.nest === planId) {
+    const at = Math.max(0, Math.min(drag.target.index, slots.length));
+    slots.splice(at, 0, { type: "placeholder" });
+  }
+  return slots;
+}
+
+export function buildColumnSlots<T>(columns: T[], idOf: (t: T) => string, drag: SlotDrag): Slot<T>[] {
   if (!drag || drag.kind !== "column") return columns.map((item) => ({ type: "item", item }));
   const slots: Slot<T>[] = columns
     .filter((item) => idOf(item) !== drag.id)

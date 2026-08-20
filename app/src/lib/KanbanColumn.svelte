@@ -55,7 +55,7 @@
   // and a placeholder occupies the target slot; animate:flip slides the
   // rest.
   const slotDrag = $derived($dragState ?? $dropHold);
-  const planSlots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, column.id, "plan"));
+  const planSlots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, column.id));
 
   // Deleting a column never touches card files -- cards whose status
   // matched it fall back to an auto column (D6), so no prompt is needed.
@@ -176,7 +176,7 @@
     {#each planSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
-          <div data-kb-plan={slot.item.id}>
+          <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
             <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} />
           </div>
         {:else}

@@ -22,17 +22,27 @@ export interface Measured {
   rect: Rect;
 }
 
+// A measured plan card may carry nest info while a task drags: its
+// presence marks the plan as a valid nest target (the glue emits it only
+// for same-context plans), `rect` is the expanded nested area (null when
+// collapsed), `children` the nested cards' rects in visual order.
+export interface MeasuredCard extends Measured {
+  nest?: { rect: Rect | null; children: Measured[] } | null;
+}
+
 export interface MeasuredColumn {
   id: string; // real column id, or "auto:<status>"
   rect: Rect;
-  auto: boolean; // auto columns accept only plan drags
-  cards: Measured[];
-  planCards: Measured[];
+  auto: boolean;
+  planCards: MeasuredCard[];
 }
 
 export interface DropTarget {
   columnId: string;
   index: number;
+  // Set when the drop nests into a plan card: the plan's id (path);
+  // `index` is then the slot among its nested children.
+  nest?: string;
 }
 
 export const DRAG_THRESHOLD_PX = 5;
@@ -47,21 +57,28 @@ function horizontalDistance(rect: Rect, x: number): number {
   return x > right ? x - right : 0;
 }
 
+function within(rect: Rect, p: Point): boolean {
+  return p.x >= rect.left && p.x <= rect.left + rect.width && p.y >= rect.top && p.y <= rect.top + rect.height;
+}
+
 // The column under (or nearest to, within maxSnapPx of) the pointer,
-// and the slot within its kind-matching block: the count of items whose
-// vertical midpoint the pointer has passed. Only horizontal position
-// picks the column -- dragging above or below a column still targets it,
-// like Trello.
+// and the slot within it: the count of cards whose vertical midpoint
+// the pointer has passed. Only horizontal position picks the column --
+// dragging above or below a column still targets it, like Trello.
+//
+// Nesting (card-model spec §2): when a measured plan card carries nest
+// info, its expanded nested area slots among the children, and the
+// card's middle band (25%-75% of its height) targets "into this plan"
+// at index 0 -- the outer bands keep meaning before/after in the
+// column, which agrees with the midpoint rule below.
 export function computeDropTarget(
   pointer: Point,
   columns: MeasuredColumn[],
-  dragKind: "card" | "plan",
   maxSnapPx = 100
 ): DropTarget | null {
   let best: MeasuredColumn | null = null;
   let bestDist = Infinity;
   for (const col of columns) {
-    if (dragKind === "card" && col.auto) continue;
     const d = horizontalDistance(col.rect, pointer.x);
     if (d < bestDist) {
       bestDist = d;
@@ -69,9 +86,26 @@ export function computeDropTarget(
     }
   }
   if (!best || bestDist > maxSnapPx) return null;
-  const list = dragKind === "card" ? best.cards : best.planCards;
+
+  for (const card of best.planCards) {
+    if (!card.nest) continue;
+    if (card.nest.rect && within(card.nest.rect, pointer)) {
+      let idx = 0;
+      for (const child of card.nest.children) {
+        if (pointer.y > child.rect.top + child.rect.height / 2) idx += 1;
+      }
+      return { columnId: best.id, index: idx, nest: card.id };
+    }
+    if (pointer.x >= card.rect.left && pointer.x <= card.rect.left + card.rect.width) {
+      const y = (pointer.y - card.rect.top) / card.rect.height;
+      if (y >= 0.25 && y <= 0.75) {
+        return { columnId: best.id, index: 0, nest: card.id };
+      }
+    }
+  }
+
   let index = 0;
-  for (const item of list) {
+  for (const item of best.planCards) {
     if (pointer.y > item.rect.top + item.rect.height / 2) index += 1;
   }
   return { columnId: best.id, index };

@@ -16,7 +16,7 @@
 
   const key = $derived(AUTO_COLUMN_PREFIX + status);
   const slotDrag = $derived($dragState ?? $dropHold);
-  const slots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, key, "plan"));
+  const slots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, key));
 </script>
 
 <!-- Same geometry as KanbanColumn's .column, muted + dashed: these exist
@@ -29,7 +29,7 @@
     {#each slots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
-          <div data-kb-plan={slot.item.id}>
+          <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
             <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlan} />
           </div>
         {:else}

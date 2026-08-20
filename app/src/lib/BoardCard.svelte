@@ -2,6 +2,7 @@
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   // Svelte 5 self-import for the nested-children recursion.
   import BoardCardSelf from "./BoardCard.svelte";
 
@@ -16,6 +17,15 @@
   let { card, labelDefs, onOpen, nested = false }: Props = $props();
 
   let expanded = $state(false);
+
+  // Auto-expand while this plan is the drag's nest target (spec §2) --
+  // during the drag AND while the drop's writes are in flight.
+  const slotDrag = $derived($dragState ?? $dropHold);
+  const nestTargeted = $derived(card.kind === "plan" && slotDrag?.target?.nest === card.id);
+  const effectiveExpanded = $derived(expanded || nestTargeted);
+  const nestedSlots = $derived(
+    card.kind === "plan" ? buildNestedSlots(card.nestedChildren, (c) => c.id, slotDrag, card.id) : []
+  );
 
   const labelChips = $derived(
     card.labels.map((name) => ({
@@ -33,9 +43,8 @@
     }
   }
 
-  // Nested children and the chevron short-circuit the board glue: their
-  // presses must not begin a drag candidate on the parent card (their
-  // own dragging arrives with the nesting-interaction plan).
+  // The chevron short-circuits the board glue: its press must not begin
+  // a drag candidate on the card.
   function shield(event: PointerEvent): void {
     event.stopPropagation();
   }
@@ -63,7 +72,7 @@
     {#if card.parseWarning}
       <span class="warning" title="This card's frontmatter has issues"><TriangleAlert size={11} /></span>
     {/if}
-    {#if card.kind === "plan" && card.nestedChildren.length > 0}
+    {#if card.kind === "plan" && (card.nestedChildren.length > 0 || nestTargeted)}
       <button
         type="button"
         class="chevron"
@@ -95,28 +104,16 @@
   {#if !nested}
     <div class="context-badge" title={card.id}>{card.contextName}</div>
   {/if}
-  {#if card.kind === "plan" && expanded && card.nestedChildren.length > 0}
-    <div class="nested-area">
-      {#each card.nestedChildren as child (child.id)}
-        <div
-          class="nested-item"
-          role="button"
-          tabindex="0"
-          onpointerdown={shield}
-          onclick={(e) => {
-            e.stopPropagation();
-            onOpen(child.id);
-          }}
-          onkeydown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              e.stopPropagation();
-              onOpen(child.id);
-            }
-          }}
-        >
-          <BoardCardSelf card={child} {labelDefs} {onOpen} nested={true} />
-        </div>
+  {#if card.kind === "plan" && effectiveExpanded && nestedSlots.length > 0}
+    <div class="nested-area" data-kb-nest={card.id}>
+      {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
+        {#if slot.type === "item"}
+          <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} />
+          </div>
+        {:else}
+          <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -276,7 +273,11 @@
     border-radius: 6px;
     background: rgba(0, 0, 0, 0.25);
   }
-  .nested-item {
-    cursor: pointer;
+  .nested-placeholder {
+    border: 1px dashed #555;
+    border-radius: 6px;
+    background: #202020;
+    margin-bottom: 4px;
+    box-sizing: border-box;
   }
 </style>
