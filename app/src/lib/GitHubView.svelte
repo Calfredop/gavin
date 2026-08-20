@@ -1,9 +1,19 @@
 <script lang="ts">
-  import { GitBranch, RefreshCw } from "@lucide/svelte";
   import { layoutState, setGitViewPrefs } from "./layoutState";
-  import { gitStore, ensureGitView, refresh, startWatching, dismissError, initRepo } from "./gitState";
-  import { branchLabel, changedCount } from "./git";
+  import {
+    gitStore,
+    ensureGitView,
+    refresh,
+    startWatching,
+    dismissError,
+    initRepo,
+    abortInProgress,
+    continueRebase,
+  } from "./gitState";
+  import { changedCount } from "./git";
   import { tooltip } from "./tooltip";
+  import GitToolbar from "./GitToolbar.svelte";
+  import GitOpBar from "./GitOpBar.svelte";
   import GitNav from "./GitNav.svelte";
   import GitChanges from "./GitChanges.svelte";
   import GitDiff from "./GitDiff.svelte";
@@ -20,7 +30,7 @@
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const root = $derived(ws?.rootPath ?? null);
   const view = $derived($gitStore[workspaceId] ?? null);
-  const busy = $derived(view?.busy != null);
+  const busy = $derived(view?.busy != null || view?.op != null);
   const repoName = $derived((view?.repo?.root ?? root ?? "").split("/").filter(Boolean).pop() ?? "");
 
   let navWidth = $state(NAV_DEFAULT);
@@ -94,22 +104,25 @@
   </div>
 {:else}
   <div class="git">
-    <div class="toolbar">
-      <span class="repo">{repoName}</span>
-      {#if view.repo}
-        <span class="branch" class:detached={view.repo.detached}>
-          <GitBranch size={12} />
-          {branchLabel(view.repo)}
-        </span>
-      {/if}
-      <span class="spacer"></span>
-      <button type="button" class="icon" use:tooltip={"Refresh"} onclick={() => refresh(workspaceId)} disabled={busy}>
-        <RefreshCw size={13} />
-      </button>
-    </div>
+    <GitToolbar {workspaceId} {repoName} />
+    <GitOpBar {workspaceId} />
     {#if view.repo?.inProgress}
+      {@const kind = view.repo.inProgress}
+      {@const conflicts = view.status?.unstaged.some((e) => e.status === "U") ?? false}
       <div class="banner info">
-        {view.repo.inProgress === "merge" ? "Merge" : "Rebase"} in progress — resolve conflicts and commit
+        <span>{kind === "merge" ? "Merge" : "Rebase"} in progress — resolve conflicts and {kind === "merge" ? "commit" : "continue"}</span>
+        {#if kind === "rebase"}
+          <button
+            type="button"
+            class="banner-act"
+            disabled={busy || conflicts}
+            use:tooltip={conflicts ? "Resolve the conflicted files first" : "git rebase --continue"}
+            onclick={() => continueRebase(workspaceId)}
+          >Continue</button>
+        {/if}
+        <button type="button" class="banner-act danger" disabled={busy} onclick={() => abortInProgress(workspaceId, kind)}>
+          Abort {kind}
+        </button>
       </div>
     {/if}
     {#if view.error}
@@ -137,51 +150,26 @@
     font-family: monospace;
     color: #ccc;
   }
-  .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 10px;
-    border-bottom: 1px solid #2f2f2f;
-    font-size: 0.8em;
-  }
-  .repo {
-    color: #eee;
-    font-weight: 600;
-  }
-  .branch {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 1px 7px;
-    border: 1px solid #3a3a3a;
-    border-radius: 10px;
-    color: #bbb;
-  }
-  .branch.detached {
-    border-color: #8a6d2b;
-    color: #d9b45c;
-  }
-  .spacer {
-    flex: 1 1 auto;
-  }
-  .icon {
-    display: inline-flex;
-    align-items: center;
+  .banner .banner-act {
     background: transparent;
-    border: 1px solid #3a3a3a;
-    border-radius: 6px;
-    color: #bbb;
-    padding: 3px 6px;
+    border: 1px solid #6a5a2b;
+    border-radius: 4px;
+    color: inherit;
+    font-family: monospace;
+    font-size: 1em;
+    padding: 1px 8px;
     cursor: pointer;
   }
-  .icon:hover:not(:disabled) {
-    border-color: #555;
-    color: #eee;
+  .banner .banner-act:hover:not(:disabled) {
+    border-color: #9a8040;
   }
-  .icon:disabled {
-    opacity: 0.5;
+  .banner .banner-act:disabled {
+    opacity: 0.45;
     cursor: default;
+  }
+  .banner .banner-act.danger {
+    border-color: #6a3030;
+    color: #e0a0a0;
   }
   .banner {
     display: flex;
