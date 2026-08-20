@@ -50,9 +50,27 @@ pub struct Workspace {
     /// out to be dead, so an agent is only ever started deliberately.
     #[serde(default)]
     pub main_session_id: Option<String>,
-    /// Launch command for that agent; `claude` when unset (D34).
+    /// D41 migration only: the pre-settings `agentCommand`, which now
+    /// lives in `.gavin-root/config.toml`. Read once at bootstrap,
+    /// carried into config.toml, then cleared -- `skip_serializing_if`
+    /// means the key disappears from config.json on the next save.
+    #[serde(default, rename = "agentCommand", skip_serializing_if = "Option::is_none")]
+    pub legacy_agent_command: Option<String>,
+    /// Accent colour for this workspace's tab indicator and sidebar
+    /// stripe. `#rrggbb`; absent means the default accent. Machine-local
+    /// (D35) -- a display preference, like the name.
     #[serde(default)]
-    pub agent_command: Option<String>,
+    pub color: Option<String>,
+    /// Per-workspace notification toggles (D38). Default true so existing
+    /// workspaces keep today's behaviour.
+    #[serde(default = "default_true")]
+    pub notify_needs_input: bool,
+    #[serde(default = "default_true")]
+    pub notify_finished: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One persisted board tab: which workspace's board, filtered to which
@@ -151,7 +169,10 @@ mod tests {
             active_view: None,
             root_path: None,
             main_session_id: None,
-            agent_command: None,
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
         }
     }
 
@@ -304,7 +325,9 @@ mod tests {
                 "activeView": null,
                 "rootPath": null,
                 "mainSessionId": null,
-                "agentCommand": null
+                "color": null,
+                "notifyNeedsInput": true,
+                "notifyFinished": true
             })
         );
     }
@@ -404,12 +427,14 @@ mod tests {
         );
     }
 
+    // Was main_session_and_agent_command_roundtrip: the launch command
+    // moved to .gavin-root/config.toml (D41), so only the session id is
+    // still a config.json concern.
     #[test]
-    fn main_session_and_agent_command_roundtrip() {
+    fn main_session_id_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let mut ws = sample_workspace();
         ws.main_session_id = Some("session-1".to_string());
-        ws.agent_command = Some("claude --model opus".to_string());
         let config = AppConfig {
             workspaces: vec![ws],
             active_workspace_id: Some("workspace-1".to_string()),
@@ -431,7 +456,40 @@ mod tests {
         .unwrap();
         let config = load(dir.path()).unwrap();
         assert_eq!(config.workspaces[0].main_session_id, None);
-        assert_eq!(config.workspaces[0].agent_command, None);
+        // A pre-D41 object has no agentCommand either -- nothing for the
+        // migration to carry, which is the case bootstrap must tolerate.
+        assert_eq!(config.workspaces[0].legacy_agent_command, None);
+    }
+
+    #[test]
+    fn settings_fields_default_when_absent_from_an_older_workspace_object() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+        let ws = &load(dir.path()).unwrap().workspaces[0];
+        assert_eq!(ws.color, None, "absent colour means the default accent");
+        assert!(ws.notify_needs_input, "notifications default on");
+        assert!(ws.notify_finished, "notifications default on");
+    }
+
+    #[test]
+    fn settings_fields_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.color = Some("#a78bfa".to_string());
+        ws.notify_finished = false;
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
     }
 
     #[test]

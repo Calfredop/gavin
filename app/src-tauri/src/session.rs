@@ -107,7 +107,10 @@ mod smoketest_tests {
             active_view: None,
             root_path: Some("/tmp/scratch".to_string()),
             main_session_id: None,
-            agent_command: None,
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -641,7 +644,10 @@ mod resolve_workspaces_tests {
             active_view: None,
             root_path: None,
             main_session_id: None,
-            agent_command: None,
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
         }
     }
 
@@ -891,7 +897,10 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 active_view: None,
                 root_path: None,
                 main_session_id: None,
-                agent_command: None,
+                legacy_agent_command: None,
+                color: None,
+                notify_needs_input: true,
+                notify_finished: true,
             });
         }
     } else {
@@ -925,6 +934,27 @@ fn reconcile_main_sessions(
         }
     }
     Ok(())
+}
+
+/// One-time carry-over of D34's `agentCommand` from config.json into
+/// config.toml (D41). Writes only when config.toml has no
+/// `[agent].command`, so the file always wins on later launches and a
+/// user's own edit is never reverted. Unrooted workspaces have nowhere to
+/// carry to and are skipped by the caller -- no loss, since
+/// startMainAgent already refuses to run without a root.
+fn carry_over_agent_command(root_path: &str, legacy: Option<&str>) -> anyhow::Result<()> {
+    let Some(legacy) = legacy.filter(|c| !c.trim().is_empty()) else { return Ok(()) };
+    let path = std::path::Path::new(root_path).join(".gavin-root").join("config.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let already = existing
+        .parse::<toml::Table>()
+        .ok()
+        .and_then(|t| Some(t.get("agent")?.as_table()?.contains_key("command")))
+        .unwrap_or(false);
+    if already {
+        return Ok(());
+    }
+    crate::agent_setup::write_root_config_key(std::path::Path::new(root_path), "command", legacy)
 }
 
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
@@ -968,11 +998,23 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 active_view: None,
                 root_path: None,
                 main_session_id: None,
-                agent_command: None,
+                legacy_agent_command: None,
+                color: None,
+                notify_needs_input: true,
+                notify_finished: true,
             },
         );
     }
     reconcile_smoketest_workspace(&mut workspaces);
+    // D41: take() clears the legacy value, so the next save drops the key
+    // from config.json permanently.
+    for ws in workspaces.iter_mut() {
+        if let (Some(root), Some(legacy)) = (ws.root_path.clone(), ws.legacy_agent_command.take()) {
+            if let Err(e) = carry_over_agent_command(&root, Some(&legacy)) {
+                eprintln!("agent command carry-over failed for {}: {e}", ws.id);
+            }
+        }
+    }
     reconcile_main_sessions(&mut workspaces, &command_conn)?;
     let non_session_tab_ids: HashSet<String> =
         file_tabs.keys().chain(board_tabs.keys()).cloned().collect();
@@ -1629,6 +1671,46 @@ pub fn set_plan_frontmatter_field(
 }
 
 #[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    fn rooted(dir: &std::path::Path) -> String {
+        let g = dir.join(".gavin-root");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(g.join("config.toml"), "version = 1\n").unwrap();
+        dir.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn carries_a_legacy_agent_command_into_config_toml_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted(dir.path());
+
+        carry_over_agent_command(&root, Some("claude --model opus")).unwrap();
+        let after = std::fs::read_to_string(dir.path().join(".gavin-root/config.toml")).unwrap();
+        assert!(after.contains("command = \"claude --model opus\""));
+
+        // Runs again with a different legacy value -> no-op, the file wins.
+        carry_over_agent_command(&root, Some("something-else")).unwrap();
+        let after2 = std::fs::read_to_string(dir.path().join(".gavin-root/config.toml")).unwrap();
+        assert!(after2.contains("command = \"claude --model opus\""));
+        assert!(!after2.contains("something-else"));
+    }
+
+    #[test]
+    fn carry_over_is_a_no_op_without_a_legacy_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted(dir.path());
+        carry_over_agent_command(&root, None).unwrap();
+        carry_over_agent_command(&root, Some("   ")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".gavin-root/config.toml")).unwrap(),
+            "version = 1\n"
+        );
+    }
+}
+
+#[cfg(test)]
 mod main_session_tests {
     use super::test_support::fake_daemon_replying_with;
     use super::*;
@@ -1642,7 +1724,10 @@ mod main_session_tests {
             active_view: None,
             root_path: Some("/tmp/ws".to_string()),
             main_session_id: main.map(|m| m.to_string()),
-            agent_command: None,
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
         }
     }
 
