@@ -43,11 +43,19 @@
   }
   let settle = $state<Settle | null>(null);
   let snapshot: { drag: ActiveDrag; card: Card | null; plan: PlanCardView | null } | null = null;
+  // Supersession guard for the async settle steps. A plain counter, NOT
+  // an identity check against `settle`: $state proxies objects on
+  // assignment, so reading `settle` back never equals the raw object
+  // that was assigned -- an identity guard is always true and once left
+  // the settle preview stuck on screen after every drop.
+  let settleToken = 0;
 
   $effect(() => {
     const d = $dragState;
     if (d) {
       snapshot = { drag: d, card: draggedCard, plan: draggedPlan };
+      settleToken += 1; // a new drag supersedes any in-flight settle
+      settle = null;
       return;
     }
     const s = snapshot;
@@ -60,12 +68,13 @@
       pos: { left: s.drag.pointer.x - s.drag.grabOffset.x, top: s.drag.pointer.y - s.drag.grabOffset.y },
       landed: false,
     };
+    const token = (settleToken += 1);
     settle = started;
     // Wait a frame for the committed board to render, then glide to the
     // card's new slot; if it can't be found (moved out of this filtered
     // view), just drop the preview.
     requestAnimationFrame(() => {
-      if (settle !== started) return;
+      if (settleToken !== token) return;
       const attr = s.drag.kind === "card" ? "data-kb-card" : "data-kb-plan";
       const el = document.querySelector(`[${attr}="${CSS.escape(s.drag.id)}"]`);
       if (!el) {
@@ -75,7 +84,7 @@
       const r = el.getBoundingClientRect();
       settle = { ...started, pos: { left: r.left, top: r.top }, landed: true };
       setTimeout(() => {
-        if (settle?.landed) settle = null;
+        if (settleToken === token) settle = null;
       }, 180);
     });
   });
