@@ -3,6 +3,7 @@ mod config;
 mod daemon;
 mod edge_expand;
 mod fileviewer;
+mod git;
 mod layout;
 mod mac_window;
 mod session;
