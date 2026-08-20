@@ -86,6 +86,7 @@
 
 <div
   class="card kind-{card.kind}"
+  class:deletable={onDelete !== null}
   class:nested
   class:session-working={sessionDot?.cls === "status-working"}
   class:session-waiting={sessionDot?.cls === "status-waiting"}
@@ -94,6 +95,21 @@
   tabindex="0"
   onkeydown={handleKeydown}
 >
+  {#if onDelete}
+    <button
+      type="button"
+      class="delete"
+      aria-label="Delete card"
+      use:tooltip={"Delete this card (its .md file)"}
+      onpointerdown={shield}
+      onclick={(e) => {
+        e.stopPropagation();
+        onDelete?.(card);
+      }}
+    >
+      ×
+    </button>
+  {/if}
   <div class="header">
     <span
       class="glyph"
@@ -132,21 +148,6 @@
     {/if}
     {#if card.parseWarning}
       <span class="warning" use:tooltip={"This card's frontmatter has issues — some fields may be unreadable"}><TriangleAlert size={11} /></span>
-    {/if}
-    {#if onDelete}
-      <button
-        type="button"
-        class="delete"
-        aria-label="Delete card"
-        use:tooltip={"Delete this card (its .md file)"}
-        onpointerdown={shield}
-        onclick={(e) => {
-          e.stopPropagation();
-          onDelete?.(card);
-        }}
-      >
-        ×
-      </button>
     {/if}
     {#if runnable}
       <button
@@ -213,6 +214,7 @@
 
 <style>
   .card {
+    position: relative;
     border-radius: 6px;
     padding: 8px;
     margin-bottom: 6px;
@@ -250,6 +252,10 @@
     align-items: center;
     gap: 6px;
     margin-bottom: 4px;
+  }
+  /* Keep header icons clear of the absolute delete button. */
+  .card.deletable .header {
+    padding-right: 18px;
   }
   .glyph {
     display: flex;
@@ -376,15 +382,24 @@
     opacity: 1;
   }
   .delete {
-    background: transparent;
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    background: rgba(30, 30, 30, 0.85);
     border: none;
+    border-radius: 4px;
     color: #999;
     cursor: pointer;
     font-size: 1.05em;
     line-height: 1;
-    padding: 0 2px;
+    padding: 1px 5px;
     opacity: 0;
-    transition: opacity 120ms;
+    transition: opacity 120ms, color 120ms, background 120ms;
+    z-index: 1;
+  }
+  .delete:hover {
+    color: #e0524a;
+    background: rgba(60, 30, 28, 0.95);
   }
   .card:hover .delete,
   .card:focus-within .delete {

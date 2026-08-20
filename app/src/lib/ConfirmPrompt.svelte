@@ -21,7 +21,7 @@
 <Modal onClose={onCancel}>
   <div class="title">{title}</div>
   <ul class="lines">
-    {#each lines as line (line)}
+    {#each lines as line, i (i)}
       <li>{line}</li>
     {/each}
   </ul>
