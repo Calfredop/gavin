@@ -17,7 +17,10 @@
   import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
   import { dirtyPaths } from "./fileEditing";
-  import { X, Plus, RotateCw, Kanban } from "@lucide/svelte";
+  import { message } from "@tauri-apps/plugin-dialog";
+  import { openContextMenuFromEvent } from "./contextMenu";
+  import { buildTabMenuEntries } from "./tabMenu";
+  import { X, Plus, RotateCw, Kanban, Pin } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
   import { sessionLabel, folderName } from "./paths";
   import {
@@ -149,6 +152,31 @@
 
   function cancelEdit(): void {
     editingSessionId = null;
+  }
+
+  function isPinnedTab(sessionId: string): boolean {
+    return (leaf.pinned ?? []).includes(sessionId);
+  }
+
+  function reportMenuError(text: string): void {
+    console.error(text);
+    void message(text, { title: "gavin", kind: "error" });
+  }
+
+  function openTabMenu(e: MouseEvent, sessionId: string): void {
+    // Inside the inline rename input the native text menu must keep working.
+    if (e.target instanceof HTMLInputElement) return;
+    const file = fileTabPath(sessionId);
+    const board = boardTab(sessionId);
+    const kind = board ? "board" : file ? "file" : "terminal";
+    const path = board ? board.contextFolder : (file ?? $layoutState.cwdBySessionId[sessionId] ?? null);
+    openContextMenuFromEvent(
+      e,
+      buildTabMenuEntries(
+        { tabId: sessionId, kind, path, pinned: isPinnedTab(sessionId), tabs: leaf.tabs, pinnedTabs: leaf.pinned ?? [] },
+        { startRename: startEditing, reportError: reportMenuError }
+      )
+    );
   }
 
   function activeLocation(): { workspaceId: string; pageId: string } | null {
@@ -288,7 +316,12 @@
         ondragend={clearTabReorder}
         ondrop={(e) => handleTabDrop(e, sessionId, tabIndex)}
         onclick={() => switchToTab(sessionId)}
+        class:pinned={isPinnedTab(sessionId)}
+        oncontextmenu={(e) => openTabMenu(e, sessionId)}
       >
+        {#if isPinnedTab(sessionId)}
+          <span class="pin-glyph" title="Pinned"><Pin size={10} /></span>
+        {/if}
         {#if editingSessionId === sessionId}
           <input
             class="tab-label-input"
@@ -335,19 +368,21 @@
             <RotateCw size={10} />
           </span>
         {/if}
-        <span
-          class="close"
-          aria-label="Close Tab"
-          title="Close Tab"
-          onclick={async (e) => {
-            e.stopPropagation();
-            if (await confirmTabClose(sessionId)) {
-              closeSession(sessionId);
-            }
-          }}
-        >
-          <X size={12} />
-        </span>
+        {#if !isPinnedTab(sessionId)}
+          <span
+            class="close"
+            aria-label="Close Tab"
+            title="Close Tab"
+            onclick={async (e) => {
+              e.stopPropagation();
+              if (await confirmTabClose(sessionId)) {
+                closeSession(sessionId);
+              }
+            }}
+          >
+            <X size={12} />
+          </span>
+        {/if}
       </button>
     {/each}
     <button class="new-tab" aria-label="New Tab" title="New Tab" onclick={() => addTab(active)}>
@@ -452,6 +487,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .pin-glyph {
+    display: inline-flex;
+    align-items: center;
+    color: #999;
+    margin-right: 2px;
+  }
+  .tab.pinned {
+    padding-right: 10px;
   }
   .status-dot {
     width: 6px;

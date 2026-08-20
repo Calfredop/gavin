@@ -35,6 +35,19 @@ export function watchRootedWorkspaces(workspaces: Workspace[]): void {
   }
 }
 
+// On-demand rescan for mutations the watcher can't see: outside contexts
+// (extra_contexts) live beyond the watched root, so creating or deleting
+// files there never produces a push. Replaces the store entry exactly
+// like a push would. Best-effort -- a failure leaves the last tree up.
+export async function refreshGavinTree(workspaceId: string): Promise<void> {
+  try {
+    const tree = await backend.getGavinTree(workspaceId);
+    gavinTrees.update((m) => ({ ...m, [workspaceId]: tree }));
+  } catch {
+    // The watcher or the next mutation will catch up.
+  }
+}
+
 // Optimistic bridge for the watcher's debounce+floor confirmation latency
 // (spec §2): called ONLY after a successful SetPlanFrontmatterField, so a
 // dragged card doesn't snap back while waiting ~2.5s for the push. The

@@ -28,6 +28,14 @@
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
   import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, getActiveView, type Workspace, type Page, type GitStatus } from "./workspace";
+  import { message } from "@tauri-apps/plugin-dialog";
+  import { openContextMenuFromEvent } from "./contextMenu";
+  import {
+    buildWorkspaceMenuEntries,
+    buildPageMenuEntries,
+    buildSessionRowMenuEntries,
+    type SidebarMenuHooks,
+  } from "./sidebarMenu";
 
   let expanded: Set<string> = $state(new Set());
 
@@ -194,6 +202,46 @@
     const ws = $layoutState.workspaces.find((w) => w.id === workspaceId);
     if (!ws) return;
     void createPage(workspaceId, ([id]) => presetSingle(id), 1, `Page ${ws.pages.length + 1}`);
+  }
+
+  function reportMenuError(text: string): void {
+    console.error(text);
+    void message(text, { title: "gavin", kind: "error" });
+  }
+
+  function menuHooks(): SidebarMenuHooks {
+    return {
+      startRenameWorkspace: (id) => {
+        const w = $layoutState.workspaces.find((x) => x.id === id);
+        if (w) startEditingWorkspace(w.id, w.name);
+      },
+      startRenamePage: (id) => {
+        const p = $layoutState.workspaces.flatMap((w) => w.pages).find((x) => x.id === id);
+        if (p) startEditingPage(p.id, p.name);
+      },
+      newPage: quickAddPage,
+      reportError: reportMenuError,
+    };
+  }
+
+  // Inside an inline rename input the native text menu must keep working.
+  function inTextInput(e: MouseEvent): boolean {
+    return e.target instanceof HTMLInputElement;
+  }
+
+  function openWorkspaceMenu(e: MouseEvent, ws: Workspace): void {
+    if (inTextInput(e)) return;
+    openContextMenuFromEvent(e, buildWorkspaceMenuEntries(ws, menuHooks()));
+  }
+
+  function openPageMenu(e: MouseEvent, ws: Workspace, page: Page): void {
+    if (inTextInput(e)) return;
+    openContextMenuFromEvent(e, buildPageMenuEntries(ws, page, $layoutState.workspaces, menuHooks()));
+  }
+
+  function openSessionRowMenu(e: MouseEvent, ws: Workspace, page: Page, sessionId: string): void {
+    const cwd = $layoutState.cwdBySessionId[sessionId] ?? null;
+    openContextMenuFromEvent(e, buildSessionRowMenuEntries(ws, page, sessionId, cwd, menuHooks()));
   }
 
   function handleWorkspaceDragStart(event: DragEvent, workspaceId: string): void {
@@ -367,6 +415,7 @@
           ondragleave={clearHover}
           ondragend={clearHover}
           ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
+          oncontextmenu={(e) => openPageMenu(e, ws, page)}
         >
           {#if gitSummary.kind === "multiple"}
             <button
@@ -449,6 +498,7 @@
                   switchWorkspaceView(ws.id, "terminal");
                   switchToSessionInPage(ws.id, page.id, sessionId);
                 }}
+                oncontextmenu={(e) => openSessionRowMenu(e, ws, page, sessionId)}
               >
                 <span class="git-session-label">
                   {sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId)}
@@ -510,6 +560,7 @@
           ondragleave={clearHover}
           ondragend={clearHover}
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
+          oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
           <button
             class="expand-toggle"
@@ -554,6 +605,7 @@
           ondragleave={clearHover}
           ondragend={clearHover}
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
+          oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
           <button
             class="expand-toggle"

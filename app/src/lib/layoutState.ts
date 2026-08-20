@@ -1203,6 +1203,20 @@ export async function reorderTabWithinPane(sessionId: string, targetIndex: numbe
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
+// Pins or unpins a tab in the active page. The layout helpers keep pinned
+// tabs as a prefix of the pane's tab list, so the tab visibly moves.
+export async function setTabPinned(sessionId: string, pinned: boolean): Promise<void> {
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const newTree = pinned
+    ? layout.pinTab(location.tree, sessionId)
+    : layout.unpinTab(location.tree, sessionId);
+  const data = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
 export async function reorderWorkspaceAction(workspaceId: string, targetIndex: number): Promise<void> {
   const state = get(layoutState);
   const data = workspace.reorderWorkspace(state, workspaceId, targetIndex);

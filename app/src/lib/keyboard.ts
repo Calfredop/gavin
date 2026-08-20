@@ -2,6 +2,8 @@ import { get } from "svelte/store";
 import { layoutState, splitPane, addTab, closeSession } from "./layoutState";
 import { copySelection, pasteClipboard } from "./clipboard";
 import { confirmTabClose } from "./confirmClose";
+import { isPinned } from "./layout";
+import { getActiveTree } from "./workspace";
 
 async function handleKeydown(event: KeyboardEvent): Promise<void> {
   // metaKey is Cmd on macOS -- the app is macOS-first per the project roadmap.
@@ -26,6 +28,10 @@ async function handleKeydown(event: KeyboardEvent): Promise<void> {
   } else if (key === "w") {
     event.preventDefault();
     event.stopPropagation();
+    // A pinned tab is protected from the close shortcut (browser-style);
+    // the tab menu's explicit Close still works.
+    const tree = getActiveTree(state);
+    if (tree && isPinned(tree, state.focusedSessionId)) return;
     if (await confirmTabClose(state.focusedSessionId)) {
       await closeSession(state.focusedSessionId);
     }

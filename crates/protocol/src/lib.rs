@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -69,6 +69,20 @@ pub enum Request {
     CreateGavinContext {
         parent_folder: String,
     },
+    /// Scaffolds `.gavin` in a folder OUTSIDE the workspace root and
+    /// registers it in `.gavin-root/config.toml`'s `extra_contexts` so
+    /// scans include it. Folders under the root are refused -- they are
+    /// scanned natively and must go through CreateGavinContext.
+    AddExternalGavinContext {
+        root_path: String,
+        folder: String,
+    },
+    /// Unregisters an outside folder from `extra_contexts`. The folder's
+    /// files are left untouched -- this only stops listing it.
+    RemoveExternalGavinContext {
+        root_path: String,
+        folder: String,
+    },
     /// Writes one frontmatter field of a plan file. The daemon enforces an
     /// allow-list (status, priority) -- this must never become an
     /// arbitrary-line writer.
@@ -118,9 +132,10 @@ pub enum Request {
         cwd: String,
         command: String,
     },
-    /// Deletes a card file (guarded to `.gavin*/plans/` paths) and its
-    /// card_sessions bindings in every workspace. A bound live agent
-    /// session is NOT killed -- it stays visible on the Agents page.
+    /// Deletes a context md file (guarded to `.gavin*/plans|docs|specs/`
+    /// paths) and its card_sessions bindings in every workspace. A bound
+    /// live agent session is NOT killed -- it stays visible on the
+    /// Agents page.
     DeleteCardFile {
         path: String,
     },
@@ -351,6 +366,11 @@ pub struct GavinContext {
     pub has_prd: bool,
     pub config_warning: bool,
     pub agent: Option<AgentConfig>,
+    /// True for contexts living outside the workspace root, pulled in via
+    /// `extra_contexts` in the root config. Default keeps old daemons'
+    /// trees parseable.
+    #[serde(default)]
+    pub outside: bool,
 }
 
 /// The full scanned picture of one workspace's bound root. Never
@@ -749,6 +769,7 @@ mod tests {
                 }],
                 specs: vec![],
                 has_prd: true,
+                outside: false,
                 config_warning: false,
                 agent: None,
             }],
@@ -785,7 +806,8 @@ mod tests {
                     "specs": [],
                     "hasPrd": true,
                     "configWarning": false,
-                    "agent": null
+                    "agent": null,
+                    "outside": false
                 }]
             })
         );
@@ -866,6 +888,7 @@ mod tests {
                 file: None,
                 command: Some("claude --model opus".to_string()),
             }),
+            outside: false,
         };
         let json = serde_json::to_value(&ctx).unwrap();
         assert_eq!(
@@ -900,9 +923,10 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_seven_until_a_breaking_change_bumps_it() {
-        // v7: GavinContext.agent + SetRootConfigField (workspace settings).
-        assert_eq!(PROTOCOL_VERSION, 7);
+    fn protocol_version_is_eight_until_a_breaking_change_bumps_it() {
+        // v8: GavinContext.outside + Add/RemoveExternalGavinContext
+        // (outside-workspace contexts) + docs/specs deletion guard.
+        assert_eq!(PROTOCOL_VERSION, 8);
     }
 
     #[test]

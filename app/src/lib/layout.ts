@@ -1,8 +1,74 @@
 export type Direction = "row" | "column";
 
 export type LayoutNode =
-  | { type: "leaf"; tabs: string[]; activeTabIndex: number }
+  | { type: "leaf"; tabs: string[]; activeTabIndex: number; pinned?: string[] }
   | { type: "split"; direction: Direction; children: LayoutNode[]; sizes: number[] };
+
+export type Leaf = Extract<LayoutNode, { type: "leaf" }>;
+
+// Pinned tabs live as a PREFIX of `tabs` (browser-style). Every mutation
+// funnels through this so the invariant holds: pinned ids not in `tabs`
+// are dropped, pinned tabs are moved first keeping their relative order,
+// the active tab stays active, and an empty `pinned` is omitted so state
+// written before pinning existed stays byte-identical.
+export function normalizeLeaf(leaf: Leaf): Leaf {
+  const pinned = (leaf.pinned ?? []).filter((id) => leaf.tabs.includes(id));
+  const pinnedSet = new Set(pinned);
+  const activeId = leaf.tabs[leaf.activeTabIndex];
+  const tabs = [...leaf.tabs.filter((t) => pinnedSet.has(t)), ...leaf.tabs.filter((t) => !pinnedSet.has(t))];
+  const activeTabIndex = Math.max(0, tabs.indexOf(activeId));
+  const orderedPinned = tabs.filter((t) => pinnedSet.has(t));
+  return orderedPinned.length > 0
+    ? { type: "leaf", tabs, activeTabIndex, pinned: orderedPinned }
+    : { type: "leaf", tabs, activeTabIndex };
+}
+
+function updateLeafOf(tree: LayoutNode, tabId: string, update: (leaf: Leaf) => Leaf): LayoutNode {
+  const path = findLeafPath(tree, tabId);
+  if (!path) return tree;
+  return replaceAtPath(tree, path, (node) => (node.type === "leaf" ? update(node) : node)) ?? tree;
+}
+
+export function isPinned(tree: LayoutNode, tabId: string): boolean {
+  const path = findLeafPath(tree, tabId);
+  if (!path) return false;
+  const node = getNodeAtPath(tree, path);
+  return node.type === "leaf" && (node.pinned ?? []).includes(tabId);
+}
+
+export function pinTab(tree: LayoutNode, tabId: string): LayoutNode {
+  return updateLeafOf(tree, tabId, (leaf) => normalizeLeaf({ ...leaf, pinned: [...(leaf.pinned ?? []), tabId] }));
+}
+
+export function unpinTab(tree: LayoutNode, tabId: string): LayoutNode {
+  return updateLeafOf(tree, tabId, (leaf) =>
+    normalizeLeaf({ ...leaf, pinned: (leaf.pinned ?? []).filter((id) => id !== tabId) })
+  );
+}
+
+// Target index for a reorder, measured in the array AFTER the moving tab
+// is removed (which is how moveTabWithinLeaf splices). A pinned tab may
+// only land inside the pinned block, an unpinned one only after it.
+export function clampReorderIndex(leaf: Leaf, tabId: string, targetIndex: number): number {
+  const pinned = leaf.pinned ?? [];
+  const pinnedCount = leaf.tabs.filter((t) => pinned.includes(t)).length;
+  if (pinned.includes(tabId)) return Math.max(0, Math.min(targetIndex, pinnedCount - 1));
+  return Math.max(pinnedCount, Math.min(targetIndex, leaf.tabs.length - 1));
+}
+
+// Which tabs "Close Others" / "Close to the Right" / "Close to the Left"
+// act on: never the clicked tab, never a pinned one.
+export function bulkCloseTargets(
+  tabs: string[],
+  pinned: string[],
+  tabId: string,
+  mode: "others" | "right" | "left"
+): string[] {
+  const index = tabs.indexOf(tabId);
+  if (index === -1) return [];
+  const candidates = mode === "others" ? tabs : mode === "right" ? tabs.slice(index + 1) : tabs.slice(0, index);
+  return candidates.filter((id) => id !== tabId && !pinned.includes(id));
+}
 
 export function findLeafPath(node: LayoutNode, sessionId: string, path: number[] = []): number[] | null {
   if (node.type === "leaf") {
@@ -86,7 +152,7 @@ export function addTab(tree: LayoutNode, targetSessionId: string, newSessionId: 
   const result = replaceAtPath(tree, path, (leaf) => {
     if (leaf.type !== "leaf") throw new Error("expected a leaf at the found path");
     const tabs = [...leaf.tabs, newSessionId];
-    return { type: "leaf", tabs, activeTabIndex: tabs.length - 1 };
+    return normalizeLeaf({ type: "leaf", tabs, activeTabIndex: tabs.length - 1, pinned: leaf.pinned });
   });
   return result as LayoutNode;
 }
@@ -101,7 +167,12 @@ export function closeTab(tree: LayoutNode, sessionId: string): LayoutNode | null
     if (tabs.length === 0) return null;
     const activeTabIndex =
       leaf.activeTabIndex > removedIndex ? leaf.activeTabIndex - 1 : Math.min(leaf.activeTabIndex, tabs.length - 1);
-    return { type: "leaf", tabs, activeTabIndex };
+    return normalizeLeaf({
+      type: "leaf",
+      tabs,
+      activeTabIndex,
+      pinned: (leaf.pinned ?? []).filter((id) => id !== sessionId),
+    });
   });
 }
 
@@ -132,8 +203,11 @@ export function detachTab(
   sessionId: string
 ): { tree: LayoutNode | null; detached: Extract<LayoutNode, { type: "leaf" }> } | null {
   if (!findLeafPath(tree, sessionId)) return null;
+  const wasPinned = isPinned(tree, sessionId);
   const newTree = closeTab(tree, sessionId);
-  const detached: LayoutNode = { type: "leaf", tabs: [sessionId], activeTabIndex: 0 };
+  const detached: Leaf = wasPinned
+    ? { type: "leaf", tabs: [sessionId], activeTabIndex: 0, pinned: [sessionId] }
+    : { type: "leaf", tabs: [sessionId], activeTabIndex: 0 };
   return { tree: newTree, detached };
 }
 
@@ -200,7 +274,12 @@ export function mergeIntoActivePane(
   return (
     replaceAtPath(targetTree, path, (node) => {
       if (node.type !== "leaf") return node;
-      return { type: "leaf", tabs: [...node.tabs, ...incoming.tabs], activeTabIndex: node.tabs.length };
+      return normalizeLeaf({
+        type: "leaf",
+        tabs: [...node.tabs, ...incoming.tabs],
+        activeTabIndex: node.tabs.length,
+        pinned: [...(node.pinned ?? []), ...(incoming.pinned ?? [])],
+      });
     }) ?? targetTree
   );
 }
@@ -219,9 +298,9 @@ export function moveTabWithinLeaf(tree: LayoutNode, sessionId: string, targetInd
       if (currentIndex === -1) return node;
       const tabs = [...node.tabs];
       tabs.splice(currentIndex, 1);
-      const clampedTarget = Math.max(0, Math.min(targetIndex, tabs.length));
+      const clampedTarget = clampReorderIndex(node, sessionId, targetIndex);
       tabs.splice(clampedTarget, 0, sessionId);
-      return { type: "leaf", tabs, activeTabIndex: tabs.indexOf(activeId) };
+      return normalizeLeaf({ type: "leaf", tabs, activeTabIndex: tabs.indexOf(activeId), pinned: node.pinned });
     }) ?? tree
   );
 }

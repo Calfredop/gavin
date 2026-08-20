@@ -417,7 +417,7 @@ fn resolve_sessions(
     non_session_tab_ids: &HashSet<String>,
 ) -> anyhow::Result<()> {
     match node {
-        LayoutNode::Leaf { tabs, .. } => {
+        LayoutNode::Leaf { tabs, pinned, .. } => {
             for id in tabs.iter_mut() {
                 if non_session_tab_ids.contains(id.as_str()) {
                     continue;
@@ -425,7 +425,13 @@ fn resolve_sessions(
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
                 if !is_valid {
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
-                    *id = create_fresh_session(command_conn, last_known_cwd, None)?;
+                    let fresh = create_fresh_session(command_conn, last_known_cwd, None)?;
+                    // A pin belongs to the tab slot, not the dead process:
+                    // carry it over so a daemon restart doesn't unpin it.
+                    if let Some(pin) = pinned.iter_mut().find(|p| **p == *id) {
+                        *pin = fresh.clone();
+                    }
+                    *id = fresh;
                 }
             }
             Ok(())
@@ -629,7 +635,7 @@ mod resolve_workspaces_tests {
     use crate::config::Page;
 
     fn leaf(tabs: &[&str]) -> LayoutNode {
-        LayoutNode::Leaf { tabs: tabs.iter().map(|s| s.to_string()).collect(), active_tab_index: 0 }
+        LayoutNode::Leaf { tabs: tabs.iter().map(|s| s.to_string()).collect(), active_tab_index: 0, pinned: Vec::new() }
     }
 
     fn page(id: &str, layout: LayoutNode) -> Page {
@@ -688,6 +694,33 @@ mod resolve_workspaces_tests {
         resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1", "fresh-a"]));
+    }
+
+    #[test]
+    fn a_pinned_stale_session_stays_pinned_under_its_fresh_id() {
+        let (client, _captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::SessionList { sessions: vec![] },
+            Response::SessionCreated { id: "fresh-a".to_string() },
+            Response::SessionCreated { id: "fresh-b".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+        let pinned_leaf = LayoutNode::Leaf {
+            tabs: vec!["stale-a".to_string(), "stale-b".to_string()],
+            active_tab_index: 1,
+            pinned: vec!["stale-a".to_string()],
+        };
+        let mut workspaces = vec![workspace("ws-1", vec![page("page-1", pinned_leaf)])];
+
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+
+        assert_eq!(
+            workspaces[0].pages[0].layout,
+            LayoutNode::Leaf {
+                tabs: vec!["fresh-a".to_string(), "fresh-b".to_string()],
+                active_tab_index: 1,
+                pinned: vec!["fresh-a".to_string()],
+            }
+        );
     }
 
     fn valid_session(id: &str) -> protocol::SessionSummary {
@@ -1347,6 +1380,36 @@ pub fn create_gavin_context(
     state: State<CommandConnection>,
 ) -> Result<(), String> {
     let resp = send_command(&state.0, &Request::CreateGavinContext { parent_folder })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn add_external_gavin_context(
+    root_path: String,
+    folder: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::AddExternalGavinContext { root_path, folder })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn remove_external_gavin_context(
+    root_path: String,
+    folder: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::RemoveExternalGavinContext { root_path, folder })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),

@@ -13,7 +13,7 @@
   import { buildCreatePlanArgs } from "./cardCompose";
   import { columnDeletionPlan, executeDeletion } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { openContextMenu, type ContextMenuEntry } from "./contextMenu";
+  import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
   import * as backend from "./backend";
 
   interface Props {
@@ -233,8 +233,6 @@
   }
 
   function handleHeaderContextMenu(e: MouseEvent): void {
-    e.preventDefault();
-    e.stopPropagation();
     const entries: ContextMenuEntry[] = [];
     if (mode === "full") {
       entries.push({ label: "Rename column", onPick: startRename });
@@ -250,7 +248,7 @@
       entries.push({ separator: true });
       entries.push({ label: "Delete column…", danger: true, onPick: requestDeleteColumn });
     }
-    openContextMenu(e.clientX, e.clientY, entries);
+    openContextMenuFromEvent(e, entries);
   }
 
   function handleComposerKeydown(e: KeyboardEvent): void {

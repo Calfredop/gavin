@@ -40,6 +40,9 @@ export interface ExplorerContextNode {
   // under the root indents one level even though it is two folders down
   // (the intermediate folders have no row to indent under).
   depth: number;
+  // Outside the workspace root (extra_contexts). Rendered set apart and
+  // removable from the navigator without touching its files.
+  outside: boolean;
   groups: ExplorerGroupNode[];
 }
 
@@ -63,10 +66,15 @@ export function newFilePath(gavinDir: string, group: ExplorerGroup, fileName: st
 export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextNode[] {
   if (!tree || tree.rootMissing) return [];
 
+  // Root first, then workspace contexts by path, then outside contexts
+  // by path -- an outside folder must never read as part of the tree.
   const contexts = [...tree.contexts].sort((a, b) => {
     const aRoot = a.kind === "root";
     const bRoot = b.kind === "root";
     if (aRoot !== bRoot) return aRoot ? -1 : 1;
+    const aOut = a.outside === true;
+    const bOut = b.outside === true;
+    if (aOut !== bOut) return aOut ? 1 : -1;
     return a.folderPath.localeCompare(b.folderPath);
   });
 
@@ -122,6 +130,7 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
       configWarning: ctx.configWarning,
       gavinDir: gavinDirFor(ctx),
       depth,
+      outside: ctx.outside === true,
       groups,
     };
   });

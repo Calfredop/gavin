@@ -569,21 +569,29 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
     Ok(created)
 }
 
-/// Deletes a card file (card-model delete design). Guarded: the path
-/// must live directly inside a `.gavin*/plans/` folder -- this must
-/// never become a general file deleter. Missing file errors (the caller
-/// should know its picture is stale).
+/// Deletes a context md file (card-model delete design + explorer
+/// delete). Guarded: some ancestor must be a `plans/`, `docs/` or
+/// `specs/` folder directly inside a `.gavin*` directory (docs and specs
+/// legitimately nest in subfolders, and the scanners list nested plans
+/// too) -- this must never become a general file deleter. `..` segments
+/// are rejected outright: the ancestor walk is lexical, so a `..` could
+/// dress an outside path up as a guarded one. Missing file errors (the
+/// caller should know its picture is stale).
 pub fn delete_card_file(path: &Path) -> anyhow::Result<()> {
-    let plans_dir = path
-        .parent()
-        .filter(|d| d.file_name().is_some_and(|n| n == "plans"))
-        .ok_or_else(|| anyhow::anyhow!("not a plans/ file: {}", path.display()))?;
-    plans_dir
-        .parent()
-        .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
-        .ok_or_else(|| anyhow::anyhow!("not inside a .gavin* folder: {}", path.display()))?;
     if path.extension().is_none_or(|e| e != "md") {
-        anyhow::bail!("not a card file: {}", path.display());
+        anyhow::bail!("not a context md file: {}", path.display());
+    }
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        anyhow::bail!("path may not contain ..: {}", path.display());
+    }
+    let guarded = path.ancestors().skip(1).any(|dir| {
+        dir.file_name().is_some_and(|n| n == "plans" || n == "docs" || n == "specs")
+            && dir.parent().is_some_and(|p| {
+                p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin"))
+            })
+    });
+    if !guarded {
+        anyhow::bail!("not inside a .gavin*/plans|docs|specs folder: {}", path.display());
     }
     std::fs::remove_file(path)
         .map_err(|e| anyhow::anyhow!("couldn't delete {}: {e}", path.display()))
@@ -684,6 +692,78 @@ pub fn create_gavin_context(parent: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Top-level `extra_contexts` array of the root config: absolute folder
+/// paths OUTSIDE the workspace that scans should include. Anything that
+/// isn't a string array (or a file that doesn't parse) reads as empty --
+/// config_warning already covers the parse failure.
+fn parse_extra_contexts(config_path: &Path) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(config_path) else { return vec![] };
+    let Ok(table) = content.parse::<toml::Table>() else { return vec![] };
+    table
+        .get("extra_contexts")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default()
+}
+
+/// Scaffolds `.gavin` in a folder outside the workspace root and records
+/// it in the root config's `extra_contexts`, so scans (and therefore the
+/// app and gavin_get_tree) include it. Folders under the root are
+/// refused: they are scanned natively and registering them would
+/// double-list. Scaffold happens BEFORE the config write, so a failed
+/// write can't register a folder that has no skeleton.
+pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
+    if !folder.is_dir() {
+        anyhow::bail!("folder does not exist or is not a directory: {}", folder.display());
+    }
+    if folder.starts_with(root) {
+        anyhow::bail!(
+            "{} is inside the workspace -- it is scanned natively, no registration needed",
+            folder.display()
+        );
+    }
+    let config_path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    if !config_path.is_file() {
+        anyhow::bail!("no {} -- is {} a gavin root?", config_path.display(), root.display());
+    }
+    create_gavin_context(folder)?;
+    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
+        anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", config_path.display())
+    })?;
+    let entry = folder.to_string_lossy().to_string();
+    let item = doc
+        .entry("extra_contexts")
+        .or_insert(toml_edit::value(toml_edit::Array::new()));
+    let arr = item
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("extra_contexts in config.toml is not an array"))?;
+    if !arr.iter().any(|v| v.as_str() == Some(entry.as_str())) {
+        arr.push(entry.as_str());
+    }
+    std::fs::write(&config_path, doc.to_string())?;
+    Ok(())
+}
+
+/// Removes an outside folder from `extra_contexts`. The folder's files
+/// are left untouched -- this only stops listing it. Unregistered paths
+/// (or an absent config) are a no-op, not an error: the end state the
+/// caller asked for already holds.
+pub fn remove_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
+    let config_path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    let Ok(existing) = std::fs::read_to_string(&config_path) else { return Ok(()) };
+    let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
+        anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", config_path.display())
+    })?;
+    let entry = folder.to_string_lossy().to_string();
+    let Some(arr) = doc.get_mut("extra_contexts").and_then(|i| i.as_array_mut()) else {
+        return Ok(());
+    };
+    arr.retain(|v| v.as_str() != Some(entry.as_str()));
+    std::fs::write(&config_path, doc.to_string())?;
+    Ok(())
+}
+
 fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
     fn walk(dir: &Path, base: &Path, out: &mut Vec<MdFileInfo>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -734,6 +814,7 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
         // Only the root context carries an agent block: `.gavin`
         // sub-contexts scope plans, not how the workspace is worked on.
         agent: if matches!(kind, GavinContextKind::Root) { agent_config } else { None },
+        outside: false,
     }
 }
 
@@ -799,6 +880,30 @@ pub fn scan_root(root: &Path) -> GavinTree {
         let b_root = matches!(b.kind, GavinContextKind::Root);
         b_root.cmp(&a_root).then(a.folder_path.cmp(&b.folder_path))
     });
+
+    // Outside contexts (`extra_contexts` in the root config) come after
+    // every scanned one, sorted by path. Entries under the root would
+    // double-list a scanned folder and are skipped; so is a folder that
+    // vanished or lost its `.gavin` -- the navigator simply stops showing
+    // it until it is back.
+    if root_has_gavin_root {
+        let mut extras = parse_extra_contexts(&root_gavin.join("config.toml"));
+        extras.sort();
+        extras.dedup();
+        for folder in extras {
+            let path = PathBuf::from(&folder);
+            if path.starts_with(root) {
+                continue;
+            }
+            let gavin_dir = path.join(GAVIN_DIR);
+            if !gavin_dir.is_dir() {
+                continue;
+            }
+            let mut ctx = build_context(&path, &gavin_dir, GavinContextKind::Context);
+            ctx.outside = true;
+            contexts.push(ctx);
+        }
+    }
     GavinTree { root_path: root_str, root_missing: false, contexts }
 }
 
@@ -1296,6 +1401,83 @@ mod tests {
         std::fs::write(&notmd, "x").unwrap();
         assert!(delete_card_file(&notmd).is_err());
         assert!(notmd.exists());
+    }
+
+    #[test]
+    fn delete_card_file_covers_docs_and_specs_but_never_dotdot_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let g = dir.path().join(GAVIN_ROOT_DIR);
+        // Nested doc: docs/specs listings walk subfolders, so deletion must too.
+        let guide = g.join("docs").join("guides").join("setup.md");
+        std::fs::create_dir_all(guide.parent().unwrap()).unwrap();
+        std::fs::write(&guide, "# setup\n").unwrap();
+        delete_card_file(&guide).unwrap();
+        assert!(!guide.exists());
+        let spec = g.join("specs").join("api.md");
+        std::fs::write(&spec, "# api\n").unwrap();
+        delete_card_file(&spec).unwrap();
+        assert!(!spec.exists());
+        // A `..` that lexically passes the ancestor check must refuse:
+        let victim = dir.path().join("victim.md");
+        std::fs::write(&victim, "x").unwrap();
+        let sneaky = g.join("docs").join("..").join("..").join("victim.md");
+        assert!(delete_card_file(&sneaky).is_err());
+        assert!(victim.exists());
+    }
+
+    #[test]
+    fn external_contexts_register_scan_and_unregister() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let lib = outside.path().join("shared-lib");
+        std::fs::create_dir_all(&lib).unwrap();
+
+        add_external_context(root.path(), &lib).unwrap();
+        assert!(lib.join(GAVIN_DIR).join("plans").is_dir());
+        // Registering twice keeps one entry:
+        add_external_context(root.path(), &lib).unwrap();
+        let config =
+            std::fs::read_to_string(root.path().join(GAVIN_ROOT_DIR).join("config.toml")).unwrap();
+        assert_eq!(config.matches("shared-lib").count(), 1);
+
+        let tree = scan_root(root.path());
+        let ctx = tree.contexts.last().unwrap();
+        assert_eq!(ctx.folder_path, lib.to_string_lossy());
+        assert!(ctx.outside);
+        assert!(!tree.contexts.first().unwrap().outside);
+
+        // A folder inside the workspace refuses registration:
+        let inner = root.path().join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        assert!(add_external_context(root.path(), &inner).is_err());
+
+        remove_external_context(root.path(), &lib).unwrap();
+        assert!(scan_root(root.path()).contexts.iter().all(|c| !c.outside));
+        // Removing an unregistered path is a no-op, not an error:
+        remove_external_context(root.path(), &lib).unwrap();
+    }
+
+    #[test]
+    fn scan_skips_extra_contexts_that_are_missing_or_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let config = root.path().join(GAVIN_ROOT_DIR).join("config.toml");
+        let inside = root.path().join("src");
+        std::fs::create_dir_all(inside.join(GAVIN_DIR)).unwrap();
+        let mut body = std::fs::read_to_string(&config).unwrap();
+        body.push_str(&format!(
+            "extra_contexts = [\"{}\", \"/definitely/not/there\"]\n",
+            inside.display()
+        ));
+        std::fs::write(&config, body).unwrap();
+        let tree = scan_root(root.path());
+        // `src` still appears once -- from the walk, not the extras list.
+        let src_entries =
+            tree.contexts.iter().filter(|c| c.folder_path == inside.to_string_lossy()).count();
+        assert_eq!(src_entries, 1);
+        assert!(tree.contexts.iter().all(|c| !c.outside));
     }
 
     #[test]

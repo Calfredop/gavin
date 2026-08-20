@@ -114,6 +114,19 @@ describe("buildExplorerTree", () => {
     ]);
   });
 
+  it("flags outside contexts and sorts them after every workspace context", () => {
+    const t = tree([
+      ctx("/elsewhere/lib", "lib", { outside: true, plans: [plan("l.md")] }),
+      ctx("/ws", "root", { kind: "root", plans: [plan("r.md")] }),
+      ctx("/ws/zeta", "zeta", { plans: [plan("z.md")] }),
+    ]);
+    expect(buildExplorerTree(t).map((c) => [c.name, c.outside, c.depth])).toEqual([
+      ["root", false, 0],
+      ["zeta", false, 1],
+      ["lib", true, 0],
+    ]);
+  });
+
   it("is empty for an absent or root_missing tree", () => {
     expect(buildExplorerTree(undefined)).toEqual([]);
     expect(buildExplorerTree({ rootPath: "/ws", rootMissing: true, contexts: [] })).toEqual([]);

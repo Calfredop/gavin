@@ -19,8 +19,14 @@ import {
   presetSingle,
   presetSideBySide,
   presetGrid2x2,
+  normalizeLeaf,
+  isPinned,
+  pinTab,
+  unpinTab,
+  clampReorderIndex,
+  bulkCloseTargets,
 } from "./layout";
-import type { LayoutNode } from "./layout";
+import type { LayoutNode, Leaf } from "./layout";
 
 describe("findLeafPath", () => {
   it("finds a leaf at the root", () => {
@@ -589,5 +595,111 @@ describe("moveTabWithinLeaf", () => {
   it("is a no-op when the session isn't in the tree", () => {
     const tree: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 0 };
     expect(moveTabWithinLeaf(tree, "z", 0)).toEqual(tree);
+  });
+});
+
+describe("pinning", () => {
+  const leaf = (tabs: string[], activeTabIndex = 0, pinned?: string[]): LayoutNode =>
+    pinned ? { type: "leaf", tabs, activeTabIndex, pinned } : { type: "leaf", tabs, activeTabIndex };
+
+  it("pinTab moves the tab to the end of the pinned block and records it", () => {
+    const tree = pinTab(leaf(["a", "b", "c"], 2, ["a"]), "c");
+    expect(tree).toEqual(leaf(["a", "c", "b"], 1, ["a", "c"]));
+  });
+
+  it("pinTab keeps the active tab active when another tab is pinned", () => {
+    const tree = pinTab(leaf(["a", "b", "c"], 1), "c");
+    expect(tree).toEqual(leaf(["c", "a", "b"], 2, ["c"]));
+  });
+
+  it("unpinTab moves the tab to the start of the unpinned block", () => {
+    const tree = unpinTab(leaf(["a", "b", "c", "d"], 0, ["a", "b"]), "a");
+    expect(tree).toEqual(leaf(["b", "a", "c", "d"], 1, ["b"]));
+  });
+
+  it("unpinning the last pinned tab drops the pinned field entirely", () => {
+    const tree = unpinTab(leaf(["a", "b"], 0, ["a"]), "a");
+    expect(tree).toEqual({ type: "leaf", tabs: ["a", "b"], activeTabIndex: 0 });
+    expect("pinned" in tree).toBe(false);
+  });
+
+  it("isPinned finds the tab anywhere in a split", () => {
+    const tree: LayoutNode = {
+      type: "split",
+      direction: "row",
+      children: [leaf(["a"]), leaf(["b", "c"], 0, ["b"])],
+      sizes: [0.5, 0.5],
+    };
+    expect(isPinned(tree, "b")).toBe(true);
+    expect(isPinned(tree, "c")).toBe(false);
+    expect(isPinned(tree, "zzz")).toBe(false);
+  });
+
+  it("normalizeLeaf drops pinned ids that are not tabs and reorders pinned first", () => {
+    const out = normalizeLeaf({ type: "leaf", tabs: ["a", "b", "c"], activeTabIndex: 2, pinned: ["c", "ghost"] });
+    expect(out).toEqual(leaf(["c", "a", "b"], 0, ["c"]));
+  });
+
+  it("closeTab removes the id from pinned too", () => {
+    const tree = closeTab(leaf(["a", "b"], 1, ["a"]), "a");
+    expect(tree).toEqual({ type: "leaf", tabs: ["b"], activeTabIndex: 0 });
+  });
+
+  it("addTab appends after the pinned block and keeps pinned", () => {
+    const tree = addTab(leaf(["a", "b"], 0, ["a"]), "a", "n");
+    expect(tree).toEqual(leaf(["a", "b", "n"], 2, ["a"]));
+  });
+
+  it("detachTab carries the pinned flag on the detached leaf", () => {
+    const result = detachTab(leaf(["a", "b"], 0, ["a"]), "a");
+    expect(result?.detached).toEqual(leaf(["a"], 0, ["a"]));
+    expect(result?.tree).toEqual({ type: "leaf", tabs: ["b"], activeTabIndex: 0 });
+  });
+
+  it("mergeIntoActivePane puts an incoming pinned tab at the end of the pinned block", () => {
+    const target = leaf(["p", "u"], 1, ["p"]);
+    const incoming = leaf(["x"], 0, ["x"]) as Extract<LayoutNode, { type: "leaf" }>;
+    expect(mergeIntoActivePane(target, "u", incoming)).toEqual(leaf(["p", "x", "u"], 1, ["p", "x"]));
+  });
+
+  it("moveTabWithinLeaf clamps a pinned tab inside the pinned block", () => {
+    const tree = moveTabWithinLeaf(leaf(["a", "b", "c", "d"], 0, ["a", "b"]), "a", 3);
+    // pinned ids are kept in tab order, so the move reorders them too
+    expect(tree).toEqual(leaf(["b", "a", "c", "d"], 1, ["b", "a"]));
+  });
+
+  it("moveTabWithinLeaf clamps an unpinned tab outside the pinned block", () => {
+    const tree = moveTabWithinLeaf(leaf(["a", "b", "c", "d"], 0, ["a", "b"]), "d", 0);
+    expect(tree).toEqual(leaf(["a", "b", "d", "c"], 0, ["a", "b"]));
+  });
+
+  it("clampReorderIndex bounds by block", () => {
+    const l: Leaf = { type: "leaf", tabs: ["a", "b", "c", "d"], activeTabIndex: 0, pinned: ["a", "b"] };
+    expect(clampReorderIndex(l, "a", 3)).toBe(1);
+    expect(clampReorderIndex(l, "b", 0)).toBe(0);
+    expect(clampReorderIndex(l, "d", 0)).toBe(2);
+    expect(clampReorderIndex(l, "c", 9)).toBe(3);
+  });
+});
+
+describe("bulkCloseTargets", () => {
+  const tabs = ["p", "a", "b", "c"];
+  const pinned = ["p"];
+  it("others excludes the clicked tab and pinned tabs", () => {
+    expect(bulkCloseTargets(tabs, pinned, "b", "others")).toEqual(["a", "c"]);
+  });
+  it("right takes only tabs after the clicked one", () => {
+    expect(bulkCloseTargets(tabs, pinned, "a", "right")).toEqual(["b", "c"]);
+  });
+  it("left takes only tabs before the clicked one, never pinned", () => {
+    expect(bulkCloseTargets(tabs, pinned, "c", "left")).toEqual(["a", "b"]);
+  });
+  it("is empty when only pinned neighbours remain", () => {
+    expect(bulkCloseTargets(["p", "a"], ["p"], "a", "others")).toEqual([]);
+  });
+  it("is empty for a tab that is not in the list", () => {
+    expect(bulkCloseTargets(tabs, pinned, "ghost", "right")).toEqual([]);
+    expect(bulkCloseTargets(tabs, pinned, "ghost", "left")).toEqual([]);
+    expect(bulkCloseTargets(tabs, pinned, "ghost", "others")).toEqual([]);
   });
 });
