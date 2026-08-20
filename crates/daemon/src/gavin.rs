@@ -568,6 +568,26 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
     Ok(created)
 }
 
+/// Deletes a card file (card-model delete design). Guarded: the path
+/// must live directly inside a `.gavin*/plans/` folder -- this must
+/// never become a general file deleter. Missing file errors (the caller
+/// should know its picture is stale).
+pub fn delete_card_file(path: &Path) -> anyhow::Result<()> {
+    let plans_dir = path
+        .parent()
+        .filter(|d| d.file_name().is_some_and(|n| n == "plans"))
+        .ok_or_else(|| anyhow::anyhow!("not a plans/ file: {}", path.display()))?;
+    plans_dir
+        .parent()
+        .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
+        .ok_or_else(|| anyhow::anyhow!("not inside a .gavin* folder: {}", path.display()))?;
+    if path.extension().is_none_or(|e| e != "md") {
+        anyhow::bail!("not a card file: {}", path.display());
+    }
+    std::fs::remove_file(path)
+        .map_err(|e| anyhow::anyhow!("couldn't delete {}: {e}", path.display()))
+}
+
 /// A context's display name from its config.toml. The bool is
 /// config_warning: false for a missing file (absent config is normal),
 /// true only when the file exists but doesn't parse as TOML.
@@ -1217,6 +1237,29 @@ mod tests {
         std::fs::write(&plan, "---\ntitle: P\n---\n- [ ] Task X\n").unwrap();
         let child = promote_checklist_item(&plan, "Task X").unwrap();
         assert_eq!(child, plans.join("task-x-2.md"));
+    }
+
+    #[test]
+    fn delete_card_file_removes_only_guarded_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = plans.join("doomed.md");
+        std::fs::write(&card, "---\ntitle: D\n---\n").unwrap();
+        delete_card_file(&card).unwrap();
+        assert!(!card.exists());
+        // Missing file errors:
+        assert!(delete_card_file(&card).is_err());
+        // Outside plans/ refuses:
+        let stray = dir.path().join("stray.md");
+        std::fs::write(&stray, "x").unwrap();
+        assert!(delete_card_file(&stray).is_err());
+        assert!(stray.exists());
+        // Non-md refuses:
+        let notmd = plans.join("notes.txt");
+        std::fs::write(&notmd, "x").unwrap();
+        assert!(delete_card_file(&notmd).is_err());
+        assert!(notmd.exists());
     }
 
     #[test]

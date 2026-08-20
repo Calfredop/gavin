@@ -760,6 +760,11 @@ impl SessionManager {
         self.kanban.lock().unwrap().unlink_card_session(workspace_id, path)
     }
 
+    pub fn delete_card_file(&self, path: &str) -> anyhow::Result<()> {
+        crate::gavin::delete_card_file(std::path::Path::new(path))?;
+        self.kanban.lock().unwrap().unlink_card_session_all(path)
+    }
+
     pub fn delete_board(&self, workspace_id: &str) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().delete_board(workspace_id)
     }
@@ -1245,6 +1250,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::UnlinkCardSession { workspace_id, path } => manager
             .unlink_card_session(&workspace_id, &path)
             .map(|_| Response::Ok),
+        Request::DeleteCardFile { path } => {
+            manager.delete_card_file(&path).map(|_| Response::Ok)
+        }
         Request::SetChecklistItem { path, line_index, expected_text, checked } => {
             crate::gavin::set_checklist_item(
                 std::path::Path::new(&path),

@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -108,6 +108,12 @@ pub enum Request {
         root_path: String,
         cwd: String,
         command: String,
+    },
+    /// Deletes a card file (guarded to `.gavin*/plans/` paths) and its
+    /// card_sessions bindings in every workspace. A bound live agent
+    /// session is NOT killed -- it stays visible on the Agents page.
+    DeleteCardFile {
+        path: String,
     },
     /// Rewrites exactly one checklist line's checkbox; expected_text
     /// must still match or the daemon refuses (concurrent agent edit).
@@ -820,10 +826,10 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_five_until_a_breaking_change_bumps_it() {
-        // v5: executable cards -- card_sessions ride the Board reply and
-        // Link/UnlinkCardSession joined the wire.
-        assert_eq!(PROTOCOL_VERSION, 5);
+    fn protocol_version_is_six_until_a_breaking_change_bumps_it() {
+        // v6: DeleteCardFile joined the wire (card + column-cascade
+        // deletion).
+        assert_eq!(PROTOCOL_VERSION, 6);
     }
 
     #[test]

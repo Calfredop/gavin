@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "app",
+  "productName": "Gavin",
   "version": "0.1.0",
   "identifier": "com.gavin.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "gavin",
+        "title": "Gavin",
         "width": 1000,
         "height": 700,
         "decorations": false,

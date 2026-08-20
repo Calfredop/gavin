@@ -169,6 +169,12 @@ impl KanbanStore {
         Ok(())
     }
 
+    /// Removes a deleted card's bindings in EVERY workspace.
+    pub fn unlink_card_session_all(&mut self, path: &str) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM card_sessions WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
     /// Removes a binding; absent is a no-op.
     pub fn unlink_card_session(&mut self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
         self.conn.execute(
@@ -298,6 +304,21 @@ mod tests {
         store.unlink_card_session("ws-1", "/p/absent.md").unwrap(); // no-op
         assert!(store.get_board("ws-1").unwrap().card_sessions.is_empty());
         assert_eq!(store.get_board("ws-2").unwrap().card_sessions.len(), 1);
+    }
+
+    #[test]
+    fn unlink_all_clears_a_path_across_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None).unwrap();
+        store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None).unwrap();
+        store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None).unwrap();
+
+        store.unlink_card_session_all("/p/t.md").unwrap();
+
+        assert!(store.get_board("ws-1").unwrap().card_sessions.iter().all(|cs| cs.path != "/p/t.md"));
+        assert!(store.get_board("ws-2").unwrap().card_sessions.is_empty());
+        assert_eq!(store.get_board("ws-1").unwrap().card_sessions.len(), 1);
     }
 
     #[test]

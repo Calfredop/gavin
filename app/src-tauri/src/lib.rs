@@ -69,6 +69,7 @@ pub fn run() {
             session::set_plan_frontmatter_field,
             session::create_plan,
             session::set_checklist_item,
+            session::delete_card_file,
             session::link_card_session,
             session::unlink_card_session,
             session::promote_checklist_item,

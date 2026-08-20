@@ -111,6 +111,15 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Hovering card icons/chips and board buttons shows the styled in-app tooltip (350ms; hides on click/drag)",
       },
       {
+        id: "delete-card",
+        text: "Card hover × / detail Delete: confirm prompt spells out consequences; the .md file and its binding are gone",
+        hint: "A deleted plan's nested tasks go with it; free-standing children get un-parented, not orphaned.",
+      },
+      {
+        id: "delete-column-cascade",
+        text: "Deleting a non-empty column offers “column only” (cards → auto column) vs cascade (files deleted)",
+      },
+      {
         id: "kind-wipe",
         text: "No free-form SQLite cards anywhere — a pre-wipe database's cards are gone after the daemon restarts",
       },

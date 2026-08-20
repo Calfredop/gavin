@@ -11,6 +11,8 @@
   import { tooltip } from "./tooltip";
   import { Play } from "@lucide/svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
+  import { columnDeletionPlan, executeDeletion } from "./cardDelete";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import * as backend from "./backend";
 
   interface Props {
@@ -26,6 +28,10 @@
     composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
+    onDeleteCard?: ((card: CardView) => void) | null;
+    // The full projection (nested included) -- the column-cascade plan
+    // needs to find a deleted plan's free children in other columns.
+    allCards?: CardView[];
   }
   let {
     workspaceId,
@@ -36,6 +42,8 @@
     composerContext = null,
     onOpenPlanCard,
     onRunCard = null,
+    onDeleteCard = null,
+    allCards = [],
   }: Props = $props();
 
   let editingName = $state(false);
@@ -62,10 +70,36 @@
   const slotDrag = $derived($dragState ?? $dropHold);
   const planSlots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, column.id));
 
-  // Deleting a column never touches card files -- cards whose status
-  // matched it fall back to an auto column (D6), so no prompt is needed.
-  function deleteColumn(): void {
+  // Deleting an EMPTY column is direct. A non-empty one prompts with two
+  // choices (card-model delete design): column only (its cards fall back
+  // to an auto column, D6) or column + cascade of its card files.
+  let confirmingColumnDelete = $state(false);
+  let deleteError = $state<string | null>(null);
+
+  const cascade = $derived(columnDeletionPlan(planCards, allCards));
+
+  function requestDeleteColumn(): void {
+    if (planCards.length === 0) {
+      void deleteColumnAction(workspaceId, column.id);
+    } else {
+      confirmingColumnDelete = true;
+    }
+  }
+
+  function deleteColumnOnly(): void {
+    confirmingColumnDelete = false;
     void deleteColumnAction(workspaceId, column.id);
+  }
+
+  async function deleteColumnCascade(): Promise<void> {
+    confirmingColumnDelete = false;
+    deleteError = null;
+    const err = await executeDeletion(workspaceId, cascade);
+    if (err) {
+      deleteError = err;
+      return;
+    }
+    await deleteColumnAction(workspaceId, column.id);
   }
 
   // Run all (card-model spec §3): every plan/task in this column with no
@@ -235,7 +269,7 @@
       </button>
     {/if}
     {#if mode === "full"}
-      <button type="button" class="delete" aria-label="Delete column" use:tooltip={"Delete column — its cards fall back to an auto column by status"} onclick={deleteColumn}>×</button>
+      <button type="button" class="delete" aria-label="Delete column" use:tooltip={"Delete column — its cards fall back to an auto column by status"} onclick={requestDeleteColumn}>×</button>
     {/if}
   </div>
   <div class="cards" data-kb-cards>
@@ -243,7 +277,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} onDelete={onDeleteCard} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
@@ -251,6 +285,9 @@
       </div>
     {/each}
   </div>
+  {#if deleteError}
+    <div class="delete-error">{deleteError}</div>
+  {/if}
   {#if composing}
     <div class="composer">
       <div class="kind-chips">
@@ -320,6 +357,24 @@
     <button type="button" class="add-card" use:tooltip={"Add a card — a markdown file in this column"} onclick={() => (composing = true)}>+ Add card</button>
   {/if}
 </div>
+
+{#if confirmingColumnDelete}
+  <ConfirmPrompt
+    title={`Delete column "${column.name}"?`}
+    lines={[
+      `${planCards.length} ${planCards.length === 1 ? "card is" : "cards are"} in this column.`,
+      `Column only: the cards fall back to an auto column named "${column.name}".`,
+      `Cascade: ${cascade.files.length} card ${cascade.files.length === 1 ? "file" : "files"} deleted (nested tasks included)` +
+        (cascade.unparent.length > 0 ? `; ${cascade.unparent.length} elsewhere un-parented.` : "."),
+      "Bound agent sessions keep running on the Agents page.",
+    ]}
+    choices={[
+      { label: "Delete column only", onPick: deleteColumnOnly },
+      { label: `Delete column + ${cascade.files.length} cards`, danger: true, onPick: () => void deleteColumnCascade() },
+    ]}
+    onCancel={() => (confirmingColumnDelete = false)}
+  />
+{/if}
 
 <style>
   .column {
@@ -478,6 +533,12 @@
   .compose-error {
     color: #e0b08a;
     font-size: 0.75em;
+  }
+  .delete-error {
+    color: #e0b08a;
+    font-family: monospace;
+    font-size: 0.75em;
+    margin-top: 4px;
   }
   .run-now {
     display: flex;

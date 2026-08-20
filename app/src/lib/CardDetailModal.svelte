@@ -13,6 +13,8 @@
   import { switchWorkspaceView, layoutState } from "./layoutState";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, relaunchCard } from "./cardRunActions";
+  import { deletionPlanFor, executeDeletion } from "./cardDelete";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { findSessionLocation } from "./workspace";
   import * as backend from "./backend";
 
@@ -191,6 +193,16 @@
     await unlinkCardSessionAction(workspaceId, card.id);
   }
 
+  let confirmingDelete = $state(false);
+  const delPlan = $derived(deletionPlanFor(card, allCards));
+
+  async function confirmDelete(): Promise<void> {
+    confirmingDelete = false;
+    const err = await executeDeletion(workspaceId, delPlan);
+    if (err) errorMessage = err;
+    else onClose();
+  }
+
   function openInPlansTab(): void {
     requestedExplorerPath.set(card.id);
     void switchWorkspaceView(workspaceId, "plans");
@@ -339,11 +351,26 @@
     <p class="error">{errorMessage}</p>
   {/if}
   <div class="actions">
+    <button type="button" class="danger" onclick={() => (confirmingDelete = true)}>Delete</button>
     <button type="button" onclick={openInPlansTab}>Open in Plans tab</button>
     <button type="button" onclick={() => void openExternally()}>Open externally</button>
     <button type="button" onclick={onClose}>Close</button>
   </div>
 </Modal>
+
+{#if confirmingDelete}
+  <ConfirmPrompt
+    title={`Delete "${card.title}"?`}
+    lines={[
+      `Deletes ${card.fileName} permanently.`,
+      ...(delPlan.files.length > 1 ? [`Also deletes ${delPlan.files.length - 1} nested ${delPlan.files.length - 1 === 1 ? "task" : "tasks"}.`] : []),
+      ...(delPlan.unparent.length > 0 ? [`${delPlan.unparent.length} free-standing ${delPlan.unparent.length === 1 ? "task keeps" : "tasks keep"} their column (un-parented).`] : []),
+      ...(binding ? ["The bound agent session keeps running on the Agents page."] : []),
+    ]}
+    choices={[{ label: "Delete", danger: true, onPick: () => void confirmDelete() }]}
+    onCancel={() => (confirmingDelete = false)}
+  />
+{/if}
 
 <style>
   .header {
@@ -560,5 +587,10 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
+  }
+  .actions button.danger {
+    background: #5a2f2a;
+    color: #f0c0b8;
+    margin-right: auto;
   }
 </style>

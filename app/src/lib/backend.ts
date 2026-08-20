@@ -181,6 +181,10 @@ export function setBoard(workspaceId: string, columns: Column[], labels: Label[]
   return invoke("set_board", { workspaceId, columns, labels });
 }
 
+export function deleteCardFile(path: string): Promise<void> {
+  return invoke("delete_card_file", { path });
+}
+
 export function linkCardSession(
   workspaceId: string,
   path: string,

@@ -1507,6 +1507,16 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
 /// never-overwrite guarantee are identical no matter who creates a plan.
 /// Returns the created path.
 #[tauri::command]
+pub fn delete_card_file(path: String, state: State<CommandConnection>) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::DeleteCardFile { path }).map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
+#[tauri::command]
 pub fn link_card_session(
     workspace_id: String,
     path: String,

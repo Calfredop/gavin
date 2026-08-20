@@ -8,6 +8,9 @@
   import { mergePlanCards, type CardView } from "./planBoard";
   import { planCommitFromMerged } from "./planDrop";
   import { runCard } from "./cardRunActions";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
   import { flip } from "svelte/animate";
@@ -54,6 +57,31 @@
   const openPlan = $derived<CardView | null>(
     openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
   );
+
+  let pendingDelete = $state<CardView | null>(null);
+  const pendingPlan = $derived<DeletionPlan | null>(
+    pendingDelete ? deletionPlanFor(pendingDelete, allCards) : null
+  );
+  const pendingDeleteLines = $derived.by(() => {
+    if (!pendingDelete || !pendingPlan) return [];
+    const lines = [`Deletes ${pendingDelete.fileName} permanently.`];
+    const nested = pendingPlan.files.length - 1;
+    if (nested > 0) lines.push(`Also deletes ${nested} nested ${nested === 1 ? "task" : "tasks"}.`);
+    if (pendingPlan.unparent.length > 0)
+      lines.push(`${pendingPlan.unparent.length} free-standing ${pendingPlan.unparent.length === 1 ? "task keeps" : "tasks keep"} their column (un-parented).`);
+    if (pendingPlan.files.some((f) => cardSessionFor(board, f.id) !== null))
+      lines.push("A bound agent session keeps running on the Agents page.");
+    return lines;
+  });
+
+  async function confirmDelete(): Promise<void> {
+    const plan = pendingPlan;
+    pendingDelete = null;
+    if (!plan) return;
+    planWriteError = null;
+    const err = await executeDeletion(workspaceId, plan);
+    if (err) planWriteError = err;
+  }
 
   async function handleRun(card: CardView): Promise<void> {
     planWriteError = null;
@@ -154,6 +182,8 @@
             planCards={merged?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
             onOpenPlanCard={(path) => (openPlanPath = path)}
             onRunCard={handleRun}
+            onDeleteCard={(card) => (pendingDelete = card)}
+            {allCards}
           />
         {:else}
           <div class="column-placeholder"></div>
@@ -161,7 +191,7 @@
       </div>
     {/each}
     {#each merged?.autoColumns ?? [] as auto (auto.status)}
-      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} />
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onDeleteCard={(card) => (pendingDelete = card)} />
     {/each}
     {#if addingColumn}
       <input
@@ -178,6 +208,14 @@
     {/if}
   </div>
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
+  {#if pendingDelete}
+    <ConfirmPrompt
+      title={`Delete "${pendingDelete.title}"?`}
+      lines={pendingDeleteLines}
+      choices={[{ label: "Delete", danger: true, onPick: () => void confirmDelete() }]}
+      onCancel={() => (pendingDelete = null)}
+    />
+  {/if}
   {#if openPlan}
     <CardDetailModal
       card={openPlan}

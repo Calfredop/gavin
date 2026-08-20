@@ -20,8 +20,9 @@
     // Enables the session dot + Run affordance (absent in the preview).
     workspaceId?: string | null;
     onRun?: ((card: CardView) => void) | null;
+    onDelete?: ((card: CardView) => void) | null;
   }
-  let { card, labelDefs, onOpen, nested = false, workspaceId = null, onRun = null }: Props = $props();
+  let { card, labelDefs, onOpen, nested = false, workspaceId = null, onRun = null, onDelete = null }: Props = $props();
 
   // Live session binding (card-model spec §3) -- same dot vocabulary the
   // terminal tabs use, plus a distinct exited ring since a card can stay
@@ -108,6 +109,21 @@
     {#if card.parseWarning}
       <span class="warning" use:tooltip={"This card's frontmatter has issues — some fields may be unreadable"}><TriangleAlert size={11} /></span>
     {/if}
+    {#if onDelete}
+      <button
+        type="button"
+        class="delete"
+        aria-label="Delete card"
+        use:tooltip={"Delete this card (its .md file)"}
+        onpointerdown={shield}
+        onclick={(e) => {
+          e.stopPropagation();
+          onDelete?.(card);
+        }}
+      >
+        ×
+      </button>
+    {/if}
     {#if runnable}
       <button
         type="button"
@@ -161,7 +177,7 @@
       {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} />
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onDelete} />
           </div>
         {:else}
           <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>
@@ -300,6 +316,21 @@
   }
   .card:hover .run,
   .card:focus-within .run {
+    opacity: 1;
+  }
+  .delete {
+    background: transparent;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    font-size: 1.05em;
+    line-height: 1;
+    padding: 0 2px;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .card:hover .delete,
+  .card:focus-within .delete {
     opacity: 1;
   }
   .title {

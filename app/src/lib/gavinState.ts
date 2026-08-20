@@ -56,6 +56,20 @@ export function patchPlanCreated(workspaceId: string, contextFolder: string, pla
   });
 }
 
+// Optimistic removal for a deleted card file; the watcher push confirms
+// ~2.5s later.
+export function patchPlanRemoved(workspaceId: string, path: string): void {
+  gavinTrees.update((m) => {
+    const tree = m[workspaceId];
+    if (!tree) return m;
+    const contexts = tree.contexts.map((ctx) => ({
+      ...ctx,
+      plans: ctx.plans.filter((p) => p.path !== path),
+    }));
+    return { ...m, [workspaceId]: { ...tree, contexts } };
+  });
+}
+
 export function patchPlanField(
   workspaceId: string,
   path: string,
