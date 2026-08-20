@@ -13,6 +13,7 @@
   import { tooltip } from "./tooltip";
   import GitToolbar from "./GitToolbar.svelte";
   import GitOpBar from "./GitOpBar.svelte";
+  import GitWorktreeSwitcher from "./GitWorktreeSwitcher.svelte";
   import GitNav from "./GitNav.svelte";
   import GitChanges from "./GitChanges.svelte";
   import GitDiff from "./GitDiff.svelte";
@@ -28,7 +29,11 @@
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const root = $derived(ws?.rootPath ?? null);
+  // SP3: the tab may be pointed at a linked worktree; the selection is
+  // persisted and reapplied on mount (falls back to the root if it's gone).
+  const cwdTarget = $derived(ws?.gitView?.worktree ?? root);
   const view = $derived($gitStore[workspaceId] ?? null);
+  const viewCwd = $derived(view?.cwd ?? null);
   const busy = $derived(view?.busy != null || view?.op != null);
   const repoName = $derived((view?.repo?.root ?? root ?? "").split("/").filter(Boolean).pop() ?? "");
 
@@ -39,15 +44,22 @@
     listWidth = ws?.gitView?.listWidth ?? LIST_DEFAULT;
   });
 
-  // Mount, workspace switch, or root rebinding: (re)create the view state,
-  // refresh once, and hold the worktree watcher for as long as the tab is
-  // on screen (spec §4). The effect's cleanup is the unmount path.
+  // Mount, workspace switch, or root rebinding: (re)create the view state
+  // for the target cwd and refresh once (spec §4).
   $effect(() => {
-    const r = root;
+    const target = cwdTarget;
     const id = workspaceId;
-    if (!r) return;
-    ensureGitView(id, r);
+    if (!target) return;
+    ensureGitView(id, target);
     void refresh(id);
+  });
+
+  // The watcher follows the view's cwd (a worktree switch restarts it); its
+  // cleanup is the unmount path.
+  $effect(() => {
+    const cwd = viewCwd;
+    const id = workspaceId;
+    if (!cwd) return;
     let stop: (() => void) | null = null;
     let cancelled = false;
     void startWatching(id).then((teardown) => {
@@ -103,7 +115,11 @@
   </div>
 {:else}
   <div class="git">
-    <GitToolbar {workspaceId} {repoName} />
+    <GitToolbar {workspaceId} {repoName}>
+      {#snippet leading()}
+        <GitWorktreeSwitcher {workspaceId} />
+      {/snippet}
+    </GitToolbar>
     <GitOpBar {workspaceId} />
     {#if view.repo?.inProgress}
       {@const kind = view.repo.inProgress}

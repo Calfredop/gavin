@@ -10,8 +10,21 @@
     /// Primary button text; "Discard" by default — SP2 reuses this dialog
     /// for every destructive confirm (delete branch, drop stash, …).
     confirmLabel?: string;
+    cancelLabel?: string;
+    /// Label of the checkbox shown when `offerSkip`; its value reaches
+    /// `onConfirm`. Defaults to SP1's "don't ask again" wording.
+    skipLabel?: string;
   }
-  let { title, body, offerSkip, onConfirm, onCancel, confirmLabel = "Discard" }: Props = $props();
+  let {
+    title,
+    body,
+    offerSkip,
+    onConfirm,
+    onCancel,
+    confirmLabel = "Discard",
+    cancelLabel = "Cancel",
+    skipLabel = "Don't ask again for hunks and lines",
+  }: Props = $props();
 
   let skip = $state(false);
 </script>
@@ -20,10 +33,10 @@
   <h3>{title}</h3>
   <pre class="body">{body}</pre>
   {#if offerSkip}
-    <label class="skip"><input type="checkbox" bind:checked={skip} /> Don't ask again for hunks and lines</label>
+    <label class="skip"><input type="checkbox" bind:checked={skip} /> {skipLabel}</label>
   {/if}
   <div class="actions">
-    <button type="button" onclick={onCancel}>Cancel</button>
+    <button type="button" onclick={onCancel}>{cancelLabel}</button>
     <button type="button" class="danger" onclick={() => onConfirm(skip)}>{confirmLabel}</button>
   </div>
 </Modal>

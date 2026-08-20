@@ -248,6 +248,12 @@ export function dismissError(workspaceId: string): void {
   update(workspaceId, (st) => ({ ...st, error: null }));
 }
 
+/// Surface a message in the error banner without a failed command behind
+/// it (e.g. "worktree gone — back to the root checkout").
+export function noteError(workspaceId: string, message: string): void {
+  update(workspaceId, (st) => ({ ...st, error: message }));
+}
+
 /// Every mutation goes through here: refuse while busy, mark busy, run,
 /// refresh, record "<label> failed: <stderr>" on error (spec §4).
 export async function run(workspaceId: string, label: string, op: (cwd: string) => Promise<void>): Promise<boolean> {
