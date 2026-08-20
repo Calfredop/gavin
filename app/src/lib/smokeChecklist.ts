@@ -367,6 +367,42 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "viewer-live", text: "Editing that file externally live-reloads the viewer" },
     ],
   },
+  {
+    title: "Git tab",
+    items: [
+      {
+        id: "git-tab-lists",
+        text: "Git tab shows unstaged/staged lists for the workspace repo and refreshes within ~300 ms of `touch x` in a terminal",
+      },
+      {
+        id: "git-partial-stage",
+        text: "Select a few lines in a hunk → “Stage selected (n)” stages only those lines (staged diff shows them; unstaged keeps the rest)",
+      },
+      { id: "git-split-toggle", text: "Unified/Split toggle keeps the line selection and survives an app restart" },
+      {
+        id: "git-discard-untracked",
+        text: "Trash on an untracked row says “Delete 1 untracked file?” and removes the file on confirm",
+        hint: "Cancel must leave the file in place.",
+      },
+      {
+        id: "git-discard-skip",
+        text: "“Don't ask again for hunks and lines” suppresses the hunk dialog; file-level discard still asks",
+      },
+      {
+        id: "git-hook-reject",
+        text: "A failing pre-commit hook shows its stderr in the banner and keeps the commit draft",
+        hint: "printf '#!/bin/sh\\nexit 1' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit",
+      },
+      {
+        id: "git-amend",
+        text: "Amend pre-fills HEAD's message when the draft is empty and restores the draft when unticked",
+      },
+      {
+        id: "git-not-a-repo",
+        text: "A rooted non-repo workspace shows “Initialize repository”; clicking it turns the tab live",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

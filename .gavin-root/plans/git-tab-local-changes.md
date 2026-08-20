@@ -17,13 +17,14 @@ Follow-ups: SP2 sync/branches/stashes · SP3 worktrees (agent forks) · SP4 hist
 
 ## Steps
 
-- [ ] Backend `git.rs`: porcelain-v2 + unified-diff parsers, read commands, unit tests
-- [ ] Backend write commands (stage/unstage/apply/discard/commit/init) + temp-repo integration tests
-- [ ] Watcher `git_watch`/`git_unwatch` with `.git/` path filter → `git-changed` event
-- [ ] `Workspace.gitView` persisted prefs (Rust + TS + shape test)
-- [ ] TS pure modules: `diffRows.ts`, `patch.ts`, `gitState.ts` + vitest (shared patch fixtures)
-- [ ] Tab registration, empty states (not a repo / git missing), three-pane shell + splitters
-- [ ] Unstaged/Staged lists, row actions, keyboard, commit box + amend
-- [ ] Diff viewer unified, then split layout, then line selection + partial staging
-- [ ] Discard flows with confirm dialogs + "don't ask again"
-- [ ] Home tile, smoke checklist entries, manual pass
+- [x] Backend `git.rs`: porcelain-v2 + unified-diff parsers, read commands, unit tests
+- [x] Backend write commands (stage/unstage/apply/discard/commit/init) + temp-repo integration tests
+- [x] Watcher `git_watch`/`git_unwatch` with `.git/` path filter → `git-changed` event
+- [x] `Workspace.gitView` persisted prefs (Rust + TS + shape test)
+- [x] TS pure modules: `diffRows.ts`, `patch.ts`, `gitState.ts` + vitest (shared patch fixtures)
+- [x] Tab registration, empty states (not a repo / git missing), three-pane shell + splitters
+- [x] Unstaged/Staged lists, row actions, keyboard, commit box + amend
+- [x] Diff viewer unified, then split layout, then line selection + partial staging
+- [x] Discard flows with confirm dialogs + "don't ask again"
+- [x] Home tile, smoke checklist entries
+- [ ] Manual smoke pass (Smoke Test workspace → “Git tab” section)

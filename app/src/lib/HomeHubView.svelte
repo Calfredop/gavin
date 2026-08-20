@@ -7,6 +7,8 @@
   import { boardSummary, planSummary, prdExcerpt } from "./homeSummary";
   import MainAgentPanel from "./MainAgentPanel.svelte";
   import * as backend from "./backend";
+  import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
+  import { changedCount } from "./git";
 
   interface Props {
     workspaceId: string;
@@ -49,7 +51,22 @@
       .readFileForViewer(`${r}/${agentCfg.file}`)
       .then((res) => (agentFileExists = res.exists))
       .catch(() => (agentFileExists = null));
+    // One-shot git status for the tile — no watcher here; the Git tab
+    // itself holds the live one.
+    ensureGitView(workspaceId, r);
+    void refreshGit(workspaceId);
   });
+
+  const git = $derived($gitStore[workspaceId] ?? null);
+  const gitLine = $derived(
+    git?.gitMissing
+      ? "git not found"
+      : git?.repo?.notARepo
+        ? "not a repository"
+        : git?.status
+          ? `${changedCount(git.status)} changes`
+          : "—"
+  );
 
   onMount(() => {
     if (!gridEl) return;
@@ -117,6 +134,9 @@
       </button>
       <button type="button" class="tile" onclick={() => go("kanban")}>
         <b>Board</b><span>{boards.totalCards} cards</span>
+      </button>
+      <button type="button" class="tile" onclick={() => go("git")}>
+        <b>Git</b><span>{gitLine}</span>
       </button>
     </div>
   </div>
@@ -206,7 +226,7 @@
   }
   .tiles {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 10px;
     flex: 0 0 auto;
   }

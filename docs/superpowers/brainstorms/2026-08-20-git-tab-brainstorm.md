@@ -60,3 +60,33 @@ model + patch builder; frontend state/refresh/destructive rules; edge cases
 + testing.
 
 Spec: `docs/superpowers/specs/2026-08-20-git-tab-local-changes-design.md`.
+
+## Execution notes — plan 1 (Local Changes, 2026-08-20)
+
+Implemented on branch `worktree-git-tab-local-changes` (18 tasks, one commit
+each). 131 Rust tests (33 new) · 510 Vitest tests (44 new) · svelte-check 0
+errors · production build clean. Manual smoke pass (Smoke Test workspace →
+“Git tab” section) still to run.
+
+Deviations from the spec, all deliberate:
+
+- **Binary files** show “Binary file — no text diff” (no byte size; spec §1
+  said “— N bytes”). Size plumbing wasn't worth a command for SP1.
+- **Binary detection** reads git's own `Binary files … differ` line from the
+  single diff invocation instead of a second `--numstat` call (spec §2).
+  Same outcome, one subprocess.
+- **Unborn HEAD** is detected with `rev-parse --verify -q HEAD`; spec
+  corrected during planning (`symbolic-ref` still succeeds on an unborn
+  branch).
+- **Failed `git apply`** surfaces in the view-level error banner rather than
+  “inline in the diff header” (spec §3) — one error surface for every
+  mutation, same information.
+- **Watcher scope**: only the worktree root is watched. A linked worktree's
+  real gitdir lives under the main repo's `.git/worktrees/<name>/`; SP3
+  (worktrees) owns that.
+- **Porcelain `u` records**: the plan's test fixture had one token too many
+  (the real format is 4 modes + 3 hashes); the parser was right, the fixture
+  was fixed.
+- **Subset-of-adds fixture**: the plan originally had `+new1` before the
+  unselected ` delta` context line; corrected to keep original hunk order
+  (matches `git add -p` edit semantics), verified with `git apply --check`.
