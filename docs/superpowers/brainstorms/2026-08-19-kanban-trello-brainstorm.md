@@ -103,3 +103,15 @@ stays — it is the standard delivery pattern and unit-covered — but its
 "WKWebView drops the pointerup" claim is downgraded to unverified hypothesis.
 Process lesson: the first fix shipped without reproducing the symptom or
 demanding evidence; the screenshot falsified it in one glance.
+
+**Follow-up (2026-08-20): plan-drop snap-back flash.** With the drop working,
+plan cards flashed back to their pre-drop slot for the duration of the daemon
+writes (patch-on-success means gavinTrees is untouched until 1–4 sequential
+IPC writes resolve), then jumped to the new slot. Fix without violating the
+patch-on-success contract: a `dropHold` store (set by `planCommitFromMerged`,
+released in finally, unit-tested) keeps the drop's visuals — card hidden,
+placeholder in place — until the writes land; the settled preview sits in the
+slot until the hold releases. Settle-target queries are now scoped to the
+surface that owns the drag (`activeDragRoot`), closing a latent bug where a
+workspace open on both surfaces could glide the settle to the wrong board.
+Free-form cards were never affected (their store mutates synchronously).
