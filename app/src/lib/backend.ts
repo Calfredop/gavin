@@ -181,6 +181,20 @@ export function setBoard(workspaceId: string, columns: Column[], labels: Label[]
   return invoke("set_board", { workspaceId, columns, labels });
 }
 
+export function linkCardSession(
+  workspaceId: string,
+  path: string,
+  sessionId: string,
+  cwd: string,
+  command: string | null
+): Promise<void> {
+  return invoke("link_card_session", { workspaceId, path, sessionId, cwd, command });
+}
+
+export function unlinkCardSession(workspaceId: string, path: string): Promise<void> {
+  return invoke("unlink_card_session", { workspaceId, path });
+}
+
 export function deleteBoard(workspaceId: string): Promise<void> {
   return invoke("delete_board", { workspaceId });
 }

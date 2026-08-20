@@ -1,7 +1,7 @@
 import { writable, get } from "svelte/store";
 import * as backend from "./backend";
 import * as kanban from "./kanban";
-import type { Board, Column, Label } from "./kanban";
+import type { Board, CardSession, Column, Label } from "./kanban";
 
 export const kanbanState = writable<Record<string, Board>>({});
 
@@ -109,6 +109,53 @@ export async function refreshBoard(workspaceId: string): Promise<void> {
 
 
 
+
+export function cardSessionFor(board: Board | undefined, path: string): CardSession | null {
+  return board?.cardSessions.find((cs) => cs.path === path) ?? null;
+}
+
+// Card session bindings persist through their own targeted requests
+// (not setBoard), with the same optimistic-update / rollback / save-
+// error shape as mutateAndPersist.
+async function mutateBindings(
+  workspaceId: string,
+  mutate: (sessions: CardSession[]) => CardSession[],
+  persist: () => Promise<void>
+): Promise<void> {
+  const current = get(kanbanState)[workspaceId];
+  if (!current) return;
+  const updated: Board = { ...current, cardSessions: mutate(current.cardSessions) };
+  kanbanState.update((s) => ({ ...s, [workspaceId]: updated }));
+  pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 0) + 1);
+  try {
+    await persist();
+    dismissSaveError(workspaceId);
+  } catch (e) {
+    kanbanState.update((s) => (s[workspaceId] === updated ? { ...s, [workspaceId]: current } : s));
+    saveErrors.update((err) => ({
+      ...err,
+      [workspaceId]: String(e instanceof Error ? e.message : e),
+    }));
+  } finally {
+    pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 1) - 1);
+  }
+}
+
+export function linkCardSessionAction(workspaceId: string, binding: CardSession): Promise<void> {
+  return mutateBindings(
+    workspaceId,
+    (sessions) => [...sessions.filter((cs) => cs.path !== binding.path), binding],
+    () => backend.linkCardSession(workspaceId, binding.path, binding.sessionId, binding.cwd, binding.command)
+  );
+}
+
+export function unlinkCardSessionAction(workspaceId: string, path: string): Promise<void> {
+  return mutateBindings(
+    workspaceId,
+    (sessions) => sessions.filter((cs) => cs.path !== path),
+    () => backend.unlinkCardSession(workspaceId, path)
+  );
+}
 
 export function addColumnAction(workspaceId: string, column: Column): Promise<void> {
   return mutateAndPersist(workspaceId, (b) => kanban.addColumn(b, column));

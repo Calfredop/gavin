@@ -16,9 +16,19 @@ export interface Column {
   position: number;
 }
 
+// A card file's live agent-session binding (card-model spec §3) --
+// runtime state, never written into the card file.
+export interface CardSession {
+  path: string;
+  sessionId: string;
+  cwd: string;
+  command: string | null;
+}
+
 export interface Board {
   columns: Column[];
   labels: Label[];
+  cardSessions: CardSession[];
 }
 
 export function addColumn(board: Board, column: Column): Board {

@@ -16,7 +16,7 @@ function label(id: string, name: string): Label {
 }
 
 function board(columnIds: string[], labels: Label[] = []): Board {
-  return { columns: columnIds.map((id, i) => ({ id, name: id, position: i })), labels };
+  return { columns: columnIds.map((id, i) => ({ id, name: id, position: i })), labels, cardSessions: [] };
 }
 
 describe("addColumn", () => {

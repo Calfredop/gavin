@@ -69,6 +69,8 @@ pub fn run() {
             session::set_plan_frontmatter_field,
             session::create_plan,
             session::set_checklist_item,
+            session::link_card_session,
+            session::unlink_card_session,
             session::promote_checklist_item,
             session::seed_smoke_test_data,
             agent_setup::setup_agent_integration

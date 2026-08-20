@@ -33,7 +33,7 @@ function tree(contexts: GavinContext[]): GavinTree {
   return { rootPath: "/ws", rootMissing: false, contexts };
 }
 
-const board: Board = { columns: [col("c1", "To Do"), col("c2", "In Progress")], labels: [] };
+const board: Board = { columns: [col("c1", "To Do"), col("c2", "In Progress")], labels: [], cardSessions: [] };
 
 describe("slugStatus", () => {
   it("normalizes case, spacing, and separators", () => {
@@ -183,7 +183,7 @@ describe("mergePlanCards", () => {
   });
 
   it("puts statusless plans into a '(no status)' auto column when the board has zero columns", () => {
-    const empty: Board = { columns: [], labels: [] };
+    const empty: Board = { columns: [], labels: [], cardSessions: [] };
     const t = tree([ctx("/ws", "root", [plan("a.md", null)])]);
     const { autoColumns } = mergePlanCards(empty, t);
     expect(autoColumns).toHaveLength(1);

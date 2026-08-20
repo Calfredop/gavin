@@ -1507,6 +1507,42 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
 /// never-overwrite guarantee are identical no matter who creates a plan.
 /// Returns the created path.
 #[tauri::command]
+pub fn link_card_session(
+    workspace_id: String,
+    path: String,
+    session_id: String,
+    cwd: String,
+    command: Option<String>,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(
+        &state.0,
+        &Request::LinkCardSession { workspace_id, path, session_id, cwd, command },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn unlink_card_session(
+    workspace_id: String,
+    path: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::UnlinkCardSession { workspace_id, path })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
+#[tauri::command]
 pub fn set_checklist_item(
     path: String,
     line_index: u32,

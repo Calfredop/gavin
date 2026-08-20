@@ -4,6 +4,8 @@ import { get } from "svelte/store";
 vi.mock("./backend", () => ({
   getBoard: vi.fn(),
   setBoard: vi.fn(),
+  linkCardSession: vi.fn(),
+  unlinkCardSession: vi.fn(),
 }));
 
 import * as backend from "./backend";
@@ -16,13 +18,16 @@ import {
   addColumnAction,
   renameColumnAction,
   deleteColumnAction,
+  linkCardSessionAction,
+  unlinkCardSessionAction,
+  cardSessionFor,
   saveErrors,
   dismissSaveError,
 } from "./kanbanState";
 import type { Board } from "./kanban";
 
 function emptyBoard(): Board {
-  return { columns: [{ id: "c1", name: "To Do", position: 0 }], labels: [] };
+  return { columns: [{ id: "c1", name: "To Do", position: 0 }], labels: [], cardSessions: [] };
 }
 
 const newColumn = { id: "c2", name: "Doing", position: 1 };
@@ -184,5 +189,48 @@ describe("refreshBoard", () => {
 
     expect(get(kanbanState)["ws-1"]).toEqual(emptyBoard());
     expect(boardError("ws-1")).toBeNull();
+  });
+});
+
+describe("card session bindings", () => {
+  const binding = { path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: "claude 'x'" };
+
+  it("link upserts optimistically and persists", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    await linkCardSessionAction("ws-1", binding);
+
+    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([binding]);
+    expect(backend.linkCardSession).toHaveBeenCalledWith("ws-1", "/p/t.md", "s-1", "/p", "claude 'x'");
+    expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual(binding);
+
+    // Upsert replaces:
+    await linkCardSessionAction("ws-1", { ...binding, sessionId: "s-2" });
+    expect(get(kanbanState)["ws-1"].cardSessions).toHaveLength(1);
+    expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-2");
+  });
+
+  it("unlink removes optimistically and persists", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue({ ...emptyBoard(), cardSessions: [binding] });
+    await fetchBoard("ws-1");
+    vi.mocked(backend.unlinkCardSession).mockResolvedValue(undefined);
+
+    await unlinkCardSessionAction("ws-1", "/p/t.md");
+
+    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([]);
+    expect(backend.unlinkCardSession).toHaveBeenCalledWith("ws-1", "/p/t.md");
+  });
+
+  it("a failed link rolls back and records a save error", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    vi.mocked(backend.linkCardSession).mockRejectedValue(new Error("daemon gone"));
+
+    await linkCardSessionAction("ws-1", binding);
+
+    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([]);
+    expect(get(saveErrors)["ws-1"]).toContain("daemon gone");
   });
 });

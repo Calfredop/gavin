@@ -39,6 +39,7 @@ const board: Board = {
     { id: "c2", name: "Done", position: 1 },
   ],
   labels: [],
+  cardSessions: [],
 };
 
 describe("boardSummary", () => {
