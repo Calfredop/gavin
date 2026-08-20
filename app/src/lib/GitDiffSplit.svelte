@@ -12,9 +12,24 @@
     onLineClick: (hunkIndex: number, lineIndex: number, shift: boolean) => void;
     onDragRange: (hunkIndex: number, from: number, to: number) => void;
     selectedLabel: (hunkIndex: number) => string | null;
+    /// null hides that hunk's Discard button (staged rows, untracked files).
+    discardLabel: (hunkIndex: number) => string | null;
+    onHunkDiscard: (hunkIndex: number) => void;
   }
-  let { rows, isCollapsed, canAct, actionLabel, onHunkAction, onExpand, selection, onLineClick, onDragRange, selectedLabel }: Props =
-    $props();
+  let {
+    rows,
+    isCollapsed,
+    canAct,
+    actionLabel,
+    onHunkAction,
+    onExpand,
+    selection,
+    onLineClick,
+    onDragRange,
+    selectedLabel,
+    discardLabel,
+    onHunkDiscard,
+  }: Props = $props();
 
   const lineCounts = $derived(new Map(rows.filter((r) => r.kind === "hunk").map((r) => [r.hunkIndex, r.lineCount])));
   function hidden(hunkIndex: number): boolean {
@@ -58,7 +73,11 @@
         {/if}
         {#if canAct}
           {@const sel = selectedLabel(row.hunkIndex)}
+          {@const dl = discardLabel(row.hunkIndex)}
           <button type="button" class="act" onclick={() => onHunkAction(row.hunkIndex)}>{sel ?? actionLabel}</button>
+          {#if dl}
+            <button type="button" class="act danger" onclick={() => onHunkDiscard(row.hunkIndex)}>{dl}</button>
+          {/if}
         {/if}
       </div>
     {:else if !hidden(row.hunkIndex)}
@@ -130,6 +149,14 @@
   .act:hover {
     border-color: #6a8aaa;
     color: #eee;
+  }
+  .act.danger {
+    border-color: #5a3030;
+    color: #e0a0a0;
+  }
+  .act.danger:hover {
+    border-color: #9a4040;
+    color: #fcc;
   }
   .pair {
     display: grid;

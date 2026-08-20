@@ -4,9 +4,11 @@
   import { toUnifiedRows, toSplitRows } from "./diffRows";
   import { clickLine, rangeIds, selectionHunk } from "./diffSelection";
   import { buildPatch } from "./patch";
+  import { describeHunkDiscard } from "./discardFlow";
   import { LARGE_HUNK_LINES, type DiffLayout } from "./git";
   import GitDiffUnified from "./GitDiffUnified.svelte";
   import GitDiffSplit from "./GitDiffSplit.svelte";
+  import GitDiscardDialog from "./GitDiscardDialog.svelte";
 
   interface Props {
     workspaceId: string;
@@ -80,6 +82,37 @@
     if (!patch) return;
     void applyPatch(workspaceId, patch, selected.area === "staged" ? "unstage" : "stage");
   }
+
+  // Discard (spec §4): worktree changes only — unstaged rows of tracked
+  // files. Confirms unless the per-workspace hunk/line opt-out is set.
+  const skipHunkConfirm = $derived(
+    $layoutState.workspaces.find((w) => w.id === workspaceId)?.gitView?.skipHunkDiscardConfirm ?? false
+  );
+  function discardLabelFor(hunkIndex: number): string | null {
+    if (selected?.area !== "unstaged" || !canAct) return null;
+    return selectionHunk(selection) === hunkIndex && selection.size > 0 ? `Discard selected (${selection.size})` : "Discard";
+  }
+  let pendingHunk = $state<{ hunkIndex: number; patch: string; title: string; body: string } | null>(null);
+
+  function onHunkDiscard(hunkIndex: number): void {
+    if (!diff || !selected || selected.area !== "unstaged" || !canAct) return;
+    const partial = selectionHunk(selection) === hunkIndex && selection.size > 0 ? selection : null;
+    const patch = buildPatch(diff, hunkIndex, partial);
+    if (!patch) return;
+    if (skipHunkConfirm) {
+      void applyPatch(workspaceId, patch, "discard");
+      return;
+    }
+    const { title, body } = describeHunkDiscard(diff.path, partial ? partial.size : null);
+    pendingHunk = { hunkIndex, patch, title, body };
+  }
+  function confirmHunkDiscard(skip: boolean): void {
+    if (!pendingHunk) return;
+    const { patch } = pendingHunk;
+    pendingHunk = null;
+    if (skip) void setGitViewPrefs(workspaceId, { skipHunkDiscardConfirm: true });
+    void applyPatch(workspaceId, patch, "discard");
+  }
 </script>
 
 <!-- Focusable so Esc can clear the line selection; lines inside are the
@@ -120,6 +153,8 @@
         {onLineClick}
         {onDragRange}
         {selectedLabel}
+        discardLabel={discardLabelFor}
+        {onHunkDiscard}
       />
     {:else}
       <GitDiffUnified
@@ -133,10 +168,16 @@
         {onLineClick}
         {onDragRange}
         {selectedLabel}
+        discardLabel={discardLabelFor}
+        {onHunkDiscard}
       />
     {/if}
   </div>
 </div>
+
+{#if pendingHunk}
+  <GitDiscardDialog title={pendingHunk.title} body={pendingHunk.body} offerSkip={true} onConfirm={confirmHunkDiscard} onCancel={() => (pendingHunk = null)} />
+{/if}
 
 <style>
   .diff {

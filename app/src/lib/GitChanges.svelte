@@ -1,8 +1,10 @@
 <script lang="ts">
-  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll } from "./gitState";
+  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles } from "./gitState";
   import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "./git";
+  import { describeFileDiscard, type FileDiscardPrompt } from "./discardFlow";
   import GitFileRow from "./GitFileRow.svelte";
   import GitCommitBox from "./GitCommitBox.svelte";
+  import GitDiscardDialog from "./GitDiscardDialog.svelte";
 
   interface Props {
     workspaceId: string;
@@ -26,6 +28,20 @@
   function toggle(entry: FileEntry, area: Area): void {
     if (busy) return;
     void (area === "unstaged" ? stageFiles(workspaceId, [entry.path]) : unstageFiles(workspaceId, [entry.path]));
+  }
+
+  // File-level discard always confirms (spec §4) — it is the one
+  // irreversible action here, and `git clean` deletes untracked files.
+  let pending = $state<FileDiscardPrompt | null>(null);
+  function askDiscard(entry: FileEntry): void {
+    if (busy) return;
+    pending = describeFileDiscard([entry]);
+  }
+  function confirmDiscard(): void {
+    if (!pending) return;
+    const { tracked, untracked } = pending;
+    pending = null;
+    void discardFiles(workspaceId, tracked, untracked);
   }
 
   // ↑/↓ within a list, Tab between lists, Space stages/unstages (spec §4).
@@ -85,6 +101,7 @@
             disabled={busy}
             onSelect={() => select(workspaceId, { path: entry.path, area })}
             onToggle={() => toggle(entry, area)}
+            onDiscard={area === "unstaged" ? () => askDiscard(entry) : undefined}
           />
         {/each}
         {#if items.length > LIST_DISPLAY_CAP}
@@ -98,6 +115,10 @@
   {/each}
   <GitCommitBox {workspaceId} />
 </div>
+
+{#if pending}
+  <GitDiscardDialog title={pending.title} body={pending.body} offerSkip={false} onConfirm={confirmDiscard} onCancel={() => (pending = null)} />
+{/if}
 
 <style>
   .changes {

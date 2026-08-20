@@ -9,8 +9,11 @@
     disabled: boolean;
     onSelect: () => void;
     onToggle: () => void;
+    /// Present only for worktree changes (unstaged rows) — discard has no
+    /// meaning for index entries.
+    onDiscard?: () => void;
   }
-  let { entry, area, selected, disabled, onSelect, onToggle }: Props = $props();
+  let { entry, area, selected, disabled, onSelect, onToggle, onDiscard }: Props = $props();
 
   const parts = $derived(splitPath(entry.path));
   const toggleLabel = $derived(area === "unstaged" ? "Stage" : "Unstage");
@@ -27,6 +30,15 @@
     <span class="dir">{parts.dir}</span><span class="name">{parts.name}</span>
   </span>
   <span class="actions">
+    {#if onDiscard}
+      <button
+        type="button"
+        class="danger"
+        use:tooltip={entry.status === "?" ? "Delete untracked file" : "Discard changes"}
+        {disabled}
+        onclick={(e) => { e.stopPropagation(); onDiscard?.(); }}
+      >🗑</button>
+    {/if}
     <button type="button" use:tooltip={toggleLabel + " file"} {disabled} onclick={(e) => { e.stopPropagation(); onToggle(); }}>
       {area === "unstaged" ? "+" : "−"}
     </button>
@@ -100,5 +112,9 @@
   .actions button:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  .actions .danger:hover:not(:disabled) {
+    border-color: #7a3030;
+    color: #f0c0c0;
   }
 </style>
