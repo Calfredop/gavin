@@ -166,6 +166,13 @@ those steps as already done.
       succeeds and clears it. (Card drags write files, not SQLite — they fail
       with the plan-error strip instead.)
 
+- [ ] **B12 — The full loop.** Composer → task chip → title "Say hello",
+      prompt "Run echo hello and set this card's status to Done", tick
+      **Run now**. Expect: an agent session lands on the Agents page already
+      attached, the card shows a working dot and moves to *In Progress*; when
+      the agent finishes and sets the status, the card lands in *Done* within
+      ~3 s. Run again while live → jumps to the session instead of spawning.
+
 ## C. Per-session context boards
 
 - [ ] **C1 — Context + icon.** (Seeded — just `cd src/auth` — or:)

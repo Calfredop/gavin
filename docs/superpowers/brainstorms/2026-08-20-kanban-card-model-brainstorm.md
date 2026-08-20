@@ -87,3 +87,24 @@ Spec: `docs/superpowers/specs/2026-08-20-kanban-card-model-design.md`.
 - Gates at completion: cargo 270, vitest 401, svelte-check 0 errors / 0
   kanban warnings, build clean. Manual smoke ("Nesting & promotion"
   section) pending — needs a daemon restart (protocol v4).
+
+## Execution notes — plan 3 (run & bindings, 2026-08-20)
+
+- All 7 tasks executed inline. card_sessions ride the Board reply (protocol
+  v5); the run flow reuses handleAgentSessionSpawned so app-run cards land
+  under the exact D19 posture; prompt/command composition is pure and
+  snapshot-tested (POSIX single-quoting included).
+- BoardCard reads bindings/session status from the stores directly (the old
+  KanbanCard precedent) with workspaceId/onRun optional so the drag preview
+  stays inert. Running a nested task frees it (In Progress removes nesting) —
+  deliberate, noted in code.
+- The known flaky daemon socket test (attach_from_a_new_connection…) tripped
+  once under parallel load and passed in isolation + a full re-run — same
+  signature as the phase log's 2026-08-07 entry.
+- Gates at completion: cargo 272, vitest 415, svelte-check 0 errors / 0
+  kanban warnings, build clean.
+
+**The card-model effort is code-complete across all three plans.** Remaining:
+the human smoke passes (Card kinds · Nesting & promotion · Run & bindings
+sections) — the running daemon must be restarted first (protocol v5), and
+"Set up agent integration" re-run so the new SKILL.md lands in the repo.

@@ -1,6 +1,6 @@
 ---
 title: Card run & bindings (plan 3/3)
-status: To Do
+status: Done
 priority: high
 ---
 # Card run & bindings (plan 3/3)

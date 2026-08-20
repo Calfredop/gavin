@@ -148,6 +148,35 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Run & bindings",
+    items: [
+      {
+        id: "run-task",
+        text: "▶ Run on a task card spawns the agent on the Agents page (attached, no focus steal) and sets In Progress",
+        hint: "The composed command is agentCommand + the quoted prompt; cwd = the card's context folder.",
+      },
+      {
+        id: "run-plan",
+        text: "▶ Run on a plan card hands the agent a pointer prompt (read the file, tick items, promote, keep status)",
+      },
+      {
+        id: "run-dot",
+        text: "A bound card shows the session dot (working/waiting/idle/exited ring), same vocabulary as terminal tabs",
+      },
+      {
+        id: "run-jump-not-double",
+        text: "Run on a card with a live session jumps to it — never a second spawn",
+      },
+      { id: "run-relaunch", text: "After the session exits, Re-launch in the detail recreates it with the same cwd/command" },
+      { id: "run-unlink", text: "Unlink clears the dot and the binding; the next Run spawns fresh" },
+      { id: "run-now-composer", text: "Composer task chip + “Run now” creates the card and immediately runs it" },
+      {
+        id: "skill-updated",
+        text: "Re-run “Set up agent integration”: SKILL.md teaches kinds, nesting, promotion, tick-when-done",
+      },
+    ],
+  },
+  {
     title: "Plans on the board",
     items: [
       { id: "seed", text: "“Seed demo data” fills the board within ~3s" },
