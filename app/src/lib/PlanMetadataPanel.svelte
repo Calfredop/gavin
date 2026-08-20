@@ -52,6 +52,7 @@
 </script>
 
 <div class="panel">
+  <span class="kind-badge kind-{plan.kind}">{plan.kind}</span>
   <input
     class="title"
     bind:value={titleDraft}
@@ -83,6 +84,9 @@
       {/each}
     </select>
   </label>
+  {#if plan.labels.length > 0}
+    <span class="labels" title="labels: {plan.labels.join(', ')}">{plan.labels.join(" · ")}</span>
+  {/if}
   {#if plan.parseWarning}
     <span class="warn">frontmatter issues</span>
   {/if}
@@ -138,5 +142,33 @@
   }
   .error {
     color: #e0a0a0;
+  }
+  .kind-badge {
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    flex: 0 0 auto;
+  }
+  .kind-badge.kind-note {
+    border: 1px solid #8a7d55;
+    color: #b8a978;
+  }
+  .kind-badge.kind-task {
+    border: 1px solid #4a5568;
+    color: #7ea8d8;
+  }
+  .kind-badge.kind-plan {
+    border: 1px solid #4c584c;
+    color: #8bc98b;
+  }
+  .labels {
+    color: #999;
+    font-size: 0.75em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 160px;
   }
 </style>

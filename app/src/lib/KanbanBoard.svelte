@@ -2,7 +2,7 @@
   import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addColumnAction, reorderColumnAction, saveErrors, dismissSaveError } from "./kanbanState";
   import KanbanColumn from "./KanbanColumn.svelte";
   import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
-  import PlanDetailModal from "./PlanDetailModal.svelte";
+  import CardDetailModal from "./CardDetailModal.svelte";
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type CardView } from "./planBoard";
@@ -171,7 +171,14 @@
   </div>
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
   {#if openPlan}
-    <PlanDetailModal plan={openPlan} {workspaceId} onClose={() => (openPlanPath = null)} />
+    <CardDetailModal
+      card={openPlan}
+      {workspaceId}
+      columns={board.columns}
+      labels={board.labels}
+      {allCards}
+      onClose={() => (openPlanPath = null)}
+    />
   {/if}
 {/if}
 

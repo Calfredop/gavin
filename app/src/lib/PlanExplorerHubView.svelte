@@ -7,6 +7,7 @@
     buildExplorerTree,
     isUnderRoot,
     newFilePath,
+    requestedExplorerPath,
     slugFileName,
     type ExplorerContextNode,
     type ExplorerGroup,
@@ -22,6 +23,15 @@
   let { workspaceId }: Props = $props();
 
   let selectedPath = $state<string | null>(null);
+
+  // Deep link from the card detail modal ("Open in Plans tab").
+  $effect(() => {
+    const p = $requestedExplorerPath;
+    if (p) {
+      selectedPath = p;
+      requestedExplorerPath.set(null);
+    }
+  });
   let error = $state<string | null>(null);
   let editor = $state<{ flush: () => Promise<void> } | null>(null);
 

@@ -5,7 +5,7 @@
   import KanbanColumn from "./KanbanColumn.svelte";
   import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
-  import PlanDetailModal from "./PlanDetailModal.svelte";
+  import CardDetailModal from "./CardDetailModal.svelte";
   import { planCommitFromMerged } from "./planDrop";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import type { ActiveDrag } from "./kanbanDrag";
@@ -55,12 +55,15 @@
       (contextFolder.split("/").at(-1) || contextFolder)
   );
   const merged = $derived(board ? mergePlanCards(board, tree, { contextFolder }) : null);
+  const allCards = $derived<CardView[]>(
+    merged
+      ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
+          (c) => [c, ...c.nestedChildren]
+        )
+      : []
+  );
   const openPlan = $derived<CardView | null>(
-    merged && openPlanPath
-      ? ([...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)]
-          .flatMap((c) => [c, ...c.nestedChildren])
-          .find((p) => p.id === openPlanPath) ?? null)
-      : null
+    openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
   );
 
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
@@ -131,8 +134,15 @@
     </div>
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
   {/if}
-  {#if openPlan}
-    <PlanDetailModal plan={openPlan} {workspaceId} onClose={() => (openPlanPath = null)} />
+  {#if openPlan && board}
+    <CardDetailModal
+      card={openPlan}
+      {workspaceId}
+      columns={board.columns}
+      labels={board.labels}
+      {allCards}
+      onClose={() => (openPlanPath = null)}
+    />
   {/if}
 </div>
 

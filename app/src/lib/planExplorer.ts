@@ -1,4 +1,9 @@
+import { writable } from "svelte/store";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
+
+// Deep link into the Plans tab: set a path here before switching the
+// hub view and PlanExplorerHubView selects it (then clears the store).
+export const requestedExplorerPath = writable<string | null>(null);
 import { slugStatus } from "./planBoard";
 
 export type ExplorerGroup = "plans" | "docs" | "specs";
