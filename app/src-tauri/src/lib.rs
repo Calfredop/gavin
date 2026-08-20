@@ -22,6 +22,7 @@ pub fn run() {
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .manage(fileviewer::FileWatchers::default())
         .manage(git::GitWatchers::default())
+        .manage(git::GitOps::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -95,7 +96,12 @@ pub fn run() {
             git::git_commit,
             git::git_init,
             git::git_watch,
-            git::git_unwatch
+            git::git_unwatch,
+            git::git_refs,
+            git::git_fetch,
+            git::git_pull,
+            git::git_push,
+            git::git_cancel_op
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

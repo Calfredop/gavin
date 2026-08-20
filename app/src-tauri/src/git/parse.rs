@@ -1,7 +1,133 @@
 //! Pure parsers for git's machine-readable output (spec §2). Both are
 //! exact by necessity: the frontend patch builder reverses `parse_diff`.
 
-use crate::git::types::{FileDiff, FileEntry, Hunk, Line, StatusResult};
+use crate::git::types::{BranchInfo, FileDiff, FileEntry, Hunk, Line, RemoteInfo, StashInfo, StatusResult};
+
+/// `%(upstream:track)` → (ahead, behind, gone): "[ahead 2, behind 1]",
+/// "[ahead 3]", "[behind 4]", "[gone]" or "".
+pub fn parse_track(s: &str) -> (u32, u32, bool) {
+    let s = s.trim().trim_start_matches('[').trim_end_matches(']');
+    if s == "gone" {
+        return (0, 0, true);
+    }
+    let (mut ahead, mut behind) = (0, 0);
+    for part in s.split(',') {
+        let part = part.trim();
+        if let Some(n) = part.strip_prefix("ahead ") {
+            ahead = n.parse().unwrap_or(0);
+        } else if let Some(n) = part.strip_prefix("behind ") {
+            behind = n.parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind, false)
+}
+
+/// Lines of `for-each-ref --format='%(refname:short)%00%(HEAD)%00
+/// %(upstream:short)%00%(upstream:track)%00%(objectname:short)%00%(subject)'`.
+pub fn parse_branches(raw: &str) -> Vec<BranchInfo> {
+    raw.lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\0').collect();
+            if f.len() < 6 {
+                return None;
+            }
+            let (ahead, behind, _gone) = parse_track(f[3]);
+            Some(BranchInfo {
+                name: f[0].to_string(),
+                current: f[1] == "*",
+                upstream: (!f[2].is_empty()).then(|| f[2].to_string()),
+                ahead,
+                behind,
+                sha: f[4].to_string(),
+                subject: f[5].to_string(),
+            })
+        })
+        .collect()
+}
+
+/// `remote -v` (fetch lines give name + URL) joined with the
+/// `refs/remotes` short names (`origin/main`; `<remote>/HEAD` dropped).
+pub fn parse_remotes(urls_raw: &str, refs_raw: &str) -> Vec<RemoteInfo> {
+    let mut remotes: Vec<RemoteInfo> = Vec::new();
+    for l in urls_raw.lines() {
+        let mut it = l.split('\t');
+        let (Some(name), Some(rest)) = (it.next(), it.next()) else { continue };
+        if !rest.ends_with("(fetch)") {
+            continue;
+        }
+        let url = rest.trim_end_matches("(fetch)").trim().to_string();
+        if !remotes.iter().any(|r| r.name == name) {
+            remotes.push(RemoteInfo { name: name.to_string(), url, branches: vec![] });
+        }
+    }
+    for l in refs_raw.lines() {
+        let Some((remote, branch)) = l.split_once('/') else { continue };
+        if branch == "HEAD" {
+            continue;
+        }
+        if let Some(r) = remotes.iter_mut().find(|r| r.name == remote) {
+            r.branches.push(branch.to_string());
+        }
+    }
+    remotes
+}
+
+/// Lines of `stash list --format='%gd%00%gs%00%cr'`.
+pub fn parse_stashes(raw: &str) -> Vec<StashInfo> {
+    raw.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\0').collect();
+            if f.len() < 3 {
+                return None;
+            }
+            let index = f[0].trim_start_matches("stash@{").trim_end_matches('}').parse().ok()?;
+            Some(StashInfo { index, message: f[1].to_string(), date: f[2].to_string() })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod refs_tests {
+    use super::*;
+
+    #[test]
+    fn track_parses_ahead_behind_gone_and_empty() {
+        assert_eq!(parse_track("[ahead 2, behind 1]"), (2, 1, false));
+        assert_eq!(parse_track("[ahead 3]"), (3, 0, false));
+        assert_eq!(parse_track("[behind 4]"), (0, 4, false));
+        assert_eq!(parse_track("[gone]"), (0, 0, true));
+        assert_eq!(parse_track(""), (0, 0, false));
+    }
+
+    #[test]
+    fn branches_parse_current_upstream_and_counts() {
+        let raw = "main\0*\0origin/main\0[ahead 1]\0abc1234\0base commit\nfeature\0 \0\0\0def5678\0wip\n";
+        let b = parse_branches(raw);
+        assert_eq!(b.len(), 2);
+        assert!(b[0].current && b[0].upstream.as_deref() == Some("origin/main") && b[0].ahead == 1 && b[0].subject == "base commit");
+        assert!(!b[1].current && b[1].upstream.is_none());
+    }
+
+    #[test]
+    fn remotes_group_branches_and_drop_head_pointers() {
+        let urls = "origin\tgit@github.com:a/b.git (fetch)\norigin\tgit@github.com:a/b.git (push)\nupstream\thttps://x/y (fetch)\n";
+        let refs = "origin/HEAD\norigin/main\norigin/feature\n";
+        let r = parse_remotes(urls, refs);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].name, "origin");
+        assert_eq!(r[0].branches, vec!["main".to_string(), "feature".to_string()]);
+        assert_eq!(r[0].url, "git@github.com:a/b.git");
+        assert!(r[1].branches.is_empty());
+    }
+
+    #[test]
+    fn stashes_parse_index_message_and_date() {
+        let s = parse_stashes("stash@{0}\0WIP on main: abc msg\02 minutes ago\nstash@{1}\0On feature: x\03 days ago\n");
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[1].index, s[1].message.as_str(), s[1].date.as_str()), (1, "On feature: x", "3 days ago"));
+    }
+}
 
 fn letter(c: char) -> Option<&'static str> {
     match c {

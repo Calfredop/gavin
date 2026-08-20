@@ -2,9 +2,9 @@
 //! thin wrapper over a plain function so the temp-repo tests below call the
 //! real code path without a Tauri runtime.
 
-use crate::git::parse::{parse_diff, parse_status};
+use crate::git::parse::{parse_branches, parse_diff, parse_remotes, parse_stashes, parse_status};
 use crate::git::run::{ok, run_git, run_git_ro};
-use crate::git::types::{Author, FileDiff, RepoInfo, StatusResult};
+use crate::git::types::{Author, FileDiff, RefsSnapshot, RepoInfo, StatusResult};
 use std::path::Path;
 
 /// Diffs larger than this are not rendered (spec §1: "Diff too large").
@@ -58,6 +58,39 @@ pub fn repo_info(cwd: &str) -> Result<RepoInfo, String> {
 pub fn status(cwd: &str) -> Result<StatusResult, String> {
     let out = ok(run_git_ro(cwd, &["status", "--porcelain=v2", "-z", "--untracked-files=all"])?)?;
     Ok(parse_status(&out.stdout))
+}
+
+/// One snapshot of branches (with tracking counts), remotes and stashes —
+/// four read-only subprocesses, no per-branch calls (spec SP2 §1.2).
+/// `worktrees` is filled in by SP3.
+pub fn refs(cwd: &str) -> Result<RefsSnapshot, String> {
+    let heads = ok(run_git_ro(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%00%(HEAD)%00%(upstream:short)%00%(upstream:track)%00%(objectname:short)%00%(subject)",
+            "refs/heads",
+        ],
+    )?)?
+    .stdout_str();
+    let remote_refs = ok(run_git_ro(cwd, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?)?.stdout_str();
+    let remote_urls = ok(run_git_ro(cwd, &["remote", "-v"])?)?.stdout_str();
+    // `stash list` takes log formats, where NUL is `%x00` (not for-each-ref's `%00`).
+    let stash_raw = ok(run_git_ro(cwd, &["stash", "list", "--format=%gd%x00%gs%x00%cr"])?)?.stdout_str();
+    let branches = parse_branches(&heads);
+    let head_branch = branches.iter().find(|b| b.current).map(|b| b.name.clone());
+    Ok(RefsSnapshot {
+        branches,
+        remotes: parse_remotes(&remote_urls, &remote_refs),
+        stashes: parse_stashes(&stash_raw),
+        worktrees: vec![],
+        head_branch,
+    })
+}
+
+#[tauri::command]
+pub fn git_refs(cwd: String) -> Result<RefsSnapshot, String> {
+    refs(&cwd)
 }
 
 pub fn diff(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untracked: bool) -> Result<FileDiff, String> {
@@ -350,6 +383,21 @@ mod read_tests {
         let t = diff(cwd(&dir), "big.txt", None, false, true).unwrap();
         assert!(t.too_large);
         assert!(t.hunks.is_empty());
+    }
+
+    #[test]
+    fn refs_snapshot_from_a_real_repo_with_a_stash() {
+        let dir = temp_repo();
+        git(cwd(&dir), &["branch", "other"]);
+        write(&dir, "f.txt", "changed\n");
+        git(cwd(&dir), &["stash", "push", "-q", "-m", "my stash"]);
+        let r = refs(cwd(&dir)).unwrap();
+        assert_eq!(r.head_branch.as_deref(), Some("main"));
+        assert_eq!(r.branches.iter().filter(|b| b.current).count(), 1);
+        assert!(r.branches.iter().any(|b| b.name == "other"));
+        assert!(r.remotes.is_empty());
+        assert_eq!(r.stashes[0].message, "On main: my stash");
+        assert!(r.worktrees.is_empty());
     }
 
     #[test]
