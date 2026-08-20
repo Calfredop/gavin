@@ -8,13 +8,43 @@
     actionLabel: string;
     onHunkAction: (hunkIndex: number) => void;
     onExpand: (hunkIndex: number) => void;
+    selection: ReadonlySet<string>;
+    onLineClick: (hunkIndex: number, lineIndex: number, shift: boolean) => void;
+    onDragRange: (hunkIndex: number, from: number, to: number) => void;
+    selectedLabel: (hunkIndex: number) => string | null;
   }
-  let { rows, isCollapsed, canAct, actionLabel, onHunkAction, onExpand }: Props = $props();
+  let { rows, isCollapsed, canAct, actionLabel, onHunkAction, onExpand, selection, onLineClick, onDragRange, selectedLabel }: Props =
+    $props();
 
   // Rows of a collapsed hunk are skipped; the hunk header stays and offers Expand.
   const lineCounts = $derived(new Map(rows.filter((r) => r.kind === "hunk").map((r) => [r.hunkIndex, r.lineCount])));
   function hidden(hunkIndex: number): boolean {
     return isCollapsed(hunkIndex, lineCounts.get(hunkIndex) ?? 0);
+  }
+
+  // Gutter drag paints a range within one hunk. Window-level pointerup with
+  // a buttons===0 bail-out (WKWebView drops pointerup in some cases).
+  let drag: { hunkIndex: number; from: number } | null = null;
+  function gutterDown(hunkIndex: number, lineIndex: number, e: PointerEvent): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    drag = { hunkIndex, from: lineIndex };
+    onDragRange(hunkIndex, lineIndex, lineIndex);
+    const up = (): void => {
+      drag = null;
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+  function lineEnter(hunkIndex: number, lineIndex: number, e: PointerEvent): void {
+    if (!drag) return;
+    if (e.buttons === 0) {
+      drag = null;
+      return;
+    }
+    if (drag.hunkIndex === hunkIndex) onDragRange(hunkIndex, drag.from, lineIndex);
   }
 </script>
 
@@ -28,13 +58,26 @@
           <button type="button" class="act" onclick={() => onExpand(row.hunkIndex)}>Expand ({row.lineCount} lines)</button>
         {/if}
         {#if canAct}
-          <button type="button" class="act" onclick={() => onHunkAction(row.hunkIndex)}>{actionLabel}</button>
+          {@const sel = selectedLabel(row.hunkIndex)}
+          <button type="button" class="act" onclick={() => onHunkAction(row.hunkIndex)}>{sel ?? actionLabel}</button>
         {/if}
       </div>
     {:else if !hidden(row.hunkIndex)}
-      <div class="line {row.line.kind}">
-        <span class="no">{row.line.oldNo ?? ""}</span>
-        <span class="no">{row.line.newNo ?? ""}</span>
+      <!-- Keyboard: Esc clears the selection at the GitDiff container level;
+           the lines themselves are pointer targets (listbox pattern). -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="line {row.line.kind}"
+        class:selected={selection.has(row.id)}
+        class:selectable={row.line.kind !== "context"}
+        role="option"
+        aria-selected={selection.has(row.id)}
+        tabindex="-1"
+        onclick={(e) => onLineClick(row.hunkIndex, row.lineIndex, e.shiftKey)}
+        onpointerenter={(e) => lineEnter(row.hunkIndex, row.lineIndex, e)}
+      >
+        <span class="no gutter" role="presentation" onpointerdown={(e) => row.line.kind !== "context" && gutterDown(row.hunkIndex, row.lineIndex, e)}>{row.line.oldNo ?? ""}</span>
+        <span class="no gutter" role="presentation" onpointerdown={(e) => row.line.kind !== "context" && gutterDown(row.hunkIndex, row.lineIndex, e)}>{row.line.newNo ?? ""}</span>
         <span class="sign">{row.line.kind === "add" ? "+" : row.line.kind === "del" ? "−" : " "}</span>
         <span class="text">{row.line.text}{#if row.line.noNewline}<span class="eof" title="No newline at end of file">⏎̸</span>{/if}</span>
       </div>
@@ -87,6 +130,17 @@
     display: grid;
     grid-template-columns: 3.5em 3.5em 1.2em minmax(0, 1fr);
     white-space: pre;
+  }
+  .selectable {
+    cursor: pointer;
+  }
+  .gutter {
+    cursor: ns-resize;
+  }
+  .line.selected {
+    outline: 1px solid #6a8aaa;
+    outline-offset: -1px;
+    filter: brightness(1.25);
   }
   .no {
     text-align: right;

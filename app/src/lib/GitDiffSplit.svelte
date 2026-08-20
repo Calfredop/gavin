@@ -8,12 +8,42 @@
     actionLabel: string;
     onHunkAction: (hunkIndex: number) => void;
     onExpand: (hunkIndex: number) => void;
+    selection: ReadonlySet<string>;
+    onLineClick: (hunkIndex: number, lineIndex: number, shift: boolean) => void;
+    onDragRange: (hunkIndex: number, from: number, to: number) => void;
+    selectedLabel: (hunkIndex: number) => string | null;
   }
-  let { rows, isCollapsed, canAct, actionLabel, onHunkAction, onExpand }: Props = $props();
+  let { rows, isCollapsed, canAct, actionLabel, onHunkAction, onExpand, selection, onLineClick, onDragRange, selectedLabel }: Props =
+    $props();
 
   const lineCounts = $derived(new Map(rows.filter((r) => r.kind === "hunk").map((r) => [r.hunkIndex, r.lineCount])));
   function hidden(hunkIndex: number): boolean {
     return isCollapsed(hunkIndex, lineCounts.get(hunkIndex) ?? 0);
+  }
+
+  // Gutter drag paints a range within one hunk. Window-level pointerup with
+  // a buttons===0 bail-out (WKWebView drops pointerup in some cases).
+  let drag: { hunkIndex: number; from: number } | null = null;
+  function gutterDown(hunkIndex: number, lineIndex: number, e: PointerEvent): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    drag = { hunkIndex, from: lineIndex };
+    onDragRange(hunkIndex, lineIndex, lineIndex);
+    const up = (): void => {
+      drag = null;
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+  function lineEnter(hunkIndex: number, lineIndex: number, e: PointerEvent): void {
+    if (!drag) return;
+    if (e.buttons === 0) {
+      drag = null;
+      return;
+    }
+    if (drag.hunkIndex === hunkIndex) onDragRange(hunkIndex, drag.from, lineIndex);
   }
 </script>
 
@@ -27,19 +57,34 @@
           <button type="button" class="act" onclick={() => onExpand(row.hunkIndex)}>Expand ({row.lineCount} lines)</button>
         {/if}
         {#if canAct}
-          <button type="button" class="act" onclick={() => onHunkAction(row.hunkIndex)}>{actionLabel}</button>
+          {@const sel = selectedLabel(row.hunkIndex)}
+          <button type="button" class="act" onclick={() => onHunkAction(row.hunkIndex)}>{sel ?? actionLabel}</button>
         {/if}
       </div>
     {:else if !hidden(row.hunkIndex)}
       <div class="pair">
-        <div class="cell {row.left?.kind ?? 'blank'}">
-          <span class="no">{row.left?.no ?? ""}</span>
-          <span class="text">{row.left?.text ?? ""}</span>
-        </div>
-        <div class="cell {row.right?.kind ?? 'blank'}">
-          <span class="no">{row.right?.no ?? ""}</span>
-          <span class="text">{row.right?.text ?? ""}</span>
-        </div>
+        {#each [row.left, row.right] as cell, side (side)}
+          {#if cell}
+            <!-- Keyboard: Esc clears the selection at the GitDiff container
+                 level; cells are pointer targets (listbox pattern). -->
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div
+              class="cell {cell.kind}"
+              class:selected={selection.has(cell.id)}
+              class:selectable={cell.kind !== "context"}
+              role="option"
+              aria-selected={selection.has(cell.id)}
+              tabindex="-1"
+              onclick={(e) => onLineClick(row.hunkIndex, cell.lineIndex, e.shiftKey)}
+              onpointerenter={(e) => lineEnter(row.hunkIndex, cell.lineIndex, e)}
+            >
+              <span class="no gutter" role="presentation" onpointerdown={(e) => cell.kind !== "context" && gutterDown(row.hunkIndex, cell.lineIndex, e)}>{cell.no ?? ""}</span>
+              <span class="text">{cell.text}</span>
+            </div>
+          {:else}
+            <div class="cell blank"><span class="no"></span><span class="text"></span></div>
+          {/if}
+        {/each}
       </div>
     {/if}
   {/each}
@@ -95,6 +140,17 @@
     grid-template-columns: 3.5em minmax(0, 1fr);
     white-space: pre;
     border-right: 1px solid #2a2a2a;
+  }
+  .selectable {
+    cursor: pointer;
+  }
+  .gutter {
+    cursor: ns-resize;
+  }
+  .cell.selected {
+    outline: 1px solid #6a8aaa;
+    outline-offset: -1px;
+    filter: brightness(1.25);
   }
   .no {
     text-align: right;

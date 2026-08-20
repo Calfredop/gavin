@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { gitStore, findEntry, applyPatch } from "./gitState";
+  import { gitStore, findEntry, applyPatch, setLineSelection } from "./gitState";
   import { layoutState, setGitViewPrefs } from "./layoutState";
   import { toUnifiedRows, toSplitRows } from "./diffRows";
+  import { clickLine, rangeIds, selectionHunk } from "./diffSelection";
   import { buildPatch } from "./patch";
   import { LARGE_HUNK_LINES, type DiffLayout } from "./git";
   import GitDiffUnified from "./GitDiffUnified.svelte";
@@ -41,15 +42,50 @@
     expanded = new Set([...expanded, hunkIndex]);
   }
 
+  // Line selection (spec §3): ids are layout-independent, so the same set
+  // drives both layouts; the anchor is the last plain-clicked line.
+  const selection = $derived(view?.lineSelection ?? new Set<string>());
+  let anchor = $state<number | null>(null);
+  $effect(() => {
+    void diff;
+    anchor = null;
+  });
+
+  function onLineClick(hunkIndex: number, lineIndex: number, shift: boolean): void {
+    if (!diff || !canAct) return;
+    const next = clickLine(selection, diff.hunks, hunkIndex, lineIndex, shift, anchor);
+    anchor = next.anchor;
+    setLineSelection(workspaceId, next.ids);
+  }
+  function onDragRange(hunkIndex: number, from: number, to: number): void {
+    if (!diff || !canAct) return;
+    anchor = from;
+    setLineSelection(workspaceId, rangeIds(diff.hunks, hunkIndex, from, to));
+  }
+  function selectedLabel(hunkIndex: number): string | null {
+    return selectionHunk(selection) === hunkIndex && selection.size > 0 ? `${actionLabel} selected (${selection.size})` : null;
+  }
+  function onKeydown(e: KeyboardEvent): void {
+    if (e.key === "Escape" && selection.size > 0) {
+      e.preventDefault();
+      setLineSelection(workspaceId, new Set());
+    }
+  }
+
+  // A selection inside the hunk stages only those lines; otherwise the whole hunk.
   function hunkAction(hunkIndex: number): void {
     if (!diff || !selected || !canAct) return;
-    const patch = buildPatch(diff, hunkIndex, null);
+    const partial = selectionHunk(selection) === hunkIndex && selection.size > 0 ? selection : null;
+    const patch = buildPatch(diff, hunkIndex, partial);
     if (!patch) return;
     void applyPatch(workspaceId, patch, selected.area === "staged" ? "unstage" : "stage");
   }
 </script>
 
-<div class="diff">
+<!-- Focusable so Esc can clear the line selection; lines inside are the
+     pointer targets. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="diff" role="listbox" aria-label="Diff" tabindex="-1" onkeydown={onKeydown} onpointerdown={(e) => e.currentTarget.focus()}>
   {#if selected && entry}
     <div class="head">
       <span class="badge">{entry.status}</span>
@@ -73,9 +109,31 @@
     {:else if diff.hunks.length === 0}
       <div class="msg">No changes</div>
     {:else if layout === "split"}
-      <GitDiffSplit rows={splitRows} {isCollapsed} {canAct} {actionLabel} onHunkAction={hunkAction} onExpand={expand} />
+      <GitDiffSplit
+        rows={splitRows}
+        {isCollapsed}
+        {canAct}
+        {actionLabel}
+        onHunkAction={hunkAction}
+        onExpand={expand}
+        {selection}
+        {onLineClick}
+        {onDragRange}
+        {selectedLabel}
+      />
     {:else}
-      <GitDiffUnified rows={unifiedRows} {isCollapsed} {canAct} {actionLabel} onHunkAction={hunkAction} onExpand={expand} />
+      <GitDiffUnified
+        rows={unifiedRows}
+        {isCollapsed}
+        {canAct}
+        {actionLabel}
+        onHunkAction={hunkAction}
+        onExpand={expand}
+        {selection}
+        {onLineClick}
+        {onDragRange}
+        {selectedLabel}
+      />
     {/if}
   </div>
 </div>
@@ -87,6 +145,9 @@
     height: 100%;
     min-height: 0;
     background: #151515;
+  }
+  .diff:focus {
+    outline: none;
   }
   .head {
     display: flex;
