@@ -7,6 +7,7 @@
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
   import { planCommitFromMerged } from "./planDrop";
+  import { runCard } from "./cardRunActions";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import type { ActiveDrag } from "./kanbanDrag";
   import type { DropTarget } from "./pointerDrag";
@@ -65,6 +66,13 @@
   const openPlan = $derived<CardView | null>(
     openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
   );
+
+  function handleRun(card: CardView): void {
+    planWriteError = null;
+    void runCard(workspaceId, card).then((err) => {
+      if (err) planWriteError = err;
+    });
+  }
 
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
     if (drag.kind !== "plan" || !board || !merged) return;
@@ -125,10 +133,11 @@
           planCards={dc.planCards}
           composerContext={contextFolder}
           onOpenPlanCard={(path) => (openPlanPath = path)}
+          onRunCard={handleRun}
         />
       {/each}
       {#each merged?.autoColumns ?? [] as auto (auto.status)}
-        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} onOpenPlan={(path) => (openPlanPath = path)} />
+        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} />
       {/each}
     </div>
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />

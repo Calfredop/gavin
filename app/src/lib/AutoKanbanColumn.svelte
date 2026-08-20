@@ -10,9 +10,11 @@
     status: string;
     planCards: CardView[];
     labels?: Label[];
+    workspaceId?: string | null;
     onOpenPlan: (path: string) => void;
+    onRunCard?: ((card: CardView) => void) | null;
   }
-  let { status, planCards, labels = [], onOpenPlan }: Props = $props();
+  let { status, planCards, labels = [], workspaceId = null, onOpenPlan, onRunCard = null }: Props = $props();
 
   const key = $derived(AUTO_COLUMN_PREFIX + status);
   const slotDrag = $derived($dragState ?? $dropHold);
@@ -30,7 +32,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlan} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlan} {workspaceId} onRun={onRunCard} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>

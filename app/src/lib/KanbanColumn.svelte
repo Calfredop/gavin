@@ -22,6 +22,7 @@
     // Pins the composer to one context (BoardPane) and hides the picker.
     composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
+    onRunCard?: ((card: CardView) => void) | null;
   }
   let {
     workspaceId,
@@ -31,6 +32,7 @@
     planCards,
     composerContext = null,
     onOpenPlanCard,
+    onRunCard = null,
   }: Props = $props();
 
   let editingName = $state(false);
@@ -74,6 +76,7 @@
   let composeBody = $state("");
   let composeContext = $state<string | null>(null);
   let composeError = $state<string | null>(null);
+  let composeRunNow = $state(false);
   let composeTitleEl = $state<HTMLTextAreaElement | null>(null);
 
   const contexts = $derived($gavinTrees[workspaceId]?.contexts ?? []);
@@ -133,7 +136,30 @@
         parseWarning: false,
       };
       patchPlanCreated(workspaceId, contextFolder, created);
+      if (composeRunNow && args.kind === "task" && onRunCard) {
+        const ctxName = ctx?.name ?? contextFolder.split("/").at(-1) ?? contextFolder;
+        onRunCard({
+          id: path,
+          title: args.title,
+          status: args.status,
+          priority: null,
+          order: null,
+          kind: "task",
+          parent: null,
+          parentTitle: null,
+          parentBroken: false,
+          labels: [],
+          checklistDone: 0,
+          checklistTotal: 0,
+          contextName: ctxName,
+          contextFolder,
+          fileName: args.fileName,
+          parseWarning: false,
+          nestedChildren: [],
+        });
+      }
       resetComposer();
+      composeRunNow = false;
       if (!keepOpen) composing = false;
       else composeTitleEl?.focus();
     } catch (e) {
@@ -177,7 +203,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
@@ -214,6 +240,12 @@
           placeholder={composeKind === "task" ? "Agent prompt…" : "Plan body (use - [ ] for tasks)…"}
           bind:value={composeBody}
         ></textarea>
+      {/if}
+      {#if composeKind === "task"}
+        <label class="run-now">
+          <input type="checkbox" bind:checked={composeRunNow} />
+          Run now with the agent
+        </label>
       {/if}
       {#if composeKind !== "note" && !composerContext && contexts.length > 1}
         <select class="compose-context" bind:value={composeContext}>
@@ -381,6 +413,16 @@
   .compose-error {
     color: #e0b08a;
     font-size: 0.75em;
+  }
+  .run-now {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #999;
+    font-size: 0.8em;
+  }
+  .run-now input {
+    accent-color: #7ea8d8;
   }
   .compose-actions {
     display: flex;

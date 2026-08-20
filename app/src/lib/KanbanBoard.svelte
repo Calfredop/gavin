@@ -7,6 +7,7 @@
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { planCommitFromMerged } from "./planDrop";
+  import { runCard } from "./cardRunActions";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
   import { flip } from "svelte/animate";
@@ -52,6 +53,13 @@
   const openPlan = $derived<CardView | null>(
     openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
   );
+
+  function handleRun(card: CardView): void {
+    planWriteError = null;
+    void runCard(workspaceId, card).then((err) => {
+      if (err) planWriteError = err;
+    });
+  }
 
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
     if (drag.kind === "column") {
@@ -145,6 +153,7 @@
             labels={board.labels}
             planCards={merged?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
             onOpenPlanCard={(path) => (openPlanPath = path)}
+            onRunCard={handleRun}
           />
         {:else}
           <div class="column-placeholder"></div>
@@ -152,7 +161,7 @@
       </div>
     {/each}
     {#each merged?.autoColumns ?? [] as auto (auto.status)}
-      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} onOpenPlan={(path) => (openPlanPath = path)} />
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} />
     {/each}
     {#if addingColumn}
       <input

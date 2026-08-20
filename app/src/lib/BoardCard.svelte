@@ -3,6 +3,9 @@
   import { slugStatus, type CardView } from "./planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, ChevronRight, ChevronDown } from "@lucide/svelte";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
+  import { kanbanState, cardSessionFor } from "./kanbanState";
+  import { layoutState } from "./layoutState";
+  import { findSessionLocation } from "./workspace";
   // Svelte 5 self-import for the nested-children recursion.
   import BoardCardSelf from "./BoardCard.svelte";
 
@@ -13,8 +16,28 @@
     labelDefs: Label[];
     onOpen: (path: string) => void;
     nested?: boolean;
+    // Enables the session dot + Run affordance (absent in the preview).
+    workspaceId?: string | null;
+    onRun?: ((card: CardView) => void) | null;
   }
-  let { card, labelDefs, onOpen, nested = false }: Props = $props();
+  let { card, labelDefs, onOpen, nested = false, workspaceId = null, onRun = null }: Props = $props();
+
+  // Live session binding (card-model spec §3) -- same dot vocabulary the
+  // terminal tabs use, plus a distinct exited ring since a card can stay
+  // bound to a long-gone session.
+  const binding = $derived(
+    workspaceId !== null ? cardSessionFor($kanbanState[workspaceId], card.id) : null
+  );
+  const sessionDot = $derived.by(() => {
+    if (!binding) return null;
+    const location = findSessionLocation($layoutState, binding.sessionId);
+    const status = location ? $layoutState.sessionStatusById[binding.sessionId] : undefined;
+    if (status === "working") return { cls: "status-working", title: "Working" };
+    if (status === "waiting_for_input") return { cls: "status-waiting", title: "Requests attention" };
+    if (location) return { cls: "status-idle", title: "Idle" };
+    return { cls: "status-exited", title: "Session exited" };
+  });
+  const runnable = $derived(onRun !== null && card.kind !== "note" && binding === null);
 
   let expanded = $state(false);
 
@@ -69,8 +92,25 @@
     {#if card.kind === "plan" && card.checklistTotal > 0}
       <span class="progress" title="Checklist progress">{card.checklistDone}/{card.checklistTotal}</span>
     {/if}
+    {#if sessionDot}
+      <span class="status-dot {sessionDot.cls}" title={sessionDot.title}></span>
+    {/if}
     {#if card.parseWarning}
       <span class="warning" title="This card's frontmatter has issues"><TriangleAlert size={11} /></span>
+    {/if}
+    {#if runnable}
+      <button
+        type="button"
+        class="run"
+        title="Run with the workspace agent"
+        onpointerdown={shield}
+        onclick={(e) => {
+          e.stopPropagation();
+          onRun?.(card);
+        }}
+      >
+        <Play size={11} />
+      </button>
     {/if}
     {#if card.kind === "plan" && (card.nestedChildren.length > 0 || nestTargeted)}
       <button
@@ -109,7 +149,7 @@
       {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} />
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} />
           </div>
         {:else}
           <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>
@@ -215,6 +255,40 @@
   }
   .child-count {
     font-size: 0.8em;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .status-dot.status-working {
+    background: #4a9eff;
+  }
+  .status-dot.status-waiting {
+    background: #e0524a;
+  }
+  .status-dot.status-idle {
+    background: #6b8e6b;
+  }
+  .status-dot.status-exited {
+    background: transparent;
+    border: 1px solid #666;
+  }
+  .run {
+    background: transparent;
+    border: none;
+    color: #7ea8d8;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    padding: 0 2px;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .card:hover .run,
+  .card:focus-within .run {
+    opacity: 1;
   }
   .title {
     word-break: break-word;

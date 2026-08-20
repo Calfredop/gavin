@@ -10,7 +10,10 @@
   import { requestedExplorerPath, slugFileName } from "./planExplorer";
   import { patchPlanField, patchPlanCreated } from "./gavinState";
   import type { PlanFileInfo } from "./gavin";
-  import { switchWorkspaceView } from "./layoutState";
+  import { switchWorkspaceView, layoutState } from "./layoutState";
+  import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
+  import { runCard, relaunchCard } from "./cardRunActions";
+  import { findSessionLocation } from "./workspace";
   import * as backend from "./backend";
 
   interface Props {
@@ -160,6 +163,34 @@
       : []
   );
 
+  // --- session block (task/plan, card-model spec §3) -------------------
+  const binding = $derived(cardSessionFor($kanbanState[workspaceId], card.id));
+  const bindingLive = $derived(
+    binding !== null && findSessionLocation($layoutState, binding.sessionId) !== null
+  );
+  const bindingStatus = $derived(
+    binding && bindingLive ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle") : "exited"
+  );
+
+  async function handleRun(): Promise<void> {
+    errorMessage = null;
+    const err = await runCard(workspaceId, card);
+    if (err) errorMessage = err;
+    else if (!binding || bindingLive) onClose();
+  }
+
+  async function handleRelaunch(): Promise<void> {
+    errorMessage = null;
+    const err = await relaunchCard(workspaceId, card.id);
+    if (err) errorMessage = err;
+    else onClose();
+  }
+
+  async function handleUnlink(): Promise<void> {
+    errorMessage = null;
+    await unlinkCardSessionAction(workspaceId, card.id);
+  }
+
   function openInPlansTab(): void {
     requestedExplorerPath.set(card.id);
     void switchWorkspaceView(workspaceId, "plans");
@@ -280,6 +311,28 @@
       <div class="section-title">Body</div>
       <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
       <div class="body-preview">{@html bodyHtml}</div>
+    </div>
+  {/if}
+  {#if card.kind !== "note"}
+    <div class="section">
+      <div class="section-title">Agent session</div>
+      {#if binding}
+        <div class="session-info">
+          <span class="session-status" class:exited={!bindingLive}>{bindingStatus}</span>
+          <span class="session-cwd">{binding.cwd}</span>
+        </div>
+        <div class="session-actions">
+          <button type="button" disabled={!bindingLive} onclick={() => void handleRun()}>Jump to session</button>
+          <button type="button" disabled={bindingLive} onclick={() => void handleRelaunch()}>Re-launch</button>
+          <button type="button" onclick={() => void handleUnlink()}>Unlink</button>
+        </div>
+      {:else}
+        <div class="session-actions">
+          <button type="button" onclick={() => void handleRun()}>
+            ▶ Run {card.kind === "plan" ? "this plan" : "this task"} with the agent
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
   {#if errorMessage}
@@ -457,6 +510,41 @@
   .error {
     color: #e0524a;
     font-size: 0.8em;
+  }
+  .session-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85em;
+    opacity: 0.85;
+    margin-bottom: 6px;
+  }
+  .session-status.exited {
+    opacity: 0.6;
+  }
+  .session-cwd {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-left: 10px;
+  }
+  .session-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .session-actions button {
+    background: #3a3a3a;
+    border: none;
+    color: #eee;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.8em;
+  }
+  .session-actions button:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .actions {
     display: flex;
