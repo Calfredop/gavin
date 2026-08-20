@@ -18,4 +18,6 @@ native skill mechanism.
 - Protocol: bumps PROTOCOL_VERSION 6 → 7 (SetRootConfigField)
 - New dep: toml_edit in the daemon (already transitively present)
 
-Spec approved 2026-08-20; implementation plan not yet written.
+- Plan: docs/superpowers/plans/2026-08-20-workspace-settings.md (7 tasks)
+
+Spec approved and plan written 2026-08-20; implementation not started.
