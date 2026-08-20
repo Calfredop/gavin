@@ -11,6 +11,7 @@ vi.mock("./backend", () => ({
 import * as backend from "./backend";
 import { gavinTrees } from "./gavinState";
 import { applyPlanDrop, planCommitFromMerged } from "./planDrop";
+import { dropHold } from "./kanbanDrag";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 import type { PlanCardView } from "./planBoard";
 
@@ -37,6 +38,7 @@ function planByPath(path: string): PlanFileInfo | undefined {
 beforeEach(() => {
   vi.clearAllMocks();
   gavinTrees.set({});
+  dropHold.set(null);
 });
 
 describe("applyPlanDrop", () => {
@@ -157,6 +159,61 @@ describe("applyPlanDrop", () => {
     expect(err).toBeNull();
     // d.md excluded from the block -> dropping at 0 means "before a.md" -> midpoint of (nothing, 2048).
     expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([["/p/d.md", "order", "1024"]]);
+  });
+
+  it("planCommitFromMerged holds the drop visuals while writes are in flight, then releases", async () => {
+    let resolveWrite!: () => void;
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolveWrite = resolve))
+    );
+    seed([planInfo("/p/d.md", "To Do", null)]);
+    const pending = planCommitFromMerged(
+      "ws",
+      { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col1", index: 0 } },
+      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
+      {
+        columns: [
+          {
+            column: { id: "col1", name: "To Do", position: 0, cards: [] },
+            planCards: [
+              {
+                id: "/p/d.md", title: "d", status: "To Do", priority: null, order: null,
+                contextName: "p", fileName: "d.md", parseWarning: false,
+              },
+              {
+                id: "/p/a.md", title: "a", status: "To Do", priority: null, order: 1024,
+                contextName: "p", fileName: "a.md", parseWarning: false,
+              },
+            ],
+          },
+        ],
+        autoColumns: [],
+      }
+    );
+    // In flight: the hold keeps the dragged card hidden + placeholder shown.
+    expect(get(dropHold)).toEqual({
+      kind: "plan",
+      id: "/p/d.md",
+      target: { columnId: "col1", index: 0 },
+      size: undefined,
+    });
+    resolveWrite();
+    const err = await pending;
+    expect(err).toBeNull();
+    expect(get(dropHold)).toBeNull();
+  });
+
+  it("planCommitFromMerged releases the hold on failure too", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockRejectedValue(new Error("nope"));
+    seed([planInfo("/p/d.md", "To Do", null)]);
+    const err = await planCommitFromMerged(
+      "ws",
+      { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col1", index: 0 } },
+      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
+      { columns: [{ column: { id: "col1", name: "To Do", position: 0, cards: [] }, planCards: [] }], autoColumns: [] }
+    );
+    expect(err).toContain("d.md");
+    expect(get(dropHold)).toBeNull();
   });
 
   it("a failed status write skips the order writes entirely", async () => {

@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { dragState, type ActiveDrag } from "./kanbanDrag";
+  import { get } from "svelte/store";
+  import { dragState, dropHold, type ActiveDrag } from "./kanbanDrag";
+  import { activeDragRoot } from "./kanbanDragGlue";
   import type { Board, Card, Label } from "./kanban";
   import type { PlanCardView } from "./planBoard";
   import KanbanCard from "./KanbanCard.svelte";
@@ -9,8 +11,15 @@
     board: Board | null;
     merged: { columns: { column: { id: string; name: string }; planCards: PlanCardView[] }[]; autoColumns: { status: string; planCards: PlanCardView[] }[] } | null;
     labels: Label[];
+    // This surface's board root. dragState/dropHold are app-global, and
+    // both surfaces can show the same workspace: only the surface that
+    // owns the drag renders the preview, and its settle-target queries
+    // stay inside this root.
+    root: HTMLElement | null;
   }
-  let { board, merged, labels }: Props = $props();
+  let { board, merged, labels, root }: Props = $props();
+
+  const ownsDrag = $derived(root !== null && $activeDragRoot === root);
 
   const draggedCard = $derived<Card | null>(
     $dragState?.kind === "card" && board
@@ -40,6 +49,10 @@
     width: number;
     pos: { left: number; top: number };
     landed: boolean;
+    // Plan drops hold their visuals until the daemon writes resolve
+    // (dropHold); the settled preview sits in the slot until then so the
+    // card appears exactly where it settled, never flashing back.
+    waitForHold: boolean;
   }
   let settle = $state<Settle | null>(null);
   let snapshot: { drag: ActiveDrag; card: Card | null; plan: PlanCardView | null } | null = null;
@@ -51,6 +64,12 @@
   let settleToken = 0;
 
   $effect(() => {
+    if (!ownsDrag) {
+      // Another surface took the drag: drop any lingering visuals here.
+      snapshot = null;
+      settle = null;
+      return;
+    }
     const d = $dragState;
     if (d) {
       snapshot = { drag: d, card: draggedCard, plan: draggedPlan };
@@ -67,16 +86,19 @@
       width: s.drag.size.width,
       pos: { left: s.drag.pointer.x - s.drag.grabOffset.x, top: s.drag.pointer.y - s.drag.grabOffset.y },
       landed: false,
+      waitForHold: s.drag.kind === "plan",
     };
     const token = (settleToken += 1);
     settle = started;
     // Wait a frame for the committed board to render, then glide to the
-    // card's new slot; if it can't be found (moved out of this filtered
-    // view), just drop the preview.
+    // card's new slot. A plan drop's card is still hidden by dropHold,
+    // so its target is the placeholder; a card that can't be found at
+    // all (moved out of this filtered view) just drops the preview.
+    const scope = root;
     requestAnimationFrame(() => {
-      if (settleToken !== token) return;
+      if (settleToken !== token || !scope) return;
       const attr = s.drag.kind === "card" ? "data-kb-card" : "data-kb-plan";
-      const el = document.querySelector(`[${attr}="${CSS.escape(s.drag.id)}"]`);
+      const el = scope.querySelector(`[${attr}="${CSS.escape(s.drag.id)}"]`) ?? scope.querySelector("[data-kb-ph]");
       if (!el) {
         settle = null;
         return;
@@ -84,13 +106,22 @@
       const r = el.getBoundingClientRect();
       settle = { ...started, pos: { left: r.left, top: r.top }, landed: true };
       setTimeout(() => {
-        if (settleToken === token) settle = null;
+        if (settleToken !== token) return;
+        // A plan drop whose writes are still in flight keeps its settled
+        // preview; the hold-release effect below clears it.
+        if (!settle?.waitForHold || !get(dropHold)) settle = null;
       }, 180);
     });
   });
+
+  // Releases a plan drop's settled preview the moment its writes land
+  // (the patch renders the real card in the same flush underneath it).
+  $effect(() => {
+    if ($dropHold === null && settle?.landed && settle.waitForHold) settle = null;
+  });
 </script>
 
-{#if $dragState}
+{#if ownsDrag && $dragState}
   <div
     class="preview"
     style:left="{$dragState.pointer.x - $dragState.grabOffset.x}px"

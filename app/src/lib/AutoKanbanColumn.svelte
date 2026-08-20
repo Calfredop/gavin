@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PlanCardView } from "./planBoard";
   import PlanKanbanCard from "./PlanKanbanCard.svelte";
-  import { dragState, buildDisplaySlots } from "./kanbanDrag";
+  import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
   import { AUTO_COLUMN_PREFIX } from "./planDrop";
   import { flip } from "svelte/animate";
 
@@ -13,7 +13,8 @@
   let { status, planCards, onOpenPlan }: Props = $props();
 
   const key = $derived(AUTO_COLUMN_PREFIX + status);
-  const slots = $derived(buildDisplaySlots(planCards, (p) => p.id, $dragState, key, "plan"));
+  const slotDrag = $derived($dragState ?? $dropHold);
+  const slots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, key, "plan"));
 </script>
 
 <!-- Same geometry as KanbanColumn's .column, muted + dashed: these exist
@@ -30,7 +31,7 @@
             <PlanKanbanCard plan={slot.item} onOpen={() => onOpenPlan(slot.item.id)} />
           </div>
         {:else}
-          <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
+          <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
         {/if}
       </div>
     {/each}

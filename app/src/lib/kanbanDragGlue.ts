@@ -11,7 +11,7 @@
 //   [data-kb-plan]     plan card wrapper; value = plan path
 //   [data-kb-colgrab]  column drag handle (header); value = column id
 
-import { get } from "svelte/store";
+import { get, writable } from "svelte/store";
 import {
   dragState,
   beginCandidate,
@@ -24,6 +24,12 @@ import {
   type DragCallbacks,
 } from "./kanbanDrag";
 import { autoScrollVelocity, type Measured, type MeasuredColumn, type DropTarget } from "./pointerDrag";
+
+// The board root that owns the current (or most recent) drag. Both
+// surfaces can show the same workspace simultaneously; each surface's
+// preview layer renders only when it is the owner, and scopes its
+// settle-target queries to this root.
+export const activeDragRoot = writable<HTMLElement | null>(null);
 
 export interface BoardDragOptions {
   root: HTMLElement; // also the horizontal scroll container of the column strip
@@ -139,6 +145,7 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
       commit: opts.commit,
       click: opts.click,
     };
+    activeDragRoot.set(root);
     beginCandidate(kind, id, sourceColumnId, sourceIndex, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
     // The gesture is tracked on WINDOW listeners, not on root: the
     // dragged card's wrapper leaves the DOM at activation, and WKWebView

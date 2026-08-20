@@ -189,7 +189,7 @@
       <button type="button" class="add-column" onclick={() => (addingColumn = true)}>+ Add column</button>
     {/if}
   </div>
-  <KanbanDragPreview {board} {merged} labels={board.labels} />
+  <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
   {#if openCard}
     <CardDetailModal
       card={openCard}

@@ -38,6 +38,22 @@ export interface DragCallbacks {
 
 export const dragState = writable<ActiveDrag | null>(null);
 
+// What the slot builders need to keep a drop's visuals in place: the
+// dragged item hidden, the placeholder at the target. ActiveDrag
+// satisfies it; so does a post-drop hold.
+export interface DropHold {
+  kind: DragKind;
+  id: string;
+  target: DropTarget | null;
+  size?: { width: number; height: number };
+}
+
+// Set for the duration of a plan drop's daemon writes (spec §2:
+// gavinTrees is patched only on success, so without this the card would
+// flash back to its pre-drop slot until the writes resolve). Components
+// render slots from `dragState ?? dropHold`.
+export const dropHold = writable<DropHold | null>(null);
+
 interface Candidate {
   kind: DragKind;
   id: string;
@@ -154,7 +170,7 @@ export type Slot<T> = { type: "item"; item: T } | { type: "placeholder" };
 export function buildDisplaySlots<T>(
   items: T[],
   idOf: (t: T) => string,
-  drag: ActiveDrag | null,
+  drag: DropHold | null,
   columnKey: string,
   kind: "card" | "plan"
 ): Slot<T>[] {
@@ -167,7 +183,7 @@ export function buildDisplaySlots<T>(
   return slots;
 }
 
-export function buildColumnSlots<T>(columns: T[], idOf: (t: T) => string, drag: ActiveDrag | null): Slot<T>[] {
+export function buildColumnSlots<T>(columns: T[], idOf: (t: T) => string, drag: DropHold | null): Slot<T>[] {
   if (!drag || drag.kind !== "column") return columns.map((item) => ({ type: "item", item }));
   const slots: Slot<T>[] = columns
     .filter((item) => idOf(item) !== drag.id)
@@ -184,4 +200,5 @@ export function __resetForTesting(): void {
   candidate = null;
   callbacks = null;
   dragState.set(null);
+  dropHold.set(null);
 }

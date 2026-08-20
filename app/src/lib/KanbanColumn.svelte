@@ -5,7 +5,7 @@
   import PlanKanbanCard from "./PlanKanbanCard.svelte";
   import DeleteColumnPrompt from "./DeleteColumnPrompt.svelte";
   import DeleteCardWithSessionPrompt from "./DeleteCardWithSessionPrompt.svelte";
-  import { dragState, buildDisplaySlots } from "./kanbanDrag";
+  import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
   import { flip } from "svelte/animate";
   import {
     renameColumnAction,
@@ -89,13 +89,15 @@
     if (trimmed && trimmed !== column.name) void renameColumnAction(workspaceId, column.id, trimmed);
   }
 
-  // Cards render through display slots: while a matching drag is live,
-  // the dragged item is hidden and a placeholder occupies the current
-  // target slot; animate:flip slides the rest (spec §1). Free-form and
-  // plan blocks slot independently -- a card never targets the plan
-  // block and vice versa (spec §2, K4).
-  const cardSlots = $derived(buildDisplaySlots(column.cards, (c) => c.id, $dragState, column.id, "card"));
-  const planSlots = $derived(buildDisplaySlots(planCards, (p) => p.id, $dragState, column.id, "plan"));
+  // Cards render through display slots: while a matching drag is live --
+  // or a plan drop's writes are still in flight (dropHold) -- the
+  // dragged item is hidden and a placeholder occupies the target slot;
+  // animate:flip slides the rest (spec §1). Free-form and plan blocks
+  // slot independently -- a card never targets the plan block and vice
+  // versa (spec §2, K4).
+  const slotDrag = $derived($dragState ?? $dropHold);
+  const cardSlots = $derived(buildDisplaySlots(column.cards, (c) => c.id, slotDrag, column.id, "card"));
+  const planSlots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, column.id, "plan"));
 
   function requestDeleteColumn(): void {
     if (column.cards.length === 0) {
@@ -159,7 +161,7 @@
               />
             </div>
           {:else}
-            <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
+            <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
           {/if}
         </div>
       {/each}
@@ -171,7 +173,7 @@
             <PlanKanbanCard plan={slot.item} onOpen={() => onOpenPlanCard(slot.item.id)} />
           </div>
         {:else}
-          <div class="slot-placeholder" style:height="{$dragState?.size.height ?? 40}px"></div>
+          <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
         {/if}
       </div>
     {/each}

@@ -127,7 +127,7 @@
         <AutoKanbanColumn status={auto.status} planCards={auto.planCards} onOpenPlan={(path) => (openPlanPath = path)} />
       {/each}
     </div>
-    <KanbanDragPreview {board} {merged} labels={board.labels} />
+    <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
   {/if}
   {#if openPlan}
     <PlanDetailModal plan={openPlan} {workspaceId} onClose={() => (openPlanPath = null)} />
