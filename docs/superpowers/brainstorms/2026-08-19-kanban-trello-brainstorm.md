@@ -88,3 +88,18 @@ numbered K1… to keep them distinct from the phase log's D-sequence
 - Lesson for this codebase: never assume Chromium event semantics — the app
   ships on WKWebView, where DOM removal under an active pointer breaks
   element-level delivery.
+
+**Correction (2026-08-20, second report + screenshot):** the stuck-after-drop
+symptom was NOT lost pointerup delivery. The owner's screenshot showed the
+dragged card back in its list with no placeholder — dragState had cleared, so
+`endPointer` ran and the release was delivered. The stuck element was the
+**drop-settle preview**: its rAF supersession guard compared the raw settle
+object against the `$state` variable it was assigned to, and **Svelte 5
+proxies objects on `$state` assignment**, so the identity check was always
+unequal, the landing step never ran, and the tilted preview persisted after
+every card/plan drop. Fixed with a plain token counter (primitives are never
+proxied). The window-listener + buttons===0 hardening from the first attempt
+stays — it is the standard delivery pattern and unit-covered — but its
+"WKWebView drops the pointerup" claim is downgraded to unverified hypothesis.
+Process lesson: the first fix shipped without reproducing the symptom or
+demanding evidence; the screenshot falsified it in one glance.
