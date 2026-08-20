@@ -21,6 +21,7 @@ pub fn run() {
         .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .manage(fileviewer::FileWatchers::default())
+        .manage(git::GitWatchers::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -81,7 +82,20 @@ pub fn run() {
             session::set_root_config_field,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
-            agent_setup::move_agent_file
+            agent_setup::move_agent_file,
+            git::git_repo_info,
+            git::git_status,
+            git::git_diff,
+            git::git_stage_files,
+            git::git_unstage_files,
+            git::git_stage_all,
+            git::git_unstage_all,
+            git::git_apply_patch,
+            git::git_discard_files,
+            git::git_commit,
+            git::git_init,
+            git::git_watch,
+            git::git_unwatch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
