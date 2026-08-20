@@ -2,14 +2,20 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { setWorkspaceRoot } from "./layoutState";
   import { gavinTrees } from "./gavinState";
+  import { agentProfilesStore } from "./layoutState";
+  import { resolveAgentConfig } from "./settings";
   import * as backend from "./backend";
   import { UNFILED_WORKSPACE_ID, SMOKETEST_WORKSPACE_ID, type Workspace } from "./workspace";
   import Modal from "./Modal.svelte";
 
   interface Props {
     workspace: Workspace;
+    /// "banner" is the hub-wide strip above every tab; "settings" is the
+    /// embedded form row, which drops the banner chrome because the
+    /// panel already provides a heading.
+    variant?: "banner" | "settings";
   }
-  let { workspace }: Props = $props();
+  let { workspace, variant = "banner" }: Props = $props();
 
   // pendingRoot is non-null while the "Initialize gavin here?" modal is up.
   let pendingRoot = $state<string | null>(null);
@@ -17,6 +23,9 @@
 
   const tree = $derived($gavinTrees[workspace.id]);
   const rootMissing = $derived(Boolean(workspace.rootPath && tree?.rootMissing));
+  const agent = $derived(
+    resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
+  );
 
   async function pickRoot(): Promise<void> {
     errorMessage = null;
@@ -86,6 +95,7 @@
   }
 </script>
 
+<div class:settings={variant === "settings"}>
 {#if workspace.id !== UNFILED_WORKSPACE_ID}
   {#if !workspace.rootPath}
     <div class="banner">
@@ -115,9 +125,11 @@
       <div class="banner seed"><span>{seedNote}</span></div>
     {/if}
   {/if}
-  {#if workspace.rootPath && !rootMissing}
+  <!-- Gated on the profile: setup_agent_integration errors for a profile
+       with no McpLayout, so offering the button would be a broken action. -->
+  {#if workspace.rootPath && !rootMissing && agent.mcpSupported}
     <div class="banner seed">
-      <span>Agent integration — write .mcp.json, the gavin skill, and a CLAUDE.md pointer into this root.</span>
+      <span>Agent integration — write .mcp.json, the gavin skill, and a {agent.file} pointer into this root.</span>
       <button type="button" onclick={setupIntegration}>Set up / update</button>
     </div>
     {#if setupNote}
@@ -125,6 +137,7 @@
     {/if}
   {/if}
 {/if}
+</div>
 
 {#if pendingRoot}
   <Modal onClose={() => (pendingRoot = null)}>
@@ -143,6 +156,15 @@
 {/if}
 
 <style>
+  /* Embedded in the Settings panel: the panel supplies the heading and
+     spacing, so the banner chrome would double up. */
+  .settings :global(.banner),
+  .settings :global(.chip) {
+    margin: 0;
+    border: none;
+    background: transparent;
+    padding: 0;
+  }
   .banner {
     display: flex;
     align-items: center;

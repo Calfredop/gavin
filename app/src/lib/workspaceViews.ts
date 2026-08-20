@@ -1,6 +1,7 @@
 import type { Component } from "svelte";
-import { LayoutDashboard, Kanban, ListChecks, FileText, Bot, FolderTree } from "@lucide/svelte";
+import { LayoutDashboard, Kanban, ListChecks, FileText, Bot, FolderTree, Settings } from "@lucide/svelte";
 import HomeHubView from "./HomeHubView.svelte";
+import SettingsHubView from "./SettingsHubView.svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
 import SmokeChecklist from "./SmokeChecklist.svelte";
 import PrdHubView from "./PrdHubView.svelte";
@@ -38,6 +39,13 @@ export const HUB_VIEWS: HubView[] = [
     icon: FolderTree,
     component: PlanExplorerHubView,
     requiresRoot: true,
+  },
+  {
+    // No requiresRoot: binding the root is one of this tab's jobs.
+    id: "settings",
+    label: "Settings",
+    icon: Settings,
+    component: SettingsHubView,
   },
   {
     id: "checklist",

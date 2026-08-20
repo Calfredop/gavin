@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { layoutState } from "./layoutState";
+  import { layoutState, agentProfilesStore } from "./layoutState";
+  import { gavinTrees } from "./gavinState";
+  import { resolveAgentConfig } from "./settings";
   import FileEditor from "./FileEditor.svelte";
 
   interface Props {
@@ -8,11 +10,14 @@
   let { workspaceId }: Props = $props();
 
   const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
-  // CLAUDE.md is hardcoded rather than read from config: it is the only
-  // agent profile that exists (D4's seam lives in agent_setup.rs's
-  // ClaudeCodeProfile), and a lookup for a single value would be
-  // speculative.
-  const path = $derived(root ? `${root}/CLAUDE.md` : null);
+  // The agent file's name is configurable per workspace (D36): it comes
+  // from .gavin-root/config.toml's [agent].file, falling back to the
+  // profile's default.
+  const tree = $derived($gavinTrees[workspaceId]);
+  const agent = $derived(
+    resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
+  );
+  const path = $derived(root ? `${root}/${agent.file}` : null);
 </script>
 
 {#if path}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { layoutState, switchWorkspaceView } from "./layoutState";
+  import { layoutState, switchWorkspaceView, agentProfilesStore } from "./layoutState";
+  import { resolveAgentConfig } from "./settings";
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { boardSummary, planSummary, prdExcerpt } from "./homeSummary";
@@ -20,6 +21,11 @@
   const board = $derived($kanbanState[workspaceId]);
   const boards = $derived(boardSummary(board, tree));
   const plans = $derived(planSummary(tree));
+  // Named agentCfg, not agent: `agent` is already the MainAgentPanel
+  // bind:this handle below.
+  const agentCfg = $derived(
+    resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
+  );
 
   let prdLines = $state<string[]>([]);
   let agentFileExists = $state<boolean | null>(null);
@@ -40,7 +46,7 @@
       .then((res) => (prdLines = prdExcerpt(res.content, EXCERPT_LINES)))
       .catch(() => (prdLines = []));
     void backend
-      .readFileForViewer(`${r}/CLAUDE.md`)
+      .readFileForViewer(`${r}/${agentCfg.file}`)
       .then((res) => (agentFileExists = res.exists))
       .catch(() => (agentFileExists = null));
   });
@@ -102,7 +108,7 @@
         <b>PRD</b><span>{prdLines.length > 0 ? "present" : "not created"}</span>
       </button>
       <button type="button" class="tile" onclick={() => go("agent-file")}>
-        <b>CLAUDE.md</b>
+        <b>{agentCfg.file}</b>
         <span>{agentFileExists === null ? "—" : agentFileExists ? "present" : "not set up"}</span>
       </button>
       <button type="button" class="tile" onclick={() => go("plans")}>

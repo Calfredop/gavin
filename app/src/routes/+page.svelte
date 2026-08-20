@@ -12,7 +12,10 @@
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
-  import { getActiveWorkspace, getActiveView } from "$lib/workspace";
+  import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
+  import { gavinTrees } from "$lib/gavinState";
+  import { agentProfilesStore } from "$lib/layoutState";
+  import { resolveAgentConfig, normalizeColor } from "$lib/settings";
   import { visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
@@ -31,6 +34,15 @@
     visibleHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV, Boolean(activeWorkspace?.rootPath))
   );
   const activeViewDef = $derived(hubViews.find((v) => v.id === activeView) ?? hubViews[0]);
+  // Resolved once: the agent-file tab's label, and (via normalizeColor)
+  // the accent every tab indicator in this workspace reads.
+  const activeAgent = $derived(
+    resolveAgentConfig(
+      $gavinTrees[activeWorkspace?.id ?? ""]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $agentProfilesStore
+    )
+  );
+  const accent = $derived(normalizeColor(activeWorkspace?.color));
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -106,11 +118,15 @@
                 onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
               >
                 <view.icon size={14} />
-                {view.label}
+                {hubLabel(view, activeAgent.file)}
               </button>
             {/each}
           </div>
-          <WorkspaceRootControl workspace={activeWorkspace} />
+          <!-- The Settings tab embeds this control itself; showing the
+               banner there too would double it up. -->
+          {#if activeView !== "settings"}
+            <WorkspaceRootControl workspace={activeWorkspace} />
+          {/if}
           <div class="view">
             <activeViewDef.component workspaceId={activeWorkspace.id} />
           </div>
