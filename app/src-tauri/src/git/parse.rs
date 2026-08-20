@@ -66,6 +66,67 @@ pub fn parse_status(raw: &[u8]) -> StatusResult {
     out
 }
 
+/// Parses a `@@ -a[,b] +c[,d] @@…` header into (a, b, c, d); a missing
+/// count means 1 (unified-diff convention).
+fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let end = rest.find(" @@")?;
+    let ranges = &rest[..end];
+    let (old, new) = ranges.split_once(" +")?;
+    fn range(s: &str) -> Option<(u32, u32)> {
+        match s.split_once(',') {
+            Some((a, b)) => Some((a.parse().ok()?, b.parse().ok()?)),
+            None => Some((s.parse().ok()?, 1)),
+        }
+    }
+    let (os, ol) = range(old)?;
+    let (ns, nl) = range(new)?;
+    Some((os, ol, ns, nl))
+}
+
+/// Parses `git diff` unified output for ONE file. Preamble lines
+/// (`diff --git`, `index`, `new file mode`, `rename from/to`, `---`,
+/// `+++`) are skipped; only hunk headers and `+`/`-`/` `/`\` lines matter.
+pub fn parse_diff(path: &str, old_path: Option<&str>, raw: &str) -> FileDiff {
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut old_no = 0u32;
+    let mut new_no = 0u32;
+
+    for line in raw.split_inclusive('\n') {
+        let line = line.strip_suffix('\n').unwrap_or(line);
+        if let Some((os, ol, ns, nl)) = line.starts_with("@@").then(|| parse_hunk_header(line)).flatten() {
+            hunks.push(Hunk { header: line.to_string(), old_start: os, old_lines: ol, new_start: ns, new_lines: nl, lines: Vec::new() });
+            old_no = os;
+            new_no = ns;
+            continue;
+        }
+        let Some(hunk) = hunks.last_mut() else { continue };
+        if let Some(text) = line.strip_prefix('+') {
+            hunk.lines.push(Line { kind: "add".into(), text: text.into(), old_no: None, new_no: Some(new_no), no_newline: false });
+            new_no += 1;
+        } else if let Some(text) = line.strip_prefix('-') {
+            hunk.lines.push(Line { kind: "del".into(), text: text.into(), old_no: Some(old_no), new_no: None, no_newline: false });
+            old_no += 1;
+        } else if let Some(text) = line.strip_prefix(' ') {
+            hunk.lines.push(Line { kind: "context".into(), text: text.into(), old_no: Some(old_no), new_no: Some(new_no), no_newline: false });
+            old_no += 1;
+            new_no += 1;
+        } else if line.starts_with('\\') {
+            if let Some(prev) = hunk.lines.last_mut() {
+                prev.no_newline = true;
+            }
+        } else if line.is_empty() {
+            // A blank context line whose leading space was trimmed by a
+            // pager/editor; treat as context to stay robust.
+            hunk.lines.push(Line { kind: "context".into(), text: String::new(), old_no: Some(old_no), new_no: Some(new_no), no_newline: false });
+            old_no += 1;
+            new_no += 1;
+        }
+    }
+
+    FileDiff { path: path.to_string(), old_path: old_path.map(str::to_string), binary: false, too_large: false, hunks }
+}
+
 #[cfg(test)]
 mod status_tests {
     use super::*;
@@ -139,5 +200,77 @@ mod status_tests {
     fn headers_and_empty_input_yield_empty_lists() {
         assert_eq!(parse_status(&z(&["# branch.oid abc", "# branch.head main"])), StatusResult::default());
         assert_eq!(parse_status(b""), StatusResult::default());
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    const SAMPLE: &str = "diff --git a/f.txt b/f.txt\nindex 600d48a..e12a1b5 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -1,5 +1,6 @@\n alpha\n-beta\n+BETA\n gamma\n-delta\n+new1\n+new2\n epsilon\n";
+
+    fn l(kind: &str, text: &str, old_no: Option<u32>, new_no: Option<u32>) -> Line {
+        Line { kind: kind.into(), text: text.into(), old_no, new_no, no_newline: false }
+    }
+
+    #[test]
+    fn parses_one_hunk_with_running_line_numbers() {
+        let d = parse_diff("f.txt", None, SAMPLE);
+        assert_eq!(d.path, "f.txt");
+        assert_eq!(d.old_path, None);
+        assert!(!d.binary && !d.too_large);
+        assert_eq!(d.hunks.len(), 1);
+        let h = &d.hunks[0];
+        assert_eq!((h.header.as_str(), h.old_start, h.old_lines, h.new_start, h.new_lines), ("@@ -1,5 +1,6 @@", 1, 5, 1, 6));
+        assert_eq!(
+            h.lines,
+            vec![
+                l("context", "alpha", Some(1), Some(1)),
+                l("del", "beta", Some(2), None),
+                l("add", "BETA", None, Some(2)),
+                l("context", "gamma", Some(3), Some(3)),
+                l("del", "delta", Some(4), None),
+                l("add", "new1", None, Some(4)),
+                l("add", "new2", None, Some(5)),
+                l("context", "epsilon", Some(5), Some(6)),
+            ]
+        );
+    }
+
+    #[test]
+    fn header_without_counts_means_one_line_and_no_newline_marker_attaches_to_previous_line() {
+        let raw = "diff --git a/n.txt b/n.txt\nindex c1b0730..e25f181 100644\n--- a/n.txt\n+++ b/n.txt\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n";
+        let d = parse_diff("n.txt", None, raw);
+        let h = &d.hunks[0];
+        assert_eq!((h.header.as_str(), h.old_start, h.old_lines, h.new_start, h.new_lines), ("@@ -1 +1 @@", 1, 1, 1, 1));
+        assert_eq!(h.lines.len(), 2);
+        assert!(h.lines[0].no_newline && h.lines[1].no_newline);
+        assert_eq!(h.lines[0].text, "x");
+        assert_eq!(h.lines[1].text, "y");
+    }
+
+    #[test]
+    fn multiple_hunks_and_function_context_in_header_are_kept() {
+        let raw = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@ fn main() {\n a\n-b\n+B\n@@ -10,2 +10,3 @@\n j\n+K\n k\n";
+        let d = parse_diff("x", None, raw);
+        assert_eq!(d.hunks.len(), 2);
+        assert_eq!(d.hunks[0].header, "@@ -1,2 +1,2 @@ fn main() {");
+        assert_eq!(d.hunks[1].old_start, 10);
+        assert_eq!(d.hunks[1].lines[1], l("add", "K", None, Some(11)));
+    }
+
+    #[test]
+    fn new_file_and_rename_preambles_are_skipped_and_old_path_is_passed_through() {
+        let raw = "diff --git a/u.txt b/u.txt\nnew file mode 100644\nindex 0000000..ce01362\n--- /dev/null\n+++ b/u.txt\n@@ -0,0 +1 @@\n+hello\n";
+        let d = parse_diff("u.txt", None, raw);
+        assert_eq!(d.hunks[0].lines, vec![l("add", "hello", None, Some(1))]);
+        let renamed = parse_diff("g.txt", Some("f.txt"), "diff --git a/f.txt b/g.txt\nsimilarity index 64%\nrename from f.txt\nrename to g.txt\n");
+        assert_eq!(renamed.old_path.as_deref(), Some("f.txt"));
+        assert!(renamed.hunks.is_empty());
+    }
+
+    #[test]
+    fn empty_output_is_an_empty_diff() {
+        assert!(parse_diff("x", None, "").hunks.is_empty());
     }
 }
