@@ -3,3 +3,6 @@
 test-fixtures/file-viewer/big.txt
 test-fixtures/gavin-orchestration/playground/
 node_modules/
+
+# Claude Code worktrees
+.claude/worktrees/
