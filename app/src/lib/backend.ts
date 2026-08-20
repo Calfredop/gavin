@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
+import type { ApplyMode, FileDiff, RepoInfo, StatusResult } from "./git";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -215,4 +216,64 @@ export function moveAgentFile(rootPath: string, from: string, to: string): Promi
 
 export function setRootConfigField(rootPath: string, key: string, value: string): Promise<void> {
   return invoke("set_root_config_field", { rootPath, key, value });
+}
+
+// --- Git tab (app/src-tauri/src/git) ---------------------------------------
+
+export function gitRepoInfo(cwd: string): Promise<RepoInfo> {
+  return invoke("git_repo_info", { cwd });
+}
+
+export function gitStatus(cwd: string): Promise<StatusResult> {
+  return invoke("git_status", { cwd });
+}
+
+export function gitDiff(
+  cwd: string,
+  path: string,
+  oldPath: string | null,
+  staged: boolean,
+  untracked: boolean
+): Promise<FileDiff> {
+  return invoke("git_diff", { cwd, path, oldPath, staged, untracked });
+}
+
+export function gitStageFiles(cwd: string, paths: string[]): Promise<void> {
+  return invoke("git_stage_files", { cwd, paths });
+}
+
+export function gitUnstageFiles(cwd: string, paths: string[]): Promise<void> {
+  return invoke("git_unstage_files", { cwd, paths });
+}
+
+export function gitStageAll(cwd: string): Promise<void> {
+  return invoke("git_stage_all", { cwd });
+}
+
+export function gitUnstageAll(cwd: string): Promise<void> {
+  return invoke("git_unstage_all", { cwd });
+}
+
+export function gitApplyPatch(cwd: string, patch: string, mode: ApplyMode): Promise<void> {
+  return invoke("git_apply_patch", { cwd, patch, mode });
+}
+
+export function gitDiscardFiles(cwd: string, tracked: string[], untracked: string[]): Promise<void> {
+  return invoke("git_discard_files", { cwd, tracked, untracked });
+}
+
+export function gitCommit(cwd: string, message: string, amend: boolean): Promise<void> {
+  return invoke("git_commit", { cwd, message, amend });
+}
+
+export function gitInit(cwd: string): Promise<void> {
+  return invoke("git_init", { cwd });
+}
+
+export function gitWatch(cwd: string): Promise<void> {
+  return invoke("git_watch", { cwd });
+}
+
+export function gitUnwatch(cwd: string): Promise<void> {
+  return invoke("git_unwatch", { cwd });
 }
