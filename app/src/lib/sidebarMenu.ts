@@ -58,14 +58,18 @@ export function buildWorkspaceMenuEntries(ws: Workspace, hooks: SidebarMenuHooks
 // initialise-or-bind flow for a plain folder belongs to the root control
 // on the Home tab, so that is where a plain folder sends the user.
 export async function changeWorkspaceRoot(workspaceId: string, reportError: (m: string) => void): Promise<void> {
-  const picked = await open({ directory: true, multiple: false, title: "Choose workspace root" });
-  if (typeof picked !== "string") return;
-  if (await backend.gavinRootExists(picked)) {
-    await setWorkspaceRoot(workspaceId, picked);
-    return;
+  try {
+    const picked = await open({ directory: true, multiple: false, title: "Choose workspace root" });
+    if (typeof picked !== "string") return;
+    if (await backend.gavinRootExists(picked)) {
+      await setWorkspaceRoot(workspaceId, picked);
+      return;
+    }
+    await switchWorkspaceView(workspaceId, "home");
+    reportError("That folder has no .gavin-root yet — use the root control on the Home tab to initialise or bind it.");
+  } catch (e) {
+    reportError(`Couldn't change root folder: ${e}`);
   }
-  await switchWorkspaceView(workspaceId, "home");
-  reportError("That folder has no .gavin-root yet — use the root control on the Home tab to initialise or bind it.");
 }
 
 export function buildPageMenuEntries(

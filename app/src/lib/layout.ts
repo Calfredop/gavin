@@ -65,6 +65,7 @@ export function bulkCloseTargets(
   mode: "others" | "right" | "left"
 ): string[] {
   const index = tabs.indexOf(tabId);
+  if (index === -1) return [];
   const candidates = mode === "others" ? tabs : mode === "right" ? tabs.slice(index + 1) : tabs.slice(0, index);
   return candidates.filter((id) => id !== tabId && !pinned.includes(id));
 }

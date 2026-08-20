@@ -697,4 +697,9 @@ describe("bulkCloseTargets", () => {
   it("is empty when only pinned neighbours remain", () => {
     expect(bulkCloseTargets(["p", "a"], ["p"], "a", "others")).toEqual([]);
   });
+  it("is empty for a tab that is not in the list", () => {
+    expect(bulkCloseTargets(tabs, pinned, "ghost", "right")).toEqual([]);
+    expect(bulkCloseTargets(tabs, pinned, "ghost", "left")).toEqual([]);
+    expect(bulkCloseTargets(tabs, pinned, "ghost", "others")).toEqual([]);
+  });
 });

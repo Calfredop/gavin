@@ -121,6 +121,19 @@ describe("changeWorkspaceRoot", () => {
     await changeWorkspaceRoot("w1", vi.fn());
     expect(gavinRootExists).not.toHaveBeenCalled();
   });
+  it("reports a failure from the picker or the backend instead of throwing", async () => {
+    vi.mocked(open).mockRejectedValue(new Error("picker broke"));
+    const report = vi.fn();
+    await expect(changeWorkspaceRoot("w1", report)).resolves.toBeUndefined();
+    expect(report).toHaveBeenCalledWith(expect.stringContaining("picker broke"));
+  });
+  it("the menu entry reaches changeWorkspaceRoot with the hook's reportError", async () => {
+    vi.mocked(open).mockRejectedValue(new Error("boom"));
+    const h = hooks();
+    find(buildWorkspaceMenuEntries(ws("w1", [], "/r"), h), "Change Root Folder…").onPick();
+    await flush();
+    expect(h.reportError).toHaveBeenCalledWith(expect.stringContaining("boom"));
+  });
 });
 
 describe("buildPageMenuEntries", () => {
