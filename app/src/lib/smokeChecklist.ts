@@ -407,6 +407,29 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Git tab — sync & branches",
+    items: [
+      {
+        id: "git-fetch",
+        text: "Fetch against a real remote streams progress in the op bar and updates ↓/↑ badges",
+        hint: "SSH-agent / credential-helper auth works as in your terminal; a prompt-needing remote fails fast with git's message.",
+      },
+      { id: "git-cancel", text: "Cancel during a slow push/fetch stops it and the banner says “… cancelled”" },
+      {
+        id: "git-pull-conflict",
+        text: "Pull into a conflicting local commit shows the “Merge in progress” banner; Abort merge restores a clean tree",
+      },
+      { id: "git-publish", text: "A new local branch shows “Publish”; pushing sets its upstream and the label flips to Push" },
+      { id: "git-stash-roundtrip", text: "Stash (with untracked) empties the lists; the stash row shows its files; Pop restores everything" },
+      { id: "git-remotes", text: "Add remote / remove remote from the sidebar; with two remotes the toolbar shows the remote picker" },
+      {
+        id: "git-delete-unmerged",
+        text: "Deleting an unmerged branch asks again with “Force delete”; a merged branch deletes on the first confirm",
+      },
+      { id: "git-checkout-dirty", text: "Checkout that would overwrite local changes shows git's refusal verbatim (no auto-stash)" },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

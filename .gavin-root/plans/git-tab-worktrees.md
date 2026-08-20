@@ -1,6 +1,6 @@
 ---
 title: Git tab — Worktrees / agent forks (SP3 of 3)
-status: To Do
+status: In Progress
 priority: high
 ---
 # Git tab — Worktrees / agent forks (SP3 of 3)

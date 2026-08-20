@@ -15,11 +15,11 @@ Plan: `docs/superpowers/plans/2026-08-20-git-tab-sync-branches.md`
 
 ## Steps
 
-- [ ] Streaming runner + op registry + cancel; fetch/pull/push commands (bare-remote tests)
-- [ ] Refs snapshot (`git_refs`): branches with tracking, remotes, stashes — parsers + tests
-- [ ] Branch / remote / stash / abort / continue commands + tests
-- [ ] Store: refs, activeRemote, navSelection, op lifecycle + tests
-- [ ] Toolbar trio + badges + remote dropdown + op bar + stash dialog
-- [ ] In-progress banner Abort / Continue
-- [ ] Sidebar sections: Branches, Remotes, Stashes + dialogs + stash view
-- [ ] Smoke checklist entries
+- [x] Streaming runner + op registry + cancel; fetch/pull/push commands (bare-remote tests)
+- [x] Refs snapshot (`git_refs`): branches with tracking, remotes, stashes — parsers + tests
+- [x] Branch / remote / stash / abort / continue commands + tests
+- [x] Store: refs, activeRemote, navSelection, op lifecycle + tests
+- [x] Toolbar trio + badges + remote dropdown + op bar + stash dialog
+- [x] In-progress banner Abort / Continue
+- [x] Sidebar sections: Branches, Remotes, Stashes + dialogs + stash view
+- [x] Smoke checklist entries
