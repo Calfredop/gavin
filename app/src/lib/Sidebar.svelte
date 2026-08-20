@@ -29,7 +29,7 @@
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
   import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, getActiveView, type Workspace, type Page, type GitStatus } from "./workspace";
   import { message } from "@tauri-apps/plugin-dialog";
-  import { openContextMenu } from "./contextMenu";
+  import { openContextMenuFromEvent } from "./contextMenu";
   import {
     buildWorkspaceMenuEntries,
     buildPageMenuEntries,
@@ -224,23 +224,24 @@
     };
   }
 
+  // Inside an inline rename input the native text menu must keep working.
+  function inTextInput(e: MouseEvent): boolean {
+    return e.target instanceof HTMLInputElement;
+  }
+
   function openWorkspaceMenu(e: MouseEvent, ws: Workspace): void {
-    e.preventDefault();
-    e.stopPropagation();
-    openContextMenu(e.clientX, e.clientY, buildWorkspaceMenuEntries(ws, menuHooks()));
+    if (inTextInput(e)) return;
+    openContextMenuFromEvent(e, buildWorkspaceMenuEntries(ws, menuHooks()));
   }
 
   function openPageMenu(e: MouseEvent, ws: Workspace, page: Page): void {
-    e.preventDefault();
-    e.stopPropagation();
-    openContextMenu(e.clientX, e.clientY, buildPageMenuEntries(ws, page, $layoutState.workspaces, menuHooks()));
+    if (inTextInput(e)) return;
+    openContextMenuFromEvent(e, buildPageMenuEntries(ws, page, $layoutState.workspaces, menuHooks()));
   }
 
   function openSessionRowMenu(e: MouseEvent, ws: Workspace, page: Page, sessionId: string): void {
-    e.preventDefault();
-    e.stopPropagation();
     const cwd = $layoutState.cwdBySessionId[sessionId] ?? null;
-    openContextMenu(e.clientX, e.clientY, buildSessionRowMenuEntries(ws, page, sessionId, cwd, menuHooks()));
+    openContextMenuFromEvent(e, buildSessionRowMenuEntries(ws, page, sessionId, cwd, menuHooks()));
   }
 
   function handleWorkspaceDragStart(event: DragEvent, workspaceId: string): void {

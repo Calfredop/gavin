@@ -10,7 +10,7 @@
   import { runCard } from "./cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { openContextMenu } from "./contextMenu";
+  import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
@@ -99,9 +99,8 @@
 
   function handleCardContextMenu(card: CardView, e: MouseEvent): void {
     if (!board) return;
-    openContextMenu(
-      e.clientX,
-      e.clientY,
+    openContextMenuFromEvent(
+      e,
       buildCardMenuEntries(card, {
         workspaceId,
         columns: board.columns,

@@ -18,7 +18,7 @@
   import { confirmTabClose } from "./confirmClose";
   import { dirtyPaths } from "./fileEditing";
   import { message } from "@tauri-apps/plugin-dialog";
-  import { openContextMenu } from "./contextMenu";
+  import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
   import { X, Plus, RotateCw, Kanban, Pin } from "@lucide/svelte";
   import Tooltip from "./Tooltip.svelte";
@@ -164,15 +164,14 @@
   }
 
   function openTabMenu(e: MouseEvent, sessionId: string): void {
-    e.preventDefault();
-    e.stopPropagation();
+    // Inside the inline rename input the native text menu must keep working.
+    if (e.target instanceof HTMLInputElement) return;
     const file = fileTabPath(sessionId);
     const board = boardTab(sessionId);
     const kind = board ? "board" : file ? "file" : "terminal";
     const path = board ? board.contextFolder : (file ?? $layoutState.cwdBySessionId[sessionId] ?? null);
-    openContextMenu(
-      e.clientX,
-      e.clientY,
+    openContextMenuFromEvent(
+      e,
       buildTabMenuEntries(
         { tabId: sessionId, kind, path, pinned: isPinnedTab(sessionId), tabs: leaf.tabs, pinnedTabs: leaf.pinned ?? [] },
         { startRename: startEditing, reportError: reportMenuError }
