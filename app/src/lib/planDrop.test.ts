@@ -13,7 +13,7 @@ import { gavinTrees } from "./gavinState";
 import { applyPlanDrop, planCommitFromMerged } from "./planDrop";
 import { dropHold } from "./kanbanDrag";
 import type { GavinTree, PlanFileInfo } from "./gavin";
-import type { PlanCardView } from "./planBoard";
+import type { CardView } from "./planBoard";
 
 function planInfo(path: string, status: string | null, order: number | null): PlanFileInfo {
   const fileName = path.split("/").at(-1) ?? path;
@@ -119,15 +119,24 @@ describe("applyPlanDrop", () => {
   it("planCommitFromMerged: drop on an auto column restatuses to the raw status", async () => {
     vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
     seed([planInfo("/p/d.md", "To Do", null)]);
-    const view = (path: string, order: number | null): PlanCardView => ({
+    const view = (path: string, order: number | null): CardView => ({
       id: path,
       title: path,
       status: "Blocked",
       priority: null,
       order,
+      kind: "plan",
+      parent: null,
+      parentTitle: null,
+      parentBroken: false,
+      labels: [],
+      checklistDone: 0,
+      checklistTotal: 0,
       contextName: "p",
+      contextFolder: "/p",
       fileName: path.split("/").at(-1) ?? path,
       parseWarning: false,
+      nestedChildren: [],
     });
     const err = await planCommitFromMerged(
       "ws",
@@ -145,15 +154,24 @@ describe("applyPlanDrop", () => {
   it("planCommitFromMerged: same-column drop skips the status write and excludes the dragged card", async () => {
     vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
     seed([planInfo("/p/d.md", "To Do", 1024)]);
-    const view = (path: string, order: number | null): PlanCardView => ({
+    const view = (path: string, order: number | null): CardView => ({
       id: path,
       title: path,
       status: "To Do",
       priority: null,
       order,
+      kind: "plan",
+      parent: null,
+      parentTitle: null,
+      parentBroken: false,
+      labels: [],
+      checklistDone: 0,
+      checklistTotal: 0,
       contextName: "p",
+      contextFolder: "/p",
       fileName: path.split("/").at(-1) ?? path,
       parseWarning: false,
+      nestedChildren: [],
     });
     const err = await planCommitFromMerged(
       "ws",
@@ -191,11 +209,17 @@ describe("applyPlanDrop", () => {
             planCards: [
               {
                 id: "/p/d.md", title: "d", status: "To Do", priority: null, order: null,
-                contextName: "p", fileName: "d.md", parseWarning: false,
+                kind: "plan" as const, parent: null, parentTitle: null, parentBroken: false,
+                labels: [], checklistDone: 0, checklistTotal: 0,
+                contextName: "p", contextFolder: "/p", fileName: "d.md", parseWarning: false,
+                nestedChildren: [],
               },
               {
                 id: "/p/a.md", title: "a", status: "To Do", priority: null, order: 1024,
-                contextName: "p", fileName: "a.md", parseWarning: false,
+                kind: "plan" as const, parent: null, parentTitle: null, parentBroken: false,
+                labels: [], checklistDone: 0, checklistTotal: 0,
+                contextName: "p", contextFolder: "/p", fileName: "a.md", parseWarning: false,
+                nestedChildren: [],
               },
             ],
           },

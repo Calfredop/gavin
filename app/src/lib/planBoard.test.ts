@@ -81,6 +81,72 @@ describe("mergePlanCards", () => {
     expect(columns[0].planCards.map((p) => p.fileName)).toEqual(["a.md", "z.md"]);
   });
 
+  it("children without status nest under their plan, sorted by order", () => {
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("p.md", "To Do", { kind: "plan", title: "The Plan" }),
+        plan("a.md", null, { kind: "task", parent: "p.md", order: 2000 }),
+        plan("b.md", null, { kind: "task", parent: "p.md", order: 1000 }),
+      ]),
+    ]);
+    const { columns, autoColumns } = mergePlanCards(board, t);
+    const planCard = columns[0].planCards.find((c) => c.fileName === "p.md");
+    expect(planCard?.nestedChildren.map((c) => c.fileName)).toEqual(["b.md", "a.md"]);
+    expect(planCard?.nestedChildren[0].parentTitle).toBe("The Plan");
+    // Nested children appear in NO column and no auto column:
+    const everywhere = [
+      ...columns.flatMap((c) => c.planCards),
+      ...autoColumns.flatMap((a) => a.planCards),
+    ].map((c) => c.fileName);
+    expect(everywhere).not.toContain("a.md");
+    expect(everywhere).not.toContain("b.md");
+  });
+
+  it("children with status stay in columns wearing parentTitle", () => {
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("p.md", "To Do", { kind: "plan", title: "The Plan" }),
+        plan("a.md", "In Progress", { kind: "task", parent: "p.md" }),
+      ]),
+    ]);
+    const { columns } = mergePlanCards(board, t);
+    const child = columns[1].planCards.find((c) => c.fileName === "a.md");
+    expect(child?.parentTitle).toBe("The Plan");
+    expect(child?.parentBroken).toBe(false);
+    expect(columns[0].planCards.find((c) => c.fileName === "p.md")?.nestedChildren).toEqual([]);
+  });
+
+  it("broken parents render free-standing with parentBroken", () => {
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("a.md", null, { kind: "task", parent: "missing.md" }),
+        plan("b.md", null, { kind: "task", parent: "b.md" }), // self
+        plan("n.md", "To Do", { kind: "note" }),
+        plan("c.md", null, { kind: "task", parent: "n.md" }), // non-plan target
+      ]),
+    ]);
+    const { columns } = mergePlanCards(board, t);
+    const first = columns[0].planCards;
+    for (const f of ["a.md", "b.md", "c.md"]) {
+      const card = first.find((c) => c.fileName === f);
+      expect(card, f).toBeDefined();
+      expect(card?.parentBroken, f).toBe(true);
+    }
+  });
+
+  it("labels and checklist counts pass through", () => {
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("p.md", "To Do", { labels: ["bug", "ui"], checklistDone: 2, checklistTotal: 5 }),
+      ]),
+    ]);
+    const card = mergePlanCards(board, t).columns[0].planCards[0];
+    expect(card.labels).toEqual(["bug", "ui"]);
+    expect(card.checklistDone).toBe(2);
+    expect(card.checklistTotal).toBe(5);
+    expect(card.contextFolder).toBe("/ws");
+  });
+
   it("groups unmatched statuses into auto columns after the real ones", () => {
     const t = tree([ctx("/ws", "root", [plan("a.md", "Blocked"), plan("b.md", "blocked"), plan("c.md", "Review")])]);
     const { autoColumns } = mergePlanCards(board, t);
