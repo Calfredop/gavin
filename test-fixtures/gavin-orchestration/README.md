@@ -13,10 +13,12 @@ for what lands where and which items each file exists to serve.
 (500 ms watch debounce + 2 s rescan floor) — that delay is by design, not a bug.
 
 **Setup once:**
-1. Build/run the current code — and make sure the **daemon** is current too:
-   `pkill gavin-daemon` before launching, so the app spawns a fresh one (an old
-   daemon predates the gavin protocol and every step below fails confusingly).
-   Your existing terminal sessions restart with fresh shells; that's expected.
+1. Build/run the current code. `npm run tauri dev` now rebuilds the daemon and
+   gavin-mcp binaries first (beforeDevCommand), but a daemon **process** from
+   an older build keeps running across relaunches: `pkill gavin-daemon` before
+   launching so the app spawns the fresh binary (the version overlay's
+   "Restart daemon & retry" does the same). Your existing terminal sessions
+   restart with fresh shells; that's expected.
 2. `sh test-fixtures/gavin-orchestration/setup.sh`, then launch the app.
 
 **Tick-off companion:** the dev Smoke Test workspace has a **Checklist** hub tab
