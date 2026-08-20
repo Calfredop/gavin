@@ -1,6 +1,6 @@
 ---
 title: Workspace settings panel
-status: To Do
+status: In Progress
 priority: high
 ---
 # Workspace settings panel
@@ -20,4 +20,8 @@ native skill mechanism.
 
 - Plan: docs/superpowers/plans/2026-08-20-workspace-settings.md (7 tasks)
 
-Spec approved and plan written 2026-08-20; implementation not started.
+All 7 tasks implemented and committed (09cb355..4c8bc4a). Automated
+verification green: cargo 308, vitest 463, svelte-check 0 errors, build
+clean. Remaining before Done: the owner's interactive smoke pass — the
+in-app Checklist tab's "Workspace settings" section (14 items), which
+needs `pkill gavin-daemon` first because this bumps the protocol to v7.

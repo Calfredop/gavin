@@ -1,6 +1,7 @@
 ---
+order: 2048
 title: Kanban Trello-quality rework
-status: In Progress
+status: Done
 priority: high
 ---
 # Kanban Trello-quality rework

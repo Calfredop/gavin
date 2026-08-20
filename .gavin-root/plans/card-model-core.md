@@ -1,4 +1,5 @@
 ---
+order: 1024
 title: Card model core (plan 1/3)
 status: Done
 priority: high

@@ -1,4 +1,5 @@
 ---
+order: 4096
 title: Card run & bindings (plan 3/3)
 status: Done
 priority: high

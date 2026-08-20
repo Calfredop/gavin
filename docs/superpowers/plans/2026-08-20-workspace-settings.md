@@ -68,7 +68,7 @@ Checked against the code before writing this plan — do not re-derive:
 **Interfaces:**
 - Produces: `protocol::AgentConfig { profile: Option<String>, file: Option<String>, command: Option<String> }`; `GavinContext.agent: Option<AgentConfig>`; `Request::SetRootConfigField { root_path, key, value }`; `gavin::set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Result<()>`.
 
-- [ ] **Step 1: Add the dependency.**
+- [x] **Step 1: Add the dependency.**
 
 In `crates/daemon/Cargo.toml`, beside `toml = "0.8"`:
 
@@ -78,7 +78,7 @@ toml_edit = "0.22"
 
 Run `cargo build -p daemon` to confirm it resolves.
 
-- [ ] **Step 2: Write the failing protocol tests.**
+- [x] **Step 2: Write the failing protocol tests.**
 
 In `crates/protocol/src/lib.rs`'s test module:
 
@@ -142,11 +142,11 @@ Then **rename** the existing version test and change its value:
 
 > If `write_message`/`read_message` are not the names used by the neighbouring round-trip tests in this file, copy whatever those tests use — match the file, not this plan.
 
-- [ ] **Step 3: Run — expect failure.**
+- [x] **Step 3: Run — expect failure.**
 
 `cargo test -p protocol` → fails: `AgentConfig` not found, and the version test fails on 6 ≠ 7.
 
-- [ ] **Step 4: Implement the protocol changes.**
+- [x] **Step 4: Implement the protocol changes.**
 
 Bump the constant:
 
@@ -191,9 +191,9 @@ Add the request variant, after `SetPlanFrontmatterField`:
     },
 ```
 
-- [ ] **Step 5: Run** — `cargo test -p protocol` passes. `cargo build` now fails in the daemon: every `GavinContext { .. }` literal is missing `agent`. That is expected and Step 7 fixes it.
+- [x] **Step 5: Run** — `cargo test -p protocol` passes. `cargo build` now fails in the daemon: every `GavinContext { .. }` literal is missing `agent`. That is expected and Step 7 fixes it.
 
-- [ ] **Step 6: Write the failing daemon tests.**
+- [x] **Step 6: Write the failing daemon tests.**
 
 In `crates/daemon/src/gavin.rs`'s test module:
 
@@ -300,7 +300,7 @@ In `crates/daemon/src/gavin.rs`'s test module:
     }
 ```
 
-- [ ] **Step 7: Implement the daemon side.**
+- [x] **Step 7: Implement the daemon side.**
 
 `parse_context_name` currently returns `(Option<String>, bool)`. Widen it rather than parsing the file twice — rename it `parse_context_config` and return the agent block too:
 
@@ -377,9 +377,9 @@ In `crates/daemon/src/server.rs`, beside the `SetPlanFrontmatterField` arm:
         }
 ```
 
-- [ ] **Step 8: Run** — `cargo test -p protocol -p daemon` green. Fix any remaining `GavinContext` literal the compiler names.
+- [x] **Step 8: Run** — `cargo test -p protocol -p daemon` green. Fix any remaining `GavinContext` literal the compiler names.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates && git commit -m "feat(settings): agent config in config.toml, read on scan and written via SetRootConfigField"
@@ -396,7 +396,7 @@ git add crates && git commit -m "feat(settings): agent config in config.toml, re
 - Consumes: nothing from Task 1.
 - Produces: `agent_setup::AGENT_PROFILES: &[AgentProfile]`; commands `agent_setup::agent_profiles() -> Vec<AgentProfileDto>` and `agent_setup::move_agent_file(root_path, from, to) -> Result<(), String>`.
 
-- [ ] **Step 1: Write the failing tests** in `agent_setup.rs`'s test module:
+- [x] **Step 1: Write the failing tests** in `agent_setup.rs`'s test module:
 
 ```rust
     #[test]
@@ -461,9 +461,9 @@ git add crates && git commit -m "feat(settings): agent config in config.toml, re
     }
 ```
 
-- [ ] **Step 2: Run** — `cargo test -p app agent_setup` fails: `AGENT_PROFILES` not found.
+- [x] **Step 2: Run** — `cargo test -p app agent_setup` fails: `AGENT_PROFILES` not found.
 
-- [ ] **Step 3: Replace `ClaudeCodeProfile` with the table.**
+- [x] **Step 3: Replace `ClaudeCodeProfile` with the table.**
 
 Delete the `ClaudeCodeProfile` struct and the `CLAUDE_CODE` const, and put this in their place:
 
@@ -514,7 +514,7 @@ pub fn profile_by_id(id: &str) -> &'static AgentProfile {
 }
 ```
 
-- [ ] **Step 4: Point the existing writers at the table.**
+- [x] **Step 4: Point the existing writers at the table.**
 
 `write_mcp_config`, `write_skill` and `write_instructions_block` take `profile: &ClaudeCodeProfile` today. Change each signature to `layout: &McpLayout` (they only ever use MCP fields) except `write_instructions_block`, which needs the filename — give it `(root: &Path, instructions_file: &str)` and use that instead of `profile.instructions_file`.
 
@@ -564,7 +564,7 @@ fn resolved_instructions_file(root: &Path, profile: &AgentProfile) -> String {
 
 > `toml` is already an app dependency only if `agent_setup.rs` compiles with it — check `app/src-tauri/Cargo.toml` and add `toml = "0.8"` there if absent.
 
-- [ ] **Step 5: Add the two commands.**
+- [x] **Step 5: Add the two commands.**
 
 ```rust
 /// The profile table, flattened for the frontend. Mirrors
@@ -613,7 +613,7 @@ pub fn move_agent_file(root_path: String, from: String, to: String) -> Result<()
 }
 ```
 
-- [ ] **Step 6: Register both** in `app/src-tauri/src/lib.rs`, after `agent_setup::setup_agent_integration`:
+- [x] **Step 6: Register both** in `app/src-tauri/src/lib.rs`, after `agent_setup::setup_agent_integration`:
 
 ```rust
             agent_setup::setup_agent_integration,
@@ -621,9 +621,9 @@ pub fn move_agent_file(root_path: String, from: String, to: String) -> Result<()
             agent_setup::move_agent_file
 ```
 
-- [ ] **Step 7: Run** — `cargo test -p app` green.
+- [x] **Step 7: Run** — `cargo test -p app` green.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add app/src-tauri && git commit -m "feat(settings): agent profile table with profile and move-file commands"
@@ -640,7 +640,7 @@ git add app/src-tauri && git commit -m "feat(settings): agent profile table with
 - Consumes: `gavin::set_root_config_field` (Task 1), reached via the daemon.
 - Produces: `Workspace.color`, `Workspace.notify_needs_input`, `Workspace.notify_finished`; `agent_command` **removed**.
 
-- [ ] **Step 1: Write the failing config tests.**
+- [x] **Step 1: Write the failing config tests.**
 
 ```rust
     #[test]
@@ -677,9 +677,9 @@ git add app/src-tauri && git commit -m "feat(settings): agent profile table with
 
 > `AppConfig`'s field list may have grown — copy the literal from the neighbouring test in the file rather than this plan.
 
-- [ ] **Step 2: Run** — fails: no field `color`.
+- [x] **Step 2: Run** — fails: no field `color`.
 
-- [ ] **Step 3: Change the struct.** In `config.rs`'s `Workspace`, **delete** `agent_command` and add:
+- [x] **Step 3: Change the struct.** In `config.rs`'s `Workspace`, **delete** `agent_command` and add:
 
 ```rust
     /// Accent colour for this workspace's tab indicator and sidebar
@@ -703,15 +703,15 @@ fn default_true() -> bool {
 }
 ```
 
-- [ ] **Step 4: Fix every literal with the compiler.**
+- [x] **Step 4: Fix every literal with the compiler.**
 
 Run `cargo build -p app` and fix each E0063 it names — **10 `Workspace { .. }` literals** across `config.rs` and `session.rs`. Add `color: None, notify_needs_input: true, notify_finished: true, legacy_agent_command: None` and remove `agent_command`. (`legacy_agent_command` is introduced in Step 8; add it in the same pass so the literals are only touched once.) Do **not** use a regex: last time one silently skipped a site whose `Some("…".to_string())` contained the `)` the pattern stopped at. Repeat `cargo build` until clean.
 
-- [ ] **Step 5: Update the shape test.** `workspace_serializes_to_the_camel_case_shape_the_frontend_expects` must now expect `"color": null, "notifyNeedsInput": true, "notifyFinished": true` and **no** `"agentCommand"` key.
+- [x] **Step 5: Update the shape test.** `workspace_serializes_to_the_camel_case_shape_the_frontend_expects` must now expect `"color": null, "notifyNeedsInput": true, "notifyFinished": true` and **no** `"agentCommand"` key.
 
 Any pre-existing test asserting `agentCommand` round-trips is **rewritten** against the new contract (e.g. `main_session_and_agent_command_roundtrip` becomes `main_session_id_roundtrips`, dropping only the command assertion), never deleted.
 
-- [ ] **Step 6: Write the failing migration test** in `session.rs`:
+- [x] **Step 6: Write the failing migration test** in `session.rs`:
 
 ```rust
     #[test]
@@ -746,7 +746,7 @@ Any pre-existing test asserting `agentCommand` round-trips is **rewritten** agai
     }
 ```
 
-- [ ] **Step 7: Implement the migration** in `session.rs`:
+- [x] **Step 7: Implement the migration** in `session.rs`:
 
 ```rust
 /// One-time carry-over of D34's `agentCommand` from config.json into
@@ -797,7 +797,7 @@ pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Res
 
 Add `toml_edit = "0.22"` to `app/src-tauri/Cargo.toml`.
 
-- [ ] **Step 8: Call it from bootstrap.**
+- [x] **Step 8: Call it from bootstrap.**
 
 `bootstrap` currently reads the persisted workspaces before `resolve_workspaces`. Because `agent_command` is being removed from the struct, read the legacy value from the raw JSON **before** deserialisation is lossy — simplest correct approach: keep a `#[serde(default)] pub legacy_agent_command: Option<String>` field aliased to the old key for one release:
 
@@ -823,9 +823,9 @@ Then in `bootstrap`, immediately after `reconcile_smoketest_workspace(&mut works
 
 Taking the value clears it, so the next `save` drops the key permanently.
 
-- [ ] **Step 9: Run** — `cargo test -p app` green.
+- [x] **Step 9: Run** — `cargo test -p app` green.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add app/src-tauri && git commit -m "feat(settings): colour and notification fields, agent command migrated to config.toml"
@@ -842,7 +842,7 @@ git add app/src-tauri && git commit -m "feat(settings): colour and notification 
 **Interfaces:**
 - Produces: `DEFAULT_ACCENT`, `normalizeColor`, `PALETTE`, `validateAgentFileName`, `renameDecision`, `resolveAgentConfig`, `AgentProfileInfo`; and in `workspace.ts`, `hubLabel`, `workspaceIdForSession`.
 
-- [ ] **Step 1: Mirror the wire type** in `app/src/lib/gavin.ts`, beside `GavinContext`:
+- [x] **Step 1: Mirror the wire type** in `app/src/lib/gavin.ts`, beside `GavinContext`:
 
 ```typescript
 export interface AgentConfig {
@@ -858,7 +858,7 @@ and add to `GavinContext`:
   agent?: AgentConfig | null;
 ```
 
-- [ ] **Step 2: Write the failing tests** (`settings.test.ts`):
+- [x] **Step 2: Write the failing tests** (`settings.test.ts`):
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -974,9 +974,9 @@ describe("resolveAgentConfig", () => {
 });
 ```
 
-- [ ] **Step 3: Run** — `npx vitest run src/lib/settings.test.ts` fails to resolve `./settings`.
+- [x] **Step 3: Run** — `npx vitest run src/lib/settings.test.ts` fails to resolve `./settings`.
 
-- [ ] **Step 4: Implement `settings.ts`:**
+- [x] **Step 4: Implement `settings.ts`:**
 
 ```typescript
 import type { AgentConfig } from "./gavin";
@@ -1084,9 +1084,9 @@ export function resolveAgentConfig(
 }
 ```
 
-- [ ] **Step 5: Run** — green.
+- [x] **Step 5: Run** — green.
 
-- [ ] **Step 6: Write the failing `workspace.ts` tests** (`workspace.test.ts`):
+- [x] **Step 6: Write the failing `workspace.ts` tests** (`workspace.test.ts`):
 
 ```typescript
 describe("hubLabel", () => {
@@ -1125,7 +1125,7 @@ describe("workspaceIdForSession", () => {
 });
 ```
 
-- [ ] **Step 7: Implement in `workspace.ts`:**
+- [x] **Step 7: Implement in `workspace.ts`:**
 
 ```typescript
 /// A hub tab's label. Static for every view except the agent-file one,
@@ -1166,9 +1166,9 @@ Also add to the `Workspace` interface, replacing `agentCommand`:
   notifyFinished?: boolean;
 ```
 
-- [ ] **Step 8: Run** — `npx vitest run` green; `npx svelte-check` will still fail where `agentCommand` is referenced. Task 5 fixes those.
+- [x] **Step 8: Run** — `npx vitest run` green; `npx svelte-check` will still fail where `agentCommand` is referenced. Task 5 fixes those.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add app/src/lib && git commit -m "feat(settings): pure colour, agent-file and profile-resolution logic"
@@ -1185,7 +1185,7 @@ git add app/src/lib && git commit -m "feat(settings): pure colour, agent-file an
 - Consumes: `settings.ts` and `workspace.ts` (Task 4); the commands from Tasks 1–2.
 - Produces: `setAgentField`, `setWorkspaceColor`, `setNotifyFlag`, `agentProfiles`, `moveAgentFile`, `setRootConfigField`.
 
-- [ ] **Step 1: Add the backend wrappers** (`backend.ts`), matching the file's existing style:
+- [x] **Step 1: Add the backend wrappers** (`backend.ts`), matching the file's existing style:
 
 ```typescript
 export function agentProfiles(): Promise<
@@ -1203,7 +1203,7 @@ export function setRootConfigField(rootPath: string, key: string, value: string)
 }
 ```
 
-- [ ] **Step 2: Add the Tauri relay command** for `set_root_config_field` in `session.rs`, beside `set_plan_frontmatter_field`:
+- [x] **Step 2: Add the Tauri relay command** for `set_root_config_field` in `session.rs`, beside `set_plan_frontmatter_field`:
 
 ```rust
 #[tauri::command]
@@ -1225,7 +1225,7 @@ pub fn set_root_config_field(
 
 Register `session::set_root_config_field` in `lib.rs`.
 
-- [ ] **Step 3: Write the failing tests** (`layoutState.test.ts`), adding `setWorkspaceColor` and `setNotifyFlag` to the import list and `setRootConfigField: vi.fn().mockResolvedValue(undefined)` plus `agentProfiles: vi.fn().mockResolvedValue([])` and `moveAgentFile: vi.fn().mockResolvedValue(undefined)` to the `./backend` mock (**resolved**, per Global Constraints):
+- [x] **Step 3: Write the failing tests** (`layoutState.test.ts`), adding `setWorkspaceColor` and `setNotifyFlag` to the import list and `setRootConfigField: vi.fn().mockResolvedValue(undefined)` plus `agentProfiles: vi.fn().mockResolvedValue([])` and `moveAgentFile: vi.fn().mockResolvedValue(undefined)` to the `./backend` mock (**resolved**, per Global Constraints):
 
 ```typescript
 describe("workspace settings", () => {
@@ -1265,7 +1265,7 @@ describe("workspace settings", () => {
 });
 ```
 
-- [ ] **Step 4: Implement in `layoutState.ts`.** Delete `setAgentCommand` entirely and add:
+- [x] **Step 4: Implement in `layoutState.ts`.** Delete `setAgentCommand` entirely and add:
 
 ```typescript
 /// Agent settings live in config.toml (D35/D41), so this goes through the
@@ -1307,7 +1307,7 @@ export async function setNotifyFlag(
 
 Import `normalizeColor` from `./settings` and `workspaceIdForSession` from `./workspace`.
 
-- [ ] **Step 5: Make `startMainAgent` use the resolved command.**
+- [x] **Step 5: Make `startMainAgent` use the resolved command.**
 
 It currently reads `ws.agentCommand ?? DEFAULT_AGENT_COMMAND`. Replace with the resolved value from the gavin tree:
 
@@ -1335,7 +1335,7 @@ and in `bootstrap`, after the existing hydration calls:
 
 Delete `DEFAULT_AGENT_COMMAND` and rewrite the existing test that asserts the `"claude"` fallback so it drives the fallback through `resolveAgentConfig` instead of the deleted constant.
 
-- [ ] **Step 6: Deduplicate the session lookup.** In `handleSessionExited`, replace the inline `mainSessionId` search **and** the page-tree walk with `workspaceIdForSession`, keeping the existing early-return behaviour:
+- [x] **Step 6: Deduplicate the session lookup.** In `handleSessionExited`, replace the inline `mainSessionId` search **and** the page-tree walk with `workspaceIdForSession`, keeping the existing early-return behaviour:
 
 ```typescript
 export function handleSessionExited(sessionId: string): void {
@@ -1348,7 +1348,7 @@ export function handleSessionExited(sessionId: string): void {
   // ... existing page-tree branch, unchanged
 ```
 
-- [ ] **Step 7: Write the failing notification test** (`notifications.test.ts`):
+- [x] **Step 7: Write the failing notification test** (`notifications.test.ts`):
 
 ```typescript
   it("respects the per-workspace toggles", async () => {
@@ -1370,7 +1370,7 @@ export function handleSessionExited(sessionId: string): void {
 
 > Match the existing tests' mock setup in this file — copy their `vi.mock` blocks rather than inventing new ones.
 
-- [ ] **Step 8: Implement.** Give `maybeNotifyStatusChange` a fifth parameter and consult it before anything else:
+- [x] **Step 8: Implement.** Give `maybeNotifyStatusChange` a fifth parameter and consult it before anything else:
 
 ```typescript
 export interface NotifyPrefs {
@@ -1410,9 +1410,9 @@ And at the call site in `handleSessionStatusChanged`:
   });
 ```
 
-- [ ] **Step 9: Run** — `npx vitest run` green.
+- [x] **Step 9: Run** — `npx vitest run` green.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add app/src app/src-tauri && git commit -m "feat(settings): agent/colour/notification actions and per-workspace notification toggles"
@@ -1426,7 +1426,7 @@ git add app/src app/src-tauri && git commit -m "feat(settings): agent/colour/not
 - Create: `app/src/lib/SettingsHubView.svelte`, `app/src/lib/ColourPicker.svelte`
 - Modify: `app/src/lib/workspaceViews.ts`, `app/src/routes/+page.svelte`, `app/src/lib/WorkspaceRootControl.svelte`, `app/src/lib/AgentFileHubView.svelte`, `app/src/lib/HomeHubView.svelte`
 
-- [ ] **Step 1: Give the root control a variant.** In `WorkspaceRootControl.svelte`, extend Props:
+- [x] **Step 1: Give the root control a variant.** In `WorkspaceRootControl.svelte`, extend Props:
 
 ```svelte
   interface Props {
@@ -1451,7 +1451,7 @@ Wrap the outermost element with `class:settings={variant === "settings"}` and ad
   }
 ```
 
-- [ ] **Step 2: Build `ColourPicker.svelte`:**
+- [x] **Step 2: Build `ColourPicker.svelte`:**
 
 ```svelte
 <script lang="ts">
@@ -1534,7 +1534,7 @@ Wrap the outermost element with `class:settings={variant === "settings"}` and ad
 </style>
 ```
 
-- [ ] **Step 3: Build `SettingsHubView.svelte`:**
+- [x] **Step 3: Build `SettingsHubView.svelte`:**
 
 ```svelte
 <script lang="ts">
@@ -1817,7 +1817,7 @@ Wrap the outermost element with `class:settings={variant === "settings"}` and ad
 
 > Check `Modal.svelte`'s actual props before using it — if it takes something other than `title`, or expects a `{#snippet}`, follow the file. `PlanDetailModal.svelte` is a working example.
 
-- [ ] **Step 4: Register the view.** In `workspaceViews.ts`, import `Settings` from `@lucide/svelte` (verify `settings.svelte` exists in `app/node_modules/@lucide/svelte/dist/icons/` first — a wrong icon name fails the build) and `SettingsHubView`, then append **last**:
+- [x] **Step 4: Register the view.** In `workspaceViews.ts`, import `Settings` from `@lucide/svelte` (verify `settings.svelte` exists in `app/node_modules/@lucide/svelte/dist/icons/` first — a wrong icon name fails the build) and `SettingsHubView`, then append **last**:
 
 ```typescript
   {
@@ -1830,7 +1830,7 @@ Wrap the outermost element with `class:settings={variant === "settings"}` and ad
 
 No `requiresRoot` — it must work unrooted.
 
-- [ ] **Step 5: De-hardcode the five sites.**
+- [x] **Step 5: De-hardcode the five sites.**
 
 `+page.svelte` — resolve once and use it for both the label and the banner gating:
 
@@ -1889,9 +1889,9 @@ with
 
 > `tree` is already derived in this component as `$gavinTrees[workspace.id]` — reuse it rather than adding a second.
 
-- [ ] **Step 6: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
+- [x] **Step 6: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/src && git commit -m "feat(settings): Settings hub tab and configurable agent file name"
@@ -1904,7 +1904,7 @@ git add app/src && git commit -m "feat(settings): Settings hub tab and configura
 **Files:**
 - Modify: `app/src/lib/Pane.svelte`, `app/src/lib/Sidebar.svelte`, `app/src/routes/+page.svelte`, `app/src/lib/smokeChecklist.ts`
 
-- [ ] **Step 1: Make the indicators read the variable.** In `Pane.svelte`, change the three hardcoded `#4a9eff` occurrences:
+- [x] **Step 1: Make the indicators read the variable.** In `Pane.svelte`, change the three hardcoded `#4a9eff` occurrences:
 
 ```css
   .tab.focused {
@@ -1918,7 +1918,7 @@ git add app/src && git commit -m "feat(settings): Settings hub tab and configura
   }
 ```
 
-- [ ] **Step 2: Set it for the active workspace.** In `+page.svelte`, on the element wrapping the workspace's content (the same one holding the hub nav and `.view`):
+- [x] **Step 2: Set it for the active workspace.** In `+page.svelte`, on the element wrapping the workspace's content (the same one holding the hub nav and `.view`):
 
 ```svelte
   style:--ws-accent={normalizeColor(activeWorkspace.color)}
@@ -1926,7 +1926,7 @@ git add app/src && git commit -m "feat(settings): Settings hub tab and configura
 
 importing `normalizeColor` from `$lib/settings`.
 
-- [ ] **Step 3: Add the sidebar stripe.** In `Sidebar.svelte`, add to **both** `.workspace-row` sites (the pinned Unfiled row and the regular list row):
+- [x] **Step 3: Add the sidebar stripe.** In `Sidebar.svelte`, add to **both** `.workspace-row` sites (the pinned Unfiled row and the regular list row):
 
 ```svelte
           style:--ws-accent={normalizeColor(ws.color)}
@@ -1942,7 +1942,7 @@ and the style:
 
 > Read the existing `.workspace-row` rule first: if it already has a `border-left` or a left padding that this would shift, adjust that rule rather than stacking a second border.
 
-- [ ] **Step 4: Add the checklist section** in `smokeChecklist.ts`, after "Orchestration home":
+- [x] **Step 4: Add the checklist section** in `smokeChecklist.ts`, after "Orchestration home":
 
 ```typescript
   {
@@ -1983,7 +1983,7 @@ and the style:
   },
 ```
 
-- [ ] **Step 5: Full gates.**
+- [x] **Step 5: Full gates.**
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -1993,11 +1993,11 @@ cd app && npx vitest run && npx svelte-check && npm run build
 
 All must be clean: `svelte-check` 0 errors, build succeeding.
 
-- [ ] **Step 6: Stale-daemon check.** This bumps `PROTOCOL_VERSION`, so a running daemon from before this work will now be rejected by the handshake. Before any manual pass: `pkill gavin-daemon`, then relaunch. Confirm the app starts without the version overlay.
+- [ ] **Step 6: Stale-daemon check.** (PENDING — user must pkill+relaunch) This bumps `PROTOCOL_VERSION`, so a running daemon from before this work will now be rejected by the handshake. Before any manual pass: `pkill gavin-daemon`, then relaunch. Confirm the app starts without the version overlay.
 
-- [ ] **Step 7: Manual smoke** — run the new section in the dev Smoke Test workspace. `set-rename-move` and `set-external` are the two that matter most: the first is the only path that mutates a user's file, and the second is the draft-preservation rule that has no automated coverage.
+- [ ] **Step 7: Manual smoke** (PENDING — user-run; see the Checklist tab's "Workspace settings" section) — run the new section in the dev Smoke Test workspace. `set-rename-move` and `set-external` are the two that matter most: the first is the only path that mutates a user's file, and the second is the draft-preservation rule that has no automated coverage.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add app/src && git commit -m "feat(settings): workspace colour on tab indicators and sidebar, plus smoke checklist"
