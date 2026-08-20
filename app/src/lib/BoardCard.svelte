@@ -22,8 +22,18 @@
     workspaceId?: string | null;
     onRun?: ((card: CardView) => void) | null;
     onDelete?: ((card: CardView) => void) | null;
+    onContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
   }
-  let { card, labelDefs, onOpen, nested = false, workspaceId = null, onRun = null, onDelete = null }: Props = $props();
+  let {
+    card,
+    labelDefs,
+    onOpen,
+    nested = false,
+    workspaceId = null,
+    onRun = null,
+    onDelete = null,
+    onContextMenu = null,
+  }: Props = $props();
 
   // Live session binding (card-model spec §3) -- same dot vocabulary the
   // terminal tabs use, plus a distinct exited ring since a card can stay
@@ -94,6 +104,12 @@
   role="button"
   tabindex="0"
   onkeydown={handleKeydown}
+  oncontextmenu={(e) => {
+    if (!onContextMenu) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onContextMenu(card, e);
+  }}
 >
   {#if onDelete}
     <button
@@ -202,7 +218,7 @@
       {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onDelete} />
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onDelete} {onContextMenu} />
           </div>
         {:else}
           <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>

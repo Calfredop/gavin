@@ -10,6 +10,9 @@
   import { runCard } from "./cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
+  import { openContextMenu } from "./contextMenu";
+  import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
@@ -81,6 +84,30 @@
     planWriteError = null;
     const err = await executeDeletion(workspaceId, plan);
     if (err) planWriteError = err;
+  }
+
+  function handleCardContextMenu(card: CardView, e: MouseEvent): void {
+    if (!board) return;
+    openContextMenu(
+      e.clientX,
+      e.clientY,
+      buildCardMenuEntries(card, {
+        workspaceId,
+        columns: board.columns,
+        openDetail: (path) => (openPlanPath = path),
+        requestDelete: (c) => (pendingDelete = c),
+        run: (c) => void handleRun(c),
+        reportError: (msg) => (planWriteError = msg),
+      })
+    );
+  }
+
+  function handleBoardContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+    openContextMenu(e.clientX, e.clientY, [
+      { label: "Add column", onPick: () => (addingColumn = true) },
+      { label: "Refresh board", onPick: () => void refreshBoard(workspaceId) },
+    ]);
   }
 
   async function handleRun(card: CardView): Promise<void> {
@@ -170,7 +197,7 @@
       <button type="button" onclick={() => dismissSaveError(workspaceId)}>✕</button>
     </div>
   {/if}
-  <div class="board" bind:this={boardEl}>
+  <div class="board" bind:this={boardEl} oncontextmenu={handleBoardContextMenu} role="presentation">
     {#each buildColumnSlots(board.columns, (c) => c.id, $dragState) as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div class="column-slot" animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
@@ -183,6 +210,7 @@
             onOpenPlanCard={(path) => (openPlanPath = path)}
             onRunCard={handleRun}
             onDeleteCard={(card) => (pendingDelete = card)}
+            onCardContextMenu={handleCardContextMenu}
             {allCards}
           />
         {:else}
@@ -191,7 +219,7 @@
       </div>
     {/each}
     {#each merged?.autoColumns ?? [] as auto (auto.status)}
-      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onDeleteCard={(card) => (pendingDelete = card)} />
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
     {/each}
     {#if addingColumn}
       <input
@@ -208,6 +236,7 @@
     {/if}
   </div>
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
+  <ContextMenu />
   {#if pendingDelete}
     <ConfirmPrompt
       title={`Delete "${pendingDelete.title}"?`}

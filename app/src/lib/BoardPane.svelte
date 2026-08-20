@@ -10,6 +10,9 @@
   import { runCard } from "./cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
+  import { openContextMenu } from "./contextMenu";
+  import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import type { ActiveDrag } from "./kanbanDrag";
@@ -95,6 +98,22 @@
     if (err) planWriteError = err;
   }
 
+  function handleCardContextMenu(card: CardView, e: MouseEvent): void {
+    if (!board) return;
+    openContextMenu(
+      e.clientX,
+      e.clientY,
+      buildCardMenuEntries(card, {
+        workspaceId,
+        columns: board.columns,
+        openDetail: (path) => (openPlanPath = path),
+        requestDelete: (c) => (pendingDelete = c),
+        run: (c) => void handleRun(c),
+        reportError: (msg) => (planWriteError = msg),
+      })
+    );
+  }
+
   async function handleRun(card: CardView): Promise<void> {
     planWriteError = null;
     const err = await runCard(workspaceId, card);
@@ -162,14 +181,16 @@
           onOpenPlanCard={(path) => (openPlanPath = path)}
           onRunCard={handleRun}
           onDeleteCard={(card) => (pendingDelete = card)}
+          onCardContextMenu={handleCardContextMenu}
           {allCards}
         />
       {/each}
       {#each merged?.autoColumns ?? [] as auto (auto.status)}
-        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onDeleteCard={(card) => (pendingDelete = card)} />
+        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
       {/each}
     </div>
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
+    <ContextMenu />
   {/if}
   {#if pendingDelete}
     <ConfirmPrompt
