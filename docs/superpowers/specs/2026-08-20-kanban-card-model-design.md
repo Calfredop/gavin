@@ -55,9 +55,9 @@ markdown checklists. The daemon counts every `- [ ]` / `- [x]` body line
 
 - Allow-list gains `kind` (validated vocabulary), `parent` (validated
   `[A-Za-z0-9._-]+\.md`), `labels` (single line, no newline).
-- **Empty value removes the line** — permitted for `status` and `parent` only
-  (nesting and un-parenting need it); empty remains invalid for every other
-  key.
+- **Empty value removes the line** — permitted for `status`, `parent`, and
+  `labels` (nesting, un-parenting, and clearing the last label need it);
+  empty remains invalid for every other key.
 
 **The wipe (C5):** the daemon drops the SQLite `cards` table (columns + labels
 tables remain); `kanban.rs` card CRUD, `kanban.ts` card mutations
