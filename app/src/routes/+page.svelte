@@ -12,6 +12,7 @@
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
+  import ContextMenu from "$lib/ContextMenu.svelte";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
   import { agentProfilesStore } from "$lib/layoutState";
@@ -136,6 +137,9 @@
       {/if}
     </div>
   {/if}
+  <!-- The one context-menu layer for the whole app: its store is a
+       singleton, so a second mount would draw a duplicate menu. -->
+  <ContextMenu />
 </div>
 
 <style>

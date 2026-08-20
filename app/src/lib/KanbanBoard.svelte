@@ -10,7 +10,6 @@
   import { runCard } from "./cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import ContextMenu from "./ContextMenu.svelte";
   import { openContextMenu } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
@@ -236,7 +235,6 @@
     {/if}
   </div>
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
-  <ContextMenu />
   {#if pendingDelete}
     <ConfirmPrompt
       title={`Delete "${pendingDelete.title}"?`}

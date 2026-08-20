@@ -43,7 +43,12 @@ function find(entries: ReturnType<typeof buildTabMenuEntries>, label: string): C
   return item;
 }
 
-beforeEach(() => vi.clearAllMocks());
+// Lets promise chains started by onPick settle before asserting.
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe("buildTabMenuEntries", () => {
   it("lists the terminal menu in order", () => {
@@ -92,7 +97,7 @@ describe("buildTabMenuEntries", () => {
 
   it("Close confirms then closes even a pinned tab", async () => {
     find(buildTabMenuEntries(ctx({ pinned: true }), hooks()), "Close").onPick();
-    await Promise.resolve();
+    await flush();
     expect(closeSession).toHaveBeenCalledWith("b");
   });
 
@@ -126,8 +131,8 @@ describe("buildTabMenuEntries", () => {
     vi.mocked(openPath).mockRejectedValueOnce(new Error("nope"));
     const h = hooks();
     find(buildTabMenuEntries(ctx(), h), "Open Folder in Finder").onPick();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
+    await flush();
     expect(h.reportError).toHaveBeenCalledWith(expect.stringContaining("nope"));
   });
 });

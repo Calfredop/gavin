@@ -10,7 +10,6 @@
   import { runCard } from "./cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import ContextMenu from "./ContextMenu.svelte";
   import { openContextMenu } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
@@ -190,7 +189,6 @@
       {/each}
     </div>
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
-    <ContextMenu />
   {/if}
   {#if pendingDelete}
     <ConfirmPrompt
