@@ -26,7 +26,7 @@ import {
   clampReorderIndex,
   bulkCloseTargets,
 } from "./layout";
-import type { LayoutNode } from "./layout";
+import type { LayoutNode, Leaf } from "./layout";
 
 describe("findLeafPath", () => {
   it("finds a leaf at the root", () => {
@@ -674,7 +674,7 @@ describe("pinning", () => {
   });
 
   it("clampReorderIndex bounds by block", () => {
-    const l = { type: "leaf", tabs: ["a", "b", "c", "d"], activeTabIndex: 0, pinned: ["a", "b"] } as const;
+    const l: Leaf = { type: "leaf", tabs: ["a", "b", "c", "d"], activeTabIndex: 0, pinned: ["a", "b"] };
     expect(clampReorderIndex(l, "a", 3)).toBe(1);
     expect(clampReorderIndex(l, "b", 0)).toBe(0);
     expect(clampReorderIndex(l, "d", 0)).toBe(2);
