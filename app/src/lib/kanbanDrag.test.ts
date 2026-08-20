@@ -167,6 +167,37 @@ describe("drop", () => {
     expect(cbs.clicks).toEqual([]);
   });
 
+  it("a tracked move with no buttons pressed ends the drag (lost-pointerup recovery)", () => {
+    // WKWebView drops the pointerup when the pointerdown target left the
+    // DOM mid-gesture; the first pointermove after the lost release
+    // arrives with buttons === 0 and must act as the drop.
+    const cbs = makeCallbacks();
+    grabA(cbs);
+    movePointer({ x: 300, y: 10 });
+    expect(get(dragState)?.target).toEqual({ columnId: "col2", index: 0 });
+    movePointer({ x: 305, y: 12 }, 0);
+    expect(cbs.commits).toHaveLength(1);
+    expect(cbs.commits[0].target).toEqual({ columnId: "col2", index: 0 });
+    expect(get(dragState)).toBeNull();
+  });
+
+  it("a buttons-0 move below the threshold resolves as a click", () => {
+    const cbs = makeCallbacks();
+    grabA(cbs);
+    movePointer({ x: 12, y: 12 }, 0);
+    expect(cbs.clicks).toEqual([["card", "A"]]);
+    expect(cbs.commits).toEqual([]);
+    expect(get(dragState)).toBeNull();
+  });
+
+  it("a move with buttons still pressed behaves normally", () => {
+    const cbs = makeCallbacks();
+    grabA(cbs);
+    movePointer({ x: 300, y: 10 }, 1);
+    expect(get(dragState)?.target).toEqual({ columnId: "col2", index: 0 });
+    expect(cbs.commits).toEqual([]);
+  });
+
   it("state is fully reset: a fresh candidate works after a completed drag", () => {
     const cbs = makeCallbacks();
     grabA(cbs);

@@ -139,24 +139,62 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
       commit: opts.commit,
       click: opts.click,
     };
-    root.setPointerCapture(e.pointerId);
     beginCandidate(kind, id, sourceColumnId, sourceIndex, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
+    // The gesture is tracked on WINDOW listeners, not on root: the
+    // dragged card's wrapper leaves the DOM at activation, and WKWebView
+    // then drops the pointerup instead of retargeting it (Chromium
+    // retargets to the capture element). Window-level capture-phase
+    // listeners receive the release wherever it lands. setPointerCapture
+    // stays as a best-effort extra for engines that honor it.
+    activePointerId = e.pointerId;
+    attachGestureListeners();
+    try {
+      root.setPointerCapture(e.pointerId);
+    } catch {
+      // Capture is an enhancement, never a requirement.
+    }
   }
 
-  function onPointerMove(e: PointerEvent): void {
-    movePointer({ x: e.clientX, y: e.clientY });
+  let activePointerId: number | null = null;
+
+  function onGestureMove(e: PointerEvent): void {
+    if (e.pointerId !== activePointerId) return;
+    // buttons === 0 means the release was eaten by the platform; the
+    // controller treats this move as the drop (lost-pointerup recovery).
+    movePointer({ x: e.clientX, y: e.clientY }, e.buttons);
+    if (e.buttons === 0) detachGestureListeners();
   }
 
-  function onPointerUp(): void {
+  function onGestureUp(e: PointerEvent): void {
+    if (e.pointerId !== activePointerId) return;
     endPointer();
+    detachGestureListeners();
   }
 
-  function onPointerCancel(): void {
+  function onGestureCancel(e: PointerEvent): void {
+    if (e.pointerId !== activePointerId) return;
     cancelDrag();
+    detachGestureListeners();
+  }
+
+  function attachGestureListeners(): void {
+    window.addEventListener("pointermove", onGestureMove, true);
+    window.addEventListener("pointerup", onGestureUp, true);
+    window.addEventListener("pointercancel", onGestureCancel, true);
+  }
+
+  function detachGestureListeners(): void {
+    activePointerId = null;
+    window.removeEventListener("pointermove", onGestureMove, true);
+    window.removeEventListener("pointerup", onGestureUp, true);
+    window.removeEventListener("pointercancel", onGestureCancel, true);
   }
 
   function onKeyDown(e: KeyboardEvent): void {
-    if (e.key === "Escape" && get(dragState)) cancelDrag();
+    if (e.key === "Escape" && get(dragState)) {
+      cancelDrag();
+      detachGestureListeners();
+    }
   }
 
   // Auto-scroll: while a drag is active, nudge the horizontal strip
@@ -207,19 +245,14 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
   });
 
   root.addEventListener("pointerdown", onPointerDown);
-  root.addEventListener("pointermove", onPointerMove);
-  root.addEventListener("pointerup", onPointerUp);
-  root.addEventListener("pointercancel", onPointerCancel);
   window.addEventListener("keydown", onKeyDown);
 
   return () => {
     unsubscribe();
     if (rafId !== null) cancelAnimationFrame(rafId);
     root.removeEventListener("pointerdown", onPointerDown);
-    root.removeEventListener("pointermove", onPointerMove);
-    root.removeEventListener("pointerup", onPointerUp);
-    root.removeEventListener("pointercancel", onPointerCancel);
     window.removeEventListener("keydown", onKeyDown);
+    detachGestureListeners();
     cancelDrag();
   };
 }

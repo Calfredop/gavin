@@ -80,7 +80,16 @@ function computeTarget(kind: DragKind, pointer: Point): DropTarget | null {
   return computeDropTarget(pointer, callbacks.measure(), kind);
 }
 
-export function movePointer(p: Point): void {
+// `buttons` (when the caller has it) is the PointerEvent.buttons bitmask.
+// A tracked move with no buttons pressed means the platform never
+// delivered the pointerup -- WKWebView drops the release when the
+// pointerdown target left the DOM mid-gesture -- so the move stands in
+// for the drop, committing at the last computed target.
+export function movePointer(p: Point, buttons?: number): void {
+  if (buttons === 0 && (candidate || get(dragState))) {
+    endPointer();
+    return;
+  }
   const active = get(dragState);
   if (active) {
     dragState.set({ ...active, pointer: p, target: computeTarget(active.kind, p) });
