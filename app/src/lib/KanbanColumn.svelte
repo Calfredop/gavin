@@ -7,6 +7,7 @@
   import { flip } from "svelte/animate";
   import { renameColumnAction, deleteColumnAction } from "./kanbanState";
   import { gavinTrees, patchPlanCreated } from "./gavinState";
+  import { tooltip } from "./tooltip";
   import { buildCreatePlanArgs } from "./cardCompose";
   import * as backend from "./backend";
 
@@ -182,7 +183,7 @@
   <div class="header" data-kb-colgrab={mode === "full" ? column.id : undefined}>
     {#if mode === "planOnly"}
       <span class="name readonly">{column.name}</span>
-      <span class="count">{planCards.length}</span>
+      <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
     {:else if editingName}
       <input
         type="text"
@@ -191,11 +192,11 @@
         onkeydown={(e) => e.key === "Enter" && commitRename()}
       />
     {:else}
-      <button type="button" class="name" onclick={startRename} title="Rename column">{column.name}</button>
-      <span class="count">{planCards.length}</span>
+      <button type="button" class="name" onclick={startRename} use:tooltip={"Rename column — its name is the status vocabulary"}>{column.name}</button>
+      <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
     {/if}
     {#if mode === "full"}
-      <button type="button" class="delete" aria-label="Delete column" onclick={deleteColumn}>×</button>
+      <button type="button" class="delete" aria-label="Delete column" use:tooltip={"Delete column — its cards fall back to an auto column by status"} onclick={deleteColumn}>×</button>
     {/if}
   </div>
   <div class="cards" data-kb-cards>
@@ -219,6 +220,11 @@
             type="button"
             class="kind-chip"
             class:active={composeKind === k}
+            use:tooltip={k === "note"
+              ? "Note — a quick reminder card"
+              : k === "task"
+                ? "Task — a runnable agent prompt"
+                : "Plan — multi-step work with a checklist"}
             onclick={() => (composeKind = k as "note" | "task" | "plan")}
           >
             {k}
@@ -272,7 +278,7 @@
       </div>
     </div>
   {:else}
-    <button type="button" class="add-card" onclick={() => (composing = true)}>+ Add card</button>
+    <button type="button" class="add-card" use:tooltip={"Add a card — a markdown file in this column"} onclick={() => (composing = true)}>+ Add card</button>
   {/if}
 </div>
 

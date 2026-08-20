@@ -11,6 +11,7 @@
   import { attachBoardDrag } from "./kanbanDragGlue";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
   import { flip } from "svelte/animate";
+  import { tooltip } from "./tooltip";
   import type { DropTarget } from "./pointerDrag";
 
   interface Props {
@@ -174,7 +175,7 @@
         onblur={() => commitColumnComposer(false)}
       />
     {:else}
-      <button type="button" class="add-column" onclick={() => (addingColumn = true)}>+ Add column</button>
+      <button type="button" class="add-column" use:tooltip={"Add a column — its name becomes a status"} onclick={() => (addingColumn = true)}>+ Add column</button>
     {/if}
   </div>
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />

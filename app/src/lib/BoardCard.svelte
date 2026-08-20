@@ -4,6 +4,7 @@
   import { FileText, TriangleAlert, StickyNote, Play, ChevronRight, ChevronDown } from "@lucide/svelte";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
+  import { tooltip } from "./tooltip";
   import { layoutState } from "./layoutState";
   import { findSessionLocation } from "./workspace";
   // Svelte 5 self-import for the nested-children recursion.
@@ -81,28 +82,37 @@
   onkeydown={handleKeydown}
 >
   <div class="header">
-    <span class="glyph" title={card.kind}>
+    <span
+      class="glyph"
+      use:tooltip={card.kind === "note"
+        ? "Note — a reminder"
+        : card.kind === "task"
+          ? "Task — the body is an agent prompt"
+          : "Plan — multi-step work with a checklist"}
+    >
       {#if card.kind === "note"}<StickyNote size={11} />{:else if card.kind === "task"}<Play
           size={11}
         />{:else}<FileText size={11} />{/if}
     </span>
     {#if card.priority && card.priority !== "none"}
-      <span class="priority priority-{card.priority}" title="Priority: {card.priority}"></span>
+      <span class="priority priority-{card.priority}" use:tooltip={"Priority: " + card.priority}></span>
     {/if}
     {#if card.kind === "plan" && card.checklistTotal > 0}
-      <span class="progress" title="Checklist progress">{card.checklistDone}/{card.checklistTotal}</span>
+      <span class="progress" use:tooltip={"Checklist: " + card.checklistDone + " of " + card.checklistTotal + " done"}>{card.checklistDone}/{card.checklistTotal}</span>
     {/if}
     {#if sessionDot}
-      <span class="status-dot {sessionDot.cls}" title={sessionDot.title}></span>
+      <span class="status-dot {sessionDot.cls}" use:tooltip={"Agent session: " + sessionDot.title}></span>
     {/if}
     {#if card.parseWarning}
-      <span class="warning" title="This card's frontmatter has issues"><TriangleAlert size={11} /></span>
+      <span class="warning" use:tooltip={"This card's frontmatter has issues — some fields may be unreadable"}><TriangleAlert size={11} /></span>
     {/if}
     {#if runnable}
       <button
         type="button"
         class="run"
-        title="Run with the workspace agent"
+        use:tooltip={card.kind === "plan"
+          ? "Run this plan with the workspace agent"
+          : "Run this task with the workspace agent"}
         onpointerdown={shield}
         onclick={(e) => {
           e.stopPropagation();
@@ -116,7 +126,7 @@
       <button
         type="button"
         class="chevron"
-        title="{expanded ? 'Collapse' : 'Expand'} {card.nestedChildren.length} nested tasks"
+        use:tooltip={(expanded ? "Collapse " : "Expand ") + card.nestedChildren.length + " nested " + (card.nestedChildren.length === 1 ? "task" : "tasks")}
         onpointerdown={shield}
         onclick={(e) => {
           e.stopPropagation();
@@ -130,7 +140,7 @@
   </div>
   <div class="title">{card.title}</div>
   {#if card.parent}
-    <span class="parent-chip" class:broken={card.parentBroken} title={card.parentBroken ? `parent: ${card.parent} (not found)` : `Part of ${card.parentTitle}`}>
+    <span class="parent-chip" class:broken={card.parentBroken} use:tooltip={card.parentBroken ? `parent: ${card.parent} — file not found in this context` : `Part of the plan "${card.parentTitle}"`}>
       {card.parentBroken ? `⚠ ${card.parent}` : card.parentTitle}
     </span>
   {/if}
@@ -142,7 +152,7 @@
     </div>
   {/if}
   {#if !nested}
-    <div class="context-badge" title={card.id}>{card.contextName}</div>
+    <div class="context-badge" use:tooltip={card.id}>{card.contextName}</div>
   {/if}
   {#if card.kind === "plan" && effectiveExpanded && nestedSlots.length > 0}
     <div class="nested-area" data-kb-nest={card.id}>

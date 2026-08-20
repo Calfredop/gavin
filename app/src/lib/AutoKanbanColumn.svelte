@@ -4,6 +4,7 @@
   import type { Label } from "./kanban";
   import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
   import { AUTO_COLUMN_PREFIX } from "./planDrop";
+  import { tooltip } from "./tooltip";
   import { flip } from "svelte/animate";
 
   interface Props {
@@ -24,7 +25,7 @@
 <!-- Same geometry as KanbanColumn's .column, muted + dashed: these exist
      only so no plan with an unmatched status can ever be invisible. -->
 <div class="auto-column" data-kb-col={key} data-kb-auto>
-  <div class="auto-header" title="Status not matching any column">
+  <div class="auto-header" use:tooltip={"Auto column — cards whose status matches no real column"}>
     {status}<span class="count">{planCards.length}</span>
   </div>
   <div class="cards" data-kb-cards>

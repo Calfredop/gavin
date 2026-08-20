@@ -107,6 +107,10 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Label chips in the detail write labels: names (slug-matched colors); clearing the last removes the line",
       },
       {
+        id: "kind-tooltips",
+        text: "Hovering card icons/chips and board buttons shows the styled in-app tooltip (350ms; hides on click/drag)",
+      },
+      {
         id: "kind-wipe",
         text: "No free-form SQLite cards anywhere — a pre-wipe database's cards are gone after the daemon restarts",
       },
