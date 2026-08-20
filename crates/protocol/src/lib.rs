@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -109,6 +109,20 @@ pub enum Request {
         cwd: String,
         command: String,
     },
+    /// Rewrites exactly one checklist line's checkbox; expected_text
+    /// must still match or the daemon refuses (concurrent agent edit).
+    SetChecklistItem {
+        path: String,
+        line_index: u32,
+        expected_text: String,
+        checked: bool,
+    },
+    /// Promotes a plan's checklist item into a nested task card and
+    /// rewrites the item line into a link to it.
+    PromoteChecklistItem {
+        plan_path: String,
+        item: String,
+    },
     GetProtocolVersion,
 }
 
@@ -131,6 +145,7 @@ pub enum Response {
     PlanCreated { path: String },
     AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
     ProtocolVersion { version: u32 },
+    TaskPromoted { path: String },
     Ok,
     Error { message: String },
 }
@@ -779,11 +794,43 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_three_until_a_breaking_change_bumps_it() {
-        // v3: cards became files -- PlanFileInfo grew kind/parent/labels/
-        // checklist counts, the writer accepts new keys, and the SQLite
-        // card types (Card/SessionLink/Column.cards) left the wire.
-        assert_eq!(PROTOCOL_VERSION, 3);
+    fn protocol_version_is_four_until_a_breaking_change_bumps_it() {
+        // v4: checklist interaction -- SetChecklistItem and
+        // PromoteChecklistItem/TaskPromoted joined the wire.
+        assert_eq!(PROTOCOL_VERSION, 4);
+    }
+
+    #[test]
+    fn checklist_requests_roundtrip_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::SetChecklistItem {
+            path: "/p/plan.md".to_string(),
+            line_index: 4,
+            expected_text: "one".to_string(),
+            checked: true,
+        }).unwrap();
+        write_message(&mut buf, &Request::PromoteChecklistItem {
+            plan_path: "/p/plan.md".to_string(),
+            item: "Ship it".to_string(),
+        }).unwrap();
+        write_message(&mut buf, &Response::TaskPromoted { path: "/p/ship-it.md".to_string() }).unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::SetChecklistItem { line_index, expected_text, checked, .. } => {
+                assert_eq!(line_index, 4);
+                assert_eq!(expected_text, "one");
+                assert!(checked);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::PromoteChecklistItem { item, .. } => assert_eq!(item, "Ship it"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Response>(&mut cursor).unwrap().unwrap() {
+            Response::TaskPromoted { path } => assert_eq!(path, "/p/ship-it.md"),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

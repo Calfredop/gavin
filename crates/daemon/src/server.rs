@@ -1224,6 +1224,19 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
+        Request::SetChecklistItem { path, line_index, expected_text, checked } => {
+            crate::gavin::set_checklist_item(
+                std::path::Path::new(&path),
+                line_index,
+                &expected_text,
+                checked,
+            )
+            .map(|_| Response::Ok)
+        }
+        Request::PromoteChecklistItem { plan_path, item } => {
+            crate::gavin::promote_checklist_item(std::path::Path::new(&plan_path), &item)
+                .map(|p| Response::TaskPromoted { path: p.to_string_lossy().to_string() })
+        }
         Request::GetProtocolVersion => {
             Ok(Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION })
         }

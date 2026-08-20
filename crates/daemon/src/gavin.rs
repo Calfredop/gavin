@@ -414,6 +414,160 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()>
     write_plan_field(path, key, value)
 }
 
+/// Splits a checkbox line into (prefix "  - [", mark ' '|'x', rest after
+/// "] "). None when the line isn't a checklist item.
+fn split_checklist_line(line: &str) -> Option<(usize, char, &str)> {
+    let trimmed_start = line.len() - line.trim_start().len();
+    let t = &line[trimmed_start..];
+    let mark = if t.starts_with("- [ ] ") {
+        ' '
+    } else if t.starts_with("- [x] ") {
+        'x'
+    } else {
+        return None;
+    };
+    Some((trimmed_start, mark, &t["- [x] ".len()..]))
+}
+
+/// True when a checklist item's text is already a promotion link:
+/// `[text](./file.md)`.
+fn checklist_link_target(text: &str) -> Option<&str> {
+    let inner = text.strip_prefix('[')?;
+    let close = inner.find("](")?;
+    let target = &inner[close + 2..];
+    let target = target.strip_suffix(')')?;
+    let target = target.strip_prefix("./").unwrap_or(target);
+    let valid = target.len() > ".md".len()
+        && target.ends_with(".md")
+        && target.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if valid { Some(target) } else { None }
+}
+
+/// Rewrites exactly one checklist line's checkbox mark (card-model spec
+/// §3). `expected_text` must equal the line's raw remainder -- a
+/// mismatch means the file changed under the UI (an agent edit) and the
+/// caller must re-read and retry deliberately. Every other byte is
+/// preserved.
+pub fn set_checklist_item(
+    path: &Path,
+    line_index: u32,
+    expected_text: &str,
+    checked: bool,
+) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let had_trailing_newline = content.ends_with('\n');
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let i = line_index as usize;
+    let line = lines.get(i).ok_or_else(|| anyhow::anyhow!("line {line_index} out of range"))?;
+    let (indent, _mark, rest) = split_checklist_line(line)
+        .ok_or_else(|| anyhow::anyhow!("line {line_index} is not a checklist item"))?;
+    if rest != expected_text {
+        anyhow::bail!("checklist item changed on disk — expected {expected_text:?}, found {rest:?}");
+    }
+    let mark = if checked { 'x' } else { ' ' };
+    lines[i] = format!("{}- [{}] {}", &line[..indent], mark, rest);
+    let mut rebuilt = lines.join("\n");
+    if had_trailing_newline || content.is_empty() {
+        rebuilt.push('\n');
+    }
+    std::fs::write(path, rebuilt)?;
+    Ok(())
+}
+
+/// The daemon-side slug for promoted-task file names (mirrors the
+/// frontend's slugFileName): lowercase, non-alphanumeric runs -> "-".
+fn slug_title(title: &str) -> Option<String> {
+    let mut slug = String::new();
+    let mut last_dash = true;
+    for c in title.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+            last_dash = false;
+        } else if !last_dash {
+            slug.push('-');
+            last_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() { None } else { Some(slug) }
+}
+
+/// Promotes a plan's checklist item into a nested task card (card-model
+/// spec §3): creates `<slug>.md` (kind task, parent set, no status ->
+/// nested) in the plan's own plans/ folder, then rewrites ONLY that
+/// checklist line to `- [<mark>] [item](./<file>)`. The item must match
+/// exactly one unpromoted line; ambiguity or absence errors with no
+/// writes. Returns the created file's path.
+pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<PathBuf> {
+    let content = std::fs::read_to_string(plan_path)?;
+    let had_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut matches = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some((_indent, _mark, rest)) = split_checklist_line(line) {
+            if rest == item && checklist_link_target(rest).is_none() {
+                matches.push(i);
+            }
+        }
+    }
+    match matches.len() {
+        0 => anyhow::bail!("no unpromoted checklist item matches: {item}"),
+        1 => {}
+        n => anyhow::bail!("ambiguous: {n} checklist items match: {item}"),
+    }
+    let line_index = matches[0];
+
+    // The plan's folder must be a `.gavin*/plans/`; the context folder is
+    // its grandparent's parent.
+    let plans_dir = plan_path
+        .parent()
+        .filter(|d| d.file_name().is_some_and(|n| n == "plans"))
+        .ok_or_else(|| anyhow::anyhow!("not a plans/ file: {}", plan_path.display()))?;
+    let gavin_dir = plans_dir
+        .parent()
+        .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
+        .ok_or_else(|| anyhow::anyhow!("not inside a .gavin* folder: {}", plan_path.display()))?;
+    let context_folder = gavin_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("no context folder above {}", gavin_dir.display()))?;
+
+    let slug = slug_title(item)
+        .ok_or_else(|| anyhow::anyhow!("item text has no usable characters for a file name: {item}"))?;
+    let mut file_name = format!("{slug}.md");
+    let mut n = 2;
+    while plans_dir.join(&file_name).exists() {
+        file_name = format!("{slug}-{n}.md");
+        n += 1;
+    }
+
+    let plan_file_name = plan_path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow::anyhow!("plan path has no file name"))?;
+    let created = create_plan_file(
+        context_folder,
+        &file_name,
+        item,
+        None,
+        None,
+        Some(item),
+        Some("task"),
+        Some(&plan_file_name),
+    )?;
+
+    let line = lines[line_index];
+    let (indent, mark, _rest) = split_checklist_line(line).unwrap();
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out[line_index] = format!("{}- [{}] [{}](./{})", &line[..indent], mark, item, file_name);
+    let mut rebuilt = out.join("\n");
+    if had_trailing_newline || content.is_empty() {
+        rebuilt.push('\n');
+    }
+    std::fs::write(plan_path, rebuilt)?;
+    Ok(created)
+}
+
 /// A context's display name from its config.toml. The bool is
 /// config_warning: false for a missing file (absent config is normal),
 /// true only when the file exists but doesn't parse as TOML.
@@ -985,6 +1139,84 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "---\npriority: HIGH\nstatus: To Do\n---\n"
         );
+    }
+
+    #[test]
+    fn set_checklist_item_toggles_exactly_one_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        let original = "---\ntitle: P\n---\n# H\n- [ ] one\n  - [x] two\nrest\n";
+        std::fs::write(&path, original).unwrap();
+        set_checklist_item(&path, 4, "one", true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: P\n---\n# H\n- [x] one\n  - [x] two\nrest\n"
+        );
+        // Indentation preserved on untick:
+        set_checklist_item(&path, 5, "two", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: P\n---\n# H\n- [x] one\n  - [ ] two\nrest\n"
+        );
+    }
+
+    #[test]
+    fn set_checklist_item_validates_line_and_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        let original = "---\ntitle: P\n---\n- [ ] one\n";
+        std::fs::write(&path, original).unwrap();
+        assert!(set_checklist_item(&path, 99, "one", true).is_err()); // out of range
+        assert!(set_checklist_item(&path, 3, "drifted", true).is_err()); // text mismatch
+        assert!(set_checklist_item(&path, 1, "title: P", true).is_err()); // not a checkbox line
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original); // no writes on error
+    }
+
+    #[test]
+    fn promote_checklist_item_creates_the_child_and_rewrites_the_line() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = plans.join("big-plan.md");
+        std::fs::write(&plan, "---\ntitle: Big\nstatus: To Do\n---\n- [ ] Ship the API\n- [x] Done thing\n")
+            .unwrap();
+
+        let child = promote_checklist_item(&plan, "Ship the API").unwrap();
+        assert_eq!(child, plans.join("ship-the-api.md"));
+        assert_eq!(
+            std::fs::read_to_string(&child).unwrap(),
+            "---\nkind: task\ntitle: Ship the API\nparent: big-plan.md\n---\nShip the API\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&plan).unwrap(),
+            "---\ntitle: Big\nstatus: To Do\n---\n- [ ] [Ship the API](./ship-the-api.md)\n- [x] Done thing\n"
+        );
+
+        // A checked item keeps its mark and collides into a -2 suffix.
+        let child2 = promote_checklist_item(&plan, "Done thing").unwrap();
+        std::fs::write(plans.join("done-thing-2-placeholder"), "").ok(); // noise, ignored
+        assert_eq!(child2, plans.join("done-thing.md"));
+        assert!(std::fs::read_to_string(&plan).unwrap().contains("- [x] [Done thing](./done-thing.md)"));
+    }
+
+    #[test]
+    fn promote_checklist_item_errors_on_missing_ambiguous_or_promoted() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = plans.join("p.md");
+        let original = "---\ntitle: P\n---\n- [ ] dup\n- [ ] dup\n- [ ] [already](./already.md)\n";
+        std::fs::write(&plan, original).unwrap();
+        assert!(promote_checklist_item(&plan, "missing").is_err());
+        assert!(promote_checklist_item(&plan, "dup").is_err()); // ambiguous
+        assert!(promote_checklist_item(&plan, "[already](./already.md)").is_err()); // already promoted
+        assert_eq!(std::fs::read_to_string(&plan).unwrap(), original);
+
+        // Name collision suffixes: an existing file with the slug name.
+        std::fs::write(&plans.join("task-x.md"), "existing").unwrap();
+        std::fs::write(&plan, "---\ntitle: P\n---\n- [ ] Task X\n").unwrap();
+        let child = promote_checklist_item(&plan, "Task X").unwrap();
+        assert_eq!(child, plans.join("task-x-2.md"));
     }
 
     #[test]
