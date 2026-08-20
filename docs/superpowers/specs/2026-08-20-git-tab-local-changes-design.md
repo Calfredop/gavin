@@ -135,7 +135,7 @@ shown verbatim in the UI. "Not a repository" is a value, not an error.
 
 | Command | git invocation | Returns |
 |---|---|---|
-| `git_repo_info(cwd)` | `rev-parse --show-toplevel`, `symbolic-ref --short -q HEAD` (falls back to `rev-parse --short HEAD` → detached; both failing with a valid toplevel → unborn), `config user.name` / `user.email`, `log -1 --format=%B` (skipped when unborn; `headMessage: null`) | `RepoInfo { notARepo: bool, root, branch, detached, unborn, author: {name,email} \| null, headMessage, inProgress: "merge" \| "rebase" \| null }` |
+| `git_repo_info(cwd)` | `rev-parse --show-toplevel`, `symbolic-ref --short -q HEAD` (fails → detached, label from `rev-parse --short HEAD`), `rev-parse --verify -q HEAD` (fails → unborn; note `symbolic-ref` still succeeds on an unborn branch), `config user.name` / `user.email`, `log -1 --format=%B` (skipped when unborn; `headMessage: null`) | `RepoInfo { notARepo: bool, root, branch, detached, unborn, author: {name,email} \| null, headMessage, inProgress: "merge" \| "rebase" \| null }` |
 | `git_status(cwd)` | `status --porcelain=v2 -z --untracked-files=all` | `StatusResult { unstaged: FileEntry[], staged: FileEntry[] }` |
 | `git_diff(cwd, path, staged, untracked)` | `diff --no-color --no-ext-diff -U3 [--cached] -- <path>`; untracked: `diff --no-index -- /dev/null <path>` (exit code 1 means "differences found" and is success for both forms); binary detected via `--numstat` `-` columns; size guard at 2 MB checked on the file before diffing | `FileDiff { path, oldPath, binary, tooLarge, hunks: Hunk[] }` |
 

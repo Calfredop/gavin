@@ -11,6 +11,7 @@ split diffs, discard, commit + amend, live watcher-driven refresh.
 
 Spec: `docs/superpowers/specs/2026-08-20-git-tab-local-changes-design.md`
 Decisions: `docs/superpowers/brainstorms/2026-08-20-git-tab-brainstorm.md` (G1–G9)
+Implementation plan: `docs/superpowers/plans/2026-08-20-git-tab-local-changes.md` (18 tasks)
 
 Follow-ups: SP2 sync/branches/stashes · SP3 worktrees (agent forks) · SP4 history graph.
 
