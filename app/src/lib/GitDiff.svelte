@@ -1,9 +1,11 @@
 <script lang="ts">
   import { gitStore, findEntry, applyPatch } from "./gitState";
-  import { toUnifiedRows } from "./diffRows";
+  import { layoutState, setGitViewPrefs } from "./layoutState";
+  import { toUnifiedRows, toSplitRows } from "./diffRows";
   import { buildPatch } from "./patch";
-  import { LARGE_HUNK_LINES } from "./git";
+  import { LARGE_HUNK_LINES, type DiffLayout } from "./git";
   import GitDiffUnified from "./GitDiffUnified.svelte";
+  import GitDiffSplit from "./GitDiffSplit.svelte";
 
   interface Props {
     workspaceId: string;
@@ -11,6 +13,12 @@
   let { workspaceId }: Props = $props();
 
   const view = $derived($gitStore[workspaceId]);
+  const layout = $derived<DiffLayout>(
+    $layoutState.workspaces.find((w) => w.id === workspaceId)?.gitView?.diffLayout ?? "unified"
+  );
+  function setLayout(next: DiffLayout): void {
+    if (next !== layout) void setGitViewPrefs(workspaceId, { diffLayout: next });
+  }
   const selected = $derived(view?.selected ?? null);
   const entry = $derived(view ? findEntry(view.status, view.selected) : null);
   const diff = $derived(view?.diff ?? null);
@@ -19,6 +27,7 @@
   const canAct = $derived(entry !== null && entry.status !== "?" && !busy);
   const actionLabel = $derived(selected?.area === "staged" ? "Unstage" : "Stage");
   const unifiedRows = $derived(diff ? toUnifiedRows(diff.hunks) : []);
+  const splitRows = $derived(diff ? toSplitRows(diff.hunks) : []);
 
   let expanded = $state<Set<number>>(new Set());
   $effect(() => {
@@ -46,6 +55,10 @@
       <span class="badge">{entry.status}</span>
       <span class="path">{#if entry.oldPath}{entry.oldPath} → {/if}{entry.path}</span>
       <span class="area">{selected.area}</span>
+      <span class="seg" role="radiogroup" aria-label="Diff layout">
+        <button type="button" class:on={layout === "unified"} role="radio" aria-checked={layout === "unified"} onclick={() => setLayout("unified")}>Unified</button>
+        <button type="button" class:on={layout === "split"} role="radio" aria-checked={layout === "split"} onclick={() => setLayout("split")}>Split</button>
+      </span>
     </div>
   {/if}
   <div class="body">
@@ -59,6 +72,8 @@
       <div class="msg">Diff too large (&gt; 2 MB)</div>
     {:else if diff.hunks.length === 0}
       <div class="msg">No changes</div>
+    {:else if layout === "split"}
+      <GitDiffSplit rows={splitRows} {isCollapsed} {canAct} {actionLabel} onHunkAction={hunkAction} onExpand={expand} />
     {:else}
       <GitDiffUnified rows={unifiedRows} {isCollapsed} {canAct} {actionLabel} onHunkAction={hunkAction} onExpand={expand} />
     {/if}
@@ -98,6 +113,25 @@
     text-transform: uppercase;
     font-size: 0.85em;
     letter-spacing: 0.05em;
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .seg button {
+    background: transparent;
+    border: 0;
+    color: #999;
+    font-family: monospace;
+    font-size: 0.95em;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .seg button.on {
+    background: #2a3a4a;
+    color: #eee;
   }
   .body {
     flex: 1 1 auto;
