@@ -90,3 +90,32 @@ Deviations from the spec, all deliberate:
 - **Subset-of-adds fixture**: the plan originally had `+new1` before the
   unselected ` delta` context line; corrected to keep original hunk order
   (matches `git add -p` edit semantics), verified with `git apply --check`.
+
+## SP2 + SP3 decisions (2026-08-20, same session)
+
+- **G10:** **Plain git semantics for Pull/Push** (recommended, approved):
+  `git pull` honours the user's merge/rebase config; conflicts land in the
+  in-progress banner, which gains Abort (merge/rebase) and Continue
+  (rebase). `git push`, auto `-u <remote> <branch>` on a branch with no
+  upstream ("Publish"). No force push in v1.
+- **G11:** **Fork worktrees default to a sibling folder** `../<repo>-<branch>`
+  (recommended, approved); path editable in the dialog.
+- **G12:** **Merge back = merge + optional cleanup** (recommended, approved):
+  `git merge <fork-branch>` in the root checkout, then offer "remove
+  worktree + delete branch". Conflicts switch the view to the root checkout
+  and use the banner's Abort.
+- **G13:** Long-running ops stream stderr progress via `git-op-progress`
+  events, 10-minute ceiling, cancellable; one op at a time (SP1's `busy`
+  gate). Credentials are never prompted (GIT_TERMINAL_PROMPT=0) — SSH agent
+  and credential helpers work as in the terminal; anything else fails with
+  git's message.
+- **G14:** Checkout never auto-stashes; git's refusal is shown verbatim.
+
+Sections approved as presented: SP2 backend; SP2 UI (toolbar trio + badges,
+remote dropdown, op bar, banner buttons, collapsible sidebar sections,
+stash view); SP3 worktrees (switcher, linked-gitdir watcher fix, fork
+dialog + agent spawn, merge back, remove/prune); testing + build order
+(two plans, executed back-to-back on the SP1 branch so the whole Git tab is
+smoke-tested once).
+
+Spec: `docs/superpowers/specs/2026-08-20-git-tab-sync-worktrees-design.md`.
