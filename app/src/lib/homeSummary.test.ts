@@ -11,6 +11,7 @@ function plan(fileName: string, status: string | null): PlanFileInfo {
     status,
     priority: null,
     order: null,
+    kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0,
     parseWarning: false,
   };
 }
@@ -34,27 +35,20 @@ function tree(contexts: GavinContext[]): GavinTree {
 
 const board: Board = {
   columns: [
-    {
-      id: "c1",
-      name: "To Do",
-      position: 0,
-      cards: [
-        { id: "f1", title: "free", description: "", labelIds: [], priority: "none", position: 0 },
-      ],
-    },
-    { id: "c2", name: "Done", position: 1, cards: [] },
+    { id: "c1", name: "To Do", position: 0 },
+    { id: "c2", name: "Done", position: 1 },
   ],
   labels: [],
 };
 
 describe("boardSummary", () => {
-  it("counts free-form and plan cards per column", () => {
+  it("counts plan cards per column", () => {
     const s = boardSummary(board, tree([ctx("/ws/a", [plan("p.md", "To Do"), plan("q.md", "Done")])]));
     expect(s.columns).toEqual([
-      { name: "To Do", freeFormCount: 1, planCount: 1 },
-      { name: "Done", freeFormCount: 0, planCount: 1 },
+      { name: "To Do", planCount: 1 },
+      { name: "Done", planCount: 1 },
     ]);
-    expect(s.totalCards).toBe(3);
+    expect(s.totalCards).toBe(2);
   });
 
   it("reports auto columns for statuses matching no column", () => {
@@ -65,7 +59,7 @@ describe("boardSummary", () => {
   it("handles an absent board or tree", () => {
     expect(boardSummary(undefined, undefined).columns).toEqual([]);
     expect(boardSummary(undefined, undefined).totalCards).toBe(0);
-    expect(boardSummary(board, undefined).totalCards).toBe(1);
+    expect(boardSummary(board, undefined).totalCards).toBe(0);
   });
 });
 

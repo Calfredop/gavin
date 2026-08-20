@@ -13,19 +13,19 @@ import {
   refreshBoard,
   boardError,
   retryFetchBoard,
-  addCardAction,
-  deleteColumnCascadeAction,
-  linkSessionAction,
-  unlinkSessionAction,
-  updateSessionLinkAction,
+  addColumnAction,
+  renameColumnAction,
+  deleteColumnAction,
   saveErrors,
   dismissSaveError,
 } from "./kanbanState";
 import type { Board } from "./kanban";
 
 function emptyBoard(): Board {
-  return { columns: [{ id: "c1", name: "To Do", position: 0, cards: [] }], labels: [] };
+  return { columns: [{ id: "c1", name: "To Do", position: 0 }], labels: [] };
 }
+
+const newColumn = { id: "c2", name: "Doing", position: 1 };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -36,165 +36,57 @@ beforeEach(() => {
 describe("fetchBoard", () => {
   it("fetches and stores the board for a workspace", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
-
     await fetchBoard("ws-1");
-
     expect(get(kanbanState)["ws-1"]).toEqual(emptyBoard());
   });
 
-  it("does not re-fetch a workspace whose board is already loaded", async () => {
+  it("is a no-op when the board is already cached", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
-
     await fetchBoard("ws-1");
-
     expect(backend.getBoard).toHaveBeenCalledTimes(1);
   });
 
-  it("records a per-workspace error on failure instead of throwing", async () => {
-    vi.mocked(backend.getBoard).mockRejectedValue(new Error("daemon unreachable"));
-
+  it("records a load error and retryFetchBoard clears it", async () => {
+    vi.mocked(backend.getBoard).mockRejectedValueOnce(new Error("boom"));
     await fetchBoard("ws-1");
-
-    expect(boardError("ws-1")).toBe("daemon unreachable");
-    expect(get(kanbanState)["ws-1"]).toBeUndefined();
-  });
-});
-
-describe("retryFetchBoard", () => {
-  it("clears the error and re-fetches successfully", async () => {
-    vi.mocked(backend.getBoard).mockRejectedValueOnce(new Error("daemon unreachable"));
-    await fetchBoard("ws-1");
-    expect(boardError("ws-1")).toBe("daemon unreachable");
-
-    vi.mocked(backend.getBoard).mockResolvedValueOnce(emptyBoard());
+    expect(boardError("ws-1")).toContain("boom");
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await retryFetchBoard("ws-1");
-
     expect(boardError("ws-1")).toBeNull();
     expect(get(kanbanState)["ws-1"]).toEqual(emptyBoard());
   });
 });
 
-describe("addCardAction", () => {
-  it("mutates local state immediately and persists via setBoard", async () => {
+describe("column actions", () => {
+  it("addColumnAction mutates optimistically and persists via setBoard", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
+    vi.mocked(backend.setBoard).mockResolvedValue(undefined);
 
-    await addCardAction("ws-1", "c1", { id: "card-1", title: "New", description: "", labelIds: [], priority: "none", position: 0 });
+    await addColumnAction("ws-1", newColumn);
 
-    expect(get(kanbanState)["ws-1"].columns[0].cards).toHaveLength(1);
+    expect(get(kanbanState)["ws-1"].columns).toHaveLength(2);
     expect(backend.setBoard).toHaveBeenCalledWith("ws-1", get(kanbanState)["ws-1"].columns, []);
   });
 
   it("is a no-op when the workspace's board was never fetched", async () => {
-    await addCardAction("ws-1", "c1", { id: "card-1", title: "New", description: "", labelIds: [], priority: "none", position: 0 });
-
+    await addColumnAction("ws-1", newColumn);
     expect(get(kanbanState)["ws-1"]).toBeUndefined();
     expect(backend.setBoard).not.toHaveBeenCalled();
   });
-});
 
-describe("linkSessionAction", () => {
-  it("mutates local state immediately and persists via setBoard", async () => {
-    vi.mocked(backend.getBoard).mockResolvedValue({
-      columns: [
-        {
-          id: "c1",
-          name: "To Do",
-          position: 0,
-          cards: [{ id: "card-1", title: "Card", description: "", labelIds: [], priority: "none", position: 0 }],
-        },
-      ],
-      labels: [],
-    });
-    await fetchBoard("ws-1");
-
-    await linkSessionAction("ws-1", "card-1", { sessionId: "s1", cwd: "/tmp", command: null });
-
-    expect(get(kanbanState)["ws-1"].columns[0].cards[0].sessionLink).toEqual({
-      sessionId: "s1",
-      cwd: "/tmp",
-      command: null,
-    });
-    expect(backend.setBoard).toHaveBeenCalledWith("ws-1", get(kanbanState)["ws-1"].columns, []);
-  });
-});
-
-describe("unlinkSessionAction", () => {
-  it("clears the card's sessionLink and persists", async () => {
-    vi.mocked(backend.getBoard).mockResolvedValue({
-      columns: [
-        {
-          id: "c1",
-          name: "To Do",
-          position: 0,
-          cards: [
-            {
-              id: "card-1",
-              title: "Card",
-              description: "",
-              labelIds: [],
-              priority: "none",
-              position: 0,
-              sessionLink: { sessionId: "s1", cwd: "/tmp", command: null },
-            },
-          ],
-        },
-      ],
-      labels: [],
-    });
-    await fetchBoard("ws-1");
-
-    await unlinkSessionAction("ws-1", "card-1");
-
-    expect(get(kanbanState)["ws-1"].columns[0].cards[0].sessionLink).toBeUndefined();
-  });
-});
-
-describe("updateSessionLinkAction", () => {
-  it("replaces the linked sessionId and persists", async () => {
-    vi.mocked(backend.getBoard).mockResolvedValue({
-      columns: [
-        {
-          id: "c1",
-          name: "To Do",
-          position: 0,
-          cards: [
-            {
-              id: "card-1",
-              title: "Card",
-              description: "",
-              labelIds: [],
-              priority: "none",
-              position: 0,
-              sessionLink: { sessionId: "old", cwd: "/tmp", command: null },
-            },
-          ],
-        },
-      ],
-      labels: [],
-    });
-    await fetchBoard("ws-1");
-
-    await updateSessionLinkAction("ws-1", "card-1", "new");
-
-    expect(get(kanbanState)["ws-1"].columns[0].cards[0].sessionLink?.sessionId).toBe("new");
-  });
-});
-
-describe("deleteColumnCascadeAction", () => {
-  it("mutates local state and persists", async () => {
+  it("deleteColumnAction removes the column", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
+    vi.mocked(backend.setBoard).mockResolvedValue(undefined);
 
-    await deleteColumnCascadeAction("ws-1", "c1");
+    await deleteColumnAction("ws-1", "c1");
 
     expect(get(kanbanState)["ws-1"].columns).toEqual([]);
     expect(backend.setBoard).toHaveBeenCalledWith("ws-1", [], []);
   });
 });
-
-const cardFixture = { id: "card-1", title: "New", description: "", labelIds: [], priority: "none" as const, position: 0 };
 
 describe("save failures", () => {
   it("failed setBoard rolls the store back and records a save error", async () => {
@@ -202,9 +94,9 @@ describe("save failures", () => {
     await fetchBoard("ws-1");
     vi.mocked(backend.setBoard).mockRejectedValue(new Error("daemon gone"));
 
-    await addCardAction("ws-1", "c1", cardFixture);
+    await addColumnAction("ws-1", newColumn);
 
-    expect(get(kanbanState)["ws-1"]).toEqual(emptyBoard()); // rolled back
+    expect(get(kanbanState)["ws-1"]).toEqual(emptyBoard());
     expect(get(saveErrors)["ws-1"]).toContain("daemon gone");
   });
 
@@ -212,11 +104,11 @@ describe("save failures", () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
     vi.mocked(backend.setBoard).mockRejectedValueOnce(new Error("daemon gone"));
-    await addCardAction("ws-1", "c1", cardFixture);
+    await addColumnAction("ws-1", newColumn);
     expect(get(saveErrors)["ws-1"]).toBeDefined();
 
     vi.mocked(backend.setBoard).mockResolvedValue(undefined);
-    await addCardAction("ws-1", "c1", cardFixture);
+    await addColumnAction("ws-1", newColumn);
 
     expect(get(saveErrors)["ws-1"]).toBeUndefined();
   });
@@ -225,7 +117,7 @@ describe("save failures", () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
     vi.mocked(backend.setBoard).mockRejectedValue(new Error("x"));
-    await addCardAction("ws-1", "c1", cardFixture);
+    await addColumnAction("ws-1", newColumn);
 
     dismissSaveError("ws-1");
 
@@ -240,16 +132,15 @@ describe("save failures", () => {
     vi.mocked(backend.setBoard).mockImplementationOnce(
       () => new Promise((_resolve, reject) => (rejectA = reject))
     );
-    const a = addCardAction("ws-1", "c1", cardFixture);
+    const a = renameColumnAction("ws-1", "c1", "First rename");
 
     vi.mocked(backend.setBoard).mockResolvedValue(undefined);
-    await addCardAction("ws-1", "c1", { ...cardFixture, id: "card-2", position: 1 });
+    await renameColumnAction("ws-1", "c1", "Second rename");
 
     rejectA(new Error("late failure"));
     await a;
 
-    // B's optimistic board (both cards) must survive A's failure.
-    expect(get(kanbanState)["ws-1"].columns[0].cards.map((c) => c.id)).toEqual(["card-1", "card-2"]);
+    expect(get(kanbanState)["ws-1"].columns[0].name).toBe("Second rename");
     expect(get(saveErrors)["ws-1"]).toContain("late failure");
   });
 });
@@ -274,7 +165,7 @@ describe("refreshBoard", () => {
     vi.mocked(backend.setBoard).mockImplementationOnce(
       () => new Promise<void>((resolve) => (resolveSave = resolve))
     );
-    const pending = addCardAction("ws-1", "c1", cardFixture);
+    const pending = addColumnAction("ws-1", newColumn);
 
     vi.mocked(backend.getBoard).mockClear();
     await refreshBoard("ws-1");

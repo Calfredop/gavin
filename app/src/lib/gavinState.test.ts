@@ -64,8 +64,8 @@ describe("gavinState", () => {
           kind: "root",
           name: "root",
           plans: [
-            { path: "/ws/a.md", fileName: "a.md", title: "a", status: "To Do", priority: null, order: null, parseWarning: false },
-            { path: "/ws/b.md", fileName: "b.md", title: "b", status: "To Do", priority: null, order: null, parseWarning: false },
+            { path: "/ws/a.md", fileName: "a.md", title: "a", status: "To Do", priority: null, order: null, kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0, parseWarning: false },
+            { path: "/ws/b.md", fileName: "b.md", title: "b", status: "To Do", priority: null, order: null, kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0, parseWarning: false },
           ],
           docs: [],
           specs: [],
@@ -99,7 +99,7 @@ describe("gavinState", () => {
               kind: "root",
               name: "root",
               plans: [
-                { path: "/ws/a.md", fileName: "a.md", title: "Old", status: "To Do", priority: null, order: null, parseWarning: false },
+                { path: "/ws/a.md", fileName: "a.md", title: "Old", status: "To Do", priority: null, order: null, kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0, parseWarning: false },
               ],
               docs: [],
               specs: [],
@@ -126,7 +126,7 @@ describe("gavinState", () => {
           kind: "root",
           name: "root",
           plans: [
-            { path: "/ws/a.md", fileName: "a.md", title: "a", status: "To Do", priority: null, order: null, parseWarning: false },
+            { path: "/ws/a.md", fileName: "a.md", title: "a", status: "To Do", priority: null, order: null, kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0, parseWarning: false },
           ],
           docs: [],
           specs: [],

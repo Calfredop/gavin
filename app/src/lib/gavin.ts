@@ -8,6 +8,11 @@ export interface PlanFileInfo {
   status: string | null;
   priority: "none" | "low" | "medium" | "high" | "urgent" | null;
   order: number | null;
+  kind: "note" | "task" | "plan";
+  parent: string | null;
+  labels: string[];
+  checklistDone: number;
+  checklistTotal: number;
   parseWarning: boolean;
 }
 

@@ -1,7 +1,7 @@
 import { writable, get } from "svelte/store";
 import * as backend from "./backend";
 import * as kanban from "./kanban";
-import type { Board, Card, Column, Label, SessionLink } from "./kanban";
+import type { Board, Column, Label } from "./kanban";
 
 export const kanbanState = writable<Record<string, Board>>({});
 
@@ -103,42 +103,12 @@ export async function refreshBoard(workspaceId: string): Promise<void> {
   }
 }
 
-export function addCardAction(workspaceId: string, columnId: string, card: Card): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.addCard(b, columnId, card));
-}
 
-export function updateCardAction(
-  workspaceId: string,
-  cardId: string,
-  patch: Partial<Pick<Card, "title" | "description" | "priority" | "labelIds">>
-): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.updateCard(b, cardId, patch));
-}
 
-export function moveCardAction(
-  workspaceId: string,
-  cardId: string,
-  targetColumnId: string,
-  targetIndex: number
-): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.moveCard(b, cardId, targetColumnId, targetIndex));
-}
 
-export function deleteCardAction(workspaceId: string, cardId: string): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.deleteCard(b, cardId));
-}
 
-export function linkSessionAction(workspaceId: string, cardId: string, sessionLink: SessionLink): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.linkSession(b, cardId, sessionLink));
-}
 
-export function unlinkSessionAction(workspaceId: string, cardId: string): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.unlinkSession(b, cardId));
-}
 
-export function updateSessionLinkAction(workspaceId: string, cardId: string, sessionId: string): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.updateSessionLink(b, cardId, sessionId));
-}
 
 export function addColumnAction(workspaceId: string, column: Column): Promise<void> {
   return mutateAndPersist(workspaceId, (b) => kanban.addColumn(b, column));
@@ -152,19 +122,10 @@ export function reorderColumnAction(workspaceId: string, columnId: string, targe
   return mutateAndPersist(workspaceId, (b) => kanban.reorderColumn(b, columnId, targetIndex));
 }
 
-export function deleteColumnCascadeAction(workspaceId: string, columnId: string): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) => kanban.deleteColumnCascade(b, columnId));
+export function deleteColumnAction(workspaceId: string, columnId: string): Promise<void> {
+  return mutateAndPersist(workspaceId, (b) => kanban.deleteColumn(b, columnId));
 }
 
-export function moveCardsOutOfColumnAndDeleteAction(
-  workspaceId: string,
-  sourceColumnId: string,
-  targetColumnId: string
-): Promise<void> {
-  return mutateAndPersist(workspaceId, (b) =>
-    kanban.deleteColumnCascade(kanban.moveCardsOutOfColumn(b, sourceColumnId, targetColumnId), sourceColumnId)
-  );
-}
 
 export function addLabelAction(workspaceId: string, label: Label): Promise<void> {
   return mutateAndPersist(workspaceId, (b) => kanban.addLabel(b, label));

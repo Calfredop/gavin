@@ -17,7 +17,20 @@ import type { PlanCardView } from "./planBoard";
 
 function planInfo(path: string, status: string | null, order: number | null): PlanFileInfo {
   const fileName = path.split("/").at(-1) ?? path;
-  return { path, fileName, title: fileName, status, priority: null, order, parseWarning: false };
+  return {
+    path,
+    fileName,
+    title: fileName,
+    status,
+    priority: null,
+    order,
+    kind: "plan",
+    parent: null,
+    labels: [],
+    checklistDone: 0,
+    checklistTotal: 0,
+    parseWarning: false,
+  };
 }
 
 function seed(plans: PlanFileInfo[]): void {
@@ -119,7 +132,7 @@ describe("applyPlanDrop", () => {
     const err = await planCommitFromMerged(
       "ws",
       { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "auto:Blocked", index: 1 } },
-      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
+      [{ id: "col1", name: "To Do", position: 0 }],
       { columns: [], autoColumns: [{ status: "Blocked", planCards: [view("/p/q.md", 1024)] }] }
     );
     expect(err).toBeNull();
@@ -145,11 +158,11 @@ describe("applyPlanDrop", () => {
     const err = await planCommitFromMerged(
       "ws",
       { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col1", index: 0 } },
-      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
+      [{ id: "col1", name: "To Do", position: 0 }],
       {
         columns: [
           {
-            column: { id: "col1", name: "To Do", position: 0, cards: [] },
+            column: { id: "col1", name: "To Do", position: 0 },
             planCards: [view("/p/d.md", 1024), view("/p/a.md", 2048)],
           },
         ],
@@ -170,11 +183,11 @@ describe("applyPlanDrop", () => {
     const pending = planCommitFromMerged(
       "ws",
       { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col1", index: 0 } },
-      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
+      [{ id: "col1", name: "To Do", position: 0 }],
       {
         columns: [
           {
-            column: { id: "col1", name: "To Do", position: 0, cards: [] },
+            column: { id: "col1", name: "To Do", position: 0 },
             planCards: [
               {
                 id: "/p/d.md", title: "d", status: "To Do", priority: null, order: null,
@@ -209,8 +222,8 @@ describe("applyPlanDrop", () => {
     const err = await planCommitFromMerged(
       "ws",
       { id: "/p/d.md", sourceColumnId: "col1", target: { columnId: "col1", index: 0 } },
-      [{ id: "col1", name: "To Do", position: 0, cards: [] }],
-      { columns: [{ column: { id: "col1", name: "To Do", position: 0, cards: [] }, planCards: [] }], autoColumns: [] }
+      [{ id: "col1", name: "To Do", position: 0 }],
+      { columns: [{ column: { id: "col1", name: "To Do", position: 0 }, planCards: [] }], autoColumns: [] }
     );
     expect(err).toContain("d.md");
     expect(get(dropHold)).toBeNull();

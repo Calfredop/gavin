@@ -144,14 +144,16 @@ export function createPlan(
   title: string,
   status?: string,
   priority?: string,
-  body?: string
+  body?: string,
+  kind?: "note" | "task" | "plan",
+  parent?: string
 ): Promise<string> {
-  return invoke("create_plan", { contextFolder, fileName, title, status, priority, body });
+  return invoke("create_plan", { contextFolder, fileName, title, status, priority, body, kind, parent });
 }
 
 export function setPlanFrontmatterField(
   path: string,
-  key: "status" | "priority" | "order" | "title",
+  key: "status" | "priority" | "order" | "title" | "kind" | "parent" | "labels",
   value: string
 ): Promise<void> {
   return invoke("set_plan_frontmatter_field", { path, key, value });

@@ -4,7 +4,6 @@ import { mergePlanCards } from "./planBoard";
 
 export interface ColumnSummary {
   name: string;
-  freeFormCount: number;
   planCount: number;
 }
 
@@ -21,13 +20,11 @@ export function boardSummary(board: Board | undefined, tree: GavinTree | undefin
   const merged = mergePlanCards(board, tree);
   const columns = merged.columns.map((dc) => ({
     name: dc.column.name,
-    freeFormCount: dc.column.cards.length,
     planCount: dc.planCards.length,
   }));
   const autoColumns = merged.autoColumns.map((a) => ({ status: a.status, count: a.planCards.length }));
   const totalCards =
-    columns.reduce((n, c) => n + c.freeFormCount + c.planCount, 0) +
-    autoColumns.reduce((n, a) => n + a.count, 0);
+    columns.reduce((n, c) => n + c.planCount, 0) + autoColumns.reduce((n, a) => n + a.count, 0);
   return { columns, autoColumns, totalCards };
 }
 

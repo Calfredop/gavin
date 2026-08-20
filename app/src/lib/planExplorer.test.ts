@@ -10,6 +10,11 @@ function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFile
     status: "To Do",
     priority: null,
     order: null,
+    kind: "plan",
+    parent: null,
+    labels: [],
+    checklistDone: 0,
+    checklistTotal: 0,
     parseWarning: false,
     ...overrides,
   };

@@ -3,20 +3,8 @@ import { slugStatus, mergePlanCards, nearestContext } from "./planBoard";
 import type { Board, Column } from "./kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 
-function col(id: string, name: string, cardTitles: string[] = []): Column {
-  return {
-    id,
-    name,
-    position: 0,
-    cards: cardTitles.map((title, i) => ({
-      id: `${id}-${i}`,
-      title,
-      description: "",
-      labelIds: [],
-      priority: "none",
-      position: i,
-    })),
-  };
+function col(id: string, name: string): Column {
+  return { id, name, position: 0 };
 }
 
 function plan(fileName: string, status: string | null, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
@@ -27,6 +15,11 @@ function plan(fileName: string, status: string | null, overrides: Partial<PlanFi
     status,
     priority: null,
     order: null,
+    kind: "plan",
+    parent: null,
+    labels: [],
+    checklistDone: 0,
+    checklistTotal: 0,
     parseWarning: false,
     ...overrides,
   };
@@ -40,7 +33,7 @@ function tree(contexts: GavinContext[]): GavinTree {
   return { rootPath: "/ws", rootMissing: false, contexts };
 }
 
-const board: Board = { columns: [col("c1", "To Do", ["free card"]), col("c2", "In Progress")], labels: [] };
+const board: Board = { columns: [col("c1", "To Do"), col("c2", "In Progress")], labels: [] };
 
 describe("slugStatus", () => {
   it("normalizes case, spacing, and separators", () => {
@@ -52,10 +45,9 @@ describe("slugStatus", () => {
 });
 
 describe("mergePlanCards", () => {
-  it("matches plans to columns by slug and appends after free-form cards", () => {
+  it("matches plans to columns by slug", () => {
     const t = tree([ctx("/ws", "root", [plan("a.md", "in_progress"), plan("b.md", "To Do")])]);
     const { columns, autoColumns } = mergePlanCards(board, t);
-    expect(columns[0].column.cards).toHaveLength(1); // free-form untouched
     expect(columns[0].planCards.map((p) => p.fileName)).toEqual(["b.md"]);
     expect(columns[1].planCards.map((p) => p.fileName)).toEqual(["a.md"]);
     expect(autoColumns).toEqual([]);
@@ -115,7 +107,6 @@ describe("mergePlanCards", () => {
       ctx("/ws/auth", "auth", [plan("a.md", "To Do")]),
     ]);
     const { columns } = mergePlanCards(board, t, { contextFolder: "/ws/auth" });
-    expect(columns[0].column.cards).toEqual([]); // structure only
     expect(columns[0].planCards.map((p) => p.fileName)).toEqual(["a.md"]);
   });
 

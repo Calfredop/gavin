@@ -39,10 +39,27 @@ export function watchRootedWorkspaces(workspaces: Workspace[]): void {
 // (spec §2): called ONLY after a successful SetPlanFrontmatterField, so a
 // dragged card doesn't snap back while waiting ~2.5s for the push. The
 // eventual push carries the same tree and re-renders as a no-op.
+// Optimistic insert for a freshly created card file (two-speed composer,
+// card-model spec §4): the watcher push arrives ~2.5s later carrying the
+// same file and re-renders as a no-op. Skips silently when the context
+// isn't in the tree yet or the path already exists.
+export function patchPlanCreated(workspaceId: string, contextFolder: string, plan: PlanFileInfo): void {
+  gavinTrees.update((m) => {
+    const tree = m[workspaceId];
+    if (!tree) return m;
+    const contexts = tree.contexts.map((ctx) => {
+      if (ctx.folderPath !== contextFolder) return ctx;
+      if (ctx.plans.some((p) => p.path === plan.path)) return ctx;
+      return { ...ctx, plans: [...ctx.plans, plan] };
+    });
+    return { ...m, [workspaceId]: { ...tree, contexts } };
+  });
+}
+
 export function patchPlanField(
   workspaceId: string,
   path: string,
-  key: "status" | "priority" | "order" | "title",
+  key: "status" | "priority" | "order" | "title" | "parent" | "labels",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -52,9 +69,13 @@ export function patchPlanField(
       ...ctx,
       plans: ctx.plans.map((p) => {
         if (p.path !== path) return p;
-        if (key === "status") return { ...p, status: value };
+        if (key === "status") return { ...p, status: value || null };
         if (key === "title") return { ...p, title: value };
         if (key === "priority") return { ...p, priority: value.toLowerCase() as PlanFileInfo["priority"] };
+        if (key === "parent") return { ...p, parent: value || null };
+        if (key === "labels") {
+          return { ...p, labels: value.split(",").map((l) => l.trim()).filter((l) => l.length > 0) };
+        }
         const n = Number(value);
         return Number.isFinite(n) ? { ...p, order: n } : p;
       }),

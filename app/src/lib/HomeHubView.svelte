@@ -83,7 +83,7 @@
               {#each boards.columns as column (column.name)}
                 <span class="column">
                   <span class="col-name">{column.name}</span>
-                  <span class="col-count">{column.freeFormCount + column.planCount}</span>
+                  <span class="col-count">{column.planCount}</span>
                 </span>
               {/each}
               {#each boards.autoColumns as auto (auto.status)}
