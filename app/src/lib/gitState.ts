@@ -5,7 +5,7 @@
 import { writable, get } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
-import type { ApplyMode, Area, FileDiff, FileEntry, RepoInfo, StatusResult } from "./git";
+import type { ApplyMode, Area, FileDiff, FileEntry, InProgressKind, NavSelection, RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
 export interface Selection {
   path: string;
@@ -33,6 +33,15 @@ export interface GitViewState {
   gitMissing: boolean;
   refreshToken: number;
   diffToken: number;
+  // ---- SP2 ----
+  refs: RefsSnapshot | null;
+  /// Session override for which remote fetch/push target; null = derived.
+  activeRemote: string | null;
+  navSelection: NavSelection;
+  /// Files of the selected stash (nav selection), read-only.
+  stashFiles: FileEntry[] | null;
+  /// A running long op (fetch/pull/push) with its latest progress line.
+  op: { id: string; label: string; line: string | null } | null;
 }
 
 export const GIT_NOT_FOUND = "git was not found on PATH";
@@ -54,6 +63,11 @@ export function initialState(cwd: string): GitViewState {
     gitMissing: false,
     refreshToken: 0,
     diffToken: 0,
+    refs: null,
+    activeRemote: null,
+    navSelection: "changes",
+    stashFiles: null,
+    op: null,
   };
 }
 
@@ -99,10 +113,38 @@ export function joinMessage(draft: CommitDraft): string {
 }
 
 export function canCommit(state: GitViewState): boolean {
-  if (state.busy || !state.repo?.author) return false;
+  if (state.busy || state.op || !state.repo?.author) return false;
   if (!state.commit.summary.trim()) return false;
   const staged = state.status?.staged.length ?? 0;
   return staged > 0 || state.commit.amend;
+}
+
+export function currentBranch(state: GitViewState) {
+  return state.refs?.branches.find((b) => b.current) ?? null;
+}
+
+/// Which remote Fetch/Push target: the session override, else the current
+/// branch's upstream remote, else `origin`, else the first remote.
+export function effectiveRemote(state: GitViewState): string | null {
+  const remotes = state.refs?.remotes ?? [];
+  if (state.activeRemote && remotes.some((r) => r.name === state.activeRemote)) return state.activeRemote;
+  const fromUpstream = currentBranch(state)?.upstream?.split("/")[0];
+  if (fromUpstream && remotes.some((r) => r.name === fromUpstream)) return fromUpstream;
+  if (remotes.some((r) => r.name === "origin")) return "origin";
+  return remotes[0]?.name ?? null;
+}
+
+export function pushLabel(state: GitViewState): string {
+  return currentBranch(state)?.upstream ? "Push" : "Publish";
+}
+
+export function canSync(state: GitViewState): { fetch: boolean; pull: boolean; push: boolean; reason: string | null } {
+  if (!state.refs || state.refs.remotes.length === 0) {
+    return { fetch: false, pull: false, push: false, reason: "No remotes — add one in the sidebar" };
+  }
+  if (state.repo?.detached) return { fetch: true, pull: false, push: false, reason: "detached HEAD" };
+  if (state.repo?.unborn) return { fetch: true, pull: false, push: false, reason: "no commits yet" };
+  return { fetch: true, pull: true, push: true, reason: null };
 }
 
 // ---- store plumbing --------------------------------------------------------
@@ -157,13 +199,14 @@ export async function refresh(workspaceId: string): Promise<void> {
   try {
     const repo = await backend.gitRepoInfo(s.cwd);
     const status = repo.notARepo ? { unstaged: [], staged: [] } : await backend.gitStatus(s.cwd);
+    const refs = repo.notARepo ? null : await backend.gitRefs(s.cwd);
     let stale = false;
     update(workspaceId, (st) => {
       if (st.refreshToken !== token) {
         stale = true;
         return st;
       }
-      return { ...applyStatus(st, status), repo, gitMissing: false };
+      return { ...applyStatus(st, status), repo, refs, gitMissing: false };
     });
     if (!stale) await loadDiff(workspaceId);
   } catch (e) {
@@ -208,7 +251,7 @@ export function dismissError(workspaceId: string): void {
 /// refresh, record "<label> failed: <stderr>" on error (spec §4).
 export async function run(workspaceId: string, label: string, op: (cwd: string) => Promise<void>): Promise<boolean> {
   const s = current(workspaceId);
-  if (!s || s.busy) return false;
+  if (!s || s.busy || s.op) return false;
   update(workspaceId, (st) => ({ ...st, busy: label, error: null }));
   let okResult = true;
   try {
@@ -265,6 +308,140 @@ export async function commit(workspaceId: string): Promise<boolean> {
 
 export function initRepo(workspaceId: string): Promise<boolean> {
   return run(workspaceId, "Initialize repository", (cwd) => backend.gitInit(cwd));
+}
+
+// ---- SP2: long ops, refs actions, nav selection ----------------------------
+
+export function setActiveRemote(workspaceId: string, remote: string | null): void {
+  update(workspaceId, (st) => ({ ...st, activeRemote: remote }));
+}
+
+/// Fetch/pull/push: one at a time, never concurrent with a `run()`
+/// mutation; progress lines for this op's id land in `op.line` (G13).
+export async function startOp(
+  workspaceId: string,
+  label: string,
+  invoke: (cwd: string, opId: string) => Promise<void>
+): Promise<boolean> {
+  const s = current(workspaceId);
+  if (!s || s.busy || s.op) return false;
+  const id = crypto.randomUUID();
+  update(workspaceId, (st) => ({ ...st, op: { id, label, line: null }, error: null }));
+  const unlisten = await listen<{ opId: string; line: string }>("git-op-progress", (event) => {
+    if (event.payload.opId !== id) return;
+    update(workspaceId, (st) => (st.op?.id === id ? { ...st, op: { ...st.op, line: event.payload.line } } : st));
+  });
+  let okResult = true;
+  try {
+    await invoke(s.cwd, id);
+  } catch (e) {
+    okResult = false;
+    const text = errorText(e);
+    update(workspaceId, (st) => ({ ...st, error: text === "cancelled" ? `${label} cancelled` : `${label} failed: ${text}` }));
+  }
+  unlisten();
+  update(workspaceId, (st) => ({ ...st, op: null }));
+  await refresh(workspaceId);
+  return okResult;
+}
+
+export async function cancelOp(workspaceId: string): Promise<void> {
+  const id = current(workspaceId)?.op?.id;
+  if (id) await backend.gitCancelOp(id).catch(() => false);
+}
+
+function remoteOrOrigin(workspaceId: string): string {
+  const s = current(workspaceId);
+  return (s && effectiveRemote(s)) ?? "origin";
+}
+
+export function fetch(workspaceId: string): Promise<boolean> {
+  const remote = remoteOrOrigin(workspaceId);
+  return startOp(workspaceId, "Fetch", (cwd, id) => backend.gitFetch(cwd, remote, id));
+}
+
+export function pull(workspaceId: string): Promise<boolean> {
+  return startOp(workspaceId, "Pull", (cwd, id) => backend.gitPull(cwd, id));
+}
+
+export function push(workspaceId: string): Promise<boolean> {
+  const remote = remoteOrOrigin(workspaceId);
+  const s = current(workspaceId);
+  const label = s ? pushLabel(s) : "Push";
+  return startOp(workspaceId, label, (cwd, id) => backend.gitPush(cwd, remote, id));
+}
+
+export function checkout(workspaceId: string, name: string, trackRemote: string | null): Promise<boolean> {
+  return run(workspaceId, `Checkout ${name}`, (cwd) => backend.gitCheckout(cwd, name, trackRemote));
+}
+
+export function createBranch(workspaceId: string, name: string, from: string | null, checkoutAfter: boolean): Promise<boolean> {
+  return run(workspaceId, "New branch", (cwd) => backend.gitCreateBranch(cwd, name, from, checkoutAfter));
+}
+
+export function deleteBranch(workspaceId: string, name: string, force: boolean): Promise<boolean> {
+  return run(workspaceId, "Delete branch", (cwd) => backend.gitDeleteBranch(cwd, name, force));
+}
+
+export function mergeBranch(workspaceId: string, branch: string): Promise<boolean> {
+  return run(workspaceId, `Merge ${branch}`, (cwd) => backend.gitMerge(cwd, branch));
+}
+
+export function abortInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
+  return run(workspaceId, kind === "merge" ? "Abort merge" : "Abort rebase", (cwd) => backend.gitAbortInProgress(cwd, kind));
+}
+
+export function continueRebase(workspaceId: string): Promise<boolean> {
+  return run(workspaceId, "Continue rebase", (cwd) => backend.gitContinueRebase(cwd));
+}
+
+export function addRemote(workspaceId: string, name: string, url: string): Promise<boolean> {
+  return run(workspaceId, "Add remote", (cwd) => backend.gitAddRemote(cwd, name, url));
+}
+
+export function removeRemote(workspaceId: string, name: string): Promise<boolean> {
+  return run(workspaceId, "Remove remote", (cwd) => backend.gitRemoveRemote(cwd, name));
+}
+
+export function stashPush(workspaceId: string, message: string, includeUntracked: boolean): Promise<boolean> {
+  return run(workspaceId, "Stash", (cwd) => backend.gitStashPush(cwd, message, includeUntracked));
+}
+
+export async function stashPop(workspaceId: string, index: number): Promise<boolean> {
+  const done = await run(workspaceId, "Pop stash", (cwd) => backend.gitStashPop(cwd, index));
+  if (done) selectChanges(workspaceId);
+  return done;
+}
+
+export function stashApply(workspaceId: string, index: number): Promise<boolean> {
+  return run(workspaceId, "Apply stash", (cwd) => backend.gitStashApply(cwd, index));
+}
+
+export async function stashDrop(workspaceId: string, index: number): Promise<boolean> {
+  const done = await run(workspaceId, "Drop stash", (cwd) => backend.gitStashDrop(cwd, index));
+  if (done) selectChanges(workspaceId);
+  return done;
+}
+
+/// Sidebar selection: a stash swaps the middle column for its read-only
+/// file list; Local Changes restores the normal view.
+export async function selectStash(workspaceId: string, index: number): Promise<void> {
+  const s = current(workspaceId);
+  if (!s) return;
+  update(workspaceId, (st) => ({ ...st, navSelection: { stash: index }, stashFiles: null }));
+  try {
+    const files = await backend.gitStashFiles(s.cwd, index);
+    update(workspaceId, (st) => {
+      const sel = st.navSelection;
+      return typeof sel === "object" && sel.stash === index ? { ...st, stashFiles: files } : st;
+    });
+  } catch (e) {
+    update(workspaceId, (st) => ({ ...st, error: `Stash contents failed: ${errorText(e)}` }));
+  }
+}
+
+export function selectChanges(workspaceId: string): void {
+  update(workspaceId, (st) => ({ ...st, navSelection: "changes", stashFiles: null }));
 }
 
 /// Starts the worktree watcher for this workspace's cwd and subscribes to

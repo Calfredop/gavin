@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
-import type { ApplyMode, FileDiff, RepoInfo, StatusResult } from "./git";
+import type { ApplyMode, FileDiff, FileEntry, InProgressKind, RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -276,4 +276,78 @@ export function gitWatch(cwd: string): Promise<void> {
 
 export function gitUnwatch(cwd: string): Promise<void> {
   return invoke("git_unwatch", { cwd });
+}
+
+// --- Git tab SP2: sync, refs, branches, remotes, stashes --------------------
+
+export function gitRefs(cwd: string): Promise<RefsSnapshot> {
+  return invoke("git_refs", { cwd });
+}
+
+export function gitFetch(cwd: string, remote: string, opId: string): Promise<void> {
+  return invoke("git_fetch", { cwd, remote, opId });
+}
+
+export function gitPull(cwd: string, opId: string): Promise<void> {
+  return invoke("git_pull", { cwd, opId });
+}
+
+export function gitPush(cwd: string, remote: string, opId: string): Promise<void> {
+  return invoke("git_push", { cwd, remote, opId });
+}
+
+export function gitCancelOp(opId: string): Promise<boolean> {
+  return invoke("git_cancel_op", { opId });
+}
+
+export function gitCheckout(cwd: string, name: string, trackRemote: string | null): Promise<void> {
+  return invoke("git_checkout", { cwd, name, trackRemote });
+}
+
+export function gitCreateBranch(cwd: string, name: string, from: string | null, checkout: boolean): Promise<void> {
+  return invoke("git_create_branch", { cwd, name, from, checkout });
+}
+
+export function gitDeleteBranch(cwd: string, name: string, force: boolean): Promise<void> {
+  return invoke("git_delete_branch", { cwd, name, force });
+}
+
+export function gitMerge(cwd: string, branch: string): Promise<void> {
+  return invoke("git_merge", { cwd, branch });
+}
+
+export function gitAbortInProgress(cwd: string, kind: InProgressKind): Promise<void> {
+  return invoke("git_abort_in_progress", { cwd, kind });
+}
+
+export function gitContinueRebase(cwd: string): Promise<void> {
+  return invoke("git_continue_rebase", { cwd });
+}
+
+export function gitAddRemote(cwd: string, name: string, url: string): Promise<void> {
+  return invoke("git_add_remote", { cwd, name, url });
+}
+
+export function gitRemoveRemote(cwd: string, name: string): Promise<void> {
+  return invoke("git_remove_remote", { cwd, name });
+}
+
+export function gitStashPush(cwd: string, message: string, includeUntracked: boolean): Promise<void> {
+  return invoke("git_stash_push", { cwd, message, includeUntracked });
+}
+
+export function gitStashPop(cwd: string, index: number): Promise<void> {
+  return invoke("git_stash_pop", { cwd, index });
+}
+
+export function gitStashApply(cwd: string, index: number): Promise<void> {
+  return invoke("git_stash_apply", { cwd, index });
+}
+
+export function gitStashDrop(cwd: string, index: number): Promise<void> {
+  return invoke("git_stash_drop", { cwd, index });
+}
+
+export function gitStashFiles(cwd: string, index: number): Promise<FileEntry[]> {
+  return invoke("git_stash_files", { cwd, index });
 }

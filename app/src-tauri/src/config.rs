@@ -47,6 +47,9 @@ pub struct GitViewPrefs {
     pub diff_layout: Option<String>,
     #[serde(default)]
     pub skip_hunk_discard_confirm: bool,
+    /// Collapsed sidebar sections, keyed by section id (SP2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nav_collapsed: Option<HashMap<String, bool>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -363,6 +366,7 @@ mod tests {
             list_width: None,
             diff_layout: Some("split".to_string()),
             skip_hunk_discard_confirm: true,
+            nav_collapsed: None,
         });
         let config = AppConfig {
             workspaces: vec![ws],

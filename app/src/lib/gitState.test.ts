@@ -15,15 +15,43 @@ vi.mock("./backend", () => ({
   gitInit: vi.fn().mockResolvedValue(undefined),
   gitWatch: vi.fn().mockResolvedValue(undefined),
   gitUnwatch: vi.fn().mockResolvedValue(undefined),
+  gitRefs: vi.fn(),
+  gitFetch: vi.fn().mockResolvedValue(undefined),
+  gitPull: vi.fn().mockResolvedValue(undefined),
+  gitPush: vi.fn().mockResolvedValue(undefined),
+  gitCancelOp: vi.fn().mockResolvedValue(true),
+  gitCheckout: vi.fn().mockResolvedValue(undefined),
+  gitCreateBranch: vi.fn().mockResolvedValue(undefined),
+  gitDeleteBranch: vi.fn().mockResolvedValue(undefined),
+  gitMerge: vi.fn().mockResolvedValue(undefined),
+  gitAbortInProgress: vi.fn().mockResolvedValue(undefined),
+  gitContinueRebase: vi.fn().mockResolvedValue(undefined),
+  gitAddRemote: vi.fn().mockResolvedValue(undefined),
+  gitRemoveRemote: vi.fn().mockResolvedValue(undefined),
+  gitStashPush: vi.fn().mockResolvedValue(undefined),
+  gitStashPop: vi.fn().mockResolvedValue(undefined),
+  gitStashApply: vi.fn().mockResolvedValue(undefined),
+  gitStashDrop: vi.fn().mockResolvedValue(undefined),
+  gitStashFiles: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
 import * as backend from "./backend";
+import { listen } from "@tauri-apps/api/event";
 import {
   gitStore, initialState, applyStatus, followSelection, splitMessage, joinMessage, canCommit,
-  ensureGitView, refresh, select, run, stageFiles, commit, setCommitDraft, setLineSelection,
+  ensureGitView, refresh, select, run, stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
+  effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
 } from "./gitState";
-import type { RepoInfo, StatusResult } from "./git";
+import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
+
+const snapshot: RefsSnapshot = {
+  branches: [{ name: "main", current: true, upstream: "origin/main", ahead: 2, behind: 1, sha: "a", subject: "s" }],
+  remotes: [{ name: "origin", url: "u", branches: ["main"] }, { name: "upstream", url: "v", branches: [] }],
+  stashes: [],
+  worktrees: [],
+  headBranch: "main",
+};
 
 const repo: RepoInfo = {
   notARepo: false, root: "/r", branch: "main", detached: false, unborn: false,
@@ -40,6 +68,7 @@ beforeEach(() => {
   vi.mocked(backend.gitRepoInfo).mockResolvedValue(repo);
   vi.mocked(backend.gitStatus).mockResolvedValue(status);
   vi.mocked(backend.gitDiff).mockResolvedValue({ path: "a.ts", binary: false, tooLarge: false, hunks: [] });
+  vi.mocked(backend.gitRefs).mockResolvedValue(snapshot);
 });
 
 describe("followSelection", () => {
@@ -175,5 +204,74 @@ describe("run / mutations", () => {
     ensureGitView("ws", "/other");
     expect(get(gitStore)["ws"].cwd).toBe("/other");
     expect(get(gitStore)["ws"].lineSelection.size).toBe(0);
+  });
+});
+
+describe("sync helpers", () => {
+  it("effectiveRemote prefers the override, then the upstream's remote, then origin", async () => {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    expect(effectiveRemote(get(gitStore)["ws"])).toBe("origin");
+    setActiveRemote("ws", "upstream");
+    expect(effectiveRemote(get(gitStore)["ws"])).toBe("upstream");
+  });
+
+  it("pushLabel is Publish without an upstream and canSync explains why things are disabled", async () => {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    expect(pushLabel(get(gitStore)["ws"])).toBe("Push");
+    vi.mocked(backend.gitRefs).mockResolvedValueOnce({ ...snapshot, branches: [{ ...snapshot.branches[0], upstream: null, ahead: 0, behind: 0 }] });
+    await refresh("ws");
+    expect(pushLabel(get(gitStore)["ws"])).toBe("Publish");
+    vi.mocked(backend.gitRefs).mockResolvedValueOnce({ ...snapshot, remotes: [] });
+    await refresh("ws");
+    expect(canSync(get(gitStore)["ws"])).toMatchObject({ fetch: false, reason: expect.stringContaining("No remotes") });
+  });
+});
+
+describe("long ops", () => {
+  it("startOp sets op, records progress for its id, refuses a second op, refreshes and clears", async () => {
+    ensureGitView("ws", "/r");
+    let handler!: (e: { payload: { opId: string; line: string } }) => void;
+    vi.mocked(listen).mockImplementationOnce(async (_n, h) => {
+      handler = h as never;
+      return () => {};
+    });
+    let finish!: () => void;
+    const p = startOp("ws", "Fetch", () => new Promise<void>((res) => (finish = res)));
+    await Promise.resolve();
+    await Promise.resolve();
+    const id = get(gitStore)["ws"].op!.id;
+    handler({ payload: { opId: "other", line: "nope" } });
+    handler({ payload: { opId: id, line: "Receiving objects: 50%" } });
+    expect(get(gitStore)["ws"].op).toMatchObject({ label: "Fetch", line: "Receiving objects: 50%" });
+    expect(await startOp("ws", "Pull", async () => {})).toBe(false);
+    expect(await stageAll("ws")).toBe(false);
+    finish();
+    await p;
+    expect(get(gitStore)["ws"].op).toBeNull();
+    expect(backend.gitStatus).toHaveBeenCalled();
+  });
+
+  it("a cancelled op reports 'cancelled' in the banner", async () => {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    vi.mocked(backend.gitFetch).mockRejectedValueOnce("cancelled");
+    await fetch("ws");
+    expect(get(gitStore)["ws"].error).toBe("Fetch cancelled");
+    expect(backend.gitFetch).toHaveBeenCalledWith("/r", "origin", expect.any(String));
+  });
+});
+
+describe("nav selection", () => {
+  it("selectStash loads its files and selectChanges restores", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitStashFiles).mockResolvedValueOnce([{ path: "a", status: "M" }]);
+    await selectStash("ws", 0);
+    expect(get(gitStore)["ws"].navSelection).toEqual({ stash: 0 });
+    expect(get(gitStore)["ws"].stashFiles).toEqual([{ path: "a", status: "M" }]);
+    selectChanges("ws");
+    expect(get(gitStore)["ws"].navSelection).toBe("changes");
+    expect(get(gitStore)["ws"].stashFiles).toBeNull();
   });
 });

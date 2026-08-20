@@ -13,6 +13,8 @@ export interface GitViewPrefs {
   listWidth?: number;
   diffLayout?: "unified" | "split";
   skipHunkDiscardConfirm?: boolean;
+  /// Collapsed sidebar sections of the Git tab, keyed by section id.
+  navCollapsed?: Record<string, boolean>;
 }
 
 export interface Workspace {

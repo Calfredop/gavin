@@ -59,6 +59,50 @@ export interface RepoInfo {
   inProgress: "merge" | "rebase" | null;
 }
 
+// ---- SP2/SP3: refs snapshot ------------------------------------------------
+
+export interface BranchInfo {
+  name: string;
+  current: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  sha: string;
+  subject: string;
+}
+
+export interface RemoteInfo {
+  name: string;
+  url: string;
+  branches: string[];
+}
+
+export interface StashInfo {
+  index: number;
+  message: string;
+  date: string;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  head: string;
+  branch: string | null;
+  isMain: boolean;
+  locked: boolean;
+  prunable: boolean;
+}
+
+export interface RefsSnapshot {
+  branches: BranchInfo[];
+  remotes: RemoteInfo[];
+  stashes: StashInfo[];
+  worktrees: WorktreeInfo[];
+  headBranch: string | null;
+}
+
+export type NavSelection = "changes" | { stash: number };
+export type InProgressKind = "merge" | "rebase";
+
 /// Hunks longer than this render collapsed (spec §3).
 export const LARGE_HUNK_LINES = 500;
 /// Per-list display cap (spec §1).
