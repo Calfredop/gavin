@@ -126,6 +126,10 @@ fn tool_definitions() -> Value {
             "path": { "type": "string", "description": "Defaults to the current directory" }
         } } },
         { "name": "gavin_get_board", "description": "The workspace kanban board: columns (the status vocabulary) and the human's free-form cards. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_promote_task", "description": "Promote a plan's checklist item into a nested task card (rewrites the item into a link to the new file).", "inputSchema": { "type": "object", "properties": {
+            "plan_path": { "type": "string" },
+            "item": { "type": "string", "description": "The checklist item's exact text" }
+        }, "required": ["plan_path", "item"] } },
         { "name": "gavin_spawn_session", "description": "Spawn a terminal session in the gavin app (visible to the human on the Agents page). Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
             "command": { "type": "string", "description": "Program to run, e.g. claude" },
             "cwd": { "type": "string", "description": "Defaults to the workspace root" }
@@ -200,6 +204,12 @@ fn dispatch_tool(
                 .to_string(),
         },
         "gavin_get_board" => Request::GetBoardByRoot { root_path: root_str },
+        "gavin_promote_task" => Request::PromoteChecklistItem {
+            plan_path: resolve_against_root(root, &require_arg(args, "plan_path")?)
+                .to_string_lossy()
+                .to_string(),
+            item: require_arg(args, "item")?,
+        },
         "gavin_spawn_session" => Request::SpawnAgentSession {
             root_path: root_str.clone(),
             cwd: str_arg(args, "cwd")
@@ -215,6 +225,7 @@ fn dispatch_tool(
         Response::GavinTreeScanned { tree } => Ok(serde_json::to_string_pretty(&tree)?),
         Response::PrdContent { content } => Ok(content),
         Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
+        Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
         Response::Board { columns, labels } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
         }

@@ -18,16 +18,16 @@ describe("parseChecklist", () => {
   it("finds items with full-content line indices", () => {
     const items = parseChecklist(FILE);
     expect(items).toEqual([
-      { lineIndex: 6, text: "first thing", checked: false, promotedFile: null },
-      { lineIndex: 7, text: "nested done", checked: true, promotedFile: null },
-      { lineIndex: 8, text: "promoted item", checked: false, promotedFile: "promoted-item.md" },
-      { lineIndex: 9, text: "done promoted", checked: true, promotedFile: "other.md" },
+      { lineIndex: 6, text: "first thing", rawText: "first thing", checked: false, promotedFile: null },
+      { lineIndex: 7, text: "nested done", rawText: "nested done", checked: true, promotedFile: null },
+      { lineIndex: 8, text: "promoted item", rawText: "[promoted item](./promoted-item.md)", checked: false, promotedFile: "promoted-item.md" },
+      { lineIndex: 9, text: "done promoted", rawText: "[done promoted](other.md)", checked: true, promotedFile: "other.md" },
     ]);
   });
 
   it("ignores frontmatter-area lines and handles no-frontmatter files", () => {
     expect(parseChecklist("- [ ] a\n")).toEqual([
-      { lineIndex: 0, text: "a", checked: false, promotedFile: null },
+      { lineIndex: 0, text: "a", rawText: "a", checked: false, promotedFile: null },
     ]);
     // A checkbox-looking line inside frontmatter never counts:
     expect(parseChecklist("---\n- [ ] not body\n---\n")).toEqual([]);

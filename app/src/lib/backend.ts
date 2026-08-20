@@ -159,6 +159,20 @@ export function setPlanFrontmatterField(
   return invoke("set_plan_frontmatter_field", { path, key, value });
 }
 
+export function setChecklistItem(
+  path: string,
+  lineIndex: number,
+  expectedText: string,
+  checked: boolean
+): Promise<void> {
+  return invoke("set_checklist_item", { path, lineIndex, expectedText, checked });
+}
+
+// Returns the created task card's path.
+export function promoteChecklistItem(planPath: string, item: string): Promise<string> {
+  return invoke("promote_checklist_item", { planPath, item });
+}
+
 export function getBoard(workspaceId: string): Promise<Board> {
   return invoke("get_board", { workspaceId });
 }

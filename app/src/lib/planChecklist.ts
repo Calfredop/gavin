@@ -5,6 +5,10 @@
 export interface ChecklistItem {
   lineIndex: number;
   text: string;
+  // The raw line remainder as written -- for a promoted item that's the
+  // whole `[text](./file.md)` link. The daemon validates writes against
+  // THIS, not the display text.
+  rawText: string;
   checked: boolean;
   // Set when the item was promoted to a task card: the linked file name
   // from `- [ ] [text](./file.md)`.
@@ -37,6 +41,7 @@ export function parseChecklist(content: string): ChecklistItem[] {
     items.push({
       lineIndex: i,
       text: link ? link[1] : raw,
+      rawText: raw,
       checked: m[1] === "x",
       promotedFile: link ? link[2] : null,
     });

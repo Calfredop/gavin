@@ -68,6 +68,8 @@ pub fn run() {
             session::set_board_tabs,
             session::set_plan_frontmatter_field,
             session::create_plan,
+            session::set_checklist_item,
+            session::promote_checklist_item,
             session::seed_smoke_test_data,
             agent_setup::setup_agent_integration
         ])

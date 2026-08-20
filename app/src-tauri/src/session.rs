@@ -1507,6 +1507,42 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
 /// never-overwrite guarantee are identical no matter who creates a plan.
 /// Returns the created path.
 #[tauri::command]
+pub fn set_checklist_item(
+    path: String,
+    line_index: u32,
+    expected_text: String,
+    checked: bool,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(
+        &state.0,
+        &Request::SetChecklistItem { path, line_index, expected_text, checked },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
+/// Returns the created task card's path.
+#[tauri::command]
+pub fn promote_checklist_item(
+    plan_path: String,
+    item: String,
+    state: State<CommandConnection>,
+) -> Result<String, String> {
+    let resp = send_command(&state.0, &Request::PromoteChecklistItem { plan_path, item })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::TaskPromoted { path } => Ok(path),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
+#[tauri::command]
 pub fn create_plan(
     context_folder: String,
     file_name: String,

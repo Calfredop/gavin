@@ -7,8 +7,9 @@
   import type { Column, Label, Priority } from "./kanban";
   import { slugStatus } from "./planBoard";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "./planChecklist";
-  import { requestedExplorerPath } from "./planExplorer";
-  import { patchPlanField } from "./gavinState";
+  import { requestedExplorerPath, slugFileName } from "./planExplorer";
+  import { patchPlanField, patchPlanCreated } from "./gavinState";
+  import type { PlanFileInfo } from "./gavin";
   import { switchWorkspaceView } from "./layoutState";
   import * as backend from "./backend";
 
@@ -41,6 +42,62 @@
   const checklist = $derived<ChecklistItem[]>(
     card.kind === "plan" && content !== null ? parseChecklist(content) : []
   );
+  let checklistError = $state<string | null>(null);
+
+  async function reloadContent(): Promise<void> {
+    const r = await backend.readFileForViewer(card.id);
+    content = r.exists ? r.content : null;
+  }
+
+  async function toggleItem(item: ChecklistItem): Promise<void> {
+    checklistError = null;
+    try {
+      await backend.setChecklistItem(card.id, item.lineIndex, item.rawText, !item.checked);
+      await reloadContent();
+    } catch (e) {
+      // Concurrent agent edit: re-read so the next attempt targets the
+      // real line, and say so instead of silently rewriting.
+      await reloadContent();
+      checklistError = `File changed — checklist re-read, try again. (${e})`;
+    }
+  }
+
+  async function promoteItem(item: ChecklistItem): Promise<void> {
+    checklistError = null;
+    try {
+      const path = await backend.promoteChecklistItem(card.id, item.rawText);
+      const fileName = path.split("/").at(-1) ?? path;
+      const created: PlanFileInfo = {
+        path,
+        fileName,
+        title: item.text,
+        status: null,
+        priority: null,
+        order: null,
+        kind: "task",
+        parent: card.fileName,
+        labels: [],
+        checklistDone: 0,
+        checklistTotal: 0,
+        parseWarning: false,
+      };
+      patchPlanCreated(workspaceId, card.contextFolder, created);
+      await reloadContent();
+    } catch (e) {
+      await reloadContent();
+      checklistError = String(e);
+    }
+  }
+
+  async function unparentChild(childPath: string): Promise<void> {
+    errorMessage = null;
+    try {
+      await backend.setPlanFrontmatterField(childPath, "parent", "");
+      patchPlanField(workspaceId, childPath, "parent", "");
+    } catch (e) {
+      errorMessage = String(e);
+    }
+  }
 
   // --- field writes (surgical, patch-on-success) -----------------------
   async function writeField(key: "title" | "status" | "priority" | "labels", value: string): Promise<boolean> {
@@ -181,13 +238,22 @@
       <div class="section-title">Checklist · {card.checklistDone}/{card.checklistTotal}</div>
       {#each checklist as item (item.lineIndex)}
         <div class="check-item">
-          <span class="box">{item.checked ? "☑" : "☐"}</span>
+          <input
+            type="checkbox"
+            checked={item.checked}
+            onchange={() => void toggleItem(item)}
+          />
           <span class="check-text" class:done={item.checked}>{item.text}</span>
           {#if item.promotedFile}
             <span class="promoted" title="Promoted to {item.promotedFile}">→ task</span>
+          {:else if slugFileName(item.text)}
+            <button type="button" class="promote" onclick={() => void promoteItem(item)}>Promote</button>
           {/if}
         </div>
       {/each}
+      {#if checklistError}
+        <p class="error">{checklistError}</p>
+      {/if}
     </div>
   {/if}
   {#if card.kind === "plan" && (card.nestedChildren.length > 0 || freeChildren.length > 0)}
@@ -197,6 +263,9 @@
         <div class="child-row">
           <span class="child-title">{child.title}</span>
           <span class="child-status">{child.status ?? "(nested)"}</span>
+          <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
+            Un-parent
+          </button>
         </div>
       {/each}
     </div>
@@ -339,6 +408,21 @@
   .promoted {
     color: #7ea8d8;
     font-size: 0.8em;
+  }
+  .promote,
+  .unparent {
+    background: transparent;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #999;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.75em;
+    padding: 0 6px;
+    margin-left: auto;
+  }
+  .check-item input {
+    accent-color: #8bc98b;
   }
   .child-row {
     display: flex;
