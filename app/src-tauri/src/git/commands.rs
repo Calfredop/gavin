@@ -3,7 +3,7 @@
 //! real code path without a Tauri runtime.
 
 use crate::git::parse::{parse_branches, parse_diff, parse_remotes, parse_stashes, parse_status};
-use crate::git::run::{ok, run_git, run_git_ro};
+use crate::git::run::{ok, run_git, run_git_env, run_git_ro};
 use crate::git::types::{Author, FileDiff, RefsSnapshot, RepoInfo, StatusResult};
 use std::path::Path;
 
@@ -197,6 +197,198 @@ pub fn commit(cwd: &str, message: &str, amend: bool) -> Result<(), String> {
 
 pub fn init(cwd: &str) -> Result<(), String> {
     ok(run_git(cwd, &["init", "-q"], None)?).map(|_| ())
+}
+
+// ---- SP2: branches, remotes, stashes, in-progress control -----------------
+
+fn local_branch_exists(cwd: &str, name: &str) -> Result<bool, String> {
+    Ok(run_git_ro(cwd, &["show-ref", "--verify", "-q", &format!("refs/heads/{name}")])?.code == 0)
+}
+
+/// `switch <name>`; with `track_remote` and no local branch of that name,
+/// `switch -c <name> --track <remote>/<name>`. A dirty tree that would be
+/// overwritten is git's refusal, surfaced verbatim (G14).
+pub fn checkout(cwd: &str, name: &str, track_remote: Option<&str>) -> Result<(), String> {
+    match track_remote {
+        Some(remote) if !local_branch_exists(cwd, name)? => {
+            let upstream = format!("{remote}/{name}");
+            ok(run_git(cwd, &["switch", "-c", name, "--track", &upstream], None)?).map(|_| ())
+        }
+        _ => ok(run_git(cwd, &["switch", name], None)?).map(|_| ()),
+    }
+}
+
+pub fn create_branch(cwd: &str, name: &str, from: Option<&str>, checkout_after: bool) -> Result<(), String> {
+    let mut args = vec!["branch", name];
+    if let Some(f) = from {
+        args.push(f);
+    }
+    ok(run_git(cwd, &args, None)?)?;
+    if checkout_after {
+        checkout(cwd, name, None)?;
+    }
+    Ok(())
+}
+
+pub fn delete_branch(cwd: &str, name: &str, force: bool) -> Result<(), String> {
+    ok(run_git(cwd, &["branch", if force { "-D" } else { "-d" }, name], None)?).map(|_| ())
+}
+
+/// `merge --no-edit <branch>`; a conflict exits non-zero with MERGE_HEAD
+/// left behind, which `repo_info` reports as `in_progress: "merge"`.
+pub fn merge(cwd: &str, branch: &str) -> Result<(), String> {
+    ok(run_git(cwd, &["merge", "--no-edit", branch], None)?).map(|_| ())
+}
+
+pub fn abort_in_progress(cwd: &str, kind: &str) -> Result<(), String> {
+    let args: &[&str] = match kind {
+        "merge" => &["merge", "--abort"],
+        "rebase" => &["rebase", "--abort"],
+        other => return Err(format!("unknown in-progress kind: {other}")),
+    };
+    ok(run_git(cwd, args, None)?).map(|_| ())
+}
+
+/// `rebase --continue` with GIT_EDITOR=true so it never opens an editor.
+pub fn continue_rebase(cwd: &str) -> Result<(), String> {
+    ok(run_git_env(cwd, &["rebase", "--continue"], &[("GIT_EDITOR", "true")])?).map(|_| ())
+}
+
+pub fn add_remote(cwd: &str, name: &str, url: &str) -> Result<(), String> {
+    ok(run_git(cwd, &["remote", "add", name, url], None)?).map(|_| ())
+}
+
+pub fn remove_remote(cwd: &str, name: &str) -> Result<(), String> {
+    ok(run_git(cwd, &["remote", "remove", name], None)?).map(|_| ())
+}
+
+pub fn stash_push(cwd: &str, message: &str, include_untracked: bool) -> Result<(), String> {
+    let mut args = vec!["stash", "push"];
+    if include_untracked {
+        args.push("-u");
+    }
+    let msg = message.trim();
+    if !msg.is_empty() {
+        args.extend(["-m", msg]);
+    }
+    ok(run_git(cwd, &args, None)?).map(|_| ())
+}
+
+fn stash_ref(index: u32) -> String {
+    format!("stash@{{{index}}}")
+}
+
+pub fn stash_pop(cwd: &str, index: u32) -> Result<(), String> {
+    ok(run_git(cwd, &["stash", "pop", &stash_ref(index)], None)?).map(|_| ())
+}
+
+pub fn stash_apply(cwd: &str, index: u32) -> Result<(), String> {
+    ok(run_git(cwd, &["stash", "apply", &stash_ref(index)], None)?).map(|_| ())
+}
+
+pub fn stash_drop(cwd: &str, index: u32) -> Result<(), String> {
+    ok(run_git(cwd, &["stash", "drop", &stash_ref(index)], None)?).map(|_| ())
+}
+
+/// `stash show --name-status` → FileEntry list. `--include-untracked`
+/// needs git ≥ 2.32; an older git rejects it, so retry without.
+pub fn stash_files(cwd: &str, index: u32) -> Result<Vec<crate::git::types::FileEntry>, String> {
+    let r = stash_ref(index);
+    let mut out = run_git_ro(cwd, &["stash", "show", "--name-status", "--include-untracked", &r])?;
+    if out.code != 0 {
+        out = run_git_ro(cwd, &["stash", "show", "--name-status", &r])?;
+    }
+    let out = ok(out)?;
+    let mut entries: Vec<crate::git::types::FileEntry> = out
+        .stdout_str()
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.split('\t');
+            let code = parts.next()?.trim();
+            let first = code.chars().next()?;
+            let a = parts.next()?.to_string();
+            let b = parts.next().map(str::to_string);
+            let status = match first {
+                'M' | 'T' => "M",
+                'A' => "A",
+                'D' => "D",
+                'R' => "R",
+                'C' => "C",
+                _ => "M",
+            };
+            Some(match (first, b) {
+                ('R' | 'C', Some(new)) => crate::git::types::FileEntry { path: new, old_path: Some(a), status: status.into() },
+                _ => crate::git::types::FileEntry { path: a, old_path: None, status: status.into() },
+            })
+        })
+        .collect();
+    entries.sort_by(|x, y| x.path.cmp(&y.path));
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn git_checkout(cwd: String, name: String, track_remote: Option<String>) -> Result<(), String> {
+    checkout(&cwd, &name, track_remote.as_deref())
+}
+
+#[tauri::command]
+pub fn git_create_branch(cwd: String, name: String, from: Option<String>, checkout: bool) -> Result<(), String> {
+    create_branch(&cwd, &name, from.as_deref(), checkout)
+}
+
+#[tauri::command]
+pub fn git_delete_branch(cwd: String, name: String, force: bool) -> Result<(), String> {
+    delete_branch(&cwd, &name, force)
+}
+
+#[tauri::command]
+pub fn git_merge(cwd: String, branch: String) -> Result<(), String> {
+    merge(&cwd, &branch)
+}
+
+#[tauri::command]
+pub fn git_abort_in_progress(cwd: String, kind: String) -> Result<(), String> {
+    abort_in_progress(&cwd, &kind)
+}
+
+#[tauri::command]
+pub fn git_continue_rebase(cwd: String) -> Result<(), String> {
+    continue_rebase(&cwd)
+}
+
+#[tauri::command]
+pub fn git_add_remote(cwd: String, name: String, url: String) -> Result<(), String> {
+    add_remote(&cwd, &name, &url)
+}
+
+#[tauri::command]
+pub fn git_remove_remote(cwd: String, name: String) -> Result<(), String> {
+    remove_remote(&cwd, &name)
+}
+
+#[tauri::command]
+pub fn git_stash_push(cwd: String, message: String, include_untracked: bool) -> Result<(), String> {
+    stash_push(&cwd, &message, include_untracked)
+}
+
+#[tauri::command]
+pub fn git_stash_pop(cwd: String, index: u32) -> Result<(), String> {
+    stash_pop(&cwd, index)
+}
+
+#[tauri::command]
+pub fn git_stash_apply(cwd: String, index: u32) -> Result<(), String> {
+    stash_apply(&cwd, index)
+}
+
+#[tauri::command]
+pub fn git_stash_drop(cwd: String, index: u32) -> Result<(), String> {
+    stash_drop(&cwd, index)
+}
+
+#[tauri::command]
+pub fn git_stash_files(cwd: String, index: u32) -> Result<Vec<crate::git::types::FileEntry>, String> {
+    stash_files(&cwd, index)
 }
 
 #[tauri::command]
@@ -551,5 +743,99 @@ mod write_tests {
         init(cwd(&dir)).unwrap();
         assert!(dir.path().join(".git").is_dir());
         assert!(repo_info(cwd(&dir)).unwrap().unborn);
+    }
+}
+
+#[cfg(test)]
+mod ref_tests {
+    use super::testutil::*;
+    use super::*;
+
+    #[test]
+    fn create_checkout_and_delete_branches() {
+        let dir = temp_repo();
+        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        assert_eq!(repo_info(cwd(&dir)).unwrap().branch.as_deref(), Some("feature"));
+        write(&dir, "x", "x\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "x", false).unwrap();
+        checkout(cwd(&dir), "main", None).unwrap();
+        let err = delete_branch(cwd(&dir), "feature", false).unwrap_err();
+        assert!(err.contains("not fully merged"), "{err}");
+        delete_branch(cwd(&dir), "feature", true).unwrap();
+        assert!(!refs(cwd(&dir)).unwrap().branches.iter().any(|b| b.name == "feature"));
+    }
+
+    #[test]
+    fn checkout_of_a_remote_branch_creates_a_tracking_branch() {
+        let (_bare, clone) = crate::git::ops::tests::remote_and_clone();
+        git(cwd(&clone), &["switch", "-q", "-c", "topic"]);
+        write(&clone, "t", "t\n");
+        git(cwd(&clone), &["add", "t"]);
+        git(cwd(&clone), &["commit", "-q", "-m", "t"]);
+        git(cwd(&clone), &["push", "-q", "-u", "origin", "topic"]);
+        git(cwd(&clone), &["switch", "-q", "main"]);
+        git(cwd(&clone), &["branch", "-q", "-D", "topic"]);
+        checkout(cwd(&clone), "topic", Some("origin")).unwrap();
+        let r = refs(cwd(&clone)).unwrap();
+        assert_eq!(r.branches.iter().find(|b| b.name == "topic").unwrap().upstream.as_deref(), Some("origin/topic"));
+        assert_eq!(r.head_branch.as_deref(), Some("topic"));
+    }
+
+    #[test]
+    fn merge_conflict_sets_in_progress_and_abort_clears_it() {
+        let dir = temp_repo();
+        create_branch(cwd(&dir), "b", None, true).unwrap();
+        write(&dir, "f.txt", "B\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "b", false).unwrap();
+        checkout(cwd(&dir), "main", None).unwrap();
+        write(&dir, "f.txt", "A\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "a", false).unwrap();
+        assert!(merge(cwd(&dir), "b").is_err());
+        assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress.as_deref(), Some("merge"));
+        assert_eq!(status(cwd(&dir)).unwrap().unstaged[0].status, "U");
+        abort_in_progress(cwd(&dir), "merge").unwrap();
+        assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress, None);
+        // A clean merge works.
+        create_branch(cwd(&dir), "c", None, true).unwrap();
+        write(&dir, "c", "c\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "c", false).unwrap();
+        checkout(cwd(&dir), "main", None).unwrap();
+        merge(cwd(&dir), "c").unwrap();
+        assert!(dir.path().join("c").exists());
+    }
+
+    #[test]
+    fn remotes_add_and_remove() {
+        let dir = temp_repo();
+        add_remote(cwd(&dir), "upstream", "https://example.invalid/u.git").unwrap();
+        assert_eq!(refs(cwd(&dir)).unwrap().remotes[0].url, "https://example.invalid/u.git");
+        remove_remote(cwd(&dir), "upstream").unwrap();
+        assert!(refs(cwd(&dir)).unwrap().remotes.is_empty());
+    }
+
+    #[test]
+    fn stash_push_files_apply_pop_drop() {
+        let dir = temp_repo();
+        write(&dir, "f.txt", "changed\n");
+        write(&dir, "u.txt", "u\n");
+        stash_push(cwd(&dir), "wip", true).unwrap();
+        assert_eq!(status(cwd(&dir)).unwrap(), StatusResult::default());
+        let files = stash_files(cwd(&dir), 0).unwrap();
+        let mut names: Vec<_> = files.iter().map(|f| f.path.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["f.txt", "u.txt"]);
+        stash_apply(cwd(&dir), 0).unwrap();
+        assert_eq!(status(cwd(&dir)).unwrap().unstaged.len(), 2);
+        assert_eq!(refs(cwd(&dir)).unwrap().stashes.len(), 1);
+        discard_files(cwd(&dir), &["f.txt".into()], &["u.txt".into()]).unwrap();
+        stash_pop(cwd(&dir), 0).unwrap();
+        assert!(refs(cwd(&dir)).unwrap().stashes.is_empty());
+        stash_push(cwd(&dir), "", false).unwrap();
+        stash_drop(cwd(&dir), 0).unwrap();
+        assert!(refs(cwd(&dir)).unwrap().stashes.is_empty());
     }
 }
