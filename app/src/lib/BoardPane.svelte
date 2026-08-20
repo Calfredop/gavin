@@ -121,6 +121,7 @@
           mode="planOnly"
           labels={board.labels}
           planCards={dc.planCards}
+          composerContext={contextFolder}
           onOpenPlanCard={(path) => (openPlanPath = path)}
         />
       {/each}

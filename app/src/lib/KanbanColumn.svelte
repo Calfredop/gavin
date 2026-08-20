@@ -1,10 +1,14 @@
 <script lang="ts">
   import type { Column, Label } from "./kanban";
   import type { CardView } from "./planBoard";
+  import type { PlanFileInfo } from "./gavin";
   import BoardCard from "./BoardCard.svelte";
   import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
   import { flip } from "svelte/animate";
   import { renameColumnAction, deleteColumnAction } from "./kanbanState";
+  import { gavinTrees, patchPlanCreated } from "./gavinState";
+  import { buildCreatePlanArgs } from "./cardCompose";
+  import * as backend from "./backend";
 
   interface Props {
     workspaceId: string;
@@ -15,9 +19,19 @@
     mode?: "full" | "planOnly";
     labels?: Label[];
     planCards: CardView[];
+    // Pins the composer to one context (BoardPane) and hides the picker.
+    composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
   }
-  let { workspaceId, column, mode = "full", labels = [], planCards, onOpenPlanCard }: Props = $props();
+  let {
+    workspaceId,
+    column,
+    mode = "full",
+    labels = [],
+    planCards,
+    composerContext = null,
+    onOpenPlanCard,
+  }: Props = $props();
 
   let editingName = $state(false);
   // Filled by startRename when editing begins -- initializing from
@@ -47,6 +61,94 @@
   // matched it fall back to an auto column (D6), so no prompt is needed.
   function deleteColumn(): void {
     void deleteColumnAction(workspaceId, column.id);
+  }
+
+  // --- two-speed composer (card-model spec §4) -------------------------
+  // Fast path: type a title, Enter -> a kind:note file in this column.
+  // The kind chips expand in place: task adds a prompt field, plan adds
+  // a body field; both add a context picker (root default) unless
+  // composerContext pins one (BoardPane).
+  let composing = $state(false);
+  let composeKind = $state<"note" | "task" | "plan">("note");
+  let composeTitle = $state("");
+  let composeBody = $state("");
+  let composeContext = $state<string | null>(null);
+  let composeError = $state<string | null>(null);
+  let composeTitleEl = $state<HTMLTextAreaElement | null>(null);
+
+  const contexts = $derived($gavinTrees[workspaceId]?.contexts ?? []);
+  const defaultContext = $derived(
+    composerContext ?? (contexts.find((c) => c.kind === "root") ?? contexts[0])?.folderPath ?? null
+  );
+
+  $effect(() => {
+    if (composing && composeTitleEl) composeTitleEl.focus();
+  });
+
+  function resetComposer(): void {
+    composeTitle = "";
+    composeBody = "";
+    composeError = null;
+  }
+
+  async function commitComposer(keepOpen: boolean): Promise<void> {
+    const contextFolder = composeContext ?? defaultContext;
+    if (!contextFolder) {
+      composeError = "No gavin context to create in — bind a root first";
+      return;
+    }
+    const ctx = contexts.find((c) => c.folderPath === contextFolder);
+    const args = buildCreatePlanArgs(
+      { kind: composeKind, title: composeTitle, body: composeBody, status: column.name },
+      ctx?.plans.map((p) => p.fileName) ?? []
+    );
+    if ("error" in args) {
+      if (composeTitle.trim() !== "" || keepOpen) composeError = args.error;
+      if (composeTitle.trim() === "" && !keepOpen) composing = false;
+      return;
+    }
+    composeError = null;
+    try {
+      const path = await backend.createPlan(
+        contextFolder,
+        args.fileName,
+        args.title,
+        args.status,
+        undefined,
+        args.body,
+        args.kind
+      );
+      const created: PlanFileInfo = {
+        path,
+        fileName: args.fileName,
+        title: args.title,
+        status: args.status,
+        priority: null,
+        order: null,
+        kind: args.kind,
+        parent: null,
+        labels: [],
+        checklistDone: 0,
+        checklistTotal: 0,
+        parseWarning: false,
+      };
+      patchPlanCreated(workspaceId, contextFolder, created);
+      resetComposer();
+      if (!keepOpen) composing = false;
+      else composeTitleEl?.focus();
+    } catch (e) {
+      composeError = String(e);
+    }
+  }
+
+  function handleComposerKeydown(e: KeyboardEvent): void {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void commitComposer(true);
+    } else if (e.key === "Escape") {
+      resetComposer();
+      composing = false;
+    }
   }
 </script>
 
@@ -83,6 +185,63 @@
       </div>
     {/each}
   </div>
+  {#if composing}
+    <div class="composer">
+      <div class="kind-chips">
+        {#each ["note", "task", "plan"] as k (k)}
+          <button
+            type="button"
+            class="kind-chip"
+            class:active={composeKind === k}
+            onclick={() => (composeKind = k as "note" | "task" | "plan")}
+          >
+            {k}
+          </button>
+        {/each}
+      </div>
+      <textarea
+        class="compose-title"
+        rows="2"
+        placeholder="Card title…"
+        bind:value={composeTitle}
+        bind:this={composeTitleEl}
+        onkeydown={handleComposerKeydown}
+      ></textarea>
+      {#if composeKind !== "note"}
+        <textarea
+          class="compose-body"
+          rows="4"
+          placeholder={composeKind === "task" ? "Agent prompt…" : "Plan body (use - [ ] for tasks)…"}
+          bind:value={composeBody}
+        ></textarea>
+      {/if}
+      {#if composeKind !== "note" && !composerContext && contexts.length > 1}
+        <select class="compose-context" bind:value={composeContext}>
+          {#each contexts as ctx (ctx.folderPath)}
+            <option value={ctx.folderPath} selected={ctx.folderPath === defaultContext}>{ctx.name}</option>
+          {/each}
+        </select>
+      {/if}
+      {#if composeError}
+        <div class="compose-error">{composeError}</div>
+      {/if}
+      <div class="compose-actions">
+        <button type="button" class="compose-add" onclick={() => void commitComposer(false)}>Add</button>
+        <button
+          type="button"
+          class="compose-cancel"
+          onclick={() => {
+            resetComposer();
+            composing = false;
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  {:else}
+    <button type="button" class="add-card" onclick={() => (composing = true)}>+ Add card</button>
+  {/if}
 </div>
 
 <style>
@@ -161,5 +320,83 @@
   .cards {
     overflow-y: auto;
     flex: 1 1 auto;
+  }
+  .add-card {
+    background: transparent;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    font-family: monospace;
+    text-align: left;
+    padding: 4px 0;
+  }
+  .composer {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+    font-family: monospace;
+  }
+  .kind-chips {
+    display: flex;
+    gap: 4px;
+  }
+  .kind-chip {
+    background: transparent;
+    border: 1px solid #444;
+    border-radius: 10px;
+    color: #999;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.75em;
+    padding: 1px 8px;
+  }
+  .kind-chip.active {
+    background: #3a3a3a;
+    color: #eee;
+    border-color: #666;
+  }
+  .compose-title,
+  .compose-body {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #eee;
+    font-family: monospace;
+    font-size: 0.85em;
+    padding: 8px;
+    resize: none;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .compose-context {
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #eee;
+    font-family: monospace;
+    font-size: 0.85em;
+    padding: 4px;
+  }
+  .compose-error {
+    color: #e0b08a;
+    font-size: 0.75em;
+  }
+  .compose-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .compose-actions button {
+    background: #3a3a3a;
+    border: none;
+    border-radius: 4px;
+    color: #eee;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.8em;
+    padding: 4px 10px;
+  }
+  .compose-cancel {
+    opacity: 0.7;
   }
 </style>
