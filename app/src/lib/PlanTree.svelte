@@ -1,9 +1,17 @@
 <script lang="ts">
-  import type { ExplorerContextNode, ExplorerGroup } from "./planExplorer";
+  import type { ExplorerContextNode, ExplorerFile, ExplorerGroup } from "./planExplorer";
   // Icon names are a COMPILE error when wrong (verified against the
   // installed @lucide/svelte): Columns2 is the current name for the old
   // SplitSquareHorizontal.
-  import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2 } from "@lucide/svelte";
+  import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X } from "@lucide/svelte";
+  import { openContextMenu } from "./contextMenu";
+  import {
+    contextRowMenuItems,
+    fileMenuItems,
+    groupRowMenuItems,
+    type TreeMenuCallbacks,
+    type TreeMenuItem,
+  } from "./planTreeMenu";
 
   interface Props {
     contexts: ExplorerContextNode[];
@@ -12,15 +20,18 @@
     onCreateFile: (context: ExplorerContextNode, group: ExplorerGroup, title: string) => void;
     // Null when there is no terminal session to anchor a split to.
     onOpenInSplit: ((path: string) => void) | null;
+    onDeleteFile: (file: ExplorerFile) => void;
+    // Outside contexts only: unlist from the navigator (files stay).
+    onRemoveOutside: (context: ExplorerContextNode) => void;
   }
-  let { contexts, selectedPath, onSelect, onCreateFile, onOpenInSplit }: Props = $props();
+  let { contexts, selectedPath, onSelect, onCreateFile, onOpenInSplit, onDeleteFile, onRemoveOutside }: Props =
+    $props();
 
   // Collapsed rather than expanded ids: .gavin folders are few, so
   // everything starts open and this stays empty in the common case.
   let collapsed = $state<Set<string>>(new Set());
   let composer = $state<{ folderPath: string; group: ExplorerGroup } | null>(null);
   let composerTitle = $state("");
-
   // Hoisted: `{#each [...] as const as g}` does not parse -- the `as
   // const` collides with each's own `as` binding.
   const GROUPS = ["plans", "docs", "specs"] as const;
@@ -39,8 +50,13 @@
     collapsed = next;
   }
 
-  function openComposer(folderPath: string): void {
-    composer = { folderPath, group: "plans" };
+  function openComposer(folderPath: string, group: ExplorerGroup = "plans"): void {
+    composer = { folderPath, group };
+    composerTitle = "";
+  }
+
+  function closeComposer(): void {
+    composer = null;
     composerTitle = "";
   }
 
@@ -48,8 +64,21 @@
     const title = composerTitle.trim();
     if (!title || !composer) return;
     onCreateFile(context, composer.group, title);
-    composer = null;
-    composerTitle = "";
+    closeComposer();
+  }
+
+  // Built at event time so the menu always closes over the current
+  // props (onOpenInSplit toggles with terminal focus).
+  function menuCallbacks(): TreeMenuCallbacks {
+    return { onSelect, onOpenInSplit, onDeleteFile, onCompose: openComposer, onRemoveOutside };
+  }
+
+  // Opens the app-wide context menu (one ContextMenu layer, mounted at the
+  // root) -- the same UI the kanban, tabs and sidebar use.
+  function openMenu(e: MouseEvent, items: TreeMenuItem[]): void {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu(e.clientX, e.clientY, items);
   }
 </script>
 
@@ -57,11 +86,24 @@
   {#each contexts as context (context.folderPath)}
     {@const contextCollapsed = collapsed.has(context.folderPath)}
     <div class="context">
-      <div class="row context-row" style:padding-left={inset(context.depth)}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -- right-click
+           is a pointer-only affordance; the row's actions stay reachable
+           through its buttons -->
+      <div
+        class="row context-row"
+        style:padding-left={inset(context.depth)}
+        oncontextmenu={(e) => openMenu(e, contextRowMenuItems(context, menuCallbacks()))}
+      >
         <button type="button" class="twisty" onclick={() => toggle(context.folderPath)}>
           {#if contextCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
         </button>
-        <span class="name" title={context.folderPath}>{context.name}</span>
+        <span
+          class="name"
+          class:outside={context.outside}
+          title={context.outside ? `outside workspace — ${context.folderPath}` : context.folderPath}
+        >
+          {context.name}
+        </span>
         {#if context.configWarning}
           <span class="warn" title="config.toml could not be parsed"><TriangleAlert size={11} /></span>
         {/if}
@@ -87,6 +129,9 @@
                 {g}
               </button>
             {/each}
+            <button type="button" class="close" title="Close (Esc)" onclick={closeComposer}>
+              <X size={12} />
+            </button>
           </div>
           <!-- svelte-ignore a11y_autofocus -->
           <input
@@ -95,7 +140,7 @@
             bind:value={composerTitle}
             onkeydown={(e) => {
               if (e.key === "Enter") submitComposer(context);
-              else if (e.key === "Escape") composer = null;
+              else if (e.key === "Escape") closeComposer();
             }}
           />
         </div>
@@ -105,7 +150,12 @@
         {#each context.groups as group (group.group)}
           {@const groupId = `${context.folderPath}#${group.group}`}
           {@const groupCollapsed = collapsed.has(groupId)}
-          <div class="row group-row" style:padding-left={inset(context.depth + 1)}>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="row group-row"
+            style:padding-left={inset(context.depth + 1)}
+            oncontextmenu={(e) => openMenu(e, groupRowMenuItems(context, group.group, menuCallbacks()))}
+          >
             <button type="button" class="twisty" onclick={() => toggle(groupId)}>
               {#if groupCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
             </button>
@@ -114,10 +164,12 @@
           </div>
           {#if !groupCollapsed}
             {#each group.files as file (file.path)}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div
                 class="row file-row"
                 class:selected={file.path === selectedPath}
                 style:padding-left={inset(context.depth + 2)}
+                oncontextmenu={(e) => openMenu(e, fileMenuItems(file, menuCallbacks()))}
               >
                 <button type="button" class="file" title={file.path} onclick={() => onSelect(file.path)}>
                   <span class="glyph"><FileText size={11} /></span>
@@ -201,6 +253,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .name.outside {
+    color: #e08a3c;
+  }
   .group-label {
     color: #999;
     text-transform: uppercase;
@@ -274,6 +329,7 @@
   .group-picker {
     display: flex;
     gap: 4px;
+    align-items: center;
   }
   .group-picker button {
     background: transparent;
@@ -288,6 +344,16 @@
   .group-picker button.active {
     background: #333;
     color: #eee;
+  }
+  .group-picker button.close {
+    border: none;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    padding: 1px 2px;
+  }
+  .group-picker button.close:hover {
+    color: #ddd;
   }
   .composer input {
     background: #1e1e1e;

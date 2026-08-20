@@ -1222,6 +1222,20 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::create_gavin_context(std::path::Path::new(&parent_folder))
                 .map(|_| Response::Ok)
         }
+        Request::AddExternalGavinContext { root_path, folder } => {
+            crate::gavin::add_external_context(
+                std::path::Path::new(&root_path),
+                std::path::Path::new(&folder),
+            )
+            .map(|_| Response::Ok)
+        }
+        Request::RemoveExternalGavinContext { root_path, folder } => {
+            crate::gavin::remove_external_context(
+                std::path::Path::new(&root_path),
+                std::path::Path::new(&folder),
+            )
+            .map(|_| Response::Ok)
+        }
         Request::SetPlanFrontmatterField { path, key, value } => {
             crate::gavin::set_plan_field(std::path::Path::new(&path), &key, &value)
                 .map(|_| Response::Ok)

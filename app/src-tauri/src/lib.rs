@@ -66,6 +66,8 @@ pub fn run() {
             session::get_gavin_tree,
             session::init_gavin_root,
             session::create_gavin_context,
+            session::add_external_gavin_context,
+            session::remove_external_gavin_context,
             session::gavin_root_exists,
             session::get_board_tabs,
             session::set_board_tabs,

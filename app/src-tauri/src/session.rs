@@ -1351,6 +1351,36 @@ pub fn create_gavin_context(
     }
 }
 
+#[tauri::command]
+pub fn add_external_gavin_context(
+    root_path: String,
+    folder: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::AddExternalGavinContext { root_path, folder })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn remove_external_gavin_context(
+    root_path: String,
+    folder: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::RemoveExternalGavinContext { root_path, folder })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
 /// Local fs probe for the set-root flow's init-vs-bind fork (spec §2) --
 /// the frontend can't stat the disk itself, and watching hasn't started
 /// yet at the moment the picker returns.

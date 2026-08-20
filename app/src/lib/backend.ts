@@ -118,6 +118,17 @@ export function createGavinContext(parentFolder: string): Promise<void> {
   return invoke("create_gavin_context", { parentFolder });
 }
 
+// Scaffolds .gavin in a folder OUTSIDE the workspace root and registers
+// it in the root config's extra_contexts so scans include it.
+export function addExternalGavinContext(rootPath: string, folder: string): Promise<void> {
+  return invoke("add_external_gavin_context", { rootPath, folder });
+}
+
+// Unregisters an outside folder; its files are left untouched.
+export function removeExternalGavinContext(rootPath: string, folder: string): Promise<void> {
+  return invoke("remove_external_gavin_context", { rootPath, folder });
+}
+
 export function gavinRootExists(rootPath: string): Promise<boolean> {
   return invoke("gavin_root_exists", { rootPath });
 }

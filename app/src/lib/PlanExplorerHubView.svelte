@@ -1,7 +1,7 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
   import { layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
-  import { gavinTrees } from "./gavinState";
+  import { gavinTrees, refreshGavinTree } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import {
     buildExplorerTree,
@@ -10,11 +10,16 @@
     requestedExplorerPath,
     slugFileName,
     type ExplorerContextNode,
+    type ExplorerFile,
     type ExplorerGroup,
   } from "./planExplorer";
+  import { mergePlanCards, type CardView } from "./planBoard";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import PlanTree from "./PlanTree.svelte";
   import FileEditor from "./FileEditor.svelte";
   import PlanMetadataPanel from "./PlanMetadataPanel.svelte";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import FormatHelpModal from "./FormatHelpModal.svelte";
   import * as backend from "./backend";
 
   interface Props {
@@ -97,6 +102,9 @@
     } catch (e) {
       error = String(e instanceof Error ? e.message : e);
     }
+    // Outside contexts sit beyond the watched root, so no push ever
+    // confirms this write; a refetch covers both worlds.
+    void refreshGavinTree(workspaceId);
   }
 
   async function createContext(): Promise<void> {
@@ -108,16 +116,99 @@
       title: "Folder for the new gavin context",
     });
     if (typeof picked !== "string") return;
-    if (!isUnderRoot(root, picked)) {
-      error = "Pick a folder inside the workspace root — a context outside it is never scanned.";
-      return;
-    }
     try {
-      await backend.createGavinContext(picked);
+      if (isUnderRoot(root, picked)) {
+        await backend.createGavinContext(picked);
+      } else {
+        // Outside the workspace: scaffold AND register it in the root
+        // config's extra_contexts so scans list it (shown in orange).
+        await backend.addExternalGavinContext(root, picked);
+      }
     } catch (e) {
       error = String(e instanceof Error ? e.message : e);
     }
+    void refreshGavinTree(workspaceId);
   }
+
+  // ---- deletion (files) ----------------------------------------------
+
+  let pendingDelete = $state<ExplorerFile | null>(null);
+
+  // The board projection, for the plan-deletion cascade: nested children
+  // die with their plan, free-standing children get un-parented -- same
+  // rules as the kanban's delete.
+  const allCards = $derived.by<CardView[]>(() => {
+    const board = $kanbanState[workspaceId];
+    if (!board) return [];
+    const merged = mergePlanCards(board, $gavinTrees[workspaceId]);
+    return [
+      ...merged.columns.flatMap((c) => c.planCards),
+      ...merged.autoColumns.flatMap((a) => a.planCards),
+    ].flatMap((c) => [c, ...c.nestedChildren]);
+  });
+
+  // Null for docs/specs (plain files, no cascade) and when the board
+  // hasn't loaded -- then the file deletes alone.
+  const pendingDeletePlan = $derived.by<DeletionPlan | null>(() => {
+    if (!pendingDelete || pendingDelete.group !== "plans") return null;
+    const card = allCards.find((c) => c.id === pendingDelete?.path);
+    return card ? deletionPlanFor(card, allCards) : null;
+  });
+
+  const pendingDeleteLines = $derived.by(() => {
+    if (!pendingDelete) return [];
+    const fileName = pendingDelete.path.split("/").at(-1) ?? pendingDelete.path;
+    const lines = [`Deletes ${fileName} permanently.`];
+    if (pendingDeletePlan) {
+      const nested = pendingDeletePlan.files.length - 1;
+      if (nested > 0) lines.push(`Also deletes ${nested} nested ${nested === 1 ? "task" : "tasks"}.`);
+      const freed = pendingDeletePlan.unparent.length;
+      if (freed > 0)
+        lines.push(`Un-parents ${freed} free-standing ${freed === 1 ? "child" : "children"} on the board.`);
+    }
+    return lines;
+  });
+
+  async function confirmDelete(): Promise<void> {
+    const target = pendingDelete;
+    const plan = pendingDeletePlan;
+    pendingDelete = null;
+    if (!target) return;
+    error = null;
+    const deleted = plan ? plan.files.map((f) => f.id) : [target.path];
+    if (plan) {
+      const err = await executeDeletion(workspaceId, plan);
+      if (err) error = err;
+    } else {
+      try {
+        await backend.deleteCardFile(target.path);
+      } catch (e) {
+        error = String(e instanceof Error ? e.message : e);
+      }
+    }
+    if (selectedPath && deleted.includes(selectedPath)) selectedPath = null;
+    void refreshGavinTree(workspaceId);
+  }
+
+  // ---- outside contexts ----------------------------------------------
+
+  let pendingRemoveOutside = $state<ExplorerContextNode | null>(null);
+
+  async function confirmRemoveOutside(): Promise<void> {
+    const target = pendingRemoveOutside;
+    pendingRemoveOutside = null;
+    if (!target || !root) return;
+    error = null;
+    try {
+      await backend.removeExternalGavinContext(root, target.folderPath);
+      if (selectedPath && selectedPath.startsWith(`${target.folderPath}/`)) selectedPath = null;
+    } catch (e) {
+      error = String(e instanceof Error ? e.message : e);
+    }
+    void refreshGavinTree(workspaceId);
+  }
+
+  let showFormatHelp = $state(false);
 
   async function openInSplit(path: string): Promise<void> {
     if (!anchorSessionId) return;
@@ -133,9 +224,14 @@
     <div class="sidebar">
       <div class="sidebar-head">
         <span>Contexts</span>
-        <button type="button" onclick={createContext} title="Create a .gavin context in a folder">
-          + context
-        </button>
+        <div class="head-actions">
+          <button type="button" onclick={() => (showFormatHelp = true)} title="gavin file formats">
+            ?
+          </button>
+          <button type="button" onclick={createContext} title="Create a .gavin context in a folder">
+            + context
+          </button>
+        </div>
       </div>
       {#if contexts.length === 0}
         <div class="empty small">No .gavin folders yet — create one to start planning.</div>
@@ -146,6 +242,8 @@
           onSelect={(p) => (selectedPath = p)}
           onCreateFile={createFile}
           onOpenInSplit={anchorSessionId ? openInSplit : null}
+          onDeleteFile={(f) => (pendingDelete = f)}
+          onRemoveOutside={(c) => (pendingRemoveOutside = c)}
         />
       {/if}
     </div>
@@ -179,6 +277,31 @@
   </div>
 {/if}
 
+{#if pendingDelete}
+  <ConfirmPrompt
+    title="Delete {pendingDelete.path.split('/').at(-1)}?"
+    lines={pendingDeleteLines}
+    choices={[{ label: "Delete", danger: true, onPick: confirmDelete }]}
+    onCancel={() => (pendingDelete = null)}
+  />
+{/if}
+
+{#if pendingRemoveOutside}
+  <ConfirmPrompt
+    title="Remove {pendingRemoveOutside.name} from the navigator?"
+    lines={[
+      `Stops listing ${pendingRemoveOutside.folderPath} in this workspace.`,
+      "No files are deleted — add it again any time with + context.",
+    ]}
+    choices={[{ label: "Remove", danger: true, onPick: confirmRemoveOutside }]}
+    onCancel={() => (pendingRemoveOutside = null)}
+  />
+{/if}
+
+{#if showFormatHelp}
+  <FormatHelpModal onClose={() => (showFormatHelp = false)} />
+{/if}
+
 <style>
   .explorer {
     display: flex;
@@ -205,6 +328,10 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     flex: 0 0 auto;
+  }
+  .head-actions {
+    display: flex;
+    gap: 4px;
   }
   .sidebar-head button {
     background: transparent;

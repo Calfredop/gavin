@@ -37,6 +37,9 @@ export interface GavinContext {
   hasPrd: boolean;
   configWarning: boolean;
   agent?: AgentConfig | null;
+  // True for contexts outside the workspace root, listed via the root
+  // config's extra_contexts. Optional so old test fixtures stay valid.
+  outside?: boolean;
 }
 
 export interface GavinTree {
