@@ -7,6 +7,7 @@
   import { tooltip } from "./tooltip";
   import { layoutState } from "./layoutState";
   import { findSessionLocation } from "./workspace";
+  import { jumpToBoundSession } from "./cardRunActions";
   // Svelte 5 self-import for the nested-children recursion.
   import BoardCardSelf from "./BoardCard.svelte";
 
@@ -34,11 +35,19 @@
     if (!binding) return null;
     const location = findSessionLocation($layoutState, binding.sessionId);
     const status = location ? $layoutState.sessionStatusById[binding.sessionId] : undefined;
-    if (status === "working") return { cls: "status-working", title: "Working" };
-    if (status === "waiting_for_input") return { cls: "status-waiting", title: "Requests attention" };
-    if (location) return { cls: "status-idle", title: "Idle" };
-    return { cls: "status-exited", title: "Session exited" };
+    if (status === "working")
+      return { cls: "status-working", tip: "Agent working — click to open the session" };
+    if (status === "waiting_for_input")
+      return { cls: "status-waiting", tip: "Waiting for input — click to open the session" };
+    if (location) return { cls: "status-idle", tip: "Agent idle — click to open the session" };
+    return { cls: "status-exited", tip: "Session exited — open the card for Re-launch" };
   });
+
+  async function handleDotClick(): Promise<void> {
+    if (workspaceId === null) return;
+    const result = await jumpToBoundSession(workspaceId, card.id);
+    if (result === "exited") onOpen(card.id);
+  }
   const runnable = $derived(onRun !== null && card.kind !== "note" && binding === null);
 
   let expanded = $state(false);
@@ -78,6 +87,9 @@
 <div
   class="card kind-{card.kind}"
   class:nested
+  class:session-working={sessionDot?.cls === "status-working"}
+  class:session-waiting={sessionDot?.cls === "status-waiting"}
+  class:session-idle={sessionDot?.cls === "status-idle"}
   role="button"
   tabindex="0"
   onkeydown={handleKeydown}
@@ -104,7 +116,19 @@
       <span class="progress" use:tooltip={"Checklist: " + card.checklistDone + " of " + card.checklistTotal + " done"}>{card.checklistDone}/{card.checklistTotal}</span>
     {/if}
     {#if sessionDot}
-      <span class="status-dot {sessionDot.cls}" use:tooltip={"Agent session: " + sessionDot.title}></span>
+      <button
+        type="button"
+        class="status-dot-btn"
+        aria-label="Open the bound agent session"
+        use:tooltip={sessionDot.tip}
+        onpointerdown={shield}
+        onclick={(e) => {
+          e.stopPropagation();
+          void handleDotClick();
+        }}
+      >
+        <span class="status-dot {sessionDot.cls}" class:pulse={sessionDot.cls === "status-waiting"}></span>
+      </button>
     {/if}
     {#if card.parseWarning}
       <span class="warning" use:tooltip={"This card's frontmatter has issues — some fields may be unreadable"}><TriangleAlert size={11} /></span>
@@ -284,11 +308,44 @@
   .child-count {
     font-size: 0.8em;
   }
+  .status-dot-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px;
+    flex: 0 0 auto;
+  }
   .status-dot {
-    width: 6px;
-    height: 6px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     flex: 0 0 auto;
+  }
+  .status-dot.pulse {
+    animation: dot-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes dot-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.5);
+      opacity: 0.55;
+    }
+  }
+  .card.session-working {
+    border-left: 3px solid #4a9eff;
+  }
+  .card.session-waiting {
+    border-left: 3px solid #e0524a;
+  }
+  .card.session-idle {
+    border-left: 3px solid #6b8e6b;
   }
   .status-dot.status-working {
     background: #4a9eff;

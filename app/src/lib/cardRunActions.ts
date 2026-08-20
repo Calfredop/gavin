@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { layoutState, handleAgentSessionSpawned, switchWorkspaceView, switchToSessionInPage } from "./layoutState";
+import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, switchWorkspaceView, switchToSessionInPage } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
 import { patchPlanField } from "./gavinState";
@@ -14,20 +14,30 @@ import { composeTaskPrompt, composePlanPrompt, buildRunCommand, runStatusNeeded 
 import { stripFrontmatter } from "./planChecklist";
 import type { CardView } from "./planBoard";
 
+// Focus a card's bound live session (card-model spec §3): "jumped" on
+// success, "exited" when the binding's session is gone (Re-launch lives
+// in the card detail), "none" when nothing is bound.
+export async function jumpToBoundSession(
+  workspaceId: string,
+  path: string
+): Promise<"jumped" | "exited" | "none"> {
+  const binding = cardSessionFor(get(kanbanState)[workspaceId], path);
+  if (!binding) return "none";
+  const location = findSessionLocation(get(layoutState), binding.sessionId);
+  if (!location) return "exited";
+  await switchWorkspaceView(location.workspaceId, "terminal");
+  await switchToSessionInPage(location.workspaceId, location.pageId, binding.sessionId);
+  return "jumped";
+}
+
 // Returns an error string for the board's error strip, or null.
 export async function runCard(workspaceId: string, card: CardView): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
 
+  if ((await jumpToBoundSession(workspaceId, card.id)) === "jumped") return null;
   const state = get(layoutState);
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
-  if (binding) {
-    const location = findSessionLocation(state, binding.sessionId);
-    if (location) {
-      await switchWorkspaceView(location.workspaceId, "terminal");
-      await switchToSessionInPage(location.workspaceId, location.pageId, binding.sessionId);
-      return null;
-    }
-  }
+  if (binding && findSessionLocation(state, binding.sessionId)) return null;
 
   let prompt: string;
   if (card.kind === "task") {
@@ -38,9 +48,10 @@ export async function runCard(workspaceId: string, card: CardView): Promise<stri
     prompt = composePlanPrompt(card.id);
   }
 
-  const workspace = state.workspaces.find((w) => w.id === workspaceId);
-  const agentCommand = workspace?.agentCommand?.trim() || "claude";
-  const command = buildRunCommand(agentCommand, prompt);
+  // The launch command lives in .gavin-root/config.toml now (D41), so it
+  // comes from the same resolver the main agent and the settings panel
+  // use rather than a per-workspace field.
+  const command = buildRunCommand(resolvedAgentFor(workspaceId).command, prompt);
   const cwd = card.contextFolder;
 
   let sessionId: string;

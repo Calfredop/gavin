@@ -180,6 +180,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "run-jump-not-double",
         text: "Run on a card with a live session jumps to it — never a second spawn",
       },
+      {
+        id: "run-dot-jump",
+        text: "Clicking a card's status dot jumps straight to the session; an exited dot opens the detail (Re-launch)",
+        hint: "Waiting-for-input pulses red; the card edge tints with the session status.",
+      },
       { id: "run-relaunch", text: "After the session exits, Re-launch in the detail recreates it with the same cwd/command" },
       { id: "run-unlink", text: "Unlink clears the dot and the binding; the next Run spawns fresh" },
       { id: "run-now-composer", text: "Composer task chip + “Run now” creates the card and immediately runs it" },

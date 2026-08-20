@@ -26,7 +26,6 @@ vi.mock("./layoutState", () => ({
           },
         ],
         activePageId: "pg-1",
-        agentCommand: "claude --model opus",
       },
     ],
     sessionStatusById: {},
@@ -36,6 +35,12 @@ vi.mock("./layoutState", () => ({
   handleAgentSessionSpawned: vi.fn(),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
+  resolvedAgentFor: vi.fn(() => ({
+    profileId: "claude-code",
+    file: "CLAUDE.md",
+    command: "claude --model opus",
+    mcpSupported: true,
+  })),
 }));
 vi.mock("./workspace", () => ({
   findSessionLocation: vi.fn(),
@@ -46,7 +51,7 @@ import { handleAgentSessionSpawned, switchToSessionInPage } from "./layoutState"
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
-import { runCard, relaunchCard } from "./cardRunActions";
+import { runCard, relaunchCard, jumpToBoundSession } from "./cardRunActions";
 import type { CardView } from "./planBoard";
 import type { Board } from "./kanban";
 
@@ -168,5 +173,27 @@ describe("relaunchCard", () => {
 
   it("errors when nothing is remembered", async () => {
     expect(await relaunchCard("ws-1", "/p/absent.md")).toContain("No session");
+  });
+});
+
+describe("jumpToBoundSession", () => {
+  it("jumps when the binding's session is alive", async () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+
+    expect(await jumpToBoundSession("ws-1", "/p/t.md")).toBe("jumped");
+    expect(switchToSessionInPage).toHaveBeenCalledWith("ws-1", "pg-1", "s-live");
+  });
+
+  it("reports exited and none without navigating", async () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: null }]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    expect(await jumpToBoundSession("ws-1", "/p/t.md")).toBe("exited");
+    expect(await jumpToBoundSession("ws-1", "/p/unbound.md")).toBe("none");
+    expect(switchToSessionInPage).not.toHaveBeenCalled();
   });
 });
