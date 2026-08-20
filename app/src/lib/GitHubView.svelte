@@ -10,7 +10,6 @@
     abortInProgress,
     continueRebase,
   } from "./gitState";
-  import { changedCount } from "./git";
   import { tooltip } from "./tooltip";
   import GitToolbar from "./GitToolbar.svelte";
   import GitOpBar from "./GitOpBar.svelte";
@@ -132,7 +131,7 @@
       </div>
     {/if}
     <div class="panes" style:grid-template-columns="{navWidth}px 4px {listWidth}px 4px minmax(0, 1fr)">
-      <div class="pane"><GitNav count={changedCount(view.status)} /></div>
+      <div class="pane"><GitNav {workspaceId} /></div>
       <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("nav", e)}></div>
       <div class="pane"><GitChanges {workspaceId} /></div>
       <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>

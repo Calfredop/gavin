@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles } from "./gitState";
+  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges } from "./gitState";
   import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "./git";
   import { describeFileDiscard, type FileDiscardPrompt } from "./discardFlow";
   import GitFileRow from "./GitFileRow.svelte";
@@ -20,6 +20,9 @@
     { area: "unstaged" as Area, items: unstaged },
     { area: "staged" as Area, items: staged },
   ]);
+  // SP2: a selected stash swaps this column for its read-only file list.
+  const stashSel = $derived(view && typeof view.navSelection === "object" ? view.navSelection.stash : null);
+  const stashInfo = $derived(stashSel === null ? null : (view?.refs?.stashes.find((s) => s.index === stashSel) ?? null));
 
   function list(area: Area): FileEntry[] {
     return area === "unstaged" ? unstaged : staged;
@@ -74,6 +77,33 @@
   }
 </script>
 
+{#if stashSel !== null}
+  <div class="changes stash-view">
+    <section class="list">
+      <header>
+        <span class="title">stash@&#123;{stashSel}&#125;</span>
+        <span class="spacer"></span>
+        <button type="button" class="all" onclick={() => selectChanges(workspaceId)}>← Local Changes</button>
+      </header>
+      <div class="stash-msg">{stashInfo?.message ?? ""}{#if stashInfo} · {stashInfo.date}{/if}</div>
+      <div class="rows">
+        {#if view?.stashFiles === null || view?.stashFiles === undefined}
+          <div class="none">Loading…</div>
+        {:else if view.stashFiles.length === 0}
+          <div class="none">Empty stash</div>
+        {:else}
+          {#each view.stashFiles as entry (entry.path)}
+            <GitFileRow {entry} area="unstaged" selected={false} disabled={true} readonly={true} onSelect={() => {}} onToggle={() => {}} />
+          {/each}
+        {/if}
+      </div>
+      <footer class="stash-foot">
+        <button type="button" class="all" disabled={busy} onclick={() => stashPop(workspaceId, stashSel)}>Pop</button>
+        <button type="button" class="all" disabled={busy} onclick={() => stashApply(workspaceId, stashSel)}>Apply</button>
+      </footer>
+    </section>
+  </div>
+{:else}
 <div class="changes" tabindex="0" role="listbox" aria-label="Changed files" onkeydown={onKeydown}>
   {#each sections as { area, items } (area)}
     <section class="list">
@@ -115,6 +145,7 @@
   {/each}
   <GitCommitBox {workspaceId} />
 </div>
+{/if}
 
 {#if pending}
   <GitDiscardDialog title={pending.title} body={pending.body} offerSkip={false} onConfirm={confirmDiscard} onCancel={() => (pending = null)} />
@@ -185,5 +216,24 @@
     padding: 6px 8px;
     color: #666;
     font-size: 0.75em;
+  }
+  .stash-view .list {
+    flex: 1 1 auto;
+    border-bottom: 0;
+  }
+  .stash-msg {
+    padding: 0 8px 6px;
+    color: #999;
+    font-size: 0.75em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .stash-foot {
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px;
+    border-top: 1px solid #2f2f2f;
+    font-size: 0.72em;
   }
 </style>

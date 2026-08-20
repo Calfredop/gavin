@@ -12,8 +12,10 @@
     /// Present only for worktree changes (unstaged rows) — discard has no
     /// meaning for index entries.
     onDiscard?: () => void;
+    /// Stash contents (SP2): no hover actions at all.
+    readonly?: boolean;
   }
-  let { entry, area, selected, disabled, onSelect, onToggle, onDiscard }: Props = $props();
+  let { entry, area, selected, disabled, onSelect, onToggle, onDiscard, readonly = false }: Props = $props();
 
   const parts = $derived(splitPath(entry.path));
   const toggleLabel = $derived(area === "unstaged" ? "Stage" : "Unstage");
@@ -29,7 +31,7 @@
     {#if entry.oldPath}<span class="dir">{entry.oldPath} → </span>{/if}
     <span class="dir">{parts.dir}</span><span class="name">{parts.name}</span>
   </span>
-  <span class="actions">
+  <span class="actions" class:hidden={readonly}>
     {#if onDiscard}
       <button
         type="button"
@@ -89,6 +91,9 @@
   .actions {
     display: none;
     gap: 4px;
+  }
+  .actions.hidden {
+    display: none !important;
   }
   .row:hover .actions,
   .row.selected .actions {

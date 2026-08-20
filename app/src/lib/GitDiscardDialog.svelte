@@ -7,8 +7,11 @@
     offerSkip: boolean;
     onConfirm: (skip: boolean) => void;
     onCancel: () => void;
+    /// Primary button text; "Discard" by default — SP2 reuses this dialog
+    /// for every destructive confirm (delete branch, drop stash, …).
+    confirmLabel?: string;
   }
-  let { title, body, offerSkip, onConfirm, onCancel }: Props = $props();
+  let { title, body, offerSkip, onConfirm, onCancel, confirmLabel = "Discard" }: Props = $props();
 
   let skip = $state(false);
 </script>
@@ -21,7 +24,7 @@
   {/if}
   <div class="actions">
     <button type="button" onclick={onCancel}>Cancel</button>
-    <button type="button" class="danger" onclick={() => onConfirm(skip)}>Discard</button>
+    <button type="button" class="danger" onclick={() => onConfirm(skip)}>{confirmLabel}</button>
   </div>
 </Modal>
 

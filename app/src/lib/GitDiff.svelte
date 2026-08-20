@@ -131,7 +131,9 @@
     </div>
   {/if}
   <div class="body">
-    {#if !selected}
+    {#if view && typeof view.navSelection === "object"}
+      <div class="msg">Stash contents — pop or apply to edit</div>
+    {:else if !selected}
       <div class="msg">Select a file to see its diff</div>
     {:else if !diff}
       <div class="msg">Loading…</div>
