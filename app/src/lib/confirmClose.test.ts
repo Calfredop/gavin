@@ -64,6 +64,26 @@ describe("confirmTabClose", () => {
     vi.mocked(confirm).mockResolvedValue(false);
     expect(await confirmTabClose("a")).toBe(false);
   });
+
+  it("finds the tab on a non-active page (sidebar session rows) and still prompts", async () => {
+    setActivePage(
+      [ws("ws-1", [page("page-1", leaf(["a", "b"])), page("page-2", leaf(["lonely"]))], "page-1")],
+      "ws-1"
+    );
+    vi.mocked(confirm).mockResolvedValue(false);
+    expect(await confirmTabClose("lonely")).toBe(false);
+    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("last one in this pane");
+  });
+
+  it("finds the tab in a non-active workspace too", async () => {
+    setActivePage(
+      [ws("ws-1", [page("page-1", leaf(["a", "b"]))]), ws("ws-2", [page("page-9", leaf(["solo"]))])],
+      "ws-1"
+    );
+    vi.mocked(confirm).mockResolvedValue(true);
+    expect(await confirmTabClose("solo")).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("confirmPaneClose", () => {

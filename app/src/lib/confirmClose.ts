@@ -2,7 +2,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { get } from "svelte/store";
 import { layoutState } from "./layoutState";
 import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds } from "./layout";
-import { getActiveTree, allSessionIdsInWorkspace } from "./workspace";
+import { getActiveTree, allSessionIdsInWorkspace, findSessionLocation } from "./workspace";
 
 // Neither a file tab nor a board tab is a terminal session: closing one
 // ends no process, so neither may appear in a "N terminal sessions will
@@ -18,14 +18,20 @@ function sessionTabsOnly(
 
 // Prompts before closing a single tab, but only when doing so would empty
 // its pane -- closing a tab that leaves siblings behind needs no prompt,
-// exactly as it behaves today. Always operates on the active page's tree,
-// since a tab can only ever be closed from the page currently on screen.
-// Returns whether the caller should proceed with closeSession(sessionId).
+// exactly as it behaves today. Looks the tab up wherever it lives: the
+// sidebar's session rows can close a session on any page of any
+// workspace, not just the one on screen. Returns whether the caller
+// should proceed with closeSession(sessionId).
 export async function confirmTabClose(sessionId: string): Promise<boolean> {
   const state = get(layoutState);
   // Closing a file or board tab ends no process -- nothing to warn about.
   if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId]) return true;
-  const tree = getActiveTree(state);
+  const location = findSessionLocation(state, sessionId);
+  const tree = location
+    ? (state.workspaces
+        .find((w) => w.id === location.workspaceId)
+        ?.pages.find((p) => p.id === location.pageId)?.layout ?? null)
+    : getActiveTree(state);
   if (!tree || !isLastTabInPane(tree, sessionId)) return true;
   return confirm("Close this tab? It's the last one in this pane, so the pane will close too.", {
     title: "gavin",

@@ -14,6 +14,11 @@ pub enum LayoutNode {
         tabs: Vec<String>,
         #[serde(rename = "activeTabIndex")]
         active_tab_index: usize,
+        /// Pinned tab ids (a subset of `tabs`). Absent in state written
+        /// before pinning existed, hence the default; omitted again when
+        /// empty so old and new state stay byte-identical until used.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pinned: Vec<String>,
     },
     Split {
         direction: Direction,
@@ -42,6 +47,7 @@ mod tests {
         LayoutNode::Leaf {
             tabs: tabs.iter().map(|s| s.to_string()).collect(),
             active_tab_index: 0,
+            pinned: Vec::new(),
         }
     }
 
@@ -94,5 +100,34 @@ mod tests {
                 "sizes": [0.6, 0.4]
             })
         );
+    }
+
+    #[test]
+    fn leaf_without_pinned_deserializes_with_no_pinned_tabs() {
+        let json = serde_json::json!({ "type": "leaf", "tabs": ["s1", "s2"], "activeTabIndex": 1 });
+        let tree: LayoutNode = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            tree,
+            LayoutNode::Leaf {
+                tabs: vec!["s1".to_string(), "s2".to_string()],
+                active_tab_index: 1,
+                pinned: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn pinned_round_trips_and_is_omitted_when_empty() {
+        let pinned = LayoutNode::Leaf {
+            tabs: vec!["s1".to_string(), "s2".to_string()],
+            active_tab_index: 0,
+            pinned: vec!["s1".to_string()],
+        };
+        let json = serde_json::to_value(&pinned).unwrap();
+        assert_eq!(json["pinned"], serde_json::json!(["s1"]));
+        assert_eq!(serde_json::from_value::<LayoutNode>(json).unwrap(), pinned);
+
+        let plain = serde_json::to_value(&leaf(&["s1"])).unwrap();
+        assert!(plain.get("pinned").is_none(), "empty pinned must not be serialized");
     }
 }
