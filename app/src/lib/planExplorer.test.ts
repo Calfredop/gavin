@@ -84,6 +84,36 @@ describe("buildExplorerTree", () => {
     expect(auth.gavinDir).toBe("/ws/auth/.gavin");
   });
 
+  it("assigns depth by nesting among contexts, not path segments", () => {
+    const t = tree([
+      ctx("/ws", "root", { kind: "root", plans: [plan("r.md")] }),
+      // Two folders below the root but only one context deep.
+      ctx("/ws/src/auth", "auth", { plans: [plan("a.md")] }),
+      ctx("/ws/src/auth/tokens", "tokens", { plans: [plan("t.md")] }),
+      // Sibling subtree: depth resets to 1 under the root.
+      ctx("/ws/ui", "ui", { plans: [plan("u.md")] }),
+    ]);
+    expect(buildExplorerTree(t).map((c) => [c.name, c.depth])).toEqual([
+      ["root", 0],
+      ["auth", 1],
+      ["tokens", 2],
+      ["ui", 1],
+    ]);
+  });
+
+  it("does not treat a segment-prefix lookalike folder as an ancestor", () => {
+    const t = tree([
+      ctx("/ws", "root", { kind: "root", plans: [plan("r.md")] }),
+      ctx("/ws/auth", "auth", { plans: [plan("a.md")] }),
+      ctx("/ws/auth-ui", "auth-ui", { plans: [plan("b.md")] }),
+    ]);
+    expect(buildExplorerTree(t).map((c) => [c.name, c.depth])).toEqual([
+      ["root", 0],
+      ["auth", 1],
+      ["auth-ui", 1],
+    ]);
+  });
+
   it("is empty for an absent or root_missing tree", () => {
     expect(buildExplorerTree(undefined)).toEqual([]);
     expect(buildExplorerTree({ rootPath: "/ws", rootMissing: true, contexts: [] })).toEqual([]);

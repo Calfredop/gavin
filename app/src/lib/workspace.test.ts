@@ -31,6 +31,8 @@ import {
   type Workspace,
   type Page,
   type GitStatus,
+  hubLabel,
+  workspaceIdForSession,
 } from "./workspace";
 
 function leaf(tabs: string[]): LayoutNode {
@@ -437,5 +439,40 @@ describe("hubViewIsVisible", () => {
   it("keeps the dev-only rule", () => {
     expect(hubViewIsVisible({ devOnly: true }, SMOKETEST_WORKSPACE_ID, true, false)).toBe(true);
     expect(hubViewIsVisible({ devOnly: true }, "ws-1", true, true)).toBe(false);
+  });
+});
+
+describe("hubLabel", () => {
+  it("shows the resolved agent file for the agent-file view", () => {
+    expect(hubLabel({ id: "agent-file", label: "CLAUDE.md" }, "AGENTS.md")).toBe("AGENTS.md");
+  });
+
+  it("leaves every other view's label alone", () => {
+    expect(hubLabel({ id: "kanban", label: "Kanban" }, "AGENTS.md")).toBe("Kanban");
+  });
+});
+
+describe("workspaceIdForSession", () => {
+  const tree = (id: string) => ({ type: "leaf" as const, tabs: [id], activeTabIndex: 0 });
+
+  it("finds a session in a page tree", () => {
+    const state = {
+      workspaces: [
+        { id: "ws-1", name: "A", pages: [{ id: "p1", name: "P", layout: tree("s-1") }], activePageId: "p1" },
+      ],
+    };
+    expect(workspaceIdForSession(state as never, "s-1")).toBe("ws-1");
+  });
+
+  it("finds a main agent session, which lives outside every page tree", () => {
+    const state = {
+      workspaces: [{ id: "ws-1", name: "A", pages: [], activePageId: null, mainSessionId: "agent-1" }],
+    };
+    expect(workspaceIdForSession(state as never, "agent-1")).toBe("ws-1");
+  });
+
+  it("returns null for a session that belongs to no workspace", () => {
+    const state = { workspaces: [{ id: "ws-1", name: "A", pages: [], activePageId: null }] };
+    expect(workspaceIdForSession(state as never, "nope")).toBeNull();
   });
 });

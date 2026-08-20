@@ -21,6 +21,12 @@ export interface MdFileInfo {
   relPath: string;
 }
 
+export interface AgentConfig {
+  profile: string | null;
+  file: string | null;
+  command: string | null;
+}
+
 export interface GavinContext {
   folderPath: string;
   kind: "root" | "context";
@@ -30,6 +36,7 @@ export interface GavinContext {
   specs: MdFileInfo[];
   hasPrd: boolean;
   configWarning: boolean;
+  agent?: AgentConfig | null;
 }
 
 export interface GavinTree {

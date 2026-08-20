@@ -25,6 +25,13 @@
   // const` collides with each's own `as` binding.
   const GROUPS = ["plans", "docs", "specs"] as const;
 
+  // Inline because the level is data (context.depth), not a fixed class:
+  // groups sit one level under their context, files one under the group.
+  const INDENT_PX = 14;
+  function inset(level: number): string {
+    return `${4 + level * INDENT_PX}px`;
+  }
+
   function toggle(id: string): void {
     const next = new Set(collapsed);
     if (next.has(id)) next.delete(id);
@@ -50,7 +57,7 @@
   {#each contexts as context (context.folderPath)}
     {@const contextCollapsed = collapsed.has(context.folderPath)}
     <div class="context">
-      <div class="row context-row">
+      <div class="row context-row" style:padding-left={inset(context.depth)}>
         <button type="button" class="twisty" onclick={() => toggle(context.folderPath)}>
           {#if contextCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
         </button>
@@ -69,7 +76,7 @@
       </div>
 
       {#if composer && composer.folderPath === context.folderPath}
-        <div class="composer">
+        <div class="composer" style:padding-left={inset(context.depth + 1)}>
           <div class="group-picker">
             {#each GROUPS as g (g)}
               <button
@@ -98,7 +105,7 @@
         {#each context.groups as group (group.group)}
           {@const groupId = `${context.folderPath}#${group.group}`}
           {@const groupCollapsed = collapsed.has(groupId)}
-          <div class="row group-row">
+          <div class="row group-row" style:padding-left={inset(context.depth + 1)}>
             <button type="button" class="twisty" onclick={() => toggle(groupId)}>
               {#if groupCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
             </button>
@@ -107,7 +114,11 @@
           </div>
           {#if !groupCollapsed}
             {#each group.files as file (file.path)}
-              <div class="row file-row" class:selected={file.path === selectedPath}>
+              <div
+                class="row file-row"
+                class:selected={file.path === selectedPath}
+                style:padding-left={inset(context.depth + 2)}
+              >
                 <button type="button" class="file" title={file.path} onclick={() => onSelect(file.path)}>
                   <span class="glyph"><FileText size={11} /></span>
                   <span class="label">{file.label}</span>
@@ -254,7 +265,8 @@
     flex: 0 0 auto;
   }
   .composer {
-    padding: 4px 6px 6px 20px;
+    /* left padding is inline: it tracks the context's depth */
+    padding: 4px 6px 6px;
     display: flex;
     flex-direction: column;
     gap: 4px;

@@ -1,5 +1,5 @@
 import type { LayoutNode } from "./layout";
-import { allSessionIds } from "./layout";
+import { allSessionIds, findLeafPath } from "./layout";
 
 export interface Page {
   id: string;
@@ -20,7 +20,11 @@ export interface Workspace {
   /// The running main agent session (D12) -- outside every page tree.
   mainSessionId?: string;
   /// Launch command for it; "claude" when unset.
-  agentCommand?: string;
+  /// Accent colour; absent means the default. Machine-local (D35).
+  color?: string;
+  /// Per-workspace notification toggles (D38); absent means on.
+  notifyNeedsInput?: boolean;
+  notifyFinished?: boolean;
 }
 
 export interface WorkspacesData {
@@ -367,4 +371,29 @@ export function summarizePageGitStatus(
   if (byRepoRoot.size === 0) return { kind: "none" };
   if (byRepoRoot.size === 1) return { kind: "single", status: [...byRepoRoot.values()][0] };
   return { kind: "multiple", repoCount: byRepoRoot.size };
+}
+
+/// A hub tab's label. Static for every view except the agent-file one,
+/// whose label is the workspace's configured file name. Kept as a
+/// resolver rather than widening HubView.label to a function, so
+/// HUB_VIEWS stays a plain data table.
+export function hubLabel(view: { id: string; label: string }, agentFileName: string): string {
+  return view.id === "agent-file" ? agentFileName : view.label;
+}
+
+/// Which workspace owns a session: page trees first, then the main agent
+/// session, which lives outside every tree by D12. Extracted because
+/// handleSessionExited and handleSessionStatusChanged both need it and
+/// were about to hold a third copy of the walk.
+export function workspaceIdForSession(
+  state: { workspaces: Workspace[] },
+  sessionId: string
+): string | null {
+  for (const ws of state.workspaces) {
+    if (ws.mainSessionId === sessionId) return ws.id;
+    for (const page of ws.pages) {
+      if (findLeafPath(page.layout, sessionId)) return ws.id;
+    }
+  }
+  return null;
 }

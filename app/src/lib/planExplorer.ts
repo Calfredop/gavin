@@ -35,6 +35,11 @@ export interface ExplorerContextNode {
   // Absolute path of this context's .gavin-root/ or .gavin/ -- creation
   // targets are built from it.
   gavinDir: string;
+  // Nesting among CONTEXTS, not filesystem segments: root is 0 and each
+  // context is one deeper than its nearest ancestor context, so src/auth
+  // under the root indents one level even though it is two folders down
+  // (the intermediate folders have no row to indent under).
+  depth: number;
   groups: ExplorerGroupNode[];
 }
 
@@ -65,7 +70,18 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
     return a.folderPath.localeCompare(b.folderPath);
   });
 
+  // The sort puts ancestors before their descendants (root first, and a
+  // folder path always precedes paths nested under it), so the current
+  // ancestor chain is a simple stack.
+  const chain: { folderPath: string; depth: number }[] = [];
+
   return contexts.map((ctx) => {
+    while (chain.length > 0 && !isUnderRoot(chain[chain.length - 1].folderPath, ctx.folderPath)) {
+      chain.pop();
+    }
+    const depth = chain.length === 0 ? 0 : chain[chain.length - 1].depth + 1;
+    chain.push({ folderPath: ctx.folderPath, depth });
+
     const groups: ExplorerGroupNode[] = [];
 
     if (ctx.plans.length > 0) {
@@ -105,6 +121,7 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
       kind: ctx.kind,
       configWarning: ctx.configWarning,
       gavinDir: gavinDirFor(ctx),
+      depth,
       groups,
     };
   });
