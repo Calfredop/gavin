@@ -67,3 +67,24 @@ numbered K1… to keep them distinct from the phase log's D-sequence
 - **Outstanding:** the interactive smoke pass (Board interaction section of
   the in-app checklist, fixture README B7–B11) needs a human at the app — a
   GUI drag can't be driven from this session.
+
+## Incident: drop left the board stuck in drag state (2026-08-20)
+
+- Owner's first manual pass: releasing a dragged card did nothing — preview
+  and placeholder persisted. Root cause: all pointer listeners sat on the
+  board root, relying on bubbling or `root.setPointerCapture()` retargeting.
+  Tauri renders in **WKWebView**, which pairs the release with the original
+  pointerdown target; that target (the dragged card's wrapper) leaves the DOM
+  at drag activation, so WebKit dropped the `pointerup` instead of
+  retargeting it (Chromium retargets — the engine was designed against
+  Chromium behavior). Moves kept flowing (hit-tested fresh), which is why the
+  drag itself looked fine.
+- Fix (`kanbanDragGlue.ts`, `kanbanDrag.ts`): gesture events attach to
+  **window** (capture phase, filtered by pointerId) for the drag's duration —
+  the pattern every battle-tested pointer-DnD library uses — with
+  `setPointerCapture` kept as best-effort only. Plus a unit-tested
+  self-healing rule: a tracked move arriving with `buttons === 0` means the
+  platform ate the release, and stands in for the drop.
+- Lesson for this codebase: never assume Chromium event semantics — the app
+  ships on WKWebView, where DOM removal under an active pointer breaks
+  element-level delivery.
