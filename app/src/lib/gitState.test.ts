@@ -33,15 +33,21 @@ vi.mock("./backend", () => ({
   gitStashApply: vi.fn().mockResolvedValue(undefined),
   gitStashDrop: vi.fn().mockResolvedValue(undefined),
   gitStashFiles: vi.fn().mockResolvedValue([]),
+  gitWorktreeAdd: vi.fn().mockResolvedValue(undefined),
+  gitWorktreeRemove: vi.fn().mockResolvedValue(undefined),
+  gitWorktreePrune: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
+vi.mock("./layoutState", () => ({ setGitViewPrefs: vi.fn().mockResolvedValue(undefined) }));
 
 import * as backend from "./backend";
 import { listen } from "@tauri-apps/api/event";
+import { setGitViewPrefs } from "./layoutState";
 import {
   gitStore, initialState, applyStatus, followSelection, splitMessage, joinMessage, canCommit,
   ensureGitView, refresh, select, run, stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
   effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
+  switchWorktree, mergeBack, rootPathOf, removeWorktree,
 } from "./gitState";
 import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
@@ -273,5 +279,47 @@ describe("nav selection", () => {
     selectChanges("ws");
     expect(get(gitStore)["ws"].navSelection).toBe("changes");
     expect(get(gitStore)["ws"].stashFiles).toBeNull();
+  });
+});
+
+describe("worktrees", () => {
+  it("switchWorktree resets state to the new cwd, persists the selection and refreshes", async () => {
+    ensureGitView("ws", "/r");
+    setLineSelection("ws", new Set(["0:1"]));
+    await switchWorktree("ws", "/r-feature");
+    const s = get(gitStore)["ws"];
+    expect(s.cwd).toBe("/r-feature");
+    expect(s.lineSelection.size).toBe(0);
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { worktree: "/r-feature" });
+    expect(backend.gitRepoInfo).toHaveBeenLastCalledWith("/r-feature");
+  });
+
+  it("rootPathOf prefers the main worktree from refs", async () => {
+    ensureGitView("ws", "/r-feature");
+    vi.mocked(backend.gitRefs).mockResolvedValueOnce({
+      ...snapshot,
+      worktrees: [
+        { path: "/r", head: "a", branch: "main", isMain: true, locked: false, prunable: false },
+        { path: "/r-feature", head: "b", branch: "feature", isMain: false, locked: false, prunable: false },
+      ],
+    });
+    await refresh("ws");
+    expect(rootPathOf(get(gitStore)["ws"])).toBe("/r");
+  });
+
+  it("mergeBack merges in the root checkout and classifies conflicts", async () => {
+    ensureGitView("ws", "/r-feature");
+    expect(await mergeBack("ws", "/r", "feature")).toBe("merged");
+    expect(backend.gitMerge).toHaveBeenCalledWith("/r", "feature");
+    vi.mocked(backend.gitMerge).mockRejectedValueOnce("CONFLICT (content)");
+    vi.mocked(backend.gitRepoInfo).mockResolvedValue({ ...repo, inProgress: "merge" });
+    expect(await mergeBack("ws", "/r", "feature")).toBe("conflict");
+  });
+
+  it("removeWorktree optionally deletes the branch in the same op", async () => {
+    ensureGitView("ws", "/r");
+    await removeWorktree("ws", "/r-feature", false, "feature");
+    expect(backend.gitWorktreeRemove).toHaveBeenCalledWith("/r", "/r-feature", false);
+    expect(backend.gitDeleteBranch).toHaveBeenCalledWith("/r", "feature", false);
   });
 });

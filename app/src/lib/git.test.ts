@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineId, parseLineId, splitPath, branchLabel, changedCount, type RepoInfo } from "./git";
+import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, type RepoInfo } from "./git";
 
 const repo: RepoInfo = {
   notARepo: false, root: "/r", branch: "main", detached: false, unborn: false,
@@ -37,5 +37,24 @@ describe("changedCount", () => {
       })
     ).toBe(3);
     expect(changedCount(null)).toBe(0);
+  });
+});
+
+describe("defaultWorktreePath", () => {
+  it("builds a sibling folder named <repo>-<branch> with slashes flattened (G11)", () => {
+    expect(defaultWorktreePath("/a/b/repo", "feat/x")).toBe("/a/b/repo-feat-x");
+    expect(defaultWorktreePath("/a/b/repo/", "main")).toBe("/a/b/repo-main");
+  });
+});
+
+describe("validateBranchName", () => {
+  it("accepts ordinary names and rejects git's forbidden shapes", () => {
+    expect(validateBranchName("feature/thing-1")).toBeNull();
+    expect(validateBranchName("")).toMatch(/required/i);
+    expect(validateBranchName("has space")).toMatch(/space/i);
+    expect(validateBranchName("a..b")).toMatch(/\.\./);
+    expect(validateBranchName("-lead")).toMatch(/start/i);
+    expect(validateBranchName("x.lock")).toMatch(/lock/i);
+    expect(validateBranchName("bad~name")).toMatch(/character/i);
   });
 });

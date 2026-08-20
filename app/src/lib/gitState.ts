@@ -5,6 +5,7 @@
 import { writable, get } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
+import { setGitViewPrefs } from "./layoutState";
 import type { ApplyMode, Area, FileDiff, FileEntry, InProgressKind, NavSelection, RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
 export interface Selection {
@@ -442,6 +443,50 @@ export async function selectStash(workspaceId: string, index: number): Promise<v
 
 export function selectChanges(workspaceId: string): void {
   update(workspaceId, (st) => ({ ...st, navSelection: "changes", stashFiles: null }));
+}
+
+// ---- SP3: worktrees --------------------------------------------------------
+
+/// The main worktree's path from the refs snapshot; falls back to the
+/// view's own cwd until refs have loaded.
+export function rootPathOf(state: GitViewState): string {
+  return state.refs?.worktrees.find((w) => w.isMain)?.path ?? state.cwd;
+}
+
+/// Point the whole tab at another worktree (G6): fresh state for the new
+/// cwd, persisted so the tab reopens there. `GitHubView`'s watcher effect
+/// keys on the view's cwd and restarts by itself.
+export async function switchWorktree(workspaceId: string, path: string): Promise<void> {
+  ensureGitView(workspaceId, path);
+  await setGitViewPrefs(workspaceId, { worktree: path });
+  await refresh(workspaceId);
+}
+
+export function forkWorktree(
+  workspaceId: string,
+  opts: { path: string; branch: string; from: string | null; newBranch: boolean }
+): Promise<boolean> {
+  return run(workspaceId, "New worktree", (cwd) => backend.gitWorktreeAdd(cwd, opts.path, opts.branch, opts.from, opts.newBranch));
+}
+
+export function removeWorktree(workspaceId: string, path: string, force: boolean, deleteBranchName: string | null): Promise<boolean> {
+  return run(workspaceId, "Remove worktree", async (cwd) => {
+    await backend.gitWorktreeRemove(cwd, path, force);
+    if (deleteBranchName) await backend.gitDeleteBranch(cwd, deleteBranchName, false);
+  });
+}
+
+export function pruneWorktrees(workspaceId: string): Promise<boolean> {
+  return run(workspaceId, "Prune worktrees", (cwd) => backend.gitWorktreePrune(cwd));
+}
+
+/// Merge a fork's branch into the ROOT checkout (G12). "conflict" means the
+/// root now has MERGE_HEAD and the banner's Abort is the way out.
+export async function mergeBack(workspaceId: string, rootPath: string, branch: string): Promise<"merged" | "conflict" | "failed"> {
+  const done = await run(workspaceId, `Merge ${branch}`, () => backend.gitMerge(rootPath, branch));
+  if (done) return "merged";
+  const info = await backend.gitRepoInfo(rootPath).catch(() => null);
+  return info?.inProgress === "merge" ? "conflict" : "failed";
 }
 
 /// Starts the worktree watcher for this workspace's cwd and subscribes to

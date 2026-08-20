@@ -138,3 +138,27 @@ export function changedCount(status: StatusResult | null): number {
   for (const e of status.staged) paths.add(e.path);
   return paths.size;
 }
+
+// ---- SP3: worktrees --------------------------------------------------------
+
+/// Default fork location (G11): a sibling of the repo named
+/// `<repo>-<branch>`, with `/` in the branch flattened to `-`.
+export function defaultWorktreePath(root: string, branch: string): string {
+  const trimmed = root.replace(/\/+$/, "");
+  const i = trimmed.lastIndexOf("/");
+  const parent = i <= 0 ? "" : trimmed.slice(0, i);
+  const name = trimmed.slice(i + 1);
+  return `${parent}/${name}-${branch.replace(/\//g, "-")}`;
+}
+
+/// A subset of git-check-ref-format, enough to catch typos before git does.
+export function validateBranchName(name: string): string | null {
+  if (!name.trim()) return "Branch name is required";
+  if (/\s/.test(name)) return "No spaces allowed";
+  if (name.includes("..")) return "'..' is not allowed";
+  if (name.startsWith("-")) return "Cannot start with '-'";
+  if (name.endsWith(".lock")) return "Cannot end with '.lock'";
+  if (/[~^:?*\[\\]/.test(name) || name.includes("@{")) return "Contains a forbidden character (~ ^ : ? * [ \\ @{)";
+  if (name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) return "Cannot start or end with '/' or end with '.'";
+  return null;
+}

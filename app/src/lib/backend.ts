@@ -351,3 +351,17 @@ export function gitStashDrop(cwd: string, index: number): Promise<void> {
 export function gitStashFiles(cwd: string, index: number): Promise<FileEntry[]> {
   return invoke("git_stash_files", { cwd, index });
 }
+
+// --- Git tab SP3: worktrees -------------------------------------------------
+
+export function gitWorktreeAdd(cwd: string, path: string, branch: string, from: string | null, newBranch: boolean): Promise<void> {
+  return invoke("git_worktree_add", { cwd, path, branch, from, newBranch });
+}
+
+export function gitWorktreeRemove(cwd: string, path: string, force: boolean): Promise<void> {
+  return invoke("git_worktree_remove", { cwd, path, force });
+}
+
+export function gitWorktreePrune(cwd: string): Promise<void> {
+  return invoke("git_worktree_prune", { cwd });
+}

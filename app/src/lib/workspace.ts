@@ -15,6 +15,8 @@ export interface GitViewPrefs {
   skipHunkDiscardConfirm?: boolean;
   /// Collapsed sidebar sections of the Git tab, keyed by section id.
   navCollapsed?: Record<string, boolean>;
+  /// Selected worktree path; absent = the root checkout.
+  worktree?: string;
 }
 
 export interface Workspace {
