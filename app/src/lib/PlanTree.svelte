@@ -4,7 +4,7 @@
   // installed @lucide/svelte): Columns2 is the current name for the old
   // SplitSquareHorizontal.
   import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X } from "@lucide/svelte";
-  import { openContextMenu } from "./contextMenu";
+  import { openContextMenuFromEvent } from "./contextMenu";
   import {
     contextRowMenuItems,
     fileMenuItems,
@@ -76,9 +76,7 @@
   // Opens the app-wide context menu (one ContextMenu layer, mounted at the
   // root) -- the same UI the kanban, tabs and sidebar use.
   function openMenu(e: MouseEvent, items: TreeMenuItem[]): void {
-    e.preventDefault();
-    e.stopPropagation();
-    openContextMenu(e.clientX, e.clientY, items);
+    openContextMenuFromEvent(e, items);
   }
 </script>
 
