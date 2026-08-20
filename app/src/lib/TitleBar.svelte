@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { invoke } from "@tauri-apps/api/core";
   import { layoutState, splitPane, closePane, createPage } from "./layoutState";
   import { presetSingle, presetSideBySide, presetGrid2x2, type LayoutNode } from "./layout";
   import { confirmPaneClose } from "./confirmClose";
@@ -8,6 +9,7 @@
   import { Columns2, Rows2, X, Square, Grid2x2 } from "@lucide/svelte";
   import WindowControls from "./WindowControls.svelte";
   import { isMacOS } from "./platform";
+  import { createDoubleClickTracker, doubleClickAction } from "./titleBarGesture";
 
   let macOS = $state(false);
   onMount(async () => {
@@ -18,9 +20,36 @@
   // version -- startDragging() is the documented, directly-controlled
   // mechanism and is what actually makes the bar draggable. Left-click
   // only, so this doesn't hijack right-click/middle-click.
-  function startDrag(event: MouseEvent): void {
-    if (event.button !== 0) return;
-    getCurrentWindow().startDragging();
+  //
+  // Double-click: the tracker keeps the 2nd mousedown from starting a
+  // drag (a native drag swallows the mouseup) and fires on the mouseup
+  // if the cursor stayed put -- macOS semantics. The action honors the
+  // user's "Double-click a window's title bar to" System Setting, read
+  // from NSUserDefaults on the Rust side (null off macOS -> zoom).
+  // The spacer deliberately has no data-tauri-drag-region: Tauri's
+  // injected script would otherwise fire its own maximize as well.
+  const doubleClick = createDoubleClickTracker();
+
+  function onBarMouseDown(event: MouseEvent): void {
+    if (doubleClick.mousedown(event) === "drag") {
+      getCurrentWindow().startDragging();
+    }
+  }
+
+  async function onBarMouseUp(event: MouseEvent): Promise<void> {
+    if (!doubleClick.mouseup(event)) return;
+    const pref = await invoke<string | null>("title_bar_double_click_action");
+    const win = getCurrentWindow();
+    switch (doubleClickAction(pref)) {
+      case "toggleMaximize":
+        await win.toggleMaximize();
+        break;
+      case "minimize":
+        await win.minimize();
+        break;
+      case "none":
+        break;
+    }
   }
 
   async function split(direction: "row" | "column"): Promise<void> {
@@ -80,11 +109,11 @@
 <div class="titlebar">
   {#if macOS}
     <WindowControls {macOS} />
-    <div class="drag-spacer" data-tauri-drag-region onmousedown={startDrag}></div>
+    <div class="drag-spacer" onmousedown={onBarMouseDown} onmouseup={onBarMouseUp}></div>
     <div class="actions">{@render actions()}</div>
   {:else}
     <div class="actions">{@render actions()}</div>
-    <div class="drag-spacer" data-tauri-drag-region onmousedown={startDrag}></div>
+    <div class="drag-spacer" onmousedown={onBarMouseDown} onmouseup={onBarMouseUp}></div>
     <WindowControls {macOS} />
   {/if}
 </div>

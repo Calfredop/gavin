@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
+import { gavinTrees } from "./gavinState";
 import type { LayoutNode } from "./layout";
 import type { Page, Workspace } from "./workspace";
 import { getActiveView } from "./workspace";
@@ -24,6 +25,9 @@ vi.mock("./backend", () => ({
   // vi.fn() returning undefined would throw instead of exercising the
   // real best-effort path.
   setFileTabs: vi.fn().mockResolvedValue(undefined),
+  setRootConfigField: vi.fn().mockResolvedValue(undefined),
+  agentProfiles: vi.fn().mockResolvedValue([]),
+  moveAgentFile: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: endTabs calls .catch() on this, so a bare
   // vi.fn() returning undefined would throw rather than exercise the
   // real best-effort path.
@@ -91,6 +95,9 @@ import {
   teardown,
   startMainAgent,
   stopMainAgent,
+  setWorkspaceColor,
+  setNotifyFlag,
+  setAgentField,
 } from "./layoutState";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
@@ -124,6 +131,9 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Module-level store: without this, one test's seeded agent config
+  // resolves in the next one.
+  gavinTrees.set({});
   layoutState.set({
     status: "connecting",
     errorMessage: "",
@@ -436,15 +446,24 @@ describe("handleSessionStatusChanged", () => {
   it("hands the previous and new status to maybeNotifyStatusChange, before overwriting the map", () => {
     handleSessionStatusChanged("a", "working");
     handleSessionStatusChanged("a", "idle");
-    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a");
-    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a");
+    // The fifth argument is the owning workspace's toggles (D38); a
+    // session in no workspace defaults to both on.
+    const bothOn = { needsInput: true, finished: true };
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a", bothOn);
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a", bothOn);
   });
 
   it("resolves the notification label via sessionNames, falling back the same way tab labels do", () => {
     setState([], null, null);
     layoutState.update((s) => ({ ...s, sessionNames: { a: "my-session" } }));
     handleSessionStatusChanged("a", "waiting_for_input");
-    expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledWith("a", undefined, "waiting_for_input", "my-session");
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledWith(
+      "a",
+      undefined,
+      "waiting_for_input",
+      "my-session",
+      { needsInput: true, finished: true }
+    );
   });
 });
 
@@ -1353,9 +1372,82 @@ describe("bootstrap / pollForStartupState readiness", () => {
   });
 });
 
+/// Puts an [agent] block on a workspace's root context, the way a
+/// watcher push would. resolvedAgentFor reads gavinTrees directly, so
+/// this is how a test controls the resolved command/file.
+function seedAgentConfig(
+  workspaceId: string,
+  agent: { profile: string | null; file: string | null; command: string | null }
+): void {
+  gavinTrees.update((t) => ({
+    ...t,
+    [workspaceId]: {
+      rootPath: "/tmp/ws",
+      rootMissing: false,
+      contexts: [
+        {
+          folderPath: "/tmp/ws",
+          kind: "root",
+          name: "ws",
+          plans: [],
+          docs: [],
+          specs: [],
+          hasPrd: false,
+          configWarning: false,
+          agent,
+        },
+      ],
+    },
+  }));
+}
+
+describe("workspace settings", () => {
+  it("setWorkspaceColor normalizes and persists", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspaceColor("ws-1", "#A78BFA");
+    expect(get(layoutState).workspaces[0].color).toBe("#a78bfa");
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+  });
+
+  it("setWorkspaceColor rejects junk by storing the default", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspaceColor("ws-1", "red; background: url(x)");
+    expect(get(layoutState).workspaces[0].color).toBe("#4a9eff");
+  });
+
+  it("setNotifyFlag flips one toggle without touching the other", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setNotifyFlag("ws-1", "notifyFinished", false);
+    const w = get(layoutState).workspaces[0];
+    expect(w.notifyFinished).toBe(false);
+    expect(w.notifyNeedsInput).not.toBe(false);
+  });
+
+  it("setAgentField writes config.toml through the daemon, not config.json", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    vi.mocked(backend.setWorkspacesState).mockClear();
+
+    await setAgentField("ws-1", "command", "claude --model opus");
+
+    expect(backend.setRootConfigField).toHaveBeenCalledWith("/tmp/ws", "command", "claude --model opus");
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  it("setAgentField does nothing without a root", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.setRootConfigField).mockClear();
+    await setAgentField("ws-1", "command", "x");
+    expect(backend.setRootConfigField).not.toHaveBeenCalled();
+  });
+});
+
 describe("main agent session", () => {
+  // Was driven by a workspace.agentCommand field; the command now comes
+  // from .gavin-root/config.toml via the gavin tree (D41), so the test
+  // seeds the tree instead.
   it("startMainAgent spawns at the root with the configured command and persists", async () => {
-    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws", agentCommand: "claude --model opus" }], "ws-1", null);
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude --model opus" });
     vi.mocked(backend.createSession).mockResolvedValue("agent-1");
 
     await startMainAgent("ws-1");

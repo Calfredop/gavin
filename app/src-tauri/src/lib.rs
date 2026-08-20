@@ -1,6 +1,7 @@
 mod agent_setup;
 mod config;
 mod daemon;
+mod edge_expand;
 mod fileviewer;
 mod layout;
 mod mac_window;
@@ -23,6 +24,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 mac_window::round_window_corners(&window, 10.0);
+                mac_window::install_edge_double_click(&window, 6.0);
             }
 
             let handle = app.handle().clone();
@@ -53,6 +55,7 @@ pub fn run() {
             fileviewer::unwatch_file_for_viewer,
             fileviewer::write_file_for_editor,
             session::signal_frontend_ready,
+            mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
             session::restart_daemon,
             session::get_board,
@@ -74,6 +77,7 @@ pub fn run() {
             session::unlink_card_session,
             session::promote_checklist_item,
             session::seed_smoke_test_data,
+            session::set_root_config_field,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_setup::move_agent_file

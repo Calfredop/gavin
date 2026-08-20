@@ -37,13 +37,24 @@ function isNotificationWorthy(previousStatus: SessionStatus | undefined, newStat
 // that's never treated as a transition, since there's nothing to
 // transition *from*, except waiting_for_input, which is always
 // notification-worthy regardless of what (if anything) came before it.
+export interface NotifyPrefs {
+  needsInput: boolean;
+  finished: boolean;
+}
+
 export async function maybeNotifyStatusChange(
   sessionId: string,
   previousStatus: SessionStatus | undefined,
   newStatus: SessionStatus,
-  label: string
+  label: string,
+  prefs: NotifyPrefs
 ): Promise<void> {
   if (!isNotificationWorthy(previousStatus, newStatus)) return;
+
+  // Per-workspace toggles (D38), checked before permission so a silenced
+  // workspace never prompts for OS permission either.
+  const enabled = newStatus === "waiting_for_input" ? prefs.needsInput : prefs.finished;
+  if (!enabled) return;
 
   // Suppressed whenever gavin is the OS-frontmost window at all, regardless
   // of which pane is internally focused -- being in front of the app

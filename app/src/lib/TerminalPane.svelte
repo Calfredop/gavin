@@ -72,6 +72,7 @@
      its accessibility helpers) turns out to depend on it after all. */
   :global(.xterm),
   :global(.xterm *) {
+    -webkit-user-select: text;
     user-select: text;
   }
 </style>

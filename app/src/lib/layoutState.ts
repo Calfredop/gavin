@@ -7,8 +7,10 @@ import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
 import type { Workspace, WorkspacesData, GitStatus } from "./workspace";
 import { sessionLabel } from "./paths";
+import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
-import { initGavinListeners, watchRootedWorkspaces } from "./gavinState";
+import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
+import { normalizeColor, resolveAgentConfig, type AgentProfileInfo } from "./settings";
 import type { BoardTab } from "./gavin";
 
 export type { SessionStatus };
@@ -253,6 +255,14 @@ export async function bootstrap(): Promise<void> {
     })
     .catch(() => {});
 
+  // The agent profile table: static Rust data, so one fetch is enough.
+  // Best-effort like the rest -- resolveAgentConfig falls back to
+  // claude-code's defaults if this never arrives.
+  void backend
+    .agentProfiles()
+    .then((profiles) => agentProfilesStore.set(profiles))
+    .catch(() => {});
+
   // Like file tabs: frontend-owned, one-shot, best-effort.
   void backend
     .getBoardTabs()
@@ -347,7 +357,18 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
   void backend.watchGavinRoot(workspaceId, rootPath).catch(() => {});
 }
 
-export const DEFAULT_AGENT_COMMAND = "claude";
+/// The Rust profile table, fetched once at bootstrap. Empty until then;
+/// resolveAgentConfig degrades to its own claude-code fallbacks in that
+/// window, so an early call is safe rather than wrong.
+export const agentProfilesStore = writable<AgentProfileInfo[]>([]);
+
+/// The workspace's resolved agent settings, from config.toml's [agent]
+/// block on the root context plus the profile table.
+export function resolvedAgentFor(workspaceId: string) {
+  const tree = get(gavinTrees)[workspaceId];
+  const rootContext = tree?.contexts.find((c) => c.kind === "root");
+  return resolveAgentConfig(rootContext?.agent ?? null, get(agentProfilesStore));
+}
 
 // Starts the workspace's main agent: a normal daemon session at the
 // workspace root, remembered on the workspace rather than placed in a
@@ -358,7 +379,7 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   if (!ws?.rootPath || ws.mainSessionId) return;
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, ws.agentCommand ?? DEFAULT_AGENT_COMMAND);
+    sessionId = await backend.createSession(ws.rootPath, resolvedAgentFor(workspaceId).command);
   } catch (e) {
     setError(String(e));
     return;
@@ -383,11 +404,41 @@ export async function stopMainAgent(workspaceId: string): Promise<void> {
   clearMainSession(workspaceId);
 }
 
-export async function setAgentCommand(workspaceId: string, command: string): Promise<void> {
+/// Agent settings live in config.toml (D35/D41), so this goes through the
+/// daemon rather than persistWorkspaces. The value comes back on the next
+/// watcher push -- no optimistic local copy to fall out of sync.
+export async function setAgentField(
+  workspaceId: string,
+  key: "profile" | "file" | "command",
+  value: string
+): Promise<void> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!ws?.rootPath) return;
+  try {
+    await backend.setRootConfigField(ws.rootPath, key, value);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+export async function setWorkspaceColor(workspaceId: string, color: string): Promise<void> {
   const state = get(layoutState);
-  const trimmed = command.trim();
+  const normalized = normalizeColor(color);
   const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, agentCommand: trimmed || undefined } : w
+    w.id === workspaceId ? { ...w, color: normalized } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+export async function setNotifyFlag(
+  workspaceId: string,
+  key: "notifyNeedsInput" | "notifyFinished",
+  value: boolean
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, [key]: value } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
@@ -510,9 +561,9 @@ export function handleSessionExited(sessionId: string): void {
   // A main agent session lives outside every page tree (D12), so the
   // search below can never find it -- without this branch its terminal
   // would sit dead on the home forever.
-  const owningWorkspace = state.workspaces.find((w) => w.mainSessionId === sessionId);
-  if (owningWorkspace) {
-    clearMainSession(owningWorkspace.id);
+  const owner = workspaceIdForSession(state, sessionId);
+  if (owner && state.workspaces.find((w) => w.id === owner)?.mainSessionId === sessionId) {
+    clearMainSession(owner);
     return;
   }
   let found: { workspaceId: string; pageId: string; page: { layout: LayoutNode } } | null = null;
@@ -606,7 +657,14 @@ export function handleSessionStatusChanged(sessionId: string, status: SessionSta
   const previousStatus = state.sessionStatusById[sessionId];
   layoutState.update((s) => ({ ...s, sessionStatusById: { ...s.sessionStatusById, [sessionId]: status } }));
   const label = sessionLabel(state.sessionNames, state.cwdBySessionId, sessionId);
-  void maybeNotifyStatusChange(sessionId, previousStatus, status, label);
+  const owner = workspaceIdForSession(state, sessionId);
+  const owningWs = owner ? state.workspaces.find((w) => w.id === owner) : undefined;
+  // A session owned by no workspace (spawned but not yet landed) keeps
+  // today's behaviour rather than going silent.
+  void maybeNotifyStatusChange(sessionId, previousStatus, status, label, {
+    needsInput: owningWs?.notifyNeedsInput ?? true,
+    finished: owningWs?.notifyFinished ?? true,
+  });
 }
 
 // Shared by the "git-status-changed" event listener in bootstrap() and

@@ -1670,6 +1670,22 @@ pub fn set_plan_frontmatter_field(
     }
 }
 
+#[tauri::command]
+pub fn set_root_config_field(
+    root_path: String,
+    key: String,
+    value: String,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::SetRootConfigField { root_path, key, value })
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
 #[cfg(test)]
 mod migration_tests {
     use super::*;

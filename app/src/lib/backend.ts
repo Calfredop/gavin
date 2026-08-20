@@ -202,3 +202,17 @@ export function unlinkCardSession(workspaceId: string, path: string): Promise<vo
 export function deleteBoard(workspaceId: string): Promise<void> {
   return invoke("delete_board", { workspaceId });
 }
+
+export function agentProfiles(): Promise<
+  Array<{ id: string; label: string; instructionsFile: string; command: string; mcpSupported: boolean }>
+> {
+  return invoke("agent_profiles");
+}
+
+export function moveAgentFile(rootPath: string, from: string, to: string): Promise<void> {
+  return invoke("move_agent_file", { rootPath, from, to });
+}
+
+export function setRootConfigField(rootPath: string, key: string, value: string): Promise<void> {
+  return invoke("set_root_config_field", { rootPath, key, value });
+}

@@ -79,6 +79,10 @@
   .cm-host :global(.cm-editor) {
     height: 100%;
     font-size: 0.85em;
+    /* Opt back out of the app-wide user-select: none -- editor text
+       must stay selectable (and WebKit gates contenteditable on it). */
+    -webkit-user-select: text;
+    user-select: text;
   }
   .cm-host :global(.cm-scroller) {
     font-family: monospace;

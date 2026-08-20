@@ -121,11 +121,20 @@
 </div>
 
 <style>
+  /* App chrome is not selectable, like a native window. WKWebView only
+     honors the -webkit- prefixed property, so the unprefixed one alone
+     did nothing on macOS. Real content opts back in below and in the
+     components that render it (xterm, CodeMirror, markdown). */
   :global(html, body) {
     margin: 0;
     padding: 0;
     overflow: hidden;
+    -webkit-user-select: none;
     user-select: none;
+  }
+  :global(input, textarea, [contenteditable]:not([contenteditable="false"])) {
+    -webkit-user-select: text;
+    user-select: text;
   }
   .app {
     width: 100vw;

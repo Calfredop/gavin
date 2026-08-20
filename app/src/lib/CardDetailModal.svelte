@@ -526,6 +526,8 @@
     overflow-y: auto;
   }
   .body-preview {
+    -webkit-user-select: text;
+    user-select: text;
     background: #1e1e1e;
     border: 1px solid #333;
     border-radius: 6px;

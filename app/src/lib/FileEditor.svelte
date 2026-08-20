@@ -351,6 +351,7 @@
     padding: 16px 20px;
     max-width: 900px;
     line-height: 1.6;
+    -webkit-user-select: text;
     user-select: text;
     /* Prose reads better proportional; the app is otherwise monospace.
        Code blocks inside stay monospace via the :global(code) rule below. */

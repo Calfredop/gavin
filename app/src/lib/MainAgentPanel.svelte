@@ -1,6 +1,7 @@
 <script lang="ts">
   import TerminalPane from "./TerminalPane.svelte";
-  import { layoutState, startMainAgent, stopMainAgent, setAgentCommand, DEFAULT_AGENT_COMMAND } from "./layoutState";
+  import { layoutState, startMainAgent, stopMainAgent, setAgentField, resolvedAgentFor } from "./layoutState";
+  import { gavinTrees } from "./gavinState";
 
   interface Props {
     workspaceId: string;
@@ -14,7 +15,11 @@
   let draftFor = $state<string | null>(null);
   $effect(() => {
     if (draftFor !== workspaceId) {
-      commandDraft = ws?.agentCommand ?? DEFAULT_AGENT_COMMAND;
+      // Resolved from config.toml + the profile table (D41), the same
+      // value Settings edits. Reading $gavinTrees keeps this reactive to
+      // an external config.toml edit.
+      void $gavinTrees;
+      commandDraft = resolvedAgentFor(workspaceId).command;
       draftFor = workspaceId;
     }
   });
@@ -27,7 +32,7 @@
   }
 
   function start(): void {
-    void setAgentCommand(workspaceId, commandDraft).then(() => startMainAgent(workspaceId));
+    void setAgentField(workspaceId, "command", commandDraft).then(() => startMainAgent(workspaceId));
   }
 </script>
 
