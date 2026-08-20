@@ -2,14 +2,13 @@
   import { get } from "svelte/store";
   import { dragState, dropHold, type ActiveDrag } from "./kanbanDrag";
   import { activeDragRoot } from "./kanbanDragGlue";
-  import type { Board, Card, Label } from "./kanban";
-  import type { PlanCardView } from "./planBoard";
-  import KanbanCard from "./KanbanCard.svelte";
-  import PlanKanbanCard from "./PlanKanbanCard.svelte";
+  import type { Board, Label } from "./kanban";
+  import type { CardView } from "./planBoard";
+  import BoardCard from "./BoardCard.svelte";
 
   interface Props {
     board: Board | null;
-    merged: { columns: { column: { id: string; name: string }; planCards: PlanCardView[] }[]; autoColumns: { status: string; planCards: PlanCardView[] }[] } | null;
+    merged: { columns: { column: { id: string; name: string }; planCards: CardView[] }[]; autoColumns: { status: string; planCards: CardView[] }[] } | null;
     labels: Label[];
     // This surface's board root. dragState/dropHold are app-global, and
     // both surfaces can show the same workspace: only the surface that
@@ -21,20 +20,20 @@
 
   const ownsDrag = $derived(root !== null && $activeDragRoot === root);
 
-  const draggedCard = $derived<Card | null>(
-    $dragState?.kind === "card" && board
-      ? (board.columns.flatMap((c) => c.cards).find((c) => c.id === $dragState?.id) ?? null)
-      : null
-  );
-  const draggedPlan = $derived<PlanCardView | null>(
+  const draggedPlan = $derived<CardView | null>(
     $dragState?.kind === "plan" && merged
-      ? ([...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].find(
-          (p) => p.id === $dragState?.id
-        ) ?? null)
+      ? ([...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)]
+          .flatMap((c) => [c, ...c.nestedChildren])
+          .find((p) => p.id === $dragState?.id) ?? null)
       : null
   );
   const draggedColumn = $derived(
     $dragState?.kind === "column" && board ? (board.columns.find((c) => c.id === $dragState?.id) ?? null) : null
+  );
+  const draggedColumnCount = $derived(
+    $dragState?.kind === "column" && merged
+      ? (merged.columns.find((dc) => dc.column.id === $dragState?.id)?.planCards.length ?? 0)
+      : 0
   );
 
   function noop(): void {}
@@ -44,8 +43,7 @@
   // untilts, then the real card takes over. Column drags skip this --
   // the strip's flip animation already covers them.
   interface Settle {
-    card: Card | null;
-    plan: PlanCardView | null;
+    plan: CardView | null;
     width: number;
     pos: { left: number; top: number };
     landed: boolean;
@@ -55,7 +53,7 @@
     waitForHold: boolean;
   }
   let settle = $state<Settle | null>(null);
-  let snapshot: { drag: ActiveDrag; card: Card | null; plan: PlanCardView | null } | null = null;
+  let snapshot: { drag: ActiveDrag; plan: CardView | null } | null = null;
   // Supersession guard for the async settle steps. A plain counter, NOT
   // an identity check against `settle`: $state proxies objects on
   // assignment, so reading `settle` back never equals the raw object
@@ -72,16 +70,15 @@
     }
     const d = $dragState;
     if (d) {
-      snapshot = { drag: d, card: draggedCard, plan: draggedPlan };
+      snapshot = { drag: d, plan: draggedPlan };
       settleToken += 1; // a new drag supersedes any in-flight settle
       settle = null;
       return;
     }
     const s = snapshot;
     snapshot = null;
-    if (!s || s.drag.kind === "column" || (!s.card && !s.plan)) return;
+    if (!s || s.drag.kind === "column" || !s.plan) return;
     const started: Settle = {
-      card: s.card,
       plan: s.plan,
       width: s.drag.size.width,
       pos: { left: s.drag.pointer.x - s.drag.grabOffset.x, top: s.drag.pointer.y - s.drag.grabOffset.y },
@@ -97,8 +94,8 @@
     const scope = root;
     requestAnimationFrame(() => {
       if (settleToken !== token || !scope) return;
-      const attr = s.drag.kind === "card" ? "data-kb-card" : "data-kb-plan";
-      const el = scope.querySelector(`[${attr}="${CSS.escape(s.drag.id)}"]`) ?? scope.querySelector("[data-kb-ph]");
+      const el =
+        scope.querySelector(`[data-kb-plan="${CSS.escape(s.drag.id)}"]`) ?? scope.querySelector("[data-kb-ph]");
       if (!el) {
         settle = null;
         return;
@@ -128,14 +125,12 @@
     style:top="{$dragState.pointer.y - $dragState.grabOffset.y}px"
     style:width="{$dragState.size.width}px"
   >
-    {#if draggedCard}
-      <KanbanCard card={draggedCard} {labels} onOpen={noop} onDelete={noop} />
-    {:else if draggedPlan}
-      <PlanKanbanCard plan={draggedPlan} onOpen={noop} />
+    {#if draggedPlan}
+      <BoardCard card={draggedPlan} labelDefs={labels} onOpen={noop} />
     {:else if draggedColumn}
       <div class="column-shell">
         <div class="column-title">{draggedColumn.name}</div>
-        <div class="column-count">{draggedColumn.cards.length} cards</div>
+        <div class="column-count">{draggedColumnCount} cards</div>
       </div>
     {/if}
   </div>
@@ -147,10 +142,8 @@
     style:top="{settle.pos.top}px"
     style:width="{settle.width}px"
   >
-    {#if settle.card}
-      <KanbanCard card={settle.card} {labels} onOpen={noop} onDelete={noop} />
-    {:else if settle.plan}
-      <PlanKanbanCard plan={settle.plan} onOpen={noop} />
+    {#if settle.plan}
+      <BoardCard card={settle.plan} labelDefs={labels} onOpen={noop} />
     {/if}
   </div>
 {/if}

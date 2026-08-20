@@ -1,13 +1,11 @@
 <script lang="ts">
-  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addCardAction, addColumnAction, updateCardAction, moveCardAction, reorderColumnAction, saveErrors, dismissSaveError } from "./kanbanState";
+  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addColumnAction, reorderColumnAction, saveErrors, dismissSaveError } from "./kanbanState";
   import KanbanColumn from "./KanbanColumn.svelte";
   import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
-  import CardDetailModal from "./CardDetailModal.svelte";
   import PlanDetailModal from "./PlanDetailModal.svelte";
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
-  import type { Card } from "./kanban";
   import { gavinTrees } from "./gavinState";
-  import { mergePlanCards, type PlanCardView } from "./planBoard";
+  import { mergePlanCards, type CardView } from "./planBoard";
   import { planCommitFromMerged } from "./planDrop";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
@@ -19,7 +17,6 @@
   }
   let { workspaceId }: Props = $props();
 
-  let openCardId = $state<string | null>(null);
   let openPlanPath = $state<string | null>(null);
   let planWriteError = $state<string | null>(null);
   let boardEl = $state<HTMLElement | null>(null);
@@ -40,10 +37,24 @@
 
   const saveError = $derived($saveErrors[workspaceId] ?? null);
 
+  const board = $derived($kanbanState[workspaceId]);
+  const error = $derived(boardError(workspaceId));
+  const merged = $derived(board ? mergePlanCards(board, $gavinTrees[workspaceId]) : null);
+  // Every card view in the projection, nested children included -- the
+  // detail modal must resolve a nested child's path too.
+  const allCards = $derived<CardView[]>(
+    merged
+      ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
+          (c) => [c, ...c.nestedChildren]
+        )
+      : []
+  );
+  const openPlan = $derived<CardView | null>(
+    openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
+  );
+
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
-    if (drag.kind === "card") {
-      void moveCardAction(workspaceId, drag.id, drag.target.columnId, drag.target.index);
-    } else if (drag.kind === "column") {
+    if (drag.kind === "column") {
       void reorderColumnAction(workspaceId, drag.id, drag.target.index);
     } else if (drag.kind === "plan" && board && merged) {
       planWriteError = null;
@@ -57,33 +68,17 @@
     if (!boardEl) return;
     return attachBoardDrag({
       root: boardEl,
-      allowCards: true,
+      allowCards: false,
       allowColumns: true,
       commit: handleDragCommit,
       click: (kind, id) => {
-        if (kind === "card") openCardId = id;
-        else if (kind === "plan") openPlanPath = id;
+        if (kind === "plan") openPlanPath = id;
       },
     });
   });
 
-  const board = $derived($kanbanState[workspaceId]);
-  const error = $derived(boardError(workspaceId));
-  const openCard = $derived<Card | null>(
-    board && openCardId ? (board.columns.flatMap((c) => c.cards).find((c) => c.id === openCardId) ?? null) : null
-  );
-  const merged = $derived(board ? mergePlanCards(board, $gavinTrees[workspaceId]) : null);
-  const openPlan = $derived<PlanCardView | null>(
-    merged && openPlanPath
-      ? ([...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].find(
-          (p) => p.id === openPlanPath
-        ) ?? null)
-      : null
-  );
-
-  // Inline column composer (spec §6): same contract as the card
-  // composer -- Enter commits and keeps the field open, blur with text
-  // commits and closes, Esc or empty blur closes.
+  // Inline column composer (spec §6): Enter commits and keeps the field
+  // open, blur with text commits and closes, Esc or empty blur closes.
   let addingColumn = $state(false);
   let columnDraft = $state("");
   let columnInputEl = $state<HTMLInputElement | null>(null);
@@ -100,7 +95,6 @@
         id: crypto.randomUUID(),
         name,
         position: board?.columns.length ?? 0,
-        cards: [],
       });
     }
     if (!keepOpen) addingColumn = false;
@@ -115,17 +109,6 @@
       columnDraft = "";
       addingColumn = false;
     }
-  }
-
-  function addCardTo(columnId: string, title: string): void {
-    void addCardAction(workspaceId, columnId, {
-      id: crypto.randomUUID(),
-      title,
-      description: "",
-      labelIds: [],
-      priority: "none",
-      position: board?.columns.find((c) => c.id === columnId)?.cards.length ?? 0,
-    });
   }
 </script>
 
@@ -160,11 +143,8 @@
           <KanbanColumn
             {workspaceId}
             {column}
-            otherColumns={board.columns.filter((c) => c.id !== column.id).map((c) => ({ id: c.id, name: c.name }))}
             labels={board.labels}
             planCards={merged?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
-            onOpenCard={(cardId) => (openCardId = cardId)}
-            onAddCard={(title) => addCardTo(column.id, title)}
             onOpenPlanCard={(path) => (openPlanPath = path)}
           />
         {:else}
@@ -173,7 +153,7 @@
       </div>
     {/each}
     {#each merged?.autoColumns ?? [] as auto (auto.status)}
-      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} onOpenPlan={(path) => (openPlanPath = path)} />
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} onOpenPlan={(path) => (openPlanPath = path)} />
     {/each}
     {#if addingColumn}
       <input
@@ -190,15 +170,6 @@
     {/if}
   </div>
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
-  {#if openCard}
-    <CardDetailModal
-      card={openCard}
-      labels={board.labels}
-      {workspaceId}
-      onSave={(patch) => void updateCardAction(workspaceId, openCard.id, patch)}
-      onClose={() => (openCardId = null)}
-    />
-  {/if}
   {#if openPlan}
     <PlanDetailModal plan={openPlan} {workspaceId} onClose={() => (openPlanPath = null)} />
   {/if}

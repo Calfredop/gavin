@@ -1,82 +1,28 @@
 <script lang="ts">
   import type { Column, Label } from "./kanban";
-  import type { PlanCardView } from "./planBoard";
-  import KanbanCard from "./KanbanCard.svelte";
-  import PlanKanbanCard from "./PlanKanbanCard.svelte";
-  import DeleteColumnPrompt from "./DeleteColumnPrompt.svelte";
-  import DeleteCardWithSessionPrompt from "./DeleteCardWithSessionPrompt.svelte";
+  import type { CardView } from "./planBoard";
+  import BoardCard from "./BoardCard.svelte";
   import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
   import { flip } from "svelte/animate";
-  import {
-    renameColumnAction,
-    deleteColumnCascadeAction,
-    moveCardsOutOfColumnAndDeleteAction,
-    deleteCardAction,
-  } from "./kanbanState";
-  import { layoutState, closeSession } from "./layoutState";
-  import { findSessionLocation } from "./workspace";
+  import { renameColumnAction, deleteColumnAction } from "./kanbanState";
 
   interface Props {
     workspaceId: string;
     column: Column;
     // "full" is the hub board; "planOnly" is the per-context BoardPane
-    // (spec §4): plan cards only, read-only header, no composer, no
-    // column dragging -- one component, both surfaces.
+    // (spec §4): read-only header, no column dragging -- one component,
+    // both surfaces.
     mode?: "full" | "planOnly";
-    otherColumns?: { id: string; name: string }[];
     labels?: Label[];
-    planCards: PlanCardView[];
-    onOpenCard?: (cardId: string) => void;
-    onAddCard?: (title: string) => void;
+    planCards: CardView[];
     onOpenPlanCard: (path: string) => void;
   }
-  let {
-    workspaceId,
-    column,
-    mode = "full",
-    otherColumns = [],
-    labels = [],
-    planCards,
-    onOpenCard = () => {},
-    onAddCard = () => {},
-    onOpenPlanCard,
-  }: Props = $props();
+  let { workspaceId, column, mode = "full", labels = [], planCards, onOpenPlanCard }: Props = $props();
 
   let editingName = $state(false);
   // Filled by startRename when editing begins -- initializing from
   // column.name here would freeze the first render's value.
   let nameDraft = $state("");
-  let showDeletePrompt = $state(false);
-  let pendingDeleteCardId = $state<string | null>(null);
-
-  // Inline composer (spec §6): "+ Add card" opens a title field in
-  // place. Enter commits and keeps the field open for rapid entry; blur
-  // with text commits and closes; Esc or an empty blur just closes.
-  let composing = $state(false);
-  let composerText = $state("");
-  let composerEl = $state<HTMLTextAreaElement | null>(null);
-
-  $effect(() => {
-    if (composing && composerEl) composerEl.focus();
-  });
-
-  function commitComposer(keepOpen: boolean): void {
-    const title = composerText.trim();
-    composerText = "";
-    if (title) onAddCard(title);
-    if (!keepOpen) composing = false;
-    else composerEl?.focus();
-  }
-
-  function handleComposerKeydown(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      commitComposer(true);
-    } else if (e.key === "Escape") {
-      composerText = "";
-      composing = false;
-    }
-  }
 
   function startRename(): void {
     nameDraft = column.name;
@@ -89,41 +35,18 @@
     if (trimmed && trimmed !== column.name) void renameColumnAction(workspaceId, column.id, trimmed);
   }
 
-  // Cards render through display slots: while a matching drag is live --
-  // or a plan drop's writes are still in flight (dropHold) -- the
-  // dragged item is hidden and a placeholder occupies the target slot;
-  // animate:flip slides the rest (spec §1). Free-form and plan blocks
-  // slot independently -- a card never targets the plan block and vice
-  // versa (spec §2, K4).
+  // All cards are file-backed (card-model spec §1): one block per
+  // column, rendered through display slots -- while a matching drag is
+  // live (or a drop's writes are in flight), the dragged card is hidden
+  // and a placeholder occupies the target slot; animate:flip slides the
+  // rest.
   const slotDrag = $derived($dragState ?? $dropHold);
-  const cardSlots = $derived(buildDisplaySlots(column.cards, (c) => c.id, slotDrag, column.id, "card"));
   const planSlots = $derived(buildDisplaySlots(planCards, (p) => p.id, slotDrag, column.id, "plan"));
 
-  function requestDeleteColumn(): void {
-    if (column.cards.length === 0) {
-      void deleteColumnCascadeAction(workspaceId, column.id);
-    } else {
-      showDeletePrompt = true;
-    }
-  }
-
-  function requestDeleteCard(cardId: string): void {
-    const target = column.cards.find((c) => c.id === cardId);
-    const location = target?.sessionLink ? findSessionLocation($layoutState, target.sessionLink.sessionId) : null;
-    if (location) {
-      pendingDeleteCardId = cardId;
-    } else {
-      void deleteCardAction(workspaceId, cardId);
-    }
-  }
-
-  async function confirmDeleteCard(): Promise<void> {
-    const cardId = pendingDeleteCardId;
-    pendingDeleteCardId = null;
-    if (!cardId) return;
-    const target = column.cards.find((c) => c.id === cardId);
-    if (target?.sessionLink) await closeSession(target.sessionLink.sessionId);
-    await deleteCardAction(workspaceId, cardId);
+  // Deleting a column never touches card files -- cards whose status
+  // matched it fall back to an auto column (D6), so no prompt is needed.
+  function deleteColumn(): void {
+    void deleteColumnAction(workspaceId, column.id);
   }
 </script>
 
@@ -141,36 +64,18 @@
       />
     {:else}
       <button type="button" class="name" onclick={startRename} title="Rename column">{column.name}</button>
-      <span class="count">{column.cards.length + planCards.length}</span>
+      <span class="count">{planCards.length}</span>
     {/if}
     {#if mode === "full"}
-      <button type="button" class="delete" aria-label="Delete column" onclick={requestDeleteColumn}>×</button>
+      <button type="button" class="delete" aria-label="Delete column" onclick={deleteColumn}>×</button>
     {/if}
   </div>
   <div class="cards" data-kb-cards>
-    {#if mode === "full"}
-      {#each cardSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
-        <div animate:flip={{ duration: 150 }}>
-          {#if slot.type === "item"}
-            <div data-kb-card={slot.item.id}>
-              <KanbanCard
-                card={slot.item}
-                {labels}
-                onOpen={() => onOpenCard(slot.item.id)}
-                onDelete={() => requestDeleteCard(slot.item.id)}
-              />
-            </div>
-          {:else}
-            <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
-          {/if}
-        </div>
-      {/each}
-    {/if}
     {#each planSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id}>
-            <PlanKanbanCard plan={slot.item} onOpen={() => onOpenPlanCard(slot.item.id)} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
@@ -178,43 +83,7 @@
       </div>
     {/each}
   </div>
-  {#if mode === "full"}
-    {#if composing}
-      <textarea
-        class="composer"
-        rows="2"
-        placeholder="Card title…"
-        bind:value={composerText}
-        bind:this={composerEl}
-        onkeydown={handleComposerKeydown}
-        onblur={() => commitComposer(false)}
-      ></textarea>
-    {:else}
-      <button type="button" class="add-card" onclick={() => (composing = true)}>+ Add card</button>
-    {/if}
-  {/if}
 </div>
-
-{#if showDeletePrompt}
-  <DeleteColumnPrompt
-    columnName={column.name}
-    cardCount={column.cards.length}
-    {otherColumns}
-    onDeleteCards={() => {
-      showDeletePrompt = false;
-      void deleteColumnCascadeAction(workspaceId, column.id);
-    }}
-    onMoveCards={(targetColumnId) => {
-      showDeletePrompt = false;
-      void moveCardsOutOfColumnAndDeleteAction(workspaceId, column.id, targetColumnId);
-    }}
-    onCancel={() => (showDeletePrompt = false)}
-  />
-{/if}
-
-{#if pendingDeleteCardId}
-  <DeleteCardWithSessionPrompt onConfirm={confirmDeleteCard} onCancel={() => (pendingDeleteCardId = null)} />
-{/if}
 
 <style>
   .column {
@@ -292,27 +161,5 @@
   .cards {
     overflow-y: auto;
     flex: 1 1 auto;
-  }
-  .add-card {
-    background: transparent;
-    border: none;
-    color: #999;
-    cursor: pointer;
-    font-family: monospace;
-    text-align: left;
-    padding: 4px 0;
-  }
-  .composer {
-    background: #1e1e1e;
-    border: 1px solid #444;
-    border-radius: 6px;
-    color: #eee;
-    font-family: monospace;
-    font-size: 0.85em;
-    padding: 8px;
-    margin-top: 2px;
-    resize: none;
-    width: 100%;
-    box-sizing: border-box;
   }
 </style>

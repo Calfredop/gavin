@@ -1,16 +1,18 @@
 <script lang="ts">
-  import type { PlanCardView } from "./planBoard";
-  import PlanKanbanCard from "./PlanKanbanCard.svelte";
+  import type { CardView } from "./planBoard";
+  import BoardCard from "./BoardCard.svelte";
+  import type { Label } from "./kanban";
   import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
   import { AUTO_COLUMN_PREFIX } from "./planDrop";
   import { flip } from "svelte/animate";
 
   interface Props {
     status: string;
-    planCards: PlanCardView[];
+    planCards: CardView[];
+    labels?: Label[];
     onOpenPlan: (path: string) => void;
   }
-  let { status, planCards, onOpenPlan }: Props = $props();
+  let { status, planCards, labels = [], onOpenPlan }: Props = $props();
 
   const key = $derived(AUTO_COLUMN_PREFIX + status);
   const slotDrag = $derived($dragState ?? $dropHold);
@@ -28,7 +30,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id}>
-            <PlanKanbanCard plan={slot.item} onOpen={() => onOpenPlan(slot.item.id)} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlan} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>

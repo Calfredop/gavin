@@ -1,13 +1,13 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
-  import type { PlanCardView } from "./planBoard";
+  import type { CardView } from "./planBoard";
   import type { Priority } from "./kanban";
   import * as backend from "./backend";
   import { patchPlanField } from "./gavinState";
   import { openPath } from "@tauri-apps/plugin-opener";
 
   interface Props {
-    plan: PlanCardView;
+    plan: CardView;
     workspaceId: string;
     onClose: () => void;
   }

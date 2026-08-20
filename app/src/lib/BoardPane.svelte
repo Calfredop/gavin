@@ -1,7 +1,7 @@
 <script lang="ts">
   import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, saveErrors, dismissSaveError } from "./kanbanState";
   import { gavinTrees } from "./gavinState";
-  import { mergePlanCards, type PlanCardView } from "./planBoard";
+  import { mergePlanCards, type CardView } from "./planBoard";
   import KanbanColumn from "./KanbanColumn.svelte";
   import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
@@ -55,11 +55,11 @@
       (contextFolder.split("/").at(-1) || contextFolder)
   );
   const merged = $derived(board ? mergePlanCards(board, tree, { contextFolder }) : null);
-  const openPlan = $derived<PlanCardView | null>(
+  const openPlan = $derived<CardView | null>(
     merged && openPlanPath
-      ? ([...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].find(
-          (p) => p.id === openPlanPath
-        ) ?? null)
+      ? ([...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)]
+          .flatMap((c) => [c, ...c.nestedChildren])
+          .find((p) => p.id === openPlanPath) ?? null)
       : null
   );
 
@@ -119,12 +119,13 @@
           {workspaceId}
           column={dc.column}
           mode="planOnly"
+          labels={board.labels}
           planCards={dc.planCards}
           onOpenPlanCard={(path) => (openPlanPath = path)}
         />
       {/each}
       {#each merged?.autoColumns ?? [] as auto (auto.status)}
-        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} onOpenPlan={(path) => (openPlanPath = path)} />
+        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} onOpenPlan={(path) => (openPlanPath = path)} />
       {/each}
     </div>
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
