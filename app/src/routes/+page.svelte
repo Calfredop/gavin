@@ -97,7 +97,9 @@
       <button onclick={retryConnect}>Restart daemon &amp; retry</button>
     </div>
   {:else}
-    <div class="body">
+    <!-- The active workspace's accent, read by every tab indicator and
+         drop marker inside (Pane.svelte's var(--ws-accent)). -->
+    <div class="body" style:--ws-accent={accent}>
       <Sidebar />
       {#if !activeWorkspace}
         <div class="overlay">

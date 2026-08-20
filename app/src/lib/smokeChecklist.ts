@@ -300,6 +300,42 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Workspace settings",
+    items: [
+      { id: "set-tab", text: "A Settings tab appears for every workspace, including one with no root bound" },
+      { id: "set-name", text: "Renaming here updates the sidebar immediately and survives a restart" },
+      {
+        id: "set-colour",
+        text: "Picking a palette colour tints the focused tab's top border and the sidebar stripe; a custom colour works too",
+      },
+      { id: "set-colour-preview", text: "The preview swatch shows the chosen colour before you look at the tabs" },
+      { id: "set-root", text: "The embedded root control binds a folder, and no duplicate banner shows on the Settings tab" },
+      {
+        id: "set-notify",
+        text: "Unticking “finished” silences that notification while “needs input” still fires",
+        hint: "Unfocus the window; run a long command, then something needing input.",
+      },
+      { id: "set-profile", text: "Switching profile updates the CLAUDE.md tab's label and the home tile to the new file name" },
+      {
+        id: "set-rename-move",
+        text: "Changing the agent file with the old one present prompts; Move renames it on disk with content intact",
+      },
+      {
+        id: "set-rename-point",
+        text: "When the target already exists, no move is offered and the old file is left alone",
+      },
+      { id: "set-rename-invalid", text: "A name with a slash, or an empty one, shows an inline error and changes nothing" },
+      { id: "set-command", text: "Editing the command writes .gavin-root/config.toml and the next Start uses it" },
+      {
+        id: "set-external",
+        text: "Editing config.toml in a terminal updates the panel (~3s); a field you're typing in is NOT clobbered",
+        hint: "Focus the Command field, type, then edit config.toml externally.",
+      },
+      { id: "set-mcp-gated", text: "A non-Claude profile hides the agent-integration row and says MCP isn't available yet" },
+      { id: "set-unparseable", text: "Corrupting config.toml makes the agent fields read-only rather than overwriting it" },
+    ],
+  },
+  {
     title: "Context boards",
     items: [
       { id: "board-icon", text: "cd into a .gavin context → kanban icon appears on the pane tab bar" },

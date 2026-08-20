@@ -439,13 +439,13 @@
     color: #fff;
   }
   .tab.focused {
-    border-top-color: #4a9eff;
+    border-top-color: var(--ws-accent, #4a9eff);
   }
   .tab.drop-before {
-    box-shadow: inset 2px 0 0 0 #4a9eff;
+    box-shadow: inset 2px 0 0 0 var(--ws-accent, #4a9eff);
   }
   .tab.drop-after {
-    box-shadow: inset -2px 0 0 0 #4a9eff;
+    box-shadow: inset -2px 0 0 0 var(--ws-accent, #4a9eff);
   }
   .tab-label {
     max-width: 120px;
