@@ -120,6 +120,10 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Deleting a non-empty column offers “column only” (cards → auto column) vs cascade (files deleted)",
       },
       {
+        id: "context-menu",
+        text: "Right-click: cards get open/run-jump/move-to/un-parent/delete; column headers rename/add/run-all/delete; empty board adds columns",
+      },
+      {
         id: "kind-wipe",
         text: "No free-form SQLite cards anywhere — a pre-wipe database's cards are gone after the daemon restarts",
       },

@@ -13,6 +13,7 @@
   import { buildCreatePlanArgs } from "./cardCompose";
   import { columnDeletionPlan, executeDeletion } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import { openContextMenu, type ContextMenuEntry } from "./contextMenu";
   import * as backend from "./backend";
 
   interface Props {
@@ -29,6 +30,7 @@
     onOpenPlanCard: (path: string) => void;
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
     onDeleteCard?: ((card: CardView) => void) | null;
+    onCardContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
     // The full projection (nested included) -- the column-cascade plan
     // needs to find a deleted plan's free children in other columns.
     allCards?: CardView[];
@@ -43,6 +45,7 @@
     onOpenPlanCard,
     onRunCard = null,
     onDeleteCard = null,
+    onCardContextMenu = null,
     allCards = [],
   }: Props = $props();
 
@@ -229,6 +232,27 @@
     }
   }
 
+  function handleHeaderContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const entries: ContextMenuEntry[] = [];
+    if (mode === "full") {
+      entries.push({ label: "Rename column", onPick: startRename });
+      entries.push({ label: "Add card", onPick: () => (composing = true) });
+    }
+    if (runnable.length > 0) {
+      entries.push({
+        label: `Run all (${runnable.length} unbound)`,
+        onPick: () => void runAll(),
+      });
+    }
+    if (mode === "full") {
+      entries.push({ separator: true });
+      entries.push({ label: "Delete column…", danger: true, onPick: requestDeleteColumn });
+    }
+    openContextMenu(e.clientX, e.clientY, entries);
+  }
+
   function handleComposerKeydown(e: KeyboardEvent): void {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -241,7 +265,7 @@
 </script>
 
 <div class="column" class:plan-only={mode === "planOnly"} data-kb-col={column.id}>
-  <div class="header" data-kb-colgrab={mode === "full" ? column.id : undefined}>
+  <div class="header" role="presentation" data-kb-colgrab={mode === "full" ? column.id : undefined} oncontextmenu={handleHeaderContextMenu}>
     {#if mode === "planOnly"}
       <span class="name readonly">{column.name}</span>
       <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
@@ -277,7 +301,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} onDelete={onDeleteCard} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} onDelete={onDeleteCard} onContextMenu={onCardContextMenu} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
