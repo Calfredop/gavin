@@ -3,3 +3,5 @@
 test-fixtures/file-viewer/big.txt
 test-fixtures/gavin-orchestration/playground/
 node_modules/
+/.claude/worktrees/
+.DS_Store
