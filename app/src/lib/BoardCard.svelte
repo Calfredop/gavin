@@ -88,7 +88,9 @@
         ? "Note — a reminder"
         : card.kind === "task"
           ? "Task — the body is an agent prompt"
-          : "Plan — multi-step work with a checklist"}
+          : card.checklistTotal > 0
+            ? "Plan — multi-step work with a checklist"
+            : "Plan — multi-step work (no checklist yet)"}
     >
       {#if card.kind === "note"}<StickyNote size={11} />{:else if card.kind === "task"}<Play
           size={11}

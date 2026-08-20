@@ -67,11 +67,10 @@
     openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
   );
 
-  function handleRun(card: CardView): void {
+  async function handleRun(card: CardView): Promise<void> {
     planWriteError = null;
-    void runCard(workspaceId, card).then((err) => {
-      if (err) planWriteError = err;
-    });
+    const err = await runCard(workspaceId, card);
+    if (err) planWriteError = err;
   }
 
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {

@@ -7,7 +7,9 @@
   import { flip } from "svelte/animate";
   import { renameColumnAction, deleteColumnAction } from "./kanbanState";
   import { gavinTrees, patchPlanCreated } from "./gavinState";
+  import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
+  import { Play } from "@lucide/svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
   import * as backend from "./backend";
 
@@ -23,7 +25,7 @@
     // Pins the composer to one context (BoardPane) and hides the picker.
     composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
-    onRunCard?: ((card: CardView) => void) | null;
+    onRunCard?: ((card: CardView) => void | Promise<void>) | null;
   }
   let {
     workspaceId,
@@ -64,6 +66,31 @@
   // matched it fall back to an auto column (D6), so no prompt is needed.
   function deleteColumn(): void {
     void deleteColumnAction(workspaceId, column.id);
+  }
+
+  // Run all (card-model spec §3): every plan/task in this column with no
+  // session binding, sequentially -- each spawn lands on the Agents page
+  // and binds before the next starts, so a re-click never double-runs.
+  const runnable = $derived(
+    onRunCard === null
+      ? []
+      : planCards.filter(
+          (c) => c.kind !== "note" && cardSessionFor($kanbanState[workspaceId], c.id) === null
+        )
+  );
+  let runningAll = $state(false);
+
+  async function runAll(): Promise<void> {
+    if (runningAll || !onRunCard) return;
+    runningAll = true;
+    try {
+      const targets = [...runnable];
+      for (const card of targets) {
+        await onRunCard(card);
+      }
+    } finally {
+      runningAll = false;
+    }
   }
 
   // --- two-speed composer (card-model spec §4) -------------------------
@@ -194,6 +221,18 @@
     {:else}
       <button type="button" class="name" onclick={startRename} use:tooltip={"Rename column — its name is the status vocabulary"}>{column.name}</button>
       <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
+    {/if}
+    {#if runnable.length > 0}
+      <button
+        type="button"
+        class="run-all"
+        aria-label="Run all unbound cards"
+        disabled={runningAll}
+        use:tooltip={"Run " + runnable.length + " unbound " + (runnable.length === 1 ? "card" : "cards") + " with the workspace agent"}
+        onclick={() => void runAll()}
+      >
+        <Play size={10} /><span class="run-all-count">{runnable.length}</span>
+      </button>
     {/if}
     {#if mode === "full"}
       <button type="button" class="delete" aria-label="Delete column" use:tooltip={"Delete column — its cards fall back to an auto column by status"} onclick={deleteColumn}>×</button>
@@ -354,6 +393,26 @@
     color: #999;
     cursor: pointer;
     font-size: 1.1em;
+  }
+  .run-all {
+    background: transparent;
+    border: 1px solid #4a5568;
+    border-radius: 10px;
+    color: #7ea8d8;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 1px 6px;
+    flex: 0 0 auto;
+  }
+  .run-all:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .run-all-count {
+    font-size: 0.75em;
+    font-family: monospace;
   }
   .cards {
     overflow-y: auto;

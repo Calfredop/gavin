@@ -13,7 +13,6 @@ const GAP_PX = 6;
 const EDGE_PX = 4;
 
 let bubble: HTMLDivElement | null = null;
-let showTimer: ReturnType<typeof setTimeout> | null = null;
 let currentHost: Element | null = null;
 
 function ensureBubble(): HTMLDivElement {
@@ -70,22 +69,22 @@ function show(host: Element, text: string): void {
 function hide(host?: Element): void {
   if (host && currentHost !== host) return;
   currentHost = null;
-  if (showTimer) {
-    clearTimeout(showTimer);
-    showTimer = null;
-  }
   if (bubble) bubble.style.opacity = "0";
 }
 
 // use:tooltip={"the text"} — empty/null text disables it.
 export const tooltip: Action<Element, string | null | undefined> = (node, text) => {
   let current = text ?? "";
+  // Per-node timer: cancel must ALWAYS clear it, even when the bubble
+  // never showed -- a shared/module timer let a pending show fire after
+  // mouseleave and linger forever.
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
   function schedule(): void {
     if (!current) return;
-    if (showTimer) clearTimeout(showTimer);
-    showTimer = setTimeout(() => {
-      showTimer = null;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
       show(node, current);
     }, SHOW_DELAY_MS);
   }
@@ -95,6 +94,10 @@ export const tooltip: Action<Element, string | null | undefined> = (node, text) 
   }
 
   function cancel(): void {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
     hide(node);
   }
 
@@ -113,6 +116,7 @@ export const tooltip: Action<Element, string | null | undefined> = (node, text) 
       }
     },
     destroy() {
+      if (timer) clearTimeout(timer);
       hide(node);
       node.removeEventListener("mouseenter", schedule);
       node.removeEventListener("mouseleave", cancel);
