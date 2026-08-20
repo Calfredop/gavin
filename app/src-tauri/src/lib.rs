@@ -74,7 +74,9 @@ pub fn run() {
             session::unlink_card_session,
             session::promote_checklist_item,
             session::seed_smoke_test_data,
-            agent_setup::setup_agent_integration
+            agent_setup::setup_agent_integration,
+            agent_setup::agent_profiles,
+            agent_setup::move_agent_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
