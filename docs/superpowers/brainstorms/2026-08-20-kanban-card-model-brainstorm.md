@@ -68,3 +68,22 @@ Spec: `docs/superpowers/specs/2026-08-20-kanban-card-model-design.md`.
   cardCompose/planChecklist), svelte-check 0 errors / 0 kanban warnings,
   production build clean. Manual smoke (new "Card kinds" section) pending —
   requires a daemon restart to pick up protocol v3.
+
+## Execution notes — plan 2 (nesting interaction, 2026-08-20)
+
+- All 7 tasks executed inline. Tasks 1–4 folded into one commit (the
+  DropTarget/DragKind signature change spans five modules coherently).
+- Design deviations, logged: nest eligibility rides the MEASUREMENT (the
+  glue emits nest info only for a task drag's same-context plans) instead of
+  a `canNest` parameter — one source of truth, no controller plumbing.
+  `ChecklistItem` gained `rawText` so the daemon validates toggles against
+  the raw line bytes while the UI displays the link's inner text. The
+  SKILL.md interim note was skipped — plan 3 rewrites the file wholesale.
+- **Incident (verification):** a `head`-truncated cargo grep hid a failing
+  gavin-mcp suite for one commit (the tools/list count assertion after
+  adding gavin_promote_task). Caught by re-running with full output to a
+  file; fixed (8 → 9). Lesson: pipe test output to a file and grep THAT —
+  truncation can hide a failing suite between two passing ones.
+- Gates at completion: cargo 270, vitest 401, svelte-check 0 errors / 0
+  kanban warnings, build clean. Manual smoke ("Nesting & promotion"
+  section) pending — needs a daemon restart (protocol v4).

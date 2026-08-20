@@ -362,7 +362,7 @@ mod tests {
         let reply =
             handle_line(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#, None, &mut t).unwrap();
         let v: Value = serde_json::from_str(&reply).unwrap();
-        assert_eq!(v.pointer("/result/tools").unwrap().as_array().unwrap().len(), 8);
+        assert_eq!(v.pointer("/result/tools").unwrap().as_array().unwrap().len(), 9);
     }
 
     #[test]

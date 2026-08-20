@@ -1,6 +1,6 @@
 ---
 title: Card nesting interaction (plan 2/3)
-status: To Do
+status: Done
 priority: high
 ---
 # Card nesting interaction (plan 2/3)

@@ -113,6 +113,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Nesting & promotion",
+    items: [
+      {
+        id: "nest-drag-in",
+        text: "Dragging a task over a plan card auto-expands it; dropping inside writes parent: and removes status:",
+        hint: "cat the task file — parent line present, status line gone; the card sits in the plan's nested area.",
+      },
+      {
+        id: "nest-drag-out",
+        text: "Dragging a nested child into a column writes status: (parent: stays; chip persists)",
+      },
+      {
+        id: "nest-note-refuses",
+        text: "Notes and plans refuse to nest — the middle of a plan card is a plain slot for them",
+      },
+      {
+        id: "promote-ui",
+        text: "Detail → Promote on a checklist item creates the nested task and rewrites the line to a link",
+      },
+      {
+        id: "promote-mcp",
+        text: "A real agent's gavin_promote_task does the same (check /mcp lists it)",
+      },
+      {
+        id: "checklist-toggle",
+        text: "Ticking a checkbox in the detail rewrites only that line; a concurrent file edit surfaces the retry message",
+        hint: "Edit the plan body in a terminal while the modal is open, then tick.",
+      },
+      {
+        id: "unparent",
+        text: "Un-parent in the children list removes parent:; the card lands in the first column",
+      },
+    ],
+  },
+  {
     title: "Plans on the board",
     items: [
       { id: "seed", text: "“Seed demo data” fills the board within ~3s" },
