@@ -114,6 +114,36 @@ mod smoketest_tests {
         assert_eq!(workspaces[0].root_path.as_deref(), Some("/tmp/scratch"));
     }
 
+    // A typo like "In progress" would still seed fine, but the board
+    // would invent an auto column for it and three checklist items would
+    // quietly test the wrong thing. Pin the exact statuses.
+    #[test]
+    fn seeded_plans_use_only_the_default_columns_plus_one_deliberate_stray() {
+        let mut statuses: Vec<&str> = SEED_FILES
+            .iter()
+            .filter(|(rel, _)| rel.contains("/plans/"))
+            .filter_map(|(_, body)| {
+                body.lines().find_map(|l| l.strip_prefix("status: ")).map(str::trim)
+            })
+            .collect();
+        statuses.sort_unstable();
+        assert_eq!(
+            statuses,
+            [
+                "Done",
+                "In Progress",
+                "In Progress",
+                "In Progress",
+                "In Progress",
+                "Shipped", // the deliberate auto-column card
+                "To Do",
+                "To Do",
+                "To Do",
+                "To Do",
+            ]
+        );
+    }
+
     #[test]
     fn seed_writes_fixtures_into_an_initialized_root_and_rejects_a_bare_one() {
         let dir = tempfile::tempdir().unwrap();
@@ -124,17 +154,15 @@ mod smoketest_tests {
 
         std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
         seed_smoke_test_data(root.clone()).unwrap();
-        for f in ["demo.md", "stray.md", "broken.md"] {
-            assert!(dir.path().join(".gavin-root").join("plans").join(f).is_file());
+        for (rel, _) in SEED_FILES {
+            assert!(dir.path().join(rel).is_file(), "{rel} was not written");
         }
-        assert!(dir
-            .path()
-            .join("src")
-            .join("auth")
-            .join(".gavin")
-            .join("plans")
-            .join("login.md")
-            .is_file());
+        // The over-cap file must actually exceed the cap, or the
+        // "no Edit mode for a big file" item silently tests nothing.
+        let big = dir.path().join("big.log");
+        assert!(
+            std::fs::metadata(&big).unwrap().len() as usize > crate::fileviewer::MAX_VIEWER_FILE_BYTES
+        );
 
         // Idempotent: a re-seed (the reset) succeeds and restores content.
         std::fs::write(dir.path().join(".gavin-root").join("plans").join("demo.md"), "mangled").unwrap();
@@ -1289,6 +1317,166 @@ pub fn gavin_root_exists(root_path: String) -> bool {
     std::path::Path::new(&root_path).join(".gavin-root").is_dir()
 }
 
+/// The demo fixture, as (path relative to the bound root, contents).
+/// One table on purpose: every smoke-checklist section's data is visible
+/// at once, and re-seeding is a plain overwrite -- the README's
+/// "re-click = reset".
+///
+/// Two things are deliberately NOT here: `CLAUDE.md` (the "edit-creates"
+/// item needs it absent so the first save creates it) and `.mcp.json`
+/// (the "mcp-setup" item writes it). `src/api/` is left without a
+/// `.gavin/` for the explorer's "+ context" item to scaffold.
+const SEED_FILES: &[(&str, &str)] = &[
+    // -- Root context: PRD (overwritten with real prose, so the home's
+    // 15-line excerpt shows something worth reading).
+    (
+        ".gavin-root/PRD.md",
+        "# Smoke Test — Product Requirements\n\n\
+         > Lead document for this workspace. The main agent reads it first;\n\
+         > every plan under `.gavin*/plans/` should trace back to a line here.\n\n\
+         ## Vision\n\n\
+         A terminal workspace where coding agents and the person directing them\n\
+         share one surface: sessions, plans, and the documents that govern them\n\
+         all live in the same window, and the files on disk are the only truth.\n\n\
+         ## Current focus\n\n\
+         - Plans are markdown files; the board is a projection of their frontmatter.\n\
+         - A main agent session per workspace, started deliberately, never on its own.\n\
+         - Editing a plan, a PRD, or CLAUDE.md happens in-app without a context switch.\n\
+         - Agents reach the same data over MCP that the UI shows.\n\n\
+         ## Out of scope\n\n\
+         - Renaming or deleting plans from the UI (create-only, by design).\n\
+         - Hosting more than one main agent per workspace.\n\
+         - Anything that would make the board, rather than the files, canonical.\n",
+    ),
+    // -- Root plans. Statuses span all three default columns plus one
+    // unmatched status, so the board has an auto column from the start.
+    (
+        ".gavin-root/plans/demo.md",
+        "---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n# Demo plan\n\n\
+         Drag me between columns -- the status line in this file follows.\n",
+    ),
+    (
+        ".gavin-root/plans/stray.md",
+        "---\ntitle: Stray status\nstatus: Shipped\n---\n# Stray\n\n\
+         My status matches no column, so I live in an auto column until dragged out.\n",
+    ),
+    (".gavin-root/plans/broken.md", "---\nstatus: To Do\nthis frontmatter never closes\n"),
+    // Three plans sharing one column, with distinct priorities: enough to
+    // drag one DOWN past two others, which is the placeholder off-by-one
+    // the kanban rework fixed ("drag-placeholder"). None carry `order:` --
+    // the first reorder materializing it is itself an assertion.
+    (
+        ".gavin-root/plans/drag-one.md",
+        "---\ntitle: Reorder me (first)\nstatus: In Progress\npriority: urgent\n---\n\
+         # Reorder me (first)\n\n\
+         Drag this card DOWN past the other two: it must land exactly where the\n\
+         dashed placeholder sat, not one slot further.\n",
+    ),
+    (
+        ".gavin-root/plans/drag-two.md",
+        "---\ntitle: Reorder me (second)\nstatus: In Progress\npriority: medium\n---\n\
+         # Reorder me (second)\n\n\
+         After a reorder, `git diff` on this folder should show `order:` lines\n\
+         and nothing else.\n",
+    ),
+    (
+        ".gavin-root/plans/drag-three.md",
+        "---\ntitle: Reorder me (third)\nstatus: In Progress\npriority: low\n---\n\
+         # Reorder me (third)\n\n\
+         The order must survive the ~3s watcher echo, not snap back.\n",
+    ),
+    (
+        ".gavin-root/plans/shipped-note.md",
+        "---\ntitle: Already done\nstatus: Done\n---\n# Already done\n\n\
+         Gives the Done column a card, so column counts on the home are not all zero.\n",
+    ),
+    // -- Root docs and specs: the explorer's tree groups are empty
+    // without these, which reads like a bug rather than an empty folder.
+    (
+        ".gavin-root/docs/architecture.md",
+        "# Architecture notes\n\n\
+         Files are truth. The daemon owns PTYs and the gavin file model; the app\n\
+         renders projections of both and writes back through the same requests an\n\
+         MCP agent uses.\n\n\
+         ## Why a daemon\n\n\
+         Sessions outlive the window. Closing the app must not kill a running\n\
+         agent, and reopening it must reattach rather than respawn.\n",
+    ),
+    (
+        ".gavin-root/docs/glossary.md",
+        "# Glossary\n\n\
+         - **root context** — the `.gavin-root/` at the workspace root.\n\
+         - **context** — any folder holding a `.gavin/`, scoped to its subtree.\n\
+         - **plan** — a markdown file whose frontmatter drives a board card.\n\
+         - **auto column** — a column the board invents for an unmatched status.\n",
+    ),
+    (
+        ".gavin-root/specs/board-behaviour.md",
+        "# Spec — board behaviour\n\n\
+         A card's position is a projection. Dragging writes frontmatter; the\n\
+         watcher echoes the change back within ~3s and the card must not move a\n\
+         second time when it does.\n\n\
+         ## Open questions\n\n\
+         Whether `order:` should be dense or sparse. Currently sparse.\n",
+    ),
+    // -- Second context: proves a context board shows ONLY its own plans,
+    // and gives the explorer a non-root context with all three groups.
+    (
+        "src/auth/.gavin/plans/login.md",
+        "---\ntitle: Login flow\nstatus: To Do\npriority: high\n---\n# Login flow\n\n\
+         cd into src/auth in a terminal to see the pane's board icon.\n",
+    ),
+    (
+        "src/auth/.gavin/plans/session-expiry.md",
+        "---\ntitle: Session expiry\nstatus: In Progress\npriority: medium\n---\n\
+         # Session expiry\n\n\
+         A second plan here, so the context board is visibly filtered rather than\n\
+         coincidentally showing one card.\n",
+    ),
+    (
+        "src/auth/.gavin/docs/auth-notes.md",
+        "# Auth notes\n\n\
+         Tokens are refreshed on the client; the server only ever validates.\n",
+    ),
+    // -- Third context: makes the home's \"N contexts\" count meaningful and
+    // gives the board icon a second target to cd between.
+    (
+        "services/billing/.gavin/plans/invoices.md",
+        "---\ntitle: Invoice generation\nstatus: To Do\npriority: medium\n---\n\
+         # Invoice generation\n\n\
+         Lives in a third context, two levels down from the root.\n",
+    ),
+    (
+        "services/billing/.gavin/specs/pricing.md",
+        "# Spec — pricing\n\n\
+         Prices are integers in minor units. No floats anywhere near money.\n",
+    ),
+    // -- Plain source file, no gavin involvement: the editor must offer
+    // Plain / Edit and NOT Formatted for a non-markdown file.
+    (
+        "src/api/handler.rs",
+        "// A plain source file: cmd+click its path in terminal output to open it,\n\
+         // and check the mode switch offers Plain / Edit but no Formatted.\n\
+         pub fn handle(request: &str) -> String {\n    \
+             format!(\"handled: {request}\")\n\
+         }\n",
+    ),
+];
+
+/// Content for the over-cap file, generated rather than stored so the
+/// fixture tracks `MAX_VIEWER_FILE_BYTES` instead of drifting from it if
+/// the cap ever moves.
+fn oversized_log() -> String {
+    let cap = crate::fileviewer::MAX_VIEWER_FILE_BYTES;
+    let mut out = String::with_capacity(cap + 128);
+    let mut line = 1;
+    while out.len() <= cap {
+        out.push_str(&format!("{line:07} over-cap log line; the editor must refuse to edit this file\n"));
+        line += 1;
+    }
+    out
+}
+
 /// Dev-only: writes the smoke-test demo fixtures into an already-initialized
 /// root. Idempotent -- re-seeding overwrites the demo files (that IS the
 /// reset). The live watcher turns each write into board updates, so this
@@ -1299,38 +1487,18 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
         return Err("seed_smoke_test_data is dev-only".to_string());
     }
     let root = std::path::Path::new(&root_path);
-    let gavin_root = root.join(".gavin-root");
-    if !gavin_root.is_dir() {
+    if !root.join(".gavin-root").is_dir() {
         return Err("initialize gavin in this folder first (Set root… → Initialize)".to_string());
     }
     let err = |e: std::io::Error| e.to_string();
-    let plans = gavin_root.join("plans");
-    std::fs::create_dir_all(&plans).map_err(err)?;
-    std::fs::write(
-        plans.join("demo.md"),
-        "---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n# Demo plan\n\n\
-         Drag me between columns -- the status line in this file follows.\n",
-    )
-    .map_err(err)?;
-    std::fs::write(
-        plans.join("stray.md"),
-        "---\ntitle: Stray status\nstatus: Shipped\n---\n# Stray\n\n\
-         My status matches no column, so I live in an auto column until dragged out.\n",
-    )
-    .map_err(err)?;
-    std::fs::write(
-        plans.join("broken.md"),
-        "---\nstatus: To Do\nthis frontmatter never closes\n",
-    )
-    .map_err(err)?;
-    let auth_plans = root.join("src").join("auth").join(".gavin").join("plans");
-    std::fs::create_dir_all(&auth_plans).map_err(err)?;
-    std::fs::write(
-        auth_plans.join("login.md"),
-        "---\ntitle: Login flow\nstatus: To Do\n---\n# Login flow\n\n\
-         cd into src/auth in a terminal to see the pane's board icon.\n",
-    )
-    .map_err(err)?;
+    for (rel, contents) in SEED_FILES {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::write(path, contents).map_err(err)?;
+    }
+    std::fs::write(root.join("big.log"), oversized_log()).map_err(err)?;
     Ok(())
 }
 

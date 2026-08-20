@@ -1,9 +1,16 @@
-# Gavin orchestration smoke test — Foundations + Plans ⇄ Kanban
+# Gavin orchestration smoke test — fixture guide
 
-Covers the two shipped sub-projects end to end in ~10 minutes. Run top to
-bottom; each step names its expected result. Timing note: board reactions to
-file changes arrive within **~3 seconds** (500 ms watch debounce + 2 s rescan
-floor) — that delay is by design, not a bug.
+Exact commands and expected output for the manual passes. The **in-app
+Checklist tab** (dev Smoke Test workspace) is the tick-off list — 69 items
+across all six sub-projects plus the kanban rework — and this file is its
+companion for the parts that need a shell.
+
+Sections A–D below cover Foundations and Plans ⇄ Kanban step by step. Everything
+the later sub-projects need is seeded by one click; see **Seeded fixture** below
+for what lands where and which items each file exists to serve.
+
+**Timing note:** board reactions to file changes arrive within **~3 seconds**
+(500 ms watch debounce + 2 s rescan floor) — that delay is by design, not a bug.
 
 **Setup once:**
 1. Build/run the current code — and make sure the **daemon** is current too:
@@ -20,11 +27,55 @@ Dev builds ship a built-in **Smoke Test** workspace (auto-created at launch,
 absent from release builds; closing it just makes the next dev launch recreate
 it empty) — use it for everything below instead of creating a workspace by
 hand. Once its root is bound, its hub shows a green **Seed demo data** button
-that writes the B1/B3/B6/C1 fixture files in one click (re-click = reset);
-steps below note where seeding replaces hand-typed commands.
+that writes the whole fixture in one click (re-click = reset); steps below note
+where seeding replaces hand-typed commands.
 
 All shell commands below run from a terminal *inside gavin* whose cwd you
 control with `cd`. `PLAYGROUND` means the absolute path printed by setup.sh.
+
+---
+
+## Seeded fixture
+
+**Seed demo data** writes this tree into the bound root. Re-clicking resets it,
+so a mangled file is one click from healthy.
+
+```
+.gavin-root/
+  PRD.md                      real prose, ~20 lines  → home's PRD excerpt
+  plans/
+    demo.md                   To Do · high           → plan-card, edit-plan-card
+    stray.md                  Shipped                → auto column (plan-auto-column)
+    broken.md                 unterminated fm        → ⚠ badge (plan-warning)
+    drag-one/two/three.md     In Progress · urgent/medium/low
+                                                     → drag-placeholder, plan-reorder
+    shipped-note.md           Done                   → non-zero Done count
+  docs/architecture.md, glossary.md                  → explorer Docs group
+  specs/board-behaviour.md                           → explorer Specs group
+src/auth/.gavin/
+  plans/login.md              To Do · high           → board icon, context board
+  plans/session-expiry.md     In Progress · medium   → proves the board is filtered
+  docs/auth-notes.md
+services/billing/.gavin/
+  plans/invoices.md           To Do · medium         → third context in the counts
+  specs/pricing.md
+src/api/handler.rs            plain .rs              → edit-modes (no Formatted)
+src/api/                      NO .gavin              → explorer's "+ context" target
+big.log                       just over 1 MiB        → edit-truncated (no Edit mode)
+```
+
+Board after seeding: **To Do 4 · In Progress 4 · Done 1**, plus a dashed auto
+column **Shipped 1**. Ten plans across three contexts — those are the numbers the
+home's tiles and board panel should show.
+
+**Deliberately absent:** `CLAUDE.md` (the `edit-creates` item needs the first
+save to create it) and `.mcp.json` (the `mcp-setup` item writes it). Don't add
+them by hand before running those items.
+
+Three plans share the *In Progress* column specifically so you can drag one
+**downward** past the other two — the placeholder off-by-one the kanban rework
+fixed. None of them carry an `order:` line: the first reorder materializing one
+is itself part of the assertion.
 
 ---
 
@@ -58,8 +109,9 @@ control with `cd`. `PLAYGROUND` means the absolute path printed by setup.sh.
 
 Open a terminal in the Smoke Test workspace and `cd` to `PLAYGROUND`.
 **Fast path:** click **Seed demo data** — it creates B1's `demo.md`, B3's
-`stray.md`, B6's `broken.md`, and C1's `src/auth` context in one go; then treat
-the file-creation commands in those steps as already done.
+`stray.md`, B6's `broken.md`, and C1's `src/auth` context (plus everything in
+**Seeded fixture** above) in one go; then treat the file-creation commands in
+those steps as already done.
 
 - [ ] **B1 — Card materializes.** (Seeded, or:)
       `printf -- '---\ntitle: Demo plan\nstatus: To Do\npriority: high\n---\n# Demo plan\n' > .gavin-root/plans/demo.md`
@@ -139,7 +191,8 @@ the file-creation commands in those steps as already done.
 - [ ] Close the Smoke Test workspace (expect: the close prompt counts only
       real terminal sessions; the workspace respawns empty on the next dev
       launch — by design). Then `rm -rf` the `playground` folder — it is
-      git-ignored, nothing to revert.
+      git-ignored, nothing to revert (that also removes the ~1 MiB `big.log`
+      the seeder generates).
 
 ---
 
