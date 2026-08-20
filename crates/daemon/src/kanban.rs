@@ -1,4 +1,4 @@
-use protocol::{Board, Card, Column, Label, Priority, SessionLink};
+use protocol::{Board, Column, Label};
 use rusqlite::{params, Connection};
 
 pub struct KanbanStore {
@@ -18,57 +18,20 @@ impl KanbanStore {
                 name TEXT NOT NULL,
                 position INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS kanban_cards (
-                id TEXT PRIMARY KEY,
-                column_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL,
-                priority TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                session_link_session_id TEXT,
-                session_link_cwd TEXT,
-                session_link_command TEXT
-            );
             CREATE TABLE IF NOT EXISTS kanban_labels (
                 id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 color TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS kanban_card_labels (
-                card_id TEXT NOT NULL,
-                label_id TEXT NOT NULL,
-                PRIMARY KEY (card_id, label_id)
-            );",
+            -- The card model made every card a file (card-model spec §1,
+            -- C5: dev-state wipe, no migration): SQLite keeps only the
+            -- column and label vocabularies. Leftover card tables from
+            -- earlier builds are dropped outright.
+            DROP TABLE IF EXISTS kanban_card_labels;
+            DROP TABLE IF EXISTS kanban_cards;",
         )?;
-        Self::add_session_link_columns_if_missing(&conn)?;
         Ok(Self { conn })
-    }
-
-    // CREATE TABLE IF NOT EXISTS only applies the current schema to a
-    // brand-new database -- a kanban_cards table left over from before
-    // these three columns existed is untouched by it, silently missing
-    // them forever (this is exactly what broke an existing install after
-    // the columns shipped: "no such column: session_link_session_id").
-    // SQLite has no "ADD COLUMN IF NOT EXISTS," so this checks each
-    // column's presence via PRAGMA table_info first and only adds what's
-    // actually missing -- safe to call on every open, whether the table is
-    // brand new (already has all three via the CREATE TABLE above, so this
-    // is a no-op) or pre-existing (backfills them once, then is a no-op on
-    // every later open too).
-    fn add_session_link_columns_if_missing(conn: &Connection) -> anyhow::Result<()> {
-        let mut existing = std::collections::HashSet::new();
-        let mut stmt = conn.prepare("PRAGMA table_info(kanban_cards)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        for row in rows {
-            existing.insert(row?);
-        }
-        for column in ["session_link_session_id", "session_link_cwd", "session_link_command"] {
-            if !existing.contains(column) {
-                conn.execute(&format!("ALTER TABLE kanban_cards ADD COLUMN {column} TEXT"), [])?;
-            }
-        }
-        Ok(())
     }
 
     /// If this workspace has never had a board (no `kanban_boards` row),
@@ -86,14 +49,9 @@ impl KanbanStore {
         )?;
         if !exists {
             let default_columns = vec![
-                Column { id: uuid::Uuid::new_v4().to_string(), name: "To Do".to_string(), position: 0, cards: vec![] },
-                Column {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    name: "In Progress".to_string(),
-                    position: 1,
-                    cards: vec![],
-                },
-                Column { id: uuid::Uuid::new_v4().to_string(), name: "Done".to_string(), position: 2, cards: vec![] },
+                Column { id: uuid::Uuid::new_v4().to_string(), name: "To Do".to_string(), position: 0 },
+                Column { id: uuid::Uuid::new_v4().to_string(), name: "In Progress".to_string(), position: 1 },
+                Column { id: uuid::Uuid::new_v4().to_string(), name: "Done".to_string(), position: 2 },
             ];
             self.replace_board(workspace_id, &default_columns, &[])?;
         }
@@ -120,65 +78,14 @@ impl KanbanStore {
                 "SELECT id, name, position FROM kanban_columns WHERE workspace_id = ?1 ORDER BY position",
             )?;
             let rows = stmt.query_map(params![workspace_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                Ok(Column { id: row.get(0)?, name: row.get(1)?, position: row.get(2)? })
             })?;
-            let mut column_rows = Vec::new();
             for row in rows {
-                column_rows.push(row?);
-            }
-            for (id, name, position) in column_rows {
-                let cards = self.read_cards(&id)?;
-                columns.push(Column { id, name, position, cards });
+                columns.push(row?);
             }
         }
 
         Ok(Board { columns, labels })
-    }
-
-    fn read_cards(&self, column_id: &str) -> anyhow::Result<Vec<Card>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, description, priority, position,
-                    session_link_session_id, session_link_cwd, session_link_command
-             FROM kanban_cards WHERE column_id = ?1 ORDER BY position",
-        )?;
-        let rows = stmt.query_map(params![column_id], |row| {
-            let priority_str: String = row.get(3)?;
-            let link_session_id: Option<String> = row.get(5)?;
-            let link_cwd: Option<String> = row.get(6)?;
-            let link_command: Option<String> = row.get(7)?;
-            let session_link = link_session_id.map(|session_id| SessionLink {
-                session_id,
-                cwd: link_cwd.unwrap_or_default(),
-                command: link_command,
-            });
-            Ok(Card {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                description: row.get(2)?,
-                priority: Priority::from_str(&priority_str),
-                position: row.get(4)?,
-                label_ids: Vec::new(),
-                session_link,
-            })
-        })?;
-        let mut cards = Vec::new();
-        for row in rows {
-            cards.push(row?);
-        }
-        for card in &mut cards {
-            card.label_ids = self.read_label_ids(&card.id)?;
-        }
-        Ok(cards)
-    }
-
-    fn read_label_ids(&self, card_id: &str) -> anyhow::Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT label_id FROM kanban_card_labels WHERE card_id = ?1")?;
-        let rows = stmt.query_map(params![card_id], |row| row.get::<_, String>(0))?;
-        let mut ids = Vec::new();
-        for row in rows {
-            ids.push(row?);
-        }
-        Ok(ids)
     }
 
     /// Deletes every `kanban_*` row for `workspace_id` except the
@@ -186,18 +93,6 @@ impl KanbanStore {
     /// re-inserts fresh rows right after) and `delete_board` (which also
     /// removes the marker, right after calling this).
     fn delete_content_rows(tx: &rusqlite::Transaction, workspace_id: &str) -> anyhow::Result<()> {
-        tx.execute(
-            "DELETE FROM kanban_card_labels WHERE card_id IN (
-                SELECT kanban_cards.id FROM kanban_cards
-                JOIN kanban_columns ON kanban_cards.column_id = kanban_columns.id
-                WHERE kanban_columns.workspace_id = ?1
-            )",
-            params![workspace_id],
-        )?;
-        tx.execute(
-            "DELETE FROM kanban_cards WHERE column_id IN (SELECT id FROM kanban_columns WHERE workspace_id = ?1)",
-            params![workspace_id],
-        )?;
         tx.execute("DELETE FROM kanban_columns WHERE workspace_id = ?1", params![workspace_id])?;
         tx.execute("DELETE FROM kanban_labels WHERE workspace_id = ?1", params![workspace_id])?;
         Ok(())
@@ -206,11 +101,7 @@ impl KanbanStore {
     /// Wholesale replace: deletes every existing row for `workspace_id`
     /// and re-inserts everything from `columns`/`labels`, in one
     /// transaction so a mid-write failure can never leave a half-deleted
-    /// board. This is the daemon's only "replace the whole tree" storage
-    /// operation -- every other daemon-side store (Registry) does
-    /// fine-grained field updates instead, so there is no existing
-    /// pattern to mirror here; the transaction is what makes a
-    /// from-scratch delete-then-reinsert safe.
+    /// board.
     pub fn replace_board(&mut self, workspace_id: &str, columns: &[Column], labels: &[Label]) -> anyhow::Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("INSERT OR IGNORE INTO kanban_boards (workspace_id) VALUES (?1)", params![workspace_id])?;
@@ -227,29 +118,6 @@ impl KanbanStore {
                 "INSERT INTO kanban_columns (id, workspace_id, name, position) VALUES (?1, ?2, ?3, ?4)",
                 params![column.id, workspace_id, column.name, column.position],
             )?;
-            for card in &column.cards {
-                let (link_session_id, link_cwd, link_command): (Option<&str>, Option<&str>, Option<&str>) =
-                    match &card.session_link {
-                        Some(link) => (Some(link.session_id.as_str()), Some(link.cwd.as_str()), link.command.as_deref()),
-                        None => (None, None, None),
-                    };
-                tx.execute(
-                    "INSERT INTO kanban_cards
-                     (id, column_id, title, description, priority, position,
-                      session_link_session_id, session_link_cwd, session_link_command)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        card.id, column.id, card.title, card.description, card.priority.as_str(), card.position,
-                        link_session_id, link_cwd, link_command
-                    ],
-                )?;
-                for label_id in &card.label_ids {
-                    tx.execute(
-                        "INSERT INTO kanban_card_labels (card_id, label_id) VALUES (?1, ?2)",
-                        params![card.id, label_id],
-                    )?;
-                }
-            }
         }
         tx.commit()?;
         Ok(())
@@ -276,20 +144,8 @@ mod tests {
         Label { id: id.to_string(), name: name.to_string(), color: "#ff0000".to_string() }
     }
 
-    fn card(id: &str, title: &str, label_ids: Vec<&str>, position: i64) -> Card {
-        Card {
-            id: id.to_string(),
-            title: title.to_string(),
-            description: "".to_string(),
-            label_ids: label_ids.into_iter().map(str::to_string).collect(),
-            priority: Priority::Medium,
-            position,
-            session_link: None,
-        }
-    }
-
-    fn column(id: &str, name: &str, position: i64, cards: Vec<Card>) -> Column {
-        Column { id: id.to_string(), name: name.to_string(), position, cards }
+    fn column(id: &str, name: &str, position: i64) -> Column {
+        Column { id: id.to_string(), name: name.to_string(), position }
     }
 
     #[test]
@@ -323,9 +179,9 @@ mod tests {
     fn replace_board_replaces_rather_than_appends() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.replace_board("ws-1", &[column("c1", "First", 0, vec![])], &[]).unwrap();
+        store.replace_board("ws-1", &[column("c1", "First", 0)], &[]).unwrap();
 
-        store.replace_board("ws-1", &[column("c2", "Second", 0, vec![])], &[]).unwrap();
+        store.replace_board("ws-1", &[column("c2", "Second", 0)], &[]).unwrap();
 
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.columns.len(), 1);
@@ -333,65 +189,21 @@ mod tests {
     }
 
     #[test]
-    fn replace_board_persists_cards_with_labels_in_position_order() {
+    fn labels_persist_and_replace() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let labels = vec![label("l1", "urgent")];
-        let columns = vec![column(
-            "c1",
-            "To Do",
-            0,
-            vec![card("card-b", "Second", vec![], 1), card("card-a", "First", vec!["l1"], 0)],
-        )];
-
-        store.replace_board("ws-1", &columns, &labels).unwrap();
+        store.replace_board("ws-1", &[column("c1", "To Do", 0)], &[label("l1", "urgent")]).unwrap();
 
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.labels.len(), 1);
-        assert_eq!(board.columns[0].cards.len(), 2);
-        assert_eq!(board.columns[0].cards[0].id, "card-a", "must come back in position order, not insertion order");
-        assert_eq!(board.columns[0].cards[0].label_ids, vec!["l1".to_string()]);
-        assert_eq!(board.columns[0].cards[1].id, "card-b");
-    }
-
-    #[test]
-    fn replace_board_persists_a_cards_session_link() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let mut linked_card = card("card-1", "Run tests", vec![], 0);
-        linked_card.session_link = Some(SessionLink {
-            session_id: "session-1".to_string(),
-            cwd: "/tmp/project".to_string(),
-            command: Some("npm test".to_string()),
-        });
-        let columns = vec![column("c1", "To Do", 0, vec![linked_card])];
-
-        store.replace_board("ws-1", &columns, &[]).unwrap();
-
-        let board = store.get_board("ws-1").unwrap();
-        let link = board.columns[0].cards[0].session_link.as_ref().unwrap();
-        assert_eq!(link.session_id, "session-1");
-        assert_eq!(link.cwd, "/tmp/project");
-        assert_eq!(link.command, Some("npm test".to_string()));
-    }
-
-    #[test]
-    fn replace_board_persists_a_card_with_no_session_link_as_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let columns = vec![column("c1", "To Do", 0, vec![card("card-1", "Plain card", vec![], 0)])];
-
-        store.replace_board("ws-1", &columns, &[]).unwrap();
-
-        let board = store.get_board("ws-1").unwrap();
-        assert_eq!(board.columns[0].cards[0].session_link, None);
+        assert_eq!(board.labels[0].name, "urgent");
     }
 
     #[test]
     fn boards_for_different_workspaces_are_independent() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.replace_board("ws-1", &[column("c1", "Only in ws-1", 0, vec![])], &[]).unwrap();
+        store.replace_board("ws-1", &[column("c1", "Only in ws-1", 0)], &[]).unwrap();
 
         let ws2_board = store.get_board("ws-2").unwrap();
 
@@ -404,18 +216,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
         store
-            .replace_board(
-                "ws-1",
-                &[column("c1", "To Do", 0, vec![card("card-a", "A card", vec!["l1"], 0)])],
-                &[label("l1", "urgent")],
-            )
+            .replace_board("ws-1", &[column("c1", "To Do", 0)], &[label("l1", "urgent")])
             .unwrap();
 
         store.delete_board("ws-1").unwrap();
 
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.columns.len(), 3, "a fresh default seed, not the deleted board's leftovers");
-        assert_eq!(board.columns[0].cards.len(), 0);
         assert!(board.labels.is_empty());
     }
 
@@ -425,7 +232,7 @@ mod tests {
         let db_path = dir.path().join("kanban.sqlite");
         {
             let mut store = KanbanStore::open(&db_path).unwrap();
-            store.replace_board("ws-1", &[column("c1", "Persisted", 0, vec![])], &[]).unwrap();
+            store.replace_board("ws-1", &[column("c1", "Persisted", 0)], &[]).unwrap();
         }
         let mut store = KanbanStore::open(&db_path).unwrap();
         let board = store.get_board("ws-1").unwrap();
@@ -433,12 +240,10 @@ mod tests {
     }
 
     #[test]
-    fn open_backfills_session_link_columns_onto_a_pre_existing_table_without_them() {
+    fn open_drops_leftover_card_tables_from_earlier_builds() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("kanban.sqlite");
-        // Simulate a database created before the session_link_* columns
-        // existed -- the exact shape CREATE TABLE IF NOT EXISTS alone
-        // leaves permanently broken.
+        // A database from before the card model, cards and all.
         {
             let conn = Connection::open(&db_path).unwrap();
             conn.execute_batch(
@@ -446,33 +251,23 @@ mod tests {
                  CREATE TABLE kanban_columns (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL);
                  CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, column_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, priority TEXT NOT NULL, position INTEGER NOT NULL);
                  CREATE TABLE kanban_labels (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, color TEXT NOT NULL);
-                 CREATE TABLE kanban_card_labels (card_id TEXT NOT NULL, label_id TEXT NOT NULL, PRIMARY KEY (card_id, label_id));",
+                 CREATE TABLE kanban_card_labels (card_id TEXT NOT NULL, label_id TEXT NOT NULL, PRIMARY KEY (card_id, label_id));
+                 INSERT INTO kanban_cards VALUES ('card-1', 'c1', 'Old', '', 'none', 0);",
             )
             .unwrap();
         }
 
-        let mut store = KanbanStore::open(&db_path).unwrap();
-        let mut linked_card = card("card-1", "Run tests", vec![], 0);
-        linked_card.session_link = Some(SessionLink {
-            session_id: "session-1".to_string(),
-            cwd: "/tmp".to_string(),
-            command: None,
-        });
-        store.replace_board("ws-1", &[column("c1", "To Do", 0, vec![linked_card])], &[]).unwrap();
-
-        let board = store.get_board("ws-1").unwrap();
-        assert_eq!(board.columns[0].cards[0].session_link.as_ref().unwrap().session_id, "session-1");
-    }
-
-    #[test]
-    fn open_is_idempotent_when_session_link_columns_already_exist() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("kanban.sqlite");
-        KanbanStore::open(&db_path).unwrap();
-
-        // Re-opening (e.g. a normal app restart) must not error trying to
-        // add the same columns twice.
-        let reopened = KanbanStore::open(&db_path);
-        assert!(reopened.is_ok());
+        let store = KanbanStore::open(&db_path).unwrap();
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('kanban_cards','kanban_card_labels')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "leftover card tables must be dropped (C5 wipe)");
+        // And re-opening stays fine.
+        assert!(KanbanStore::open(&db_path).is_ok());
     }
 }

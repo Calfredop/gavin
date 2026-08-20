@@ -1211,7 +1211,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }),
         Request::ReadPrd { root_path } => crate::gavin::read_prd(std::path::Path::new(&root_path))
             .map(|content| Response::PrdContent { content }),
-        Request::CreatePlan { context_folder, file_name, title, status, priority, body } => {
+        Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent } => {
             crate::gavin::create_plan_file(
                 std::path::Path::new(&context_folder),
                 &file_name,
@@ -1219,6 +1219,8 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 status.as_deref(),
                 priority.as_deref(),
                 body.as_deref(),
+                kind.as_deref(),
+                parent.as_deref(),
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
@@ -1561,6 +1563,8 @@ mod tests {
                 title: "Over socket".to_string(),
                 status: None,
                 priority: Some("low".to_string()),
+                kind: None,
+                parent: None,
                 body: None,
             },
         );
@@ -1908,7 +1912,7 @@ mod tests {
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
         let manager = SessionManager::new(registry, kanban);
         let columns =
-            vec![Column { id: "c1".to_string(), name: "Only column".to_string(), position: 0, cards: vec![] }];
+            vec![Column { id: "c1".to_string(), name: "Only column".to_string(), position: 0 }];
 
         let set_resp = handle_request(
             &manager,
@@ -1936,7 +1940,7 @@ mod tests {
             &manager,
             Request::SetBoard {
                 workspace_id: "ws-1".to_string(),
-                columns: vec![Column { id: "c1".to_string(), name: "Custom".to_string(), position: 0, cards: vec![] }],
+                columns: vec![Column { id: "c1".to_string(), name: "Custom".to_string(), position: 0 }],
                 labels: vec![],
             },
         );

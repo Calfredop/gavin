@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -93,6 +93,10 @@ pub enum Request {
         status: Option<String>,
         priority: Option<String>,
         body: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        parent: Option<String>,
     },
     /// The SQLite board of the WATCHED workspace whose root matches.
     GetBoardByRoot {
@@ -201,31 +205,10 @@ pub struct Label {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionLink {
-    pub session_id: String,
-    pub cwd: String,
-    pub command: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Card {
-    pub id: String,
-    pub title: String,
-    pub description: String,
-    pub label_ids: Vec<String>,
-    pub priority: Priority,
-    pub position: i64,
-    pub session_link: Option<SessionLink>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct Column {
     pub id: String,
     pub name: String,
     pub position: i64,
-    pub cards: Vec<Card>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -235,12 +218,23 @@ pub struct Board {
     pub labels: Vec<Label>,
 }
 
-/// One plan file inside a `.gavin*/plans/` folder, with its frontmatter
-/// parsed (status/priority/title/order). `parse_warning` covers an
-/// unterminated frontmatter block, an unrecognized priority value, or a
-/// non-integer order -- the plan still appears, never silently dropped
-/// (spec §4). Crosses to the frontend, so camelCase like GitStatus,
-/// verified by a shape test below.
+/// What a card file IS (card-model spec §1): a reminder, a single agent
+/// task (body = the prompt), or a multi-task plan. Absent/unknown kind
+/// parses as Plan so pre-kind files stay valid.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CardKind {
+    Note,
+    Task,
+    Plan,
+}
+
+/// One card file inside a `.gavin*/plans/` folder, with its frontmatter
+/// parsed (kind/title/status/priority/order/parent/labels) and its body
+/// checklist counted. `parse_warning` covers an unterminated frontmatter
+/// block or an unrecognized field value -- the card still appears, never
+/// silently dropped (spec §4). Crosses to the frontend, so camelCase
+/// like GitStatus, verified by a shape test below.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanFileInfo {
@@ -250,6 +244,11 @@ pub struct PlanFileInfo {
     pub status: Option<String>,
     pub priority: Option<Priority>,
     pub order: Option<i64>,
+    pub kind: CardKind,
+    pub parent: Option<String>,
+    pub labels: Vec<String>,
+    pub checklist_done: u32,
+    pub checklist_total: u32,
     pub parse_warning: bool,
 }
 
@@ -560,15 +559,6 @@ mod tests {
                 id: "col-1".to_string(),
                 name: "To Do".to_string(),
                 position: 0,
-                cards: vec![Card {
-                    id: "card-1".to_string(),
-                    title: "Write plan".to_string(),
-                    description: "".to_string(),
-                    label_ids: vec!["label-1".to_string()],
-                    priority: Priority::High,
-                    position: 0,
-                    session_link: None,
-                }],
             }],
             labels: vec![Label {
                 id: "label-1".to_string(),
@@ -585,7 +575,7 @@ mod tests {
             Request::SetBoard { workspace_id, columns, labels } => {
                 assert_eq!(workspace_id, "ws-1");
                 assert_eq!(columns.len(), 1);
-                assert_eq!(columns[0].cards[0].priority, Priority::High);
+                assert_eq!(columns[0].name, "To Do");
                 assert_eq!(labels.len(), 1);
             }
             other => panic!("wrong variant: {other:?}"),
@@ -615,7 +605,6 @@ mod tests {
                 id: "col-1".to_string(),
                 name: "Done".to_string(),
                 position: 0,
-                cards: vec![],
             }],
             labels: vec![],
         };
@@ -635,71 +624,10 @@ mod tests {
     }
 
     #[test]
-    fn card_serializes_to_the_camel_case_shape_the_frontend_expects() {
-        let card = Card {
-            id: "card-1".to_string(),
-            title: "Write plan".to_string(),
-            description: "details".to_string(),
-            label_ids: vec!["label-1".to_string()],
-            priority: Priority::Urgent,
-            position: 2,
-            session_link: None,
-        };
-        let json = serde_json::to_value(&card).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "id": "card-1",
-                "title": "Write plan",
-                "description": "details",
-                "labelIds": ["label-1"],
-                "priority": "urgent",
-                "position": 2,
-                "sessionLink": null
-            })
-        );
-    }
-
-    #[test]
-    fn session_link_serializes_to_the_camel_case_shape_the_frontend_expects() {
-        let link = SessionLink {
-            session_id: "session-1".to_string(),
-            cwd: "/Users/alice/project".to_string(),
-            command: Some("npm test".to_string()),
-        };
-        let json = serde_json::to_value(&link).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "sessionId": "session-1",
-                "cwd": "/Users/alice/project",
-                "command": "npm test"
-            })
-        );
-    }
-
-    #[test]
-    fn card_with_session_link_roundtrips_through_json_line() {
-        let mut buf = Vec::new();
-        let card = Card {
-            id: "card-1".to_string(),
-            title: "Run tests".to_string(),
-            description: "".to_string(),
-            label_ids: vec![],
-            priority: Priority::None,
-            position: 0,
-            session_link: Some(SessionLink {
-                session_id: "session-1".to_string(),
-                cwd: "/tmp".to_string(),
-                command: None,
-            }),
-        };
-        write_message(&mut buf, &card).unwrap();
-
-        let mut cursor = Cursor::new(buf);
-        let decoded: Card = read_message(&mut cursor).unwrap().unwrap();
-
-        assert_eq!(decoded.session_link.unwrap().session_id, "session-1");
+    fn card_kind_serializes_to_lowercase_strings() {
+        assert_eq!(serde_json::to_value(CardKind::Note).unwrap(), serde_json::json!("note"));
+        assert_eq!(serde_json::to_value(CardKind::Task).unwrap(), serde_json::json!("task"));
+        assert_eq!(serde_json::to_value(CardKind::Plan).unwrap(), serde_json::json!("plan"));
     }
 
     #[test]
@@ -738,6 +666,11 @@ mod tests {
                     status: Some("To Do".to_string()),
                     priority: Some(Priority::High),
                     order: None,
+                    kind: CardKind::Plan,
+                    parent: None,
+                    labels: vec![],
+                    checklist_done: 0,
+                    checklist_total: 0,
                     parse_warning: false,
                 }],
                 docs: vec![MdFileInfo {
@@ -770,6 +703,11 @@ mod tests {
                         "status": "To Do",
                         "priority": "high",
                         "order": null,
+                        "kind": "plan",
+                        "parent": null,
+                        "labels": [],
+                        "checklistDone": 0,
+                        "checklistTotal": 0,
                         "parseWarning": false
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
@@ -841,11 +779,11 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_two_until_a_breaking_change_bumps_it() {
-        // v2: PlanFileInfo grew `order`, and set_plan_field accepts the
-        // "order" key -- a pre-order daemon would reject the app's order
-        // writes per-drop, so the mismatch must surface at the handshake.
-        assert_eq!(PROTOCOL_VERSION, 2);
+    fn protocol_version_is_three_until_a_breaking_change_bumps_it() {
+        // v3: cards became files -- PlanFileInfo grew kind/parent/labels/
+        // checklist counts, the writer accepts new keys, and the SQLite
+        // card types (Card/SessionLink/Column.cards) left the wire.
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     #[test]
@@ -858,12 +796,16 @@ mod tests {
             status: Some("In Progress".to_string()),
             priority: Some("high".to_string()),
             body: Some("Body text".to_string()),
+            kind: Some("task".to_string()),
+            parent: Some("auth-plan.md".to_string()),
         };
         write_message(&mut buf, &req).unwrap();
         let mut cursor = Cursor::new(buf);
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
         match decoded {
-            Request::CreatePlan { context_folder, file_name, title, status, priority, body } => {
+            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent } => {
+                assert_eq!(kind.as_deref(), Some("task"));
+                assert_eq!(parent.as_deref(), Some("auth-plan.md"));
                 assert_eq!(context_folder, "/ws/auth");
                 assert_eq!(file_name, "login.md");
                 assert_eq!(title, "Login flow");

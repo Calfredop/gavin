@@ -1514,11 +1514,13 @@ pub fn create_plan(
     status: Option<String>,
     priority: Option<String>,
     body: Option<String>,
+    kind: Option<String>,
+    parent: Option<String>,
     state: State<CommandConnection>,
 ) -> Result<String, String> {
     let resp = send_command(
         &state.0,
-        &Request::CreatePlan { context_folder, file_name, title, status, priority, body },
+        &Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent },
     )
     .map_err(|e| e.to_string())?;
     match resp {
@@ -1650,7 +1652,7 @@ mod kanban_command_tests {
     #[test]
     fn get_board_impl_returns_the_boards_columns_and_labels() {
         let (client, _dir) = fake_daemon_replying_with(vec![Response::Board {
-            columns: vec![Column { id: "c1".to_string(), name: "To Do".to_string(), position: 0, cards: vec![] }],
+            columns: vec![Column { id: "c1".to_string(), name: "To Do".to_string(), position: 0 }],
             labels: vec![Label { id: "l1".to_string(), name: "urgent".to_string(), color: "#f00".to_string() }],
         }]);
         let conn = Mutex::new(client);
@@ -1692,7 +1694,7 @@ mod kanban_command_tests {
     fn set_board_impl_sends_the_given_columns_and_labels() {
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::Ok]);
         let conn = Mutex::new(client);
-        let columns = vec![Column { id: "c1".to_string(), name: "Only".to_string(), position: 0, cards: vec![] }];
+        let columns = vec![Column { id: "c1".to_string(), name: "Only".to_string(), position: 0,  }];
 
         set_board_impl(&conn, "ws-1".to_string(), columns.clone(), vec![]).unwrap();
 

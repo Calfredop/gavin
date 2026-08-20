@@ -104,13 +104,15 @@ fn tool_definitions() -> Value {
     json!([
         { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and plan files (canonical parse, incl. statuses and warnings).", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_read_prd", "description": "Read the workspace PRD — the lead document for all development.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "gavin_create_plan", "description": "Create a plan file in a gavin context with canonical frontmatter. Never overwrites.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_create_plan", "description": "Create a card file (note, task, or plan) in a gavin context with canonical frontmatter. Never overwrites.", "inputSchema": { "type": "object", "properties": {
             "context_folder": { "type": "string", "description": "Folder that is the root or contains .gavin (relative allowed)" },
             "file_name": { "type": "string", "description": "kebab-case-name.md" },
             "title": { "type": "string" },
-            "status": { "type": "string", "description": "Board column name; default To Do" },
+            "status": { "type": "string", "description": "Board column name; default To Do (omitted on a task with a parent: it nests)" },
             "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
-            "body": { "type": "string" }
+            "body": { "type": "string", "description": "For kind task this IS the agent prompt" },
+            "kind": { "type": "string", "enum": ["note", "task", "plan"], "description": "Default plan" },
+            "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" }
         }, "required": ["context_folder", "file_name", "title"] } },
         { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
@@ -182,6 +184,8 @@ fn dispatch_tool(
             status: str_arg(args, "status"),
             priority: str_arg(args, "priority"),
             body: str_arg(args, "body"),
+            kind: str_arg(args, "kind"),
+            parent: str_arg(args, "parent"),
         },
         "gavin_set_plan_field" => Request::SetPlanFrontmatterField {
             path: resolve_against_root(root, &require_arg(args, "path")?)

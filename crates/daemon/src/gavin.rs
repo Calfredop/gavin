@@ -1,5 +1,5 @@
 use protocol::{
-    GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
+    CardKind, GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
 };
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -117,6 +117,40 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
             }
         },
     };
+    let kind = match get("kind") {
+        None => CardKind::Plan,
+        Some(raw) => match raw.to_ascii_lowercase().as_str() {
+            "note" => CardKind::Note,
+            "task" => CardKind::Task,
+            "plan" => CardKind::Plan,
+            _ => {
+                warning = true;
+                CardKind::Plan
+            }
+        },
+    };
+    // parent is only meaningful on tasks (card-model spec §1) -- set on
+    // any other kind it degrades to a warning, never a hidden card.
+    let parent = match get("parent") {
+        None => None,
+        Some(p) => {
+            if kind == CardKind::Task {
+                Some(p)
+            } else {
+                warning = true;
+                None
+            }
+        }
+    };
+    let labels: Vec<String> = get("labels")
+        .map(|raw| {
+            raw.split(',')
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: path.to_string_lossy().to_string(),
         file_name,
@@ -124,8 +158,45 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         status: get("status"),
         priority,
         order,
+        kind,
+        parent,
+        labels,
+        checklist_done,
+        checklist_total,
         parse_warning: warning,
     }
+}
+
+/// Counts `- [ ]` / `- [x]` lines (any indentation, requiring the
+/// trailing space) in the BODY -- everything after the frontmatter's
+/// closing marker; an unterminated block yields no body.
+fn checklist_counts(content: &str) -> (u32, u32) {
+    let mut lines = content.lines();
+    if content.lines().next() == Some("---") {
+        lines.next();
+        let mut closed = false;
+        for l in lines.by_ref() {
+            if l == "---" {
+                closed = true;
+                break;
+            }
+        }
+        if !closed {
+            return (0, 0);
+        }
+    }
+    let mut done = 0u32;
+    let mut total = 0u32;
+    for line in lines {
+        let t = line.trim_start();
+        if t.starts_with("- [ ] ") {
+            total += 1;
+        } else if t.starts_with("- [x] ") {
+            total += 1;
+            done += 1;
+        }
+    }
+    (done, total)
 }
 
 /// Rewrites ONLY the `{key}:` line (spec §2): replace in place if present,
@@ -147,10 +218,23 @@ fn write_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
             .position(|l| l.split_once(':').map(|(k, _)| k.trim() == key).unwrap_or(false))
             .map(|i| i + 1);
         out = lines.iter().map(|l| l.to_string()).collect();
-        match field_line {
-            Some(i) => out[i] = format!("{key}: {value}"),
-            None => out.insert(1, format!("{key}: {value}")),
+        // Empty value = remove the line (nesting/un-parenting, card-model
+        // spec §1); absent line -> no-op, the file stays untouched.
+        if value.is_empty() {
+            match field_line {
+                Some(i) => {
+                    out.remove(i);
+                }
+                None => return Ok(()),
+            }
+        } else {
+            match field_line {
+                Some(i) => out[i] = format!("{key}: {value}"),
+                None => out.insert(1, format!("{key}: {value}")),
+            }
         }
+    } else if value.is_empty() {
+        return Ok(());
     } else {
         out = vec!["---".to_string(), format!("{key}: {value}"), "---".to_string()];
         out.extend(lines.iter().map(|l| l.to_string()));
@@ -186,7 +270,25 @@ pub fn create_plan_file(
     status: Option<&str>,
     priority: Option<&str>,
     body: Option<&str>,
+    kind: Option<&str>,
+    parent: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
+    let kind = match kind {
+        None => "plan",
+        Some(k) if matches!(k, "note" | "task" | "plan") => k,
+        Some(other) => anyhow::bail!("invalid kind value: {other}"),
+    };
+    if let Some(p) = parent {
+        if kind != "task" {
+            anyhow::bail!("parent requires kind task, got: {kind}");
+        }
+        let valid = p.len() > ".md".len()
+            && p.ends_with(".md")
+            && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !valid {
+            anyhow::bail!("parent must match [A-Za-z0-9._-]+.md, got: {p}");
+        }
+    }
     let gavin_dir = if context_folder.join(GAVIN_ROOT_DIR).is_dir() {
         context_folder.join(GAVIN_ROOT_DIR)
     } else if context_folder.join(GAVIN_DIR).is_dir() {
@@ -211,8 +313,14 @@ pub fn create_plan_file(
     if title.is_empty() || title.contains('\n') {
         anyhow::bail!("title must be a non-empty single line");
     }
-    let status = status.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("To Do");
-    if status.contains('\n') {
+    // A nested child (task with a parent) has no status by design (spec
+    // §1's nesting rule); everything else defaults to "To Do".
+    let status: Option<&str> = if kind == "task" && parent.is_some() && status.is_none() {
+        None
+    } else {
+        Some(status.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("To Do"))
+    };
+    if status.is_some_and(|s| s.contains('\n')) {
         anyhow::bail!("status must be a single line");
     }
     if let Some(p) = priority {
@@ -228,7 +336,17 @@ pub fn create_plan_file(
         anyhow::bail!("plan file already exists: {}", path.display());
     }
 
-    let mut content = format!("---\ntitle: {title}\nstatus: {status}\n");
+    let mut content = String::from("---\n");
+    if kind != "plan" {
+        content.push_str(&format!("kind: {kind}\n"));
+    }
+    content.push_str(&format!("title: {title}\n"));
+    if let Some(s) = status {
+        content.push_str(&format!("status: {s}\n"));
+    }
+    if let Some(p) = parent {
+        content.push_str(&format!("parent: {p}\n"));
+    }
     if let Some(p) = priority {
         content.push_str(&format!("priority: {p}\n"));
     }
@@ -248,6 +366,14 @@ pub fn create_plan_file(
 /// allow-list is enforced HERE, not trusted to callers -- this must never
 /// become an arbitrary-line writer.
 pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+    // Empty value removes the line -- permitted only where the card model
+    // needs it (status: nesting, parent: un-parenting, labels: clearing).
+    if value.is_empty() {
+        match key {
+            "status" | "parent" | "labels" => return write_plan_field(path, key, value),
+            other => anyhow::bail!("empty value not allowed for: {other}"),
+        }
+    }
     match key {
         "status" => {} // free text
         "priority" => {
@@ -263,6 +389,24 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()>
         "title" => {
             if value.trim().is_empty() || value.contains('\n') {
                 anyhow::bail!("title must be a non-empty single line");
+            }
+        }
+        "kind" => {
+            if !matches!(value, "note" | "task" | "plan") {
+                anyhow::bail!("invalid kind value: {value}");
+            }
+        }
+        "parent" => {
+            let valid = value.len() > ".md".len()
+                && value.ends_with(".md")
+                && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+            if !valid {
+                anyhow::bail!("parent must match [A-Za-z0-9._-]+.md, got: {value}");
+            }
+        }
+        "labels" => {
+            if value.contains('\n') {
+                anyhow::bail!("labels must be a single line");
             }
         }
         other => anyhow::bail!("field not allowed: {other}"),
@@ -636,6 +780,41 @@ mod tests {
     }
 
     #[test]
+    fn plan_kind_parses_defaults_and_flags_garbage() {
+        assert_eq!(plan("---\ntitle: A\n---\n").kind, CardKind::Plan);
+        assert_eq!(plan("---\nkind: note\n---\n").kind, CardKind::Note);
+        assert_eq!(plan("---\nkind: task\n---\n").kind, CardKind::Task);
+        let bad = plan("---\nkind: epic\n---\n");
+        assert_eq!(bad.kind, CardKind::Plan);
+        assert!(bad.parse_warning);
+    }
+
+    #[test]
+    fn parent_only_lives_on_tasks() {
+        let t = plan("---\nkind: task\nparent: auth.md\n---\n");
+        assert_eq!(t.parent.as_deref(), Some("auth.md"));
+        assert!(!t.parse_warning);
+        let n = plan("---\nkind: note\nparent: auth.md\n---\n");
+        assert_eq!(n.parent, None);
+        assert!(n.parse_warning);
+    }
+
+    #[test]
+    fn labels_split_and_trim() {
+        assert_eq!(plan("---\nlabels: bug,  ui , \n---\n").labels, vec!["bug", "ui"]);
+        assert!(plan("---\ntitle: A\n---\n").labels.is_empty());
+    }
+
+    #[test]
+    fn checklist_counts_from_body() {
+        let p = plan("---\nkind: plan\n---\n# P\n- [ ] one\n  - [x] nested\n- [x] two\nnot - [ ] a list\n");
+        assert_eq!((p.checklist_done, p.checklist_total), (2, 3));
+        // No frontmatter: the whole file is body. Unterminated: no body.
+        assert_eq!(plan("- [ ] a\n").checklist_total, 1);
+        assert_eq!(plan("---\nstatus: x\n- [ ] a\n").checklist_total, 0);
+    }
+
+    #[test]
     fn plan_order_parses_integer_and_flags_garbage() {
         let ok = plan("---\ntitle: A\norder: 2048\n---\n");
         assert_eq!(ok.order, Some(2048));
@@ -648,6 +827,47 @@ mod tests {
         let bad = plan("---\ntitle: A\norder: soon\n---\n");
         assert_eq!(bad.order, None);
         assert!(bad.parse_warning);
+    }
+
+    #[test]
+    fn empty_value_removes_the_line_for_status_parent_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: T\nkind: task\nstatus: To Do\nparent: a.md\nlabels: x\n---\nbody\n")
+            .unwrap();
+        set_plan_field(&path, "status", "").unwrap();
+        set_plan_field(&path, "parent", "").unwrap();
+        set_plan_field(&path, "labels", "").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: T\nkind: task\n---\nbody\n"
+        );
+        // Absent line -> no-op, no error, file untouched:
+        set_plan_field(&path, "status", "").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: T\nkind: task\n---\nbody\n"
+        );
+        assert!(set_plan_field(&path, "title", "").is_err());
+        assert!(set_plan_field(&path, "priority", "").is_err());
+    }
+
+    #[test]
+    fn kind_and_parent_values_are_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: T\n---\n").unwrap();
+        assert!(set_plan_field(&path, "kind", "epic").is_err());
+        assert!(set_plan_field(&path, "parent", "../evil.md").is_err());
+        assert!(set_plan_field(&path, "parent", "no-md").is_err());
+        assert!(set_plan_field(&path, "labels", "a\nb").is_err());
+        set_plan_field(&path, "kind", "task").unwrap();
+        set_plan_field(&path, "parent", "plan-1.md").unwrap();
+        set_plan_field(&path, "labels", "bug, ui").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nlabels: bug, ui\nparent: plan-1.md\nkind: task\ntitle: T\n---\n"
+        );
     }
 
     #[test]
@@ -882,7 +1102,7 @@ mod tests {
     fn create_plan_file_writes_canonical_content_with_defaults() {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
-        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None).unwrap();
+        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\ntitle: Auth flow\nstatus: To Do\n---\n# Auth flow\n"
@@ -894,6 +1114,8 @@ mod tests {
             Some("In Progress"),
             Some("high"),
             Some("Body text"),
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -903,21 +1125,42 @@ mod tests {
     }
 
     #[test]
+    fn create_plan_file_writes_kind_and_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
+        // A nested child: kind task + parent, no status line at all.
+        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "---\nkind: task\ntitle: Child\nparent: parent-plan.md\n---\n# Child\n"
+        );
+        // A note keeps the default/explicit status.
+        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None).unwrap();
+        assert!(std::fs::read_to_string(&n).unwrap().starts_with("---\nkind: note\ntitle: Note\nstatus: Done\n"));
+        // kind plan writes no kind line (backward-canonical).
+        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None).unwrap();
+        assert!(std::fs::read_to_string(&pl).unwrap().starts_with("---\ntitle: P\nstatus: To Do\n"));
+        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None).is_err());
+        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md")).is_err());
+        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md")).is_err());
+    }
+
+    #[test]
     fn create_plan_file_validates_and_never_overwrites() {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
         // Not a context:
-        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None).is_err());
+        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None).is_err());
         // Bad names ("../esc.md" doubles as the path-escape guard):
         for bad in ["", ".md", "no-extension", "sp ace.md", "../esc.md"] {
-            assert!(create_plan_file(dir.path(), bad, "T", None, None, None).is_err(), "{bad}");
+            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None).is_err(), "{bad}");
         }
         // Bad priority / bad title:
-        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None).is_err());
-        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None).is_err());
         // Never overwrites:
-        create_plan_file(dir.path(), "a.md", "T", None, None, None).unwrap();
-        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None);
+        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None).unwrap();
+        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None);
         assert!(dup.unwrap_err().to_string().contains("already exists"));
     }
 
