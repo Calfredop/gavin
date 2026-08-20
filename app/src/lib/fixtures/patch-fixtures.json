@@ -1,0 +1,118 @@
+{
+  "fixtures": [
+    {
+      "name": "whole-hunk",
+      "file": "f.txt",
+      "base": "alpha\nbeta\ngamma\ndelta\nepsilon\n",
+      "modified": "alpha\nBETA\ngamma\nnew1\nnew2\nepsilon\n",
+      "diff": {
+        "path": "f.txt",
+        "binary": false,
+        "tooLarge": false,
+        "hunks": [
+          {
+            "header": "@@ -1,5 +1,6 @@",
+            "oldStart": 1, "oldLines": 5, "newStart": 1, "newLines": 6,
+            "lines": [
+              { "kind": "context", "text": "alpha", "oldNo": 1, "newNo": 1, "noNewline": false },
+              { "kind": "del", "text": "beta", "oldNo": 2, "noNewline": false },
+              { "kind": "add", "text": "BETA", "newNo": 2, "noNewline": false },
+              { "kind": "context", "text": "gamma", "oldNo": 3, "newNo": 3, "noNewline": false },
+              { "kind": "del", "text": "delta", "oldNo": 4, "noNewline": false },
+              { "kind": "add", "text": "new1", "newNo": 4, "noNewline": false },
+              { "kind": "add", "text": "new2", "newNo": 5, "noNewline": false },
+              { "kind": "context", "text": "epsilon", "oldNo": 5, "newNo": 6, "noNewline": false }
+            ]
+          }
+        ]
+      },
+      "hunkIndex": 0,
+      "selected": null,
+      "expectedPatch": "--- a/f.txt\n+++ b/f.txt\n@@ -1,5 +1,6 @@\n alpha\n-beta\n+BETA\n gamma\n-delta\n+new1\n+new2\n epsilon\n"
+    },
+    {
+      "name": "subset-of-adds",
+      "file": "f.txt",
+      "base": "alpha\nbeta\ngamma\ndelta\nepsilon\n",
+      "modified": "alpha\nBETA\ngamma\nnew1\nnew2\nepsilon\n",
+      "diff": {
+        "path": "f.txt",
+        "binary": false,
+        "tooLarge": false,
+        "hunks": [
+          {
+            "header": "@@ -1,5 +1,6 @@",
+            "oldStart": 1, "oldLines": 5, "newStart": 1, "newLines": 6,
+            "lines": [
+              { "kind": "context", "text": "alpha", "oldNo": 1, "newNo": 1, "noNewline": false },
+              { "kind": "del", "text": "beta", "oldNo": 2, "noNewline": false },
+              { "kind": "add", "text": "BETA", "newNo": 2, "noNewline": false },
+              { "kind": "context", "text": "gamma", "oldNo": 3, "newNo": 3, "noNewline": false },
+              { "kind": "del", "text": "delta", "oldNo": 4, "noNewline": false },
+              { "kind": "add", "text": "new1", "newNo": 4, "noNewline": false },
+              { "kind": "add", "text": "new2", "newNo": 5, "noNewline": false },
+              { "kind": "context", "text": "epsilon", "oldNo": 5, "newNo": 6, "noNewline": false }
+            ]
+          }
+        ]
+      },
+      "hunkIndex": 0,
+      "selected": ["0:5"],
+      "expectedPatch": "--- a/f.txt\n+++ b/f.txt\n@@ -1,5 +1,6 @@\n alpha\n beta\n gamma\n delta\n+new1\n epsilon\n"
+    },
+    {
+      "name": "mixed-dels-and-adds",
+      "file": "f.txt",
+      "base": "alpha\nbeta\ngamma\ndelta\nepsilon\n",
+      "modified": "alpha\nBETA\ngamma\nnew1\nnew2\nepsilon\n",
+      "diff": {
+        "path": "f.txt",
+        "binary": false,
+        "tooLarge": false,
+        "hunks": [
+          {
+            "header": "@@ -1,5 +1,6 @@",
+            "oldStart": 1, "oldLines": 5, "newStart": 1, "newLines": 6,
+            "lines": [
+              { "kind": "context", "text": "alpha", "oldNo": 1, "newNo": 1, "noNewline": false },
+              { "kind": "del", "text": "beta", "oldNo": 2, "noNewline": false },
+              { "kind": "add", "text": "BETA", "newNo": 2, "noNewline": false },
+              { "kind": "context", "text": "gamma", "oldNo": 3, "newNo": 3, "noNewline": false },
+              { "kind": "del", "text": "delta", "oldNo": 4, "noNewline": false },
+              { "kind": "add", "text": "new1", "newNo": 4, "noNewline": false },
+              { "kind": "add", "text": "new2", "newNo": 5, "noNewline": false },
+              { "kind": "context", "text": "epsilon", "oldNo": 5, "newNo": 6, "noNewline": false }
+            ]
+          }
+        ]
+      },
+      "hunkIndex": 0,
+      "selected": ["0:1", "0:2", "0:4"],
+      "expectedPatch": "--- a/f.txt\n+++ b/f.txt\n@@ -1,5 +1,4 @@\n alpha\n-beta\n+BETA\n gamma\n-delta\n epsilon\n"
+    },
+    {
+      "name": "no-newline-at-eof",
+      "file": "n.txt",
+      "base": "x",
+      "modified": "y",
+      "diff": {
+        "path": "n.txt",
+        "binary": false,
+        "tooLarge": false,
+        "hunks": [
+          {
+            "header": "@@ -1 +1 @@",
+            "oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 1,
+            "lines": [
+              { "kind": "del", "text": "x", "oldNo": 1, "noNewline": true },
+              { "kind": "add", "text": "y", "newNo": 1, "noNewline": true }
+            ]
+          }
+        ]
+      },
+      "hunkIndex": 0,
+      "selected": null,
+      "expectedPatch": "--- a/n.txt\n+++ b/n.txt\n@@ -1,1 +1,1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n"
+    }
+  ]
+}
