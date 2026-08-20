@@ -48,3 +48,23 @@ progress); surfaces + verification + three-plan build order (card model core →
 nesting interaction → run & bindings).
 
 Spec: `docs/superpowers/specs/2026-08-20-kanban-card-model-design.md`.
+
+## Execution notes — plan 1 (card model core, 2026-08-20)
+
+- All 11 tasks executed inline on `main`. Tasks 1–5 (protocol v3 + daemon)
+  folded into one commit as the plan anticipated: removing the Card types
+  breaks crate-by-crate compilation until the wipe lands.
+- Deviations, all safety-driven: nested children do NOT yet carry
+  `data-kb-plan` wrappers (the glue would count them into the column's slot
+  geometry and corrupt drag indices — plan 2 owns nested measurement); their
+  presses stop propagation so a nested click can't drag/open the parent.
+  "Open in Plans tab" gained a tiny `requestedExplorerPath` store so the
+  explorer preselects the file (the alternative was landing on an unselected
+  tree).
+- The stale gavin-mcp session incident from plan-writing repeated as
+  designed: this session's MCP shim predates v3; plan cards were authored as
+  files directly (the gavin skill's documented fallback).
+- Gates at completion: cargo 265, vitest 394 (+ new pure suites for
+  cardCompose/planChecklist), svelte-check 0 errors / 0 kanban warnings,
+  production build clean. Manual smoke (new "Card kinds" section) pending —
+  requires a daemon restart to pick up protocol v3.

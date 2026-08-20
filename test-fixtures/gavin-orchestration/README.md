@@ -142,10 +142,12 @@ those steps as already done.
       `printf -- '---\nstatus: To Do\nno closing marker\n' > .gavin-root/plans/broken.md`
       Expect: a card in the **first** column with a ⚠ badge; its modal explains
       the frontmatter has issues. The board stays fully functional.
-- [ ] **B7 — Free-form cards.** "+ Add card" opens an inline title field
-      (Enter adds and keeps the field, Esc closes, empty adds nothing). The
-      created card has a solid border, is deletable, drags with position, and
-      plan cards always render after free-form ones.
+- [ ] **B7 — Composer creates files.** "+ Add card" opens the two-speed
+      composer: Enter creates a `kind: note` .md in the root context's plans/
+      with `status:` = the column's name (check the file); the task chip adds
+      a prompt field (body = the agent prompt), the plan chip a body field +
+      context picker. There are no SQLite cards anymore — every card is a
+      file.
 - [ ] **B8 — Trello-grade drag.** While dragging any card: a tilted floating
       copy follows the cursor, a dashed placeholder marks the landing slot
       (verify a **downward** same-column move lands exactly there — the old
@@ -158,10 +160,11 @@ those steps as already done.
 - [ ] **B10 — Column reorder + composer.** Drag a column by its header — it
       lands exactly at the placeholder in both directions. "+ Add column"
       opens an inline name field with the same composer keys as B7.
-- [ ] **B11 — Save failure surfaces.** `pkill -x gavin-daemon`, then drag a
-      free-form card. Expect: the card snaps back and a dismissible "Couldn't
-      save" banner appears; after **Restart daemon & retry** the next drag
-      succeeds and clears it.
+- [ ] **B11 — Save failure surfaces.** `pkill -x gavin-daemon`, then rename
+      or add a column. Expect: the edit reverts and a dismissible "Couldn't
+      save" banner appears; after **Restart daemon & retry** the next edit
+      succeeds and clears it. (Card drags write files, not SQLite — they fail
+      with the plan-error strip instead.)
 
 ## C. Per-session context boards
 

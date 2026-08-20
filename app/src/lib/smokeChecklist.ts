@@ -63,14 +63,53 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Dragging near the board's left/right edge scrolls the strip; near a tall column's top/bottom scrolls its list",
       },
       { id: "column-reorder", text: "Dragging a column by its header lands it exactly at the placeholder, both directions" },
-      { id: "composer-card", text: "“+ Add card” opens an in-place field: Enter adds and stays, Esc closes, empty adds nothing" },
+      { id: "composer-card", text: "“+ Add card” opens the composer: Enter adds a note FILE in that column and stays, Esc closes, empty adds nothing" },
       { id: "composer-column", text: "“+ Add column” behaves the same way — no more literal “New column”" },
       {
         id: "save-failure",
-        text: "Kill the daemon, drag a card → it snaps back and a “Couldn't save” banner appears; recovery clears it",
-        hint: "pkill -x gavin-daemon, then drag. Restart daemon & retry via the error overlay if needed.",
+        text: "Kill the daemon, rename or add a column → it reverts and a “Couldn't save” banner appears; recovery clears it",
+        hint: "pkill -x gavin-daemon, then edit a column. Restart daemon & retry via the error overlay if needed.",
       },
-      { id: "board-refresh", text: "Refocusing the window refetches the board (free-form cards no longer go stale)" },
+      { id: "board-refresh", text: "Refocusing the window refetches the board (columns/labels no longer go stale)" },
+    ],
+  },
+  {
+    title: "Card kinds",
+    items: [
+      {
+        id: "kind-compose-note",
+        text: "Composer fast path: type a title, Enter → a kind: note .md lands in plans/ with status: <column>",
+        hint: "cat the file — slugged name, note kind, the column's name as status.",
+      },
+      {
+        id: "kind-compose-task",
+        text: "Composer task chip: prompt textarea appears; the created file's body IS the prompt (kind: task)",
+      },
+      {
+        id: "kind-compose-plan",
+        text: "Composer plan chip: body textarea + context picker; plan cards show n/m checklist progress",
+      },
+      {
+        id: "kind-nested-display",
+        text: "A task with parent: <plan file> and NO status renders inside the plan card's expandable area",
+        hint: "Create via gavin_create_plan (kind task, parent set) or hand-author; chevron shows the child count.",
+      },
+      {
+        id: "kind-parent-chip",
+        text: "A task with parent: AND a status stays in its column wearing the plan's title as a chip; a bad parent shows ⚠",
+      },
+      {
+        id: "kind-detail-roundtrip",
+        text: "Card detail: title/status/priority edits round-trip into the file; status select can free a nested child",
+      },
+      {
+        id: "kind-labels",
+        text: "Label chips in the detail write labels: names (slug-matched colors); clearing the last removes the line",
+      },
+      {
+        id: "kind-wipe",
+        text: "No free-form SQLite cards anywhere — a pre-wipe database's cards are gone after the daemon restarts",
+      },
     ],
   },
   {
