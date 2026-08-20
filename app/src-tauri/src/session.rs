@@ -628,7 +628,7 @@ mod resolve_workspaces_tests {
     use crate::config::Page;
 
     fn leaf(tabs: &[&str]) -> LayoutNode {
-        LayoutNode::Leaf { tabs: tabs.iter().map(|s| s.to_string()).collect(), active_tab_index: 0 }
+        LayoutNode::Leaf { tabs: tabs.iter().map(|s| s.to_string()).collect(), active_tab_index: 0, pinned: Vec::new() }
     }
 
     fn page(id: &str, layout: LayoutNode) -> Page {
