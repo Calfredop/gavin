@@ -1,6 +1,7 @@
 import type { Component } from "svelte";
-import { LayoutDashboard, Kanban, ListChecks, FileText, Bot, FolderTree, Settings } from "@lucide/svelte";
+import { LayoutDashboard, Kanban, ListChecks, FileText, Bot, FolderTree, Settings, GitBranch } from "@lucide/svelte";
 import HomeHubView from "./HomeHubView.svelte";
+import GitHubView from "./GitHubView.svelte";
 import SettingsHubView from "./SettingsHubView.svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
 import SmokeChecklist from "./SmokeChecklist.svelte";
@@ -24,6 +25,7 @@ export interface HubView {
 
 export const HUB_VIEWS: HubView[] = [
   { id: "home", label: "Home", icon: LayoutDashboard, component: HomeHubView, requiresRoot: true },
+  { id: "git", label: "Git", icon: GitBranch, component: GitHubView, requiresRoot: true },
   { id: "kanban", label: "Kanban", icon: Kanban, component: KanbanBoard },
   { id: "prd", label: "PRD", icon: FileText, component: PrdHubView, requiresRoot: true },
   {
