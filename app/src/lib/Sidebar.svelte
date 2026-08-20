@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { normalizeColor } from "./settings";
+  import { accentVar } from "./settings";
   import {
     layoutState,
     switchWorkspace,
@@ -503,7 +503,7 @@
       <div class="workspace-row-group">
         <div
           class="workspace-row pinned"
-          style:--ws-accent={ws.color ? normalizeColor(ws.color) : undefined}
+          style:--row-accent={accentVar(ws.color) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
           ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
@@ -539,7 +539,7 @@
       <div class="workspace-row-group">
         <div
           class="workspace-row"
-          style:--ws-accent={ws.color ? normalizeColor(ws.color) : undefined}
+          style:--row-accent={accentVar(ws.color) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-before={hoverState?.targetId === ws.id &&
             hoverState.kind === "reorder" &&
@@ -666,7 +666,9 @@
     /* padding-left drops by the stripe's width so the row's contents do
        not shift when a colour is set. */
     padding: 4px 8px 4px 5px;
-    border-left: 3px solid var(--ws-accent, transparent);
+    /* Its own variable, always set: --ws-accent is inherited from the
+       active workspace's container, which would paint every row. */
+    border-left: 3px solid var(--row-accent, transparent);
     cursor: pointer;
   }
   .workspace-row.active {

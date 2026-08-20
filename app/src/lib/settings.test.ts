@@ -5,6 +5,7 @@ import {
   normalizeColor,
   validateAgentFileName,
   renameDecision,
+  accentVar,
   resolveAgentConfig,
   type AgentProfileInfo,
 } from "./settings";
@@ -107,5 +108,22 @@ describe("resolveAgentConfig", () => {
     const r = resolveAgentConfig({ profile: "codex", file: "  ", command: "" }, PROFILES);
     expect(r.file).toBe("AGENTS.md");
     expect(r.command).toBe("codex");
+  });
+});
+
+describe("accentVar", () => {
+  it("returns a normalized colour when one is set", () => {
+    expect(accentVar("#A78BFA")).toBe("#a78bfa");
+  });
+
+  it("returns undefined when unset, so each indicator keeps its own default", () => {
+    expect(accentVar(undefined)).toBeUndefined();
+    expect(accentVar(null)).toBeUndefined();
+    expect(accentVar("")).toBeUndefined();
+    expect(accentVar("   ")).toBeUndefined();
+  });
+
+  it("still normalizes junk rather than passing it into CSS", () => {
+    expect(accentVar("red; background: url(x)")).toBe(DEFAULT_ACCENT);
   });
 });

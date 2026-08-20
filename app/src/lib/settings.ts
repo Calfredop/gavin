@@ -101,3 +101,12 @@ export function resolveAgentConfig(
     mcpSupported: effective?.mcpSupported ?? false,
   };
 }
+
+/// The CSS custom-property value for a workspace accent, or `undefined`
+/// when none is set. Undefined is load-bearing twice over: it lets each
+/// indicator keep its OWN default (the hub nav's amber, a pane tab's
+/// blue), and it stops an uncoloured sidebar row from inheriting the
+/// active workspace's accent from an ancestor.
+export function accentVar(color: string | null | undefined): string | undefined {
+  return typeof color === "string" && color.trim() ? normalizeColor(color) : undefined;
+}

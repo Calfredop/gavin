@@ -15,7 +15,7 @@
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
   import { agentProfilesStore } from "$lib/layoutState";
-  import { resolveAgentConfig, normalizeColor } from "$lib/settings";
+  import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
@@ -42,7 +42,7 @@
       $agentProfilesStore
     )
   );
-  const accent = $derived(normalizeColor(activeWorkspace?.color));
+  const accent = $derived(accentVar(activeWorkspace?.color));
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -198,7 +198,9 @@
   }
   .tab.active {
     color: #eee;
-    border-bottom-color: #d9a648;
+    /* The workspace's accent when set; otherwise the original amber, so
+       an uncoloured workspace looks exactly as it did before. */
+    border-bottom-color: var(--ws-accent, #d9a648);
   }
   .view {
     flex: 1 1 auto;
