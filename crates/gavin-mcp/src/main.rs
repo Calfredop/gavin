@@ -226,7 +226,7 @@ fn dispatch_tool(
         Response::PrdContent { content } => Ok(content),
         Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
-        Response::Board { columns, labels } => {
+        Response::Board { columns, labels, card_sessions: _ } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
         }
         Response::SessionCreated { id } => {

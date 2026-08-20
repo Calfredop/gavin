@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -123,6 +123,18 @@ pub enum Request {
         plan_path: String,
         item: String,
     },
+    /// Upserts a card file's live session binding (by workspace + path).
+    LinkCardSession {
+        workspace_id: String,
+        path: String,
+        session_id: String,
+        cwd: String,
+        command: Option<String>,
+    },
+    UnlinkCardSession {
+        workspace_id: String,
+        path: String,
+    },
     GetProtocolVersion,
 }
 
@@ -137,7 +149,7 @@ pub enum Response {
     StatusChanged { id: String, status: String },
     GitStatusChanged { id: String, status: Option<GitStatus> },
     SessionRestored { id: String },
-    Board { columns: Vec<Column>, labels: Vec<Label> },
+    Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
     GavinTreeChanged { workspace_id: String, tree: GavinTree },
     GavinTreeScanned { tree: GavinTree },
@@ -226,11 +238,24 @@ pub struct Column {
     pub position: i64,
 }
 
+/// A card file's live agent-session binding (card-model spec §3).
+/// Runtime state only -- never written into the card file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardSession {
+    pub path: String,
+    pub session_id: String,
+    pub cwd: String,
+    pub command: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
     pub columns: Vec<Column>,
     pub labels: Vec<Label>,
+    #[serde(default)]
+    pub card_sessions: Vec<CardSession>,
 }
 
 /// What a card file IS (card-model spec §1): a reminder, a single agent
@@ -622,6 +647,7 @@ mod tests {
                 position: 0,
             }],
             labels: vec![],
+            card_sessions: vec![],
         };
         write_message(&mut buf, &resp).unwrap();
 
@@ -629,7 +655,7 @@ mod tests {
         let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
 
         match decoded {
-            Response::Board { columns, labels } => {
+            Response::Board { columns, labels, card_sessions: _ } => {
                 assert_eq!(columns.len(), 1);
                 assert_eq!(columns[0].name, "Done");
                 assert_eq!(labels.len(), 0);
@@ -794,10 +820,48 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_four_until_a_breaking_change_bumps_it() {
-        // v4: checklist interaction -- SetChecklistItem and
-        // PromoteChecklistItem/TaskPromoted joined the wire.
-        assert_eq!(PROTOCOL_VERSION, 4);
+    fn protocol_version_is_five_until_a_breaking_change_bumps_it() {
+        // v5: executable cards -- card_sessions ride the Board reply and
+        // Link/UnlinkCardSession joined the wire.
+        assert_eq!(PROTOCOL_VERSION, 5);
+    }
+
+    #[test]
+    fn card_session_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let cs = CardSession {
+            path: "/p/t.md".to_string(),
+            session_id: "s-1".to_string(),
+            cwd: "/p".to_string(),
+            command: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&cs).unwrap(),
+            serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p", "command": null })
+        );
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::LinkCardSession {
+            workspace_id: "ws".to_string(),
+            path: "/p/t.md".to_string(),
+            session_id: "s-1".to_string(),
+            cwd: "/p".to_string(),
+            command: Some("claude 'x'".to_string()),
+        }).unwrap();
+        write_message(&mut buf, &Request::UnlinkCardSession {
+            workspace_id: "ws".to_string(),
+            path: "/p/t.md".to_string(),
+        }).unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::LinkCardSession { session_id, command, .. } => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(command.as_deref(), Some("claude 'x'"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::UnlinkCardSession { path, .. } => assert_eq!(path, "/p/t.md"),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

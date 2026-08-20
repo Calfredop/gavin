@@ -1192,7 +1192,7 @@ pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Resu
 fn get_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<Board> {
     let resp = send_command(command_conn, &Request::GetBoard { workspace_id })?;
     match resp {
-        Response::Board { columns, labels } => Ok(Board { columns, labels }),
+        Response::Board { columns, labels, card_sessions } => Ok(Board { columns, labels, card_sessions }),
         other => anyhow::bail!("expected Board, got {other:?}"),
     }
 }
@@ -1688,6 +1688,7 @@ mod kanban_command_tests {
     #[test]
     fn get_board_impl_returns_the_boards_columns_and_labels() {
         let (client, _dir) = fake_daemon_replying_with(vec![Response::Board {
+            card_sessions: vec![],
             columns: vec![Column { id: "c1".to_string(), name: "To Do".to_string(), position: 0 }],
             labels: vec![Label { id: "l1".to_string(), name: "urgent".to_string(), color: "#f00".to_string() }],
         }]);
@@ -1703,7 +1704,7 @@ mod kanban_command_tests {
     #[test]
     fn get_board_impl_sends_the_given_workspace_id() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::Board { columns: vec![], labels: vec![] }]);
+            fake_daemon_capturing_requests(vec![Response::Board { columns: vec![], labels: vec![], card_sessions: vec![] }]);
         let conn = Mutex::new(client);
 
         get_board_impl(&conn, "ws-42".to_string()).unwrap();

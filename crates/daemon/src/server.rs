@@ -745,6 +745,21 @@ impl SessionManager {
         self.kanban.lock().unwrap().replace_board(workspace_id, &columns, &labels)
     }
 
+    pub fn link_card_session(
+        &self,
+        workspace_id: &str,
+        path: &str,
+        session_id: &str,
+        cwd: &str,
+        command: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.kanban.lock().unwrap().link_card_session(workspace_id, path, session_id, cwd, command)
+    }
+
+    pub fn unlink_card_session(&self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
+        self.kanban.lock().unwrap().unlink_card_session(workspace_id, path)
+    }
+
     pub fn delete_board(&self, workspace_id: &str) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().delete_board(workspace_id)
     }
@@ -1174,7 +1189,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
         Request::GetBoard { workspace_id } => manager
             .get_board(&workspace_id)
-            .map(|board| Response::Board { columns: board.columns, labels: board.labels }),
+            .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
         Request::SetBoard { workspace_id, columns, labels } => manager
             .set_board(&workspace_id, columns, labels)
             .map(|_| Response::Ok),
@@ -1224,6 +1239,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
+        Request::LinkCardSession { workspace_id, path, session_id, cwd, command } => manager
+            .link_card_session(&workspace_id, &path, &session_id, &cwd, command.as_deref())
+            .map(|_| Response::Ok),
+        Request::UnlinkCardSession { workspace_id, path } => manager
+            .unlink_card_session(&workspace_id, &path)
+            .map(|_| Response::Ok),
         Request::SetChecklistItem { path, line_index, expected_text, checked } => {
             crate::gavin::set_checklist_item(
                 std::path::Path::new(&path),
@@ -1242,7 +1263,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }
         Request::GetBoardByRoot { root_path } => manager
             .board_by_root(&root_path)
-            .map(|board| Response::Board { columns: board.columns, labels: board.labels }),
+            .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
         Request::SpawnAgentSession { root_path, cwd, command } => manager
             .spawn_agent_session(&root_path, &cwd, &command)
             .map(|id| Response::SessionCreated { id }),
@@ -1910,7 +1931,7 @@ mod tests {
         let resp = handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".to_string() });
 
         match resp {
-            Response::Board { columns, labels } => {
+            Response::Board { columns, labels, card_sessions: _ } => {
                 assert_eq!(columns.len(), 3);
                 assert!(labels.is_empty());
             }

@@ -1,4 +1,4 @@
-use protocol::{Board, Column, Label};
+use protocol::{Board, CardSession, Column, Label};
 use rusqlite::{params, Connection};
 
 pub struct KanbanStore {
@@ -28,6 +28,14 @@ impl KanbanStore {
             -- C5: dev-state wipe, no migration): SQLite keeps only the
             -- column and label vocabularies. Leftover card tables from
             -- earlier builds are dropped outright.
+            CREATE TABLE IF NOT EXISTS card_sessions (
+                workspace_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                command TEXT,
+                PRIMARY KEY (workspace_id, path)
+            );
             DROP TABLE IF EXISTS kanban_card_labels;
             DROP TABLE IF EXISTS kanban_cards;",
         )?;
@@ -85,7 +93,25 @@ impl KanbanStore {
             }
         }
 
-        Ok(Board { columns, labels })
+        let mut card_sessions = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT path, session_id, cwd, command FROM card_sessions WHERE workspace_id = ?1",
+            )?;
+            let rows = stmt.query_map(params![workspace_id], |row| {
+                Ok(CardSession {
+                    path: row.get(0)?,
+                    session_id: row.get(1)?,
+                    cwd: row.get(2)?,
+                    command: row.get(3)?,
+                })
+            })?;
+            for row in rows {
+                card_sessions.push(row?);
+            }
+        }
+
+        Ok(Board { columns, labels, card_sessions })
     }
 
     /// Deletes every `kanban_*` row for `workspace_id` except the
@@ -120,6 +146,35 @@ impl KanbanStore {
             )?;
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Upserts a card file's live session binding (card-model spec §3) --
+    /// runtime state keyed by (workspace, path), never written to files.
+    pub fn link_card_session(
+        &mut self,
+        workspace_id: &str,
+        path: &str,
+        session_id: &str,
+        cwd: &str,
+        command: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO card_sessions (workspace_id, path, session_id, cwd, command)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(workspace_id, path) DO UPDATE SET
+               session_id = excluded.session_id, cwd = excluded.cwd, command = excluded.command",
+            params![workspace_id, path, session_id, cwd, command],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a binding; absent is a no-op.
+    pub fn unlink_card_session(&mut self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "DELETE FROM card_sessions WHERE workspace_id = ?1 AND path = ?2",
+            params![workspace_id, path],
+        )?;
         Ok(())
     }
 
@@ -224,6 +279,25 @@ mod tests {
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.columns.len(), 3, "a fresh default seed, not the deleted board's leftovers");
         assert!(board.labels.is_empty());
+    }
+
+    #[test]
+    fn card_sessions_upsert_unlink_and_ride_the_board() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'")).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-2", "/p", None).unwrap(); // upsert replaces
+        store.link_card_session("ws-2", "/p/t.md", "s-9", "/p", None).unwrap(); // other workspace
+
+        let board = store.get_board("ws-1").unwrap();
+        assert_eq!(board.card_sessions.len(), 1);
+        assert_eq!(board.card_sessions[0].session_id, "s-2");
+        assert_eq!(board.card_sessions[0].command, None);
+
+        store.unlink_card_session("ws-1", "/p/t.md").unwrap();
+        store.unlink_card_session("ws-1", "/p/absent.md").unwrap(); // no-op
+        assert!(store.get_board("ws-1").unwrap().card_sessions.is_empty());
+        assert_eq!(store.get_board("ws-2").unwrap().card_sessions.len(), 1);
     }
 
     #[test]
