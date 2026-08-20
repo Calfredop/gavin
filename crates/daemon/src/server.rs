@@ -1226,6 +1226,10 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::set_plan_field(std::path::Path::new(&path), &key, &value)
                 .map(|_| Response::Ok)
         }
+        Request::SetRootConfigField { root_path, key, value } => {
+            crate::gavin::set_root_config_field(std::path::Path::new(&root_path), &key, &value)
+                .map(|_| Response::Ok)
+        }
         Request::ScanGavinRoot { root_path } => Ok(Response::GavinTreeScanned {
             tree: crate::gavin::scan_root(std::path::Path::new(&root_path)),
         }),

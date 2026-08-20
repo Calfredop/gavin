@@ -1,4 +1,5 @@
 use protocol::{
+    AgentConfig,
     CardKind, GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
 };
 use std::os::unix::net::UnixStream;
@@ -588,21 +589,52 @@ pub fn delete_card_file(path: &Path) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("couldn't delete {}: {e}", path.display()))
 }
 
-/// A context's display name from its config.toml. The bool is
+/// A context's display name and (for a root context) its `[agent]`
+/// block, from one parse of config.toml. The bool is
 /// config_warning: false for a missing file (absent config is normal),
 /// true only when the file exists but doesn't parse as TOML.
-fn parse_context_name(config_path: &Path) -> (Option<String>, bool) {
+fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConfig>, bool) {
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
-        Err(_) => return (None, false),
+        Err(_) => return (None, None, false),
     };
     match content.parse::<toml::Table>() {
         Ok(table) => {
             let name = table.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-            (name, false)
+            let agent = table.get("agent").and_then(|v| v.as_table()).map(|t| {
+                let get = |k: &str| t.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+                AgentConfig { profile: get("profile"), file: get("file"), command: get("command") }
+            });
+            (name, agent, false)
         }
-        Err(_) => (None, true),
+        Err(_) => (None, None, true),
     }
+}
+
+/// Writes one `[agent]` key of `.gavin-root/config.toml`. Uses toml_edit
+/// so comments, key order and formatting survive -- this file is
+/// hand-edited by users and read by their agents. Allow-listed exactly
+/// like set_plan_field: never an arbitrary-key writer.
+pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+    if !matches!(key, "profile" | "file" | "command") {
+        anyhow::bail!("not a settable agent key: {key}");
+    }
+    if value.trim().is_empty() || value.contains('\n') {
+        anyhow::bail!("{key} must be a non-empty single line");
+    }
+    let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
+        anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", path.display())
+    })?;
+    doc["agent"][key] = toml_edit::value(value);
+    // A freshly created [agent] arrives implicit; make it explicit so the
+    // file stays readable to whoever opens it next.
+    if let Some(t) = doc["agent"].as_table_mut() {
+        t.set_implicit(false);
+    }
+    std::fs::write(&path, doc.to_string())?;
+    Ok(())
 }
 
 fn scaffold_gavin_dir(gavin_dir: &Path) -> anyhow::Result<()> {
@@ -678,7 +710,8 @@ fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
 }
 
 fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> GavinContext {
-    let (config_name, config_warning) = parse_context_name(&gavin_dir.join("config.toml"));
+    let (config_name, agent_config, config_warning) =
+        parse_context_config(&gavin_dir.join("config.toml"));
     let folder_name =
         folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let plans = list_md_files(&gavin_dir.join("plans"))
@@ -698,6 +731,9 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
         specs: list_md_files(&gavin_dir.join("specs")),
         has_prd: matches!(kind, GavinContextKind::Root) && gavin_dir.join("PRD.md").is_file(),
         config_warning,
+        // Only the root context carries an agent block: `.gavin`
+        // sub-contexts scope plans, not how the workspace is worked on.
+        agent: if matches!(kind, GavinContextKind::Root) { agent_config } else { None },
     }
 }
 
@@ -1359,6 +1395,124 @@ mod tests {
         let tree = scan_root(Path::new("/definitely/not/a/real/path"));
         assert!(tree.root_missing);
         assert!(tree.contexts.is_empty());
+    }
+
+    #[test]
+    fn scan_surfaces_the_agent_block_on_the_root_context_only() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        std::fs::write(
+            dir.path().join(GAVIN_ROOT_DIR).join("config.toml"),
+            "version = 1\n\n[agent]\nprofile = \"codex\"\ncommand = \"codex\"\n",
+        )
+        .unwrap();
+        let sub = dir.path().join("svc");
+        std::fs::create_dir_all(sub.join(GAVIN_DIR)).unwrap();
+
+        let tree = scan_root(dir.path());
+        let root = tree.contexts.iter().find(|c| c.kind == GavinContextKind::Root).unwrap();
+        let agent = root.agent.as_ref().unwrap();
+        assert_eq!(agent.profile.as_deref(), Some("codex"));
+        assert_eq!(agent.command.as_deref(), Some("codex"));
+        assert_eq!(agent.file, None, "absent key stays None so the profile default applies");
+
+        let child = tree.contexts.iter().find(|c| c.kind != GavinContextKind::Root).unwrap();
+        assert_eq!(child.agent, None, "only the root context carries an agent block");
+    }
+
+    #[test]
+    fn a_config_without_an_agent_block_scans_to_none_not_an_error() {
+        // Built by hand, NOT via init_gavin_root: the scaffold template
+        // already ships an [agent] block (see the next test), so this
+        // covers a config.toml predating workspace settings.
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(g.join("config.toml"), "version = 1\nname = \"Old\"\n").unwrap();
+
+        let tree = scan_root(dir.path());
+        let root = tree.contexts.iter().find(|c| c.kind == GavinContextKind::Root).unwrap();
+        assert_eq!(root.agent, None);
+        assert!(!root.config_warning, "an absent block is normal, not a warning");
+    }
+
+    #[test]
+    fn a_freshly_scaffolded_root_already_declares_the_claude_code_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let tree = scan_root(dir.path());
+        let agent = tree.contexts[0].agent.as_ref().unwrap();
+        assert_eq!(agent.profile.as_deref(), Some("claude-code"));
+        assert_eq!(agent.file, None, "the file name follows the profile until overridden");
+        assert_eq!(agent.command, None);
+    }
+
+    #[test]
+    fn set_root_config_field_writes_each_allowed_key_and_rejects_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+
+        set_root_config_field(dir.path(), "profile", "codex").unwrap();
+        set_root_config_field(dir.path(), "file", "AGENTS.md").unwrap();
+        set_root_config_field(dir.path(), "command", "codex --full-auto").unwrap();
+
+        let tree = scan_root(dir.path());
+        let agent = tree.contexts[0].agent.as_ref().unwrap();
+        assert_eq!(agent.profile.as_deref(), Some("codex"));
+        assert_eq!(agent.file.as_deref(), Some("AGENTS.md"));
+        assert_eq!(agent.command.as_deref(), Some("codex --full-auto"));
+
+        assert!(set_root_config_field(dir.path(), "version", "9").is_err(), "unknown key");
+        assert!(set_root_config_field(dir.path(), "profile", "").is_err(), "empty value");
+        assert!(set_root_config_field(dir.path(), "profile", "a\nb").is_err(), "newline");
+    }
+
+    #[test]
+    fn set_root_config_field_preserves_comments_and_key_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(
+            g.join("config.toml"),
+            "# hand-written, keep me\nversion = 1\nname = \"Mine\"\n\n[agent]\n# and me\nprofile = \"claude-code\"\n",
+        )
+        .unwrap();
+
+        set_root_config_field(dir.path(), "command", "claude --model opus").unwrap();
+
+        let after = std::fs::read_to_string(g.join("config.toml")).unwrap();
+        assert!(after.contains("# hand-written, keep me"));
+        assert!(after.contains("# and me"));
+        assert!(after.contains("name = \"Mine\""));
+        assert!(after.contains("command = \"claude --model opus\""));
+    }
+
+    #[test]
+    fn set_root_config_field_creates_the_agent_table_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(g.join("config.toml"), "version = 1\n").unwrap();
+
+        set_root_config_field(dir.path(), "profile", "gemini").unwrap();
+
+        let tree = scan_root(dir.path());
+        assert_eq!(tree.contexts[0].agent.as_ref().unwrap().profile.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn set_root_config_field_refuses_an_unparseable_file_rather_than_clobbering_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(g.join("config.toml"), "this is not [ valid toml\n").unwrap();
+
+        assert!(set_root_config_field(dir.path(), "profile", "codex").is_err());
+        assert_eq!(
+            std::fs::read_to_string(g.join("config.toml")).unwrap(),
+            "this is not [ valid toml\n",
+            "the file must survive untouched"
+        );
     }
 
     #[test]

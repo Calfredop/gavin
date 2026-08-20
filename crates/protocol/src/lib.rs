@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -74,6 +74,15 @@ pub enum Request {
     /// arbitrary-line writer.
     SetPlanFrontmatterField {
         path: String,
+        key: String,
+        value: String,
+    },
+    /// Writes one key of `.gavin-root/config.toml`'s `[agent]` table.
+    /// Allow-listed to profile/file/command -- like
+    /// SetPlanFrontmatterField this must never become an arbitrary-key
+    /// writer into a file the user hand-edits.
+    SetRootConfigField {
+        root_path: String,
         key: String,
         value: String,
     },
@@ -314,6 +323,19 @@ pub enum GavinContextKind {
     Context,
 }
 
+/// The root context's `[agent]` block from `.gavin-root/config.toml`.
+/// Every field optional: a config.toml predating workspace settings
+/// parses cleanly with all three `None`, and the profile defaults apply.
+/// Only ever populated for the root context -- `.gavin` sub-contexts have
+/// no agent block.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfig {
+    pub profile: Option<String>,
+    pub file: Option<String>,
+    pub command: Option<String>,
+}
+
 /// A folder that contains a `.gavin-root/` (kind Root, only ever directly
 /// under the workspace root) or `.gavin/` (kind Context) directory.
 /// `folder_path` is the CONTAINING folder, not the marker directory.
@@ -328,6 +350,7 @@ pub struct GavinContext {
     pub specs: Vec<MdFileInfo>,
     pub has_prd: bool,
     pub config_warning: bool,
+    pub agent: Option<AgentConfig>,
 }
 
 /// The full scanned picture of one workspace's bound root. Never
@@ -727,6 +750,7 @@ mod tests {
                 specs: vec![],
                 has_prd: true,
                 config_warning: false,
+                agent: None,
             }],
         }
     }
@@ -760,7 +784,8 @@ mod tests {
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
                     "hasPrd": true,
-                    "configWarning": false
+                    "configWarning": false,
+                    "agent": null
                 }]
             })
         );
@@ -826,10 +851,58 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_six_until_a_breaking_change_bumps_it() {
-        // v6: DeleteCardFile joined the wire (card + column-cascade
-        // deletion).
-        assert_eq!(PROTOCOL_VERSION, 6);
+    fn agent_config_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let ctx = GavinContext {
+            folder_path: "/ws".to_string(),
+            kind: GavinContextKind::Root,
+            name: "ws".to_string(),
+            plans: vec![],
+            docs: vec![],
+            specs: vec![],
+            has_prd: false,
+            config_warning: false,
+            agent: Some(AgentConfig {
+                profile: Some("claude-code".to_string()),
+                file: None,
+                command: Some("claude --model opus".to_string()),
+            }),
+        };
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert_eq!(
+            json["agent"],
+            serde_json::json!({
+                "profile": "claude-code",
+                "file": null,
+                "command": "claude --model opus"
+            })
+        );
+    }
+
+    #[test]
+    fn set_root_config_field_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        let req = Request::SetRootConfigField {
+            root_path: "/ws".to_string(),
+            key: "profile".to_string(),
+            value: "codex".to_string(),
+        };
+        write_message(&mut buf, &req).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
+        match decoded {
+            Request::SetRootConfigField { root_path, key, value } => {
+                assert_eq!(root_path, "/ws");
+                assert_eq!(key, "profile");
+                assert_eq!(value, "codex");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protocol_version_is_seven_until_a_breaking_change_bumps_it() {
+        // v7: GavinContext.agent + SetRootConfigField (workspace settings).
+        assert_eq!(PROTOCOL_VERSION, 7);
     }
 
     #[test]
