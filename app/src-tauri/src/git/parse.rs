@@ -1,7 +1,68 @@
 //! Pure parsers for git's machine-readable output (spec §2). Both are
 //! exact by necessity: the frontend patch builder reverses `parse_diff`.
 
-use crate::git::types::{BranchInfo, FileDiff, FileEntry, Hunk, Line, RemoteInfo, StashInfo, StatusResult};
+use crate::git::types::{BranchInfo, FileDiff, FileEntry, Hunk, Line, RemoteInfo, StashInfo, StatusResult, WorktreeInfo};
+
+/// `worktree list --porcelain`: blank-line separated blocks of
+/// `worktree <path>` / `HEAD <sha>` / `branch refs/heads/<n>` | `detached` /
+/// `bare` / `locked [reason]` / `prunable [reason]`. Git lists the main
+/// worktree first.
+pub fn parse_worktree_list(raw: &str) -> Vec<WorktreeInfo> {
+    let mut out: Vec<WorktreeInfo> = Vec::new();
+    let mut cur: Option<WorktreeInfo> = None;
+    let flush = |cur: &mut Option<WorktreeInfo>, out: &mut Vec<WorktreeInfo>| {
+        if let Some(w) = cur.take() {
+            out.push(w);
+        }
+    };
+    for line in raw.lines() {
+        if line.is_empty() {
+            flush(&mut cur, &mut out);
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("worktree ") {
+            flush(&mut cur, &mut out);
+            cur = Some(WorktreeInfo {
+                path: path.to_string(),
+                head: String::new(),
+                branch: None,
+                is_main: out.is_empty(),
+                locked: false,
+                prunable: false,
+            });
+            continue;
+        }
+        let Some(w) = cur.as_mut() else { continue };
+        if let Some(sha) = line.strip_prefix("HEAD ") {
+            w.head = sha.to_string();
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            w.branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
+        } else if line == "detached" {
+            w.branch = None;
+        } else if line == "locked" || line.starts_with("locked ") {
+            w.locked = true;
+        } else if line == "prunable" || line.starts_with("prunable ") {
+            w.prunable = true;
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
+#[cfg(test)]
+mod worktree_tests {
+    use super::*;
+
+    #[test]
+    fn worktree_list_parses_main_linked_detached_and_prunable() {
+        let raw = "worktree /r/main\nHEAD aaaa\nbranch refs/heads/main\n\nworktree /r/wt-feature\nHEAD bbbb\nbranch refs/heads/feature\nlocked\n\nworktree /r/wt-det\nHEAD cccc\ndetached\nprunable gitdir file points to non-existent location\n\n";
+        let w = parse_worktree_list(raw);
+        assert_eq!(w.len(), 3);
+        assert!(w[0].is_main && w[0].branch.as_deref() == Some("main") && w[0].head == "aaaa");
+        assert!(!w[1].is_main && w[1].locked && w[1].branch.as_deref() == Some("feature"));
+        assert!(w[2].branch.is_none() && w[2].prunable && !w[2].is_main);
+    }
+}
 
 /// `%(upstream:track)` → (ahead, behind, gone): "[ahead 2, behind 1]",
 /// "[ahead 3]", "[behind 4]", "[gone]" or "".

@@ -2,9 +2,9 @@
 //! thin wrapper over a plain function so the temp-repo tests below call the
 //! real code path without a Tauri runtime.
 
-use crate::git::parse::{parse_branches, parse_diff, parse_remotes, parse_stashes, parse_status};
+use crate::git::parse::{parse_branches, parse_diff, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
 use crate::git::run::{ok, run_git, run_git_env, run_git_ro};
-use crate::git::types::{Author, FileDiff, RefsSnapshot, RepoInfo, StatusResult};
+use crate::git::types::{Author, FileDiff, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
 use std::path::Path;
 
 /// Diffs larger than this are not rendered (spec §1: "Diff too large").
@@ -83,9 +83,59 @@ pub fn refs(cwd: &str) -> Result<RefsSnapshot, String> {
         branches,
         remotes: parse_remotes(&remote_urls, &remote_refs),
         stashes: parse_stashes(&stash_raw),
-        worktrees: vec![],
+        worktrees: worktrees(cwd)?,
         head_branch,
     })
+}
+
+// ---- SP3: worktrees ---------------------------------------------------------
+
+pub fn worktrees(cwd: &str) -> Result<Vec<WorktreeInfo>, String> {
+    let out = ok(run_git_ro(cwd, &["worktree", "list", "--porcelain"])?)?;
+    Ok(parse_worktree_list(&out.stdout_str()))
+}
+
+/// `new_branch`: `worktree add -b <branch> <path> [<from>]`; otherwise
+/// `worktree add <path> <branch>` for an existing branch.
+pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new_branch: bool) -> Result<(), String> {
+    let mut args = vec!["worktree", "add"];
+    if new_branch {
+        args.extend(["-b", branch, path]);
+        if let Some(f) = from {
+            args.push(f);
+        }
+    } else {
+        args.extend([path, branch]);
+    }
+    ok(run_git(cwd, &args, None)?).map(|_| ())
+}
+
+pub fn worktree_remove(cwd: &str, path: &str, force: bool) -> Result<(), String> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(path);
+    ok(run_git(cwd, &args, None)?).map(|_| ())
+}
+
+pub fn worktree_prune(cwd: &str) -> Result<(), String> {
+    ok(run_git(cwd, &["worktree", "prune"], None)?).map(|_| ())
+}
+
+#[tauri::command]
+pub fn git_worktree_add(cwd: String, path: String, branch: String, from: Option<String>, new_branch: bool) -> Result<(), String> {
+    worktree_add(&cwd, &path, &branch, from.as_deref(), new_branch)
+}
+
+#[tauri::command]
+pub fn git_worktree_remove(cwd: String, path: String, force: bool) -> Result<(), String> {
+    worktree_remove(&cwd, &path, force)
+}
+
+#[tauri::command]
+pub fn git_worktree_prune(cwd: String) -> Result<(), String> {
+    worktree_prune(&cwd)
 }
 
 #[tauri::command]
@@ -589,7 +639,8 @@ mod read_tests {
         assert!(r.branches.iter().any(|b| b.name == "other"));
         assert!(r.remotes.is_empty());
         assert_eq!(r.stashes[0].message, "On main: my stash");
-        assert!(r.worktrees.is_empty());
+        assert_eq!(r.worktrees.len(), 1);
+        assert!(r.worktrees[0].is_main);
     }
 
     #[test]
@@ -837,5 +888,32 @@ mod ref_tests {
         stash_push(cwd(&dir), "", false).unwrap();
         stash_drop(cwd(&dir), 0).unwrap();
         assert!(refs(cwd(&dir)).unwrap().stashes.is_empty());
+    }
+
+    #[test]
+    fn worktree_add_list_remove_prune_round_trip() {
+        let dir = temp_repo();
+        let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
+        let wt = dir.path().parent().unwrap().join(format!("{name}-feature"));
+        let wt_s = wt.to_str().unwrap().to_string();
+        worktree_add(cwd(&dir), &wt_s, "feature", None, true).unwrap();
+        let r = refs(cwd(&dir)).unwrap();
+        assert_eq!(r.worktrees.len(), 2);
+        assert!(r.worktrees[0].is_main);
+        assert_eq!(r.worktrees[1].branch.as_deref(), Some("feature"));
+        assert_eq!(repo_info(&wt_s).unwrap().branch.as_deref(), Some("feature"));
+
+        std::fs::write(wt.join("dirty.txt"), "x").unwrap();
+        let err = worktree_remove(cwd(&dir), &wt_s, false).unwrap_err();
+        assert!(err.contains("modified or untracked"), "{err}");
+        worktree_remove(cwd(&dir), &wt_s, true).unwrap();
+        assert_eq!(refs(cwd(&dir)).unwrap().worktrees.len(), 1);
+
+        // Existing-branch mode, then prune after an external rm -rf.
+        worktree_add(cwd(&dir), &wt_s, "feature", None, false).unwrap();
+        std::fs::remove_dir_all(&wt).unwrap();
+        assert!(refs(cwd(&dir)).unwrap().worktrees[1].prunable);
+        worktree_prune(cwd(&dir)).unwrap();
+        assert_eq!(refs(cwd(&dir)).unwrap().worktrees.len(), 1);
     }
 }
