@@ -5,7 +5,7 @@ import * as layout from "./layout";
 import * as backend from "./backend";
 import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
-import type { Workspace, WorkspacesData, GitStatus } from "./workspace";
+import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs } from "./workspace";
 import { sessionLabel } from "./paths";
 import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
@@ -439,6 +439,18 @@ export async function setNotifyFlag(
   const state = get(layoutState);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, [key]: value } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+// Git tab preferences (splitter widths, diff layout, discard-confirm
+// opt-out): merged, never replaced, so one control's save can't clobber
+// another's.
+export async function setGitViewPrefs(workspaceId: string, patch: Partial<GitViewPrefs>): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, gitView: { ...(w.gitView ?? {}), ...patch } } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

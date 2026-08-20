@@ -32,6 +32,23 @@ pub const UNFILED_WORKSPACE_ID: &str = "__unfiled__";
 /// (app/src/lib/workspace.ts's SMOKETEST_WORKSPACE_ID).
 pub const SMOKETEST_WORKSPACE_ID: &str = "__smoketest__";
 
+/// Per-workspace Git tab preferences (spec §1: splitter widths, diff
+/// layout, the hunk/line discard confirm opt-out). Crosses to the frontend
+/// inside Workspace, hence camelCase.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitViewPrefs {
+    #[serde(default)]
+    pub nav_width: Option<u32>,
+    #[serde(default)]
+    pub list_width: Option<u32>,
+    /// "unified" | "split"
+    #[serde(default)]
+    pub diff_layout: Option<String>,
+    #[serde(default)]
+    pub skip_hunk_discard_confirm: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -67,6 +84,9 @@ pub struct Workspace {
     pub notify_needs_input: bool,
     #[serde(default = "default_true")]
     pub notify_finished: bool,
+    /// Git tab preferences; None until the user changes something.
+    #[serde(default)]
+    pub git_view: Option<GitViewPrefs>,
 }
 
 fn default_true() -> bool {
@@ -173,6 +193,7 @@ mod tests {
             color: None,
             notify_needs_input: true,
             notify_finished: true,
+            git_view: None,
         }
     }
 
@@ -327,9 +348,38 @@ mod tests {
                 "mainSessionId": null,
                 "color": null,
                 "notifyNeedsInput": true,
-                "notifyFinished": true
+                "notifyFinished": true,
+                "gitView": null
             })
         );
+    }
+
+    #[test]
+    fn git_view_prefs_roundtrip_and_default_to_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.git_view = Some(GitViewPrefs {
+            nav_width: Some(180),
+            list_width: None,
+            diff_layout: Some("split".to_string()),
+            skip_hunk_discard_confirm: true,
+        });
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().workspaces[0].git_view, None);
     }
 
     #[test]

@@ -98,6 +98,7 @@ import {
   setWorkspaceColor,
   setNotifyFlag,
   setAgentField,
+  setGitViewPrefs,
 } from "./layoutState";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
@@ -147,6 +148,27 @@ beforeEach(() => {
     restoredSessionIds: new Set(),
     fileTabsById: {},
     boardTabsById: {},
+  });
+});
+
+describe("setGitViewPrefs", () => {
+  it("merges the patch into the workspace's gitView and persists", async () => {
+    setState([{ ...ws("ws-1", []), gitView: { diffLayout: "unified", navWidth: 160 } }], "ws-1", null);
+
+    await setGitViewPrefs("ws-1", { diffLayout: "split" });
+
+    expect(get(layoutState).workspaces[0].gitView).toEqual({ diffLayout: "split", navWidth: 160 });
+    const persisted = vi.mocked(backend.setWorkspacesState).mock.calls.at(-1)![0];
+    expect(persisted.find((w: Workspace) => w.id === "ws-1")?.gitView).toEqual({ diffLayout: "split", navWidth: 160 });
+  });
+
+  it("creates gitView when the workspace has none and leaves other workspaces alone", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+
+    await setGitViewPrefs("ws-2", { skipHunkDiscardConfirm: true });
+
+    expect(get(layoutState).workspaces[0].gitView).toBeUndefined();
+    expect(get(layoutState).workspaces[1].gitView).toEqual({ skipHunkDiscardConfirm: true });
   });
 });
 

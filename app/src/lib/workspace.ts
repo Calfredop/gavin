@@ -8,6 +8,13 @@ export interface Page {
   focusedSessionId: string | null;
 }
 
+export interface GitViewPrefs {
+  navWidth?: number;
+  listWidth?: number;
+  diffLayout?: "unified" | "split";
+  skipHunkDiscardConfirm?: boolean;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -25,6 +32,8 @@ export interface Workspace {
   /// Per-workspace notification toggles (D38); absent means on.
   notifyNeedsInput?: boolean;
   notifyFinished?: boolean;
+  /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
+  gitView?: GitViewPrefs;
 }
 
 export interface WorkspacesData {
