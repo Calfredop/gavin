@@ -5,6 +5,7 @@
   import IconButton from "./ui/IconButton.svelte";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
+  import { boardSelection } from "./boardSelection";
   import { tooltip } from "./tooltip";
   import { layoutState } from "./layoutState";
   import { findSessionLocation } from "./workspace";
@@ -66,6 +67,11 @@
   }
   const runnable = $derived(card.kind !== "note" && binding === null && (onRun !== null || onSendToAgent !== null));
 
+  // Shift+click multi-select (boardSelection.ts). Read straight from the
+  // app-wide store rather than threaded down as a prop: every board
+  // surface renders the same selection, and so does the drag preview.
+  const selected = $derived($boardSelection.includes(card.id));
+
   let expanded = $state(false);
 
   // Auto-expand while this plan is the drag's nest target (spec §2) --
@@ -103,6 +109,7 @@
 <div
   class="card kind-{card.kind}"
   class:deletable={onDelete !== null}
+  class:selected
   class:nested
   class:session-working={sessionDot?.cls === "status-working"}
   class:session-waiting={sessionDot?.cls === "status-waiting"}
@@ -282,6 +289,15 @@
   .card:hover {
     border-color: var(--border-strong);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+  /* A ring rather than a border swap: the kind borders (dashed task,
+     dashed plan) still have to read through the selection. */
+  .card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  .card.selected:hover {
+    box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .card.nested {
     margin-bottom: 4px;

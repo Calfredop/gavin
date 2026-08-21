@@ -35,17 +35,17 @@ function makeColumns(): MeasuredColumn[] {
 
 function makeCallbacks(overrides: Partial<DragCallbacks> = {}): DragCallbacks & {
   commits: (ActiveDrag & { target: { columnId: string; index: number; nest?: string } })[];
-  clicks: [string, string][];
+  clicks: [string, string, boolean][];
 } {
   const commits: (ActiveDrag & { target: { columnId: string; index: number; nest?: string } })[] = [];
-  const clicks: [string, string][] = [];
+  const clicks: [string, string, boolean][] = [];
   return {
     commits,
     clicks,
     measure: () => makeColumns(),
     measureColumns: () => [{ id: "col2", rect: r(252, 0, 240, 400) }],
     commit: (d) => commits.push(d),
-    click: (kind, id) => clicks.push([kind, id]),
+    click: (kind, id, mods) => clicks.push([kind, id, mods.shift]),
     ...overrides,
   };
 }
@@ -56,8 +56,8 @@ beforeEach(() => {
 
 // A card drag candidate for card "A" grabbed at (10, 10) inside its
 // rect at (0, 0, 240, 50), source col1 index 0, free-standing.
-function grabA(cbs: DragCallbacks, sourceNest: string | null = null): void {
-  beginCandidate("plan", "A", "col1", 0, sourceNest, { x: 10, y: 10 }, r(0, 0, 240, 50), cbs);
+function grabA(cbs: DragCallbacks, sourceNest: string | null = null, shift = false): void {
+  beginCandidate("plan", "A", "col1", 0, sourceNest, { x: 10, y: 10 }, r(0, 0, 240, 50), cbs, shift);
 }
 
 describe("click vs drag", () => {
@@ -67,7 +67,7 @@ describe("click vs drag", () => {
     movePointer({ x: 12, y: 12 });
     expect(get(dragState)).toBeNull();
     endPointer();
-    expect(cbs.clicks).toEqual([["plan", "A"]]);
+    expect(cbs.clicks).toEqual([["plan", "A", false]]);
     expect(cbs.commits).toEqual([]);
   });
 
@@ -84,6 +84,30 @@ describe("click vs drag", () => {
     expect(d?.sourceNest).toBeNull();
     expect(d?.grabOffset).toEqual({ x: 10, y: 10 });
     expect(d?.size).toEqual({ width: 240, height: 50 });
+  });
+
+  // Shift+click is the multi-select gesture: it must never turn into a
+  // drag, or picking a card would fling it into another column.
+  it("a shift grab never activates a drag, however far it moves", () => {
+    const cbs = makeCallbacks();
+    grabA(cbs, null, true);
+    movePointer({ x: 300, y: 300 });
+    expect(get(dragState)).toBeNull();
+    endPointer();
+    expect(cbs.commits).toEqual([]);
+    expect(cbs.clicks).toEqual([["plan", "A", true]]);
+  });
+
+  it("reports the shift modifier with the click so the board can select instead of open", () => {
+    const cbs = makeCallbacks();
+    grabA(cbs, null, true);
+    endPointer();
+    grabA(cbs);
+    endPointer();
+    expect(cbs.clicks).toEqual([
+      ["plan", "A", true],
+      ["plan", "A", false],
+    ]);
   });
 });
 
@@ -208,7 +232,7 @@ describe("drop", () => {
     endPointer();
     grabA(cbs);
     endPointer();
-    expect(cbs.clicks).toEqual([["plan", "A"]]);
+    expect(cbs.clicks).toEqual([["plan", "A", false]]);
   });
 });
 

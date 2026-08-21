@@ -24,6 +24,7 @@ import {
   type ActiveDrag,
   type DragKind,
   type DragCallbacks,
+  type ClickModifiers,
 } from "./kanbanDrag";
 import {
   autoScrollVelocity,
@@ -43,7 +44,7 @@ export interface BoardDragOptions {
   root: HTMLElement; // also the horizontal scroll container of the column strip
   allowColumns: boolean; // column dragging (hub only)
   commit: (drag: ActiveDrag & { target: DropTarget }) => void;
-  click: (kind: DragKind, id: string) => void;
+  click: (kind: DragKind, id: string, mods: ClickModifiers) => void;
 }
 
 function toRect(el: Element): { left: number; top: number; width: number; height: number } {
@@ -131,6 +132,9 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
     let sourceIndex: number;
     let sourceNest: string | null = null;
     let nestCtx: string | null = null;
+    // Shift is multi-select, and only cards are selectable -- a shifted
+    // column-header grab is still an ordinary column drag.
+    const shift = planEl !== null && e.shiftKey;
 
     if (planEl) {
       kind = "plan";
@@ -180,7 +184,7 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
       click: opts.click,
     };
     activeDragRoot.set(root);
-    beginCandidate(kind, id, sourceColumnId, sourceIndex, sourceNest, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
+    beginCandidate(kind, id, sourceColumnId, sourceIndex, sourceNest, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs, shift);
     // The gesture is tracked on WINDOW listeners, not on root: the
     // dragged card's wrapper leaves the DOM at activation, and WKWebView
     // then drops the pointerup instead of retargeting it (Chromium

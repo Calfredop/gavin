@@ -15,6 +15,8 @@
   import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
+  import BoardSelectionBar from "./BoardSelectionBar.svelte";
+  import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import type { ActiveDrag } from "./kanbanDrag";
   import type { DropTarget } from "./pointerDrag";
 
@@ -145,8 +147,17 @@
       root: columnsEl,
       allowColumns: false,
       commit: handleDragCommit,
-      click: (kind, id) => {
-        if (kind === "plan") openPlanPath = id;
+      click: (kind, id, mods) => {
+        if (kind !== "plan") return;
+        // Shift picks cards for a batch run; a plain click still opens
+        // the card, and drops any standing selection the way a file
+        // list does.
+        if (mods.shift) {
+          toggleCardSelected(id);
+        } else {
+          clearBoardSelection();
+          openPlanPath = id;
+        }
       },
     });
   });
@@ -202,6 +213,7 @@
         <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
       {/each}
     </div>
+    <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
   {/if}
   {#if pendingDelete}

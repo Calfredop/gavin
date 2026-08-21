@@ -15,6 +15,8 @@
   import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
+  import BoardSelectionBar from "./BoardSelectionBar.svelte";
+  import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
   import { flip } from "svelte/animate";
   import { tooltip } from "./tooltip";
@@ -143,8 +145,17 @@
       root: boardEl,
       allowColumns: true,
       commit: handleDragCommit,
-      click: (kind, id) => {
-        if (kind === "plan") openPlanPath = id;
+      click: (kind, id, mods) => {
+        if (kind !== "plan") return;
+        // Shift picks cards for a batch run; a plain click still opens
+        // the card, and drops any standing selection the way a file
+        // list does.
+        if (mods.shift) {
+          toggleCardSelected(id);
+        } else {
+          clearBoardSelection();
+          openPlanPath = id;
+        }
       },
     });
   });
@@ -247,6 +258,7 @@
       <button type="button" class="add-column" use:tooltip={"Add a column — its name becomes a status"} onclick={() => (addingColumn = true)}>+ Add column</button>
     {/if}
   </div>
+  <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
   {#if pendingDelete}
     <ConfirmPrompt
