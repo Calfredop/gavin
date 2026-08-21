@@ -4,6 +4,7 @@
   import OrchestrationRail from "./OrchestrationRail.svelte";
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
+  import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
   import { attachOrchestrationDrag } from "./orchestrationDragGlue";
   import Modal from "./Modal.svelte";
   import { gavinTrees } from "./gavinState";
@@ -146,7 +147,8 @@
       No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
     </p>
   {:else}
-    <div class="grid" bind:this={gridEl}>
+    <div class="body">
+      <div class="grid" bind:this={gridEl}>
       {#each rails as rail (rail.id)}
         <OrchestrationRail
           {rail}
@@ -164,6 +166,12 @@
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
         />
       {/each}
+      </div>
+      <OrchestrationDrawer
+        {available}
+        targetRailId={rails[0]?.id ?? null}
+        onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
+      />
     </div>
   {/if}
 </div>
@@ -260,12 +268,17 @@
     color: var(--text-muted);
     font-size: 13px;
   }
+  .body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
   /* Rails are grid columns and stage index is the row track, so a
      horizontal band across the grid reads as roughly concurrent
      (orchestration spec O8). */
   .grid {
     flex: 1;
-    min-height: 0;
+    min-width: 0;
     display: grid;
     grid-auto-flow: column;
     grid-auto-columns: minmax(280px, 1fr);
