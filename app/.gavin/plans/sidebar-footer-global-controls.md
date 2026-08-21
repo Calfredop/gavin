@@ -1,6 +1,6 @@
 ---
 title: Sidebar footer for global controls
-status: In Progress
+status: Done
 priority: medium
 labels: ui
 ---
@@ -15,7 +15,7 @@ per-workspace Settings hub view, with a hint apologising for it.
 - [x] `.sidebar-footer` with an inert Settings row
 - [x] Theme segmented control — Sun / Moon / Monitor, `aria-pressed`
 - [x] Remove the Appearance section from `SettingsHubView.svelte`
-- [ ] Verify both themes; `npm test` + `svelte-check` green
+- [x] Verify both themes; `npm test` + `svelte-check` green
 
 Built on SP1's tier-2 tokens. The three icon buttons are shaped to fold
 into SP2's `IconButton` mechanically.

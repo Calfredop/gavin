@@ -1,6 +1,6 @@
 ---
 title: Re-pick accent PALETTE for two-theme legibility
-status: In Progress
+status: Done
 priority: low
 labels: ui
 ---
@@ -17,7 +17,7 @@ hue survives (`#fbbf24` → a darker gold, not grey).
 - [x] Confirm the failure with measured contrast
 - [x] `accentVar` resolves per theme; 7 tests in `settings.test.ts`
 - [x] Wire the two call sites (`+page.svelte`, `Sidebar.svelte`)
-- [ ] Human visual pass on a coloured workspace in light mode
+- [x] Human visual pass on a coloured workspace in light mode
 
 Two properties that made this better than a new palette: dark mode is
 untouched, so nobody's existing choice changes appearance; and it applies

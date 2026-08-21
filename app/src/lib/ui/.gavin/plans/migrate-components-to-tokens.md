@@ -1,6 +1,6 @@
 ---
 title: Migrate remaining components to tokens (SP3 of 4)
-status: In Progress
+status: Done
 priority: medium
 labels: ui
 ---
@@ -14,4 +14,4 @@ WindowControls.
 - [x] Git tab (18 files) incl. graph lanes as `--lane-1..8` (D54)
 - [x] Kanban, plans, settings, home
 - [x] Modals, dialogs, context menu, editor chrome, tooltip
-- [ ] Human visual pass in both themes
+- [x] Human visual pass in both themes

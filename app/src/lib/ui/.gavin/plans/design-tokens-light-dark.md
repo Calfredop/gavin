@@ -1,6 +1,6 @@
 ---
 title: Design tokens + light/dark (SP1 of 4)
-status: In Progress
+status: Done
 priority: high
 labels: ui
 ---

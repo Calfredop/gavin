@@ -1,6 +1,6 @@
 ---
 title: IconButton primitive (SP2 of 4)
-status: In Progress
+status: Done
 priority: medium
 labels: ui
 ---
@@ -16,7 +16,7 @@ variables the variant rules read rather than a variant x tone matrix.
 - [x] PlanTree, GitWorktreeSwitcher, BoardCard, KanbanColumn
 - [x] Radii unified: was 3 / 6 / 10 / none, now one
 - [x] Disabled unified: was 0.4 / 0.45 / 0.5, now one
-- [ ] Human visual pass
+- [x] Human visual pass
 
 **15 left as raw `<button>` on purpose**, not missed:
 - WindowControls (4) — fixed-colour platform circles, not icon buttons
