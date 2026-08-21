@@ -36,6 +36,7 @@ because of a detected conflict.
 | O10 | The scheduler is a **pure function** over (plan, run state, board, tree, worktrees) returning actions; the reactive layer only executes them. |
 | O11 | Plan is replaced **wholesale** (like `replace_board`); run state is keyed by step id and survives. Deleting a **running** step is refused. |
 | O12 | Per-worktree **dirty file paths** are evidence for the agent only. The app's own conflict detection never needs them. |
+| O13 | **Separate worktrees are never a conflict**, same rail or different rails — sharing a checkout is the whole criterion. There is no step-level worktree, so a parallel stage always shares its rail's checkout; the box flags it and offers **Make sequential**. |
 
 ---
 
@@ -310,7 +311,7 @@ mount tick is just the first tick.
 
 ```ts
 type Conflict =
-  | { kind: "same-worktree";  severity: "live" | "potential"; stepIds: string[]; worktreePath: string }
+  | { kind: "same-worktree";  scope: "stage" | "rails"; severity: "live" | "potential"; stepIds: string[]; worktreePath: string }
   | { kind: "duplicate-card"; severity: "potential"; stepIds: string[]; cardPath: string }
   | { kind: "worktree-missing"; severity: "potential"; railId: string; worktreePath: string }
   | { kind: "rail-unbound";   severity: "potential"; railId: string }
@@ -321,20 +322,39 @@ type Conflict =
 state** (O12) — dirty paths exist only as evidence for the agent (§8.1).
 
 **`same-worktree`** — the structural rule, and the only one that needed
-thought. Two not-`done` steps conflict when they share an *effective*
-worktree path (`rail.worktreePath ?? card.contextFolder`) **and** they could
+thought. **Sharing a checkout is the whole criterion: two steps on separate
+worktrees are never a conflict, whether they sit on the same rail or on
+different ones.** Worktree isolation is the answer, and where it holds the
+tab stays quiet.
+
+The checkout a step runs in is `rail.worktreePath ?? <the workspace root>` —
+deliberately *not* the cwd fallback `nextActions` uses. A step launched from
+an unbound rail starts in its card's `contextFolder`, but that folder is a
+subdirectory of the root checkout, not a checkout of its own; treating it as
+one would report isolation that does not exist. Two functions, two
+questions: `effectiveWorktree` answers "where does this agent start", and
+`conflictCheckout` answers "which working tree does it edit".
+
+Two not-`done` steps conflict when they share that checkout **and** could
 overlap in time:
 
-- Same rail: only steps in the **same stage**. Different stages of one rail
-  are strictly sequential and can never overlap, so they are not a conflict.
-- Different rails: **any** pair, because rails advance independently and
-  gavin makes no ordering promise between them.
+- **Same rail: only steps in the same stage** (`scope: "stage"`). Different
+  stages of one rail are strictly sequential and can never overlap.
+- **Different rails: any pair** (`scope: "rails"`), because rails advance
+  independently and gavin makes no ordering promise between them.
 
-Severity is `live` when both steps are currently `running`, `potential`
-otherwise. Note that a parallel stage is *by construction* a same-worktree
-conflict — that is correct and intended: the human or agent deliberately put
-two agents in one checkout, and the tab says so out loud rather than
-pretending it is safe.
+Severity is `live` when at least two of the group are actually running,
+`potential` otherwise — a single running step cannot collide with anything
+by itself.
+
+A parallel stage within one rail is therefore *always* a `scope: "stage"`
+conflict: its steps share the rail's checkout by construction, and there is
+no step-level worktree to escape into (D-O13). That is intended, not a gap.
+The tab says so out loud and offers the repair — **Make sequential**, which
+splits the stage into consecutive single-step stages. Running two agents in
+one working tree is a real hazard; the honest options are "put them on
+different rails with different worktrees" or "run them one after another",
+and the box names the second one.
 
 **`rail-unbound`** fires only for a rail that has steps; an empty rail being
 unbound is just a rail you have not finished setting up.
@@ -419,8 +439,10 @@ Pinned under the header, collapsible, and **absent entirely** when there are
 none. Header counts (`⚠ 3 conflicts`). Each row: number badge, severity dot,
 one-line description naming the participating steps and the shared resource,
 and for `declared` the agent's note verbatim with an "agent note" tag. Rows
-whose cause is a binding carry the fix inline — `Bind worktree…` — so the
-box repairs rather than lectures.
+carry their repair inline, so the box fixes rather than lectures:
+`Bind worktree…` for the two rail-binding kinds, and **`Make sequential`**
+for a `scope: "stage"` conflict, which rewrites that stage into consecutive
+single-step stages in order, preserving step ids so run state survives.
 
 Hovering a row highlights its chips and dims the rest; hovering a chip
 highlights its rows. Clicking a row scrolls its first chip into view.
