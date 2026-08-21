@@ -2,8 +2,16 @@
   import { Play, Pause, RotateCcw, Trash2, Plus } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
-  import type { CardEntry, Orchestration, Rail } from "./orchestration";
-  import { railStateOf, stepStateOf } from "./orchestration";
+  import type { CardEntry, NumberedConflict, Orchestration, Rail } from "./orchestration";
+  import {
+    railStateOf,
+    stepStateOf,
+    numbersForStep,
+    numbersForRail,
+    severityForStep,
+    severityForRail,
+  } from "./orchestration";
+  import { highlightedConflict } from "./orchestrationState";
 
   interface Props {
     rail: Rail;
@@ -12,6 +20,7 @@
     /// Null when the board has no columns at all — nothing can complete,
     /// and the header says so rather than looking hung.
     doneColumnName: string | null;
+    numbered: NumberedConflict[];
     onStart: () => void;
     onPause: () => void;
     onReset: () => void;
@@ -26,6 +35,7 @@
     orch,
     cards,
     doneColumnName,
+    numbered,
     onStart,
     onPause,
     onReset,
@@ -38,6 +48,10 @@
 
   const state = $derived(railStateOf(orch, rail.id));
   const stages = $derived([...rail.stages].sort((a, b) => a.position - b.position));
+  // A rail-level conflict (missing/unbound worktree) badges the HEADER,
+  // not any chip -- the cause is the binding, not a step.
+  const railBadges = $derived(numbersForRail(numbered, rail.id));
+  const railSeverity = $derived(severityForRail(numbered, rail.id));
 
   function runOf(id: string) {
     return orch.stepRuns.find((r) => r.stepId === id) ?? null;
@@ -48,6 +62,15 @@
   <header>
     <div class="name-row">
       <span class="name">{rail.name}</span>
+      {#each railBadges as n (n)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <span
+          class="rail-badge {railSeverity}"
+          class:lit={$highlightedConflict === n}
+          onmouseenter={() => highlightedConflict.set(n)}
+          onmouseleave={() => highlightedConflict.set(null)}
+        >{n}</span>
+      {/each}
       <span class="state {state}">{state}</span>
       {#if state === "running"}
         <IconButton icon={Pause} label="Pause" onclick={onPause} />
@@ -98,6 +121,8 @@
             entry={cards.get(step.cardPath)}
             state={stepStateOf(orch, step.id)}
             reason={runOf(step.id)?.reason ?? null}
+            badges={numbersForStep(numbered, step.id)}
+            severity={severityForStep(numbered, step.id)}
             onRetry={() => onRetryStep(step.id)}
             onRemove={() => onRemoveStep(step.id)}
           />
@@ -153,6 +178,26 @@
   }
   .state.paused {
     color: var(--warning-text);
+  }
+  .rail-badge {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid var(--border-warning);
+    color: var(--warning-text);
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+  }
+  .rail-badge.live {
+    border-color: var(--border-danger);
+    color: var(--danger-text);
+  }
+  .rail-badge.lit {
+    background: var(--surface-overlay);
   }
   .bind {
     display: flex;

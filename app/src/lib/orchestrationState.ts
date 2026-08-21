@@ -44,6 +44,11 @@ export function dismissSaveError(workspaceId: string): void {
   });
 }
 
+/// Which conflict badge is hovered, app-wide. Hovering a box row lights
+/// its chips; hovering a chip lights its rows. Ephemeral UI state, never
+/// persisted -- which is why it lives here and not in the plan.
+export const highlightedConflict = writable<number | null>(null);
+
 const pendingSaves = new Map<string, number>();
 
 export async function fetchOrchestration(workspaceId: string): Promise<void> {
@@ -323,6 +328,7 @@ export function __resetForTesting(): void {
   saveErrors.set({});
   pendingSaves.clear();
   ticking.clear();
+  highlightedConflict.set(null);
 }
 
 // ---- Plan-edit actions -----------------------------------------------------

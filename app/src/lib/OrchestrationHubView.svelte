@@ -1,12 +1,13 @@
 <script lang="ts">
   import { Plus } from "@lucide/svelte";
   import OrchestrationRail from "./OrchestrationRail.svelte";
+  import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import Modal from "./Modal.svelte";
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
-  import { ensureGitView, refresh as refreshGit } from "./gitState";
+  import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { layoutState } from "./layoutState";
-  import { cardIndex, doneColumn } from "./orchestration";
+  import { cardIndex, doneColumn, detectConflicts, numberConflicts } from "./orchestration";
   import {
     orchestrations,
     fetchOrchestration,
@@ -24,6 +25,7 @@
     resetRail,
     retryStep,
     tick,
+    makeStageSequentialAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -39,8 +41,16 @@
   const cards = $derived(cardIndex(tree));
   const doneName = $derived(board ? (doneColumn(board)?.name ?? null) : null);
   const rails = $derived([...(orch?.rails ?? [])].sort((a, b) => a.position - b.position));
+  // null, not [], while the refs snapshot is still loading -- unknown
+  // must not read as "every worktree is gone".
+  const worktrees = $derived($gitStore[workspaceId]?.refs?.worktrees ?? null);
+  const numbered = $derived(orch ? numberConflicts(detectConflicts(orch, tree, worktrees)) : []);
 
   let picking = $state<string | null>(null);
+  // Written by the conflicts box's inline fix; SP2 Task 9 turns it into
+  // the real binding dialog. Never read during render until then.
+  let binding = $state<string | null>(null);
+  void binding;
 
   // The cards a rail can take on: every runnable card not already on one.
   const placed = $derived(
@@ -91,6 +101,16 @@
     </div>
   {/if}
 
+  {#if orch}
+    <OrchestrationConflicts
+      {numbered}
+      {cards}
+      {orch}
+      onBindWorktree={(railId) => (binding = railId)}
+      onMakeSequential={(stageId) => void makeStageSequentialAction(workspaceId, stageId)}
+    />
+  {/if}
+
   {#if !orch}
     <p class="empty">Loading…</p>
   {:else if rails.length === 0}
@@ -105,6 +125,7 @@
           {orch}
           {cards}
           doneColumnName={doneName}
+          {numbered}
           onStart={() => onStart(rail.id)}
           onPause={() => void pauseRail(workspaceId, rail.id)}
           onReset={() => void resetRail(workspaceId, rail.id)}
