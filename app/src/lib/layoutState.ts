@@ -991,6 +991,40 @@ export async function createPage(
 // "use the default"), converted to undefined here -- the one place that
 // conversion happens, so every caller (create-new, re-launch) can just
 // pass a SessionLink's fields straight through.
+/// createSessionForCard, but landing on a NAMED page rather than the
+/// workspace's active one -- what an orchestration rail needs, since a
+/// rail binds to a page (orchestration spec §4.3). A null or unknown
+/// pageId falls back to createSessionForCard's behavior, which is the
+/// Agents-page posture.
+export async function createSessionOnPage(
+  workspaceId: string,
+  pageId: string | null,
+  cwd: string,
+  command: string | null
+): Promise<string | null> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  const page = pageId ? ws?.pages.find((p) => p.id === pageId) : undefined;
+  if (!ws || !page) return createSessionForCard(workspaceId, cwd, command);
+
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(cwd || undefined, command ?? undefined);
+  } catch (e) {
+    setError(String(e));
+    return null;
+  }
+  const anchor = layout.allSessionIds(page.layout)[0];
+  const newTree = anchor
+    ? layout.addTab(page.layout, anchor, sessionId)
+    : layout.presetSingle(sessionId);
+  const withTree = workspace.updatePageLayout(state, workspaceId, page.id, newTree);
+  const data = workspace.setPageFocus(withTree, workspaceId, page.id, sessionId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  return sessionId;
+}
+
 export async function createSessionForCard(
   workspaceId: string,
   cwd: string,

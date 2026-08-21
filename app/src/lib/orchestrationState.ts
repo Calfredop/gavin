@@ -7,7 +7,20 @@
 
 import { writable, get } from "svelte/store";
 import * as backend from "./backend";
-import type { Orchestration, RailState, StepState } from "./orchestration";
+import {
+  nextActions,
+  firstUnfinishedStageId,
+  cardIndex,
+  doneColumn,
+} from "./orchestration";
+import type { Action, Orchestration, Rail, RailState, StepState } from "./orchestration";
+import { kanbanState, linkCardSessionAction } from "./kanbanState";
+import { gavinTrees, patchPlanField } from "./gavinState";
+import { gitStore } from "./gitState";
+import { layoutState, resolvedAgentFor, createSessionOnPage } from "./layoutState";
+import { allSessionIds } from "./layout";
+import { composeTaskPrompt, composePlanPrompt, buildRunCommand, runStatusNeeded } from "./cardRun";
+import { stripFrontmatter } from "./planChecklist";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -137,9 +150,167 @@ export function setStepRunAction(
   );
 }
 
+function railOwning(orch: Orchestration, stepId: string): Rail | null {
+  return orch.rails.find((r) => r.stages.some((s) => s.steps.some((t) => t.id === stepId))) ?? null;
+}
+
+export async function startRail(workspaceId: string, railId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch?.rails.find((r) => r.id === railId);
+  if (!rail) return;
+  const stageId = firstUnfinishedStageId(rail, orch);
+  if (!stageId) return;
+  await setRailRunAction(workspaceId, railId, "running", stageId);
+  await tick(workspaceId);
+}
+
+export async function pauseRail(workspaceId: string, railId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const current = orch?.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
+  await setRailRunAction(workspaceId, railId, "paused", current);
+}
+
+export async function resumeRail(workspaceId: string, railId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch?.rails.find((r) => r.id === railId);
+  if (!rail) return;
+  const current = orch.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
+  await setRailRunAction(workspaceId, railId, "running", current ?? firstUnfinishedStageId(rail, orch));
+  await tick(workspaceId);
+}
+
+/// Clears run state for the rail. Never touches card statuses -- the
+/// board is the human's record, not the scheduler's scratch space.
+export async function resetRail(workspaceId: string, railId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch?.rails.find((r) => r.id === railId);
+  if (!rail) return;
+  for (const stage of rail.stages) {
+    for (const step of stage.steps) {
+      await setStepRunAction(workspaceId, step.id, "pending", null, null);
+    }
+  }
+  await setRailRunAction(workspaceId, railId, "idle", null);
+}
+
+/// A stalled step returns to pending with its reason cleared; the next
+/// tick re-reads the card and re-checks the worktree rather than
+/// replaying the old command (spec §6.2).
+export async function retryStep(workspaceId: string, stepId: string): Promise<void> {
+  await setStepRunAction(workspaceId, stepId, "pending", null, null);
+  await tick(workspaceId);
+}
+
+/// Deliberately the EXISTING card-run path, so the board and the tab can
+/// never disagree about what is running (spec §4.3).
+async function executeLaunch(workspaceId: string, stepId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = railOwning(orch, stepId);
+  const step = rail?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId);
+  if (!rail || !step) return;
+
+  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
+  if (!entry) {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
+    return;
+  }
+
+  let prompt: string;
+  if (entry.plan.kind === "task") {
+    const file = await backend.readFileForViewer(step.cardPath);
+    if (!file.exists) {
+      await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
+      return;
+    }
+    prompt = composeTaskPrompt(step.cardPath, entry.plan.title, stripFrontmatter(file.content).trim());
+  } else {
+    prompt = composePlanPrompt(step.cardPath);
+  }
+
+  const command = buildRunCommand(resolvedAgentFor(workspaceId).command, prompt);
+  const cwd = rail.worktreePath ?? entry.contextFolder;
+  const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
+  if (!sessionId) {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
+    return;
+  }
+
+  await linkCardSessionAction(workspaceId, { path: step.cardPath, sessionId, cwd, command });
+  await setStepRunAction(workspaceId, stepId, "running", sessionId, null);
+  if (runStatusNeeded(entry.plan.status)) {
+    try {
+      await backend.setPlanFrontmatterField(step.cardPath, "status", "In Progress");
+      patchPlanField(workspaceId, step.cardPath, "status", "In Progress");
+    } catch {
+      // The agent is running; a failed status write is not worth
+      // stalling the step over. The card's own agent will set it.
+    }
+  }
+}
+
+export async function executeActions(workspaceId: string, actions: Action[]): Promise<void> {
+  for (const action of actions) {
+    const orch = get(orchestrations)[workspaceId];
+    if (!orch) return;
+    if (action.kind === "launch") {
+      await executeLaunch(workspaceId, action.stepId);
+    } else if (action.kind === "markDone") {
+      const sessionId = orch.stepRuns.find((r) => r.stepId === action.stepId)?.sessionId ?? null;
+      // The session id is kept deliberately: the step is finished, but
+      // its transcript stays reachable from the chip.
+      await setStepRunAction(workspaceId, action.stepId, "done", sessionId, null);
+    } else if (action.kind === "stall") {
+      await setStepRunAction(workspaceId, action.stepId, "stalled", null, action.reason);
+      const rail = railOwning(orch, action.stepId);
+      if (rail) {
+        const current = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
+        await setRailRunAction(workspaceId, rail.id, "paused", current);
+      }
+    } else if (action.kind === "advance") {
+      await setRailRunAction(workspaceId, action.railId, "running", action.stageId);
+    } else {
+      await setRailRunAction(workspaceId, action.railId, "idle", null);
+    }
+  }
+}
+
+/// The board's done column name, for the rail header's "nothing can
+/// complete" warning. Null when the board has no columns at all.
+export function doneColumnName(workspaceId: string): string | null {
+  const board = get(kanbanState)[workspaceId];
+  return board ? (doneColumn(board)?.name ?? null) : null;
+}
+
+// One tick at a time per workspace: executing an action mutates the very
+// state the next nextActions call reads, so overlapping ticks would
+// double-launch.
+const ticking = new Set<string>();
+
+export async function tick(workspaceId: string): Promise<void> {
+  if (ticking.has(workspaceId)) return;
+  ticking.add(workspaceId);
+  try {
+    const orch = get(orchestrations)[workspaceId];
+    const board = get(kanbanState)[workspaceId];
+    if (!orch || !board) return;
+    const tree = get(gavinTrees)[workspaceId];
+    // null, not [] -- an unloaded refs snapshot must not look like "every
+    // worktree is gone" and stall every bound rail on a cold start.
+    const worktrees = get(gitStore)[workspaceId]?.refs?.worktrees ?? null;
+    const live = new Set<string>();
+    for (const ws of get(layoutState).workspaces) {
+      for (const page of ws.pages) for (const id of allSessionIds(page.layout)) live.add(id);
+    }
+    await executeActions(workspaceId, nextActions(orch, board, tree, worktrees, live));
+  } finally {
+    ticking.delete(workspaceId);
+  }
+}
+
 /** @internal test-only reset for module-level state */
 export function __resetForTesting(): void {
   orchestrations.set({});
   saveErrors.set({});
   pendingSaves.clear();
+  ticking.clear();
 }
