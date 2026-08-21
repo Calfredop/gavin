@@ -18,7 +18,7 @@
   let { entry, area, selected, disabled, onSelect, onToggle, onDiscard, readonly = false }: Props = $props();
 
   const parts = $derived(splitPath(entry.path));
-  const toggleLabel = $derived(area === "unstaged" ? "Stage" : "Unstage");
+  const toggleLabel = $derived(entry.status === "U" ? "Mark resolved" : area === "unstaged" ? "Stage" : "Unstage");
 </script>
 
 <!-- Keyboard handling lives on the enclosing listbox (GitChanges.svelte):
@@ -41,7 +41,7 @@
         onclick={(e) => { e.stopPropagation(); onDiscard?.(); }}
       >🗑</button>
     {/if}
-    <button type="button" use:tooltip={toggleLabel + " file"} {disabled} onclick={(e) => { e.stopPropagation(); onToggle(); }}>
+    <button type="button" use:tooltip={entry.status === "U" ? "Mark resolved (refused while conflict markers remain)" : toggleLabel + " file"} {disabled} onclick={(e) => { e.stopPropagation(); onToggle(); }}>
       {area === "unstaged" ? "+" : "−"}
     </button>
   </span>
