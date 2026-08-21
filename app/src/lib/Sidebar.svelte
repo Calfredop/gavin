@@ -14,7 +14,17 @@
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   import { presetSingle, allSessionIds } from "./layout";
-  import { ChevronRight, ChevronDown, Plus, X, House } from "@lucide/svelte";
+  import { ChevronRight, ChevronDown, Plus, X, House, Sun, Moon, Monitor, Settings } from "@lucide/svelte";
+  import { themeState } from "./ui/themeState.svelte";
+  import type { ThemePref } from "./ui/theme";
+
+  /// System first, matching the default -- and matching the order the
+  /// three states read in: follow the OS, or override it either way.
+  const THEME_OPTIONS: { pref: ThemePref; label: string; icon: typeof Sun }[] = [
+    { pref: "system", label: "Follow system", icon: Monitor },
+    { pref: "light", label: "Light", icon: Sun },
+    { pref: "dark", label: "Dark", icon: Moon },
+  ];
   import { sessionLabel } from "./paths";
   import { HUB_VIEWS } from "./workspaceViews";
   import {
@@ -667,6 +677,30 @@
       </div>
     {/each}
   </div>
+  <div class="sidebar-footer">
+    <button class="footer-row" disabled title="Coming soon">
+      <Settings size={12} />
+      <span>Settings</span>
+    </button>
+    <div class="footer-row theme-row">
+      <span>Theme</span>
+      <div class="theme-toggle">
+        {#each THEME_OPTIONS as opt (opt.pref)}
+          <button
+            type="button"
+            class="theme-btn"
+            class:active={themeState.pref === opt.pref}
+            aria-pressed={themeState.pref === opt.pref}
+            aria-label={opt.label}
+            title={opt.label}
+            onclick={() => void themeState.setPref(opt.pref)}
+          >
+            <opt.icon size={12} />
+          </button>
+        {/each}
+      </div>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -679,10 +713,21 @@
     font-size: 0.8em;
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
+    /* The scroll lives on .workspace-list, not here: a footer on a
+       scrolling sidebar would slide away with the content. Pinning it
+       pins the header too, which it wasn't before. */
+    overflow: hidden;
     border-right: 1px solid var(--border);
   }
+  .workspace-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
   .sidebar-header {
+    /* Pinned now that .sidebar no longer scrolls -- without this it can
+       shrink when the workspace list is long. */
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -896,5 +941,69 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-muted);
+  }
+  .sidebar-footer {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    padding: 4px 0;
+  }
+  .footer-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: inherit;
+    text-align: left;
+  }
+  button.footer-row {
+    cursor: pointer;
+  }
+  button.footer-row:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+  button.footer-row:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .theme-row {
+    justify-content: space-between;
+  }
+  .theme-toggle {
+    display: flex;
+    gap: 2px;
+    /* One inset well holding all three, so the active segment reads as a
+       selection rather than three unrelated buttons. */
+    background: var(--surface-sunken);
+    border-radius: 4px;
+    padding: 1px;
+  }
+  .theme-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 5px;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: var(--text-subtle);
+    cursor: pointer;
+  }
+  .theme-btn:hover {
+    color: var(--text);
+  }
+  .theme-btn.active {
+    background: var(--surface-selected);
+    color: var(--text);
+  }
+  .theme-btn:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: -1px;
   }
 </style>
