@@ -84,12 +84,16 @@
 /* Light borders step INWARD rather than mirroring the dark ones: an
    equal-contrast hairline reads much heavier on a light surface. */
 :root[data-theme="light"] {
+  /* Elevation goes DARKER as it comes forward here, the reverse of the
+     dark theme: a control that lightens against an almost-white bar has
+     nothing left to lighten into, so the fill disappears. Monotonic
+     #fff > #fbfbfb > #f4f4f4 > #eee > #ddd keeps every layer separable. */
   --surface-base: var(--grey-15);
   --surface-raised: var(--grey-14);
-  --surface-overlay: var(--grey-15);
-  --surface-sunken: var(--grey-13);
-  --surface-hover: var(--grey-13);
-  --surface-selected: var(--grey-12);
+  --surface-overlay: var(--grey-13);
+  --surface-sunken: var(--grey-12);
+  --surface-hover: var(--grey-12);
+  --surface-selected: var(--grey-11);
 
   --border: var(--grey-11);
   --border-strong: var(--grey-10);
