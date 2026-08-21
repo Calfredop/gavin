@@ -22,9 +22,12 @@ sequence ("chord") shortcuts, and ⌘Q as close-tab (see Decision K1).
   Windows/Linux, for every shortcut in this spec. The pre-existing ⌘C/⌘V
   (terminal copy/paste) stay **macOS-only** on `metaKey`: on Linux/Windows,
   Ctrl+C in a terminal must remain SIGINT.
-- **K4 — match on `event.code`, never `event.key`.** On macOS ⌘⇧1 reports
-  `key: "!"` and ⌘⌥1 reports `key: "¡"`; only `code` (`Digit1`) is stable across
-  modifiers and layouts.
+- **K4 — digits match on `event.code`, letters keep matching `event.key`.** On
+  macOS ⌘⇧1 reports `key: "!"` and ⌘⌥1 reports `key: "¡"`, so digit navigation
+  must read `code` (`Digit1`/`Numpad1`). Letters have no such problem under the
+  modifiers this spec uses, and matching them on `code` would silently rebind
+  them to physical key positions on non-QWERTY layouts — so ⌘T/⌘W/⌘D keep
+  comparing `event.key.toLowerCase()`, exactly as the app does today.
 
 ---
 
@@ -47,8 +50,8 @@ and the failure mode is a Ctrl-instead-of-⌘ match, not a crash.
 
 ```ts
 export interface Chord {
-  /// KeyboardEvent.code, e.g. "KeyT", "Digit1".
-  code: string;
+  /// Lower-case KeyboardEvent.key, e.g. "t", "d" (see K4).
+  key: string;
   shift?: boolean;
   alt?: boolean;
 }
@@ -67,7 +70,7 @@ export function digitFromCode(code: string): number | null;
 export function resolveIndex(digit: number, count: number): number | null;
 ```
 
-`matchesChord` requires `cmdHeld`, the exact `code`, and exact `shift`/`alt`
+`matchesChord` requires `cmdHeld`, the exact `key`, and exact `shift`/`alt`
 state (an undeclared modifier must be **off**, so ⌘⇧1 never triggers the plain
 ⌘1 action). `formatChord` produces `⌘T`, `⌘⇧D`, `⌘⌥1` on macOS and `Ctrl+T`,
 `Ctrl+Shift+D`, `Ctrl+Alt+1` elsewhere; digits render as the digit, letters
