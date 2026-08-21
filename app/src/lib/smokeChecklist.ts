@@ -469,6 +469,25 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "hist-reset-hard", text: "Reset → Hard stays disabled until the short SHA is typed; Soft/Mixed behave as labelled" },
     ],
   },
+  {
+    title: "Git tab — conflicts",
+    items: [
+      {
+        id: "conf-merge-editor",
+        text: "A merge conflict opens the 3-pane editor: ours/theirs panes highlight the numbered regions, Result shows the markers with Ours/Theirs/Both buttons",
+        hint: "git switch -c x; edit line 2; commit; git switch main; edit line 2 differently; commit; merge x.",
+      },
+      { id: "conf-resolve-mark", text: "Choosing per block clears its markers; Save then Mark resolved stages the file and jumps to the next conflicted file" },
+      { id: "conf-markers-refused", text: "Mark resolved and the row's + are refused while markers remain (banner says so)" },
+      { id: "conf-restore", text: "Restore markers brings git's conflict text back after a save or a whole-file choice" },
+      { id: "conf-rebase-labels", text: "During a rebase conflict the panes are labelled “<upstream> (upstream)” and “<branch> (rebasing)”" },
+      { id: "conf-delete-modify", text: "A delete/modify conflict shows the chooser sentence with Keep file / Delete file" },
+      { id: "conf-binary", text: "A binary conflict offers Keep ours / Keep theirs only" },
+      { id: "conf-crlf", text: "A CRLF file resolved in the editor is saved back with CRLF and its final newline state" },
+      { id: "conf-mergetool", text: "With merge.tool set, Open in <tool> runs git mergetool in a terminal pane and the editor reloads after the tool saves" },
+      { id: "conf-continue", text: "The banner counts conflicted files and Continue unlocks at zero" },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

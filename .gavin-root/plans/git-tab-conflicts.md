@@ -16,7 +16,8 @@ Plan: `docs/superpowers/plans/2026-08-21-git-tab-conflicts.md`
 
 ## Steps
 
-- [ ] Backend `conflict.rs`: conflict info (kind, stages, labels, EOL), mark resolved (marker check), resolve whole/deleted, restore markers, merge tool name (+ tests)
-- [ ] `conflictMarkers.ts` parser/rewriter + store actions (+ tests)
-- [ ] CodeMirror decorations + scroll; `GitConflictView`, `GitConflictChooser`; wiring, banner count, U-row routing
-- [ ] Smoke entries; manual pass
+- [x] Backend `conflict.rs`: conflict info (kind, stages, labels, EOL), mark resolved (marker check), resolve whole/deleted, restore markers, merge tool name (+ tests)
+- [x] `conflictMarkers.ts` parser/rewriter + store actions (+ tests)
+- [x] CodeMirror decorations + scroll; `GitConflictView`, `GitConflictChooser`; wiring, banner count, U-row routing
+- [x] Smoke entries
+- [ ] Manual pass (Smoke Test workspace → “Git tab — conflicts”)
