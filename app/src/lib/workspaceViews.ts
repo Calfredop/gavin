@@ -8,60 +8,34 @@ import SmokeChecklist from "./SmokeChecklist.svelte";
 import PrdHubView from "./PrdHubView.svelte";
 import AgentFileHubView from "./AgentFileHubView.svelte";
 import PlanExplorerHubView from "./PlanExplorerHubView.svelte";
-import { hubViewIsVisible } from "./workspace";
+import { HUB_VIEW_META, visibleHubViewIds, type HubViewMeta } from "./hubViewMeta";
 
-export interface HubView {
-  id: string;
-  label: string;
+/// A hub tab: the metadata from hubViewMeta.ts plus what renders it.
+/// The id/label/visibility rules live there so modules that only need
+/// the policy (the keyboard router) don't import eight components.
+export interface HubView extends HubViewMeta {
   icon: Component;
   component: Component<{ workspaceId: string }>;
-  /// Only offered in dev builds, and only in the Smoke Test workspace --
-  /// see visibleHubViews.
-  devOnly?: boolean;
-  /// Only offered once the workspace is bound to a root folder: these
-  /// views edit files that live under it.
-  requiresRoot?: boolean;
 }
 
-export const HUB_VIEWS: HubView[] = [
-  { id: "home", label: "Home", icon: LayoutDashboard, component: HomeHubView, requiresRoot: true },
-  { id: "git", label: "Git", icon: GitBranch, component: GitHubView, requiresRoot: true },
-  { id: "kanban", label: "Kanban", icon: Kanban, component: KanbanBoard },
-  { id: "prd", label: "PRD", icon: FileText, component: PrdHubView, requiresRoot: true },
-  {
-    id: "agent-file",
-    label: "CLAUDE.md",
-    icon: Bot,
-    component: AgentFileHubView,
-    requiresRoot: true,
-  },
-  {
-    id: "plans",
-    label: "Plans",
-    icon: FolderTree,
-    component: PlanExplorerHubView,
-    requiresRoot: true,
-  },
-  {
-    // No requiresRoot: binding the root is one of this tab's jobs.
-    id: "settings",
-    label: "Settings",
-    icon: Settings,
-    component: SettingsHubView,
-  },
-  {
-    id: "checklist",
-    label: "Checklist",
-    icon: ListChecks,
-    component: SmokeChecklist,
-    devOnly: true,
-  },
-];
+const COMPONENTS: Record<string, { icon: Component; component: Component<{ workspaceId: string }> }> = {
+  home: { icon: LayoutDashboard, component: HomeHubView },
+  git: { icon: GitBranch, component: GitHubView },
+  kanban: { icon: Kanban, component: KanbanBoard },
+  prd: { icon: FileText, component: PrdHubView },
+  "agent-file": { icon: Bot, component: AgentFileHubView },
+  plans: { icon: FolderTree, component: PlanExplorerHubView },
+  settings: { icon: Settings, component: SettingsHubView },
+  checklist: { icon: ListChecks, component: SmokeChecklist },
+};
 
-// The hub tabs a given workspace should offer. A dev-only view is hidden
-// everywhere except the dev Smoke Test workspace, so a release build (or
-// any real workspace) never shows it -- callers must render from this,
-// not from HUB_VIEWS directly.
+export const HUB_VIEWS: HubView[] = HUB_VIEW_META.map((meta) => ({ ...meta, ...COMPONENTS[meta.id] }));
+
+// The hub tabs a given workspace should offer, in the order they render.
+// A dev-only view is hidden everywhere except the dev Smoke Test
+// workspace, so a release build (or any real workspace) never shows it --
+// callers must render from this, not from HUB_VIEWS directly.
 export function visibleHubViews(workspaceId: string, isDev: boolean, hasRoot: boolean): HubView[] {
-  return HUB_VIEWS.filter((v) => hubViewIsVisible(v, workspaceId, isDev, hasRoot));
+  const visible = new Set(visibleHubViewIds(workspaceId, isDev, hasRoot));
+  return HUB_VIEWS.filter((v) => visible.has(v.id));
 }
