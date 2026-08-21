@@ -9,6 +9,7 @@
 //   [data-orch-stage-pos]  a stage band; value = its position
 //   [data-orch-step]       a step chip wrapper; value = step id
 //   [data-orch-drawer]     the unplaced drawer root
+//   [data-orch-card]       an unplaced drawer row; value = the card path
 
 import { get, writable } from "svelte/store";
 import {
@@ -29,8 +30,13 @@ import { autoScrollVelocity, type Rect } from "./pointerDrag";
 export const activeOrchDragRoot = writable<HTMLElement | null>(null);
 
 export interface OrchDragOptions {
-  /// The grid element, also the scroll container in both axes.
+  /// The element the gesture is listened on and measured within. It must
+  /// contain BOTH the rail grid and the drawer, so an unplaced card can
+  /// be dragged in.
   root: HTMLElement;
+  /// The element that actually scrolls (the grid). Separate from `root`
+  /// because the listening element is its parent.
+  scrollEl: HTMLElement;
   commit: (drag: ActiveOrchDrag & { target: OrchDropTarget }) => void;
   click: (stepId: string) => void;
 }
@@ -67,7 +73,7 @@ function measureRails(root: HTMLElement, draggedId: string): MeasuredRail[] {
 }
 
 export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
-  const { root } = opts;
+  const { root, scrollEl } = opts;
   let activePointerId: number | null = null;
 
   function measureDrawer(): Rect | null {
@@ -78,11 +84,31 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
   function onPointerDown(e: PointerEvent): void {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest("button, input, a, textarea, select")) return;
-    const stepEl = target.closest("[data-orch-step]");
-    if (!stepEl) return;
-    const stageEl = stepEl.closest("[data-orch-stage]");
-    const draggedId = stepEl.getAttribute("data-orch-step") ?? "";
+
+    // Drawer cards are checked FIRST and are exempt from the button
+    // guard below: the whole row IS a button, and it is also the drag
+    // subject. A press with no movement still fires its own onclick, so
+    // click-to-add keeps working.
+    const cardEl = target.closest("[data-orch-card]");
+    let kind: "step" | "card";
+    let itemEl: Element;
+    let draggedId: string;
+    let sourceStageId: string | null;
+
+    if (cardEl) {
+      kind = "card";
+      itemEl = cardEl;
+      draggedId = cardEl.getAttribute("data-orch-card") ?? "";
+      sourceStageId = null;
+    } else {
+      if (target.closest("button, input, a, textarea, select")) return;
+      const stepEl = target.closest("[data-orch-step]");
+      if (!stepEl) return;
+      kind = "step";
+      itemEl = stepEl;
+      draggedId = stepEl.getAttribute("data-orch-step") ?? "";
+      sourceStageId = stepEl.closest("[data-orch-stage]")?.getAttribute("data-orch-stage") ?? "";
+    }
 
     const cbs: OrchDragCallbacks = {
       measure: () => measureRails(root, draggedId),
@@ -91,13 +117,7 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       click: opts.click,
     };
     activeOrchDragRoot.set(root);
-    beginCandidate(
-      draggedId,
-      stageEl?.getAttribute("data-orch-stage") ?? "",
-      { x: e.clientX, y: e.clientY },
-      toRect(stepEl),
-      cbs
-    );
+    beginCandidate(kind, draggedId, sourceStageId, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
     // Window-level, capture-phase: the dragged chip's wrapper leaves the
     // DOM at activation and WKWebView then drops the pointerup instead
     // of retargeting it. setPointerCapture stays a best-effort extra.
@@ -157,18 +177,18 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
     if (!drag) return;
     let scrolled = false;
 
-    const rootRect = root.getBoundingClientRect();
-    const dx = autoScrollVelocity(drag.pointer.x, rootRect.left, rootRect.right);
+    const gridRect = scrollEl.getBoundingClientRect();
+    const dx = autoScrollVelocity(drag.pointer.x, gridRect.left, gridRect.right);
     if (dx !== 0) {
-      const before = root.scrollLeft;
-      root.scrollLeft += dx;
-      scrolled ||= root.scrollLeft !== before;
+      const before = scrollEl.scrollLeft;
+      scrollEl.scrollLeft += dx;
+      scrolled ||= scrollEl.scrollLeft !== before;
     }
-    const dy = autoScrollVelocity(drag.pointer.y, rootRect.top, rootRect.bottom);
+    const dy = autoScrollVelocity(drag.pointer.y, gridRect.top, gridRect.bottom);
     if (dy !== 0) {
-      const before = root.scrollTop;
-      root.scrollTop += dy;
-      scrolled ||= root.scrollTop !== before;
+      const before = scrollEl.scrollTop;
+      scrollEl.scrollTop += dy;
+      scrolled ||= scrollEl.scrollTop !== before;
     }
 
     if (scrolled) refreshTarget();

@@ -12,7 +12,14 @@
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { layoutState, switchWorkspaceView } from "./layoutState";
-  import { cardIndex, doneColumn, detectConflicts, numberConflicts, describeConflict } from "./orchestration";
+  import {
+    cardIndex,
+    doneColumn,
+    detectConflicts,
+    numberConflicts,
+    describeConflict,
+    groupUnplacedByStatus,
+  } from "./orchestration";
   import {
     orchestrations,
     fetchOrchestration,
@@ -32,7 +39,10 @@
     makeStageSequentialAction,
     moveStepIntoStageAction,
     moveStepToNewStageAction,
+    addCardAsStageAction,
+    addStepToStageAction,
     requestReorganize,
+    renameRailAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -65,6 +75,15 @@
   const available = $derived(
     [...cards.values()].filter((e) => e.plan.kind !== "note" && !placed.has(e.plan.path))
   );
+  const unplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
+
+  // Which rail's name is being edited. Owned here so a rail created by
+  // the button below can open straight into rename mode.
+  let editingRailId = $state<string | null>(null);
+
+  async function newRail(): Promise<void> {
+    editingRailId = await addRailAction(workspaceId, "New rail");
+  }
 
   $effect(() => {
     void fetchOrchestration(workspaceId);
@@ -87,14 +106,28 @@
   });
 
   let gridEl = $state<HTMLElement | null>(null);
+  // Listening happens on the row that holds BOTH the grid and the drawer,
+  // so a card can be dragged from one into the other.
+  let bodyEl = $state<HTMLElement | null>(null);
 
   // onMount returns the detach function, so the engine is torn down with
   // the tab.
   onMount(() => {
-    if (!gridEl) return;
+    if (!bodyEl || !gridEl) return;
     return attachOrchestrationDrag({
-      root: gridEl,
+      root: bodyEl,
+      scrollEl: gridEl,
       commit: (drag) => {
+        // `id` is a step id for a step drag and a card path for a card
+        // drag -- the two commit into different mutators entirely.
+        if (drag.kind === "card") {
+          if (drag.target.kind === "into-stage") {
+            void addStepToStageAction(workspaceId, drag.target.stageId, drag.id);
+          } else if (drag.target.kind === "new-stage") {
+            void addCardAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
+          }
+          return;
+        }
         if (drag.target.kind === "unplace") {
           void removeStepAction(workspaceId, drag.id);
         } else if (drag.target.kind === "into-stage") {
@@ -142,7 +175,7 @@
     >
       Reorganize with agent…
     </button>
-    <button type="button" class="add-rail" onclick={() => void addRailAction(workspaceId, "New rail")}>
+    <button type="button" class="add-rail" onclick={() => void newRail()}>
       <Plus size={14} /> Rail
     </button>
   </header>
@@ -171,7 +204,7 @@
       No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
     </p>
   {:else}
-    <div class="body">
+    <div class="body" bind:this={bodyEl}>
       <div class="grid" bind:this={gridEl}>
       {#each rails as rail (rail.id)}
         <OrchestrationRail
@@ -185,6 +218,13 @@
           onReset={() => void resetRail(workspaceId, rail.id)}
           onDelete={() => void deleteRailAction(workspaceId, rail.id)}
           pageName={ws?.pages.find((p) => p.id === rail.pageId)?.name ?? null}
+          editing={editingRailId === rail.id}
+          onStartEdit={() => (editingRailId = rail.id)}
+          onRename={(name) => {
+            void renameRailAction(workspaceId, rail.id, name);
+            editingRailId = null;
+          }}
+          onCancelEdit={() => (editingRailId = null)}
           onBind={() => (binding = rail.id)}
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
@@ -193,7 +233,7 @@
       {/each}
       </div>
       <OrchestrationDrawer
-        {available}
+        groups={unplacedGroups}
         targetRailId={rails[0]?.id ?? null}
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
       />

@@ -93,11 +93,18 @@ export function computeOrchDropTarget(
 
 // ---- The controller --------------------------------------------------------
 
-/// A step drag in flight. `sourceStageId` is what makes "dropped back
-/// where it started" detectable, so a click-like drag commits nothing.
+/// What is being dragged. "step" moves an existing step between stages
+/// and rails; "card" places an unplaced card from the drawer, which has
+/// no step id yet -- its `id` is the card path.
+export type OrchDragKind = "step" | "card";
+
+/// `sourceStageId` is what makes "dropped back where it started"
+/// detectable, so a click-like drag commits nothing. Null for a card,
+/// which came from no stage.
 export interface ActiveOrchDrag {
+  kind: OrchDragKind;
   id: string;
-  sourceStageId: string;
+  sourceStageId: string | null;
   target: OrchDropTarget | null;
   pointer: Point;
   grabOffset: Point;
@@ -114,8 +121,9 @@ export interface OrchDragCallbacks {
 export const orchDragState = writable<ActiveOrchDrag | null>(null);
 
 interface Candidate {
+  kind: OrchDragKind;
   id: string;
-  sourceStageId: string;
+  sourceStageId: string | null;
   start: Point;
   grabOffset: Point;
   size: { width: number; height: number };
@@ -125,13 +133,15 @@ let candidate: Candidate | null = null;
 let callbacks: OrchDragCallbacks | null = null;
 
 export function beginCandidate(
+  kind: OrchDragKind,
   id: string,
-  sourceStageId: string,
+  sourceStageId: string | null,
   start: Point,
   itemRect: Rect,
   cbs: OrchDragCallbacks
 ): void {
   candidate = {
+    kind,
     id,
     sourceStageId,
     start,
@@ -162,6 +172,7 @@ export function movePointer(p: Point, buttons?: number): void {
   }
   if (!candidate || !exceedsThreshold(candidate.start, p)) return;
   orchDragState.set({
+    kind: candidate.kind,
     id: candidate.id,
     sourceStageId: candidate.sourceStageId,
     target: computeTarget(p),
@@ -194,6 +205,8 @@ export function endPointer(): void {
   if (!active.target) return;
   // Dropping back into the stage it came from changes nothing.
   if (active.target.kind === "into-stage" && active.target.stageId === active.sourceStageId) return;
+  // A card dropped on the drawer is already unplaced.
+  if (active.kind === "card" && active.target.kind === "unplace") return;
   cbs.commit(active as ActiveOrchDrag & { target: OrchDropTarget });
 }
 

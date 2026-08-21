@@ -20,6 +20,7 @@ import {
   addStage,
   addStep,
   removeStep,
+  addCardAsStage,
   moveStepIntoStage,
   moveStepToNewStage,
   splitStageIntoSequence,
@@ -368,8 +369,12 @@ export function __resetForTesting(): void {
 
 // ---- Plan-edit actions -----------------------------------------------------
 
-export function addRailAction(workspaceId: string, name: string): Promise<void> {
-  return mutatePlan(workspaceId, (o) => addRail(o, crypto.randomUUID(), name));
+/// Returns the new rail's id so the caller can drop it straight into
+/// rename mode -- a rail called "New rail" is a placeholder, not a name.
+export async function addRailAction(workspaceId: string, name: string): Promise<string> {
+  const railId = crypto.randomUUID();
+  await mutatePlan(workspaceId, (o) => addRail(o, railId, name));
+  return railId;
 }
 
 export function renameRailAction(workspaceId: string, railId: string, name: string): Promise<void> {
@@ -425,6 +430,16 @@ export function moveStepToNewStageAction(
   index: number
 ): Promise<void> {
   return mutatePlan(workspaceId, (o) => moveStepToNewStage(o, stepId, railId, index));
+}
+
+/// Drop an unplaced card into a rail as its own stage at `index`.
+export function addCardAsStageAction(
+  workspaceId: string,
+  railId: string,
+  index: number,
+  cardPath: string
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => addCardAsStage(o, railId, index, crypto.randomUUID(), cardPath));
 }
 
 export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<void> {

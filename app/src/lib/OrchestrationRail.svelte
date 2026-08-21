@@ -22,6 +22,12 @@
     /// and the header says so rather than looking hung.
     doneColumnName: string | null;
     numbered: NumberedConflict[];
+    /// Rename is CONTROLLED by the parent: it owns which rail is being
+    /// renamed, so a freshly created rail can open straight into it.
+    editing: boolean;
+    onStartEdit: () => void;
+    onRename: (name: string) => void;
+    onCancelEdit: () => void;
     onStart: () => void;
     onPause: () => void;
     onReset: () => void;
@@ -40,6 +46,10 @@
     doneColumnName,
     numbered,
     pageName,
+    editing,
+    onStartEdit,
+    onRename,
+    onCancelEdit,
     onStart,
     onPause,
     onReset,
@@ -50,12 +60,33 @@
     onRemoveStep,
   }: Props = $props();
 
-  const state = $derived(railStateOf(orch, rail.id));
+  const railState = $derived(railStateOf(orch, rail.id));
   const stages = $derived([...rail.stages].sort((a, b) => a.position - b.position));
   // A rail-level conflict (missing/unbound worktree) badges the HEADER,
   // not any chip -- the cause is the binding, not a step.
   const railBadges = $derived(numbersForRail(numbered, rail.id));
   const railSeverity = $derived(severityForRail(numbered, rail.id));
+
+  let draft = $state("");
+  // Seeded when edit mode OPENS, not at construction: the parent drops a
+  // newly created rail straight into editing without a click, so there is
+  // no onclick to seed it there.
+  $effect(() => {
+    if (editing) draft = rail.name;
+  });
+
+  /// Focus AND select: a new rail arrives named "New rail", so the first
+  /// keystroke should replace it rather than append to it.
+  function focusAndSelect(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
+  function commit(): void {
+    const name = draft.trim();
+    if (name && name !== rail.name) onRename(name);
+    else onCancelEdit();
+  }
 
   function runOf(id: string) {
     return orch.stepRuns.find((r) => r.stepId === id) ?? null;
@@ -79,7 +110,25 @@
 <div class="rail" data-orch-rail={rail.id}>
   <header>
     <div class="name-row">
-      <span class="name">{rail.name}</span>
+      {#if editing}
+        <input
+          class="name-input"
+          bind:value={draft}
+          use:focusAndSelect
+          onblur={commit}
+          onkeydown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") onCancelEdit();
+          }}
+        />
+      {:else}
+        <button
+          type="button"
+          class="name"
+          title="Rename"
+          onclick={onStartEdit}
+        >{rail.name}</button>
+      {/if}
       {#each railBadges as n (n)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <span
@@ -89,13 +138,13 @@
           onmouseleave={() => highlightedConflict.set(null)}
         >{n}</span>
       {/each}
-      <span class="state {state}">{state}</span>
-      {#if state === "running"}
+      <span class="state {railState}">{railState}</span>
+      {#if railState === "running"}
         <IconButton icon={Pause} label="Pause" onclick={onPause} />
       {:else}
         <IconButton
           icon={Play}
-          label={state === "paused" ? "Resume" : "Start"}
+          label={railState === "paused" ? "Resume" : "Start"}
           tone="accent"
           onclick={onStart}
         />
@@ -180,6 +229,28 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-weight: 600;
+    padding: 2px 4px;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text);
+    font-size: inherit;
+    text-align: left;
+    cursor: text;
+  }
+  .name:hover {
+    border-color: var(--border);
+  }
+  .name-input {
+    flex: 1;
+    min-width: 0;
+    padding: 2px 4px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-focus);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: inherit;
     font-weight: 600;
   }
   .state {

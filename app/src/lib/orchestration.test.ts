@@ -23,6 +23,8 @@ import {
   moveStepToNewStage,
   moveStepIntoStage,
   splitStageIntoSequence,
+  groupUnplacedByStatus,
+  addCardAsStage,
 } from "./orchestration";
 import type { Conflict } from "./orchestration";
 import type { WorktreeInfo } from "./git";
@@ -825,5 +827,96 @@ describe("splitStageIntoSequence", () => {
     const before = built();
     expect(stageMap(splitStageIntoSequence(before, "s1"))).toEqual(stageMap(before));
     expect(stageMap(splitStageIntoSequence(before, "nope"))).toEqual(stageMap(before));
+  });
+});
+
+describe("groupUnplacedByStatus", () => {
+  const B3 = board(["To Do", "In Progress", "Done"]);
+  const entry = (fileName: string, status: string | null) => ({
+    plan: plan(fileName, { status }),
+    contextFolder: "/ws/.gavin-root",
+  });
+
+  it("orders groups by the board's column position, not by first sight", () => {
+    const groups = groupUnplacedByStatus(
+      [entry("a.md", "Done"), entry("b.md", "To Do"), entry("c.md", "In Progress")],
+      B3
+    );
+    expect(groups.map((g) => g.status)).toEqual(["To Do", "In Progress", "Done"]);
+  });
+
+  it("marks only the done column, so the drawer knows what to collapse", () => {
+    const groups = groupUnplacedByStatus([entry("a.md", "Done"), entry("b.md", "To Do")], B3);
+    expect(groups.map((g) => [g.status, g.isDone])).toEqual([
+      ["To Do", false],
+      ["Done", true],
+    ]);
+  });
+
+  it("drops columns with no unplaced cards", () => {
+    const groups = groupUnplacedByStatus([entry("a.md", "Done")], B3);
+    expect(groups.map((g) => g.status)).toEqual(["Done"]);
+  });
+
+  it("puts a card with no status in the first column, as the board does", () => {
+    const groups = groupUnplacedByStatus([entry("a.md", null)], B3);
+    expect(groups.map((g) => [g.status, g.cards.length])).toEqual([["To Do", 1]]);
+  });
+
+  it("matches columns by slug, not exact spelling", () => {
+    const groups = groupUnplacedByStatus([entry("a.md", "  in progress  ")], B3);
+    expect(groups.map((g) => g.status)).toEqual(["In Progress"]);
+  });
+
+  it("gives an unknown status its own group after the known ones", () => {
+    const groups = groupUnplacedByStatus([entry("a.md", "Blocked"), entry("b.md", "To Do")], B3);
+    expect(groups.map((g) => g.status)).toEqual(["To Do", "Blocked"]);
+    expect(groups[1].isDone).toBe(false);
+  });
+
+  it("folds two spellings of one unknown status together", () => {
+    const groups = groupUnplacedByStatus([entry("a.md", "Blocked"), entry("b.md", "blocked")], B3);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards).toHaveLength(2);
+  });
+
+  it("falls back to one no-status group when the board has no columns", () => {
+    const groups = groupUnplacedByStatus([entry("a.md", null), entry("b.md", "Done")], board([]));
+    expect(groups.map((g) => g.status)).toEqual(["(no status)", "Done"]);
+  });
+
+  it("is empty for no cards", () => {
+    expect(groupUnplacedByStatus([], B3)).toEqual([]);
+  });
+});
+
+describe("addCardAsStage", () => {
+  it("inserts a new single-step stage at the index", () => {
+    const o = addCardAsStage(built(), "r1", 1, "new", "/x/z.md");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t1"], ["new"], ["t2", "t3"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("clamps an index past the end to an append", () => {
+    const o = addCardAsStage(built(), "r1", 99, "new", "/x/z.md");
+    expect(stageMap(o)[0][1]).toEqual([["t1"], ["t2", "t3"], ["new"]]);
+  });
+
+  it("renumbers stages after the insert", () => {
+    const o = addCardAsStage(built(), "r1", 0, "new", "/x/z.md");
+    expect(o.rails[0].stages.map((s) => s.position)).toEqual([0, 1, 2]);
+  });
+
+  it("adds to an empty rail", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addCardAsStage(o, "r1", 0, "new", "/x/z.md");
+    expect(stageMap(o)).toEqual([["r1", [["new"]]]]);
+  });
+
+  it("is a no-op for an unknown rail", () => {
+    const before = built();
+    expect(stageMap(addCardAsStage(before, "nope", 0, "new", "/x/z.md"))).toEqual(stageMap(before));
   });
 });
