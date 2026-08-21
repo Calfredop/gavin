@@ -2,6 +2,7 @@
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
@@ -171,19 +172,19 @@
       <span class="warning" use:tooltip={"This card's frontmatter has issues — some fields may be unreadable"}><TriangleAlert size={11} /></span>
     {/if}
     {#if card.kind === "plan" && (card.nestedChildren.length > 0 || nestTargeted)}
-      <button
-        type="button"
+      <IconButton
+        icon={expanded ? ChevronDown : ChevronRight}
+        label={(expanded ? "Collapse " : "Expand ") + card.nestedChildren.length + " nested " + (card.nestedChildren.length === 1 ? "task" : "tasks")}
+        size={12}
         class="chevron"
-        use:tooltip={(expanded ? "Collapse " : "Expand ") + card.nestedChildren.length + " nested " + (card.nestedChildren.length === 1 ? "task" : "tasks")}
         onpointerdown={shield}
         onclick={(e) => {
           e.stopPropagation();
           expanded = !expanded;
         }}
       >
-        {#if expanded}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
         <span class="child-count">{card.nestedChildren.length}</span>
-      </button>
+      </IconButton>
     {/if}
   </div>
   <div class="title">{card.title}</div>
@@ -346,18 +347,10 @@
     color: var(--warning-text);
     margin-left: auto;
   }
-  .chevron {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 2px;
+  :global(.chevron) {
     margin-left: auto;
-    padding: 0 2px;
   }
-  .warning + .chevron {
+  .warning + :global(.chevron) {
     margin-left: 0;
   }
   .child-count {

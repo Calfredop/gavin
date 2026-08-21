@@ -128,7 +128,8 @@
     </div>
   {:else}
     <div class="chip" title={workspace.rootPath}>
-      <span class="path">{workspace.rootPath}</span>
+      <!-- The &lrm; bookends are load-bearing -- see .path below. -->
+      <span class="path">&lrm;{workspace.rootPath}&lrm;</span>
       {#if variant === "settings"}
         <button type="button" class="gear" onclick={pickRoot} title="Change workspace root">⚙</button>
       {/if}
@@ -240,7 +241,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    direction: rtl; /* ellipsis on the LEFT: a path's tail is its informative end */
+    /* Ellipsis on the LEFT: a path's tail is its informative end. The cost
+       of an RTL paragraph is that "/" is a bidi-neutral, so a leading one
+       has no strong character before it and resolves to the paragraph's
+       direction -- it detaches from the path and parks at the far right,
+       rendering /Users/x/gavin as "Users/x/gavin/". The &lrm; bookends in
+       the markup are strong-LTR, so the slashes sit inside the LTR run and
+       stay where they were typed. */
+    direction: rtl;
   }
   .gear {
     background: transparent;

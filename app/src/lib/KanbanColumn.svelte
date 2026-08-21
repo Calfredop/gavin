@@ -10,6 +10,7 @@
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
   import { Play } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
   import { columnDeletionPlan, executeDeletion } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -283,16 +284,19 @@
       <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
     {/if}
     {#if runnable.length > 0}
-      <button
-        type="button"
+      <IconButton
+        icon={Play}
+        label="Run all unbound cards"
+        tone="accent"
+        variant="outlined"
+        size={10}
         class="run-all"
-        aria-label="Run all unbound cards"
         disabled={runningAll}
-        use:tooltip={"Run " + runnable.length + " unbound " + (runnable.length === 1 ? "card" : "cards") + " with the workspace agent"}
+        tip={"Run " + runnable.length + " unbound " + (runnable.length === 1 ? "card" : "cards") + " with the workspace agent"}
         onclick={() => void runAll()}
       >
-        <Play size={10} /><span class="run-all-count">{runnable.length}</span>
-      </button>
+        <span class="run-all-count">{runnable.length}</span>
+      </IconButton>
     {/if}
     {#if mode === "full"}
       <button type="button" class="delete" aria-label="Delete column" use:tooltip={"Delete column — its cards fall back to an auto column by status"} onclick={requestDeleteColumn}>×</button>
@@ -475,21 +479,8 @@
     cursor: pointer;
     font-size: 1.1em;
   }
-  .run-all {
-    background: transparent;
-    border: 1px solid var(--border-accent);
-    border-radius: 10px;
-    color: var(--accent-text);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 1px 6px;
+  :global(.run-all) {
     flex: 0 0 auto;
-  }
-  .run-all:disabled {
-    opacity: 0.4;
-    cursor: default;
   }
   .run-all-count {
     font-size: 0.75em;

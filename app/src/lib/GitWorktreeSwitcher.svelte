@@ -1,6 +1,7 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import { ChevronDown, FolderGit2, Play, GitMerge, Trash2, Plus, Eraser } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { agentProfilesStore, createSessionForCard } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig } from "./settings";
@@ -154,13 +155,13 @@
           </button>
           <span class="acts">
             {#if !w.prunable}
-              <button type="button" use:tooltip={`Open an agent in ${splitPath(w.path).name}`} disabled={locked} onclick={() => { open = false; spawnAgent(w.path, agentCommand); }}><Play size={11} /></button>
+              <IconButton icon={Play} label={`Open an agent in ${splitPath(w.path).name}`} size={11} disabled={locked} onclick={() => { open = false; spawnAgent(w.path, agentCommand); }} />
             {/if}
             {#if !w.isMain && !w.prunable && w.branch}
-              <button type="button" use:tooltip={`Merge ${w.branch} into ${rootBranch}`} disabled={locked} onclick={() => onMergeBack(w)}><GitMerge size={11} /></button>
+              <IconButton icon={GitMerge} label={`Merge ${w.branch} into ${rootBranch}`} size={11} disabled={locked} onclick={() => onMergeBack(w)} />
             {/if}
             {#if !w.isMain}
-              <button type="button" class="danger" use:tooltip={"Remove worktree"} disabled={locked} onclick={() => onRemove(w)}><Trash2 size={11} /></button>
+              <IconButton icon={Trash2} label="Remove worktree" tone="danger" size={11} disabled={locked} onclick={() => onRemove(w)} />
             {/if}
           </span>
         </div>
@@ -283,7 +284,6 @@
   .row:hover .acts {
     display: inline-flex;
   }
-  .acts button,
   .foot button {
     background: transparent;
     border: 1px solid var(--border);
@@ -297,19 +297,13 @@
     gap: 4px;
     cursor: pointer;
   }
-  .acts button:hover:not(:disabled),
   .foot button:hover:not(:disabled) {
     border-color: var(--border-strong);
     color: var(--text);
   }
-  .acts button:disabled,
   .foot button:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .acts .danger:hover:not(:disabled) {
-    border-color: var(--border-danger);
-    color: var(--danger-text);
   }
   .foot {
     display: flex;
