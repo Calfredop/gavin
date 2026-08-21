@@ -19,9 +19,10 @@ listed "theming beyond the accent colour" as out of scope entirely.
 
 **In:** the token vocabulary (both tiers, both themes); `theme.css`;
 theme resolution and persistence including the Tauri system-appearance
-listener; the `AppConfig.theme` field and its dedicated command; the
-Light/Dark/System control in the Settings hub; migration of the five
-app-shell components that prove the tokens work.
+listener; the `AppConfig.theme` field, its managed state and the
+`persist_workspaces` threading; the Light/Dark/System control in the
+Settings hub; migration of the five app-shell components that prove the
+tokens work.
 
 **Out (sub-project 2):** the `IconButton` primitive and the ~6 divergent
 icon-button styles it replaces.
@@ -51,10 +52,11 @@ Continuing the log from `2026-08-20-workspace-settings-design.md`
   hand-picked with nothing tying it to its dark counterpart, and the two
   lists drift. The indirection is the thing that keeps them honest.
 - **D46 — The light end of the ramp is authored, not inverted.** The app
-  contains no light values today, so `--grey-11` upward are new. A light
-  theme produced by inverting a dark ramp reads muddy: real light
-  surfaces sit at `#fff`/`#f7f7f7`/`#efefef` with lower-contrast borders
-  than their dark counterparts, which is not where an inversion lands.
+  has no value between `#eee` and `#fff`, which is the band light
+  surfaces live in, so `--grey-13` and `--grey-14` are new (§4.1). A
+  light theme produced by inverting a dark ramp reads muddy: light
+  surfaces need lower-contrast borders than their dark counterparts,
+  which is not where a mirror of the dark values lands.
 - **D47 — Theme is app-global with a System option, not per-workspace.**
   The per-workspace accent (D35, D43) is a *label* — it distinguishes
   workspaces from each other, and the sidebar shows several at once.
@@ -63,12 +65,25 @@ Continuing the log from `2026-08-20-workspace-settings-design.md`
   included because `tauri.conf.json` pins no `theme`, so
   `getCurrentWindow().theme()` reports the real macOS appearance and
   `onThemeChanged()` fires on the auto light/dark schedule.
-- **D48 — Theme persists through its own command, not
-  `set_workspaces_state`.** `config.rs` documents the same trap twice —
-  for `session_names` and `file_tabs` — that a field not carried through
-  `persist_workspaces` "will silently reset to empty on the next save."
-  Adding a third field to that hazard trades a one-line saving for a
-  recurring bug. `set_theme_preference` does its own read-modify-write.
+- **D48 — Theme becomes a fourth managed state threaded through
+  `persist_workspaces`.** `config.rs` documents the carry-through trap
+  twice — a field not carried through "will silently reset to empty on
+  the next save." The fix already exists in the codebase:
+  `persist_workspaces` is a deliberate funnel, and its doc comment says
+  centralizing it "is what makes the rule structural rather than just
+  documented: every save site funnels through here instead of each
+  independently reconstructing the `AppConfig` literal."
+
+  So theme follows `SessionNames`/`FileTabs`/`BoardTabs` exactly: a
+  `ThemePref(Mutex<Option<String>>)` managed state, a new parameter on
+  `persist_workspaces`, and `get_theme_pref`/`set_theme_pref` commands
+  shaped like `get_session_names`/`set_session_name`.
+
+  *Revised during planning.* The original decision gave theme its own
+  read-modify-write command to avoid the trap. That would have added a
+  second save path bypassing the funnel — precisely what the funnel
+  exists to prevent. Joining the funnel is both safer and the
+  established pattern; the cost is updating its six call sites.
 - **D49 — Pre-boot stamp from `prefers-color-scheme`.** `ssr = false`
   and the stored preference arrives asynchronously from Tauri, so there
   is a window before `data-theme` is set. An inline script in `app.html`
@@ -220,7 +235,7 @@ the three literals becomes `"system"`.
 5. `onThemeChanged()` re-runs steps 3–4 while the pref is `"system"`,
    and is ignored otherwise.
 6. The Settings control writes the pref, which re-runs steps 3–4 and
-   calls `set_theme_preference`.
+   calls `set_theme_pref`.
 
 Both `theme()` and `onThemeChanged()` are confirmed present in the
 installed `@tauri-apps/api/window`.
@@ -230,16 +245,28 @@ installed `@tauri-apps/api/window`.
 `AppConfig` in `config.rs` gains:
 
 ```rust
+/// App-global light/dark preference. `None` means System — the same
+/// "absent means default" convention as `Workspace::color`. Like
+/// session_names/file_tabs/board_tabs, carried through
+/// persist_workspaces or it silently resets on the next save.
 #[serde(default)]
 pub theme: Option<String>,
 ```
 
-`None` means System. Per D48 it is written by a new
-`set_theme_preference` command that loads, mutates one field, and saves
-— not by `set_workspaces_state`.
+Per D48 this joins the existing funnel rather than getting its own save
+path:
 
-`AppConfig` is constructed with exhaustive struct literals in the
-`config.rs` test module; those literals need the new field.
+- `session.rs` gains `pub struct ThemePref(pub Mutex<Option<String>>)`,
+  `manage`d in `lib.rs` alongside the others.
+- `persist_workspaces` gains a `theme: Option<String>` parameter; all
+  **six** call sites (`session.rs:234, 270, 298, 328, 1091` and the new
+  setter) pass it.
+- `get_theme_pref` / `set_theme_pref` commands mirror
+  `get_session_names` / `set_session_name`, registered in `lib.rs`.
+
+`AppConfig` derives `Default`, but the `config.rs` test module builds it
+with exhaustive struct literals (e.g. `save_then_load_roundtrips`);
+those literals need the new field.
 
 ### 5.4 Failure modes
 
@@ -247,7 +274,7 @@ pub theme: Option<String>,
 |---|---|
 | `theme()` returns `null` | Treated as System-unavailable; falls back to dark (§5.1) |
 | Stored value is garbage | `parseThemePref` yields `"system"` |
-| `set_theme_preference` fails | The in-memory theme still applies; the change is simply not persisted, consistent with how other settings writes behave |
+| `set_theme_pref` fails | The in-memory theme still applies; the change is simply not persisted, consistent with how other settings writes behave |
 | `config.json` predates this field | `#[serde(default)]` yields `None` → System |
 
 ## 6. Beachhead migration
