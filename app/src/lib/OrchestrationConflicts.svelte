@@ -3,18 +3,22 @@
   import { highlightedConflict } from "./orchestrationState";
   import { describeConflict, conflictRailId } from "./orchestration";
   import type { CardEntry, NumberedConflict, Orchestration } from "./orchestration";
+  import type { Tool } from "./orchestrationTools";
 
   interface Props {
     numbered: NumberedConflict[];
     cards: Map<string, CardEntry>;
     orch: Orchestration;
+    /// Tool names, so a conflict naming a tool step reads as "Push
+    /// branch" rather than as a uuid.
+    tools: Tool[];
     onBindWorktree: (railId: string) => void;
     /// The repair for a parallel stage (spec O13): split it into
     /// consecutive single-step stages. Only offered for scope "stage" --
     /// no single stage can fix two rails sharing a checkout.
     onMakeSequential: (stageId: string) => void;
   }
-  let { numbered, cards, orch, onBindWorktree, onMakeSequential }: Props = $props();
+  let { numbered, cards, orch, tools, onBindWorktree, onMakeSequential }: Props = $props();
 
   let collapsed = $state(false);
 
@@ -46,7 +50,7 @@
             onmouseleave={() => highlightedConflict.set(null)}
           >
             <span class="badge">{n}</span>
-            <span class="text">{describeConflict(conflict, cards, orch)}</span>
+            <span class="text">{describeConflict(conflict, cards, orch, tools)}</span>
             {#if conflict.kind === "declared"}<span class="tag">agent note</span>{/if}
             {#if railId}
               <button type="button" class="fix" onclick={() => onBindWorktree(railId)}>

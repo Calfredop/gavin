@@ -1,6 +1,6 @@
-use protocol::{ConflictNote, Orchestration, Rail, RailRun, Stage, Step, StepRun};
+use protocol::{ConflictNote, Orchestration, Rail, RailRun, Stage, Step, StepRun, ToolDef, ToolParam};
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The orchestration plan (rails → stages → steps, plus the agent's
 /// conflict notes) and its machine-local run state. Its own SQLite file
@@ -55,8 +55,26 @@ impl OrchestrationStore {
                 state TEXT NOT NULL,
                 session_id TEXT,
                 reason TEXT
+            );
+            -- The tool library (tools spec T4). workspace_id NULL means
+            -- GLOBAL: every workspace on this machine sees it. Built-in
+            -- tools never land here -- they are constants in the app.
+            CREATE TABLE IF NOT EXISTS orch_tools (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                body TEXT NOT NULL,
+                params TEXT NOT NULL,
+                position INTEGER NOT NULL
             );",
         )?;
+        // orch_steps predates tool steps and is already live on disk, so
+        // CREATE TABLE IF NOT EXISTS above would silently keep the old
+        // shape. Add the columns idempotently instead.
+        add_column_if_missing(&conn, "orch_steps", "tool_id", "TEXT")?;
+        add_column_if_missing(&conn, "orch_steps", "tool_params", "TEXT")?;
         Ok(Self { conn })
     }
 
@@ -91,11 +109,25 @@ impl OrchestrationStore {
                 stage.steps = self
                     .conn
                     .prepare(
-                        "SELECT id, position, card_path FROM orch_steps
+                        "SELECT id, position, card_path, tool_id, tool_params FROM orch_steps
                          WHERE stage_id = ?1 ORDER BY position",
                     )?
                     .query_map(params![stage.id], |row| {
-                        Ok(Step { id: row.get(0)?, position: row.get(1)?, card_path: row.get(2)? })
+                        let tool_params: Option<String> = row.get(4)?;
+                        Ok(Step {
+                            id: row.get(0)?,
+                            position: row.get(1)?,
+                            card_path: row.get(2)?,
+                            tool_id: row.get(3)?,
+                            // Rows written before tool steps existed have
+                            // NULL here, and a hand-corrupted value must
+                            // not fail the whole read: both degrade to no
+                            // overrides, which resolves to the tool's own
+                            // defaults.
+                            tool_params: tool_params
+                                .and_then(|j| serde_json::from_str(&j).ok())
+                                .unwrap_or_default(),
+                        })
                     })?
                     .collect::<Result<_, _>>()?;
             }
@@ -184,7 +216,29 @@ impl OrchestrationStore {
             }
         }
 
-        // Guard 2: a running step must survive the replace, or its live
+        // Guard 2: a step is a card OR a tool, never both and never
+        // neither -- everything downstream branches on exactly that
+        // (tools spec T1), and a step that is neither would launch
+        // nothing forever.
+        for rail in rails {
+            for stage in &rail.stages {
+                for step in &stage.steps {
+                    match (step.card_path.is_empty(), step.tool_id.is_some()) {
+                        (true, false) => anyhow::bail!(
+                            "step {} has neither a cardPath nor a toolId",
+                            step.id
+                        ),
+                        (false, true) => anyhow::bail!(
+                            "step {} has both a cardPath and a toolId — a step is one or the other",
+                            step.id
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Guard 3: a running step must survive the replace, or its live
         // session is orphaned.
         let running: Vec<(String, String)> = self
             .conn
@@ -205,7 +259,7 @@ impl OrchestrationStore {
             }
         }
 
-        // Guard 3: every conflict note names steps in this same payload.
+        // Guard 4: every conflict note names steps in this same payload.
         for note in notes {
             for step_id in &note.step_ids {
                 if !incoming.contains(step_id.as_str()) {
@@ -246,8 +300,16 @@ impl OrchestrationStore {
                 )?;
                 for step in &stage.steps {
                     tx.execute(
-                        "INSERT INTO orch_steps (id, stage_id, position, card_path) VALUES (?1, ?2, ?3, ?4)",
-                        params![step.id, stage.id, step.position, step.card_path],
+                        "INSERT INTO orch_steps (id, stage_id, position, card_path, tool_id, tool_params)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            step.id,
+                            stage.id,
+                            step.position,
+                            step.card_path,
+                            step.tool_id,
+                            serde_json::to_string(&step.tool_params)?
+                        ],
                     )?;
                 }
             }
@@ -301,6 +363,111 @@ impl OrchestrationStore {
         )?;
         Ok(())
     }
+
+    // ---- The tool library --------------------------------------------------
+    // Targeted upsert/delete rather than the plan's wholesale replace: a
+    // tool outlives every arrangement that uses it (tools spec T8).
+
+    /// This workspace's own tools plus every GLOBAL one, workspace-first
+    /// so a workspace tool shadows a same-named global in the app's
+    /// merge. `workspace_id IS NULL` is the global marker.
+    pub fn tools(&self, workspace_id: &str) -> anyhow::Result<Vec<ToolDef>> {
+        let tools = self
+            .conn
+            .prepare(
+                "SELECT id, workspace_id, name, description, kind, body, params, position
+                 FROM orch_tools
+                 WHERE workspace_id = ?1 OR workspace_id IS NULL
+                 ORDER BY workspace_id IS NULL, position, name",
+            )?
+            .query_map(params![workspace_id], |row| {
+                let params_json: String = row.get(6)?;
+                Ok(ToolDef {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    name: row.get(2)?,
+                    description: row.get(3)?,
+                    kind: row.get(4)?,
+                    body: row.get(5)?,
+                    // A tool with unreadable params is still a runnable
+                    // tool; losing the whole library over one bad row is
+                    // the worse failure.
+                    params: serde_json::from_str::<Vec<ToolParam>>(&params_json).unwrap_or_default(),
+                    position: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(tools)
+    }
+
+    /// Upsert by id. Re-saving with the other `workspace_id` is how a
+    /// tool moves between this-workspace and global scope, which is why
+    /// the column is in the UPDATE list.
+    pub fn save_tool(&mut self, tool: &ToolDef) -> anyhow::Result<()> {
+        if tool.id.is_empty() {
+            anyhow::bail!("a tool needs an id");
+        }
+        if tool.id.starts_with("builtin:") {
+            anyhow::bail!("{} is a built-in tool — duplicate it instead of saving over it", tool.id);
+        }
+        if tool.name.trim().is_empty() {
+            anyhow::bail!("a tool needs a name");
+        }
+        if !matches!(tool.kind.as_str(), "agent" | "command" | "script") {
+            anyhow::bail!("unknown tool kind {}", tool.kind);
+        }
+        self.conn.execute(
+            "INSERT INTO orch_tools (id, workspace_id, name, description, kind, body, params, position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               workspace_id = ?2, name = ?3, description = ?4, kind = ?5,
+               body = ?6, params = ?7, position = ?8",
+            params![
+                tool.id,
+                tool.workspace_id,
+                tool.name,
+                tool.description,
+                tool.kind,
+                tool.body,
+                serde_json::to_string(&tool.params)?,
+                tool.position
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Deleting a tool a step still references is DELIBERATELY allowed:
+    /// the plan is the human's, and a step that stalls with "tool is no
+    /// longer in the library" is recoverable where a refused delete or a
+    /// silently gutted rail is not.
+    pub fn delete_tool(&mut self, id: &str) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM orch_tools WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+}
+
+/// `ALTER TABLE ... ADD COLUMN` is not idempotent and SQLite has no
+/// `IF NOT EXISTS` for it, so ask the schema first. Cheap enough to run
+/// on every open, and the only migration path that leaves an already-live
+/// orchestration.sqlite intact.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> anyhow::Result<()> {
+    let existing: HashMap<String, ()> = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|name| (name, ()))
+        .collect();
+    if existing.contains_key(column) {
+        return Ok(());
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -328,6 +495,8 @@ mod tests {
                         id: (*sid).into(),
                         position: i as i64,
                         card_path: (*path).into(),
+                        tool_id: None,
+                        tool_params: HashMap::new(),
                     })
                     .collect(),
             }],
@@ -440,6 +609,173 @@ mod tests {
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.conflict_notes[0].note, "careful");
         assert_eq!(o.conflict_notes[0].step_ids, vec!["t1".to_string()]);
+    }
+
+    fn tool(id: &str, workspace_id: Option<&str>) -> ToolDef {
+        ToolDef {
+            id: id.into(),
+            workspace_id: workspace_id.map(str::to_string),
+            name: format!("Tool {id}"),
+            description: "does a thing".into(),
+            kind: "command".into(),
+            body: "echo {{what}}".into(),
+            params: vec![ToolParam {
+                name: "what".into(),
+                label: "What".into(),
+                default: "hi".into(),
+            }],
+            position: 0,
+        }
+    }
+
+    fn tool_step(id: &str, tool_id: &str) -> Rail {
+        Rail {
+            id: "rt".into(),
+            name: "rt".into(),
+            position: 0,
+            worktree_path: None,
+            page_id: None,
+            stages: vec![Stage {
+                id: "rt-s1".into(),
+                position: 0,
+                steps: vec![Step {
+                    id: id.into(),
+                    position: 0,
+                    card_path: String::new(),
+                    tool_id: Some(tool_id.into()),
+                    tool_params: HashMap::from([("what".to_string(), "bye".to_string())]),
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_tool_step_round_trips_with_its_overrides() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[tool_step("t1", "u1")], &[]).unwrap();
+        let step = s.get("ws-1").unwrap().rails[0].stages[0].steps[0].clone();
+        assert_eq!(step.tool_id.as_deref(), Some("u1"));
+        assert_eq!(step.card_path, "");
+        assert_eq!(step.tool_params.get("what").map(String::as_str), Some("bye"));
+    }
+
+    #[test]
+    fn a_step_that_is_neither_a_card_nor_a_tool_is_refused() {
+        let mut s = store();
+        let err = s.replace_plan("ws-1", &[rail("r1", &[("t1", "")])], &[]).unwrap_err().to_string();
+        assert!(err.contains("neither"), "{err}");
+    }
+
+    #[test]
+    fn a_step_that_is_both_a_card_and_a_tool_is_refused() {
+        let mut s = store();
+        let mut both = tool_step("t1", "u1");
+        both.stages[0].steps[0].card_path = "/x/a.md".into();
+        let err = s.replace_plan("ws-1", &[both], &[]).unwrap_err().to_string();
+        assert!(err.contains("both"), "{err}");
+    }
+
+    #[test]
+    fn tools_returns_this_workspaces_own_plus_every_global_one() {
+        let mut s = store();
+        s.save_tool(&tool("u1", Some("ws-1"))).unwrap();
+        s.save_tool(&tool("u2", Some("ws-2"))).unwrap();
+        s.save_tool(&tool("g1", None)).unwrap();
+        let ids: Vec<String> = s.tools("ws-1").unwrap().into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["u1".to_string(), "g1".to_string()]);
+    }
+
+    #[test]
+    fn saving_a_tool_twice_upserts_and_can_change_its_scope() {
+        let mut s = store();
+        s.save_tool(&tool("u1", Some("ws-1"))).unwrap();
+        let mut promoted = tool("u1", None);
+        promoted.name = "Renamed".into();
+        s.save_tool(&promoted).unwrap();
+        let workspace_view = s.tools("ws-1").unwrap();
+        assert_eq!(workspace_view.len(), 1);
+        assert_eq!(workspace_view[0].name, "Renamed");
+        assert_eq!(workspace_view[0].workspace_id, None);
+        // Global now, so an unrelated workspace sees it too.
+        assert_eq!(s.tools("ws-9").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tool_params_round_trip_as_json() {
+        let mut s = store();
+        s.save_tool(&tool("u1", Some("ws-1"))).unwrap();
+        let back = s.tools("ws-1").unwrap().remove(0);
+        assert_eq!(back.params.len(), 1);
+        assert_eq!(back.params[0].name, "what");
+        assert_eq!(back.params[0].default, "hi");
+    }
+
+    #[test]
+    fn a_builtin_id_cannot_be_saved_over() {
+        let mut s = store();
+        let err = s.save_tool(&tool("builtin:push", None)).unwrap_err().to_string();
+        assert!(err.contains("built-in"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_tool_kind_is_refused() {
+        let mut s = store();
+        let mut bad = tool("u1", None);
+        bad.kind = "wasm".into();
+        let err = s.save_tool(&bad).unwrap_err().to_string();
+        assert!(err.contains("wasm"), "{err}");
+    }
+
+    #[test]
+    fn deleting_a_tool_a_step_still_uses_is_allowed_and_leaves_the_step() {
+        let mut s = store();
+        s.save_tool(&tool("u1", Some("ws-1"))).unwrap();
+        s.replace_plan("ws-1", &[tool_step("t1", "u1")], &[]).unwrap();
+        s.delete_tool("u1").unwrap();
+        assert!(s.tools("ws-1").unwrap().is_empty());
+        assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].steps[0].tool_id.as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn adding_a_column_twice_is_a_no_op() {
+        let s = store();
+        add_column_if_missing(&s.conn, "orch_steps", "tool_id", "TEXT").unwrap();
+        add_column_if_missing(&s.conn, "orch_steps", "tool_id", "TEXT").unwrap();
+    }
+
+    /// The real migration path: a database created BEFORE tool steps
+    /// existed must gain the columns on the next open, not keep the old
+    /// shape behind CREATE TABLE IF NOT EXISTS.
+    #[test]
+    fn opening_a_pre_tools_database_adds_the_step_columns() {
+        let dir = std::env::temp_dir().join(format!("gavin-orch-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE orch_steps (
+                    id TEXT PRIMARY KEY, stage_id TEXT NOT NULL,
+                    position INTEGER NOT NULL, card_path TEXT NOT NULL);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO orch_steps (id, stage_id, position, card_path) VALUES ('t1','s1',0,'/x/a.md')",
+                [],
+            )
+            .unwrap();
+        }
+        let s = OrchestrationStore::open(&path).unwrap();
+        let (tool_id, tool_params): (Option<String>, Option<String>) = s
+            .conn
+            .query_row("SELECT tool_id, tool_params FROM orch_steps WHERE id = 't1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(tool_id, None);
+        assert_eq!(tool_params, None);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

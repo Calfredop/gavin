@@ -803,6 +803,31 @@ impl SessionManager {
         });
     }
 
+    // ---- The tool library ------------------------------------------------
+    // Targeted, like link_card_session -- a tool outlives every
+    // arrangement that references it, so there is nothing to replace
+    // wholesale. No push either: writes originate in the app that is
+    // already holding the state.
+
+    pub fn tools(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::ToolDef>> {
+        self.orchestration.lock().unwrap().tools(workspace_id)
+    }
+
+    pub fn save_tool(&self, tool: protocol::ToolDef) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().save_tool(&tool)
+    }
+
+    pub fn delete_tool(&self, id: &str) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().delete_tool(id)
+    }
+
+    pub fn tools_by_root(&self, root_path: &str) -> anyhow::Result<Vec<protocol::ToolDef>> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.tools(&watcher.workspace_id)
+    }
+
     pub fn set_rail_run(
         &self,
         rail_id: &str,
@@ -1316,6 +1341,14 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetStepRun { step_id, state, session_id, reason } => manager
             .set_step_run(&step_id, &state, session_id, reason)
             .map(|_| Response::Ok),
+        Request::GetTools { workspace_id } => {
+            manager.tools(&workspace_id).map(|tools| Response::Tools { tools })
+        }
+        Request::SaveTool { tool } => manager.save_tool(tool).map(|_| Response::Ok),
+        Request::DeleteTool { id } => manager.delete_tool(&id).map(|_| Response::Ok),
+        Request::GetToolsByRoot { root_path } => {
+            manager.tools_by_root(&root_path).map(|tools| Response::Tools { tools })
+        }
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
         Request::WatchGavinRoot { .. } => {
             unreachable!("WatchGavinRoot is intercepted in handle_connection")
@@ -1504,6 +1537,8 @@ mod tests {
                     id: step_id.into(),
                     position: 0,
                     card_path: "/x/a.md".into(),
+                    tool_id: None,
+                    tool_params: Default::default(),
                 }],
             }],
         }
@@ -1566,6 +1601,94 @@ mod tests {
                 assert_eq!(step_runs[0].session_id.as_deref(), Some("sess-1"));
             }
             other => panic!("expected Orchestration, got {other:?}"),
+        }
+    }
+
+    fn a_tool(id: &str, workspace_id: Option<&str>) -> protocol::ToolDef {
+        protocol::ToolDef {
+            id: id.into(),
+            workspace_id: workspace_id.map(str::to_string),
+            name: "Push".into(),
+            description: "git push".into(),
+            kind: "command".into(),
+            body: "git push -u {{remote}} HEAD".into(),
+            params: vec![protocol::ToolParam {
+                name: "remote".into(),
+                label: "Remote".into(),
+                default: "origin".into(),
+            }],
+            position: 0,
+        }
+    }
+
+    #[test]
+    fn save_tool_then_get_tools_round_trips_through_handle_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        assert!(matches!(
+            handle_request(&manager, Request::SaveTool { tool: a_tool("u1", Some("ws-1")) }),
+            Response::Ok
+        ));
+        match handle_request(&manager, Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => {
+                assert_eq!(tools.len(), 1);
+                assert_eq!(tools[0].id, "u1");
+                assert_eq!(tools[0].params[0].default, "origin");
+            }
+            other => panic!("wrong response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_global_tool_is_visible_from_every_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(&manager, Request::SaveTool { tool: a_tool("g1", None) });
+        for ws in ["ws-1", "ws-2"] {
+            match handle_request(&manager, Request::GetTools { workspace_id: ws.into() }) {
+                Response::Tools { tools } => assert_eq!(tools.len(), 1, "{ws}"),
+                other => panic!("wrong response: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn delete_tool_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(&manager, Request::SaveTool { tool: a_tool("u1", Some("ws-1")) });
+        assert!(matches!(
+            handle_request(&manager, Request::DeleteTool { id: "u1".into() }),
+            Response::Ok
+        ));
+        match handle_request(&manager, Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => assert!(tools.is_empty()),
+            other => panic!("wrong response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_tools_by_root_needs_the_workspace_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        match handle_request(
+            &manager,
+            Request::GetToolsByRoot { root_path: "/nope".into() },
+        ) {
+            Response::Error { message } => assert!(message.contains("not open"), "{message}"),
+            other => panic!("wrong response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_save_tool_answers_with_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let mut bad = a_tool("u1", None);
+        bad.kind = "wasm".into();
+        match handle_request(&manager, Request::SaveTool { tool: bad }) {
+            Response::Error { message } => assert!(message.contains("wasm"), "{message}"),
+            other => panic!("wrong response: {other:?}"),
         }
     }
 

@@ -10,6 +10,7 @@
 //   [data-orch-step]       a step chip wrapper; value = step id
 //   [data-orch-drawer]     the unplaced drawer root
 //   [data-orch-card]       an unplaced drawer row; value = the card path
+//   [data-orch-tool]       a drawer tool row; value = the tool id
 
 import { get, writable } from "svelte/store";
 import {
@@ -20,6 +21,7 @@ import {
   endPointer,
   cancelDrag,
   type ActiveOrchDrag,
+  type OrchDragKind,
   type MeasuredRail,
   type MeasuredStage,
   type OrchDragCallbacks,
@@ -85,12 +87,14 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
 
-    // Drawer cards are checked FIRST and are exempt from the button
-    // guard below: the whole row IS a button, and it is also the drag
-    // subject. A press with no movement still fires its own onclick, so
-    // click-to-add keeps working.
+    // Drawer rows are checked FIRST and are exempt from the button guard
+    // below: the whole row IS a button, and it is also the drag subject.
+    // A press with no movement still fires its own onclick, so
+    // click-to-add keeps working. Cards and tools are the same gesture
+    // and differ only in which attribute carries the id.
     const cardEl = target.closest("[data-orch-card]");
-    let kind: "step" | "card";
+    const toolEl = cardEl ? null : target.closest("[data-orch-tool]");
+    let kind: OrchDragKind;
     let itemEl: Element;
     let draggedId: string;
     let sourceStageId: string | null;
@@ -99,6 +103,11 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       kind = "card";
       itemEl = cardEl;
       draggedId = cardEl.getAttribute("data-orch-card") ?? "";
+      sourceStageId = null;
+    } else if (toolEl) {
+      kind = "tool";
+      itemEl = toolEl;
+      draggedId = toolEl.getAttribute("data-orch-tool") ?? "";
       sourceStageId = null;
     } else {
       if (target.closest("button, input, a, textarea, select")) return;

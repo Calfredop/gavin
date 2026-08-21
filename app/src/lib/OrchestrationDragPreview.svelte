@@ -2,10 +2,14 @@
   import { orchDragState } from "./orchestrationDrag";
   import { activeOrchDragRoot } from "./orchestrationDragGlue";
   import type { CardEntry, Orchestration } from "./orchestration";
+  import type { Tool } from "./orchestrationTools";
 
   interface Props {
     orch: Orchestration | null;
     cards: Map<string, CardEntry>;
+    /// The tool library, so a tool drag and a tool STEP drag both show a
+    /// name rather than a UUID.
+    tools: Tool[];
     /// MUST be the very element handed to attachOrchestrationDrag as
     /// `root` -- the ghost renders only for the surface that owns the
     /// drag, and the glue registers that element by identity. Naming it
@@ -14,23 +18,26 @@
     /// the listener moved up to the grid's parent.
     dragRoot: HTMLElement | null;
   }
-  let { orch, cards, dragRoot }: Props = $props();
+  let { orch, cards, tools, dragRoot }: Props = $props();
 
   const ownsDrag = $derived(dragRoot !== null && $activeOrchDragRoot === dragRoot);
   const titleOfPath = (path: string): string =>
     cards.get(path)?.plan.title ?? (path.split("/").pop() ?? "");
+  const nameOfTool = (id: string): string => tools.find((t) => t.id === id)?.name ?? id;
 
   const title = $derived.by(() => {
     const drag = $orchDragState;
     if (!drag) return "";
-    // A card drag carries the card PATH; only a step drag needs the
-    // rails walked to find which card it points at.
+    // A drawer drag carries the card PATH or the TOOL ID; only a step
+    // drag needs the rails walked to find what it points at.
     if (drag.kind === "card") return titleOfPath(drag.id);
+    if (drag.kind === "tool") return nameOfTool(drag.id);
     if (!orch) return "";
     for (const rail of orch.rails) {
       for (const stage of rail.stages) {
         for (const step of stage.steps) {
-          if (step.id === drag.id) return titleOfPath(step.cardPath);
+          if (step.id !== drag.id) continue;
+          return step.toolId ? nameOfTool(step.toolId) : titleOfPath(step.cardPath);
         }
       }
     }

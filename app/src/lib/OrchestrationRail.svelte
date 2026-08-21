@@ -3,6 +3,9 @@
   import IconButton from "./ui/IconButton.svelte";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import type { CardEntry, NumberedConflict, Orchestration, Rail } from "./orchestration";
+  import { stepParams } from "./orchestration";
+  import { findTool } from "./orchestrationTools";
+  import type { Tool } from "./orchestrationTools";
   import {
     railStateOf,
     stepStateOf,
@@ -18,6 +21,9 @@
     rail: Rail;
     orch: Orchestration;
     cards: Map<string, CardEntry>;
+    /// The tool library, for resolving a tool step's chip. A step whose
+    /// tool is absent still renders -- by its id (see the chip).
+    tools: Tool[];
     /// Null when the board has no columns at all — nothing can complete,
     /// and the header says so rather than looking hung.
     doneColumnName: string | null;
@@ -38,11 +44,13 @@
     onAddStep: () => void;
     onRetryStep: (stepId: string) => void;
     onRemoveStep: (stepId: string) => void;
+    onEditStepParams: (stepId: string) => void;
   }
   let {
     rail,
     orch,
     cards,
+    tools,
     doneColumnName,
     numbered,
     pageName,
@@ -58,6 +66,7 @@
     onAddStep,
     onRetryStep,
     onRemoveStep,
+    onEditStepParams,
   }: Props = $props();
 
   const railState = $derived(railStateOf(orch, rail.id));
@@ -180,12 +189,16 @@
             stepId={step.id}
             cardPath={step.cardPath}
             entry={cards.get(step.cardPath)}
+            toolId={step.toolId ?? null}
+            tool={step.toolId ? findTool(tools, step.toolId) : undefined}
+            toolParams={stepParams(step)}
             state={stepStateOf(orch, step.id)}
             reason={runOf(step.id)?.reason ?? null}
             badges={numbersForStep(numbered, step.id)}
             severity={severityForStep(numbered, step.id)}
             onRetry={() => onRetryStep(step.id)}
             onRemove={() => onRemoveStep(step.id)}
+            onEditParams={() => onEditStepParams(step.id)}
           />
         {/each}
       </div>

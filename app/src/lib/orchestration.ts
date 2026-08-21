@@ -12,8 +12,28 @@ export interface Step {
   id: string;
   position: number;
   /// The card file's absolute path -- a step is a REFERENCE to a card
-  /// (spec O2); title, prompt and status all stay in the file.
+  /// (spec O2); title, prompt and status all stay in the file. `""` for
+  /// a TOOL step, which carries `toolId` instead (tools spec T1). Never
+  /// both, never neither: the daemon refuses either shape.
   cardPath: string;
+  /// The tool this step runs, or null for a card step.
+  toolId?: string | null;
+  /// Per-step parameter OVERRIDES only. A parameter the human never
+  /// touched is absent and resolves to the tool's own default, so a
+  /// later edit to that default still reaches this step.
+  toolParams?: Record<string, string>;
+}
+
+/// A step is a card step or a tool step, and almost everything branches
+/// on exactly this. One predicate so the rule has one spelling.
+export function isToolStep(step: Step): boolean {
+  return Boolean(step.toolId);
+}
+
+/// The overrides a step carries, tolerating the field being absent --
+/// steps written by an agent that predates tools have no `toolParams`.
+export function stepParams(step: Step): Record<string, string> {
+  return step.toolParams ?? {};
 }
 
 /// Stages run one after another; a stage's steps run in parallel, in the
@@ -42,6 +62,15 @@ export interface ConflictNote {
   id: string;
   stepIds: string[];
   note: string;
+}
+
+/// The only thing this module needs to know about a tool: that it
+/// exists, and what to call it in a stall reason or a conflict line. The
+/// tool's kind, body and params are orchestrationTools.ts's business,
+/// and keeping them out of here keeps the scheduler's inputs small.
+export interface ToolSummary {
+  id: string;
+  name: string;
 }
 
 export type RailState = "idle" | "running" | "paused";
@@ -143,17 +172,47 @@ export type Action =
 /// `knownWorktrees` is null when the worktree list has not loaded yet --
 /// unknown must never look like "gone", or a cold start would stall
 /// every bound rail.
+///
+/// `knownTools` is null on the same principle: the library is fetched
+/// asynchronously, and an unloaded library must not read as "every tool
+/// was deleted".
 function launchBlocker(
   rail: Rail,
+  step: Step,
   entry: CardEntry | undefined,
-  knownWorktrees: Set<string> | null
+  knownWorktrees: Set<string> | null,
+  knownTools: Set<string> | null
 ): string | null {
-  if (!entry) return "card file is missing";
-  if (entry.plan.kind === "note") return "notes are not runnable";
+  if (isToolStep(step)) {
+    if (knownTools && !knownTools.has(step.toolId as string)) {
+      return "tool is no longer in the library";
+    }
+  } else {
+    if (!entry) return "card file is missing";
+    if (entry.plan.kind === "note") return "notes are not runnable";
+  }
   if (rail.worktreePath && knownWorktrees && !knownWorktrees.has(rail.worktreePath)) {
     return `worktree ${rail.worktreePath} is gone`;
   }
   return null;
+}
+
+/// What a finished TOOL step's session says about it (tools spec T5).
+/// There is no card and therefore no done column to reach, so the exit
+/// code is the whole verdict.
+///
+/// An UNKNOWN code is a stall, not a pass: it means the app was not
+/// running when the session ended, so nobody witnessed the outcome, and
+/// silently marking it done would advance the rail on an assumption.
+function toolStepOutcome(
+  exitCode: number | undefined,
+  label: string
+): { kind: "markDone" } | { kind: "stall"; reason: string } {
+  if (exitCode === 0) return { kind: "markDone" };
+  if (exitCode === undefined) {
+    return { kind: "stall", reason: `${label}'s session ended while gavin was not watching` };
+  }
+  return { kind: "stall", reason: `${label} exited with code ${exitCode}` };
 }
 
 /// The scheduler (spec §4.2). Pure and total: same inputs, same list.
@@ -166,13 +225,22 @@ export function nextActions(
   board: Board,
   tree: GavinTree | undefined,
   worktrees: WorktreeInfo[] | null,
-  liveSessionIds: Set<string>
+  liveSessionIds: Set<string>,
+  /// The tool library, for resolving a tool step's name and checking it
+  /// still exists. Null while it is still loading -- which must not read
+  /// as "every tool was deleted" (see launchBlocker).
+  tools: ToolSummary[] | null = null,
+  /// Exit code by session id, for finished tool steps (tools spec T5).
+  /// A session absent here has no witnessed outcome.
+  exitCodes: Map<string, number> = new Map()
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
   const done = doneColumn(board);
   const doneSlug = done ? slugStatus(done.name) : null;
   const knownWorktrees = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
+  const knownTools = tools ? new Set(tools.map((t) => t.id)) : null;
+  const toolName = new Map((tools ?? []).map((t) => [t.id, t.name]));
   const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
 
   for (const rail of orch.rails) {
@@ -203,7 +271,11 @@ export function nextActions(
         // launching, so re-arming a rail is idempotent, and before the
         // dead-session check, so an agent that finished the card and
         // then quit counts as done, not stalled.
+        //
+        // Skipped entirely for a TOOL step: it has no card, so there is
+        // no status to compare and rule 3 owns its completion.
         if (
+          !isToolStep(step) &&
           (state === "pending" || state === "running") &&
           doneSlug &&
           entry &&
@@ -216,7 +288,7 @@ export function nextActions(
 
         // Rule 2 -- launch a pending step, or stall it with a reason.
         if (state === "pending") {
-          const reason = launchBlocker(rail, entry, knownWorktrees);
+          const reason = launchBlocker(rail, step, entry, knownWorktrees, knownTools);
           if (reason) {
             actions.push({ kind: "stall", stepId: step.id, reason });
             simulated.set(step.id, "stalled");
@@ -228,15 +300,29 @@ export function nextActions(
           continue;
         }
 
-        // Rule 3 -- a running step whose session is gone (spec O6).
+        // Rule 3 -- a running step whose session is gone (spec O6). For
+        // a CARD step that is always a stall: rule 1 already had its
+        // chance to call it done. For a TOOL step the exit code is the
+        // whole verdict (tools spec T5).
         if (state === "running") {
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
           if (sessionId && !liveSessionIds.has(sessionId)) {
-            actions.push({
-              kind: "stall",
-              stepId: step.id,
-              reason: `agent exited before the card reached ${done?.name ?? "the done column"}`,
-            });
+            if (isToolStep(step)) {
+              const label = toolName.get(step.toolId as string) ?? "the tool";
+              const outcome = toolStepOutcome(exitCodes.get(sessionId), label);
+              if (outcome.kind === "markDone") {
+                actions.push({ kind: "markDone", stepId: step.id });
+                simulated.set(step.id, "done");
+                continue;
+              }
+              actions.push({ kind: "stall", stepId: step.id, reason: outcome.reason });
+            } else {
+              actions.push({
+                kind: "stall",
+                stepId: step.id,
+                reason: `agent exited before the card reached ${done?.name ?? "the done column"}`,
+              });
+            }
             simulated.set(step.id, "stalled");
             stalled = true;
           }
@@ -336,21 +422,65 @@ export function addStage(orch: Orchestration, railId: string, stageId: string): 
   };
 }
 
+/// A step for a card (`cardPath`) or for a tool (`toolId`). Exactly one
+/// of the two, always -- the daemon refuses anything else, so the two
+/// factories below are the only shapes the app ever builds.
+function cardStep(stepId: string, position: number, cardPath: string): Step {
+  return { id: stepId, position, cardPath, toolId: null, toolParams: {} };
+}
+
+function toolStep(stepId: string, position: number, toolId: string): Step {
+  return { id: stepId, position, cardPath: "", toolId, toolParams: {} };
+}
+
+function insertStep(orch: Orchestration, stageId: string, make: (position: number) => Step): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => ({
+      ...r,
+      stages: r.stages.map((s) =>
+        s.id === stageId ? { ...s, steps: renumber([...s.steps, make(s.steps.length)]) } : s
+      ),
+    })),
+  };
+}
+
 export function addStep(
   orch: Orchestration,
   stageId: string,
   stepId: string,
   cardPath: string
 ): Orchestration {
+  return insertStep(orch, stageId, (position) => cardStep(stepId, position, cardPath));
+}
+
+/// Join an existing stage with a tool -- the PARALLEL drop, same as
+/// addStep is for a card.
+export function addToolStep(
+  orch: Orchestration,
+  stageId: string,
+  stepId: string,
+  toolId: string
+): Orchestration {
+  return insertStep(orch, stageId, (position) => toolStep(stepId, position, toolId));
+}
+
+/// Replace a tool step's parameter overrides wholesale. The caller has
+/// already pruned values equal to the tool's defaults (spec §5.4), so
+/// what arrives here is exactly what gets stored.
+export function setStepParams(
+  orch: Orchestration,
+  stepId: string,
+  params: Record<string, string>
+): Orchestration {
   return {
     ...orch,
     rails: orch.rails.map((r) => ({
       ...r,
-      stages: r.stages.map((s) =>
-        s.id === stageId
-          ? { ...s, steps: renumber([...s.steps, { id: stepId, position: s.steps.length, cardPath }]) }
-          : s
-      ),
+      stages: r.stages.map((s) => ({
+        ...s,
+        steps: s.steps.map((t) => (t.id === stepId ? { ...t, toolParams: { ...params } } : t)),
+      })),
     })),
   };
 }
@@ -465,6 +595,27 @@ export function addCardAsStage(
   stepId: string,
   cardPath: string
 ): Orchestration {
+  return insertAsStage(orch, railId, index, cardStep(stepId, 0, cardPath));
+}
+
+/// Place a TOOL into a rail as its own stage at `index` -- the same
+/// sequential drop addCardAsStage is for a card.
+export function addToolAsStage(
+  orch: Orchestration,
+  railId: string,
+  index: number,
+  stepId: string,
+  toolId: string
+): Orchestration {
+  return insertAsStage(orch, railId, index, toolStep(stepId, 0, toolId));
+}
+
+function insertAsStage(
+  orch: Orchestration,
+  railId: string,
+  index: number,
+  step: Step
+): Orchestration {
   if (!orch.rails.some((r) => r.id === railId)) return orch;
   return {
     ...orch,
@@ -472,11 +623,7 @@ export function addCardAsStage(
       if (r.id !== railId) return r;
       const stages = [...r.stages];
       const at = Math.max(0, Math.min(index, stages.length));
-      stages.splice(at, 0, {
-        id: crypto.randomUUID(),
-        position: at,
-        steps: [{ id: stepId, position: 0, cardPath }],
-      });
+      stages.splice(at, 0, { id: crypto.randomUUID(), position: at, steps: [step] });
       return { ...r, stages: renumber(stages) };
     }),
   };
@@ -642,6 +789,11 @@ interface PlacedStep {
   railId: string;
   stageId: string;
   cardPath: string;
+  /// Null for a card step. A tool step is EXCLUDED from duplicate-card
+  /// (two "Push" steps in one rail are the normal case) but takes part
+  /// in same-worktree exactly like a card step -- a bash tool writing to
+  /// the checkout is precisely the hazard that rule exists for.
+  toolId: string | null;
   checkout: string | null;
   state: StepState;
 }
@@ -657,6 +809,7 @@ function placedSteps(orch: Orchestration, tree: GavinTree | undefined): PlacedSt
           railId: rail.id,
           stageId: stage.id,
           cardPath: step.cardPath,
+          toolId: step.toolId ?? null,
           checkout,
           state: stepStateOf(orch, step.id),
         });
@@ -729,9 +882,12 @@ export function detectConflicts(
     });
   }
 
-  // 3. One card on two steps would be run twice.
+  // 3. One card on two steps would be run twice. TOOL steps are exempt
+  // (tools spec T6): a rail that commits, tests and commits again is
+  // doing exactly what it should.
   const byCard = new Map<string, PlacedStep[]>();
   for (const s of steps) {
+    if (s.toolId) continue;
     const group = byCard.get(s.cardPath) ?? [];
     group.push(s);
     byCard.set(s.cardPath, group);
@@ -827,13 +983,19 @@ export function severityForRail(
 export function describeConflict(
   c: Conflict,
   cards: Map<string, CardEntry>,
-  orch: Orchestration
+  orch: Orchestration,
+  /// Tool names, for naming a tool step. Absent falls back to the tool
+  /// id -- a conflict about a deleted tool must still be describable,
+  /// exactly as one about a missing card falls back to its file name.
+  tools: ToolSummary[] = []
 ): string {
+  const toolName = new Map(tools.map((t) => [t.id, t.name]));
   const titleOfStep = (stepId: string): string => {
     for (const rail of orch.rails) {
       for (const stage of rail.stages) {
         for (const step of stage.steps) {
           if (step.id !== stepId) continue;
+          if (step.toolId) return toolName.get(step.toolId) ?? step.toolId;
           return cards.get(step.cardPath)?.plan.title ?? (step.cardPath.split("/").pop() ?? step.cardPath);
         }
       }

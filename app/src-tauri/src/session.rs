@@ -2,7 +2,7 @@ use crate::config::Workspace;
 use crate::layout::LayoutNode;
 use protocol::{
     read_message, socket_path, write_message, Board, Column, ConflictNote, Label, Orchestration, Rail,
-    Request, Response,
+    Request, Response, ToolDef,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -1485,6 +1485,33 @@ pub fn set_step_run(
         &Request::SetStepRun { step_id, state: state_value, session_id, reason },
     )
     .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+// --- The tool library -------------------------------------------------------
+
+#[tauri::command]
+pub fn get_tools(workspace_id: String, state: State<CommandConnection>) -> Result<Vec<ToolDef>, String> {
+    let resp =
+        send_command(&state.0, &Request::GetTools { workspace_id }).map_err(|e| e.to_string())?;
+    match resp {
+        Response::Tools { tools } => Ok(tools),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected Tools, got {other:?}")),
+    }
+}
+
+/// The daemon's validation (unknown kind, a built-in id, an empty name)
+/// comes back as Response::Error and reaches the dialog verbatim.
+#[tauri::command]
+pub fn save_tool(tool: ToolDef, state: State<CommandConnection>) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::SaveTool { tool }).map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+#[tauri::command]
+pub fn delete_tool(id: String, state: State<CommandConnection>) -> Result<(), String> {
+    let resp = send_command(&state.0, &Request::DeleteTool { id }).map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
 

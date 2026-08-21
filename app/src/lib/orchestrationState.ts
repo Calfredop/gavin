@@ -19,19 +19,32 @@ import {
   deleteRail,
   addStage,
   addStep,
+  addToolStep,
   removeStep,
   addCardAsStage,
+  addToolAsStage,
+  setStepParams,
   moveStepIntoStage,
   moveStepToNewStage,
   splitStageIntoSequence,
+  isToolStep,
+  stepParams,
 } from "./orchestration";
-import type { Action, Orchestration, Rail, RailState, StepState } from "./orchestration";
+import type { Action, Orchestration, Rail, RailState, StepState, Step } from "./orchestration";
+import { findTool, resolveToolBody } from "./orchestrationTools";
+import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore } from "./gitState";
-import { layoutState, resolvedAgentFor, createSessionOnPage } from "./layoutState";
+import { layoutState, resolvedAgentFor, createSessionOnPage, sessionExits } from "./layoutState";
 import { allSessionIds } from "./layout";
-import { composeTaskPrompt, composePlanPrompt, buildRunCommand, runStatusNeeded } from "./cardRun";
+import {
+  composeTaskPrompt,
+  composePlanPrompt,
+  buildRunCommand,
+  buildToolCommand,
+  runStatusNeeded,
+} from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
 import { pasteToMainAgent } from "./cardRunActions";
 
@@ -219,6 +232,66 @@ export async function retryStep(workspaceId: string, stepId: string): Promise<vo
   await tick(workspaceId);
 }
 
+/// Launch a TOOL step (tools spec §3). Nothing card-shaped happens here:
+/// no card_sessions binding and no "In Progress" write, because a tool
+/// is not a card and has no status to keep.
+async function executeToolLaunch(
+  workspaceId: string,
+  rail: Rail,
+  step: Step
+): Promise<void> {
+  // null is "not fetched yet", NOT "empty" -- stalling here would turn a
+  // cold start into a stalled rail. Leaving the step `pending` and
+  // writing nothing is safe: the tab re-ticks when the library lands
+  // (its $effect watches toolRecords), and nextActions will re-issue
+  // this same launch. nextActions makes the matching choice, passing a
+  // null library through launchBlocker rather than blocking on it.
+  const library = libraryFor(get(toolRecords), workspaceId);
+  if (library === null) return;
+
+  const tool = findTool(library, step.toolId as string);
+  if (!tool) {
+    await setStepRunAction(workspaceId, step.id, "stalled", null, "tool is no longer in the library");
+    return;
+  }
+
+  // The rail's checkout, NOT a card's contextFolder -- there is no card.
+  const tree = get(gavinTrees)[workspaceId];
+  const cwd = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
+  if (!cwd) {
+    await setStepRunAction(
+      workspaceId,
+      step.id,
+      "stalled",
+      null,
+      "no worktree bound and the workspace has no root"
+    );
+    return;
+  }
+
+  const body = resolveToolBody(tool, stepParams(step));
+  const command =
+    tool.kind === "agent"
+      ? buildRunCommand(resolvedAgentFor(workspaceId).command, body)
+      : buildToolCommand(tool.kind, body, tool.name);
+
+  const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
+  if (!sessionId) {
+    await setStepRunAction(workspaceId, step.id, "stalled", null, `could not start ${tool.name}`);
+    return;
+  }
+  // A command tool's PTY can close in well under a second, so the tab
+  // needs a name the moment it appears or it is unidentifiable. Best
+  // effort: a nameless tab is cosmetic, not a reason to stall a step
+  // whose session is already running.
+  try {
+    await backend.setSessionName(sessionId, tool.name);
+  } catch {
+    // Cosmetic only.
+  }
+  await setStepRunAction(workspaceId, step.id, "running", sessionId, null);
+}
+
 /// Deliberately the EXISTING card-run path, so the board and the tab can
 /// never disagree about what is running (spec §4.3).
 async function executeLaunch(workspaceId: string, stepId: string): Promise<void> {
@@ -226,6 +299,11 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
   const rail = railOwning(orch, stepId);
   const step = rail?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId);
   if (!rail || !step) return;
+
+  if (isToolStep(step)) {
+    await executeToolLaunch(workspaceId, rail, step);
+    return;
+  }
 
   const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
   if (!entry) {
@@ -319,7 +397,13 @@ export async function tick(workspaceId: string): Promise<void> {
     for (const ws of get(layoutState).workspaces) {
       for (const page of ws.pages) for (const id of allSessionIds(page.layout)) live.add(id);
     }
-    await executeActions(workspaceId, nextActions(orch, board, tree, worktrees, live));
+    // null, not [], for the same reason as worktrees above: an unloaded
+    // tool library must not read as "every tool was deleted".
+    const tools = libraryFor(get(toolRecords), workspaceId);
+    await executeActions(
+      workspaceId,
+      nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits))
+    );
   } finally {
     ticking.delete(workspaceId);
   }
@@ -442,6 +526,54 @@ export function addCardAsStageAction(
   return mutatePlan(workspaceId, (o) => addCardAsStage(o, railId, index, crypto.randomUUID(), cardPath));
 }
 
+// ---- Tool step actions -----------------------------------------------------
+// The card pair's exact shape, one rung over: a tool dropped into a gap
+// becomes its own stage (sequential), a tool dropped onto a stage joins
+// it (parallel).
+
+/// Appends the tool to the rail as its own stage -- what clicking a tool
+/// row in the drawer means.
+export function addToolAsStepAction(
+  workspaceId: string,
+  railId: string,
+  toolId: string
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => {
+    const stageId = crypto.randomUUID();
+    return addToolStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), toolId);
+  });
+}
+
+export function addToolAsStageAction(
+  workspaceId: string,
+  railId: string,
+  index: number,
+  toolId: string
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) =>
+    addToolAsStage(o, railId, index, crypto.randomUUID(), toolId)
+  );
+}
+
+export function addToolToStageAction(
+  workspaceId: string,
+  stageId: string,
+  toolId: string
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => addToolStep(o, stageId, crypto.randomUUID(), toolId));
+}
+
+/// The overrides arrive already pruned of values equal to the tool's own
+/// defaults (StepParamsDialog does it), so a later edit to a default
+/// still reaches a step that never deliberately overrode it.
+export function setStepParamsAction(
+  workspaceId: string,
+  stepId: string,
+  params: Record<string, string>
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => setStepParams(o, stepId, params));
+}
+
 export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<void> {
   return mutatePlan(workspaceId, (o) => splitStageIntoSequence(o, stageId));
 }
@@ -471,6 +603,8 @@ export async function requestReorganize(
       : "\nGavin currently flags no conflicts.",
     "",
     "Read gavin_get_orchestration for the authoritative picture before writing anything.",
+    "It also lists this workspace's TOOLS — a step can run a tool (toolId) instead of a card,",
+    "and rewriting a rail must carry every existing step's toolId and toolParams through.",
   ].join("\n");
 
   return pasteToMainAgent(workspaceId, prompt);

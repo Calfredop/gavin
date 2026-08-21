@@ -1,16 +1,32 @@
 <script lang="ts">
-  import { ChevronRight, ChevronLeft, ChevronDown, FileText, ListChecks } from "@lucide/svelte";
+  import {
+    ChevronRight,
+    ChevronLeft,
+    ChevronDown,
+    FileText,
+    ListChecks,
+    Bot,
+    Terminal,
+    FileCode2,
+    Settings2,
+  } from "@lucide/svelte";
   import { orchDragState } from "./orchestrationDrag";
+  import { toolKindLabel } from "./orchestrationTools";
+  import type { Tool } from "./orchestrationTools";
   import type { UnplacedGroup } from "./orchestration";
 
   interface Props {
     groups: UnplacedGroup[];
+    /// Every tool this workspace can reach: built-in, global, its own.
+    tools: Tool[];
     /// Clicking a row adds it to this rail as its own stage; null when
     /// there is no rail to add to yet.
     targetRailId: string | null;
     onAdd: (cardPath: string) => void;
+    onAddTool: (toolId: string) => void;
+    onManageTools: () => void;
   }
-  let { groups, targetRailId, onAdd }: Props = $props();
+  let { groups, tools, targetRailId, onAdd, onAddTool, onManageTools }: Props = $props();
 
   let collapsed = $state(false);
   const dragging = $derived($orchDragState !== null);
@@ -20,6 +36,22 @@
   // not touched follows its own isDone rule even as groups come and go.
   let toggled = $state<Record<string, boolean>>({});
   const isCollapsed = (g: UnplacedGroup): boolean => toggled[g.slug] ?? g.isDone;
+
+  // Tools sit ABOVE the cards and start open: they are the same handful
+  // every time, so they are the part of this panel a human learns to
+  // reach for, while the card list churns.
+  let toolsCollapsed = $state(false);
+  const iconFor = (kind: Tool["kind"]) =>
+    kind === "agent" ? Bot : kind === "command" ? Terminal : FileCode2;
+  // Built-ins first, then everything the human made, each alphabetical --
+  // a stable order, so a tool stays where they last saw it.
+  const SCOPE_ORDER: Tool["scope"][] = ["builtin", "workspace", "global"];
+  const sortedTools = $derived(
+    [...tools].sort(
+      (a, b) =>
+        SCOPE_ORDER.indexOf(a.scope) - SCOPE_ORDER.indexOf(b.scope) || a.name.localeCompare(b.name)
+    )
+  );
 </script>
 
 <aside class="drawer" class:collapsed class:drop-lit={dragging} data-orch-drawer>
@@ -32,7 +64,43 @@
     {#if dragging && $orchDragState?.kind === "step"}
       <p class="hint">Drop here to take a step off its rail.</p>
     {:else if !dragging}
-      <p class="hint quiet">Drag a card onto a rail, or click to append it.</p>
+      <p class="hint quiet">Drag a card or a tool onto a rail, or click to append it.</p>
+    {/if}
+
+    <button
+      type="button"
+      class="group-head"
+      onclick={() => (toolsCollapsed = !toolsCollapsed)}
+    >
+      {#if toolsCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+      <span class="group-name">Tools</span>
+      <span class="group-count">{sortedTools.length}</span>
+    </button>
+    {#if !toolsCollapsed}
+      <ul>
+        {#each sortedTools as tool (tool.id)}
+          {@const Icon = iconFor(tool.kind)}
+          <li>
+            <button
+              type="button"
+              data-orch-tool={tool.id}
+              class:dragging={$orchDragState?.id === tool.id}
+              disabled={!targetRailId}
+              title="{toolKindLabel(tool.kind)}{tool.description ? ` — ${tool.description}` : ''}"
+              onclick={() => onAddTool(tool.id)}
+            >
+              <Icon size={12} />
+              <span>{tool.name}</span>
+              {#if tool.scope !== "builtin"}
+                <span class="scope">{tool.scope === "global" ? "all" : "ws"}</span>
+              {/if}
+            </button>
+          </li>
+        {/each}
+      </ul>
+      <button type="button" class="manage" onclick={onManageTools}>
+        <Settings2 size={12} /> Manage tools…
+      </button>
     {/if}
     {#each groups as group (group.slug)}
       <button
@@ -175,5 +243,35 @@
   .group-count {
     color: var(--text-subtle);
     font-variant-numeric: tabular-nums;
+  }
+  /* "ws" / "all" rather than a full word: the row's job is the tool's
+     NAME, and the scope only has to be checkable at a glance. Built-ins
+     carry no tag at all -- they are the unmarked default. */
+  .scope {
+    flex: none;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-subtle);
+    font-size: 9px;
+    text-transform: uppercase;
+  }
+  .manage {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: calc(100% - 8px);
+    margin: 0 4px 6px;
+    padding: 5px 6px;
+    background: none;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .manage:hover {
+    background: var(--surface-hover);
+    color: var(--text);
   }
 </style>

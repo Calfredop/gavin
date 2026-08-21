@@ -7,6 +7,7 @@ import {
   movePointer,
   endPointer,
   cancelDrag,
+  isPlacementDrag,
   __resetForTesting,
 } from "./orchestrationDrag";
 import type { MeasuredRail, OrchDragCallbacks } from "./orchestrationDrag";
@@ -224,5 +225,60 @@ describe("dragging an unplaced card in", () => {
     expect(get(orchDragState)?.target).toEqual({ kind: "unplace" });
     endPointer();
     expect(c.commit).not.toHaveBeenCalled();
+  });
+});
+
+describe("dragging a tool in", () => {
+  it("commits a tool drop onto a stage — parallel", () => {
+    const c = cbs();
+    beginCandidate("tool", "builtin:push", null, { x: 100, y: 300 }, RECT, c);
+    movePointer({ x: 100, y: 50 });
+    endPointer();
+    expect(c.commit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "tool",
+        id: "builtin:push",
+        target: { kind: "into-stage", stageId: "s1" },
+      })
+    );
+  });
+
+  it("commits a tool drop into a gap as a new stage — sequential", () => {
+    const c = cbs();
+    beginCandidate("tool", "builtin:push", null, { x: 100, y: 300 }, RECT, c);
+    movePointer({ x: 100, y: 110 });
+    endPointer();
+    expect(c.commit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "tool",
+        target: { kind: "new-stage", railId: "r1", index: 1 },
+      })
+    );
+  });
+
+  // Same rule as a card: it was never placed, so there is nothing to
+  // take off a rail.
+  it("does not commit a tool dropped back on the drawer", () => {
+    const c = cbs({ measureDrawer: () => ({ left: 500, top: 0, width: 100, height: 400 }) });
+    beginCandidate("tool", "builtin:push", null, { x: 540, y: 300 }, RECT, c);
+    movePointer({ x: 540, y: 50 });
+    endPointer();
+    expect(c.commit).not.toHaveBeenCalled();
+  });
+
+  it("a press with no movement is a click, so click-to-append still works", () => {
+    const c = cbs();
+    beginCandidate("tool", "builtin:push", null, { x: 100, y: 50 }, RECT, c);
+    endPointer();
+    expect(c.commit).not.toHaveBeenCalled();
+    expect(c.click).toHaveBeenCalledWith("builtin:push");
+  });
+});
+
+describe("isPlacementDrag", () => {
+  it("is true for the drawer kinds and false for a step", () => {
+    expect(isPlacementDrag("card")).toBe(true);
+    expect(isPlacementDrag("tool")).toBe(true);
+    expect(isPlacementDrag("step")).toBe(false);
   });
 });

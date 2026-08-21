@@ -94,13 +94,21 @@ export function computeOrchDropTarget(
 // ---- The controller --------------------------------------------------------
 
 /// What is being dragged. "step" moves an existing step between stages
-/// and rails; "card" places an unplaced card from the drawer, which has
-/// no step id yet -- its `id` is the card path.
-export type OrchDragKind = "step" | "card";
+/// and rails; "card" places an unplaced card from the drawer, whose `id`
+/// is the card path; "tool" places a tool from the drawer's library,
+/// whose `id` is the tool id. The two drawer kinds behave identically
+/// here and diverge only at commit, which calls different mutators.
+export type OrchDragKind = "step" | "card" | "tool";
+
+/// True for the drawer kinds -- the ones that have no step id yet, so
+/// nothing to detach and nowhere to be "dropped back".
+export function isPlacementDrag(kind: OrchDragKind): boolean {
+  return kind === "card" || kind === "tool";
+}
 
 /// `sourceStageId` is what makes "dropped back where it started"
-/// detectable, so a click-like drag commits nothing. Null for a card,
-/// which came from no stage.
+/// detectable, so a click-like drag commits nothing. Null for a card or
+/// a tool, which came from no stage.
 export interface ActiveOrchDrag {
   kind: OrchDragKind;
   id: string;
@@ -205,8 +213,8 @@ export function endPointer(): void {
   if (!active.target) return;
   // Dropping back into the stage it came from changes nothing.
   if (active.target.kind === "into-stage" && active.target.stageId === active.sourceStageId) return;
-  // A card dropped on the drawer is already unplaced.
-  if (active.kind === "card" && active.target.kind === "unplace") return;
+  // A card or tool dropped back on the drawer was never placed.
+  if (isPlacementDrag(active.kind) && active.target.kind === "unplace") return;
   cbs.commit(active as ActiveOrchDrag & { target: OrchDropTarget });
 }
 
