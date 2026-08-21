@@ -32,6 +32,7 @@ import { layoutState, resolvedAgentFor, createSessionOnPage } from "./layoutStat
 import { allSessionIds } from "./layout";
 import { composeTaskPrompt, composePlanPrompt, buildRunCommand, runStatusNeeded } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
+import { pasteToMainAgent } from "./cardRunActions";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -428,4 +429,34 @@ export function moveStepToNewStageAction(
 
 export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<void> {
   return mutatePlan(workspaceId, (o) => splitStageIntoSequence(o, stageId));
+}
+
+/// Hand the reorganize request to the RUNNING workspace agent. A summary
+/// of what the tab currently shows rides along so the agent starts from
+/// the same picture the human is looking at -- it still calls
+/// gavin_get_orchestration for the authoritative read.
+export async function requestReorganize(
+  workspaceId: string,
+  conflictSummary: string[]
+): Promise<string | null> {
+  const orch = get(orchestrations)[workspaceId];
+  const railLine = (rail: Rail): string =>
+    `- ${rail.name} (${rail.worktreePath ?? "no worktree"}): ` +
+    `${rail.stages.length} stage${rail.stages.length === 1 ? "" : "s"}, ` +
+    `${rail.stages.reduce((n, s) => n + s.steps.length, 0)} steps`;
+
+  const prompt = [
+    "Use the gavin-orchestrate skill to reorganize this workspace's orchestration.",
+    "",
+    orch && orch.rails.length > 0
+      ? `The tab currently shows:\n${orch.rails.map(railLine).join("\n")}`
+      : "The tab has no rails yet — create them.",
+    conflictSummary.length > 0
+      ? `\nGavin currently flags:\n${conflictSummary.map((c) => `- ${c}`).join("\n")}`
+      : "\nGavin currently flags no conflicts.",
+    "",
+    "Read gavin_get_orchestration for the authoritative picture before writing anything.",
+  ].join("\n");
+
+  return pasteToMainAgent(workspaceId, prompt);
 }

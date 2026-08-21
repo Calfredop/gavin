@@ -11,8 +11,8 @@
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
-  import { layoutState } from "./layoutState";
-  import { cardIndex, doneColumn, detectConflicts, numberConflicts } from "./orchestration";
+  import { layoutState, switchWorkspaceView } from "./layoutState";
+  import { cardIndex, doneColumn, detectConflicts, numberConflicts, describeConflict } from "./orchestration";
   import {
     orchestrations,
     fetchOrchestration,
@@ -32,6 +32,7 @@
     makeStageSequentialAction,
     moveStepIntoStageAction,
     moveStepToNewStageAction,
+    requestReorganize,
   } from "./orchestrationState";
 
   interface Props {
@@ -109,6 +110,20 @@
     });
   });
 
+  const mainAgentRunning = $derived(Boolean(ws?.mainSessionId));
+  const conflictSummary = $derived(
+    orch ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch)}`) : []
+  );
+
+  async function reorganize(): Promise<void> {
+    const err = await requestReorganize(workspaceId, conflictSummary);
+    if (err) {
+      saveErrors.update((e) => ({ ...e, [workspaceId]: err }));
+      return;
+    }
+    await switchWorkspaceView(workspaceId, "home");
+  }
+
   function onStart(railId: string): void {
     const paused = orch?.railRuns.find((r) => r.railId === railId)?.state === "paused";
     void (paused ? resumeRail(workspaceId, railId) : startRail(workspaceId, railId));
@@ -118,6 +133,15 @@
 <div class="view">
   <header class="bar">
     <h2>Orchestration</h2>
+    <button
+      type="button"
+      class="add-rail"
+      disabled={!mainAgentRunning}
+      title={mainAgentRunning ? "" : "Start the workspace agent on Home first"}
+      onclick={() => void reorganize()}
+    >
+      Reorganize with agent…
+    </button>
     <button type="button" class="add-rail" onclick={() => void addRailAction(workspaceId, "New rail")}>
       <Plus size={14} /> Rail
     </button>
@@ -249,8 +273,12 @@
     font-size: 12px;
     cursor: pointer;
   }
-  .add-rail:hover {
+  .add-rail:hover:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .add-rail:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
   .save-error {
     display: flex;
