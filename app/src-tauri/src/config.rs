@@ -140,6 +140,13 @@ pub struct AppConfig {
     /// persist_workspaces, or it silently resets to empty on save.
     #[serde(default)]
     pub board_tabs: HashMap<String, BoardTabRecord>,
+    /// App-global light/dark preference: "light", "dark", or absent for
+    /// System -- the same "absent means default" convention as
+    /// `Workspace::color`. Like session_names/file_tabs/board_tabs this
+    /// must be carried through `persist_workspaces`, or it silently
+    /// resets on the next save.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -216,6 +223,21 @@ mod tests {
     }
 
     #[test]
+    fn theme_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = AppConfig { theme: Some("light".to_string()), ..Default::default() };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap().theme, Some("light".to_string()));
+    }
+
+    #[test]
+    fn absent_theme_loads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(dir.path()), r#"{"workspaces":[]}"#).unwrap();
+        assert_eq!(load(dir.path()).unwrap().theme, None);
+    }
+
+    #[test]
     fn save_then_load_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
         let config = AppConfig {
@@ -224,6 +246,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -242,6 +265,7 @@ mod tests {
             session_names,
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -274,6 +298,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs,
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -383,6 +408,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -418,6 +444,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -433,6 +460,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(&nested, &config).unwrap();
 
@@ -456,6 +484,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs,
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -504,6 +533,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -550,6 +580,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            theme: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
