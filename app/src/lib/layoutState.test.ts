@@ -44,6 +44,9 @@ vi.mock("./backend", () => ({
 vi.mock("./terminalRegistry", () => ({
   destroyTerminal: vi.fn(),
   setCwdForLinks: vi.fn(),
+  // themeState.init() runs at the top of bootstrap() and pushes the
+  // resolved theme into the terminal registry.
+  applyTerminalTheme: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({

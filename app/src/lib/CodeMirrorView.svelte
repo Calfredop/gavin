@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { createEditor, type EditorHandle } from "./codeMirror";
+  import { themeState } from "./ui/themeState.svelte";
 
   interface Props {
     // Initial content only: once mounted, the EDITOR owns the buffer.
@@ -40,7 +41,8 @@
   $effect(() => {
     if (!host || handle) return;
     const parent = host;
-    void createEditor({ parent, doc, path, readOnly, onChange, onSave }).then((created) => {
+    const opts = { parent, doc, path, readOnly, theme: themeState.effective, onChange, onSave };
+    void createEditor(opts).then((created) => {
       // The component may have been destroyed while the language pack
       // was still loading.
       if (destroyed) {
@@ -60,6 +62,12 @@
   $effect(() => {
     const ro = readOnly;
     handle?.setReadOnly(ro);
+  });
+
+  // Same reconfigure-don't-remount rule for the theme.
+  $effect(() => {
+    const t = themeState.effective;
+    handle?.setTheme(t);
   });
 
   onDestroy(() => {

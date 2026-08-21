@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as backend from "../backend";
+import { applyTerminalTheme } from "../terminalRegistry";
 import { resolveTheme, parseThemePref, type ThemePref, type EffectiveTheme } from "./theme";
 
 /// "system" is stored as null on the Rust side (absent means default),
@@ -20,6 +21,9 @@ class ThemeStore {
     if (typeof document !== "undefined") {
       document.documentElement.dataset.theme = this.effective;
     }
+    // xterm reads colours from a JS options object, not CSS, so stamping
+    // data-theme does nothing for it -- the registry has to be told.
+    applyTerminalTheme(this.effective);
   }
 
   async #systemTheme(): Promise<EffectiveTheme | null> {

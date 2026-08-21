@@ -65,6 +65,7 @@ async function languageExtension(path: string): Promise<Extension[]> {
 export interface EditorHandle {
   setDoc(text: string): void;
   setReadOnly(readOnly: boolean): void;
+  setTheme(theme: "light" | "dark"): void;
   measure(): void;
   destroy(): void;
 }
@@ -74,22 +75,53 @@ export interface CreateEditorOptions {
   doc: string;
   path: string;
   readOnly: boolean;
+  theme: "light" | "dark";
   onChange: (value: string) => void;
   onSave: () => void;
 }
 
 export async function createEditor(options: CreateEditorOptions): Promise<EditorHandle> {
-  const [stateMod, view, commands, themeOneDark, language] = await Promise.all([
+  const [stateMod, view, commands, themeOneDark, languageMod, language] = await Promise.all([
     import("@codemirror/state"),
     import("@codemirror/view"),
     import("@codemirror/commands"),
     import("@codemirror/theme-one-dark"),
+    import("@codemirror/language"),
     languageExtension(options.path),
   ]);
   const { EditorState, Compartment } = stateMod;
   const { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } = view;
 
   const readOnlyCompartment = new Compartment();
+  const themeCompartment = new Compartment();
+
+  /// oneDark bundles its own HighlightStyle, and it is the ONLY source of
+  /// syntax colour here -- there is no defaultHighlightStyle in the
+  /// extension list. So the light arm has to supply one, or light mode
+  /// would render every token in the same flat colour.
+  const themeFor = (theme: "light" | "dark") =>
+    theme === "dark"
+      ? themeOneDark.oneDark
+      : [
+          languageMod.syntaxHighlighting(languageMod.defaultHighlightStyle),
+          EditorView.theme(
+            {
+              "&": { backgroundColor: "var(--surface-base)", color: "var(--text)" },
+              ".cm-content": { caretColor: "var(--text)" },
+              ".cm-gutters": {
+                backgroundColor: "var(--surface-raised)",
+                color: "var(--text-subtle)",
+                border: "none",
+              },
+              ".cm-activeLine": { backgroundColor: "var(--surface-hover)" },
+              ".cm-activeLineGutter": { backgroundColor: "var(--surface-hover)" },
+              "&.cm-focused .cm-selectionBackground, ::selection": {
+                backgroundColor: "var(--surface-selected)",
+              },
+            },
+            { dark: false }
+          ),
+        ];
 
   const state = EditorState.create({
     doc: options.doc,
@@ -111,7 +143,7 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
         ...commands.defaultKeymap,
         ...commands.historyKeymap,
       ]),
-      themeOneDark.oneDark,
+      themeCompartment.of(themeFor(options.theme)),
       EditorView.lineWrapping,
       readOnlyCompartment.of([
         EditorState.readOnly.of(options.readOnly),
@@ -141,6 +173,11 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
           EditorView.editable.of(!readOnly),
         ]),
       });
+    },
+    setTheme(theme: "light" | "dark") {
+      // Compartment reconfigure, same reason as setReadOnly: a theme flip
+      // must not throw away scroll position or undo history.
+      editorView.dispatch({ effects: themeCompartment.reconfigure(themeFor(theme)) });
     },
     measure() {
       editorView.requestMeasure();
