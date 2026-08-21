@@ -34,11 +34,18 @@ export interface ActiveDrag {
   size: { width: number; height: number };
 }
 
+// What was held down when the gesture started. Shift is the board's
+// multi-select modifier (boardSelection.ts): the surface selects instead
+// of opening the card.
+export interface ClickModifiers {
+  shift: boolean;
+}
+
 export interface DragCallbacks {
   measure: () => MeasuredColumn[]; // card/plan drags
   measureColumns: () => Measured[]; // column drags, dragged excluded
   commit: (drag: ActiveDrag & { target: DropTarget }) => void;
-  click: (kind: DragKind, id: string) => void;
+  click: (kind: DragKind, id: string, mods: ClickModifiers) => void;
 }
 
 export const dragState = writable<ActiveDrag | null>(null);
@@ -72,6 +79,9 @@ interface Candidate {
   start: Point;
   grabOffset: Point;
   size: { width: number; height: number };
+  // Shift was down at pointerdown: this gesture can only ever be a
+  // multi-select click, never a drag.
+  shift: boolean;
 }
 
 let candidate: Candidate | null = null;
@@ -85,7 +95,8 @@ export function beginCandidate(
   sourceNest: string | null,
   start: Point,
   itemRect: Rect,
-  cbs: DragCallbacks
+  cbs: DragCallbacks,
+  shift = false
 ): void {
   candidate = {
     kind,
@@ -96,6 +107,7 @@ export function beginCandidate(
     start,
     grabOffset: { x: start.x - itemRect.left, y: start.y - itemRect.top },
     size: { width: itemRect.width, height: itemRect.height },
+    shift,
   };
   callbacks = cbs;
 }
@@ -123,7 +135,9 @@ export function movePointer(p: Point, buttons?: number): void {
     dragState.set({ ...active, pointer: p, target: computeTarget(active.kind, p) });
     return;
   }
-  if (!candidate || !exceedsThreshold(candidate.start, p)) return;
+  // A shift gesture is a selection click and nothing else -- promoting
+  // it to a drag would fling the card the human was only picking.
+  if (!candidate || candidate.shift || !exceedsThreshold(candidate.start, p)) return;
   dragState.set({
     kind: candidate.kind,
     id: candidate.id,
@@ -155,7 +169,7 @@ export function endPointer(): void {
   dragState.set(null);
   if (!cbs) return;
   if (!active) {
-    if (wasCandidate) cbs.click(wasCandidate.kind, wasCandidate.id);
+    if (wasCandidate) cbs.click(wasCandidate.kind, wasCandidate.id, { shift: wasCandidate.shift });
     return;
   }
   if (!active.target) return;

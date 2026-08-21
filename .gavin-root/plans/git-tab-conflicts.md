@@ -1,6 +1,7 @@
 ---
+order: 1024
 title: Git tab — Conflict resolution (merge editor)
-status: In Progress
+status: Done
 priority: high
 ---
 # Git tab — Conflict resolution (merge editor)
@@ -20,4 +21,4 @@ Plan: `docs/superpowers/plans/2026-08-21-git-tab-conflicts.md`
 - [x] `conflictMarkers.ts` parser/rewriter + store actions (+ tests)
 - [x] CodeMirror decorations + scroll; `GitConflictView`, `GitConflictChooser`; wiring, banner count, U-row routing
 - [x] Smoke entries
-- [ ] Manual pass (Smoke Test workspace → “Git tab — conflicts”)
+- [x] Manual pass (Smoke Test workspace → “Git tab — conflicts”)

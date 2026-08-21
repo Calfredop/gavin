@@ -1,4 +1,5 @@
 ---
+order: 4096
 title: Workspace init wizard
 kind: plan
 status: In Progress
@@ -60,3 +61,20 @@ wizard needs both a folder picker and the integration action, making it a
 second owner. Recommended amendment: D56 becomes "Settings and the init
 wizard own..." — the wizard is a setup flow, the same job D37 gave
 Settings when it made the panel work unrooted. Tasks 1-4 are unaffected.
+
+## Remaining to close
+
+- [ ] Smoke `wiz-derived` — do a step in Settings, confirm the wizard counts it
+- [ ] Smoke `wiz-integration-degrades` — Codex writes AGENTS.md, names what it skipped
+- [ ] Smoke the other nine "Init wizard" checklist items
+- [ ] Move this card to Done once the pass is clean
+- [ ] Push `main` (the merge is local only)
+
+Everything in code is built and merged to `main` (9 commits, `d89fc40..0bbd6c4`).
+Gates on the merged result: cargo clean, vitest 689, svelte-check 0 errors,
+build clean. Only the interactive pass is left — no component has been
+clicked by a human yet.
+
+**Known limitation, by design:** "Ask the agent" appears only for Claude
+Code, because `prompt_arg` is verified only there. See the
+`multi-agent-mcp` card to unlock the rest.

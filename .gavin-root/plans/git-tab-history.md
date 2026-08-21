@@ -1,6 +1,7 @@
 ---
+order: 2048
 title: Git tab — History graph (SP4 of 4)
-status: In Progress
+status: Done
 priority: high
 ---
 # Git tab — History graph (SP4 of 4)
@@ -19,4 +20,4 @@ Plan: `docs/superpowers/plans/2026-08-21-git-tab-history.md`
 - [x] Lane model `graphLanes.ts` + history store (+ tests)
 - [x] Graph, detail pane, reset dialog, context menu, banner kinds
 - [x] Smoke entries
-- [ ] Whole-feature manual pass (Smoke Test workspace → the four “Git tab” sections)
+- [x] Whole-feature manual pass (Smoke Test workspace → the four “Git tab” sections)

@@ -1,6 +1,7 @@
 ---
+order: 6144
 title: Git tab — Worktrees / agent forks (SP3 of 3)
-status: In Progress
+status: Done
 priority: high
 ---
 # Git tab — Worktrees / agent forks (SP3 of 3)
@@ -21,4 +22,4 @@ Plan: `docs/superpowers/plans/2026-08-20-git-tab-worktrees.md`
 - [x] Fork dialog (new / existing branch, default sibling path) + agent spawn
 - [x] Merge back + cleanup dialog; remove (+ force) ; prune
 - [x] Smoke checklist entries
-- [ ] Whole-feature manual pass (Smoke Test workspace → the three “Git tab” sections)
+- [x] Whole-feature manual pass (Smoke Test workspace → the three “Git tab” sections)

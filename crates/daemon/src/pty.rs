@@ -18,10 +18,30 @@ impl PtySession {
             pixel_height: 0,
         })?;
 
-        let shell = command
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()));
-        let mut cmd = CommandBuilder::new(shell);
+        // A supplied `command` is a shell command LINE, not a program path.
+        // config.toml's `[agent].command` is documented as e.g.
+        // "claude --model opus", and a card run appends the generated prompt
+        // POSIX-single-quoted onto it ("claude 'Read ...'", see
+        // app/src/lib/cardRun.ts). Handing that whole string to
+        // CommandBuilder::new would make it one argv[0] and fail with
+        // "doesn't exist on the filesystem and was not found in PATH".
+        //
+        // /bin/sh rather than $SHELL deliberately: the quoting the app emits is
+        // POSIX, so the parser has to be too -- a user whose login shell is
+        // fish or nushell must not change how an app-generated command line is
+        // read. `sh -c` with a single simple command execs it in place, so the
+        // agent still owns the PTY (signals, job control, exit status) with no
+        // extra process in between.
+        let mut cmd = match command {
+            Some(c) => {
+                let mut cmd = CommandBuilder::new("/bin/sh");
+                cmd.args(["-c", c]);
+                cmd
+            }
+            None => CommandBuilder::new(
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+            ),
+        };
         cmd.cwd(cwd);
         // A daemon auto-spawned by the GUI (not launched from an interactive
         // terminal) inherits no TERM from its parent, which breaks every
@@ -223,6 +243,39 @@ mod tests {
         assert!(output.contains("hello_pty_test"), "got: {output}");
 
         session.kill().unwrap();
+    }
+
+    #[test]
+    fn spawn_runs_a_command_line_not_a_bare_program_path() {
+        // The launch command is a shell command LINE: config.toml's
+        // `[agent].command` is documented as e.g. "claude --model opus",
+        // and a card run appends a POSIX single-quoted prompt
+        // ("claude 'Read ...'"). Handing that whole string to
+        // CommandBuilder::new treats it as one argv[0] and fails with
+        // "doesn't exist on the filesystem and was not found in PATH" --
+        // the error the app surfaced as "Couldn't start the agent".
+        let mut session = PtySession::spawn("/tmp", Some("/bin/echo 'ARGMARK=[one two]'")).unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "ARGMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains("ARGMARK=[one two]"), "got: {output}");
+    }
+
+    #[test]
+    fn spawn_honours_the_posix_quoting_the_app_generates() {
+        // shellQuote (app/src/lib/cardRun.ts) closes and reopens the quote
+        // around each embedded apostrophe -- '\'' -- which is what a card
+        // run's prompt is full of ("keep the plan's status current"). The
+        // parser on this side has to be POSIX for that to survive, which
+        // is why the command goes to /bin/sh rather than to $SHELL.
+        const CMD: &str = r"/bin/echo 'QMARK=[the plan'\''s]'";
+        let mut session = PtySession::spawn("/tmp", Some(CMD)).unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "QMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains("QMARK=[the plan's]"), "got: {output}");
     }
 
     #[test]

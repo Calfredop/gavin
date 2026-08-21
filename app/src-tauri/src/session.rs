@@ -1,6 +1,9 @@
 use crate::config::Workspace;
 use crate::layout::LayoutNode;
-use protocol::{read_message, socket_path, write_message, Board, Column, Label, Request, Response};
+use protocol::{
+    read_message, socket_path, write_message, Board, Column, ConflictNote, Label, Orchestration, Rail,
+    Request, Response,
+};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
@@ -1249,6 +1252,10 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 Response::SessionRestored { id } => {
                     let _ = reader_app_handle.emit("session-restored", id);
                 }
+                Response::OrchestrationChanged { workspace_id, orchestration } => {
+                    let _ = reader_app_handle
+                        .emit("orchestration-changed", (workspace_id, orchestration));
+                }
                 Response::GavinTreeChanged { workspace_id, tree } => {
                     let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
                 }
@@ -1396,6 +1403,89 @@ pub fn set_board(
     state: State<CommandConnection>,
 ) -> Result<(), String> {
     set_board_impl(&state.0, workspace_id, columns, labels).map_err(|e| e.to_string())
+}
+
+// --- Orchestration (SP1) ----------------------------------------------------
+//
+// `state_value` rather than `state`: the Tauri State<CommandConnection>
+// parameter already owns the name `state` in this file's convention.
+
+fn get_orchestration_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+) -> anyhow::Result<Orchestration> {
+    let resp = send_command(command_conn, &Request::GetOrchestration { workspace_id })?;
+    match resp {
+        Response::Orchestration { rails, conflict_notes, rail_runs, step_runs } => {
+            Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs })
+        }
+        other => anyhow::bail!("expected Orchestration, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub fn get_orchestration(
+    workspace_id: String,
+    state: State<CommandConnection>,
+) -> Result<Orchestration, String> {
+    get_orchestration_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+}
+
+/// A refused write (the running-step guard) comes back as
+/// Response::Error and must reach the caller verbatim -- the board's
+/// save-error strip shows it, so it has to name the step.
+fn expect_ok(resp: Response) -> Result<(), String> {
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected Ok, got {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn set_orchestration(
+    workspace_id: String,
+    rails: Vec<Rail>,
+    conflict_notes: Vec<ConflictNote>,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(
+        &state.0,
+        &Request::SetOrchestration { workspace_id, rails, conflict_notes },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+#[tauri::command]
+pub fn set_rail_run(
+    rail_id: String,
+    state_value: String,
+    current_stage_id: Option<String>,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(
+        &state.0,
+        &Request::SetRailRun { rail_id, state: state_value, current_stage_id },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+#[tauri::command]
+pub fn set_step_run(
+    step_id: String,
+    state_value: String,
+    session_id: Option<String>,
+    reason: Option<String>,
+    state: State<CommandConnection>,
+) -> Result<(), String> {
+    let resp = send_command(
+        &state.0,
+        &Request::SetStepRun { step_id, state: state_value, session_id, reason },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
 }
 
 fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<()> {

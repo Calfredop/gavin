@@ -1,6 +1,7 @@
 ---
+order: 3072
 title: Git tab — Local Changes (SP1 of 3)
-status: In Progress
+status: Done
 priority: high
 ---
 # Git tab — Local Changes (SP1 of 3)
@@ -27,4 +28,4 @@ Follow-ups: SP2 sync/branches/stashes · SP3 worktrees (agent forks) · SP4 hist
 - [x] Diff viewer unified, then split layout, then line selection + partial staging
 - [x] Discard flows with confirm dialogs + "don't ask again"
 - [x] Home tile, smoke checklist entries
-- [ ] Manual smoke pass (Smoke Test workspace → “Git tab” section)
+- [x] Manual smoke pass (Smoke Test workspace → “Git tab” section)

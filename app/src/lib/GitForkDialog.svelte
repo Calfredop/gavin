@@ -9,8 +9,27 @@
     agentCommand: string;
     onSpawnAgent: (path: string, command: string) => void;
     onClose: () => void;
+    /// Called with the created worktree's path. Set by callers that want
+    /// the worktree for something other than starting an agent in it --
+    /// an orchestration rail binding, for instance.
+    onPicked?: (path: string) => void;
+    /// Offer "Start agent here". Off for rail binding: the rail's own
+    /// Start is what launches agents there.
+    allowSpawn?: boolean;
+    /// Repoint the whole Git tab at the new worktree. Off for rail
+    /// binding -- creating a rail's fork should not move the user's Git
+    /// tab out from under them.
+    switchAfter?: boolean;
   }
-  let { workspaceId, agentCommand, onSpawnAgent, onClose }: Props = $props();
+  let {
+    workspaceId,
+    agentCommand,
+    onSpawnAgent,
+    onClose,
+    onPicked,
+    allowSpawn = true,
+    switchAfter = true,
+  }: Props = $props();
 
   const view = $derived($gitStore[workspaceId] ?? null);
   const root = $derived(view ? rootPathOf(view) : "");
@@ -60,8 +79,9 @@
     submitting = false;
     if (!ok) return; // the error banner shows git's message; keep the dialog
     onClose();
-    await switchWorktree(workspaceId, path);
-    if (startAgent) onSpawnAgent(path, agentCommand);
+    if (switchAfter) await switchWorktree(workspaceId, path);
+    onPicked?.(path);
+    if (allowSpawn && startAgent) onSpawnAgent(path, agentCommand);
   }
 </script>
 
@@ -107,10 +127,12 @@
     </label>
     {#if folderError && folderTouched}<div class="err">{folderError}</div>{/if}
 
-    <label class="check">
-      <input type="checkbox" bind:checked={startAgent} />
-      Start agent here <span class="cmd">({agentCommand})</span>
-    </label>
+    {#if allowSpawn}
+      <label class="check">
+        <input type="checkbox" bind:checked={startAgent} />
+        Start agent here <span class="cmd">({agentCommand})</span>
+      </label>
+    {/if}
 
     <div class="actions">
       <button type="button" onclick={onClose}>Cancel</button>

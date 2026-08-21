@@ -75,6 +75,34 @@ export async function runCard(workspaceId: string, card: CardView): Promise<stri
   return null;
 }
 
+const NO_MAIN_AGENT = "No workspace agent running — start it on the Home tab first";
+
+/// The workspace's running main agent, or null. Exported so callers can
+/// fail fast before doing work (composing a prompt reads a file).
+export function mainAgentSessionId(workspaceId: string): string | null {
+  return get(layoutState).workspaces.find((w) => w.id === workspaceId)?.mainSessionId ?? null;
+}
+
+/// Bracketed paste into the workspace's RUNNING main agent, then Enter.
+/// Bracketed so a multi-line prompt arrives as one block instead of
+/// line-by-line submissions. Returns an error string, or null.
+///
+/// Never starts the agent: agent launches cost money and attention, and
+/// that is the human's call.
+export async function pasteToMainAgent(
+  workspaceId: string,
+  prompt: string
+): Promise<string | null> {
+  const mainSessionId = mainAgentSessionId(workspaceId);
+  if (!mainSessionId) return NO_MAIN_AGENT;
+  try {
+    await backend.writeInput(mainSessionId, `\x1b[200~${prompt}\x1b[201~\r`);
+  } catch (e) {
+    return `Couldn't reach the workspace agent: ${e instanceof Error ? e.message : e}`;
+  }
+  return null;
+}
+
 // Hands a card to the RUNNING workspace agent (the Home panel's main
 // session, D12) instead of spawning a dedicated one: the same prompt is
 // bracketed-pasted into its terminal and submitted, the card gets In
@@ -84,10 +112,9 @@ export async function runCard(workspaceId: string, card: CardView): Promise<stri
 // agent launches cost money and attention).
 export async function sendToMainAgent(workspaceId: string, card: CardView): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
-  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
-  const mainSessionId = workspace?.mainSessionId ?? null;
-  if (!mainSessionId) return "No workspace agent running — start it on the Home tab first";
-
+  // Checked before composing: composing reads the card file, and "no
+  // agent" is the more useful message when both are true.
+  if (!mainAgentSessionId(workspaceId)) return NO_MAIN_AGENT;
   let prompt: string;
   if (card.kind === "task") {
     const file = await backend.readFileForViewer(card.id);
@@ -96,13 +123,8 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   } else {
     prompt = composePlanPrompt(card.id);
   }
-  try {
-    // Bracketed paste so a multi-line prompt arrives as one block
-    // instead of line-by-line submissions, then Enter.
-    await backend.writeInput(mainSessionId, `\x1b[200~${prompt}\x1b[201~\r`);
-  } catch (e) {
-    return `Couldn't reach the workspace agent: ${e instanceof Error ? e.message : e}`;
-  }
+  const pasteError = await pasteToMainAgent(workspaceId, prompt);
+  if (pasteError) return pasteError;
   if (runStatusNeeded(card.status)) {
     try {
       await backend.setPlanFrontmatterField(card.id, "status", "In Progress");

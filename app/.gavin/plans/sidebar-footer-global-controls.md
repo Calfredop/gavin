@@ -1,4 +1,5 @@
 ---
+order: 10240
 title: Sidebar footer for global controls
 status: Done
 priority: medium

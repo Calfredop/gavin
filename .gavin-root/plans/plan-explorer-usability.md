@@ -1,4 +1,5 @@
 ---
+order: 8192
 title: Plan explorer usability (outside contexts, delete, menu, format help)
 status: Done
 priority: medium

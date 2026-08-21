@@ -225,6 +225,12 @@ export async function bootstrap(): Promise<void> {
   // below) -- gavin-tree-changed pushes with no listener would be lost,
   // not buffered.
   unlisteners.push(await initGavinListeners());
+  // Imported dynamically on purpose: orchestrationState imports THIS
+  // module (for resolvedAgentFor and createSessionOnPage), so a static
+  // import here would close a cycle. By the time bootstrap runs, this
+  // module is fully evaluated and the load is safe.
+  const { initOrchestrationListeners } = await import("./orchestrationState");
+  unlisteners.push(await initOrchestrationListeners());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);
@@ -991,20 +997,23 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
 // per-workspace "+" button) can add a page to a workspace without first
 // switching to it. The new page (and its workspace) become active,
 // mirroring "a new tab becomes the active one" elsewhere in this app.
+/// Returns the new page's id, so a caller that must bind something to it
+/// (an orchestration rail) does not have to guess which page appeared.
+/// Null when the workspace is unknown or session creation failed.
 export async function createPage(
   workspaceId: string,
   buildTree: (freshIds: string[]) => LayoutNode,
   sessionCount: number,
   name: string
-): Promise<void> {
+): Promise<string | null> {
   const state = get(layoutState);
-  if (!state.workspaces.some((w) => w.id === workspaceId)) return;
+  if (!state.workspaces.some((w) => w.id === workspaceId)) return null;
   let freshIds: string[];
   try {
     freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession()));
   } catch (e) {
     setError(String(e));
-    return;
+    return null;
   }
   const tree = buildTree(freshIds);
   const pageId = crypto.randomUUID();
@@ -1018,6 +1027,7 @@ export async function createPage(
     focusedSessionId,
   }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  return pageId;
 }
 
 // Creates a fresh session for a kanban card link, homing it in the given
@@ -1031,6 +1041,40 @@ export async function createPage(
 // "use the default"), converted to undefined here -- the one place that
 // conversion happens, so every caller (create-new, re-launch) can just
 // pass a SessionLink's fields straight through.
+/// createSessionForCard, but landing on a NAMED page rather than the
+/// workspace's active one -- what an orchestration rail needs, since a
+/// rail binds to a page (orchestration spec §4.3). A null or unknown
+/// pageId falls back to createSessionForCard's behavior, which is the
+/// Agents-page posture.
+export async function createSessionOnPage(
+  workspaceId: string,
+  pageId: string | null,
+  cwd: string,
+  command: string | null
+): Promise<string | null> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  const page = pageId ? ws?.pages.find((p) => p.id === pageId) : undefined;
+  if (!ws || !page) return createSessionForCard(workspaceId, cwd, command);
+
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(cwd || undefined, command ?? undefined);
+  } catch (e) {
+    setError(String(e));
+    return null;
+  }
+  const anchor = layout.allSessionIds(page.layout)[0];
+  const newTree = anchor
+    ? layout.addTab(page.layout, anchor, sessionId)
+    : layout.presetSingle(sessionId);
+  const withTree = workspace.updatePageLayout(state, workspaceId, page.id, newTree);
+  const data = workspace.setPageFocus(withTree, workspaceId, page.id, sessionId);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  return sessionId;
+}
+
 export async function createSessionForCard(
   workspaceId: string,
   cwd: string,

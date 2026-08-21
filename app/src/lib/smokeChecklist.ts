@@ -78,6 +78,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "pkill -x gavin-daemon, then edit a column. Restart daemon & retry via the error overlay if needed.",
       },
       { id: "board-refresh", text: "Refocusing the window refetches the board (columns/labels no longer go stale)" },
+      {
+        id: "multi-select-shift",
+        text: "Shift+click rings cards in accent and stacks them into a selection — across columns, auto columns and nested areas",
+        hint: "Shift+DRAG must never move a card: the whole gesture is a pick. A plain click still opens the card and drops the selection; Esc drops it too.",
+      },
     ],
   },
   {
@@ -124,7 +129,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "delete-column-cascade",
-        text: "Deleting a non-empty CUSTOM column offers “column only” (cards → auto column) vs cascade (files deleted)",
+        text: "Deleting a non-empty CUSTOM column offers three ways out: move cards to a picked column, leave them (auto column), or delete them",
+        hint: "The picker lists every other real column; “move” rewrites each card's status: line.",
       },
       {
         id: "permanent-columns",
@@ -209,6 +215,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "No binding/dot for main-agent sends — the card's status is the tracking.",
       },
       { id: "run-now-composer", text: "Composer task chip + “Run now” creates the card and immediately runs it" },
+      {
+        id: "run-selected",
+        text: "The selection bar's ▶ Run selected spawns one session per picked UNBOUND card, one after another, then clears the selection",
+        hint: "Its count excludes notes and already-bound cards; pick only those and the button is disabled with a tooltip saying why.",
+      },
       {
         id: "skill-updated",
         text: "Re-run “Set up agent integration”: SKILL.md teaches kinds, nesting, promotion, tick-when-done",

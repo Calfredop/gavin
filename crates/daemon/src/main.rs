@@ -1,6 +1,7 @@
 mod gavin;
 mod git_status;
 mod kanban;
+mod orchestration;
 mod osc;
 mod pty;
 mod registry;
@@ -22,6 +23,10 @@ fn kanban_db_path() -> PathBuf {
     protocol::app_support_dir().join("kanban.sqlite")
 }
 
+fn orchestration_db_path() -> PathBuf {
+    protocol::app_support_dir().join("orchestration.sqlite")
+}
+
 fn main() -> anyhow::Result<()> {
     let dir = protocol::app_support_dir();
     std::fs::create_dir_all(&dir)?;
@@ -29,7 +34,8 @@ fn main() -> anyhow::Result<()> {
 
     let registry = Registry::open(&db_path())?;
     let kanban = KanbanStore::open(&kanban_db_path())?;
-    let manager = Arc::new(SessionManager::new(registry, kanban));
+    let orchestration = orchestration::OrchestrationStore::open(&orchestration_db_path())?;
+    let manager = Arc::new(SessionManager::new(registry, kanban, orchestration));
     manager.recover()?;
 
     println!("gavin-daemon listening on {}", protocol::socket_path().display());
@@ -50,5 +56,6 @@ mod tests {
         assert_eq!(protocol::socket_path().file_name().unwrap(), "daemon.sock");
         assert_eq!(db_path().file_name().unwrap(), "registry.sqlite");
         assert_eq!(kanban_db_path().file_name().unwrap(), "kanban.sqlite");
+        assert_eq!(orchestration_db_path().file_name().unwrap(), "orchestration.sqlite");
     }
 }

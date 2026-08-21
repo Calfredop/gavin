@@ -1,13 +1,33 @@
 use std::path::{Path, PathBuf};
 
+/// One gavin-managed skill file. Overwritten wholesale on every setup
+/// run, like the instructions block's marker section.
+pub struct SkillFile {
+    pub dir: &'static str,
+    pub file: &'static str,
+    pub contents: &'static str,
+}
+
 /// Where a profile's agent reads MCP config. Held only by profiles that
 /// gavin can actually set up; sub-project B fills in the rest (the
 /// verified layouts are recorded in the design spec's §4.1).
 pub struct McpLayout {
     pub config_file: &'static str,
     pub server_key: &'static str,
-    pub skill_dir: &'static str,
-    pub skill_file: &'static str,
+    pub skills: &'static [SkillFile],
+}
+
+impl McpLayout {
+    /// Where a skill this profile does not yet install would go: the
+    /// parent every installed skill shares, and the filename they all
+    /// use. Taken from the first entry because that is the shape an
+    /// agent's own skill loader imposes -- one directory per skill under
+    /// a single root, each holding the same filename -- so every entry
+    /// answers identically. None when the profile installs no skills.
+    fn skill_slot(&self) -> Option<(&'static Path, &'static str)> {
+        let first = self.skills.first()?;
+        Some((Path::new(first.dir).parent()?, first.file))
+    }
 }
 
 /// D4's seam, widened. The writers below read fields, never literals.
@@ -36,8 +56,21 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         mcp: Some(McpLayout {
             config_file: ".mcp.json",
             server_key: "gavin",
-            skill_dir: ".claude/skills/gavin",
-            skill_file: "SKILL.md",
+            skills: &[
+                SkillFile {
+                    dir: ".claude/skills/gavin",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_skill.md"),
+                },
+                // Its own skill, not a section of the workflow one: this
+                // loads only when orchestration comes up, so the
+                // always-on skill stays short.
+                SkillFile {
+                    dir: ".claude/skills/gavin-orchestrate",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_orchestrate_skill.md"),
+                },
+            ],
         }),
     },
     AgentProfile {
@@ -158,7 +191,6 @@ fn instructions_block_for(profile: &AgentProfile) -> &'static str {
     }
 }
 
-const SKILL_MD: &str = include_str!("gavin_skill.md");
 const PRD_SKILL_MD: &str = include_str!("gavin_prd_skill.md");
 const AGENT_FILE_SKILL_MD: &str = include_str!("gavin_agent_file_skill.md");
 
@@ -205,13 +237,17 @@ fn write_mcp_config(root: &Path, layout: &McpLayout, binary: &Path) -> anyhow::R
     Ok(path)
 }
 
-/// Gavin-managed: overwritten wholesale on every setup run.
-fn write_skill(root: &Path, layout: &McpLayout) -> anyhow::Result<PathBuf> {
-    let dir = root.join(layout.skill_dir);
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(layout.skill_file);
-    std::fs::write(&path, SKILL_MD)?;
-    Ok(path)
+/// Gavin-managed: every skill is overwritten wholesale on each setup run.
+fn write_skills(root: &Path, layout: &McpLayout) -> anyhow::Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    for skill in layout.skills {
+        let dir = root.join(skill.dir);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(skill.file);
+        std::fs::write(&path, skill.contents)?;
+        written.push(path);
+    }
+    Ok(written)
 }
 
 /// Replaces the marker block in place, appends it otherwise (creating the
@@ -282,8 +318,11 @@ pub fn setup_agent_integration(root_path: String) -> Result<IntegrationResult, S
     match profile.mcp.as_ref() {
         Some(layout) => {
             let binary = resolve_mcp_binary_path().map_err(|e| e.to_string())?;
-            written.push(
-                write_skill(root, layout).map_err(|e| e.to_string())?.to_string_lossy().to_string(),
+            written.extend(
+                write_skills(root, layout)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().to_string()),
             );
             written.push(
                 write_mcp_config(root, layout, &binary)
@@ -347,15 +386,14 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
 
     match profile.mcp.as_ref() {
         Some(layout) => {
-            // The step skill sits beside the main gavin skill: same parent
-            // directory, one directory per skill, matching the profile.
-            let parent = Path::new(layout.skill_dir)
-                .parent()
-                .ok_or_else(|| "profile skill_dir has no parent".to_string())?;
+            // The step skill sits beside the gavin-managed ones: same
+            // parent directory, one directory per skill, matching the
+            // profile.
+            let (parent, file) =
+                layout.skill_slot().ok_or_else(|| "profile installs no skills".to_string())?;
             let dir = root.join(parent).join(skill.name);
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            std::fs::write(dir.join(layout.skill_file), skill.document)
-                .map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(file), skill.document).map_err(|e| e.to_string())?;
             Ok(format!(
                 "Use the {} skill to write {target} for this repo. Interview me first.",
                 skill.name
@@ -683,12 +721,34 @@ mod tests {
     }
 
     #[test]
-    fn skill_is_written_and_overwritten() {
+    fn every_skill_is_written_and_overwritten() {
         let dir = tempfile::tempdir().unwrap();
-        let p = write_skill(dir.path(), claude_layout()).unwrap();
-        assert!(std::fs::read_to_string(&p).unwrap().contains("gavin_create_plan"));
-        std::fs::write(&p, "mangled").unwrap();
-        write_skill(dir.path(), claude_layout()).unwrap();
-        assert!(std::fs::read_to_string(&p).unwrap().contains("gavin_create_plan"));
+        let paths = write_skills(dir.path(), claude_layout()).unwrap();
+        assert_eq!(paths.len(), 2, "workflow skill plus the orchestrate one");
+
+        let workflow = std::fs::read_to_string(&paths[0]).unwrap();
+        assert!(workflow.contains("gavin_create_plan"), "{workflow}");
+        let orchestrate = std::fs::read_to_string(&paths[1]).unwrap();
+        assert!(orchestrate.contains("gavin_get_orchestration"), "{orchestrate}");
+        assert!(
+            orchestrate.contains("When unsure, serialize"),
+            "the parallelism rule must survive into the installed file"
+        );
+
+        // Gavin-managed: a hand-edited skill is replaced, not merged.
+        for p in &paths {
+            std::fs::write(p, "mangled").unwrap();
+        }
+        write_skills(dir.path(), claude_layout()).unwrap();
+        assert!(std::fs::read_to_string(&paths[0]).unwrap().contains("gavin_create_plan"));
+        assert!(std::fs::read_to_string(&paths[1]).unwrap().contains("gavin_get_orchestration"));
+    }
+
+    #[test]
+    fn the_two_skills_land_in_different_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = write_skills(dir.path(), claude_layout()).unwrap();
+        assert!(paths[0].ends_with(".claude/skills/gavin/SKILL.md"), "{:?}", paths[0]);
+        assert!(paths[1].ends_with(".claude/skills/gavin-orchestrate/SKILL.md"), "{:?}", paths[1]);
     }
 }

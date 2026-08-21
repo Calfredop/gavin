@@ -1,6 +1,6 @@
 ---
 title: Keyboard shortcuts & hold-⌘ hints
-status: In Progress
+status: Done
 priority: medium
 labels: ui
 ---
@@ -21,8 +21,11 @@ Plan: `docs/superpowers/plans/2026-08-21-keyboard-shortcuts.md`
 - [x] Sidebar page & workspace hints
 - [x] Shortcut hints in icon button tooltips
 - [x] Full suites: vitest 654, cargo 170+174+32+7, svelte-check 0 errors, build clean
-- [ ] Manual pass: ⌘1-8/9/0 on pane tabs (focused pane only) and hub tabs;
-      ⌘⇧-number pages; ⌘⌥-number workspaces (Unfiled = 1); hold ⌘ / ⌘⇧ / ⌘⌥
-      for badges; ⌘T does not flash hints; ⌘Tab away leaves no stuck badges;
-      "New Tab (⌘T)" tooltip; ⌘W still tab-close and still refuses on pinned;
-      ⌘Q still quits
+- [x] Manual pass confirmed in the app by the human (2026-08-21)
+- [x] Fixed after the first manual pass: the hold-⌘ badges never appeared —
+      createHintTracker's default clock was `{ setTimeout, clearTimeout }`,
+      and WebKit throws "Can only call Window.setTimeout on instances of
+      Window" when it is called as a method of that object, so the hold
+      timer never started. Node's timers ignore `this`, which is why the
+      suites stayed green; the regression test now stubs the global timer
+      to behave like WebKit (`shortcutHints.test.ts` → "default clock").

@@ -595,6 +595,7 @@ fn trigger_recheck_for_session(manager: &Arc<SessionManager>, id: &str) {
 pub struct SessionManager {
     registry: Mutex<Registry>,
     kanban: Mutex<KanbanStore>,
+    orchestration: Mutex<crate::orchestration::OrchestrationStore>,
     sessions: Mutex<HashMap<String, PtySession>>,
     attached_writers: Mutex<HashMap<String, Arc<Mutex<UnixStream>>>>,
     output_buffers: Mutex<HashMap<String, VecDeque<u8>>>,
@@ -614,10 +615,15 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn new(registry: Registry, kanban: KanbanStore) -> Self {
+    pub fn new(
+        registry: Registry,
+        kanban: KanbanStore,
+        orchestration: crate::orchestration::OrchestrationStore,
+    ) -> Self {
         Self {
             registry: Mutex::new(registry),
             kanban: Mutex::new(kanban),
+            orchestration: Mutex::new(orchestration),
             sessions: Mutex::new(HashMap::new()),
             attached_writers: Mutex::new(HashMap::new()),
             output_buffers: Mutex::new(HashMap::new()),
@@ -745,6 +751,80 @@ impl SessionManager {
         self.kanban.lock().unwrap().replace_board(workspace_id, &columns, &labels)
     }
 
+    pub fn get_orchestration(&self, workspace_id: &str) -> anyhow::Result<protocol::Orchestration> {
+        self.orchestration.lock().unwrap().get(workspace_id)
+    }
+
+    pub fn set_orchestration(
+        &self,
+        workspace_id: &str,
+        rails: Vec<protocol::Rail>,
+        conflict_notes: Vec<protocol::ConflictNote>,
+    ) -> anyhow::Result<()> {
+        // The `?` before the push is deliberate: a refused write (the
+        // running-step guard) must not push a plan that was never stored.
+        // The lock is released at the end of this statement, which
+        // matters -- push_orchestration re-reads through the same mutex.
+        self.orchestration.lock().unwrap().replace_plan(workspace_id, &rails, &conflict_notes)?;
+        self.push_orchestration(workspace_id);
+        Ok(())
+    }
+
+    pub fn orchestration_by_root(&self, root_path: &str) -> anyhow::Result<protocol::Orchestration> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.get_orchestration(&watcher.workspace_id)
+    }
+
+    pub fn set_orchestration_by_root(
+        &self,
+        root_path: &str,
+        rails: Vec<protocol::Rail>,
+        conflict_notes: Vec<protocol::ConflictNote>,
+    ) -> anyhow::Result<()> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.set_orchestration(&watcher.workspace_id, rails, conflict_notes)
+    }
+
+    /// Best-effort push of the whole orchestration on the watching app
+    /// connection. Silent when the workspace is not watched (a headless
+    /// agent with the app closed) or the writer is dead -- the app's next
+    /// fetch catches up either way.
+    fn push_orchestration(&self, workspace_id: &str) {
+        let watcher = self.gavin_watchers.lock().unwrap().get(workspace_id).cloned();
+        let Some(watcher) = watcher else { return };
+        let Ok(orchestration) = self.get_orchestration(workspace_id) else { return };
+        watcher.push_response(&protocol::Response::OrchestrationChanged {
+            workspace_id: workspace_id.to_string(),
+            orchestration,
+        });
+    }
+
+    pub fn set_rail_run(
+        &self,
+        rail_id: &str,
+        state: &str,
+        current_stage_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().set_rail_run(rail_id, state, current_stage_id.as_deref())
+    }
+
+    pub fn set_step_run(
+        &self,
+        step_id: &str,
+        state: &str,
+        session_id: Option<String>,
+        reason: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.orchestration
+            .lock()
+            .unwrap()
+            .set_step_run(step_id, state, session_id.as_deref(), reason.as_deref())
+    }
+
     pub fn link_card_session(
         &self,
         workspace_id: &str,
@@ -835,9 +915,10 @@ impl SessionManager {
                 }
                 continue;
             }
-            // A single bad leftover record (e.g. its command is no longer
-            // executable) must not abort recovery of every session after it
-            // in the list. Log and move on instead of propagating with `?`.
+            // A single bad leftover record (e.g. its workspace directory
+            // is no longer enterable) must not abort recovery of every
+            // session after it in the list. Log and move on instead of
+            // propagating with `?`.
             match PtySession::spawn(&record.workspace_path, record.command.as_deref()) {
                 Ok(pty) => {
                     sessions.insert(record.id.clone(), pty);
@@ -1008,12 +1089,11 @@ impl SessionManager {
                     // thread) would otherwise leak -- along with the repo
                     // poller, its filesystem watch, and its 3-minute
                     // backstop thread, permanently, once per attach.
-                    // Reachable with no race at all: recover() leaves a
-                    // registry row at its ORIGINAL, non-Exited status when
-                    // PtySession::spawn fails for it (e.g. its command is
-                    // no longer executable), so attach()'s Exited gate
-                    // doesn't apply, yet `sessions` has no entry and
-                    // reader_for below fails.
+                    // Reachable with no race at all: any registry row at
+                    // a non-Exited status whose `sessions` entry is
+                    // missing -- what a failed recovery spawn leaves
+                    // behind -- passes attach()'s Exited gate, yet
+                    // reader_for above fails.
                     unregister_session_repo_mapping(&manager, &id);
                     return;
                 }
@@ -1199,6 +1279,43 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .set_board(&workspace_id, columns, labels)
             .map(|_| Response::Ok),
         Request::DeleteBoard { workspace_id } => manager.delete_board(&workspace_id).map(|_| Response::Ok),
+        Request::GetOrchestrationByRoot { root_path } => {
+            manager.orchestration_by_root(&root_path).map(|o| Response::Orchestration {
+                rails: o.rails,
+                conflict_notes: o.conflict_notes,
+                rail_runs: o.rail_runs,
+                step_runs: o.step_runs,
+            })
+        }
+        Request::SetOrchestrationByRoot { root_path, rails, conflict_notes } => manager
+            .set_orchestration_by_root(&root_path, rails, conflict_notes)
+            .map(|_| Response::Ok),
+        Request::GitDirtyPaths { cwd, limit } => Ok(
+            match crate::git_status::dirty_paths(&cwd, limit as usize) {
+                Some((paths, truncated)) => Response::DirtyPaths { paths, truncated },
+                // Not a repo, or git was too slow: empty evidence, not an
+                // error -- one unreadable worktree must not fail the
+                // whole gavin_get_orchestration payload.
+                None => Response::DirtyPaths { paths: vec![], truncated: false },
+            },
+        ),
+        Request::GetOrchestration { workspace_id } => {
+            manager.get_orchestration(&workspace_id).map(|o| Response::Orchestration {
+                rails: o.rails,
+                conflict_notes: o.conflict_notes,
+                rail_runs: o.rail_runs,
+                step_runs: o.step_runs,
+            })
+        }
+        Request::SetOrchestration { workspace_id, rails, conflict_notes } => manager
+            .set_orchestration(&workspace_id, rails, conflict_notes)
+            .map(|_| Response::Ok),
+        Request::SetRailRun { rail_id, state, current_stage_id } => manager
+            .set_rail_run(&rail_id, &state, current_stage_id)
+            .map(|_| Response::Ok),
+        Request::SetStepRun { step_id, state, session_id, reason } => manager
+            .set_step_run(&step_id, &state, session_id, reason)
+            .map(|_| Response::Ok),
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
         Request::WatchGavinRoot { .. } => {
             unreachable!("WatchGavinRoot is intercepted in handle_connection")
@@ -1361,6 +1478,131 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
 
 #[cfg(test)]
 mod tests {
+    /// Every daemon test gets a throwaway in-memory orchestration store:
+    /// none of them exercise it, they just need SessionManager to build.
+    fn test_orchestration_store() -> crate::orchestration::OrchestrationStore {
+        crate::orchestration::OrchestrationStore::open(std::path::Path::new(":memory:")).unwrap()
+    }
+
+    fn test_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        Arc::new(SessionManager::new(registry, kanban, test_orchestration_store()))
+    }
+
+    fn orch_rail(rail_id: &str, step_id: &str) -> protocol::Rail {
+        protocol::Rail {
+            id: rail_id.into(),
+            name: "backend".into(),
+            position: 0,
+            worktree_path: None,
+            page_id: None,
+            stages: vec![protocol::Stage {
+                id: "s1".into(),
+                position: 0,
+                steps: vec![protocol::Step {
+                    id: step_id.into(),
+                    position: 0,
+                    card_path: "/x/a.md".into(),
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn set_orchestration_then_get_orchestration_round_trips_through_handle_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let rails = vec![orch_rail("r1", "t1")];
+        let resp = handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: rails.clone(),
+                conflict_notes: vec![],
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        let resp = handle_request(&manager, Request::GetOrchestration { workspace_id: "ws-1".into() });
+        match resp {
+            Response::Orchestration { rails: got, .. } => assert_eq!(got, rails),
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_state_writes_come_back_on_the_next_get() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        handle_request(
+            &manager,
+            Request::SetRailRun {
+                rail_id: "r1".into(),
+                state: "running".into(),
+                current_stage_id: Some("s1".into()),
+            },
+        );
+        handle_request(
+            &manager,
+            Request::SetStepRun {
+                step_id: "t1".into(),
+                state: "running".into(),
+                session_id: Some("sess-1".into()),
+                reason: None,
+            },
+        );
+        match handle_request(&manager, Request::GetOrchestration { workspace_id: "ws-1".into() }) {
+            Response::Orchestration { rail_runs, step_runs, .. } => {
+                assert_eq!(rail_runs[0].state, "running");
+                assert_eq!(step_runs[0].session_id.as_deref(), Some("sess-1"));
+            }
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_set_orchestration_answers_with_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        handle_request(
+            &manager,
+            Request::SetStepRun {
+                step_id: "t1".into(),
+                state: "running".into(),
+                session_id: None,
+                reason: None,
+            },
+        );
+        match handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t2")],
+                conflict_notes: vec![],
+            },
+        ) {
+            Response::Error { message } => assert!(message.contains("t1"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
     use super::*;
     use std::time::Duration;
 
@@ -1371,7 +1613,7 @@ mod tests {
 
         let registry = Registry::open(&db_path).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let manager = Arc::new(SessionManager::new(registry, kanban));
+        let manager = Arc::new(SessionManager::new(registry, kanban, test_orchestration_store()));
 
         let server_socket_path = socket_path.clone();
         std::thread::spawn(move || {
@@ -1392,6 +1634,96 @@ mod tests {
         write_message(stream, req).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         read_message(&mut reader).unwrap().unwrap()
+    }
+
+    #[test]
+    fn orchestration_by_root_errors_when_the_workspace_is_not_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        match handle_request(
+            &manager,
+            Request::GetOrchestrationByRoot { root_path: "/nowhere".into() },
+        ) {
+            Response::Error { message } => assert!(message.contains("not open in gavin"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_orchestration_by_root_writes_the_watched_workspaces_plan_and_pushes() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+
+        // A watching connection is what makes the root resolvable.
+        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut watcher,
+            &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut reader = BufReader::new(watcher.try_clone().unwrap());
+        let first: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::SetOrchestrationByRoot {
+                root_path: root.clone(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        // Readable by workspace id, and the write pushed.
+        match request(&mut cmd, &Request::GetOrchestration { workspace_id: "ws-1".into() }) {
+            Response::Orchestration { rails, .. } => assert_eq!(rails[0].id, "r1"),
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+        match read_message(&mut reader).unwrap() {
+            Some(Response::OrchestrationChanged { workspace_id, orchestration }) => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(orchestration.rails[0].stages[0].steps[0].id, "t1");
+            }
+            other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_write_through_the_root_path_still_reports_the_running_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        handle_request(
+            &manager,
+            Request::SetStepRun {
+                step_id: "t1".into(),
+                state: "running".into(),
+                session_id: None,
+                reason: None,
+            },
+        );
+        match handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t2")],
+                conflict_notes: vec![],
+            },
+        ) {
+            Response::Error { message } => assert!(message.contains("is running"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1952,7 +2284,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let manager = SessionManager::new(registry, kanban);
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
 
         let resp = handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".to_string() });
 
@@ -1970,7 +2302,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let manager = SessionManager::new(registry, kanban);
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
         let columns =
             vec![Column { id: "c1".to_string(), name: "Only column".to_string(), position: 0 }];
 
@@ -2000,7 +2332,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let manager = SessionManager::new(registry, kanban);
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
         handle_request(
             &manager,
             Request::SetBoard {
@@ -2926,7 +3258,7 @@ mod tests {
 
         let registry = Registry::open(&db_path).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let manager = SessionManager::new(registry, kanban);
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
 
         manager.recover().unwrap();
 
@@ -2957,7 +3289,7 @@ mod tests {
     fn bare_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
         let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        Arc::new(SessionManager::new(registry, kanban))
+        Arc::new(SessionManager::new(registry, kanban, test_orchestration_store()))
     }
 
     fn bare_poller() -> Arc<RepoPoller> {
@@ -3253,11 +3585,11 @@ mod tests {
     }
 
     #[test]
-    fn attaching_after_a_failed_recovery_spawn_leaves_no_repo_mapping_or_poller_behind() {
-        // recover() leaves a registry row at its ORIGINAL, non-Exited
-        // status when PtySession::spawn fails for it, and no `sessions`
-        // entry -- so attach()'s Exited gate does not apply, the mapping
-        // gets established, a poller gets spawned, and then the pump's
+    fn attaching_to_a_session_with_no_live_pty_leaves_no_repo_mapping_or_poller_behind() {
+        // A registry row whose `sessions` entry is missing -- what a
+        // failed recovery spawn leaves behind -- at a non-Exited status,
+        // so attach()'s Exited gate does not apply: the mapping gets
+        // established, a poller gets spawned, and then the pump's
         // reader_for call fails. Without the error arm's own
         // unregister_session_repo_mapping, both leak permanently, once
         // per attach.
@@ -3274,26 +3606,26 @@ mod tests {
                     id: "failed-spawn-1".to_string(),
                     workspace_path: repo_path.clone(),
                     cwd: repo_path.clone(),
-                    command: Some("/nonexistent/definitely-not-an-executable-xyz".to_string()),
+                    command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
                 })
                 .unwrap();
         }
 
+        // Deliberately NOT recovered: the row exists, no PTY does. Held
+        // this way rather than via a spawn that fails, because a launch
+        // command is a shell command line now (PtySession::spawn) -- an
+        // unresolvable program no longer fails the spawn, it makes the
+        // shell exit 127.
         let manager = Arc::new(SessionManager::new(
             Registry::open(&db_path).unwrap(),
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
         ));
-        manager.recover().unwrap();
         assert!(
             manager.sessions.lock().unwrap().get("failed-spawn-1").is_none(),
-            "test premise broken: the command was expected to fail to spawn"
-        );
-        assert_eq!(
-            manager.registry.lock().unwrap().get("failed-spawn-1").unwrap().unwrap().status,
-            SessionStatus::Exited,
-            "test premise broken: recover() is now expected to mark a failed-spawn record Exited"
+            "test premise broken: this session must have no live PTY"
         );
 
         let (client, server_side) = UnixStream::pair().unwrap();
@@ -3334,16 +3666,43 @@ mod tests {
 
     #[test]
     fn recover_marks_a_failed_spawn_record_exited_instead_of_leaving_it_stale() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // The spawn failure is induced with a workspace directory that
+        // exists (so recover()'s own is_dir gate lets it through) but
+        // cannot be entered, which is what is left of this arm now that a
+        // launch command goes through `sh -c`: an unresolvable program
+        // makes the shell exit 127 rather than failing the spawn, so the
+        // reachable failures are the environmental ones -- chdir refused,
+        // no /bin/sh, fds exhausted.
         let dir = tempfile::tempdir().unwrap();
+        let unenterable = dir.path().join("locked-workspace");
+        std::fs::create_dir(&unenterable).unwrap();
+        std::fs::set_permissions(&unenterable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unenterable_path = unenterable.to_str().unwrap().to_string();
+        // root ignores the permission bits, so there would be nothing to
+        // assert; the tempdir is cleaned up by the guard either way.
+        if std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .current_dir(&unenterable)
+            .status()
+            .is_ok()
+        {
+            let _ = std::fs::set_permissions(&unenterable, std::fs::Permissions::from_mode(0o700));
+            eprintln!("skipping: this user can enter a mode-000 directory (running as root?)");
+            return;
+        }
+
         let db_path = dir.path().join("registry.sqlite");
         {
             let registry = Registry::open(&db_path).unwrap();
             registry
                 .insert(&SessionRecord {
                     id: "failed-spawn-2".to_string(),
-                    workspace_path: "/tmp".to_string(),
-                    cwd: "/tmp".to_string(),
-                    command: Some("/nonexistent/definitely-not-an-executable-xyz".to_string()),
+                    workspace_path: unenterable_path.clone(),
+                    cwd: unenterable_path.clone(),
+                    command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
                 })
@@ -3353,12 +3712,14 @@ mod tests {
         let manager = SessionManager::new(
             Registry::open(&db_path).unwrap(),
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
         );
         manager.recover().unwrap();
+        std::fs::set_permissions(&unenterable, std::fs::Permissions::from_mode(0o700)).unwrap();
 
         assert!(
             manager.sessions.lock().unwrap().get("failed-spawn-2").is_none(),
-            "test premise broken: the command was expected to fail to spawn"
+            "test premise broken: the spawn was expected to fail"
         );
         assert_eq!(
             manager.registry.lock().unwrap().get("failed-spawn-2").unwrap().unwrap().status,
@@ -3388,6 +3749,7 @@ mod tests {
         let manager = SessionManager::new(
             Registry::open(&db_path).unwrap(),
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
         );
         manager.recover().unwrap();
 
@@ -3426,6 +3788,7 @@ mod tests {
         let manager = Arc::new(SessionManager::new(
             Registry::open(&db_path).unwrap(),
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
         ));
         // No recover() call -- `sessions` genuinely has no entry for this
         // id, simulating whatever unanticipated cause reaches this arm.
@@ -3488,6 +3851,7 @@ mod tests {
         let manager = Arc::new(SessionManager::new(
             Registry::open(&db_path).unwrap(),
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
         ));
 
         let (client, server_side) = UnixStream::pair().unwrap();
@@ -3524,6 +3888,7 @@ mod tests {
         let manager = Arc::new(SessionManager::new(
             Registry::open(&db_path).unwrap(),
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
         ));
 
         let (client, server_side) = UnixStream::pair().unwrap();
@@ -3554,6 +3919,7 @@ mod tests {
         let manager = SessionManager::new(
             Registry::open(&db_path).unwrap(),
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
         );
         let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
         manager.registry.lock().unwrap().mark_restored(&id).unwrap();
@@ -3597,7 +3963,7 @@ mod tests {
 
         let registry = Registry::open(&db_path).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        let manager = SessionManager::new(registry, kanban);
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
 
         manager.recover().unwrap();
 

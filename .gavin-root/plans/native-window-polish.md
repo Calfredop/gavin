@@ -1,6 +1,7 @@
 ---
+order: 4352
 title: Native window polish (text selection, title-bar + edge double-click)
-status: In Progress
+status: Done
 priority: medium
 ---
 # Native window polish
@@ -36,7 +37,7 @@ keeping `decorations: false` and the CSS traffic lights.
 - [x] Automated verification: `npm run check` (0 errors), `vitest` (463
       pass, 12 new), `cargo test` edge_expand (13 pass, mutation-checked),
       `cargo build` clean, app launches with the monitor installed
-- [ ] Manual verification (needs a human -- synthetic clicks are blocked
+- [x] Manual verification (needs a human -- synthetic clicks are blocked
       without Accessibility permission): chrome text not selectable;
       terminal / editor / markdown / inputs selectable; double-click the
       title bar zooms and un-zooms; double-click each edge and a corner,

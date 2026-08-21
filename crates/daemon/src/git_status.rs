@@ -106,9 +106,18 @@ pub fn resolve_repo_root(cwd: &str) -> Option<String> {
 /// user's own concurrent git commands). It is a TOP-LEVEL git option: it
 /// must come before the subcommand, since `git status --no-optional-locks`
 /// is an "unknown option" error, not a no-op.
-pub fn run_git_status(repo_root: &str) -> Option<protocol::GitStatus> {
+/// Spawn git, drain stdout on its own thread, wait with a deadline.
+/// None on spawn failure, non-zero exit, or timeout.
+///
+/// The draining thread is load-bearing, not an optimization: `git status`
+/// can write more output than the OS pipe buffer holds (a large change
+/// set), and a `try_wait()` loop with nothing reading blocks the child on
+/// its own `write()` and this function on the child -- the classic
+/// `std::process` deadlock that `Child::wait_with_output` exists to
+/// avoid, and which a timeout loop cannot use directly.
+fn run_git_capture(repo_root: &str, args: &[&str], timeout: Duration) -> Option<String> {
     let mut child = Command::new("git")
-        .args(["--no-optional-locks", "status", "--porcelain=v2", "--branch"])
+        .args(args)
         .current_dir(repo_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -116,14 +125,6 @@ pub fn run_git_status(repo_root: &str) -> Option<protocol::GitStatus> {
         .spawn()
         .ok()?;
 
-    // Read stdout on a separate thread, concurrently with waiting below --
-    // not after. `git status` can write more output than the OS pipe
-    // buffer holds (a large change set); if nothing is draining that pipe
-    // while this function is busy polling `try_wait()`, the child blocks
-    // on its own `write()` call and this function blocks waiting for it
-    // to exit -- a classic, well-documented `std::process` deadlock (the
-    // same reason `Child::wait_with_output` exists for the no-timeout
-    // case; a timeout loop can't use it directly).
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -132,7 +133,7 @@ pub fn run_git_status(repo_root: &str) -> Option<protocol::GitStatus> {
         let _ = tx.send(output);
     });
 
-    let deadline = Instant::now() + GIT_STATUS_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -150,8 +151,64 @@ pub fn run_git_status(repo_root: &str) -> Option<protocol::GitStatus> {
     if !status.success() {
         return None;
     }
+    rx.recv_timeout(Duration::from_secs(1)).ok()
+}
 
-    let output = rx.recv_timeout(Duration::from_secs(1)).ok()?;
+/// Every path with an uncommitted change, from porcelain=v2 output --
+/// the SAME format run_git_status already uses, so this file reasons
+/// about one git format rather than two.
+///
+/// Field layouts (v2, no -z):
+///   1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
+///   2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <Xscore> <path>\t<origPath>
+///   u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
+///   ? <path>
+/// Renames report the NEW path: that is the file an agent would edit.
+/// `!` (ignored) and `#` (header) lines are not changes.
+///
+/// Returns (paths, truncated). This is EVIDENCE for an agent, not a
+/// correctness-critical read: a path containing a literal newline (which
+/// git would quote here) is not worth a -z parser.
+pub fn parse_dirty_paths(output: &str, limit: usize) -> (Vec<String>, bool) {
+    let mut paths = Vec::new();
+    let mut truncated = false;
+    for line in output.lines() {
+        let path = if let Some(rest) = line.strip_prefix("? ") {
+            Some(rest)
+        } else if line.starts_with("1 ") {
+            line.splitn(9, ' ').nth(8)
+        } else if line.starts_with("2 ") {
+            line.splitn(10, ' ').nth(9).and_then(|p| p.split('\t').next())
+        } else if line.starts_with("u ") {
+            line.splitn(11, ' ').nth(10)
+        } else {
+            None
+        };
+        let Some(path) = path.filter(|p| !p.is_empty()) else { continue };
+        if paths.len() >= limit {
+            truncated = true;
+            break;
+        }
+        paths.push(path.to_string());
+    }
+    (paths, truncated)
+}
+
+pub fn dirty_paths(repo_root: &str, limit: usize) -> Option<(Vec<String>, bool)> {
+    let output = run_git_capture(
+        repo_root,
+        &["--no-optional-locks", "status", "--porcelain=v2", "--untracked-files=all"],
+        GIT_STATUS_TIMEOUT,
+    )?;
+    Some(parse_dirty_paths(&output, limit))
+}
+
+pub fn run_git_status(repo_root: &str) -> Option<protocol::GitStatus> {
+    let output = run_git_capture(
+        repo_root,
+        &["--no-optional-locks", "status", "--porcelain=v2", "--branch"],
+        GIT_STATUS_TIMEOUT,
+    )?;
     let parsed = parse_porcelain_v2(&output)?;
     Some(protocol::GitStatus {
         repo_root: repo_root.to_string(),
@@ -166,6 +223,49 @@ pub fn run_git_status(repo_root: &str) -> Option<protocol::GitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dirty_paths_reads_ordinary_staged_and_unstaged_entries() {
+        let output = "# branch.oid abc\n# branch.head main\n\
+            1 M. N... 100644 100644 100644 abc def src/foo.rs\n\
+            1 .M N... 100644 100644 100644 abc def src/bar.rs\n";
+        let (paths, truncated) = parse_dirty_paths(output, 10);
+        assert_eq!(paths, vec!["src/foo.rs", "src/bar.rs"]);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn dirty_paths_takes_the_new_side_of_a_rename() {
+        let output = "2 R. N... 100644 100644 100644 abc def R100 src/new.rs\tsrc/old.rs\n";
+        assert_eq!(parse_dirty_paths(output, 10).0, vec!["src/new.rs"]);
+    }
+
+    #[test]
+    fn dirty_paths_includes_untracked_and_unmerged_entries() {
+        let output = "? new-file.txt\n\
+            u UU N... 100644 100644 100644 100644 aaa bbb ccc src/conflict.rs\n";
+        assert_eq!(parse_dirty_paths(output, 10).0, vec!["new-file.txt", "src/conflict.rs"]);
+    }
+
+    #[test]
+    fn dirty_paths_skips_headers_and_ignored_entries() {
+        let output = "# branch.oid abc\n# branch.head main\n! build/out.js\n";
+        assert!(parse_dirty_paths(output, 10).0.is_empty());
+    }
+
+    #[test]
+    fn dirty_paths_caps_at_the_limit_and_says_so() {
+        let output = (0..5).map(|i| format!("? file{i}.txt\n")).collect::<String>();
+        let (paths, truncated) = parse_dirty_paths(&output, 3);
+        assert_eq!(paths.len(), 3);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn dirty_paths_handles_a_path_containing_spaces() {
+        let output = "1 M. N... 100644 100644 100644 abc def src/a file.rs\n";
+        assert_eq!(parse_dirty_paths(output, 10).0, vec!["src/a file.rs"]);
+    }
 
     #[test]
     fn parses_a_clean_repo_with_no_upstream() {

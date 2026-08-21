@@ -1,6 +1,7 @@
 ---
+order: 5120
 title: Workspace settings panel
-status: In Progress
+status: Done
 priority: high
 ---
 # Workspace settings panel
