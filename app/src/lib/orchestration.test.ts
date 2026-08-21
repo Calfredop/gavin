@@ -20,6 +20,9 @@ import {
   numbersForStep,
   numbersForRail,
   severityForStep,
+  moveStepToNewStage,
+  moveStepIntoStage,
+  splitStageIntoSequence,
 } from "./orchestration";
 import type { Conflict } from "./orchestration";
 import type { WorktreeInfo } from "./git";
@@ -688,5 +691,139 @@ describe("conflict lookups", () => {
     expect(severityForStep(numbered, "t2")).toBe("live");
     expect(severityForStep(numbered, "t3")).toBe("potential");
     expect(severityForStep(numbered, "t7")).toBeNull();
+  });
+});
+
+function built(): Orchestration {
+  // r1: [t1] [t2, t3]   r2: [t4]
+  let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "ui");
+  o = addStage(o, "r1", "s1");
+  o = addStep(o, "s1", "t1", "/x/a.md");
+  o = addStage(o, "r1", "s2");
+  o = addStep(o, "s2", "t2", "/x/b.md");
+  o = addStep(o, "s2", "t3", "/x/c.md");
+  o = addStage(o, "r2", "s3");
+  o = addStep(o, "s3", "t4", "/x/d.md");
+  return o;
+}
+
+const stageMap = (o: Orchestration) =>
+  o.rails.map((r) => [r.id, r.stages.map((s) => s.steps.map((t) => t.id))]);
+
+describe("moveStepIntoStage", () => {
+  it("makes a step parallel with an existing stage's steps", () => {
+    const o = moveStepIntoStage(built(), "t1", "s2");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t2", "t3", "t1"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("moves across rails, which changes the step's effective worktree", () => {
+    const o = moveStepIntoStage(built(), "t4", "s1");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t1", "t4"], ["t2", "t3"]]],
+      ["r2", []],
+    ]);
+  });
+
+  it("is a no-op when the step is already in that stage", () => {
+    const before = built();
+    expect(stageMap(moveStepIntoStage(before, "t2", "s2"))).toEqual(stageMap(before));
+  });
+
+  it("renumbers positions after the move", () => {
+    const o = moveStepIntoStage(built(), "t1", "s2");
+    expect(o.rails[0].stages[0].steps.map((t) => t.position)).toEqual([0, 1, 2]);
+    expect(o.rails[0].stages.map((s) => s.position)).toEqual([0]);
+  });
+});
+
+describe("moveStepToNewStage", () => {
+  it("inserts a fresh single-step stage at the index", () => {
+    const o = moveStepToNewStage(built(), "t3", "r1", 0);
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t3"], ["t1"], ["t2"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("appends at an index past the end", () => {
+    const o = moveStepToNewStage(built(), "t1", "r1", 99);
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t2", "t3"], ["t1"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("moves a step to another rail as its own stage", () => {
+    const o = moveStepToNewStage(built(), "t1", "r2", 0);
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t2", "t3"]]],
+      ["r2", [["t1"], ["t4"]]],
+    ]);
+  });
+
+  it("drops the stage the step vacated when it becomes empty", () => {
+    const o = moveStepToNewStage(built(), "t1", "r2", 0);
+    expect(o.rails[0].stages).toHaveLength(1);
+  });
+
+  it("keeps run state and notes for the moved step — the id survives", () => {
+    let o = built();
+    o = {
+      ...o,
+      stepRuns: [{ stepId: "t1", state: "running", sessionId: "s9", reason: null }],
+      conflictNotes: [{ id: "n1", stepIds: ["t1", "t2"], note: "careful" }],
+    };
+    const moved = moveStepToNewStage(o, "t1", "r2", 0);
+    expect(moved.stepRuns).toEqual([{ stepId: "t1", state: "running", sessionId: "s9", reason: null }]);
+    expect(moved.conflictNotes).toHaveLength(1);
+  });
+
+  it("is a no-op for an unknown step or rail", () => {
+    const before = built();
+    expect(stageMap(moveStepToNewStage(before, "nope", "r1", 0))).toEqual(stageMap(before));
+    expect(stageMap(moveStepToNewStage(before, "t1", "nope", 0))).toEqual(stageMap(before));
+  });
+});
+
+describe("splitStageIntoSequence", () => {
+  it("turns a parallel stage into consecutive single-step stages, in order", () => {
+    const o = splitStageIntoSequence(built(), "s2");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t1"], ["t2"], ["t3"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("keeps the original stage id on the FIRST slice", () => {
+    // A running rail's currentStageId points at this stage; reusing the
+    // id is what stops the split from orphaning it.
+    const o = splitStageIntoSequence(built(), "s2");
+    expect(o.rails[0].stages.map((s) => s.id)).toEqual(["s1", "s2", expect.any(String)]);
+  });
+
+  it("renumbers every stage after the split", () => {
+    const o = splitStageIntoSequence(built(), "s2");
+    expect(o.rails[0].stages.map((s) => s.position)).toEqual([0, 1, 2]);
+  });
+
+  it("preserves step ids, so run state and notes survive", () => {
+    let o = built();
+    o = {
+      ...o,
+      stepRuns: [{ stepId: "t3", state: "running", sessionId: "s9", reason: null }],
+      conflictNotes: [{ id: "n1", stepIds: ["t2", "t3"], note: "careful" }],
+    };
+    const split = splitStageIntoSequence(o, "s2");
+    expect(split.stepRuns).toEqual([{ stepId: "t3", state: "running", sessionId: "s9", reason: null }]);
+    expect(split.conflictNotes).toHaveLength(1);
+  });
+
+  it("is a no-op for a single-step stage or an unknown stage", () => {
+    const before = built();
+    expect(stageMap(splitStageIntoSequence(before, "s1"))).toEqual(stageMap(before));
+    expect(stageMap(splitStageIntoSequence(before, "nope"))).toEqual(stageMap(before));
   });
 });

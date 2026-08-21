@@ -369,6 +369,120 @@ export function removeStep(orch: Orchestration, stepId: string): Orchestration {
   return sweepOrphans({ ...orch, rails });
 }
 
+/// The step and the stage it currently sits in, or null.
+function locateStep(orch: Orchestration, stepId: string): { step: Step; stageId: string } | null {
+  for (const rail of orch.rails) {
+    for (const stage of rail.stages) {
+      const step = stage.steps.find((t) => t.id === stepId);
+      if (step) return { step, stageId: stage.id };
+    }
+  }
+  return null;
+}
+
+/// Detach the step everywhere, dropping any stage it emptied. Shared by
+/// both moves so "leave no empty stage behind" has exactly one
+/// implementation.
+function detachStep(orch: Orchestration, stepId: string): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => ({
+      ...r,
+      stages: renumber(
+        r.stages
+          .map((s) => ({ ...s, steps: renumber(s.steps.filter((t) => t.id !== stepId)) }))
+          .filter((s) => s.steps.length > 0)
+      ),
+    })),
+  };
+}
+
+/// Drop onto an existing stage's band: the step joins it and runs in
+/// PARALLEL with its steps, in that rail's checkout. No sweepOrphans --
+/// the step id survives a move, so its run state and notes must too.
+export function moveStepIntoStage(
+  orch: Orchestration,
+  stepId: string,
+  stageId: string
+): Orchestration {
+  const found = locateStep(orch, stepId);
+  if (!found || found.stageId === stageId) return orch;
+  const detached = detachStep(orch, stepId);
+  if (!detached.rails.some((r) => r.stages.some((s) => s.id === stageId))) return orch;
+  return {
+    ...detached,
+    rails: detached.rails.map((r) => ({
+      ...r,
+      stages: r.stages.map((s) =>
+        s.id === stageId
+          ? { ...s, steps: renumber([...s.steps, { ...found.step, position: s.steps.length }]) }
+          : s
+      ),
+    })),
+  };
+}
+
+/// Drop into the gap between stages: the step becomes its own stage
+/// there and runs SEQUENTIALLY. `index` is clamped, so "past the end"
+/// appends rather than failing.
+///
+/// CONTRACT: `index` counts stage positions in the target rail with the
+/// dragged step's own stage already removed if that removal emptied it --
+/// which is what the drag glue measures, since the dragged chip is
+/// excluded from measurement.
+export function moveStepToNewStage(
+  orch: Orchestration,
+  stepId: string,
+  railId: string,
+  index: number
+): Orchestration {
+  const found = locateStep(orch, stepId);
+  if (!found || !orch.rails.some((r) => r.id === railId)) return orch;
+  const detached = detachStep(orch, stepId);
+  return {
+    ...detached,
+    rails: detached.rails.map((r) => {
+      if (r.id !== railId) return r;
+      const stages = [...r.stages];
+      const at = Math.max(0, Math.min(index, stages.length));
+      stages.splice(at, 0, {
+        id: crypto.randomUUID(),
+        position: at,
+        steps: [{ ...found.step, position: 0 }],
+      });
+      return { ...r, stages: renumber(stages) };
+    }),
+  };
+}
+
+/// Split one stage of N steps into N consecutive single-step stages, in
+/// step order -- the "Make sequential" repair for a same-worktree
+/// conflict of scope "stage".
+///
+/// The FIRST slice keeps the original stage id on purpose: a running
+/// rail's `currentStageId` may point at this stage, and minting a fresh
+/// id for every slice would strand it mid-run. Step ids are untouched
+/// throughout, so run state and conflict notes ride along.
+export function splitStageIntoSequence(orch: Orchestration, stageId: string): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => {
+      if (!r.stages.some((s) => s.id === stageId)) return r;
+      const stages = r.stages.flatMap((s) => {
+        if (s.id !== stageId || s.steps.length < 2) return [s];
+        return [...s.steps]
+          .sort((a, b) => a.position - b.position)
+          .map((step, i) => ({
+            id: i === 0 ? s.id : crypto.randomUUID(),
+            position: 0, // renumber() fixes these up below
+            steps: [{ ...step, position: 0 }],
+          }));
+      });
+      return { ...r, stages: renumber(stages) };
+    }),
+  };
+}
+
 // ---- Conflicts -------------------------------------------------------------
 // Computed at render time from the plan, the tree and the worktree list;
 // nothing here is persisted. Gavin never BLOCKS on any of this (spec

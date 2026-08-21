@@ -19,6 +19,9 @@ import {
   addStage,
   addStep,
   removeStep,
+  moveStepIntoStage,
+  moveStepToNewStage,
+  splitStageIntoSequence,
 } from "./orchestration";
 import type { Action, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
@@ -364,4 +367,25 @@ export function addStepToStageAction(
 
 export function removeStepAction(workspaceId: string, stepId: string): Promise<void> {
   return mutatePlan(workspaceId, (o) => removeStep(o, stepId));
+}
+
+export function moveStepIntoStageAction(
+  workspaceId: string,
+  stepId: string,
+  stageId: string
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => moveStepIntoStage(o, stepId, stageId));
+}
+
+export function moveStepToNewStageAction(
+  workspaceId: string,
+  stepId: string,
+  railId: string,
+  index: number
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => moveStepToNewStage(o, stepId, railId, index));
+}
+
+export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<void> {
+  return mutatePlan(workspaceId, (o) => splitStageIntoSequence(o, stageId));
 }
