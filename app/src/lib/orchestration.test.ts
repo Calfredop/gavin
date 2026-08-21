@@ -8,6 +8,13 @@ import {
   railStateOf,
   firstUnfinishedStageId,
   nextActions,
+  addRail,
+  renameRail,
+  bindRail,
+  deleteRail,
+  addStage,
+  addStep,
+  removeStep,
 } from "./orchestration";
 import type { Action, Orchestration, Rail } from "./orchestration";
 import type { Board } from "./kanban";
@@ -381,5 +388,76 @@ describe("nextActions", () => {
     expect(nextActions(orch, BOARD, tree([plan("a.md"), plan("b.md")]), [], new Set())).toEqual([
       { kind: "launch", stepId: "t1" },
     ]);
+  });
+});
+
+describe("plan mutators", () => {
+  it("adds a rail at the end and numbers positions from zero", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addRail(o, "r2", "ui");
+    expect(o.rails.map((r) => [r.id, r.position])).toEqual([
+      ["r1", 0],
+      ["r2", 1],
+    ]);
+  });
+
+  it("renames and binds a rail without touching the others", () => {
+    let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "ui");
+    o = renameRail(o, "r1", "server");
+    o = bindRail(o, "r1", { worktreePath: "/x/wt", pageId: "p1" });
+    expect(o.rails[0]).toMatchObject({ name: "server", worktreePath: "/x/wt", pageId: "p1" });
+    expect(o.rails[1]).toMatchObject({ name: "ui", worktreePath: null, pageId: null });
+  });
+
+  it("binds only the keys given", () => {
+    let o = bindRail(addRail(emptyOrchestration(), "r1", "backend"), "r1", { worktreePath: "/x/wt" });
+    o = bindRail(o, "r1", { pageId: "p1" });
+    expect(o.rails[0]).toMatchObject({ worktreePath: "/x/wt", pageId: "p1" });
+  });
+
+  it("deletes a rail, renumbers the rest, and drops notes that named its steps", () => {
+    let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "ui");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md");
+    o = { ...o, conflictNotes: [{ id: "n1", stepIds: ["t1"], note: "careful" }] };
+    o = deleteRail(o, "r1");
+    expect(o.rails.map((r) => [r.id, r.position])).toEqual([["r2", 0]]);
+    expect(o.conflictNotes).toEqual([]);
+  });
+
+  it("adds stages in order and steps within a stage in order", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStage(o, "r1", "s1");
+    o = addStage(o, "r1", "s2");
+    o = addStep(o, "s1", "t1", "/x/a.md");
+    o = addStep(o, "s1", "t2", "/x/b.md");
+    expect(o.rails[0].stages.map((s) => [s.id, s.position])).toEqual([
+      ["s1", 0],
+      ["s2", 1],
+    ]);
+    expect(o.rails[0].stages[0].steps.map((t) => [t.id, t.position])).toEqual([
+      ["t1", 0],
+      ["t2", 1],
+    ]);
+  });
+
+  it("removes a step, renumbers its siblings, and drops a stage left empty", () => {
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    o = addStep(o, "s1", "t2", "/x/b.md");
+    o = removeStep(o, "t1");
+    expect(o.rails[0].stages[0].steps.map((t) => [t.id, t.position])).toEqual([["t2", 0]]);
+    o = removeStep(o, "t2");
+    expect(o.rails[0].stages).toEqual([]);
+  });
+
+  it("drops run state and notes for a removed step", () => {
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    o = {
+      ...o,
+      stepRuns: [{ stepId: "t1", state: "done", sessionId: null, reason: null }],
+      conflictNotes: [{ id: "n1", stepIds: ["t1"], note: "careful" }],
+    };
+    o = removeStep(o, "t1");
+    expect(o.stepRuns).toEqual([]);
+    expect(o.conflictNotes).toEqual([]);
   });
 });

@@ -12,6 +12,13 @@ import {
   firstUnfinishedStageId,
   cardIndex,
   doneColumn,
+  addRail,
+  renameRail,
+  bindRail,
+  deleteRail,
+  addStage,
+  addStep,
+  removeStep,
 } from "./orchestration";
 import type { Action, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
@@ -313,4 +320,48 @@ export function __resetForTesting(): void {
   saveErrors.set({});
   pendingSaves.clear();
   ticking.clear();
+}
+
+// ---- Plan-edit actions -----------------------------------------------------
+
+export function addRailAction(workspaceId: string, name: string): Promise<void> {
+  return mutatePlan(workspaceId, (o) => addRail(o, crypto.randomUUID(), name));
+}
+
+export function renameRailAction(workspaceId: string, railId: string, name: string): Promise<void> {
+  return mutatePlan(workspaceId, (o) => renameRail(o, railId, name));
+}
+
+export function bindRailAction(
+  workspaceId: string,
+  railId: string,
+  patch: { worktreePath?: string | null; pageId?: string | null }
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => bindRail(o, railId, patch));
+}
+
+export function deleteRailAction(workspaceId: string, railId: string): Promise<void> {
+  return mutatePlan(workspaceId, (o) => deleteRail(o, railId));
+}
+
+/// Adds the card as its OWN new stage -- a sequential beat, the safe
+/// default. Parallel is the deliberate act of dropping onto an existing
+/// stage (SP2).
+export function addStepAsStageAction(workspaceId: string, railId: string, cardPath: string): Promise<void> {
+  return mutatePlan(workspaceId, (o) => {
+    const stageId = crypto.randomUUID();
+    return addStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), cardPath);
+  });
+}
+
+export function addStepToStageAction(
+  workspaceId: string,
+  stageId: string,
+  cardPath: string
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => addStep(o, stageId, crypto.randomUUID(), cardPath));
+}
+
+export function removeStepAction(workspaceId: string, stepId: string): Promise<void> {
+  return mutatePlan(workspaceId, (o) => removeStep(o, stepId));
 }

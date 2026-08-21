@@ -264,3 +264,107 @@ export function nextActions(
 
   return actions;
 }
+
+// ---- Plan mutators ---------------------------------------------------------
+// Pure and total, like kanban.ts's: every one returns a fresh
+// Orchestration. orchestrationState.mutatePlan persists the result
+// wholesale, so none of these needs to know about I/O.
+
+function renumber<T extends { position: number }>(items: T[]): T[] {
+  return items.map((item, i) => ({ ...item, position: i }));
+}
+
+/// Drops run state and conflict notes that name ids no longer in the
+/// plan -- the client-side mirror of replace_plan's orphan sweep, so the
+/// optimistic view matches what SQLite will hold.
+function sweepOrphans(orch: Orchestration): Orchestration {
+  const railIds = new Set(orch.rails.map((r) => r.id));
+  const stepIds = new Set(
+    orch.rails.flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.id)))
+  );
+  return {
+    ...orch,
+    railRuns: orch.railRuns.filter((r) => railIds.has(r.railId)),
+    stepRuns: orch.stepRuns.filter((r) => stepIds.has(r.stepId)),
+    conflictNotes: orch.conflictNotes.filter((n) => n.stepIds.every((id) => stepIds.has(id))),
+  };
+}
+
+export function addRail(orch: Orchestration, railId: string, name: string): Orchestration {
+  const rail: Rail = {
+    id: railId,
+    name,
+    position: orch.rails.length,
+    worktreePath: null,
+    pageId: null,
+    stages: [],
+  };
+  return { ...orch, rails: renumber([...orch.rails, rail]) };
+}
+
+export function renameRail(orch: Orchestration, railId: string, name: string): Orchestration {
+  return { ...orch, rails: orch.rails.map((r) => (r.id === railId ? { ...r, name } : r)) };
+}
+
+/// Re-binding affects steps launched from now on; sessions already
+/// running keep the cwd they were spawned with (spec §7).
+export function bindRail(
+  orch: Orchestration,
+  railId: string,
+  patch: { worktreePath?: string | null; pageId?: string | null }
+): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => (r.id === railId ? { ...r, ...patch } : r)),
+  };
+}
+
+/// Never removes a worktree or a page -- those outlive the plan that
+/// referenced them (spec §7).
+export function deleteRail(orch: Orchestration, railId: string): Orchestration {
+  return sweepOrphans({ ...orch, rails: renumber(orch.rails.filter((r) => r.id !== railId)) });
+}
+
+export function addStage(orch: Orchestration, railId: string, stageId: string): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) =>
+      r.id === railId
+        ? { ...r, stages: renumber([...r.stages, { id: stageId, position: r.stages.length, steps: [] }]) }
+        : r
+    ),
+  };
+}
+
+export function addStep(
+  orch: Orchestration,
+  stageId: string,
+  stepId: string,
+  cardPath: string
+): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => ({
+      ...r,
+      stages: r.stages.map((s) =>
+        s.id === stageId
+          ? { ...s, steps: renumber([...s.steps, { id: stepId, position: s.steps.length, cardPath }]) }
+          : s
+      ),
+    })),
+  };
+}
+
+/// A stage left with no steps is removed: an empty stage is invisible in
+/// the grid and would otherwise be a silent gap the scheduler steps over.
+export function removeStep(orch: Orchestration, stepId: string): Orchestration {
+  const rails = orch.rails.map((r) => ({
+    ...r,
+    stages: renumber(
+      r.stages
+        .map((s) => ({ ...s, steps: renumber(s.steps.filter((t) => t.id !== stepId)) }))
+        .filter((s) => s.steps.length > 0)
+    ),
+  }));
+  return sweepOrphans({ ...orch, rails });
+}
