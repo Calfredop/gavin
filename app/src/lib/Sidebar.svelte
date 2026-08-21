@@ -38,7 +38,10 @@
     type ReorderPosition,
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
-  import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, getActiveView, type Workspace, type Page, type GitStatus } from "./workspace";
+  import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, getActiveView, sidebarWorkspaceOrder, type Workspace, type Page, type GitStatus } from "./workspace";
+  import { hintMode } from "./shortcutHints";
+  import { hintDigitFor } from "./shortcuts";
+  import ShortcutHint from "./ui/ShortcutHint.svelte";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import {
@@ -109,6 +112,27 @@
   // (the Rust side always creates it once ready).
   const unfiledWorkspace = $derived($layoutState.workspaces.find((w) => w.id === UNFILED_WORKSPACE_ID) ?? null);
   const regularWorkspaces = $derived($layoutState.workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID));
+
+  // ⌘⌥-number addresses workspaces in the order this sidebar renders
+  // them (Unfiled pinned first) -- the same helper the router uses, so a
+  // badge and its shortcut can never point at different rows.
+  const orderedWorkspaces = $derived(sidebarWorkspaceOrder($layoutState.workspaces));
+
+  /// ⌘⇧-number switches pages, and only within the ACTIVE workspace --
+  /// badging another workspace's pages would promise a jump that
+  /// shortcut does not make.
+  function pageHint(ws: Workspace, index: number): string | null {
+    if ($hintMode !== "cmd-shift" || ws.id !== $layoutState.activeWorkspaceId) return null;
+    const digit = hintDigitFor(index, ws.pages.length);
+    return digit === null ? null : String(digit);
+  }
+
+  function workspaceHint(workspaceId: string): string | null {
+    if ($hintMode !== "cmd-alt") return null;
+    const index = orderedWorkspaces.findIndex((w) => w.id === workspaceId);
+    const digit = index === -1 ? null : hintDigitFor(index, orderedWorkspaces.length);
+    return digit === null ? null : String(digit);
+  }
 
   // The count this plan's sidebar badges show -- waiting_for_input only,
   // never a generic aggregate across all three states (see this plan's
@@ -436,6 +460,9 @@
               onclick={() => togglePageGitExpand(page.id)}
             />
           {/if}
+          {#if pageHint(ws, pageIndex)}
+            <ShortcutHint text={pageHint(ws, pageIndex) ?? ""} />
+          {/if}
           {#if editingPageId === page.id}
             <input
               class="page-name-input"
@@ -572,6 +599,9 @@
             size={12}
             onclick={() => toggleExpand(ws.id)}
           />
+          {#if workspaceHint(ws.id)}
+            <ShortcutHint text={workspaceHint(ws.id) ?? ""} />
+          {/if}
           <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
           {#if workspaceWaitingForInputCount(ws) > 0}
             <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
@@ -628,6 +658,9 @@
               }}
             />
           {:else}
+            {#if workspaceHint(ws.id)}
+              <ShortcutHint text={workspaceHint(ws.id) ?? ""} />
+            {/if}
             <span
               class="workspace-name"
               ondblclick={() => startEditingWorkspace(ws.id, ws.name)}
