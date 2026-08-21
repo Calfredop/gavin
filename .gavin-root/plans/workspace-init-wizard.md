@@ -36,9 +36,18 @@ honestly for profiles that have no MCP support yet (W4).
   choosing the agent starts the session on that step, one deliberate
   press, so D12 holds. The Launch step then reports it already running.
 
-## Still open
+Resolved since: step 1's modal embeds the Settings components rather than
+restating them, and the wizard is offered for any unconfigured workspace
+(derived progress makes that free).
 
-- Whether step 1's modal embeds the Settings panel's components or
-  carries its own fields.
-- Whether the wizard is offered for existing unrooted workspaces or only
-  brand-new ones.
+- Spec: docs/superpowers/specs/2026-08-21-workspace-init-wizard-design.md
+- Plan: docs/superpowers/plans/2026-08-21-workspace-init-wizard.md (7 tasks)
+
+## Blocking question before Task 5
+
+D56 ("Settings owns every folder-picking and integration action") was
+added to the workspace-settings spec after this design was approved. The
+wizard needs both a folder picker and the integration action, making it a
+second owner. Recommended amendment: D56 becomes "Settings and the init
+wizard own..." — the wizard is a setup flow, the same job D37 gave
+Settings when it made the panel work unrooted. Tasks 1-4 are unaffected.
