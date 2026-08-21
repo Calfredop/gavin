@@ -71,8 +71,8 @@
     flex-direction: column;
     min-height: 0;
     height: 100%;
-    background: #1a1a1a;
-    border: 1px solid #2f2f2f;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
   }
@@ -81,19 +81,19 @@
     align-items: center;
     justify-content: space-between;
     padding: 6px 10px;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
     font-family: monospace;
     font-size: 0.75em;
-    color: #999;
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     flex: 0 0 auto;
   }
   .head button,
   .launcher button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 3px 10px;
     border-radius: 4px;
     cursor: pointer;
@@ -113,7 +113,7 @@
     align-items: center;
     justify-content: center;
     gap: 10px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.85em;
     padding: 16px;
@@ -124,10 +124,10 @@
     gap: 6px;
   }
   .launcher input {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 3px 8px;

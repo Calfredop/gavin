@@ -15,13 +15,18 @@
 
   const LANE_W = 14;
   const ROW_H = 22;
-  const PALETTE = ["#8ab4e0", "#8bc98b", "#d9b45c", "#e08a8a", "#b48ae0", "#6ad1c9", "#e0a86a", "#c9c98b"];
+  /// Categorical, not semantic -- adjacent lanes just need to differ. The
+  /// actual colours live in theme.css as --lane-1..8 and swap per theme,
+  /// because a palette tuned for a dark background washes out on white.
+  /// These are var() references, not hexes: SVG presentation attributes
+  /// don't resolve var(), so every use below goes through style: instead.
+  const LANES = 8;
 
   const clampLane = (l: number): number => Math.min(l, MAX_DRAWN_LANE);
   const x = (l: number): number => clampLane(l) * LANE_W + LANE_W / 2;
   const svgWidth = $derived(Math.max(1, clampLane(width)) * LANE_W);
   const cx = $derived(x(row.lane));
-  const colorOf = (l: number): string => PALETTE[l % PALETTE.length];
+  const colorOf = (l: number): string => `var(--lane-${(l % LANES) + 1})`;
 
   // A curve from (fromLane, top) into this row's dot, and from the dot down
   // to (toLane, bottom): cubic with the control points pulled vertical so
@@ -55,21 +60,22 @@
 <div class="row" class:selected role="option" aria-selected={selected} tabindex="-1" onclick={onSelect} oncontextmenu={onMenu}>
   <svg class="lanes" width={svgWidth} height={ROW_H} aria-hidden="true">
     {#each row.passes as lane (lane)}
-      <line x1={x(lane)} y1="0" x2={x(lane)} y2={ROW_H} stroke={colorOf(lane)} stroke-width="2" />
+      <line x1={x(lane)} y1="0" x2={x(lane)} y2={ROW_H} style:stroke={colorOf(lane)} stroke-width="2" />
     {/each}
     {#each row.incoming as lane (lane)}
-      <path d={curveIn(lane)} stroke={colorOf(lane)} stroke-width="2" fill="none" />
+      <path d={curveIn(lane)} style:stroke={colorOf(lane)} stroke-width="2" fill="none" />
     {/each}
     {#each row.outgoing as lane (lane)}
-      <path d={curveOut(lane)} stroke={colorOf(lane)} stroke-width="2" fill="none" />
+      <path d={curveOut(lane)} style:stroke={colorOf(lane)} stroke-width="2" fill="none" />
     {/each}
     {#if row.fromAbove}
-      <line x1={cx} y1="0" x2={cx} y2={ROW_H / 2} stroke={colorOf(row.lane)} stroke-width="2" />
+      <line x1={cx} y1="0" x2={cx} y2={ROW_H / 2} style:stroke={colorOf(row.lane)} stroke-width="2" />
     {/if}
     {#if row.hasParent}
-      <line x1={cx} y1={ROW_H / 2} x2={cx} y2={ROW_H} stroke={colorOf(row.lane)} stroke-width="2" />
+      <line x1={cx} y1={ROW_H / 2} x2={cx} y2={ROW_H} style:stroke={colorOf(row.lane)} stroke-width="2" />
     {/if}
-    <circle cx={cx} cy={ROW_H / 2} r={commit.isHead ? 4.5 : 3.5} fill={commit.isHead ? "#151515" : colorOf(row.lane)} stroke={colorOf(row.lane)} stroke-width="2" />
+    <circle cx={cx} cy={ROW_H / 2} r={commit.isHead ? 4.5 : 3.5} style:fill={commit.isHead ? "var(--surface-base)" : colorOf(row.lane)}
+      style:stroke={colorOf(row.lane)} stroke-width="2" />
   </svg>
   <span class="refs">
     {#each commit.refs as r (r.kind + r.name)}
@@ -92,16 +98,16 @@
     height: 22px;
     padding: 0 8px 0 4px;
     font-size: 0.78em;
-    color: #ccc;
+    color: var(--text);
     white-space: nowrap;
     user-select: none;
     cursor: default;
   }
   .row:hover {
-    background: #222;
+    background: var(--surface-sunken);
   }
   .row.selected {
-    background: #2a3a4a;
+    background: var(--surface-accent);
   }
   .lanes {
     display: block;
@@ -119,35 +125,35 @@
     line-height: 1.4;
   }
   .chip.local {
-    color: #8bc98b;
-    border-color: #3f6b3f;
+    color: var(--success-text);
+    border-color: var(--border-success);
   }
   .chip.local.head {
-    background: #23402a;
-    color: #cfe8cf;
+    background: var(--surface-success);
+    color: var(--success-text);
     font-weight: 700;
   }
   .chip.remote {
-    color: #8ab4e0;
-    border-color: #3a5a7a;
+    color: var(--accent-text);
+    border-color: var(--border-accent);
   }
   .chip.tag {
-    color: #d9b45c;
-    border-color: #6a5a2b;
+    color: var(--warning-text);
+    border-color: var(--border-warning);
   }
   .chip.stash,
   .chip.head-only {
-    color: #aaa;
-    border-color: #444;
+    color: var(--text-muted);
+    border-color: var(--border);
   }
   .subject {
     overflow: hidden;
     text-overflow: ellipsis;
-    color: #ddd;
+    color: var(--text);
   }
   .author,
   .date {
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.92em;
   }
 </style>

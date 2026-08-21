@@ -5,6 +5,17 @@
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tauri + SvelteKit + Typescript App</title>
+    <script>
+      // Pre-boot guess so the first frame isn't the wrong theme. The
+      // stored preference arrives from Tauri asynchronously and
+      // overwrites this; dark is the fallback, matching resolveTheme.
+      try {
+        document.documentElement.dataset.theme =
+          window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      } catch (_) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

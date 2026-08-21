@@ -33,15 +33,15 @@
     z-index: 100;
   }
   .panel {
-    background: #2a2a2a;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 20px;
     min-width: 320px;
     max-width: 480px;
     max-height: 80vh;
     overflow-y: auto;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
   }
 </style>

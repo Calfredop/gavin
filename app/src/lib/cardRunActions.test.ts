@@ -10,6 +10,7 @@ vi.mock("./backend", () => ({
   setPlanFrontmatterField: vi.fn(),
   linkCardSession: vi.fn(),
   unlinkCardSession: vi.fn(),
+  writeInput: vi.fn(),
   getBoard: vi.fn(),
 }));
 vi.mock("./layoutState", () => ({
@@ -47,11 +48,11 @@ vi.mock("./workspace", () => ({
 }));
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, switchToSessionInPage } from "./layoutState";
+import { handleAgentSessionSpawned, switchToSessionInPage, switchWorkspaceView, layoutState } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
-import { runCard, relaunchCard, jumpToBoundSession } from "./cardRunActions";
+import { runCard, relaunchCard, jumpToBoundSession, sendToMainAgent } from "./cardRunActions";
 import type { CardView } from "./planBoard";
 import type { Board } from "./kanban";
 
@@ -195,5 +196,50 @@ describe("jumpToBoundSession", () => {
     expect(await jumpToBoundSession("ws-1", "/p/t.md")).toBe("exited");
     expect(await jumpToBoundSession("ws-1", "/p/unbound.md")).toBe("none");
     expect(switchToSessionInPage).not.toHaveBeenCalled();
+  });
+});
+
+describe("sendToMainAgent", () => {
+  function setMainSession(id: string | null): void {
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) => ({ ...w, mainSessionId: id ?? undefined })),
+    }));
+  }
+
+  it("bracketed-pastes the prompt into the main session, sets In Progress, jumps Home", async () => {
+    setMainSession("main-1");
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo it.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.writeInput).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+
+    const err = await sendToMainAgent("ws-1", card("task", "To Do"));
+
+    expect(err).toBeNull();
+    const [sid, data] = vi.mocked(backend.writeInput).mock.calls[0];
+    expect(sid).toBe("main-1");
+    expect(data.startsWith("\x1b[200~")).toBe(true);
+    expect(data.endsWith("\x1b[201~\r")).toBe(true);
+    expect(data).toContain("Do it.");
+    expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith(
+      "/ws/.gavin-root/plans/t.md",
+      "status",
+      "In Progress"
+    );
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "home");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
+    setMainSession(null);
+  });
+
+  it("refuses without a running main agent, and for notes", async () => {
+    setMainSession(null);
+    expect(await sendToMainAgent("ws-1", card("plan", null))).toContain("start it on the Home tab");
+    expect(await sendToMainAgent("ws-1", card("note", null))).toContain("not runnable");
+    expect(backend.writeInput).not.toHaveBeenCalled();
   });
 });

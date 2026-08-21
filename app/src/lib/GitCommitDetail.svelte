@@ -110,39 +110,39 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    background: #151515;
+    background: var(--surface-sunken);
     font-family: monospace;
-    color: #ccc;
+    color: var(--text);
   }
   .head {
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 5px 10px;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
     font-size: 0.78em;
   }
   .sha {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #d9b45c;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 1em;
     padding: 1px 7px;
     cursor: pointer;
   }
   .sha:hover {
-    border-color: #666;
+    border-color: var(--border-strong);
   }
   .who {
-    color: #ddd;
+    color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .when {
-    color: #777;
+    color: var(--text-subtle);
     white-space: nowrap;
   }
   .spacer {
@@ -150,22 +150,22 @@
   }
   .seg {
     display: inline-flex;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
   }
   .seg button {
     background: transparent;
     border: 0;
-    color: #999;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.95em;
     padding: 2px 8px;
     cursor: pointer;
   }
   .seg button.on {
-    background: #2a3a4a;
-    color: #eee;
+    background: var(--surface-accent);
+    color: var(--text);
   }
   .chips {
     display: flex;
@@ -179,25 +179,25 @@
     border-radius: 8px;
     padding: 0 6px;
   }
-  .chip.local { color: #8bc98b; border-color: #3f6b3f; }
-  .chip.remote { color: #8ab4e0; border-color: #3a5a7a; }
-  .chip.tag { color: #d9b45c; border-color: #6a5a2b; }
-  .chip.stash, .chip.head { color: #aaa; border-color: #444; }
+  .chip.local { color: var(--success-text); border-color: var(--border-success); }
+  .chip.remote { color: var(--accent-text); border-color: var(--border-accent); }
+  .chip.tag { color: var(--warning-text); border-color: var(--border-warning); }
+  .chip.stash, .chip.head { color: var(--text-muted); border-color: var(--border); }
   .message {
     margin: 0;
     padding: 8px 10px;
     white-space: pre-wrap;
-    color: #ddd;
+    color: var(--text);
     font-size: 0.8em;
     max-height: 30%;
     overflow: auto;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
   }
   .files {
     flex: 0 1 auto;
     max-height: 35%;
     overflow: auto;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
   }
   .diff {
     flex: 1 1 auto;
@@ -209,7 +209,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.8em;
   }
   .msg.small {
@@ -217,7 +217,7 @@
   }
   .none {
     padding: 6px 8px;
-    color: #666;
+    color: var(--text-subtle);
     font-size: 0.75em;
   }
 </style>

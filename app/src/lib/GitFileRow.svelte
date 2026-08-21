@@ -58,10 +58,10 @@
     user-select: none;
   }
   .row:hover {
-    background: #222;
+    background: var(--surface-sunken);
   }
   .row.selected {
-    background: #2a3a4a;
+    background: var(--surface-accent);
   }
   .badge {
     width: 14px;
@@ -69,12 +69,12 @@
     font-weight: 700;
     flex: 0 0 auto;
   }
-  .s-M { color: #d9b45c; }
-  .s-A { color: #8bc98b; }
-  .s-D { color: #e08a8a; }
-  .s-R, .s-C { color: #8ab4e0; }
-  .s-untracked { color: #8bc98b; }
-  .s-U { color: #ff6b6b; }
+  .s-M { color: var(--warning-text); }
+  .s-A { color: var(--success-text); }
+  .s-D { color: var(--danger-text); }
+  .s-R, .s-C { color: var(--accent-text); }
+  .s-untracked { color: var(--success-text); }
+  .s-U { color: var(--danger-text); }
   .path {
     flex: 1 1 auto;
     min-width: 0;
@@ -83,10 +83,10 @@
     white-space: nowrap;
   }
   .dir {
-    color: #777;
+    color: var(--text-subtle);
   }
   .name {
-    color: #ddd;
+    color: var(--text);
   }
   .actions {
     display: none;
@@ -101,9 +101,9 @@
   }
   .actions button {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     width: 20px;
     height: 18px;
     line-height: 1;
@@ -111,15 +111,15 @@
     font-family: monospace;
   }
   .actions button:hover:not(:disabled) {
-    border-color: #666;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .actions button:disabled {
     opacity: 0.4;
     cursor: default;
   }
   .actions .danger:hover:not(:disabled) {
-    border-color: #7a3030;
-    color: #f0c0c0;
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
 </style>

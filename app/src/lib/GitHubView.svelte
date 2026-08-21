@@ -183,11 +183,11 @@
     height: 100%;
     min-height: 0;
     font-family: monospace;
-    color: #ccc;
+    color: var(--text);
   }
   .banner .banner-act {
     background: transparent;
-    border: 1px solid #6a5a2b;
+    border: 1px solid var(--border-warning);
     border-radius: 4px;
     color: inherit;
     font-family: monospace;
@@ -196,15 +196,15 @@
     cursor: pointer;
   }
   .banner .banner-act:hover:not(:disabled) {
-    border-color: #9a8040;
+    border-color: var(--border-warning);
   }
   .banner .banner-act:disabled {
     opacity: 0.45;
     cursor: default;
   }
   .banner .banner-act.danger {
-    border-color: #6a3030;
-    color: #e0a0a0;
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   .banner {
     display: flex;
@@ -214,14 +214,14 @@
     font-size: 0.75em;
   }
   .banner.info {
-    background: #2a2417;
-    color: #d9b45c;
-    border-bottom: 1px solid #4a3d1f;
+    background: var(--surface-warning);
+    color: var(--warning-text);
+    border-bottom: 1px solid var(--border-warning);
   }
   .banner.error {
-    background: #2b1a1a;
-    color: #e08a8a;
-    border-bottom: 1px solid #4a2727;
+    background: var(--surface-danger);
+    color: var(--danger-text);
+    border-bottom: 1px solid var(--border-danger);
   }
   .banner span {
     flex: 1 1 auto;
@@ -245,10 +245,10 @@
   }
   .splitter {
     cursor: col-resize;
-    background: #2f2f2f;
+    background: var(--surface-raised);
   }
   .splitter:hover {
-    background: #4a4a4a;
+    background: var(--surface-selected);
   }
   .empty {
     display: flex;
@@ -257,18 +257,18 @@
     justify-content: center;
     gap: 10px;
     height: 100%;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.85em;
   }
   .empty code {
-    color: #bbb;
+    color: var(--text-muted);
   }
   .primary {
-    background: #2d4a2d;
-    border: 1px solid #3f6b3f;
+    background: var(--surface-success);
+    border: 1px solid var(--border-success);
     border-radius: 6px;
-    color: #cfe8cf;
+    color: var(--success-text);
     padding: 5px 12px;
     font-family: monospace;
     cursor: pointer;

@@ -158,17 +158,17 @@
     height: 100%;
     min-height: 0;
     outline: none;
-    background: #1a1a1a;
+    background: var(--surface-sunken);
   }
   .changes:focus-visible {
-    box-shadow: inset 0 0 0 1px #4a6a8a;
+    box-shadow: inset 0 0 0 1px var(--border-accent);
   }
   .list {
     flex: 1 1 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
   }
   header {
     display: flex;
@@ -176,12 +176,12 @@
     gap: 6px;
     padding: 5px 8px;
     font-size: 0.72em;
-    color: #999;
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
   .count {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .spacer {
     flex: 1 1 auto;
@@ -190,17 +190,17 @@
     text-transform: none;
     letter-spacing: 0;
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 1em;
     padding: 1px 6px;
     cursor: pointer;
   }
   .all:hover:not(:disabled) {
-    border-color: #666;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .all:disabled {
     opacity: 0.4;
@@ -214,7 +214,7 @@
   .more,
   .none {
     padding: 6px 8px;
-    color: #666;
+    color: var(--text-subtle);
     font-size: 0.75em;
   }
   .stash-view .list {
@@ -223,7 +223,7 @@
   }
   .stash-msg {
     padding: 0 8px 6px;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.75em;
     white-space: nowrap;
     overflow: hidden;
@@ -233,7 +233,7 @@
     display: flex;
     gap: 6px;
     padding: 6px 8px;
-    border-top: 1px solid #2f2f2f;
+    border-top: 1px solid var(--border);
     font-size: 0.72em;
   }
 </style>

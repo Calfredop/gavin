@@ -178,20 +178,20 @@
     gap: 6px;
     align-items: flex-start;
     text-align: left;
-    background: #1a1a1a;
-    border: 1px solid #2f2f2f;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 10px;
-    color: #ccc;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.8em;
     cursor: pointer;
   }
   .panel:hover {
-    border-color: #444;
+    border-color: var(--border);
   }
   .panel-head {
-    color: #999;
+    color: var(--text-muted);
     text-transform: uppercase;
     font-size: 0.85em;
     letter-spacing: 0.05em;
@@ -203,7 +203,7 @@
     line-height: 1.5;
   }
   .muted {
-    color: #777;
+    color: var(--text-subtle);
   }
   .columns {
     display: flex;
@@ -214,7 +214,7 @@
     display: flex;
     gap: 5px;
     align-items: baseline;
-    border: 1px solid #333;
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 2px 8px;
   }
@@ -222,7 +222,7 @@
     border-style: dashed;
   }
   .col-count {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .tiles {
     display: grid;
@@ -236,27 +236,27 @@
     gap: 3px;
     align-items: flex-start;
     background: transparent;
-    border: 1px solid #333;
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 8px 10px;
-    color: #ccc;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.75em;
     cursor: pointer;
     text-align: left;
   }
   .tile:hover {
-    border-color: #555;
+    border-color: var(--border-strong);
   }
   .tile span {
-    color: #888;
+    color: var(--text-subtle);
   }
   .empty {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.85em;
   }

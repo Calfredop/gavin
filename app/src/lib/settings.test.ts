@@ -127,3 +127,55 @@ describe("accentVar", () => {
     expect(accentVar("red; background: url(x)")).toBe(DEFAULT_ACCENT);
   });
 });
+
+describe("accentVar light-mode legibility", () => {
+  // Contrast helpers, kept local to the test so the assertion is
+  // independent of whatever the implementation computes.
+  const chan = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  const lum = (hex: string) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+  };
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  it("leaves every swatch untouched in dark mode", () => {
+    for (const swatch of PALETTE) {
+      expect(accentVar(swatch, "dark")).toBe(swatch);
+    }
+  });
+
+  it("brings every swatch to at least 3:1 on a light surface", () => {
+    for (const swatch of PALETTE) {
+      const resolved = accentVar(swatch, "light")!;
+      expect(contrast(resolved, "#ffffff")).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("keeps a swatch recognisable rather than collapsing it to grey", () => {
+    // Same hue family: the dominant channel must stay dominant.
+    for (const swatch of PALETTE) {
+      const resolved = accentVar(swatch, "light")!;
+      const chanOf = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const a = chanOf(swatch);
+      const b = chanOf(resolved);
+      expect(b.indexOf(Math.max(...b))).toBe(a.indexOf(Math.max(...a)));
+    }
+  });
+
+  it("darkens an arbitrary hand-edited colour too, not just the presets", () => {
+    // #fbbf24-like brightness, but not in PALETTE.
+    const resolved = accentVar("#ffe066", "light")!;
+    expect(contrast(resolved, "#ffffff")).toBeGreaterThanOrEqual(3);
+  });
+
+  it("returns undefined for an unset colour in both themes", () => {
+    for (const theme of ["light", "dark"] as const) {
+      expect(accentVar(null, theme)).toBeUndefined();
+      expect(accentVar(undefined, theme)).toBeUndefined();
+      expect(accentVar("   ", theme)).toBeUndefined();
+    }
+  });
+});

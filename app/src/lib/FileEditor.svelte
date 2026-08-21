@@ -262,8 +262,8 @@
   .pane {
     width: 100%;
     height: 100%;
-    background: #1e1e1e;
-    color: #eee;
+    background: var(--surface-base);
+    color: var(--text);
     display: flex;
     flex-direction: column;
   }
@@ -274,12 +274,12 @@
     padding: 4px 8px;
     justify-content: flex-end;
     flex: 0 0 auto;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
   }
   .modes button {
     background: transparent;
     border: 1px solid transparent;
-    color: #999;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.75em;
     padding: 2px 8px;
@@ -287,15 +287,15 @@
     cursor: pointer;
   }
   .modes button.active {
-    background: #333;
-    color: #eee;
+    background: var(--surface-overlay);
+    color: var(--text);
   }
   .modes button:disabled {
     opacity: 0.4;
     cursor: default;
   }
   .dirty {
-    color: #d9a648;
+    color: var(--warning-text);
     font-size: 0.7em;
     margin-left: 4px;
   }
@@ -319,9 +319,9 @@
   .notice button {
     margin-top: 12px;
     padding: 8px 16px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
@@ -331,8 +331,8 @@
     align-items: center;
     gap: 12px;
     padding: 8px 12px;
-    background: #3a3320;
-    color: #e0d0a0;
+    background: var(--surface-warning);
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.85em;
     flex: 0 0 auto;
@@ -342,8 +342,8 @@
     padding: 4px 10px;
   }
   .notice.error {
-    background: #3a2020;
-    color: #e0a0a0;
+    background: var(--surface-danger);
+    color: var(--danger-text);
   }
   .markdown {
     flex: 1 1 auto;
@@ -358,7 +358,7 @@
     font-family: sans-serif;
   }
   .markdown :global(pre) {
-    background: #2a2a2a;
+    background: var(--surface-raised);
     padding: 10px;
     border-radius: 4px;
     overflow-x: auto;
@@ -368,14 +368,14 @@
     font-size: 0.9em;
   }
   .markdown :global(a) {
-    color: #4a9eff;
+    color: var(--accent-text);
   }
   .markdown :global(table) {
     border-collapse: collapse;
   }
   .markdown :global(th),
   .markdown :global(td) {
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     padding: 4px 8px;
   }
 </style>

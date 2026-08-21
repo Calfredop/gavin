@@ -21,6 +21,8 @@ export interface CardMenuHooks {
   openDetail: (path: string) => void;
   requestDelete: (card: CardView) => void;
   run: (card: CardView) => void;
+  sendToAgent: (card: CardView) => void;
+  agentAvailable: boolean;
   reportError: (message: string) => void;
 }
 
@@ -63,8 +65,13 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       });
     } else {
       entries.push({
-        label: card.kind === "plan" ? "Run plan with agent" : "Run task with agent",
+        label: "Run in dedicated session",
         onPick: () => hooks.run(card),
+      });
+      entries.push({
+        label: "Send to workspace agent",
+        disabled: !hooks.agentAvailable,
+        onPick: () => hooks.sendToAgent(card),
       });
     }
   }

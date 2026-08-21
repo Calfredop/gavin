@@ -1,6 +1,7 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import { ChevronDown, FolderGit2, Play, GitMerge, Trash2, Plus, Eraser } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { agentProfilesStore, createSessionForCard } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig } from "./settings";
@@ -154,13 +155,13 @@
           </button>
           <span class="acts">
             {#if !w.prunable}
-              <button type="button" use:tooltip={`Open an agent in ${splitPath(w.path).name}`} disabled={locked} onclick={() => { open = false; spawnAgent(w.path, agentCommand); }}><Play size={11} /></button>
+              <IconButton icon={Play} label={`Open an agent in ${splitPath(w.path).name}`} size={11} disabled={locked} onclick={() => { open = false; spawnAgent(w.path, agentCommand); }} />
             {/if}
             {#if !w.isMain && !w.prunable && w.branch}
-              <button type="button" use:tooltip={`Merge ${w.branch} into ${rootBranch}`} disabled={locked} onclick={() => onMergeBack(w)}><GitMerge size={11} /></button>
+              <IconButton icon={GitMerge} label={`Merge ${w.branch} into ${rootBranch}`} size={11} disabled={locked} onclick={() => onMergeBack(w)} />
             {/if}
             {#if !w.isMain}
-              <button type="button" class="danger" use:tooltip={"Remove worktree"} disabled={locked} onclick={() => onRemove(w)}><Trash2 size={11} /></button>
+              <IconButton icon={Trash2} label="Remove worktree" tone="danger" size={11} disabled={locked} onclick={() => onRemove(w)} />
             {/if}
           </span>
         </div>
@@ -202,9 +203,9 @@
     align-items: center;
     gap: 5px;
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     font-weight: 600;
@@ -213,7 +214,7 @@
     max-width: 320px;
   }
   .current:hover {
-    border-color: #555;
+    border-color: var(--border-strong);
   }
   .name {
     overflow: hidden;
@@ -226,8 +227,8 @@
     left: 0;
     z-index: 50;
     min-width: 340px;
-    background: #1e1e1e;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     padding: 4px;
@@ -239,14 +240,14 @@
     border-radius: 6px;
   }
   .row:hover {
-    background: #262626;
+    background: var(--surface-raised);
   }
   .row.active .lbl {
-    color: #eee;
+    color: var(--text);
     font-weight: 600;
   }
   .row.prunable .lbl {
-    color: #666;
+    color: var(--text-subtle);
   }
   .pick {
     flex: 1 1 auto;
@@ -255,7 +256,7 @@
     gap: 6px;
     background: transparent;
     border: 0;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 1em;
     padding: 5px 6px;
@@ -268,7 +269,7 @@
   }
   .dot {
     width: 8px;
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .lbl {
     overflow: hidden;
@@ -283,12 +284,11 @@
   .row:hover .acts {
     display: inline-flex;
   }
-  .acts button,
   .foot button {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.95em;
     padding: 1px 6px;
@@ -297,25 +297,19 @@
     gap: 4px;
     cursor: pointer;
   }
-  .acts button:hover:not(:disabled),
   .foot button:hover:not(:disabled) {
-    border-color: #666;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
-  .acts button:disabled,
   .foot button:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .acts .danger:hover:not(:disabled) {
-    border-color: #7a3030;
-    color: #f0c0c0;
   }
   .foot {
     display: flex;
     gap: 6px;
     padding: 6px 4px 2px;
     margin-top: 4px;
-    border-top: 1px solid #2f2f2f;
+    border-top: 1px solid var(--border);
   }
 </style>

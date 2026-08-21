@@ -45,12 +45,12 @@
   h3 {
     margin: 0 0 10px;
     font-size: 1em;
-    color: #eee;
+    color: var(--text);
   }
   .body {
     margin: 0 0 12px;
     white-space: pre-wrap;
-    color: #bbb;
+    color: var(--text-muted);
     font-size: 0.85em;
     max-height: 40vh;
     overflow: auto;
@@ -59,7 +59,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.8em;
     margin-bottom: 12px;
   }
@@ -69,17 +69,17 @@
     gap: 8px;
   }
   .actions button {
-    background: #333;
-    border: 1px solid #444;
+    background: var(--surface-overlay);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ddd;
+    color: var(--text);
     padding: 5px 12px;
     font-family: monospace;
     cursor: pointer;
   }
   .actions .danger {
-    background: #4a2020;
-    border-color: #7a3030;
-    color: #f0c0c0;
+    background: var(--surface-danger);
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
 </style>

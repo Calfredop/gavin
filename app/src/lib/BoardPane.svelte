@@ -7,7 +7,8 @@
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
   import { planCommitFromMerged } from "./planDrop";
-  import { runCard } from "./cardRunActions";
+  import { runCard, sendToMainAgent } from "./cardRunActions";
+  import { layoutState } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
@@ -107,6 +108,8 @@
         openDetail: (path) => (openPlanPath = path),
         requestDelete: (c) => (pendingDelete = c),
         run: (c) => void handleRun(c),
+        sendToAgent: (c) => void handleSendToAgent(c),
+        agentAvailable,
         reportError: (msg) => (planWriteError = msg),
       })
     );
@@ -115,6 +118,16 @@
   async function handleRun(card: CardView): Promise<void> {
     planWriteError = null;
     const err = await runCard(workspaceId, card);
+    if (err) planWriteError = err;
+  }
+
+  const agentAvailable = $derived(
+    ($layoutState.workspaces.find((w) => w.id === workspaceId)?.mainSessionId ?? null) !== null
+  );
+
+  async function handleSendToAgent(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await sendToMainAgent(workspaceId, card);
     if (err) planWriteError = err;
   }
 
@@ -178,13 +191,15 @@
           composerContext={contextFolder}
           onOpenPlanCard={(path) => (openPlanPath = path)}
           onRunCard={handleRun}
+          onSendToAgent={handleSendToAgent}
+          {agentAvailable}
           onDeleteCard={(card) => (pendingDelete = card)}
           onCardContextMenu={handleCardContextMenu}
           {allCards}
         />
       {/each}
       {#each merged?.autoColumns ?? [] as auto (auto.status)}
-        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
+        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
       {/each}
     </div>
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
@@ -214,11 +229,11 @@
     position: absolute;
     inset: 0;
     flex-direction: column;
-    background: #1e1e1e;
+    background: var(--surface-base);
     overflow: hidden;
   }
   .context-title {
-    color: #8bc98b;
+    color: var(--success-text);
     font-family: monospace;
     font-size: 0.8em;
     padding: 8px 12px 0;
@@ -240,9 +255,9 @@
     gap: 10px;
     margin: 8px 12px 0;
     padding: 6px 10px;
-    border: 1px solid #a15c2f;
+    border: 1px solid var(--border-warning);
     border-radius: 6px;
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
     flex: 0 0 auto;
@@ -260,7 +275,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     height: 100%;
   }
@@ -272,9 +287,9 @@
   .overlay button {
     margin-top: 12px;
     padding: 8px 16px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;

@@ -89,7 +89,7 @@
   }
   .divider {
     flex: 0 0 4px;
-    background: #333;
+    background: var(--surface-overlay);
   }
   .divider.row {
     cursor: col-resize;

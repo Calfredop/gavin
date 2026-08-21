@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { setWorkspaceRoot } from "./layoutState";
+  import { setWorkspaceRoot, switchWorkspaceView } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { agentProfilesStore } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
@@ -26,6 +26,13 @@
   const agent = $derived(
     resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
   );
+
+  // The banner variant never picks a folder itself (D56) -- it hands the
+  // user to the one place that does, so an unbound workspace is still a
+  // live path rather than a dead end.
+  function openSettings(): void {
+    void switchWorkspaceView(workspace.id, "settings");
+  }
 
   async function pickRoot(): Promise<void> {
     errorMessage = null;
@@ -78,8 +85,9 @@
     }
   }
 
-  // Agent integration (D20): available for every rooted, healthy
-  // workspace. Writes are merge-aware and re-runnable (gavin-managed
+  // Agent integration (D20): offered for every rooted, healthy workspace,
+  // but only from Settings (D56) -- it is one-time workspace setup, not
+  // per-page context. Writes are merge-aware and re-runnable (gavin-managed
   // files updated in place; everything else preserved).
   let setupNote = $state<string | null>(null);
 
@@ -97,20 +105,34 @@
 
 <div class:settings={variant === "settings"}>
 {#if workspace.id !== UNFILED_WORKSPACE_ID}
+  <!-- Every folder-picking affordance is settings-only (D56). The banner
+       variant states which folder the workspace is bound to and, when
+       that answer is bad news, points at the panel that can fix it. -->
   {#if !workspace.rootPath}
     <div class="banner">
       <span>No root folder set — bind this workspace to a directory to enable gavin features.</span>
-      <button type="button" onclick={pickRoot}>Set root…</button>
+      {#if variant === "settings"}
+        <button type="button" onclick={pickRoot}>Set root…</button>
+      {:else}
+        <button type="button" onclick={openSettings}>Open settings</button>
+      {/if}
     </div>
   {:else if rootMissing}
     <div class="banner warning">
       <span>Root not found: {workspace.rootPath}</span>
-      <button type="button" onclick={pickRoot}>Re-pick…</button>
+      {#if variant === "settings"}
+        <button type="button" onclick={pickRoot}>Re-pick…</button>
+      {:else}
+        <button type="button" onclick={openSettings}>Open settings</button>
+      {/if}
     </div>
   {:else}
     <div class="chip" title={workspace.rootPath}>
-      <span class="path">{workspace.rootPath}</span>
-      <button type="button" class="gear" onclick={pickRoot} title="Change workspace root">⚙</button>
+      <!-- The &lrm; bookends are load-bearing -- see .path below. -->
+      <span class="path">&lrm;{workspace.rootPath}&lrm;</span>
+      {#if variant === "settings"}
+        <button type="button" class="gear" onclick={pickRoot} title="Change workspace root">⚙</button>
+      {/if}
     </div>
   {/if}
   {#if errorMessage}
@@ -125,9 +147,10 @@
       <div class="banner seed"><span>{seedNote}</span></div>
     {/if}
   {/if}
-  <!-- Gated on the profile: setup_agent_integration errors for a profile
-       with no McpLayout, so offering the button would be a broken action. -->
-  {#if workspace.rootPath && !rootMissing && agent.mcpSupported}
+  <!-- Settings-only (D56), and gated on the profile: setup_agent_integration
+       errors for a profile with no McpLayout, so offering the button would
+       be a broken action. -->
+  {#if variant === "settings" && workspace.rootPath && !rootMissing && agent.mcpSupported}
     <div class="banner seed">
       <span>Agent integration — write .mcp.json, the gavin skill, and a {agent.file} pointer into this root.</span>
       <button type="button" onclick={setupIntegration}>Set up / update</button>
@@ -165,32 +188,38 @@
     background: transparent;
     padding: 0;
   }
+  /* Stripping the chrome also strips the spacing, and Settings is now the
+     only home for the agent-integration row -- give the stack some air so
+     it does not butt against the path. */
+  .settings > * + * {
+    margin-top: 8px;
+  }
   .banner {
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 6px 12px;
     margin: 6px 10px 0;
-    background: #2a2a2a;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ccc;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.8em;
   }
   .banner.warning {
-    border-color: #a15c2f;
-    color: #e0b08a;
+    border-color: var(--border-warning);
+    color: var(--warning-text);
   }
   .banner.seed {
-    border-color: #3d5a3d;
-    color: #8bc98b;
+    border-color: var(--border-success);
+    color: var(--success-text);
   }
   .banner button,
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 4px 10px;
     border-radius: 4px;
     cursor: pointer;
@@ -203,7 +232,7 @@
     gap: 6px;
     margin: 6px 10px 0;
     padding: 3px 10px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.75em;
   }
@@ -212,17 +241,24 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    direction: rtl; /* ellipsis on the LEFT: a path's tail is its informative end */
+    /* Ellipsis on the LEFT: a path's tail is its informative end. The cost
+       of an RTL paragraph is that "/" is a bidi-neutral, so a leading one
+       has no strong character before it and resolves to the paragraph's
+       direction -- it detaches from the path and parks at the far right,
+       rendering /Users/x/gavin as "Users/x/gavin/". The &lrm; bookends in
+       the markup are strong-LTR, so the slashes sit inside the LTR run and
+       stay where they were typed. */
+    direction: rtl;
   }
   .gear {
     background: transparent;
     border: none;
-    color: #888;
+    color: var(--text-subtle);
     cursor: pointer;
     padding: 0 2px;
   }
   .gear:hover {
-    color: #eee;
+    color: var(--text);
   }
   .detail {
     opacity: 0.7;

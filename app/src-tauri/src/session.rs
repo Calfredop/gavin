@@ -47,6 +47,7 @@ fn persist_workspaces(
     session_names: HashMap<String, String>,
     file_tabs: HashMap<String, String>,
     board_tabs: HashMap<String, crate::config::BoardTabRecord>,
+    theme: Option<String>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -56,6 +57,7 @@ fn persist_workspaces(
             session_names,
             file_tabs,
             board_tabs,
+            theme,
         },
     )
 }
@@ -76,6 +78,26 @@ mod workspaces_data_tests {
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json, serde_json::json!({ "workspaces": [], "activeWorkspaceId": null }));
+    }
+
+    /// The regression D48 exists to prevent: theme is a fourth field on
+    /// AppConfig, so a save that reconstructs the struct without carrying
+    /// it would silently reset it -- exactly what already bit
+    /// session_names and file_tabs.
+    #[test]
+    fn persist_workspaces_carries_theme_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Some("light".to_string()),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
     }
 }
 
@@ -224,6 +246,7 @@ pub fn set_workspaces_state(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id };
     *state.0.lock().unwrap() = data.clone();
@@ -231,7 +254,40 @@ pub fn set_workspaces_state(
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+    let theme = theme_state.0.lock().unwrap().clone();
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_theme_pref(state: State<ThemePref>) -> Option<String> {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn set_theme_pref(
+    theme: Option<String>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+) -> Result<(), String> {
+    // An absent or blank value clears the override back to System rather
+    // than persisting an empty string -- there's no separate "clear"
+    // command, the same shape as set_session_name.
+    let theme = {
+        let mut current = theme_state.0.lock().unwrap();
+        *current = theme.filter(|t| !t.trim().is_empty());
+        current.clone()
+    };
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
         .map_err(|e| e.to_string())
 }
 
@@ -249,6 +305,7 @@ pub fn set_session_name(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -267,7 +324,8 @@ pub fn set_session_name(
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+    let theme = theme_state.0.lock().unwrap().clone();
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
         .map_err(|e| e.to_string())
 }
 
@@ -289,19 +347,25 @@ pub fn set_file_tabs(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+    let theme = theme_state.0.lock().unwrap().clone();
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
         .map_err(|e| e.to_string())
 }
 
 /// Open per-context board tabs (tab id -> BoardTabRecord). Same
 /// always-carry persistence contract as FileTabs.
 pub struct BoardTabs(pub Mutex<HashMap<String, crate::config::BoardTabRecord>>);
+
+/// App-global light/dark preference: "light", "dark", or None for
+/// System. Same always-carry persistence contract as FileTabs/BoardTabs.
+pub struct ThemePref(pub Mutex<Option<String>>);
 
 #[tauri::command]
 pub fn get_board_tabs(state: State<BoardTabs>) -> HashMap<String, crate::config::BoardTabRecord> {
@@ -319,13 +383,15 @@ pub fn set_board_tabs(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs)
+    let theme = theme_state.0.lock().unwrap().clone();
+    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
         .map_err(|e| e.to_string())
 }
 
@@ -1094,6 +1160,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         session_names.clone(),
         file_tabs.clone(),
         board_tabs.clone(),
+        config.theme.clone(),
     )?;
 
     let all_session_ids: Vec<String> = workspaces_data
@@ -1121,6 +1188,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(SessionNames(Mutex::new(session_names)));
     app_handle.manage(FileTabs(Mutex::new(file_tabs)));
     app_handle.manage(BoardTabs(Mutex::new(board_tabs)));
+    app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     let mut reader = BufReader::new(reader_stream);

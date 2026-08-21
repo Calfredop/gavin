@@ -5,6 +5,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import * as backend from "./backend";
 import { fileExtension } from "./fileTypes";
+import { xtermTheme } from "./ui/terminalTheme";
+import type { EffectiveTheme } from "./ui/theme";
 
 interface RegistryEntry {
   term: Terminal;
@@ -121,7 +123,7 @@ export function getOrCreateTerminal(sessionId: string): RegistryEntry {
   const existing = registry.get(sessionId);
   if (existing) return existing;
 
-  const term = new Terminal({ convertEol: false });
+  const term = new Terminal({ convertEol: false, theme: xtermTheme(currentTheme) });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(
@@ -155,6 +157,20 @@ export function getOrCreateTerminal(sessionId: string): RegistryEntry {
   const entry: RegistryEntry = { term, container, fitAddon };
   registry.set(sessionId, entry);
   return entry;
+}
+
+/// Terminals outlive the components that show them (see
+/// getOrCreateTerminal), so a theme flip has to reach every terminal
+/// already in the registry -- not just ones created afterwards. Held at
+/// module level so newly created terminals start in the right theme too.
+let currentTheme: EffectiveTheme = "dark";
+
+export function applyTerminalTheme(theme: EffectiveTheme): void {
+  currentTheme = theme;
+  const next = xtermTheme(theme);
+  for (const entry of registry.values()) {
+    entry.term.options.theme = next;
+  }
 }
 
 export function getTerminal(sessionId: string): Terminal | undefined {

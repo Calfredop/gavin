@@ -12,6 +12,7 @@ import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
 import { normalizeColor, resolveAgentConfig, type AgentProfileInfo } from "./settings";
 import type { BoardTab } from "./gavin";
+import { themeState } from "./ui/themeState.svelte";
 
 export type { SessionStatus };
 
@@ -170,6 +171,9 @@ function activePageLocation(
 const unlisteners: UnlistenFn[] = [];
 
 export async function bootstrap(): Promise<void> {
+  // Ahead of the workspace listeners: the theme should be correct on the
+  // first painted frame, and it has no dependency on workspace state.
+  await themeState.init();
   unlisteners.push(
     await listen<WorkspacesData>("workspaces-ready", (event) => {
       layoutState.update((s) => {

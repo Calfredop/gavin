@@ -4,6 +4,7 @@
   import { gitStore, saveConflict, markResolved, resolveWhole, restoreConflict, openMergeTool } from "./gitState";
   import { parseConflicts, applyChoice, hasMarkers, locateRegion, splitEol, joinEol, type Choice, type ConflictBlock } from "./conflictMarkers";
   import { createEditor, type EditorHandle } from "./codeMirror";
+  import { themeState } from "./ui/themeState.svelte";
   import { createRegionDecorations, type Region, type RegionDecorations } from "./mergeDecorations";
   import { tooltip } from "./tooltip";
   import GitConflictChooser from "./GitConflictChooser.svelte";
@@ -50,6 +51,7 @@
       doc: text,
       path: conflict?.path ?? "file.txt",
       readOnly,
+      theme: themeState.effective,
       extensions: [deco.extension],
       onChange: (value) => {
         if (key !== "result") return;
@@ -62,6 +64,14 @@
     });
     panes = { ...panes, [key]: { handle, deco } };
   }
+
+  // All four panes reconfigure in place rather than remounting, so a theme
+  // flip mid-merge keeps scroll position, undo history and any unsaved
+  // resolution in the result pane.
+  $effect(() => {
+    const t = themeState.effective;
+    for (const pane of Object.values(panes)) pane?.handle.setTheme(t);
+  });
 
   // (Re)load when a different conflict arrives (selection change or a
   // refresh after save/restore): the on-disk text is authoritative.
@@ -284,29 +294,29 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    background: #151515;
+    background: var(--surface-sunken);
     font-family: monospace;
-    color: #ccc;
+    color: var(--text);
   }
   .head {
     display: flex;
     align-items: center;
     gap: 6px;
     padding: 5px 10px;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
     font-size: 0.76em;
     flex-wrap: wrap;
   }
   .path {
-    color: #ddd;
+    color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 30ch;
   }
   .kind {
-    color: #d9b45c;
-    border: 1px solid #6a5a2b;
+    color: var(--warning-text);
+    border: 1px solid var(--border-warning);
     border-radius: 8px;
     padding: 0 6px;
     font-size: 0.9em;
@@ -318,9 +328,9 @@
   }
   .nav button {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     width: 20px;
     height: 18px;
     display: inline-flex;
@@ -333,7 +343,7 @@
     cursor: default;
   }
   .counter {
-    color: #999;
+    color: var(--text-muted);
     padding: 0 4px;
     white-space: nowrap;
   }
@@ -346,9 +356,9 @@
     align-items: center;
     gap: 4px;
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 1em;
     padding: 2px 8px;
@@ -356,17 +366,17 @@
     white-space: nowrap;
   }
   .act:hover:not(:disabled) {
-    border-color: #666;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .act.on {
-    background: #2a3a4a;
-    color: #eee;
+    background: var(--surface-accent);
+    color: var(--text);
   }
   .primary {
-    background: #2d4a2d;
-    border-color: #3f6b3f;
-    color: #cfe8cf;
+    background: var(--surface-success);
+    border-color: var(--border-success);
+    color: var(--success-text);
   }
   .act:disabled,
   .primary:disabled {
@@ -380,7 +390,7 @@
     grid-template-columns: 1fr 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     gap: 1px;
-    background: #2f2f2f;
+    background: var(--surface-raised);
   }
   .panes.with-base {
     grid-template-columns: 1fr 1fr 1fr;
@@ -390,7 +400,7 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    background: #151515;
+    background: var(--surface-sunken);
   }
   .pane.result {
     grid-column: 1 / -1;
@@ -398,19 +408,19 @@
   .label {
     padding: 3px 8px;
     font-size: 0.72em;
-    color: #999;
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
   }
   .label.ours {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .label.theirs {
-    color: #8ab4e0;
+    color: var(--accent-text);
   }
   .label.base {
-    color: #d9b45c;
+    color: var(--warning-text);
   }
   .editor {
     flex: 1 1 auto;
@@ -450,36 +460,42 @@
     margin-right: 6px;
     vertical-align: middle;
   }
+  /* The one place a component reaches tier 1 on purpose. --text-inverted
+     is white, which is the right foreground on --accent and --danger but
+     only 2.2:1 on amber -- and amber is light in BOTH themes, so this
+     badge's foreground is a constant dark rather than a theme-flipped
+     one. The vocabulary has no per-family on-fill foreground; noted as an
+     open item rather than inventing a family of four for one badge. */
   .editor :global(.cm-conflict-num) {
-    background: #d9b45c;
-    color: #151515;
+    background: var(--warning);
+    color: var(--grey-0);
     border-radius: 8px;
     padding: 0 6px;
     font-size: 0.75em;
     font-weight: 700;
   }
   .editor :global(.cm-conflict-badge.active .cm-conflict-num) {
-    background: #f0d080;
+    background: var(--amber-4);
   }
   .editor :global(.cm-conflict-act) {
-    background: #2a3a4a;
-    border: 1px solid #4a6a8a;
+    background: var(--surface-accent);
+    border: 1px solid var(--border-accent);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.75em;
     padding: 0 6px;
     cursor: pointer;
   }
   .editor :global(.cm-conflict-act:hover) {
-    border-color: #6a8aaa;
+    border-color: var(--border-accent);
   }
   .msg {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.8em;
     gap: 4px;
   }

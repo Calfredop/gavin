@@ -59,6 +59,17 @@ Continuing the log in
   never overwritten (upholds D10, create-only).
 - **D43 — Workspace colour reaches the focused-tab indicator, the drag
   drop-indicators, and a sidebar stripe.** Semantic greens are untouched.
+- **D56 — Settings owns every folder-picking and integration action; the
+  hub folder bar is read-only and sits above the tabs.** Added 2026-08-21.
+  D37 made Settings work unrooted *because* binding the root is one of its
+  jobs — this finishes that thought: the ⚙ picker, the "Set root…" /
+  "Re-pick…" buttons and the "Agent integration" setup row all render only
+  in the `settings` variant of `WorkspaceRootControl`. The `banner` variant
+  keeps one job, *stating* which folder the workspace is bound to, so it
+  belongs above the tab navigator (workspace-wide context, not a property
+  of the open page) rather than under it. An unbound or missing root is
+  still not a dead end: the banner offers "Open settings", which switches
+  the hub view instead of opening a folder dialog.
 
 ## 3. Storage and ownership
 

@@ -14,6 +14,8 @@
     workspaceId?: string | null;
     onOpenPlan: (path: string) => void;
     onRunCard?: ((card: CardView) => void) | null;
+    onSendToAgent?: ((card: CardView) => void) | null;
+    agentAvailable?: boolean;
     onDeleteCard?: ((card: CardView) => void) | null;
     onCardContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
   }
@@ -24,6 +26,8 @@
     workspaceId = null,
     onOpenPlan,
     onRunCard = null,
+    onSendToAgent = null,
+    agentAvailable = false,
     onDeleteCard = null,
     onCardContextMenu = null,
   }: Props = $props();
@@ -44,7 +48,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlan} {workspaceId} onRun={onRunCard} onDelete={onDeleteCard} onContextMenu={onCardContextMenu} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlan} {workspaceId} onRun={onRunCard} {onSendToAgent} {agentAvailable} onDelete={onDeleteCard} onContextMenu={onCardContextMenu} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
@@ -56,8 +60,8 @@
 
 <style>
   .auto-column {
-    background: #232323;
-    border: 1px dashed #555;
+    background: var(--surface-raised);
+    border: 1px dashed var(--border-strong);
     border-radius: 8px;
     padding: 10px;
     width: 240px;
@@ -69,14 +73,14 @@
     box-sizing: border-box;
   }
   .auto-header {
-    color: #bbb;
+    color: var(--text-muted);
     font-size: 0.85em;
     margin-bottom: 8px;
     user-select: none;
     -webkit-user-select: none;
   }
   .count {
-    color: #888;
+    color: var(--text-subtle);
     font-size: 0.9em;
     margin-left: 6px;
   }
@@ -85,9 +89,9 @@
     flex: 1 1 auto;
   }
   .slot-placeholder {
-    border: 1px dashed #555;
+    border: 1px dashed var(--border-strong);
     border-radius: 6px;
-    background: #202020;
+    background: var(--surface-sunken);
     margin-bottom: 6px;
     box-sizing: border-box;
   }

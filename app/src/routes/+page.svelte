@@ -17,6 +17,7 @@
   import { gavinTrees } from "$lib/gavinState";
   import { agentProfilesStore } from "$lib/layoutState";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
+  import { themeState } from "$lib/ui/themeState.svelte";
   import { visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
@@ -43,7 +44,7 @@
       $agentProfilesStore
     )
   );
-  const accent = $derived(accentVar(activeWorkspace?.color));
+  const accent = $derived(accentVar(activeWorkspace?.color, themeState.effective));
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -112,6 +113,13 @@
         </div>
       {:else}
         <div class="content">
+          <!-- Above the tabs: the bound folder is the whole workspace's
+               context, not a property of whichever page is open. The
+               Settings tab embeds this control itself; showing the
+               banner there too would double it up. -->
+          {#if activeView !== "settings"}
+            <WorkspaceRootControl workspace={activeWorkspace} />
+          {/if}
           <div class="tabs">
             {#each hubViews as view (view.id)}
               <button
@@ -125,11 +133,6 @@
               </button>
             {/each}
           </div>
-          <!-- The Settings tab embeds this control itself; showing the
-               banner there too would double it up. -->
-          {#if activeView !== "settings"}
-            <WorkspaceRootControl workspace={activeWorkspace} />
-          {/if}
           <div class="view">
             <activeViewDef.component workspaceId={activeWorkspace.id} />
           </div>
@@ -162,7 +165,7 @@
     width: 100vw;
     height: 100vh;
     margin: 0;
-    background: #1e1e1e;
+    background: var(--surface-base);
     display: flex;
     flex-direction: column;
     border-radius: 10px;
@@ -194,14 +197,14 @@
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
-    color: #999;
+    color: var(--text-muted);
     padding: 6px 10px;
     cursor: pointer;
     font-family: monospace;
     font-size: 0.85em;
   }
   .tab.active {
-    color: #eee;
+    color: var(--text);
     /* The workspace's accent when set; otherwise the original amber, so
        an uncoloured workspace looks exactly as it did before. */
     border-bottom-color: var(--ws-accent, #d9a648);
@@ -217,7 +220,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
   }
   .detail {
@@ -227,9 +230,9 @@
   .overlay button {
     margin-top: 12px;
     padding: 8px 16px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;

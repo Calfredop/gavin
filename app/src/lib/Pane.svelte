@@ -21,6 +21,7 @@
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
   import { X, Plus, RotateCw, Kanban, Pin } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import Tooltip from "./Tooltip.svelte";
   import { sessionLabel, folderName } from "./paths";
   import {
@@ -385,18 +386,15 @@
         {/if}
       </button>
     {/each}
-    <button class="new-tab" aria-label="New Tab" title="New Tab" onclick={() => addTab(active)}>
-      <Plus size={14} />
-    </button>
+    <IconButton icon={Plus} label="New Tab" size={14} onclick={() => addTab(active)} />
     {#if activeBoardContext}
-      <button
-        class="new-tab"
-        aria-label="Open context board"
-        title={`Open board · ${activeBoardContext.name}`}
+      <IconButton
+        icon={Kanban}
+        label="Open context board"
+        tip={`Open board · ${activeBoardContext.name}`}
+        size={14}
         onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
-      >
-        <Kanban size={14} />
-      </button>
+      />
     {/if}
   </div>
   <div
@@ -449,7 +447,7 @@
   }
   .tab-bar {
     display: flex;
-    background: #2a2a2a;
+    background: var(--surface-raised);
     flex: 0 0 auto;
   }
   .tab {
@@ -464,14 +462,14 @@
     border: none;
     border-top: 2px solid transparent;
     box-sizing: border-box;
-    color: #aaa;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.8em;
     cursor: pointer;
   }
   .tab.active {
-    background: #1e1e1e;
-    color: #fff;
+    background: var(--surface-base);
+    color: var(--text);
   }
   .tab.focused {
     border-top-color: var(--ws-accent, #4a9eff);
@@ -491,7 +489,7 @@
   .pin-glyph {
     display: inline-flex;
     align-items: center;
-    color: #999;
+    color: var(--text-muted);
     margin-right: 2px;
   }
   .tab.pinned {
@@ -504,17 +502,17 @@
     flex: 0 0 auto;
   }
   .status-dot.status-working {
-    background: #4a9eff;
+    background: var(--accent);
   }
   .status-dot.status-waiting {
-    background: #e0524a;
+    background: var(--danger);
   }
   .dirty-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     flex: 0 0 auto;
-    background: #d9a648;
+    background: var(--warning);
   }
   .git-dot {
     width: 6px;
@@ -524,24 +522,24 @@
     box-sizing: border-box;
   }
   .git-dot.dirty {
-    background: #d9a648;
+    background: var(--warning);
   }
   .git-dot.clean {
     background: transparent;
-    border: 1px solid #d9a648;
+    border: 1px solid var(--warning);
   }
   .restored-badge {
     display: flex;
     align-items: center;
     flex: 0 0 auto;
-    color: #8bc98b;
+    color: var(--success);
   }
   .tab-label-input {
     max-width: 120px;
     width: 100px;
-    background: #111;
-    color: #fff;
-    border: 1px solid #4a9eff;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border-focus);
     border-radius: 3px;
     font-family: monospace;
     font-size: 1em;
@@ -552,15 +550,6 @@
   }
   .close:hover {
     opacity: 1;
-  }
-  .new-tab {
-    background: transparent;
-    border: none;
-    border-top: 2px solid transparent;
-    box-sizing: border-box;
-    color: #aaa;
-    cursor: pointer;
-    padding: 4px 8px;
   }
   .content {
     position: relative;

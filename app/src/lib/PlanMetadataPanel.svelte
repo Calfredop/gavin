@@ -101,10 +101,10 @@
     align-items: center;
     gap: 10px;
     padding: 6px 10px;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
     font-family: monospace;
     font-size: 0.8em;
-    color: #999;
+    color: var(--text-muted);
     flex: 0 0 auto;
     flex-wrap: wrap;
   }
@@ -112,7 +112,7 @@
     background: transparent;
     border: 1px solid transparent;
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: inherit;
     font-size: 1.1em;
     padding: 2px 6px;
@@ -121,8 +121,8 @@
   }
   .title:hover,
   .title:focus {
-    border-color: #444;
-    background: #1e1e1e;
+    border-color: var(--border);
+    background: var(--surface-base);
   }
   label {
     display: flex;
@@ -130,18 +130,18 @@
     gap: 4px;
   }
   select {
-    background: #1e1e1e;
-    color: #eee;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 4px;
     font-family: inherit;
     padding: 1px 4px;
   }
   .warn {
-    color: #d9a648;
+    color: var(--warning-text);
   }
   .error {
-    color: #e0a0a0;
+    color: var(--danger-text);
   }
   .kind-badge {
     border-radius: 10px;
@@ -152,19 +152,19 @@
     flex: 0 0 auto;
   }
   .kind-badge.kind-note {
-    border: 1px solid #8a7d55;
-    color: #b8a978;
+    border: 1px solid var(--border-warning);
+    color: var(--warning-text);
   }
   .kind-badge.kind-task {
-    border: 1px solid #4a5568;
-    color: #7ea8d8;
+    border: 1px solid var(--border-accent);
+    color: var(--accent-text);
   }
   .kind-badge.kind-plan {
-    border: 1px solid #4c584c;
-    color: #8bc98b;
+    border: 1px solid var(--border-success);
+    color: var(--success-text);
   }
   .labels {
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.75em;
     overflow: hidden;
     text-overflow: ellipsis;

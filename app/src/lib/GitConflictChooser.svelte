@@ -86,7 +86,7 @@
     height: 100%;
     padding: 20px;
     font-family: monospace;
-    color: #ccc;
+    color: var(--text);
   }
   .what {
     margin: 0;
@@ -102,19 +102,19 @@
     justify-content: center;
   }
   button {
-    background: #2a3a4a;
-    border: 1px solid #4a6a8a;
+    background: var(--surface-accent);
+    border: 1px solid var(--border-accent);
     border-radius: 6px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     padding: 6px 12px;
     cursor: pointer;
   }
   button.danger {
-    background: #4a2020;
-    border-color: #7a3030;
-    color: #f0c0c0;
+    background: var(--surface-danger);
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   button:disabled {
     opacity: 0.45;

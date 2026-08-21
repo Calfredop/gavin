@@ -10,6 +10,7 @@
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
   import { Play } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
   import { columnDeletionPlan, executeDeletion } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -29,6 +30,8 @@
     composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
+    onSendToAgent?: ((card: CardView) => void) | null;
+    agentAvailable?: boolean;
     onDeleteCard?: ((card: CardView) => void) | null;
     onCardContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
     // The full projection (nested included) -- the column-cascade plan
@@ -44,6 +47,8 @@
     composerContext = null,
     onOpenPlanCard,
     onRunCard = null,
+    onSendToAgent = null,
+    agentAvailable = false,
     onDeleteCard = null,
     onCardContextMenu = null,
     allCards = [],
@@ -279,16 +284,19 @@
       <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
     {/if}
     {#if runnable.length > 0}
-      <button
-        type="button"
+      <IconButton
+        icon={Play}
+        label="Run all unbound cards"
+        tone="accent"
+        variant="outlined"
+        size={10}
         class="run-all"
-        aria-label="Run all unbound cards"
         disabled={runningAll}
-        use:tooltip={"Run " + runnable.length + " unbound " + (runnable.length === 1 ? "card" : "cards") + " with the workspace agent"}
+        tip={"Run " + runnable.length + " unbound " + (runnable.length === 1 ? "card" : "cards") + " with the workspace agent"}
         onclick={() => void runAll()}
       >
-        <Play size={10} /><span class="run-all-count">{runnable.length}</span>
-      </button>
+        <span class="run-all-count">{runnable.length}</span>
+      </IconButton>
     {/if}
     {#if mode === "full"}
       <button type="button" class="delete" aria-label="Delete column" use:tooltip={"Delete column — its cards fall back to an auto column by status"} onclick={requestDeleteColumn}>×</button>
@@ -299,7 +307,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} onDelete={onDeleteCard} onContextMenu={onCardContextMenu} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} {onSendToAgent} {agentAvailable} onDelete={onDeleteCard} onContextMenu={onCardContextMenu} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>
@@ -400,7 +408,7 @@
 
 <style>
   .column {
-    background: #232323;
+    background: var(--surface-raised);
     border-radius: 8px;
     padding: 10px;
     width: 240px;
@@ -414,7 +422,7 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 8px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-weight: bold;
     cursor: grab;
@@ -422,16 +430,16 @@
     -webkit-user-select: none;
   }
   .slot-placeholder {
-    border: 1px dashed #555;
+    border: 1px dashed var(--border-strong);
     border-radius: 6px;
-    background: #202020;
+    background: var(--surface-sunken);
     margin-bottom: 6px;
     box-sizing: border-box;
   }
   .header input {
-    background: #1e1e1e;
-    border: 1px solid #444;
-    color: #eee;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    color: var(--text);
     font-family: monospace;
     padding: 2px 4px;
     border-radius: 4px;
@@ -458,7 +466,7 @@
     cursor: default;
   }
   .count {
-    color: #888;
+    color: var(--text-subtle);
     font-weight: normal;
     font-size: 0.85em;
     margin-left: 6px;
@@ -467,25 +475,12 @@
   .delete {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 1.1em;
   }
-  .run-all {
-    background: transparent;
-    border: 1px solid #4a5568;
-    border-radius: 10px;
-    color: #7ea8d8;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 1px 6px;
+  :global(.run-all) {
     flex: 0 0 auto;
-  }
-  .run-all:disabled {
-    opacity: 0.4;
-    cursor: default;
   }
   .run-all-count {
     font-size: 0.75em;
@@ -498,7 +493,7 @@
   .add-card {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-family: monospace;
     text-align: left;
@@ -517,25 +512,25 @@
   }
   .kind-chip {
     background: transparent;
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 10px;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-family: monospace;
     font-size: 0.75em;
     padding: 1px 8px;
   }
   .kind-chip.active {
-    background: #3a3a3a;
-    color: #eee;
-    border-color: #666;
+    background: var(--surface-overlay);
+    color: var(--text);
+    border-color: var(--border-strong);
   }
   .compose-title,
   .compose-body {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     padding: 8px;
@@ -544,20 +539,20 @@
     box-sizing: border-box;
   }
   .compose-context {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     padding: 4px;
   }
   .compose-error {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-size: 0.75em;
   }
   .delete-error {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.75em;
     margin-top: 4px;
@@ -566,21 +561,21 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.8em;
   }
   .run-now input {
-    accent-color: #7ea8d8;
+    accent-color: var(--accent);
   }
   .compose-actions {
     display: flex;
     gap: 6px;
   }
   .compose-actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     cursor: pointer;
     font-family: monospace;
     font-size: 0.8em;

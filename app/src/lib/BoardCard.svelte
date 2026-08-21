@@ -2,6 +2,7 @@
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
@@ -21,6 +22,9 @@
     // Enables the session dot + Run affordance (absent in the preview).
     workspaceId?: string | null;
     onRun?: ((card: CardView) => void) | null;
+    // The second run mode: hand the card to the RUNNING workspace agent.
+    onSendToAgent?: ((card: CardView) => void) | null;
+    agentAvailable?: boolean;
     onDelete?: ((card: CardView) => void) | null;
     onContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
   }
@@ -31,6 +35,8 @@
     nested = false,
     workspaceId = null,
     onRun = null,
+    onSendToAgent = null,
+    agentAvailable = false,
     onDelete = null,
     onContextMenu = null,
   }: Props = $props();
@@ -58,7 +64,7 @@
     const result = await jumpToBoundSession(workspaceId, card.id);
     if (result === "exited") onOpen(card.id);
   }
-  const runnable = $derived(onRun !== null && card.kind !== "note" && binding === null);
+  const runnable = $derived(card.kind !== "note" && binding === null && (onRun !== null || onSendToAgent !== null));
 
   let expanded = $state(false);
 
@@ -165,40 +171,24 @@
     {#if card.parseWarning}
       <span class="warning" use:tooltip={"This card's frontmatter has issues — some fields may be unreadable"}><TriangleAlert size={11} /></span>
     {/if}
-    {#if runnable}
-      <button
-        type="button"
-        class="run"
-        use:tooltip={card.kind === "plan"
-          ? "Run this plan with the workspace agent"
-          : "Run this task with the workspace agent"}
-        onpointerdown={shield}
-        onclick={(e) => {
-          e.stopPropagation();
-          onRun?.(card);
-        }}
-      >
-        <Play size={11} />
-      </button>
-    {/if}
     {#if card.kind === "plan" && (card.nestedChildren.length > 0 || nestTargeted)}
-      <button
-        type="button"
+      <IconButton
+        icon={expanded ? ChevronDown : ChevronRight}
+        label={(expanded ? "Collapse " : "Expand ") + card.nestedChildren.length + " nested " + (card.nestedChildren.length === 1 ? "task" : "tasks")}
+        size={12}
         class="chevron"
-        use:tooltip={(expanded ? "Collapse " : "Expand ") + card.nestedChildren.length + " nested " + (card.nestedChildren.length === 1 ? "task" : "tasks")}
         onpointerdown={shield}
         onclick={(e) => {
           e.stopPropagation();
           expanded = !expanded;
         }}
       >
-        {#if expanded}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
         <span class="child-count">{card.nestedChildren.length}</span>
-      </button>
+      </IconButton>
     {/if}
   </div>
   <div class="title">{card.title}</div>
-  {#if card.parent}
+  {#if card.parent && !nested}
     <span class="parent-chip" class:broken={card.parentBroken} use:tooltip={card.parentBroken ? `parent: ${card.parent} — file not found in this context` : `Part of the plan "${card.parentTitle}"`}>
       {card.parentBroken ? `⚠ ${card.parent}` : card.parentTitle}
     </span>
@@ -213,12 +203,47 @@
   {#if !nested}
     <div class="context-badge" use:tooltip={card.id}>{card.contextName}</div>
   {/if}
+  {#if runnable}
+    <div class="run-pills">
+      {#if onRun}
+        <button
+          type="button"
+          class="pill pill-session"
+          use:tooltip={"Run in a dedicated agent session, bound to this card"}
+          onpointerdown={shield}
+          onclick={(e) => {
+            e.stopPropagation();
+            onRun?.(card);
+          }}
+        >
+          ▶ session
+        </button>
+      {/if}
+      {#if onSendToAgent}
+        <button
+          type="button"
+          class="pill pill-agent"
+          disabled={!agentAvailable}
+          use:tooltip={agentAvailable
+            ? "Send to the running workspace agent (Home)"
+            : "No workspace agent running — start it on the Home tab first"}
+          onpointerdown={shield}
+          onclick={(e) => {
+            e.stopPropagation();
+            if (agentAvailable) onSendToAgent?.(card);
+          }}
+        >
+          ▶ agent
+        </button>
+      {/if}
+    </div>
+  {/if}
   {#if card.kind === "plan" && effectiveExpanded && nestedSlots.length > 0}
     <div class="nested-area" data-kb-nest={card.id}>
       {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onDelete} {onContextMenu} />
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onSendToAgent} {agentAvailable} {onDelete} {onContextMenu} />
           </div>
         {:else}
           <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>
@@ -235,7 +260,7 @@
     padding: 8px;
     margin-bottom: 6px;
     cursor: pointer;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     user-select: none;
@@ -243,19 +268,19 @@
     transition: box-shadow 120ms, border-color 120ms;
   }
   .card.kind-note {
-    background: #2a2a2a;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
   }
   .card.kind-task {
-    background: #26292e;
-    border: 1px dashed #4a5568;
+    background: var(--surface-accent);
+    border: 1px dashed var(--border-accent);
   }
   .card.kind-plan {
-    background: #262b26;
-    border: 1px dashed #4c584c;
+    background: var(--surface-success);
+    border: 1px dashed var(--border-success);
   }
   .card:hover {
-    border-color: #6a6a6a;
+    border-color: var(--border-strong);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .card.nested {
@@ -273,16 +298,25 @@
   .card.deletable .header {
     padding-right: 18px;
   }
+  .card.nested.deletable .header {
+    padding-right: 14px;
+  }
+  .card.nested .delete {
+    top: 2px;
+    right: 2px;
+    padding: 0 4px;
+    font-size: 0.95em;
+  }
   .glyph {
     display: flex;
     align-items: center;
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .kind-task .glyph {
-    color: #7ea8d8;
+    color: var(--accent-text);
   }
   .kind-note .glyph {
-    color: #b8a978;
+    color: var(--warning-text);
   }
   .priority {
     display: inline-block;
@@ -292,39 +326,31 @@
     flex: 0 0 auto;
   }
   .priority-low {
-    background: #6b8e6b;
+    background: var(--surface-success);
   }
   .priority-medium {
-    background: #d9a648;
+    background: var(--warning);
   }
   .priority-high {
-    background: #d97748;
+    background: var(--warning);
   }
   .priority-urgent {
-    background: #d94848;
+    background: var(--danger);
   }
   .progress {
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.85em;
   }
   .warning {
     display: flex;
     align-items: center;
-    color: #d9a648;
+    color: var(--warning-text);
     margin-left: auto;
   }
-  .chevron {
-    background: transparent;
-    border: none;
-    color: #999;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 2px;
+  :global(.chevron) {
     margin-left: auto;
-    padding: 0 2px;
   }
-  .warning + .chevron {
+  .warning + :global(.chevron) {
     margin-left: 0;
   }
   .child-count {
@@ -361,41 +387,85 @@
     }
   }
   .card.session-working {
-    border-left: 3px solid #4a9eff;
+    border-left: 3px solid var(--border-focus);
   }
   .card.session-waiting {
-    border-left: 3px solid #e0524a;
+    border-left: 3px solid var(--border-danger);
   }
   .card.session-idle {
-    border-left: 3px solid #6b8e6b;
+    border-left: 3px solid var(--border-success);
   }
   .status-dot.status-working {
-    background: #4a9eff;
+    background: var(--accent);
   }
   .status-dot.status-waiting {
-    background: #e0524a;
+    background: var(--danger);
   }
   .status-dot.status-idle {
-    background: #6b8e6b;
+    background: var(--surface-success);
   }
   .status-dot.status-exited {
     background: transparent;
-    border: 1px solid #666;
+    border: 1px solid var(--border-strong);
   }
-  .run {
-    background: transparent;
-    border: none;
-    color: #7ea8d8;
-    cursor: pointer;
+  /* In flow, not overlaid: a compact nested card has no spare room, and
+     an expanded plan's pills must sit with ITS content rather than below
+     its children. Always laid out, so hover changes opacity only --
+     never layout. pointer-events follow visibility: an invisible run
+     button must never be clickable. */
+  .run-pills {
     display: flex;
-    align-items: center;
-    padding: 0 2px;
+    justify-content: flex-end;
+    gap: 4px;
+    margin-top: 6px;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 120ms;
   }
-  .card:hover .run,
-  .card:focus-within .run {
+  .card:hover > .run-pills,
+  .card:focus-within > .run-pills {
     opacity: 1;
+    pointer-events: auto;
+  }
+  .card.nested .run-pills {
+    margin-top: 4px;
+    gap: 3px;
+  }
+  .card:hover .run-pills,
+  .card:focus-within .run-pills {
+    opacity: 1;
+  }
+  .pill {
+    border-radius: 10px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.72em;
+    line-height: 1.5;
+    padding: 1px 8px;
+    background: var(--surface-raised);
+  }
+  .pill-session {
+    border: 1px solid var(--border-accent);
+    color: var(--accent-text);
+  }
+  .pill-session:hover {
+    background: var(--surface-accent);
+  }
+  .pill-agent {
+    border: 1px solid var(--border-success);
+    color: var(--success-text);
+  }
+  .pill-agent:hover:not(:disabled) {
+    background: var(--surface-success);
+  }
+  .card.nested .pill {
+    font-size: 0.66em;
+    padding: 0 6px;
+    line-height: 1.6;
+  }
+  .pill:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .delete {
     position: absolute;
@@ -404,7 +474,7 @@
     background: rgba(30, 30, 30, 0.85);
     border: none;
     border-radius: 4px;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 1.05em;
     line-height: 1;
@@ -414,7 +484,7 @@
     z-index: 1;
   }
   .delete:hover {
-    color: #e0524a;
+    color: var(--danger-text);
     background: rgba(60, 30, 28, 0.95);
   }
   .card:hover .delete,
@@ -426,11 +496,11 @@
   }
   .parent-chip {
     display: inline-block;
-    border: 1px solid #4a5568;
+    border: 1px solid var(--border-accent);
     border-radius: 10px;
     padding: 0 6px;
     font-size: 0.8em;
-    color: #7ea8d8;
+    color: var(--accent-text);
     margin-top: 6px;
     max-width: 100%;
     overflow: hidden;
@@ -439,8 +509,8 @@
     box-sizing: border-box;
   }
   .parent-chip.broken {
-    border-color: #a15c2f;
-    color: #e0b08a;
+    border-color: var(--border-warning);
+    color: var(--warning-text);
   }
   .labels {
     display: flex;
@@ -449,18 +519,18 @@
     margin-top: 6px;
   }
   .label-chip {
-    border: 1px solid #666;
+    border: 1px solid var(--border-strong);
     border-radius: 10px;
     padding: 1px 6px;
     font-size: 0.85em;
   }
   .context-badge {
     display: inline-block;
-    border: 1px solid #555;
+    border: 1px solid var(--border-strong);
     border-radius: 10px;
     padding: 1px 6px;
     font-size: 0.8em;
-    color: #999;
+    color: var(--text-muted);
     margin-top: 6px;
     max-width: 100%;
     overflow: hidden;
@@ -469,8 +539,8 @@
     box-sizing: border-box;
   }
   .kind-plan .context-badge {
-    color: #8bc98b;
-    border-color: #4c584c;
+    color: var(--success-text);
+    border-color: var(--border-success);
   }
   .nested-area {
     margin-top: 8px;
@@ -479,9 +549,9 @@
     background: rgba(0, 0, 0, 0.25);
   }
   .nested-placeholder {
-    border: 1px dashed #555;
+    border: 1px dashed var(--border-strong);
     border-radius: 6px;
-    background: #202020;
+    background: var(--surface-sunken);
     margin-bottom: 4px;
     box-sizing: border-box;
   }

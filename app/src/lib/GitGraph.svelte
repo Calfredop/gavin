@@ -143,57 +143,57 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    background: #1a1a1a;
+    background: var(--surface-sunken);
     outline: none;
     font-family: monospace;
   }
   .graph:focus-visible {
-    box-shadow: inset 0 0 0 1px #4a6a8a;
+    box-shadow: inset 0 0 0 1px var(--border-accent);
   }
   header {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 5px 8px;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
     font-size: 0.75em;
   }
   .seg {
     display: inline-flex;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
   }
   .seg button {
     background: transparent;
     border: 0;
-    color: #999;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 1em;
     padding: 2px 8px;
     cursor: pointer;
   }
   .seg button.on {
-    background: #2a3a4a;
-    color: #eee;
+    background: var(--surface-accent);
+    color: var(--text);
   }
   .filter {
     flex: 1 1 auto;
     min-width: 0;
-    background: #1e1e1e;
-    border: 1px solid #333;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ddd;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 3px 8px;
   }
   .filter:focus {
     outline: none;
-    border-color: #4a6a8a;
+    border-color: var(--border-accent);
   }
   .count {
-    color: #777;
+    color: var(--text-subtle);
   }
   .rows {
     flex: 1 1 auto;
@@ -202,15 +202,15 @@
   }
   .none {
     padding: 12px 10px;
-    color: #666;
+    color: var(--text-subtle);
     font-size: 0.78em;
   }
   .more {
     width: 100%;
     background: transparent;
     border: 0;
-    border-top: 1px solid #2f2f2f;
-    color: #8ab4e0;
+    border-top: 1px solid var(--border);
+    color: var(--accent-text);
     font-family: monospace;
     font-size: 0.78em;
     padding: 8px;

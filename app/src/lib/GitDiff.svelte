@@ -187,7 +187,7 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    background: #151515;
+    background: var(--surface-sunken);
   }
   .diff:focus {
     outline: none;
@@ -197,12 +197,12 @@
     align-items: center;
     gap: 8px;
     padding: 5px 10px;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
     font-size: 0.78em;
   }
   .badge {
     font-weight: 700;
-    color: #d9b45c;
+    color: var(--warning-text);
   }
   .path {
     flex: 1 1 auto;
@@ -210,32 +210,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #ddd;
+    color: var(--text);
   }
   .area {
-    color: #777;
+    color: var(--text-subtle);
     text-transform: uppercase;
     font-size: 0.85em;
     letter-spacing: 0.05em;
   }
   .seg {
     display: inline-flex;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
   }
   .seg button {
     background: transparent;
     border: 0;
-    color: #999;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.95em;
     padding: 2px 8px;
     cursor: pointer;
   }
   .seg button.on {
-    background: #2a3a4a;
-    color: #eee;
+    background: var(--surface-accent);
+    color: var(--text);
   }
   .body {
     flex: 1 1 auto;
@@ -247,7 +247,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.8em;
   }
 </style>

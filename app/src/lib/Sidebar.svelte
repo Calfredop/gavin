@@ -14,7 +14,18 @@
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   import { presetSingle, allSessionIds } from "./layout";
-  import { ChevronRight, ChevronDown, Plus, X, House } from "@lucide/svelte";
+  import { ChevronRight, ChevronDown, Plus, X, House, Sun, Moon, Monitor, Settings } from "@lucide/svelte";
+  import { themeState } from "./ui/themeState.svelte";
+  import IconButton from "./ui/IconButton.svelte";
+  import type { ThemePref } from "./ui/theme";
+
+  /// System first, matching the default -- and matching the order the
+  /// three states read in: follow the OS, or override it either way.
+  const THEME_OPTIONS: { pref: ThemePref; label: string; icon: typeof Sun }[] = [
+    { pref: "system", label: "Follow system", icon: Monitor },
+    { pref: "light", label: "Light", icon: Sun },
+    { pref: "dark", label: "Dark", icon: Moon },
+  ];
   import { sessionLabel } from "./paths";
   import { HUB_VIEWS } from "./workspaceViews";
   import {
@@ -418,17 +429,12 @@
           oncontextmenu={(e) => openPageMenu(e, ws, page)}
         >
           {#if gitSummary.kind === "multiple"}
-            <button
-              class="git-expand-toggle"
-              aria-label={isPageGitExpanded(page.id) ? "Collapse git detail" : "Expand git detail"}
+            <IconButton
+              icon={isPageGitExpanded(page.id) ? ChevronDown : ChevronRight}
+              label={isPageGitExpanded(page.id) ? "Collapse git detail" : "Expand git detail"}
+              size={10}
               onclick={() => togglePageGitExpand(page.id)}
-            >
-              {#if isPageGitExpanded(page.id)}
-                <ChevronDown size={10} />
-              {:else}
-                <ChevronRight size={10} />
-              {/if}
-            </button>
+            />
           {/if}
           {#if editingPageId === page.id}
             <input
@@ -526,9 +532,7 @@
 <div class="sidebar">
   <div class="sidebar-header">
     <span>Workspaces</span>
-    <button aria-label="New Workspace" title="New Workspace" onclick={startCreatingWorkspace}>
-      <Plus size={14} />
-    </button>
+    <IconButton icon={Plus} label="New Workspace" size={14} onclick={startCreatingWorkspace} />
   </div>
   {#if creatingWorkspace}
     <input
@@ -553,7 +557,7 @@
       <div class="workspace-row-group">
         <div
           class="workspace-row pinned"
-          style:--row-accent={accentVar(ws.color) ?? "transparent"}
+          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
           ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
@@ -562,24 +566,17 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
-          <button
-            class="expand-toggle"
-            aria-label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+          <IconButton
+            icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
+            label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+            size={12}
             onclick={() => toggleExpand(ws.id)}
-          >
-            {#if isExpanded(ws.id)}
-              <ChevronDown size={12} />
-            {:else}
-              <ChevronRight size={12} />
-            {/if}
-          </button>
+          />
           <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
           {#if workspaceWaitingForInputCount(ws) > 0}
             <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
           {/if}
-          <button class="add-page" aria-label="New Page" title="New Page" onclick={() => quickAddPage(ws.id)}>
-            <Plus size={12} />
-          </button>
+          <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
         </div>
         {#if isExpanded(ws.id)}
           {@render pageList(ws, false)}
@@ -590,7 +587,7 @@
       <div class="workspace-row-group">
         <div
           class="workspace-row"
-          style:--row-accent={accentVar(ws.color) ?? "transparent"}
+          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-before={hoverState?.targetId === ws.id &&
             hoverState.kind === "reorder" &&
@@ -607,17 +604,12 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
-          <button
-            class="expand-toggle"
-            aria-label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+          <IconButton
+            icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
+            label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+            size={12}
             onclick={() => toggleExpand(ws.id)}
-          >
-            {#if isExpanded(ws.id)}
-              <ChevronDown size={12} />
-            {:else}
-              <ChevronRight size={12} />
-            {/if}
-          </button>
+          />
           {#if editingWorkspaceId === ws.id}
             <input
               class="workspace-name-input"
@@ -645,9 +637,7 @@
           {#if workspaceWaitingForInputCount(ws) > 0}
             <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
           {/if}
-          <button class="add-page" aria-label="New Page" title="New Page" onclick={() => quickAddPage(ws.id)}>
-            <Plus size={12} />
-          </button>
+          <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
           <button
             class="close-workspace"
             aria-label="Close Workspace"
@@ -667,42 +657,74 @@
       </div>
     {/each}
   </div>
+  <div class="sidebar-footer">
+    <button class="footer-row" disabled title="Coming soon">
+      <Settings size={12} />
+      <span>Settings</span>
+    </button>
+    <div class="footer-row theme-row">
+      <span>Theme</span>
+      <div class="theme-toggle">
+        {#each THEME_OPTIONS as opt (opt.pref)}
+          <IconButton
+            icon={opt.icon}
+            label={opt.label}
+            variant="segmented"
+            size={12}
+            active={themeState.pref === opt.pref}
+            onclick={() => void themeState.setPref(opt.pref)}
+          />
+        {/each}
+      </div>
+    </div>
+  </div>
 </div>
 
 <style>
   .sidebar {
     width: 200px;
     flex: 0 0 auto;
-    background: #232323;
-    color: #ccc;
+    background: var(--surface-raised);
+    color: var(--text);
     font-family: monospace;
     font-size: 0.8em;
     display: flex;
     flex-direction: column;
+    /* The scroll lives on .workspace-list, not here: a footer on a
+       scrolling sidebar would slide away with the content. Pinning it
+       pins the header too, which it wasn't before. */
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+  }
+  .workspace-list {
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
-    border-right: 1px solid #1a1a1a;
   }
   .sidebar-header {
+    /* Pinned now that .sidebar no longer scrolls -- without this it can
+       shrink when the workspace list is long. */
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 8px;
     font-weight: bold;
-    color: #999;
+    color: var(--text-muted);
   }
   .sidebar-header button {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 2px;
   }
   .new-workspace-input,
   .workspace-name-input,
   .page-name-input {
-    background: #111;
-    color: #fff;
-    border: 1px solid #4a9eff;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border-focus);
     border-radius: 3px;
     font-family: monospace;
     font-size: 1em;
@@ -724,24 +746,16 @@
     cursor: pointer;
   }
   .workspace-row.active {
-    background: #2a2a2a;
+    background: var(--surface-raised);
   }
   .workspace-row.pinned {
     font-style: italic;
-    color: #999;
-    border-bottom: 1px solid #333;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
     margin-bottom: 2px;
   }
   .workspace-row.pinned.active {
-    color: #ccc;
-  }
-  .expand-toggle {
-    background: transparent;
-    border: none;
-    color: #999;
-    cursor: pointer;
-    padding: 0;
-    display: flex;
+    color: var(--text);
   }
   .workspace-name {
     flex: 1 1 auto;
@@ -751,8 +765,8 @@
   }
   .waiting-badge {
     flex: 0 0 auto;
-    background: #e0524a;
-    color: #fff;
+    background: var(--danger);
+    color: var(--text-inverted);
     border-radius: 8px;
     padding: 0 5px;
     font-size: 0.85em;
@@ -766,7 +780,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
   }
   .git-dot {
     width: 6px;
@@ -776,38 +790,36 @@
     box-sizing: border-box;
   }
   .git-dot.dirty {
-    background: #d9a648;
+    background: var(--warning);
   }
   .git-dot.clean {
     background: transparent;
-    border: 1px solid #d9a648;
+    border: 1px solid var(--warning);
   }
   .git-ahead-behind {
     flex: 0 1 auto;
     overflow: hidden;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.9em;
   }
   .git-repo-count {
     flex: 0 1 auto;
     overflow: hidden;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.9em;
   }
-  .add-page,
   .close-workspace,
   .close-page {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 2px;
     opacity: 0.6;
     flex: 0 0 auto;
   }
-  .add-page:hover,
   .close-workspace:hover,
   .close-page:hover {
     opacity: 1;
@@ -824,56 +836,47 @@
     cursor: pointer;
   }
   .page-row.active {
-    background: #1e1e1e;
-    color: #fff;
+    background: var(--surface-base);
+    color: var(--text);
   }
   .page-row.home {
     justify-content: center;
-    color: #999;
+    color: var(--text-muted);
   }
   .page-row.home.active {
-    color: #eee;
+    color: var(--text);
   }
   .workspace-row.drop-before,
   .page-row.drop-before {
-    box-shadow: inset 0 2px 0 0 #4a9eff;
+    box-shadow: inset 0 2px 0 0 var(--accent);
   }
   .workspace-row.drop-after,
   .page-row.drop-after {
-    box-shadow: inset 0 -2px 0 0 #4a9eff;
+    box-shadow: inset 0 -2px 0 0 var(--accent);
   }
   .workspace-row.drop-append {
-    background: #2d4a6a;
+    background: var(--surface-selected);
   }
   .page-row.drop-zone-left {
-    box-shadow: inset 2px 0 0 0 #4a9eff;
+    box-shadow: inset 2px 0 0 0 var(--accent);
   }
   .page-row.drop-zone-right {
-    box-shadow: inset -2px 0 0 0 #4a9eff;
+    box-shadow: inset -2px 0 0 0 var(--accent);
   }
   .page-row.drop-zone-top {
-    box-shadow: inset 0 2px 0 0 #4a9eff;
+    box-shadow: inset 0 2px 0 0 var(--accent);
   }
   .page-row.drop-zone-bottom {
-    box-shadow: inset 0 -2px 0 0 #4a9eff;
+    box-shadow: inset 0 -2px 0 0 var(--accent);
   }
   .page-row.drop-zone-center {
-    background: #2d4a6a;
+    background: var(--surface-selected);
   }
   .page-name {
     flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .git-expand-toggle {
-    background: transparent;
-    border: none;
-    color: #999;
-    cursor: pointer;
-    padding: 0;
-    display: flex;
-    flex: 0 0 auto;
   }
   .page-git-detail {
     display: flex;
@@ -888,13 +891,55 @@
     font-size: 0.9em;
   }
   .git-session-row:hover {
-    background: #1e1e1e;
+    background: var(--surface-base);
   }
   .git-session-label {
     flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
+  }
+  .sidebar-footer {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    padding: 4px 0;
+  }
+  .footer-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: inherit;
+    text-align: left;
+  }
+  button.footer-row {
+    cursor: pointer;
+  }
+  button.footer-row:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+  button.footer-row:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .theme-row {
+    justify-content: space-between;
+  }
+  .theme-toggle {
+    display: flex;
+    gap: 2px;
+    /* One inset well holding all three, so the active segment reads as a
+       selection rather than three unrelated buttons. */
+    background: var(--surface-sunken);
+    border-radius: 4px;
+    padding: 1px;
   }
 </style>

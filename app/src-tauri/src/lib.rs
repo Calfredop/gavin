@@ -47,6 +47,8 @@ pub fn run() {
             session::kill_session,
             session::get_workspaces_state,
             session::set_workspaces_state,
+            session::get_theme_pref,
+            session::set_theme_pref,
             session::get_session_names,
             session::set_session_name,
             session::get_file_tabs,

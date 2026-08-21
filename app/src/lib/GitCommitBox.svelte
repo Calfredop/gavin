@@ -66,18 +66,18 @@
     flex-direction: column;
     gap: 6px;
     padding: 8px;
-    border-top: 1px solid #2f2f2f;
-    background: #161616;
+    border-top: 1px solid var(--border);
+    background: var(--surface-sunken);
     font-size: 0.78em;
   }
   .summary,
   .description {
     width: 100%;
     box-sizing: border-box;
-    background: #1e1e1e;
-    border: 1px solid #333;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ddd;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 5px 8px;
@@ -86,7 +86,7 @@
   .summary:focus,
   .description:focus {
     outline: none;
-    border-color: #4a6a8a;
+    border-color: var(--border-accent);
   }
   .foot {
     display: flex;
@@ -97,17 +97,17 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     cursor: pointer;
   }
   .spacer {
     flex: 1 1 auto;
   }
   .commit {
-    background: #2d4a2d;
-    border: 1px solid #3f6b3f;
+    background: var(--surface-success);
+    border: 1px solid var(--border-success);
     border-radius: 6px;
-    color: #cfe8cf;
+    color: var(--success-text);
     padding: 4px 12px;
     font-family: monospace;
     cursor: pointer;
@@ -117,10 +117,10 @@
     cursor: default;
   }
   .author {
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.92em;
   }
   .warn {
-    color: #d9b45c;
+    color: var(--warning-text);
   }
 </style>

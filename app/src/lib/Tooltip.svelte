@@ -43,8 +43,11 @@
     transform: translateX(-50%);
     margin-bottom: 4px;
     padding: 4px 8px;
-    background: #000;
-    color: #fff;
+    background: var(--surface-sunken);
+    color: var(--text);
+    /* Was #000 on #fff -- a shadow alone carried it. On a light surface
+       --surface-sunken is #eee, so it needs an edge to stay a layer. */
+    border: 1px solid var(--border);
     font-size: 0.75em;
     font-family: monospace;
     white-space: nowrap;

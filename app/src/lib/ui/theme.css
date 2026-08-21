@@ -1,0 +1,171 @@
+/* Tier 1 -- primitive ramps. Theme-independent: defined once, never
+   redefined. Components must NOT reference these directly; they exist so
+   the tier-2 roles below can be re-pointed per theme. */
+:root {
+  --grey-0: #1a1a1a;
+  --grey-1: #1e1e1e;
+  --grey-2: #232323;
+  --grey-3: #2f2f2f;
+  --grey-4: #3a3a3a;
+  --grey-5: #444;
+  --grey-6: #555;
+  --grey-7: #666;
+  --grey-8: #888;
+  --grey-9: #999;
+  --grey-10: #bbb;
+  --grey-11: #ddd;
+  --grey-12: #eee;
+  --grey-13: #f4f4f4; /* NEW -- light raised surface */
+  --grey-14: #fbfbfb; /* NEW -- light base surface */
+  --grey-15: #fff;
+
+  --blue-0: #20242a;   /* dark tint surface */
+  --blue-1: #2a3a4a;
+  --blue-2: #4a6a8a;
+  --blue-3: #4a9eff;
+  --blue-4: #7ea8d8;
+  --blue-5: #d3e4f7; /* NEW */
+  --blue-6: #e8f1fb; /* NEW -- light tint surface */
+
+  --green-0: #17301a;  /* dark tint surface */
+  --green-1: #2c4a2c; /* NEW */
+  --green-2: #3f6b3f;
+  --green-3: #6b8e6b;
+  --green-4: #8bc98b;
+  --green-5: #cfe8cf;
+  --green-6: #e6f5e9; /* NEW -- light tint surface */
+
+  --red-0: #3a1a1a;    /* dark tint surface */
+  --red-1: #7a3030;
+  --red-2: #b03a32; /* NEW */
+  --red-3: #e0524a;
+  --red-4: #e08a8a;
+  --red-5: #f0c0c0;
+  --red-6: #fdeaea; /* NEW -- light tint surface */
+
+  --amber-0: #3a3320;  /* dark tint surface */
+  --amber-1: #6b3d1f; /* NEW */
+  --amber-2: #a15c2f;
+  --amber-3: #d9a648;
+  --amber-4: #d9b45c;
+  --amber-5: #e0b08a;
+  --amber-6: #fdf3e0; /* NEW -- light tint surface */
+
+  /* Categorical, NOT semantic: commit-graph lanes, where the only job is
+     "adjacent lanes look different". Two sets, because a palette tuned
+     for a dark background washes out on white. */
+  --lane-dark-1: #8ab4e0;  --lane-dark-5: #b48ae0;
+  --lane-dark-2: #8bc98b;  --lane-dark-6: #6ad1c9;
+  --lane-dark-3: #d9b45c;  --lane-dark-7: #e0a86a;
+  --lane-dark-4: #e08a8a;  --lane-dark-8: #c9c98b;
+
+  --lane-light-1: #2f6ba8;  --lane-light-5: #7a4bb5;
+  --lane-light-2: #3f7d47;  --lane-light-6: #1f8a80;
+  --lane-light-3: #8a6410;  --lane-light-7: #a8601c;
+  --lane-light-4: #b0504a;  --lane-light-8: #6f6f22;
+}
+
+/* Tier 2 -- semantic roles. Bare :root carries the DARK values so that
+   every failure path (pre-boot stamp missing, config unreadable, system
+   appearance unavailable) lands on the app's current look. */
+:root,
+:root[data-theme="dark"] {
+  --surface-base: var(--grey-1);
+  --surface-raised: var(--grey-3);
+  --surface-overlay: var(--grey-4);
+  --surface-sunken: var(--grey-0);
+  --surface-hover: var(--grey-2);
+  --surface-selected: var(--grey-4);
+
+  --border: var(--grey-4);
+  --border-strong: var(--grey-6);
+  --border-focus: var(--blue-3);
+
+  --text: var(--grey-12);
+  --text-muted: var(--grey-9);
+  --text-subtle: var(--grey-7);
+  /* Foreground on a COLOURED fill (accent/danger/warning badges), not the
+     inverse of --text. Those fills stay mid-to-dark in both themes, so
+     this is white in both -- inverting it here would put near-black on a
+     mid-red badge. */
+  --text-inverted: var(--grey-15);
+
+  --accent: var(--blue-3);
+  --accent-hover: var(--blue-4);
+  --accent-text: var(--blue-4);
+
+  --success: var(--green-4);
+  --success-text: var(--green-4);
+  --warning: var(--amber-3);
+  --warning-text: var(--amber-3);
+  --danger: var(--red-3);
+  --danger-text: var(--red-4);
+
+  /* Tinted surfaces: a diff's added line, a conflict row, a drop target.
+     Distinct from --success/--danger, which are foreground strengths --
+     painting a whole row in those would be a vivid block, not a tint. */
+  --surface-accent: var(--blue-0);
+  --surface-success: var(--green-0);
+  --surface-warning: var(--amber-0);
+  --surface-danger: var(--red-0);
+  --border-accent: var(--blue-2);
+  --border-success: var(--green-2);
+  --border-warning: var(--amber-2);
+  --border-danger: var(--red-1);
+
+  --lane-1: var(--lane-dark-1);  --lane-5: var(--lane-dark-5);
+  --lane-2: var(--lane-dark-2);  --lane-6: var(--lane-dark-6);
+  --lane-3: var(--lane-dark-3);  --lane-7: var(--lane-dark-7);
+  --lane-4: var(--lane-dark-4);  --lane-8: var(--lane-dark-8);
+}
+
+/* Light borders step INWARD rather than mirroring the dark ones: an
+   equal-contrast hairline reads much heavier on a light surface. */
+:root[data-theme="light"] {
+  /* Elevation goes DARKER as it comes forward here, the reverse of the
+     dark theme: a control that lightens against an almost-white bar has
+     nothing left to lighten into, so the fill disappears. Monotonic
+     #fff > #fbfbfb > #f4f4f4 > #eee > #ddd keeps every layer separable. */
+  --surface-base: var(--grey-15);
+  --surface-raised: var(--grey-14);
+  --surface-overlay: var(--grey-13);
+  --surface-sunken: var(--grey-12);
+  --surface-hover: var(--grey-12);
+  --surface-selected: var(--grey-11);
+
+  --border: var(--grey-11);
+  --border-strong: var(--grey-10);
+  --border-focus: var(--blue-3);
+
+  --text: var(--grey-0);
+  --text-muted: var(--grey-7);
+  --text-subtle: var(--grey-8);
+  --text-inverted: var(--grey-15);
+
+  /* Fills stay vivid; anything that renders as TEXT drops to blue-2,
+     which clears 4.5:1 on white where blue-3 does not. */
+  --accent: var(--blue-3);
+  --accent-hover: var(--blue-2);
+  --accent-text: var(--blue-2);
+
+  --success: var(--green-2);
+  --success-text: var(--green-1);
+  --warning: var(--amber-2);
+  --warning-text: var(--amber-1);
+  --danger: var(--red-2);
+  --danger-text: var(--red-1);
+
+  --surface-accent: var(--blue-6);
+  --surface-success: var(--green-6);
+  --surface-warning: var(--amber-6);
+  --surface-danger: var(--red-6);
+  --border-accent: var(--blue-5);
+  --border-success: var(--green-5);
+  --border-warning: var(--amber-5);
+  --border-danger: var(--red-5);
+
+  --lane-1: var(--lane-light-1);  --lane-5: var(--lane-light-5);
+  --lane-2: var(--lane-light-2);  --lane-6: var(--lane-light-6);
+  --lane-3: var(--lane-light-3);  --lane-7: var(--lane-light-7);
+  --lane-4: var(--lane-light-4);  --lane-8: var(--lane-light-8);
+}
