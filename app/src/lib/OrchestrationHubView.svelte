@@ -244,7 +244,7 @@
   {/if}
 </div>
 
-<OrchestrationDragPreview {orch} {cards} root={gridEl} />
+<OrchestrationDragPreview {orch} {cards} dragRoot={bodyEl} />
 
 {#if binding && orch}
   {@const bindingRail = orch.rails.find((r) => r.id === binding)}

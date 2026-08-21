@@ -6,13 +6,17 @@
   interface Props {
     orch: Orchestration | null;
     cards: Map<string, CardEntry>;
-    /// This surface's grid root. Only the grid that owns the drag renders
-    /// the ghost.
-    root: HTMLElement | null;
+    /// MUST be the very element handed to attachOrchestrationDrag as
+    /// `root` -- the ghost renders only for the surface that owns the
+    /// drag, and the glue registers that element by identity. Naming it
+    /// `dragRoot` rather than `root` because passing the scroll element
+    /// instead silently disables the ghost, which is what happened when
+    /// the listener moved up to the grid's parent.
+    dragRoot: HTMLElement | null;
   }
-  let { orch, cards, root }: Props = $props();
+  let { orch, cards, dragRoot }: Props = $props();
 
-  const ownsDrag = $derived(root !== null && $activeOrchDragRoot === root);
+  const ownsDrag = $derived(dragRoot !== null && $activeOrchDragRoot === dragRoot);
   const titleOfPath = (path: string): string =>
     cards.get(path)?.plan.title ?? (path.split("/").pop() ?? "");
 
