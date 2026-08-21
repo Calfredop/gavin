@@ -157,8 +157,9 @@ plan untouched:
 1. **A step whose `StepRun.state` is `running` is missing from the new
    plan.** Moving it between stages or rails is fine — the id survives, so
    its live session stays reachable. Deleting it would orphan a running
-   agent. Message: `step <id> ("<card title>") is running — pause or let it
-   finish before removing it`.
+   agent. Message: `step <id> (<card path>) is running — pause or let it
+   finish before removing it`. The path, not the title: the daemon stores
+   `card_path` and never parses the card's frontmatter.
 2. Duplicate `id` anywhere in rails/stages/steps.
 3. A `ConflictNote.stepIds` entry that names no step in the same payload.
 4. A `Rail.pageId` is *not* validated — pages are app-side config; a stale
