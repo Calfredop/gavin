@@ -156,7 +156,15 @@ export function seedSmokeTestData(rootPath: string): Promise<void> {
   return invoke("seed_smoke_test_data", { rootPath });
 }
 
-export function setupAgentIntegration(rootPath: string): Promise<string[]> {
+/// What a setup run wrote, and what it could not (spec §6). `skipped` is
+/// [what, why] pairs, rendered verbatim so an unavailable MCP config is
+/// visible rather than silent.
+export interface IntegrationResult {
+  written: string[];
+  skipped: Array<[string, string]>;
+}
+
+export function setupAgentIntegration(rootPath: string): Promise<IntegrationResult> {
   return invoke("setup_agent_integration", { rootPath });
 }
 

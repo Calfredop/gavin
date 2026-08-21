@@ -95,8 +95,12 @@
     if (!workspace.rootPath) return;
     setupNote = null;
     try {
-      const files = await backend.setupAgentIntegration(workspace.rootPath);
-      setupNote = `Wrote: ${files.map((f) => f.replace(workspace.rootPath + "/", "")).join(", ")} — re-run any time to update.`;
+      const result = await backend.setupAgentIntegration(workspace.rootPath);
+      const wrote = result.written.map((f) => f.replace(workspace.rootPath + "/", "")).join(", ");
+      const missed = result.skipped.map(([what]) => what).join(", ");
+      setupNote = missed
+        ? `Wrote: ${wrote}. Skipped: ${missed} — re-run any time to update.`
+        : `Wrote: ${wrote} — re-run any time to update.`;
     } catch (e) {
       setupNote = `Couldn't set up: ${e}`;
     }

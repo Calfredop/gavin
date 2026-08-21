@@ -18,6 +18,11 @@ pub struct AgentProfile {
     pub instructions_file: &'static str,
     /// Empty for `custom`, where the user supplies it.
     pub command: &'static str,
+    /// Whether this agent accepts a positional prompt argument, i.e.
+    /// `<command> "<prompt>"`. Only true where the convention is
+    /// verified: getting it wrong puts garbage in the agent's argv, so
+    /// agent-driven flows are hidden rather than risked (spec §7.2).
+    pub prompt_arg: bool,
     pub mcp: Option<McpLayout>,
 }
 
@@ -27,6 +32,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Claude Code",
         instructions_file: "CLAUDE.md",
         command: "claude",
+        prompt_arg: true,
         mcp: Some(McpLayout {
             config_file: ".mcp.json",
             server_key: "gavin",
@@ -39,6 +45,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Codex CLI",
         instructions_file: "AGENTS.md",
         command: "codex",
+        prompt_arg: false,
         mcp: None,
     },
     AgentProfile {
@@ -46,6 +53,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Gemini CLI",
         instructions_file: "GEMINI.md",
         command: "gemini",
+        prompt_arg: false,
         mcp: None,
     },
     AgentProfile {
@@ -53,6 +61,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Cursor",
         instructions_file: "AGENTS.md",
         command: "cursor",
+        prompt_arg: false,
         mcp: None,
     },
     AgentProfile {
@@ -60,6 +69,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "opencode",
         instructions_file: "AGENTS.md",
         command: "opencode",
+        prompt_arg: false,
         mcp: None,
     },
     AgentProfile {
@@ -67,6 +77,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Custom…",
         instructions_file: "",
         command: "",
+        prompt_arg: false,
         mcp: None,
     },
 ];
@@ -120,10 +131,32 @@ pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Res
 const MARKER_START: &str = "<!-- gavin:start -->";
 const MARKER_END: &str = "<!-- gavin:end -->";
 
-const CLAUDE_MD_BLOCK: &str = "## Gavin workspace\n\n\
+/// Pointer variant: for profiles with a skill mechanism, the block stays
+/// short and defers to the skill file.
+const BLOCK_WITH_SKILL: &str = "## Gavin workspace\n\n\
 This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all\n\
 development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`\n\
 (plan before coding, keep plan statuses current, use the gavin_* MCP tools).\n";
+
+/// Inline variant: for agents with no skill mechanism, the same guidance
+/// has to live in the block itself -- there is no file to point at.
+const BLOCK_INLINE: &str = "## Gavin workspace\n\n\
+This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all\n\
+development.\n\n\
+- Plans are markdown files in `.gavin-root/plans/` (and any `.gavin/plans/`).\n\
+  Their frontmatter drives a kanban board the human watches: `status:` is the\n\
+  column, `priority:` the dot, `kind:` one of note/task/plan.\n\
+- Plan before coding. Create a plan file, keep its `status:` current as you\n\
+  work, and never mark work done that you have not verified.\n\
+- The files are the truth. Edit them directly; the board follows.\n";
+
+fn instructions_block_for(profile: &AgentProfile) -> &'static str {
+    if profile.mcp.is_some() {
+        BLOCK_WITH_SKILL
+    } else {
+        BLOCK_INLINE
+    }
+}
 
 const SKILL_MD: &str = include_str!("gavin_skill.md");
 
@@ -181,9 +214,13 @@ fn write_skill(root: &Path, layout: &McpLayout) -> anyhow::Result<PathBuf> {
 
 /// Replaces the marker block in place, appends it otherwise (creating the
 /// file if absent). Nothing outside the markers is ever touched.
-fn write_instructions_block(root: &Path, instructions_file: &str) -> anyhow::Result<PathBuf> {
+fn write_instructions_block(
+    root: &Path,
+    instructions_file: &str,
+    block_body: &str,
+) -> anyhow::Result<PathBuf> {
     let path = root.join(instructions_file);
-    let block = format!("{MARKER_START}\n{CLAUDE_MD_BLOCK}{MARKER_END}\n");
+    let block = format!("{MARKER_START}\n{block_body}{MARKER_END}\n");
     let content = if path.exists() {
         let existing = std::fs::read_to_string(&path)?;
         match (existing.find(MARKER_START), existing.find(MARKER_END)) {
@@ -209,24 +246,63 @@ fn write_instructions_block(root: &Path, instructions_file: &str) -> anyhow::Res
     Ok(path)
 }
 
+/// What a setup run wrote, and what it could not. Rendered verbatim by
+/// the wizard's Integration step: a profile with no McpLayout still gets
+/// its instructions block, and the two omissions are named with reasons
+/// rather than failing the whole run (W4).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationResult {
+    pub written: Vec<String>,
+    pub skipped: Vec<(String, String)>,
+}
+
 #[tauri::command]
-pub fn setup_agent_integration(root_path: String) -> Result<Vec<String>, String> {
+pub fn setup_agent_integration(root_path: String) -> Result<IntegrationResult, String> {
     let root = Path::new(&root_path);
     if !root.is_dir() {
         return Err(format!("root does not exist: {root_path}"));
     }
     let profile = profile_by_id(&read_profile_id(root));
-    let Some(layout) = profile.mcp.as_ref() else {
-        return Err(format!("MCP integration isn't available for {} yet", profile.label));
-    };
     let instructions_file = resolved_instructions_file(root, profile);
-    let binary = resolve_mcp_binary_path().map_err(|e| e.to_string())?;
-    let written = vec![
-        write_mcp_config(root, layout, &binary).map_err(|e| e.to_string())?,
-        write_skill(root, layout).map_err(|e| e.to_string())?,
-        write_instructions_block(root, &instructions_file).map_err(|e| e.to_string())?,
-    ];
-    Ok(written.into_iter().map(|p| p.to_string_lossy().to_string()).collect())
+    let mut written = Vec::new();
+    let mut skipped = Vec::new();
+
+    // Written for EVERY profile -- the change W4 makes. Before this, a
+    // profile without an McpLayout errored out and got nothing at all.
+    written.push(
+        write_instructions_block(root, &instructions_file, instructions_block_for(profile))
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    match profile.mcp.as_ref() {
+        Some(layout) => {
+            let binary = resolve_mcp_binary_path().map_err(|e| e.to_string())?;
+            written.push(
+                write_skill(root, layout).map_err(|e| e.to_string())?.to_string_lossy().to_string(),
+            );
+            written.push(
+                write_mcp_config(root, layout, &binary)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        None => {
+            skipped.push((
+                "skill file".to_string(),
+                format!(
+                    "{} has no skill mechanism — the guidance is inline in {instructions_file}",
+                    profile.label
+                ),
+            ));
+            skipped
+                .push(("MCP config".to_string(), format!("not available for {} yet", profile.label)));
+        }
+    }
+    Ok(IntegrationResult { written, skipped })
 }
 
 /// The profile table, flattened for the frontend. Mirrors
@@ -240,6 +316,7 @@ pub struct AgentProfileDto {
     pub instructions_file: String,
     pub command: String,
     pub mcp_supported: bool,
+    pub prompt_arg: bool,
 }
 
 #[tauri::command]
@@ -252,6 +329,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             instructions_file: p.instructions_file.to_string(),
             command: p.command.to_string(),
             mcp_supported: p.mcp.is_some(),
+            prompt_arg: p.prompt_arg,
         })
         .collect()
 }
@@ -356,15 +434,69 @@ mod tests {
         .is_err());
     }
 
+    // Was setup_refuses_a_profile_with_no_mcp_layout: a profile without an
+    // MCP layout now degrades (see the tests below) rather than refusing.
+    // The surviving refusal is a root that is not there at all.
     #[test]
-    fn setup_refuses_a_profile_with_no_mcp_layout() {
-        let dir = tempfile::tempdir().unwrap();
-        let g = dir.path().join(".gavin-root");
+    fn setup_refuses_a_root_that_does_not_exist() {
+        let err = setup_agent_integration("/no/such/root".to_string()).unwrap_err();
+        assert!(err.contains("root does not exist"), "got: {err}");
+    }
+
+    fn rooted_with_profile(dir: &std::path::Path, profile: &str) -> String {
+        let g = dir.join(".gavin-root");
         std::fs::create_dir_all(&g).unwrap();
-        std::fs::write(g.join("config.toml"), "version = 1\n\n[agent]\nprofile = \"codex\"\n")
+        std::fs::write(g.join("config.toml"), format!("[agent]\nprofile = \"{profile}\"\n"))
             .unwrap();
-        let err = setup_agent_integration(dir.path().to_string_lossy().to_string()).unwrap_err();
-        assert!(err.contains("Codex CLI"), "the message names the profile: {err}");
+        dir.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn integration_writes_the_block_for_a_profile_with_no_mcp_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "codex");
+
+        let result = setup_agent_integration(root).unwrap();
+
+        // The agent file IS written, which is the whole point of W4.
+        assert!(dir.path().join("AGENTS.md").is_file());
+        assert!(result.written.iter().any(|w| w.ends_with("AGENTS.md")));
+        // ...and the two it cannot do are named, with reasons.
+        let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
+        assert_eq!(skipped, ["skill file", "MCP config"]);
+        for (_, why) in &result.skipped {
+            assert!(why.contains("Codex CLI"), "the reason names the profile: {why}");
+        }
+    }
+
+    #[test]
+    fn a_profile_without_a_skill_mechanism_gets_the_guidance_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "codex");
+
+        setup_agent_integration(root).unwrap();
+
+        let body = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
+        assert!(!body.contains("SKILL.md"), "no skill file exists to point at");
+        assert!(body.contains("`.gavin-root/plans/`"), "the guidance is inline instead");
+    }
+
+    #[test]
+    fn claude_code_keeps_the_pointer_block_and_its_layout() {
+        // resolve_mcp_binary_path needs the binary beside current_exe, which
+        // is not true under cargo test -- so assert on what does not need it.
+        let block = instructions_block_for(profile_by_id("claude-code"));
+        assert!(block.contains(".claude/skills/gavin/SKILL.md"));
+        assert!(profile_by_id("claude-code").mcp.is_some());
+        assert!(instructions_block_for(profile_by_id("codex")) != block);
+    }
+
+    #[test]
+    fn prompt_arg_is_set_only_where_the_convention_is_verified() {
+        let with_prompt: Vec<&str> =
+            AGENT_PROFILES.iter().filter(|p| p.prompt_arg).map(|p| p.id).collect();
+        assert_eq!(with_prompt, ["claude-code"]);
     }
 
     #[test]
@@ -418,19 +550,19 @@ mod tests {
     fn instructions_block_appends_replaces_and_never_touches_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         // Absent → created with just the block.
-        let p = write_instructions_block(dir.path(), "CLAUDE.md").unwrap();
+        let p = write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let first = std::fs::read_to_string(&p).unwrap();
         assert!(first.starts_with(MARKER_START));
         // Existing content → appended after it.
         std::fs::write(&p, "# My rules\n\nKeep tests green.\n").unwrap();
-        write_instructions_block(dir.path(), "CLAUDE.md").unwrap();
+        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let appended = std::fs::read_to_string(&p).unwrap();
         assert!(appended.starts_with("# My rules"));
         assert!(appended.contains(MARKER_START));
         // Re-run → block replaced in place, custom content above AND below intact.
         let with_tail = format!("{appended}## After\n\ntail text\n");
         std::fs::write(&p, &with_tail).unwrap();
-        write_instructions_block(dir.path(), "CLAUDE.md").unwrap();
+        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let replaced = std::fs::read_to_string(&p).unwrap();
         assert!(replaced.starts_with("# My rules"));
         assert!(replaced.contains("tail text"));
