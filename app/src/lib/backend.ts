@@ -3,6 +3,7 @@ import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
+import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -442,4 +443,35 @@ export function gitRestoreConflict(cwd: string, path: string): Promise<void> {
 
 export function gitMergeToolName(cwd: string): Promise<string | null> {
   return invoke("git_merge_tool_name", { cwd });
+}
+
+// --- Orchestration (SP1) ----------------------------------------------------
+
+export function getOrchestration(workspaceId: string): Promise<Orchestration> {
+  return invoke("get_orchestration", { workspaceId });
+}
+
+export function setOrchestration(
+  workspaceId: string,
+  rails: Rail[],
+  conflictNotes: ConflictNote[]
+): Promise<void> {
+  return invoke("set_orchestration", { workspaceId, rails, conflictNotes });
+}
+
+export function setRailRun(
+  railId: string,
+  state: RailState,
+  currentStageId: string | null
+): Promise<void> {
+  return invoke("set_rail_run", { railId, stateValue: state, currentStageId });
+}
+
+export function setStepRun(
+  stepId: string,
+  state: StepState,
+  sessionId: string | null,
+  reason: string | null
+): Promise<void> {
+  return invoke("set_step_run", { stepId, stateValue: state, sessionId, reason });
 }
