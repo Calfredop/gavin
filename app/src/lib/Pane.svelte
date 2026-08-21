@@ -397,7 +397,7 @@
         {/if}
       </button>
     {/each}
-    <IconButton icon={Plus} label="New Tab" size={14} onclick={() => addTab(active)} />
+    <IconButton icon={Plus} label="New Tab" size={14} shortcut="new-tab" onclick={() => addTab(active)} />
     {#if activeBoardContext}
       <IconButton
         icon={Kanban}

@@ -90,8 +90,8 @@
 </script>
 
 {#snippet actions()}
-  <IconButton icon={Columns2} label="Split Right" variant="filled" size={16} onclick={() => split("row")} />
-  <IconButton icon={Rows2} label="Split Down" variant="filled" size={16} onclick={() => split("column")} />
+  <IconButton icon={Columns2} label="Split Right" variant="filled" size={16} shortcut="split-right" onclick={() => split("row")} />
+  <IconButton icon={Rows2} label="Split Down" variant="filled" size={16} shortcut="split-down" onclick={() => split("column")} />
   <IconButton icon={X} label="Close Pane" variant="filled" size={16} onclick={handleClosePane} />
   <div class="presets">
     <span>Presets:</span>
