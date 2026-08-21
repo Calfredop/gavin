@@ -2,7 +2,7 @@
   import type { Component, Snippet } from "svelte";
   import { tooltip as tooltipAction } from "../tooltip";
   import { formatShortcut, type ShortcutId } from "../shortcuts";
-  import { isMacSync } from "../platform";
+  import { isMac } from "../platform";
   import { hintMode } from "../shortcutHints";
   import ShortcutHint from "./ShortcutHint.svelte";
 
@@ -61,7 +61,7 @@
   }: Props = $props();
 
   const baseTip = $derived(tip === undefined ? label : tip);
-  const shortcutText = $derived(shortcut ? formatShortcut(shortcut, isMacSync()) : null);
+  const shortcutText = $derived(shortcut ? formatShortcut(shortcut, $isMac) : null);
   const tipText = $derived(baseTip && shortcutText ? `${baseTip} (${shortcutText})` : baseTip);
 </script>
 
