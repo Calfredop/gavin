@@ -18,6 +18,9 @@ export interface TreeMenuCallbacks {
   onDeleteFile: (file: ExplorerFile) => void;
   onCompose: (folderPath: string, group: ExplorerGroup) => void;
   onRemoveOutside: (context: ExplorerContextNode) => void;
+  // Opens a folder in Finder: the context's own folder, or one of its
+  // plans/docs/specs sub-folders inside .gavin*/.
+  onShowInFinder: (folderPath: string) => void;
 }
 
 const NEW_LABELS: Record<ExplorerGroup, string> = {
@@ -44,6 +47,7 @@ export function contextRowMenuItems(
     label: NEW_LABELS[group],
     onPick: () => cb.onCompose(context.folderPath, group),
   }));
+  items.push({ label: "Show in Finder", onPick: () => cb.onShowInFinder(context.folderPath) });
   if (context.outside) {
     // Unlisting, not deletion: the folder's files stay on disk.
     items.push({
@@ -60,5 +64,8 @@ export function groupRowMenuItems(
   group: ExplorerGroup,
   cb: TreeMenuCallbacks
 ): TreeMenuItem[] {
-  return [{ label: NEW_LABELS[group], onPick: () => cb.onCompose(context.folderPath, group) }];
+  return [
+    { label: NEW_LABELS[group], onPick: () => cb.onCompose(context.folderPath, group) },
+    { label: "Show in Finder", onPick: () => cb.onShowInFinder(`${context.gavinDir}/${group}`) },
+  ];
 }

@@ -4,6 +4,8 @@
   // installed @lucide/svelte): Columns2 is the current name for the old
   // SplitSquareHorizontal.
   import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X } from "@lucide/svelte";
+  import { openPath } from "@tauri-apps/plugin-opener";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import {
     contextRowMenuItems,
@@ -70,7 +72,15 @@
   // Built at event time so the menu always closes over the current
   // props (onOpenInSplit toggles with terminal focus).
   function menuCallbacks(): TreeMenuCallbacks {
-    return { onSelect, onOpenInSplit, onDeleteFile, onCompose: openComposer, onRemoveOutside };
+    return { onSelect, onOpenInSplit, onDeleteFile, onCompose: openComposer, onRemoveOutside, onShowInFinder: showInFinder };
+  }
+
+  function showInFinder(folderPath: string): void {
+    openPath(folderPath).catch((e) => {
+      const text = `Couldn't open in Finder: ${e}`;
+      console.error(text);
+      void message(text, { title: "gavin", kind: "error" });
+    });
   }
 
   // Opens the app-wide context menu (one ContextMenu layer, mounted at the

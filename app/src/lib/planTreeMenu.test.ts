@@ -9,6 +9,7 @@ function callbacks(over: Partial<TreeMenuCallbacks> = {}): TreeMenuCallbacks {
     onDeleteFile: vi.fn(),
     onCompose: vi.fn(),
     onRemoveOutside: vi.fn(),
+    onShowInFinder: vi.fn(),
     ...over,
   };
 }
@@ -60,12 +61,14 @@ describe("fileMenuItems", () => {
 });
 
 describe("contextRowMenuItems", () => {
-  it("offers a composer entry per group", () => {
+  it("offers a composer entry per group, then Show in Finder for the context folder", () => {
     const cb = callbacks();
     const items = contextRowMenuItems(ctx(), cb);
-    expect(items.map((i) => i.label)).toEqual(["New plan…", "New doc…", "New spec…"]);
+    expect(items.map((i) => i.label)).toEqual(["New plan…", "New doc…", "New spec…", "Show in Finder"]);
     items[1].onPick();
     expect(cb.onCompose).toHaveBeenCalledWith("/ws", "docs");
+    items[3].onPick();
+    expect(cb.onShowInFinder).toHaveBeenCalledWith("/ws");
   });
 
   it("adds Remove from navigator only for outside contexts", () => {
@@ -76,15 +79,18 @@ describe("contextRowMenuItems", () => {
     expect(items.at(-1)?.danger).toBe(true);
     items.at(-1)?.onPick();
     expect(cb.onRemoveOutside).toHaveBeenCalledWith(outside);
+    expect(contextRowMenuItems(ctx(), cb).map((i) => i.label)).not.toContain("Remove from navigator");
   });
 });
 
 describe("groupRowMenuItems", () => {
-  it("offers a single composer entry for that group", () => {
+  it("offers the composer entry for that group, then Show in Finder for the group folder", () => {
     const cb = callbacks();
     const items = groupRowMenuItems(ctx(), "specs", cb);
-    expect(items.map((i) => i.label)).toEqual(["New spec…"]);
+    expect(items.map((i) => i.label)).toEqual(["New spec…", "Show in Finder"]);
     items[0].onPick();
     expect(cb.onCompose).toHaveBeenCalledWith("/ws", "specs");
+    items[1].onPick();
+    expect(cb.onShowInFinder).toHaveBeenCalledWith("/ws/.gavin-root/specs");
   });
 });
