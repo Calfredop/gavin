@@ -1252,6 +1252,10 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 Response::SessionRestored { id } => {
                     let _ = reader_app_handle.emit("session-restored", id);
                 }
+                Response::OrchestrationChanged { workspace_id, orchestration } => {
+                    let _ = reader_app_handle
+                        .emit("orchestration-changed", (workspace_id, orchestration));
+                }
                 Response::GavinTreeChanged { workspace_id, tree } => {
                     let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
                 }

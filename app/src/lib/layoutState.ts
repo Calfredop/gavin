@@ -224,6 +224,12 @@ export async function bootstrap(): Promise<void> {
   // below) -- gavin-tree-changed pushes with no listener would be lost,
   // not buffered.
   unlisteners.push(await initGavinListeners());
+  // Imported dynamically on purpose: orchestrationState imports THIS
+  // module (for resolvedAgentFor and createSessionOnPage), so a static
+  // import here would close a cycle. By the time bootstrap runs, this
+  // module is fully evaluated and the load is safe.
+  const { initOrchestrationListeners } = await import("./orchestrationState");
+  unlisteners.push(await initOrchestrationListeners());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);

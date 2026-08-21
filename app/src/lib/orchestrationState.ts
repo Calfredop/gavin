@@ -6,6 +6,7 @@
 // against a refresh clobbering an in-flight save.
 
 import { writable, get } from "svelte/store";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "./backend";
 import {
   nextActions,
@@ -320,6 +321,39 @@ export async function tick(workspaceId: string): Promise<void> {
   } finally {
     ticking.delete(workspaceId);
   }
+}
+
+/// Must be registered BEFORE the first watchGavinRoot call: Tauri events
+/// emitted with no listener are lost, not buffered. layoutState.bootstrap()
+/// registers this beside initGavinListeners.
+///
+/// The payload REPLACES the plan but preserves whatever run state this
+/// app already holds: the daemon's copy can lag an optimistic local write
+/// by a round trip, and the agent never authors run state anyway.
+export async function initOrchestrationListeners(): Promise<UnlistenFn> {
+  return listen<[string, Orchestration]>("orchestration-changed", (event) => {
+    const [workspaceId, incoming] = event.payload;
+    orchestrations.update((m) => {
+      const current = m[workspaceId];
+      if (!current) return { ...m, [workspaceId]: incoming };
+      // The preserved run state may name steps the agent just deleted.
+      // The daemon has already dropped those rows; this keeps the
+      // in-memory copy honest without waiting for the next fetch.
+      const railIds = new Set(incoming.rails.map((r) => r.id));
+      const stepIds = new Set(
+        incoming.rails.flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.id)))
+      );
+      return {
+        ...m,
+        [workspaceId]: {
+          rails: incoming.rails,
+          conflictNotes: incoming.conflictNotes,
+          railRuns: current.railRuns.filter((r) => railIds.has(r.railId)),
+          stepRuns: current.stepRuns.filter((r) => stepIds.has(r.stepId)),
+        },
+      };
+    });
+  });
 }
 
 /** @internal test-only reset for module-level state */
