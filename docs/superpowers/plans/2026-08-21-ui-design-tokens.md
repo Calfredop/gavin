@@ -52,7 +52,7 @@
 - Consumes: nothing.
 - Produces: `type ThemePref = "light" | "dark" | "system"`; `type EffectiveTheme = "light" | "dark"`; `resolveTheme(pref: ThemePref, system: EffectiveTheme | null): EffectiveTheme`; `parseThemePref(value: string | null | undefined): ThemePref`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -93,12 +93,12 @@ describe("parseThemePref", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd app && npm test -- src/lib/ui/theme.test.ts`
 Expected: FAIL — cannot resolve `./theme`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```ts
 /// The user's stored choice. "system" defers to the OS appearance.
@@ -127,12 +127,12 @@ export function parseThemePref(value: string | null | undefined): ThemePref {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd app && npm test -- src/lib/ui/theme.test.ts`
 Expected: PASS, 5 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/src/lib/ui/theme.ts app/src/lib/ui/theme.test.ts
@@ -151,7 +151,7 @@ git commit -m "feat(ui): pure theme resolution"
 - Consumes: nothing.
 - Produces: the 22 tier-2 custom properties on `:root`, resolving under `[data-theme="dark"]` and `[data-theme="light"]`.
 
-- [ ] **Step 1: Write `theme.css`**
+- [x] **Step 1: Write `theme.css`**
 
 Tier 1 values are fixed by spec §4.1. `NEW` marks values not previously in the codebase.
 
@@ -249,7 +249,7 @@ Tier 1 values are fixed by spec §4.1. `NEW` marks values not previously in the 
 }
 ```
 
-- [ ] **Step 2: Create `+layout.svelte`**
+- [x] **Step 2: Create `+layout.svelte`**
 
 The repo has `+layout.ts` (which sets `ssr = false`) but no `+layout.svelte`. This one exists only to pull the stylesheet in once.
 
@@ -266,12 +266,12 @@ The repo has `+layout.ts` (which sets `ssr = false`) but no `+layout.svelte`. Th
 {@render children()}
 ```
 
-- [ ] **Step 3: Verify the app still builds**
+- [x] **Step 3: Verify the app still builds**
 
 Run: `cd app && npm run check`
 Expected: no new errors (pre-existing warnings are fine).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/src/lib/ui/theme.css app/src/routes/+layout.svelte
@@ -291,7 +291,7 @@ git commit -m "feat(ui): two-tier design token stylesheet"
 - Consumes: nothing from earlier tasks.
 - Produces: Tauri commands `get_theme_pref() -> Option<String>` and `set_theme_pref(theme: Option<String>) -> Result<(), String>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to the `config.rs` test module:
 
@@ -312,12 +312,12 @@ fn absent_theme_loads_as_none() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd app/src-tauri && cargo test theme_roundtrips absent_theme_loads_as_none`
 Expected: FAIL — `AppConfig` has no field `theme`.
 
-- [ ] **Step 3: Add the field**
+- [x] **Step 3: Add the field**
 
 In `config.rs`, inside `AppConfig` after `board_tabs`:
 
@@ -333,12 +333,12 @@ In `config.rs`, inside `AppConfig` after `board_tabs`:
 
 Then fix the exhaustive struct literals in the existing tests (e.g. `save_then_load_roundtrips`) by adding `theme: None,`.
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `cd app/src-tauri && cargo test --lib config::`
 Expected: PASS.
 
-- [ ] **Step 5: Thread it through the funnel**
+- [x] **Step 5: Thread it through the funnel**
 
 In `session.rs`, next to `BoardTabs`:
 
@@ -350,7 +350,7 @@ pub struct ThemePref(pub Mutex<Option<String>>);
 
 Add a `theme: Option<String>` parameter to `persist_workspaces` and pass it into the `AppConfig` literal. Update **all six** call sites (`session.rs:234, 270, 298, 328, 1091`, plus the new setter in step 6) to read `theme_state.0.lock().unwrap().clone()` — each of those commands needs a `theme_state: State<ThemePref>` parameter added.
 
-- [ ] **Step 6: Add the commands**
+- [x] **Step 6: Add the commands**
 
 ```rust
 #[tauri::command]
@@ -387,7 +387,7 @@ pub fn set_theme_pref(
 
 In `lib.rs`: `.manage(session::ThemePref(std::sync::Mutex::new(None)))` alongside the other `manage` calls, seeded from the loaded config at bootstrap the same way the other states are; and add `session::get_theme_pref, session::set_theme_pref` to `invoke_handler`.
 
-- [ ] **Step 7: Add the regression test**
+- [x] **Step 7: Add the regression test**
 
 This is the test D48 exists to justify — it proves saving workspaces cannot wipe the theme.
 
@@ -404,12 +404,12 @@ fn persist_workspaces_carries_theme_through() {
 }
 ```
 
-- [ ] **Step 8: Run the full Rust suite**
+- [x] **Step 8: Run the full Rust suite**
 
 Run: `cd app/src-tauri && cargo test`
 Expected: PASS, including the new tests.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add app/src-tauri/src/config.rs app/src-tauri/src/session.rs app/src-tauri/src/lib.rs
@@ -430,7 +430,7 @@ git commit -m "feat(ui): persist the app-global theme preference"
 - Consumes: `resolveTheme`, `parseThemePref` (Task 1); `get_theme_pref`/`set_theme_pref` (Task 3).
 - Produces: the singleton `themeState`, with reactive `.pref: ThemePref` and `.effective: EffectiveTheme`, and methods `init(): Promise<void>` and `setPref(pref: ThemePref): Promise<void>`.
 
-- [ ] **Step 1: Pre-boot stamp in `app.html`**
+- [x] **Step 1: Pre-boot stamp in `app.html`**
 
 Add inside `<head>`, before `%sveltekit.head%`. This runs before first paint; the real preference arrives asynchronously and corrects it.
 
@@ -447,7 +447,7 @@ Add inside `<head>`, before `%sveltekit.head%`. This runs before first paint; th
 </script>
 ```
 
-- [ ] **Step 2: Backend wrappers in `backend.ts`**
+- [x] **Step 2: Backend wrappers in `backend.ts`**
 
 ```ts
 export function getThemePref(): Promise<string | null> {
@@ -459,7 +459,7 @@ export function setThemePref(theme: string | null): Promise<void> {
 }
 ```
 
-- [ ] **Step 3: The store**
+- [x] **Step 3: The store**
 
 ```ts
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -524,7 +524,7 @@ class ThemeStore {
 export const themeState = new ThemeStore();
 ```
 
-- [ ] **Step 4: Call it from `bootstrap()`**
+- [x] **Step 4: Call it from `bootstrap()`**
 
 In `layoutState.ts`, at the top of `bootstrap()`, before the listener registrations:
 
@@ -536,12 +536,12 @@ In `layoutState.ts`, at the top of `bootstrap()`, before the listener registrati
 
 with `import { themeState } from "./ui/themeState.svelte";` added to the imports.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run: `cd app && npm test && npm run check`
 Expected: all tests pass; no new check errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/src/app.html app/src/lib/backend.ts app/src/lib/ui/themeState.svelte.ts app/src/lib/layoutState.ts
@@ -559,7 +559,7 @@ git commit -m "feat(ui): resolve and apply the theme at boot"
 - Consumes: `themeState` (Task 4).
 - Produces: nothing consumed downstream.
 
-- [ ] **Step 1: Add the section**
+- [x] **Step 1: Add the section**
 
 The existing sections are per-workspace; this one is not, so it says so. Place it after the Notifications section, following the established `<section><h3>` + `.row` markup.
 
@@ -585,12 +585,12 @@ Add imports: `import { themeState } from "./ui/themeState.svelte";` and `import 
 
 No new CSS is needed: `SettingsHubView.svelte` already styles `h3` (line 257), `.row` (265), `.row > span:first-child` (271), `.row select` (277) and `.hint` (293), and `.hint` is already used this way at lines 161 and 167.
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 Run: `cd app && npm run check`
 Expected: no new errors.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add app/src/lib/SettingsHubView.svelte
@@ -626,13 +626,13 @@ Mapping to apply, per spec §4.2 and D50:
 | `#d9a648`, `#d9b45c` | `--warning` | dirty state |
 | `#e0524a` | `--danger` | errors, close hover |
 
-- [ ] **Step 1: Migrate, one file per commit**
+- [x] **Step 1: Migrate, one file per commit**
 
 For each of the five files, replace the literals in its `<style>` block per the table. Judge each `#3a3a3a` by the property it sets — `background`/`background-color` → `--surface-overlay`; `border`/`border-*-color`/`outline` → `--border`.
 
 Leave untouched: `var(--ws-accent, #4a9eff)` and `var(--row-accent, transparent)` fallbacks, and the `:global(html, body)` reset in `+page.svelte`.
 
-- [ ] **Step 2: Confirm no literals remain in the five files**
+- [x] **Step 2: Confirm no literals remain in the five files**
 
 Run:
 ```bash
@@ -641,16 +641,16 @@ cd app && grep -nE "#[0-9a-fA-F]{3,8}\b" src/routes/+page.svelte src/lib/TitleBa
 ```
 Expected: only the `--ws-accent`/`--row-accent` fallbacks.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run: `cd app && npm test && npm run check`
 Expected: all tests pass; no new errors.
 
-- [ ] **Step 4: Manual visual pass**
+- [x] **Step 4: Manual visual pass**
 
 Launch the app. In Settings → Appearance, switch System → Light → Dark. Confirm for each: the title bar, sidebar, pane tabs and window controls all repaint; the workspace accent stripe and focused-tab indicator still show the workspace's chosen colour; text stays legible throughout. Expect the terminal, editor and all non-beachhead views to stay dark — that is SP3/SP4 (spec §7).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/src/routes/+page.svelte app/src/lib/TitleBar.svelte app/src/lib/Sidebar.svelte \

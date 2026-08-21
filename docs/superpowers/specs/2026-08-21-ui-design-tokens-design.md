@@ -94,6 +94,14 @@ Continuing the log from `2026-08-20-workspace-settings-design.md`
   value: 38 occurrences, serving as both a raised background and a
   hairline border. It becomes `--surface-overlay` in the former case and
   `--border` in the latter, and those diverge in light mode.
+- **D52 — Light elevation runs darker-forward.** Added after the visual
+  pass. The dark theme lightens a surface as it comes forward
+  (`#1e1e1e` base → `#3a3a3a` overlay); mirroring that in light put
+  `--surface-overlay` at `#fff` over a `#fbfbfb` bar, and the title
+  bar's buttons disappeared. Light therefore inverts the direction:
+  `#fff > #fbfbfb > #f4f4f4 > #eee > #ddd`, monotonic, every layer
+  separable. This is the concrete form of D46's "not inverted" — the
+  *ordering* flips too, not only the values.
 - **D51 — The beachhead is the app shell.** Five components, chosen
   because the user always sees them and because between them they
   exercise every token group. Shipping tokens with zero consumers means
