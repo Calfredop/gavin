@@ -21,6 +21,7 @@
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
   import { X, Plus, RotateCw, Kanban, Pin } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import Tooltip from "./Tooltip.svelte";
   import { sessionLabel, folderName } from "./paths";
   import {
@@ -385,18 +386,15 @@
         {/if}
       </button>
     {/each}
-    <button class="new-tab" aria-label="New Tab" title="New Tab" onclick={() => addTab(active)}>
-      <Plus size={14} />
-    </button>
+    <IconButton icon={Plus} label="New Tab" size={14} onclick={() => addTab(active)} />
     {#if activeBoardContext}
-      <button
-        class="new-tab"
-        aria-label="Open context board"
-        title={`Open board · ${activeBoardContext.name}`}
+      <IconButton
+        icon={Kanban}
+        label="Open context board"
+        tip={`Open board · ${activeBoardContext.name}`}
+        size={14}
         onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
-      >
-        <Kanban size={14} />
-      </button>
+      />
     {/if}
   </div>
   <div
@@ -552,15 +550,6 @@
   }
   .close:hover {
     opacity: 1;
-  }
-  .new-tab {
-    background: transparent;
-    border: none;
-    border-top: 2px solid transparent;
-    box-sizing: border-box;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 4px 8px;
   }
   .content {
     position: relative;

@@ -7,6 +7,7 @@
   import { confirmPaneClose } from "./confirmClose";
   import { getActiveWorkspace } from "./workspace";
   import { Columns2, Rows2, X, Square, Grid2x2 } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import WindowControls from "./WindowControls.svelte";
   import { isMacOS } from "./platform";
   import { createDoubleClickTracker, doubleClickAction } from "./titleBarGesture";
@@ -89,20 +90,14 @@
 </script>
 
 {#snippet actions()}
-  <button aria-label="Split Right" title="Split Right" onclick={() => split("row")}>
-    <Columns2 size={16} />
-  </button>
-  <button aria-label="Split Down" title="Split Down" onclick={() => split("column")}>
-    <Rows2 size={16} />
-  </button>
-  <button aria-label="Close Pane" title="Close Pane" onclick={handleClosePane}>
-    <X size={16} />
-  </button>
+  <IconButton icon={Columns2} label="Split Right" variant="filled" size={16} onclick={() => split("row")} />
+  <IconButton icon={Rows2} label="Split Down" variant="filled" size={16} onclick={() => split("column")} />
+  <IconButton icon={X} label="Close Pane" variant="filled" size={16} onclick={handleClosePane} />
   <div class="presets">
     <span>Presets:</span>
-    <button onclick={applySingle}><Square size={14} /> Single</button>
-    <button onclick={applySideBySide}><Columns2 size={14} /> Side by Side</button>
-    <button onclick={applyGrid}><Grid2x2 size={14} /> 2×2 Grid</button>
+    <IconButton icon={Square} label="Single" text="Single" variant="filled" size={14} onclick={applySingle} />
+    <IconButton icon={Columns2} label="Side by Side" text="Side by Side" variant="filled" size={14} onclick={applySideBySide} />
+    <IconButton icon={Grid2x2} label="2×2 Grid" text="2×2 Grid" variant="filled" size={14} onclick={applyGrid} />
   </div>
 {/snippet}
 
@@ -138,20 +133,6 @@
     gap: 8px;
     align-items: center;
     padding: 4px 8px;
-  }
-  .actions button {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: var(--surface-overlay);
-    border: none;
-    color: var(--text);
-    padding: 4px 8px;
-    border-radius: 3px;
-    cursor: pointer;
-  }
-  .actions button:hover {
-    background: var(--surface-selected);
   }
   .presets {
     display: flex;
