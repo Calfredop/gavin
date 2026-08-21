@@ -22,6 +22,9 @@
   import { buildTabMenuEntries } from "./tabMenu";
   import { X, Plus, RotateCw, Kanban, Pin } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import ShortcutHint from "./ui/ShortcutHint.svelte";
+  import { hintMode } from "./shortcutHints";
+  import { hintDigitFor } from "./shortcuts";
   import Tooltip from "./Tooltip.svelte";
   import { sessionLabel, folderName } from "./paths";
   import {
@@ -322,6 +325,14 @@
       >
         {#if isPinnedTab(sessionId)}
           <span class="pin-glyph" title="Pinned"><Pin size={10} /></span>
+        {/if}
+        <!-- Only the focused pane: ⌘-digits act on the focused pane's
+             tabs, so badging any other pane would be a lie. -->
+        {#if $hintMode === "cmd" && isFocused}
+          {@const digit = hintDigitFor(tabIndex, leaf.tabs.length)}
+          {#if digit !== null}
+            <ShortcutHint text={String(digit)} />
+          {/if}
         {/if}
         {#if editingSessionId === sessionId}
           <input

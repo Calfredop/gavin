@@ -13,7 +13,9 @@
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
   import { initPlatform } from "$lib/platform";
-  import { installHintTracking } from "$lib/shortcutHints";
+  import { installHintTracking, hintMode } from "$lib/shortcutHints";
+  import { hintDigitFor } from "$lib/shortcuts";
+  import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
@@ -130,7 +132,7 @@
             <WorkspaceRootControl workspace={activeWorkspace} />
           {/if}
           <div class="tabs">
-            {#each hubViews as view (view.id)}
+            {#each hubViews as view, viewIndex (view.id)}
               <button
                 type="button"
                 class="tab"
@@ -139,6 +141,12 @@
               >
                 <view.icon size={14} />
                 {hubLabel(view, activeAgent.file)}
+                {#if $hintMode === "cmd"}
+                  {@const digit = hintDigitFor(viewIndex, hubViews.length)}
+                  {#if digit !== null}
+                    <ShortcutHint text={String(digit)} />
+                  {/if}
+                {/if}
               </button>
             {/each}
           </div>
