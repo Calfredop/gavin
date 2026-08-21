@@ -15,7 +15,14 @@ import {
   addStage,
   addStep,
   removeStep,
+  detectConflicts,
+  numberConflicts,
+  numbersForStep,
+  numbersForRail,
+  severityForStep,
 } from "./orchestration";
+import type { Conflict } from "./orchestration";
+import type { WorktreeInfo } from "./git";
 import type { Action, Orchestration, Rail } from "./orchestration";
 import type { Board } from "./kanban";
 import type { GavinTree, PlanFileInfo } from "./gavin";
@@ -459,5 +466,227 @@ describe("plan mutators", () => {
     o = removeStep(o, "t1");
     expect(o.stepRuns).toEqual([]);
     expect(o.conflictNotes).toEqual([]);
+  });
+});
+
+const WT: WorktreeInfo[] = [
+  { path: "/x/main", head: "a", branch: "main", isMain: true, locked: false, prunable: false },
+  { path: "/x/wt-a", head: "b", branch: "a", isMain: false, locked: false, prunable: false },
+];
+
+function bound(id: string, worktreePath: string | null, stages: Array<Array<[string, string]>>): Rail {
+  return { ...rail(id, stages), worktreePath };
+}
+
+function orchOf(rails: Rail[], overrides: Partial<Orchestration> = {}): Orchestration {
+  return { ...emptyOrchestration(), rails, ...overrides };
+}
+
+const CARDS = tree([plan("a.md"), plan("b.md"), plan("c.md")]);
+const A = "/ws/.gavin-root/plans/a.md";
+const B = "/ws/.gavin-root/plans/b.md";
+const C = "/ws/.gavin-root/plans/c.md";
+
+describe("detectConflicts — same worktree", () => {
+  it("flags a parallel stage: two agents in one checkout", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", A], ["t2", B]]])]);
+    expect(detectConflicts(o, CARDS, WT)).toEqual([
+      {
+        kind: "same-worktree",
+        scope: "stage",
+        stageId: "r1-s0",
+        severity: "potential",
+        stepIds: ["t1", "t2"],
+        worktreePath: "/x/wt-a",
+      },
+    ]);
+  });
+
+  it("still flags a parallel stage on an UNBOUND rail — it shares the root checkout", () => {
+    const o = orchOf([bound("r1", null, [[["t1", A], ["t2", B]]])]);
+    expect(detectConflicts(o, CARDS, WT)).toContainEqual(
+      expect.objectContaining({ kind: "same-worktree", scope: "stage", worktreePath: "/ws" })
+    );
+  });
+
+  it("does NOT flag different stages of one rail — they are strictly sequential", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", A]], [["t2", B]]])]);
+    expect(detectConflicts(o, CARDS, WT)).toEqual([]);
+  });
+
+  it("flags two rails sharing a worktree, whatever stage each is on", () => {
+    const o = orchOf([
+      bound("r1", "/x/wt-a", [[["t1", A]], [["t2", B]]]),
+      bound("r2", "/x/wt-a", [[["t3", C]]]),
+    ]);
+    const found = detectConflicts(o, CARDS, WT);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      kind: "same-worktree",
+      scope: "rails",
+      stageId: null,
+      worktreePath: "/x/wt-a",
+    });
+    expect(found[0].kind === "same-worktree" && [...found[0].stepIds].sort()).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("says nothing when every rail is on its own worktree", () => {
+    const o = orchOf([
+      bound("r1", "/x/wt-a", [[["t1", A]], [["t2", B]]]),
+      bound("r2", "/x/main", [[["t3", C]]]),
+    ]);
+    expect(detectConflicts(o, CARDS, WT)).toEqual([]);
+  });
+
+  it("collides two unbound rails on the ROOT checkout, not on their cards' folders", () => {
+    const o = orchOf([bound("r1", null, [[["t1", A]]]), bound("r2", null, [[["t2", B]]])]);
+    const found = detectConflicts(o, CARDS, WT);
+    // /ws, the tree's rootPath -- NOT /ws/.gavin-root, which is merely a
+    // subdirectory of that same working tree (spec O13).
+    expect(found.some((c) => c.kind === "same-worktree" && c.worktreePath === "/ws")).toBe(true);
+    expect(found.some((c) => c.kind === "same-worktree" && c.worktreePath === "/ws/.gavin-root")).toBe(false);
+  });
+
+  it("ignores done steps", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", A], ["t2", B]]])], {
+      stepRuns: [{ stepId: "t1", state: "done", sessionId: null, reason: null }],
+    });
+    expect(detectConflicts(o, CARDS, WT)).toEqual([]);
+  });
+
+  it("is live when two of the group are actually running", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", A], ["t2", B]]])], {
+      stepRuns: [
+        { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+        { stepId: "t2", state: "running", sessionId: "s2", reason: null },
+      ],
+    });
+    expect(detectConflicts(o, CARDS, WT)[0].severity).toBe("live");
+  });
+
+  it("is only potential when a single step of the group is running", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", A], ["t2", B]]])], {
+      stepRuns: [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }],
+    });
+    expect(detectConflicts(o, CARDS, WT)[0].severity).toBe("potential");
+  });
+});
+
+describe("detectConflicts — the other kinds", () => {
+  it("flags the same card placed on two steps", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", A]], [["t2", A]]])]);
+    expect(detectConflicts(o, CARDS, WT)).toContainEqual({
+      kind: "duplicate-card",
+      severity: "potential",
+      stepIds: ["t1", "t2"],
+      cardPath: A,
+    });
+  });
+
+  it("flags a rail whose bound worktree is gone", () => {
+    const o = orchOf([bound("r1", "/x/vanished", [[["t1", A]]])]);
+    expect(detectConflicts(o, CARDS, WT)).toContainEqual({
+      kind: "worktree-missing",
+      severity: "potential",
+      railId: "r1",
+      worktreePath: "/x/vanished",
+    });
+  });
+
+  it("suppresses worktree-missing while the worktree list is unknown", () => {
+    const o = orchOf([bound("r1", "/x/vanished", [[["t1", A]]])]);
+    expect(detectConflicts(o, CARDS, null).some((c) => c.kind === "worktree-missing")).toBe(false);
+  });
+
+  it("flags an unbound rail that has steps", () => {
+    const o = orchOf([bound("r1", null, [[["t1", A]]])]);
+    expect(detectConflicts(o, CARDS, WT)).toContainEqual({
+      kind: "rail-unbound",
+      severity: "potential",
+      railId: "r1",
+    });
+  });
+
+  it("does not flag an unbound rail with no steps — that is just unfinished setup", () => {
+    const o = orchOf([bound("r1", null, [])]);
+    expect(detectConflicts(o, CARDS, WT)).toEqual([]);
+  });
+
+  it("surfaces the agent's declared notes", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", A]], [["t2", B]]])], {
+      conflictNotes: [{ id: "n1", stepIds: ["t1", "t2"], note: "both rewrite GitDiff.svelte" }],
+    });
+    expect(detectConflicts(o, CARDS, WT)).toContainEqual({
+      kind: "declared",
+      severity: "potential",
+      id: "n1",
+      stepIds: ["t1", "t2"],
+      note: "both rewrite GitDiff.svelte",
+    });
+  });
+});
+
+describe("numberConflicts", () => {
+  it("puts live first, then orders by kind, and numbers from one", () => {
+    const conflicts: Conflict[] = [
+      { kind: "rail-unbound", severity: "potential", railId: "r9" },
+      { kind: "declared", severity: "potential", id: "n1", stepIds: ["t1"], note: "x" },
+      {
+        kind: "same-worktree",
+        scope: "stage",
+        stageId: "s1",
+        severity: "live",
+        stepIds: ["t1", "t2"],
+        worktreePath: "/x/wt-a",
+      },
+      { kind: "duplicate-card", severity: "potential", stepIds: ["t3", "t4"], cardPath: A },
+    ];
+    expect(numberConflicts(conflicts).map((n) => [n.n, n.conflict.kind])).toEqual([
+      [1, "same-worktree"],
+      [2, "duplicate-card"],
+      [3, "rail-unbound"],
+      [4, "declared"],
+    ]);
+  });
+
+  it("is stable for two conflicts of the same kind and severity", () => {
+    const conflicts: Conflict[] = [
+      { kind: "duplicate-card", severity: "potential", stepIds: ["t9"], cardPath: B },
+      { kind: "duplicate-card", severity: "potential", stepIds: ["t1"], cardPath: A },
+    ];
+    expect(numberConflicts(conflicts).map((n) => n.conflict)).toEqual([
+      { kind: "duplicate-card", severity: "potential", stepIds: ["t1"], cardPath: A },
+      { kind: "duplicate-card", severity: "potential", stepIds: ["t9"], cardPath: B },
+    ]);
+  });
+});
+
+describe("conflict lookups", () => {
+  const numbered = numberConflicts([
+    {
+      kind: "same-worktree",
+      scope: "stage",
+      stageId: "s1",
+      severity: "live",
+      stepIds: ["t1", "t2"],
+      worktreePath: "/x/wt-a",
+    },
+    { kind: "duplicate-card", severity: "potential", stepIds: ["t2", "t3"], cardPath: A },
+    { kind: "rail-unbound", severity: "potential", railId: "r2" },
+  ]);
+
+  it("collects every badge a step belongs to", () => {
+    expect(numbersForStep(numbered, "t2")).toEqual([1, 2]);
+    expect(numbersForStep(numbered, "t7")).toEqual([]);
+  });
+
+  it("collects rail-level badges separately", () => {
+    expect(numbersForRail(numbered, "r2")).toEqual([3]);
+  });
+
+  it("takes the highest severity when a step is in several conflicts", () => {
+    expect(severityForStep(numbered, "t2")).toBe("live");
+    expect(severityForStep(numbered, "t3")).toBe("potential");
+    expect(severityForStep(numbered, "t7")).toBeNull();
   });
 });

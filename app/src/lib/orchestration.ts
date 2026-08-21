@@ -368,3 +368,302 @@ export function removeStep(orch: Orchestration, stepId: string): Orchestration {
   }));
   return sweepOrphans({ ...orch, rails });
 }
+
+// ---- Conflicts -------------------------------------------------------------
+// Computed at render time from the plan, the tree and the worktree list;
+// nothing here is persisted. Gavin never BLOCKS on any of this (spec
+// O4) -- the box and the colouring are the whole intervention.
+
+export type ConflictSeverity = "live" | "potential";
+
+export type Conflict =
+  | {
+      kind: "same-worktree";
+      /// "stage" -- a parallel stage, two agents deliberately put in one
+      /// checkout. "rails" -- two or more rails bound to one checkout,
+      /// which have no ordering guarantee between them.
+      scope: "stage" | "rails";
+      /// The stage to split, for the box's "Make sequential" repair.
+      /// Null for scope "rails", which no single stage can fix.
+      stageId: string | null;
+      severity: ConflictSeverity;
+      stepIds: string[];
+      worktreePath: string;
+    }
+  | { kind: "duplicate-card"; severity: "potential"; stepIds: string[]; cardPath: string }
+  | { kind: "worktree-missing"; severity: "potential"; railId: string; worktreePath: string }
+  | { kind: "rail-unbound"; severity: "potential"; railId: string }
+  | { kind: "declared"; severity: "potential"; id: string; stepIds: string[]; note: string };
+
+export interface NumberedConflict {
+  /// The badge, 1-based. Shared by the box row and every chip in it --
+  /// pairing is carried by this number, never by a hue (spec O9).
+  n: number;
+  conflict: Conflict;
+}
+
+const KIND_ORDER: Conflict["kind"][] = [
+  "same-worktree",
+  "duplicate-card",
+  "worktree-missing",
+  "rail-unbound",
+  "declared",
+];
+
+export function conflictStepIds(c: Conflict): string[] {
+  return c.kind === "worktree-missing" || c.kind === "rail-unbound" ? [] : c.stepIds;
+}
+
+export function conflictRailId(c: Conflict): string | null {
+  return c.kind === "worktree-missing" || c.kind === "rail-unbound" ? c.railId : null;
+}
+
+/// WHICH WORKING TREE a rail's steps edit -- the isolation question,
+/// and the only thing that makes two steps conflict (spec O13).
+///
+/// Deliberately NOT effectiveWorktree, which answers where an agent's
+/// shell starts. An unbound rail launches each step in its card's
+/// contextFolder, but that folder is a SUBDIRECTORY of the root
+/// checkout, not a checkout of its own -- keying conflicts on it would
+/// report isolation that does not exist, and two unbound rails editing
+/// the same repo would look safe.
+export function conflictCheckout(rail: Rail, tree: GavinTree | undefined): string | null {
+  return rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
+}
+
+interface PlacedStep {
+  stepId: string;
+  railId: string;
+  stageId: string;
+  cardPath: string;
+  checkout: string | null;
+  state: StepState;
+}
+
+function placedSteps(orch: Orchestration, tree: GavinTree | undefined): PlacedStep[] {
+  const out: PlacedStep[] = [];
+  for (const rail of orch.rails) {
+    const checkout = conflictCheckout(rail, tree);
+    for (const stage of rail.stages) {
+      for (const step of stage.steps) {
+        out.push({
+          stepId: step.id,
+          railId: rail.id,
+          stageId: stage.id,
+          cardPath: step.cardPath,
+          checkout,
+          state: stepStateOf(orch, step.id),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/// live when at least TWO of the group are actually running right now --
+/// one running step cannot collide with anything by itself.
+function severityOf(group: PlacedStep[]): ConflictSeverity {
+  return group.filter((s) => s.state === "running").length >= 2 ? "live" : "potential";
+}
+
+/// `tree` supplies the root checkout for unbound rails; `worktrees` is
+/// null while the refs snapshot is still loading, which must suppress
+/// `worktree-missing` rather than read as "gone".
+export function detectConflicts(
+  orch: Orchestration,
+  tree: GavinTree | undefined,
+  worktrees: WorktreeInfo[] | null
+): Conflict[] {
+  const steps = placedSteps(orch, tree).filter((s) => s.state !== "done");
+  const conflicts: Conflict[] = [];
+
+  // 1. A parallel stage IS a same-worktree conflict by construction: its
+  // steps share the rail's checkout. That is intended, and saying so out
+  // loud beats pretending it is safe (spec §5).
+  const byStage = new Map<string, PlacedStep[]>();
+  for (const s of steps) {
+    if (!s.checkout) continue;
+    const group = byStage.get(s.stageId) ?? [];
+    group.push(s);
+    byStage.set(s.stageId, group);
+  }
+  for (const [stageId, group] of byStage) {
+    if (group.length < 2) continue;
+    conflicts.push({
+      kind: "same-worktree",
+      scope: "stage",
+      stageId,
+      severity: severityOf(group),
+      stepIds: group.map((s) => s.stepId),
+      worktreePath: group[0].checkout as string,
+    });
+  }
+
+  // 2. Across rails there is NO ordering guarantee, so every not-done
+  // step in a shared checkout is a potential collision with every other.
+  // Reported once per checkout rather than as a pair explosion. Rails on
+  // DIFFERENT checkouts never land in the same group, which is the whole
+  // of spec O13: isolation buys silence.
+  const byCheckout = new Map<string, PlacedStep[]>();
+  for (const s of steps) {
+    if (!s.checkout) continue;
+    const group = byCheckout.get(s.checkout) ?? [];
+    group.push(s);
+    byCheckout.set(s.checkout, group);
+  }
+  for (const [worktreePath, group] of byCheckout) {
+    if (new Set(group.map((s) => s.railId)).size < 2) continue;
+    conflicts.push({
+      kind: "same-worktree",
+      scope: "rails",
+      stageId: null,
+      severity: severityOf(group),
+      stepIds: group.map((s) => s.stepId),
+      worktreePath,
+    });
+  }
+
+  // 3. One card on two steps would be run twice.
+  const byCard = new Map<string, PlacedStep[]>();
+  for (const s of steps) {
+    const group = byCard.get(s.cardPath) ?? [];
+    group.push(s);
+    byCard.set(s.cardPath, group);
+  }
+  for (const [cardPath, group] of byCard) {
+    if (group.length < 2) continue;
+    conflicts.push({
+      kind: "duplicate-card",
+      severity: "potential",
+      stepIds: group.map((s) => s.stepId),
+      cardPath,
+    });
+  }
+
+  // 4/5. Rail-level bindings. `worktrees === null` means the refs
+  // snapshot has not loaded -- unknown must never read as "gone".
+  const known = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
+  for (const rail of orch.rails) {
+    if (rail.worktreePath) {
+      if (known && !known.has(rail.worktreePath)) {
+        conflicts.push({
+          kind: "worktree-missing",
+          severity: "potential",
+          railId: rail.id,
+          worktreePath: rail.worktreePath,
+        });
+      }
+    } else if (rail.stages.some((s) => s.steps.length > 0)) {
+      // An EMPTY unbound rail is just setup you have not finished.
+      conflicts.push({ kind: "rail-unbound", severity: "potential", railId: rail.id });
+    }
+  }
+
+  // 6. The agent's own judgement, rendered beside the computed ones.
+  for (const note of orch.conflictNotes) {
+    conflicts.push({
+      kind: "declared",
+      severity: "potential",
+      id: note.id,
+      stepIds: note.stepIds,
+      note: note.note,
+    });
+  }
+
+  return conflicts;
+}
+
+/// Live first, then by kind, then stably by the first id involved --
+/// so a badge keeps its number across re-renders that changed nothing.
+export function numberConflicts(conflicts: Conflict[]): NumberedConflict[] {
+  const keyOf = (c: Conflict) => conflictStepIds(c)[0] ?? conflictRailId(c) ?? "";
+  return [...conflicts]
+    .sort((a, b) => {
+      if (a.severity !== b.severity) return a.severity === "live" ? -1 : 1;
+      const ka = KIND_ORDER.indexOf(a.kind);
+      const kb = KIND_ORDER.indexOf(b.kind);
+      if (ka !== kb) return ka - kb;
+      return keyOf(a).localeCompare(keyOf(b));
+    })
+    .map((conflict, i) => ({ n: i + 1, conflict }));
+}
+
+export function numbersForStep(numbered: NumberedConflict[], stepId: string): number[] {
+  return numbered.filter((x) => conflictStepIds(x.conflict).includes(stepId)).map((x) => x.n);
+}
+
+export function numbersForRail(numbered: NumberedConflict[], railId: string): number[] {
+  return numbered.filter((x) => conflictRailId(x.conflict) === railId).map((x) => x.n);
+}
+
+function highestSeverity(matches: NumberedConflict[]): ConflictSeverity | null {
+  if (matches.length === 0) return null;
+  return matches.some((x) => x.conflict.severity === "live") ? "live" : "potential";
+}
+
+export function severityForStep(
+  numbered: NumberedConflict[],
+  stepId: string
+): ConflictSeverity | null {
+  return highestSeverity(numbered.filter((x) => conflictStepIds(x.conflict).includes(stepId)));
+}
+
+export function severityForRail(
+  numbered: NumberedConflict[],
+  railId: string
+): ConflictSeverity | null {
+  return highestSeverity(numbered.filter((x) => conflictRailId(x.conflict) === railId));
+}
+
+/// One line for the box. Titles come from the tree where the card
+/// resolves, and fall back to the file name -- a conflict about a
+/// missing card must still be describable.
+export function describeConflict(
+  c: Conflict,
+  cards: Map<string, CardEntry>,
+  orch: Orchestration
+): string {
+  const titleOfStep = (stepId: string): string => {
+    for (const rail of orch.rails) {
+      for (const stage of rail.stages) {
+        for (const step of stage.steps) {
+          if (step.id !== stepId) continue;
+          return cards.get(step.cardPath)?.plan.title ?? (step.cardPath.split("/").pop() ?? step.cardPath);
+        }
+      }
+    }
+    return stepId;
+  };
+  const nameOfRail = (railId: string): string =>
+    orch.rails.find((r) => r.id === railId)?.name ?? railId;
+  const list = (ids: string[]): string => ids.map((id) => `“${titleOfStep(id)}”`).join(", ");
+  const railNamesFor = (stepIds: string[]): string[] => {
+    const names = new Set<string>();
+    for (const rail of orch.rails) {
+      for (const stage of rail.stages) {
+        for (const step of stage.steps) {
+          if (stepIds.includes(step.id)) names.add(rail.name);
+        }
+      }
+    }
+    return [...names];
+  };
+
+  switch (c.kind) {
+    case "same-worktree": {
+      if (c.scope === "stage") {
+        return `${list(c.stepIds)} run in parallel in one checkout (${c.worktreePath}) — run them one after another, or move one to a rail with its own worktree`;
+      }
+      const rails = railNamesFor(c.stepIds);
+      return `rails ${rails.map((n) => `“${n}”`).join(" and ")} share ${c.worktreePath}: ${list(c.stepIds)}`;
+    }
+    case "duplicate-card":
+      return `the same card is on two steps: ${list(c.stepIds)}`;
+    case "worktree-missing":
+      return `rail “${nameOfRail(c.railId)}” points at ${c.worktreePath}, which is not a worktree of this repo`;
+    case "rail-unbound":
+      return `rail “${nameOfRail(c.railId)}” has steps but no worktree — they will run in each card's own folder`;
+    case "declared":
+      return c.note;
+  }
+}
