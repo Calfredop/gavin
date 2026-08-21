@@ -118,6 +118,14 @@ mod smoketest_tests {
         assert_eq!(workspaces[0].root_path.as_deref(), Some("/tmp/scratch"));
     }
 
+    /// True when the `---`-delimited block declares `key:`.
+    fn frontmatter_has_key(body: &str, key: &str) -> bool {
+        body.lines()
+            .skip(1)
+            .take_while(|l| *l != "---")
+            .any(|l| l.trim_start().starts_with(&format!("{key}:")))
+    }
+
     // A typo like "In progress" would still seed fine, but the board
     // would invent an auto column for it and three checklist items would
     // quietly test the wrong thing. Pin the exact statuses.
@@ -135,6 +143,7 @@ mod smoketest_tests {
             statuses,
             [
                 "Done",
+                "In Progress", // auth-rework, the nesting parent
                 "In Progress",
                 "In Progress",
                 "In Progress",
@@ -144,7 +153,24 @@ mod smoketest_tests {
                 "To Do",
                 "To Do",
                 "To Do",
+                "To Do", // auth-key-rotation, freed from its parent
+                "To Do", // scratch-note
             ]
+        );
+        // The two genuinely nested cards carry no status at all -- that is
+        // what puts them inside the parent card instead of a column.
+        let nested: Vec<&str> = SEED_FILES
+            .iter()
+            .filter(|(rel, body)| rel.contains("/plans/") && body.contains("parent: auth-rework.md"))
+            // Frontmatter only: the body prose legitimately mentions
+            // statuses, and a substring match over the whole file would
+            // read that as a key.
+            .filter(|(_, body)| !frontmatter_has_key(body, "status"))
+            .map(|(rel, _)| *rel)
+            .collect();
+        assert_eq!(
+            nested,
+            [".gavin-root/plans/auth-token-refresh.md", ".gavin-root/plans/auth-cookie-flags.md"]
         );
     }
 
@@ -1498,6 +1524,55 @@ const SEED_FILES: &[(&str, &str)] = &[
         ".gavin-root/plans/shipped-note.md",
         "---\ntitle: Already done\nstatus: Done\n---\n# Already done\n\n\
          Gives the Done column a card, so column counts on the home are not all zero.\n",
+    ),
+    // -- Card nesting (card-model spec). A plan with a checklist for its
+    // n/m progress, two tasks nested inside it (parent + NO status), one
+    // freed into a column (parent + status, wearing the plan's chip), a
+    // task pointing at a parent that does not exist, and a note -- the
+    // kind that must refuse to nest at all.
+    (
+        ".gavin-root/plans/auth-rework.md",
+        "---\ntitle: Auth rework\nkind: plan\nstatus: In Progress\npriority: high\n\
+         labels: backend, security\n---\n# Auth rework\n\n\
+         The parent card for the nesting fixtures. Expand it to see its children.\n\n\
+         - [x] Audit the current token flow\n\
+         - [x] Pick a refresh strategy\n\
+         - [ ] Rotate signing keys\n\
+         - [ ] Migrate existing sessions\n",
+    ),
+    (
+        ".gavin-root/plans/auth-token-refresh.md",
+        "---\ntitle: Token refresh\nkind: task\nparent: auth-rework.md\n---\n\
+         # Token refresh\n\n\
+         A parent and no status line, so this renders INSIDE the Auth rework\n\
+         card rather than in any column. Give it a status to free it.\n",
+    ),
+    (
+        ".gavin-root/plans/auth-cookie-flags.md",
+        "---\ntitle: Cookie flags\nkind: task\nparent: auth-rework.md\n---\n\
+         # Cookie flags\n\n\
+         A second nested child, so the expandable area has more than one row\n\
+         and un-parenting one leaves the other in place.\n",
+    ),
+    (
+        ".gavin-root/plans/auth-key-rotation.md",
+        "---\ntitle: Key rotation\nkind: task\nstatus: To Do\nparent: auth-rework.md\n\
+         priority: urgent\n---\n# Key rotation\n\n\
+         Parent AND status: freed into its column, still wearing the parent\n\
+         plan's title as a chip.\n",
+    ),
+    (
+        ".gavin-root/plans/orphan-task.md",
+        "---\ntitle: Orphaned task\nkind: task\nparent: no-such-plan.md\n---\n\
+         # Orphaned task\n\n\
+         Points at a parent that does not exist: must degrade visibly with a\n\
+         warning, never vanish from the board.\n",
+    ),
+    (
+        ".gavin-root/plans/scratch-note.md",
+        "---\ntitle: Scratch note\nkind: note\nstatus: To Do\n---\n# Scratch note\n\n\
+         A note. Notes refuse to nest -- dragging this onto a plan card must not\n\
+         parent it.\n",
     ),
     // -- Root docs and specs: the explorer's tree groups are empty
     // without these, which reads like a bug rather than an empty folder.

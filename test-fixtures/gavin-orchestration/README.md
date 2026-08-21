@@ -52,6 +52,14 @@ so a mangled file is one click from healthy.
     drag-one/two/three.md     In Progress · urgent/medium/low
                                                      → drag-placeholder, plan-reorder
     shipped-note.md           Done                   → non-zero Done count
+    auth-rework.md            plan · In Progress     → nesting parent; 2/4 checklist,
+                              labels: backend, security   labels chips
+    auth-token-refresh.md     task · parent, NO status → renders INSIDE auth-rework
+    auth-cookie-flags.md      task · parent, NO status → second nested child
+    auth-key-rotation.md      task · parent + To Do    → freed into its column,
+                                                         wearing the parent's chip
+    orphan-task.md            task · parent missing    → degrades visibly with ⚠
+    scratch-note.md           note · To Do             → notes refuse to nest
   docs/architecture.md, glossary.md                  → explorer Docs group
   specs/board-behaviour.md                           → explorer Specs group
 src/auth/.gavin/
@@ -66,9 +74,14 @@ src/api/                      NO .gavin              → explorer's "+ context" 
 big.log                       just over 1 MiB        → edit-truncated (no Edit mode)
 ```
 
-Board after seeding: **To Do 4 · In Progress 4 · Done 1**, plus a dashed auto
-column **Shipped 1**. Ten plans across three contexts — those are the numbers the
-home's tiles and board panel should show.
+Board after seeding: **To Do 6 · In Progress 5 · Done 1**, plus a dashed auto
+column **Shipped 1**. Sixteen cards across three contexts — those are the numbers
+the home's tiles and board panel should show.
+
+**The two nested children are deliberately absent from every column**: a card
+with a `parent:` and no `status:` renders inside its parent card, which is the
+whole nesting rule. Give one a status and it moves into that column, keeping the
+parent chip.
 
 **Deliberately absent:** `CLAUDE.md` (the `edit-creates` item needs the first
 save to create it) and `.mcp.json` (the `mcp-setup` item writes it). Don't add
