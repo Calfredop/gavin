@@ -5,6 +5,8 @@
 
 import type { Board, Column } from "./kanban";
 import type { GavinTree, PlanFileInfo } from "./gavin";
+import type { WorktreeInfo } from "./git";
+import { slugStatus } from "./planBoard";
 
 export interface Step {
   id: string;
@@ -126,4 +128,139 @@ export function firstUnfinishedStageId(rail: Rail, orch: Orchestration): string 
     if (!stage.steps.every((s) => stepStateOf(orch, s.id) === "done")) return stage.id;
   }
   return null;
+}
+
+/// What the reactive layer must DO. nextActions decides; executing is
+/// orchestrationState.ts's job alone.
+export type Action =
+  | { kind: "launch"; stepId: string }
+  | { kind: "markDone"; stepId: string }
+  | { kind: "stall"; stepId: string; reason: string }
+  | { kind: "advance"; railId: string; stageId: string }
+  | { kind: "complete"; railId: string };
+
+/// Why a pending step cannot be launched right now, or null.
+/// `knownWorktrees` is null when the worktree list has not loaded yet --
+/// unknown must never look like "gone", or a cold start would stall
+/// every bound rail.
+function launchBlocker(
+  rail: Rail,
+  entry: CardEntry | undefined,
+  knownWorktrees: Set<string> | null
+): string | null {
+  if (!entry) return "card file is missing";
+  if (entry.plan.kind === "note") return "notes are not runnable";
+  if (rail.worktreePath && knownWorktrees && !knownWorktrees.has(rail.worktreePath)) {
+    return `worktree ${rail.worktreePath} is gone`;
+  }
+  return null;
+}
+
+/// The scheduler (spec §4.2). Pure and total: same inputs, same list.
+/// Rules run in order per stage -- mark done, launch or stall pending,
+/// stall a running step whose session died -- and a fully-done stage
+/// advances within the same tick, so a run of already-finished stages
+/// collapses in one pass.
+export function nextActions(
+  orch: Orchestration,
+  board: Board,
+  tree: GavinTree | undefined,
+  worktrees: WorktreeInfo[] | null,
+  liveSessionIds: Set<string>
+): Action[] {
+  const actions: Action[] = [];
+  const cards = cardIndex(tree);
+  const done = doneColumn(board);
+  const doneSlug = done ? slugStatus(done.name) : null;
+  const knownWorktrees = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
+  const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
+
+  for (const rail of orch.rails) {
+    if (railStateOf(orch, rail.id) !== "running") continue;
+
+    // Step states simulated forward within this tick, so an advance can
+    // cascade without re-entering the function.
+    const simulated = new Map<string, StepState>();
+    for (const stage of rail.stages) {
+      for (const step of stage.steps) simulated.set(step.id, stepStateOf(orch, step.id));
+    }
+
+    let stageId = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
+    let stalled = false;
+
+    for (let guard = 0; guard <= rail.stages.length; guard++) {
+      const stage = rail.stages.find((s) => s.id === stageId);
+      if (!stage) {
+        actions.push({ kind: "complete", railId: rail.id });
+        break;
+      }
+
+      for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
+        const state = simulated.get(step.id);
+        const entry = cards.get(step.cardPath);
+
+        // Rule 1 -- the card reached the done column. Checked before
+        // launching, so re-arming a rail is idempotent, and before the
+        // dead-session check, so an agent that finished the card and
+        // then quit counts as done, not stalled.
+        if (
+          (state === "pending" || state === "running") &&
+          doneSlug &&
+          entry &&
+          slugStatus(entry.plan.status ?? "") === doneSlug
+        ) {
+          actions.push({ kind: "markDone", stepId: step.id });
+          simulated.set(step.id, "done");
+          continue;
+        }
+
+        // Rule 2 -- launch a pending step, or stall it with a reason.
+        if (state === "pending") {
+          const reason = launchBlocker(rail, entry, knownWorktrees);
+          if (reason) {
+            actions.push({ kind: "stall", stepId: step.id, reason });
+            simulated.set(step.id, "stalled");
+            stalled = true;
+          } else {
+            actions.push({ kind: "launch", stepId: step.id });
+            simulated.set(step.id, "running");
+          }
+          continue;
+        }
+
+        // Rule 3 -- a running step whose session is gone (spec O6).
+        if (state === "running") {
+          const sessionId = runByStep.get(step.id)?.sessionId ?? null;
+          if (sessionId && !liveSessionIds.has(sessionId)) {
+            actions.push({
+              kind: "stall",
+              stepId: step.id,
+              reason: `agent exited before the card reached ${done?.name ?? "the done column"}`,
+            });
+            simulated.set(step.id, "stalled");
+            stalled = true;
+          }
+        }
+      }
+
+      // Rule 5 -- any stall this tick pauses the rail; the executor
+      // writes that, and we stop scheduling here.
+      if (stalled) break;
+
+      // Rule 4 -- a fully-done stage advances. An empty stage is
+      // vacuously done, so it is stepped over rather than hanging.
+      if (!stage.steps.every((s) => simulated.get(s.id) === "done")) break;
+      const next = rail.stages
+        .filter((s) => s.position > stage.position)
+        .sort((a, b) => a.position - b.position)[0];
+      if (!next) {
+        actions.push({ kind: "complete", railId: rail.id });
+        break;
+      }
+      actions.push({ kind: "advance", railId: rail.id, stageId: next.id });
+      stageId = next.id;
+    }
+  }
+
+  return actions;
 }
