@@ -76,7 +76,7 @@ Checked against the code before writing this plan — do not re-derive:
 **Interfaces:**
 - Produces: `AgentProfile.prompt_arg: bool`; `IntegrationResult { written: Vec<String>, skipped: Vec<(String, String)> }`; `setup_agent_integration(root_path) -> Result<IntegrationResult, String>`.
 
-- [ ] **Step 1: Write the failing tests** in `agent_setup.rs`'s test module:
+- [x] **Step 1: Write the failing tests** in `agent_setup.rs`'s test module:
 
 ```rust
     #[test]
@@ -136,7 +136,7 @@ Checked against the code before writing this plan — do not re-derive:
     }
 ```
 
-- [ ] **Step 2: Rewrite the test that encodes the old contract.**
+- [x] **Step 2: Rewrite the test that encodes the old contract.**
 
 `setup_refuses_a_profile_with_no_mcp_layout` asserts `setup_agent_integration(...)` returns `Err` naming "Codex CLI". That is exactly what W4 reverses. **Rewrite it, do not delete it** — the surviving rule is that a *missing root* still errors:
 
@@ -151,12 +151,12 @@ Checked against the code before writing this plan — do not re-derive:
     }
 ```
 
-- [ ] **Step 3: Run — expect failure.**
+- [x] **Step 3: Run — expect failure.**
 
 Run: `cargo test -p app agent_setup`
 Expected: FAIL — `IntegrationResult` not found, `prompt_arg` no field, `instructions_block_for` not found.
 
-- [ ] **Step 4: Add `prompt_arg` to the profile table.**
+- [x] **Step 4: Add `prompt_arg` to the profile table.**
 
 Add the field to `AgentProfile`:
 
@@ -172,7 +172,7 @@ Then run `cargo build -p app` and add `prompt_arg: <value>` to each of the **six
 
 Add `pub prompt_arg: bool` to `AgentProfileDto` and `prompt_arg: p.prompt_arg` to the mapping in `agent_profiles()`.
 
-- [ ] **Step 5: Two block variants from one source.**
+- [x] **Step 5: Two block variants from one source.**
 
 Replace the single `CLAUDE_MD_BLOCK` const with a selector. Keep the existing constant's text as the pointer variant so claude-code's output is byte-identical to today:
 
@@ -215,7 +215,7 @@ fn write_instructions_block(
 
 …leaving the rest of that function exactly as it is. Update its existing test `instructions_block_appends_replaces_and_never_touches_the_rest` to pass `BLOCK_WITH_SKILL` as the third argument — its assertions stay valid.
 
-- [ ] **Step 6: Split the command.**
+- [x] **Step 6: Split the command.**
 
 ```rust
 /// What a setup run wrote, and what it could not. Rendered verbatim by
@@ -279,7 +279,7 @@ pub fn setup_agent_integration(root_path: String) -> Result<IntegrationResult, S
 }
 ```
 
-- [ ] **Step 7: Fix the one frontend caller.**
+- [x] **Step 7: Fix the one frontend caller.**
 
 `backend.ts`:
 
@@ -306,9 +306,9 @@ export function setupAgentIntegration(rootPath: string): Promise<IntegrationResu
         : `Wrote: ${wrote} — re-run any time to update.`;
 ```
 
-- [ ] **Step 8: Run** — `cargo test -p app` green, `npx svelte-check` 0 errors.
+- [x] **Step 8: Run** — `cargo test -p app` green, `npx svelte-check` 0 errors.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add app && git commit -m "feat(wizard): integration degrades honestly instead of refusing"
@@ -326,7 +326,7 @@ git add app && git commit -m "feat(wizard): integration degrades honestly instea
 - Consumes: `AgentProfile`, `profile_by_id`, `read_profile_id`, `resolved_instructions_file` (Task 1).
 - Produces: `compose_agent_prompt(root_path: String, flow: String) -> Result<String, String>` where `flow` is `"prd"` or `"agent-file"`.
 
-- [ ] **Step 1: Write `gavin_prd_skill.md`**, matching `gavin_skill.md`'s frontmatter format:
+- [x] **Step 1: Write `gavin_prd_skill.md`**, matching `gavin_skill.md`'s frontmatter format:
 
 ```markdown
 ---
@@ -361,7 +361,7 @@ not what sounds good.
   screen reads.
 ```
 
-- [ ] **Step 2: Write `gavin_agent_file_skill.md`:**
+- [x] **Step 2: Write `gavin_agent_file_skill.md`:**
 
 ```markdown
 ---
@@ -392,7 +392,7 @@ that are load-bearing, and the traps.
 - Do not include secrets, tokens, or anything machine-specific.
 ```
 
-- [ ] **Step 3: Write the failing tests:**
+- [x] **Step 3: Write the failing tests:**
 
 ```rust
     #[test]
@@ -457,9 +457,9 @@ that are load-bearing, and the traps.
     }
 ```
 
-- [ ] **Step 4: Run — expect failure.** `cargo test -p app agent_setup` → `compose_agent_prompt` not found.
+- [x] **Step 4: Run — expect failure.** `cargo test -p app agent_setup` → `compose_agent_prompt` not found.
 
-- [ ] **Step 5: Implement.**
+- [x] **Step 5: Implement.**
 
 ```rust
 const PRD_SKILL_MD: &str = include_str!("gavin_prd_skill.md");
@@ -526,16 +526,16 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
 }
 ```
 
-- [ ] **Step 6: Register** in `lib.rs`, after `agent_setup::move_agent_file`:
+- [x] **Step 6: Register** in `lib.rs`, after `agent_setup::move_agent_file`:
 
 ```rust
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt
 ```
 
-- [ ] **Step 7: Run** — `cargo test -p app` green.
+- [x] **Step 7: Run** — `cargo test -p app` green.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add app/src-tauri && git commit -m "feat(wizard): step skills for the agent-driven PRD and agent-file flows"
@@ -551,7 +551,7 @@ git add app/src-tauri && git commit -m "feat(wizard): step skills for the agent-
 **Interfaces:**
 - Produces: `SetupStep`, `SetupProgress`, `setupProgress()`, `applyPrdSections()`, `agentFlowAvailable()`, `PRD_PLACEHOLDERS`.
 
-- [ ] **Step 1: Write the failing tests** (`setupWizard.test.ts`):
+- [x] **Step 1: Write the failing tests** (`setupWizard.test.ts`):
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -679,9 +679,9 @@ describe("agentFlowAvailable", () => {
 });
 ```
 
-- [ ] **Step 2: Run — expect failure.** `npx vitest run src/lib/setupWizard.test.ts` → cannot resolve `./setupWizard`.
+- [x] **Step 2: Run — expect failure.** `npx vitest run src/lib/setupWizard.test.ts` → cannot resolve `./setupWizard`.
 
-- [ ] **Step 3: Implement:**
+- [x] **Step 3: Implement:**
 
 ```typescript
 export type SetupStep = "agent" | "integration" | "prd" | "launch";
@@ -772,9 +772,9 @@ export function agentFlowAvailable(profile: { promptArg: boolean } | undefined):
 }
 ```
 
-- [ ] **Step 4: Run** — green.
+- [x] **Step 4: Run** — green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/src/lib/setupWizard.ts app/src/lib/setupWizard.test.ts && git commit -m "feat(wizard): derived setup progress and PRD section application"
@@ -791,7 +791,7 @@ git add app/src/lib/setupWizard.ts app/src/lib/setupWizard.test.ts && git commit
 - Consumes: `compose_agent_prompt` (Task 2), `agentFlowAvailable` (Task 3).
 - Produces: `backend.composeAgentPrompt()`, `startMainAgentWithPrompt(workspaceId, prompt)`; `AgentProfileInfo.promptArg`.
 
-- [ ] **Step 1: Add the wrapper** (`backend.ts`):
+- [x] **Step 1: Add the wrapper** (`backend.ts`):
 
 ```typescript
 export function composeAgentPrompt(rootPath: string, flow: "prd" | "agent-file"): Promise<string> {
@@ -799,7 +799,7 @@ export function composeAgentPrompt(rootPath: string, flow: "prd" | "agent-file")
 }
 ```
 
-- [ ] **Step 2: Widen the profile type** in `settings.ts`'s `AgentProfileInfo`:
+- [x] **Step 2: Widen the profile type** in `settings.ts`'s `AgentProfileInfo`:
 
 ```typescript
   /// Whether the agent takes a positional prompt argument; gates the
@@ -809,7 +809,7 @@ export function composeAgentPrompt(rootPath: string, flow: "prd" | "agent-file")
 
 Add `promptArg: false` to the `PROFILES` fixtures in `settings.test.ts` so they still typecheck — the existing assertions are unaffected.
 
-- [ ] **Step 3: Write the failing test** (`layoutState.test.ts`, in the existing `main agent session` describe):
+- [x] **Step 3: Write the failing test** (`layoutState.test.ts`, in the existing `main agent session` describe):
 
 ```typescript
   it("startMainAgentWithPrompt spawns with the composed prompt and records the session", async () => {
@@ -840,9 +840,9 @@ Add `promptArg: false` to the `PROFILES` fixtures in `settings.test.ts` so they 
 
 > Check `shellQuote`'s actual output before pinning the expected string — if it quotes differently, match the implementation, not this plan.
 
-- [ ] **Step 4: Run — expect failure.** `startMainAgentWithPrompt` is not exported.
+- [x] **Step 4: Run — expect failure.** `startMainAgentWithPrompt` is not exported.
 
-- [ ] **Step 5: Implement** in `layoutState.ts`, directly below `startMainAgent`:
+- [x] **Step 5: Implement** in `layoutState.ts`, directly below `startMainAgent`:
 
 ```typescript
 /// Starts the main agent already working on something (the wizard's
@@ -874,9 +874,9 @@ export async function startMainAgentWithPrompt(
 
 Import `buildRunCommand` from `./cardRun`.
 
-- [ ] **Step 6: Run** — `npx vitest run` green.
+- [x] **Step 6: Run** — `npx vitest run` green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/src && git commit -m "feat(wizard): start the main agent already working on a prompt"
@@ -892,7 +892,7 @@ git add app/src && git commit -m "feat(wizard): start the main agent already wor
 - Create: `app/src/lib/WorkspaceCreateModal.svelte`
 - Modify: `app/src/lib/Sidebar.svelte`
 
-- [ ] **Step 1: Build the modal.**
+- [x] **Step 1: Build the modal.**
 
 ```svelte
 <script lang="ts">
@@ -990,7 +990,7 @@ git add app/src && git commit -m "feat(wizard): start the main agent already wor
 
 The name is not re-asked — the sidebar already took it. Continue is disabled until a folder is bound, because every later step needs one.
 
-- [ ] **Step 2: Wire it into `Sidebar.svelte`.** `commitNewWorkspace` currently fires `createWorkspace(trimmed)` and forgets. Capture the new id so the modal can target it:
+- [x] **Step 2: Wire it into `Sidebar.svelte`.** `commitNewWorkspace` currently fires `createWorkspace(trimmed)` and forgets. Capture the new id so the modal can target it:
 
 ```typescript
   let pendingSetupId = $state<string | null>(null);
@@ -1025,9 +1025,9 @@ Import `get` from `svelte/store` if it is not already imported, and render at th
 
 `openWizard` comes from Task 6 — until then, stub it as `(id: string) => { pendingSetupId = null; }` and replace it there.
 
-- [ ] **Step 3: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
+- [x] **Step 3: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/src && git commit -m "feat(wizard): workspace creation modal for folder and colour"
@@ -1041,7 +1041,7 @@ git add app/src && git commit -m "feat(wizard): workspace creation modal for fol
 - Create: `app/src/lib/SetupWizard.svelte`, `app/src/lib/wizardSteps/AgentStep.svelte`, `IntegrationStep.svelte`, `PrdStep.svelte`, `LaunchStep.svelte`
 - Modify: `app/src/lib/layoutState.ts` (the open-wizard store)
 
-- [ ] **Step 1: Add the store** in `layoutState.ts`, so any surface can open the wizard:
+- [x] **Step 1: Add the store** in `layoutState.ts`, so any surface can open the wizard:
 
 ```typescript
 /// The workspace whose wizard is open, or null. A store rather than a
@@ -1060,7 +1060,7 @@ export function closeWizard(): void {
 
 Replace Task 5's `openWizard` stub in `Sidebar.svelte` with this import.
 
-- [ ] **Step 2: Build the shell** (`SetupWizard.svelte`). It owns the current step, reads derived progress, and renders one step component:
+- [x] **Step 2: Build the shell** (`SetupWizard.svelte`). It owns the current step, reads derived progress, and renders one step component:
 
 ```svelte
 <script lang="ts">
@@ -1216,7 +1216,7 @@ Replace Task 5's `openWizard` stub in `Sidebar.svelte` with this import.
 </style>
 ```
 
-- [ ] **Step 3: `AgentStep.svelte`** — profile + command, always writing `command` so the step becomes detectable:
+- [x] **Step 3: `AgentStep.svelte`** — profile + command, always writing `command` so the step becomes detectable:
 
 ```svelte
 <script lang="ts">
@@ -1290,7 +1290,7 @@ Replace Task 5's `openWizard` stub in `Sidebar.svelte` with this import.
 </style>
 ```
 
-- [ ] **Step 4: `IntegrationStep.svelte`** — one action, rendering `written` and `skipped` verbatim:
+- [x] **Step 4: `IntegrationStep.svelte`** — one action, rendering `written` and `skipped` verbatim:
 
 ```svelte
 <script lang="ts">
@@ -1366,7 +1366,7 @@ Replace Task 5's `openWizard` stub in `Sidebar.svelte` with this import.
 </style>
 ```
 
-- [ ] **Step 5: `PrdStep.svelte`** — three fields, or hand it to the agent:
+- [x] **Step 5: `PrdStep.svelte`** — three fields, or hand it to the agent:
 
 ```svelte
 <script lang="ts">
@@ -1475,7 +1475,7 @@ Replace Task 5's `openWizard` stub in `Sidebar.svelte` with this import.
 </style>
 ```
 
-- [ ] **Step 6: `LaunchStep.svelte`:**
+- [x] **Step 6: `LaunchStep.svelte`:**
 
 ```svelte
 <script lang="ts">
@@ -1526,7 +1526,7 @@ Replace Task 5's `openWizard` stub in `Sidebar.svelte` with this import.
 </style>
 ```
 
-- [ ] **Step 7: Render the wizard once, app-wide,** in `app/src/routes/+page.svelte`, just inside the outermost element:
+- [x] **Step 7: Render the wizard once, app-wide,** in `app/src/routes/+page.svelte`, just inside the outermost element:
 
 ```svelte
 {#if $wizardWorkspaceId}
@@ -1536,9 +1536,9 @@ Replace Task 5's `openWizard` stub in `Sidebar.svelte` with this import.
 
 importing `wizardWorkspaceId` from `$lib/layoutState` and `SetupWizard` from `$lib/SetupWizard.svelte`.
 
-- [ ] **Step 8: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
+- [x] **Step 8: Verify** — `npx svelte-check` 0 errors, `npx vitest run` green, `npm run build` succeeds.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add app/src && git commit -m "feat(wizard): four-step setup wizard with agent-driven PRD"
@@ -1551,7 +1551,7 @@ git add app/src && git commit -m "feat(wizard): four-step setup wizard with agen
 **Files:**
 - Modify: `app/src/lib/HomeHubView.svelte`, `app/src/lib/smokeChecklist.ts`
 
-- [ ] **Step 1: Add the resume card** to `HomeHubView.svelte`. It already derives `tree` and `agentCfg`; add the bodies and the progress:
+- [x] **Step 1: Add the resume card** to `HomeHubView.svelte`. It already derives `tree` and `agentCfg`; add the bodies and the progress:
 
 ```svelte
   import { setupProgress } from "./setupWizard";
@@ -1629,7 +1629,7 @@ render there either. Verify this during the smoke pass (`wiz-unfiled`)
 rather than coding around it — but if either premise turns out false, add
 the `UNFILED_WORKSPACE_ID` guard and say so.
 
-- [ ] **Step 2: Add the checklist section** in `smokeChecklist.ts`, after "Workspace settings":
+- [x] **Step 2: Add the checklist section** in `smokeChecklist.ts`, after "Workspace settings":
 
 ```typescript
   {
@@ -1663,7 +1663,7 @@ the `UNFILED_WORKSPACE_ID` guard and say so.
   },
 ```
 
-- [ ] **Step 3: Full gates.**
+- [x] **Step 3: Full gates.**
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -1673,9 +1673,9 @@ cd app && npx vitest run && npx svelte-check && npm run build
 
 All must be clean: `svelte-check` 0 errors, build succeeding.
 
-- [ ] **Step 4: Manual smoke** — run the new section. `wiz-derived` and `wiz-integration-degrades` matter most: the first is the whole premise of W1, and the second is the behaviour change this work makes to existing code.
+- [ ] **Step 4: Manual smoke** (PENDING — user-run; see the Checklist tab's "Init wizard" section) — run the new section. `wiz-derived` and `wiz-integration-degrades` matter most: the first is the whole premise of W1, and the second is the behaviour change this work makes to existing code.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/src && git commit -m "feat(wizard): home resume card and init wizard smoke checklist"

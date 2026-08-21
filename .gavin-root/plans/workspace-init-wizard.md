@@ -1,7 +1,7 @@
 ---
 title: Workspace init wizard
 kind: plan
-status: To Do
+status: In Progress
 priority: medium
 labels: ui
 ---
@@ -43,7 +43,16 @@ restating them, and the wizard is offered for any unconfigured workspace
 - Spec: docs/superpowers/specs/2026-08-21-workspace-init-wizard-design.md
 - Plan: docs/superpowers/plans/2026-08-21-workspace-init-wizard.md (7 tasks)
 
-## Blocking question before Task 5
+## Resolved
+
+D56 was widened to name the wizard, recorded as D57 in the
+workspace-settings spec. All 7 tasks are implemented and committed on
+branch `worktree-init-wizard`; automated verification green (cargo 391,
+vitest 627, svelte-check 0 errors, build clean). Remaining before Done:
+the owner's interactive pass over the Checklist tab's 11-item "Init
+wizard" section.
+
+## Original blocking question (resolved)
 
 D56 ("Settings owns every folder-picking and integration action") was
 added to the workspace-settings spec after this design was approved. The
