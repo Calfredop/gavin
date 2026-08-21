@@ -4,18 +4,14 @@ status: In Progress
 priority: medium
 labels: ui
 ---
-Depends on SP1.
+Spec: `docs/superpowers/specs/2026-08-21-ui-design-tokens-design.md` (D55)
 
-Two surfaces that stay dark under a light theme no matter what the token
-layer does:
+Done 2026-08-21.
 
-- `terminalRegistry.ts:124` — `new Terminal({ convertEol: false })` passes
-  no theme object, so xterm's own white-on-black default applies. Needs a
-  full `ITheme` incl. 16 ANSI colours, swapped on theme change.
-- `codeMirror.ts:114` — hard-wired `themeOneDark.oneDark`. Needs a light
-  counterpart and a reconfigure on theme change.
-
-Open question from the spec (§9): whether the 16 ANSI colours derive from
-the tier-1 families or are authored separately.
-
-Needs its own spec before work starts.
+- [x] xterm `ITheme` incl. 16 ANSI slots; `applyTerminalTheme` walks the
+      registry, since terminals outlive their components
+- [x] CodeMirror light arm + `defaultHighlightStyle` (oneDark was the only
+      source of syntax colour), both via a `Compartment` so scroll and
+      undo survive a flip
+- [ ] Human visual pass: terminal colours, diff readability, syntax
+      highlighting in light

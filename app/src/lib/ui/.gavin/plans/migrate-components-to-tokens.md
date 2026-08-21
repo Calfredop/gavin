@@ -4,12 +4,14 @@ status: In Progress
 priority: medium
 labels: ui
 ---
-Depends on SP1.
+Spec: `docs/superpowers/specs/2026-08-21-ui-design-tokens-design.md` (D53, D54)
 
-The 47 components SP1's beachhead leaves behind, and roughly 600 of the
-673 hex literals. Light mode is not honestly "done" until this lands.
+Done 2026-08-21. 609 literals -> 9 app-wide; the nine survivors are four
+`--ws-accent` fallbacks and the five fixed platform colours in
+WindowControls.
 
-Open question from the spec (§9): file-by-file, or token-group-by-
-token-group across all files.
-
-Needs its own spec before work starts.
+- [x] Extend the vocabulary: `--surface-*` / `--border-*` tints (D53)
+- [x] Git tab (18 files) incl. graph lanes as `--lane-1..8` (D54)
+- [x] Kanban, plans, settings, home
+- [x] Modals, dialogs, context menu, editor chrome, tooltip
+- [ ] Human visual pass in both themes
