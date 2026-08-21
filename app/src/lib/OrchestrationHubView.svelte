@@ -48,9 +48,8 @@
 
   let picking = $state<string | null>(null);
   // Written by the conflicts box's inline fix; SP2 Task 9 turns it into
-  // the real binding dialog. Never read during render until then.
+  // the real binding dialog. Written, never read, until then.
   let binding = $state<string | null>(null);
-  void binding;
 
   // The cards a rail can take on: every runnable card not already on one.
   const placed = $derived(
