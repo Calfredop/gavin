@@ -156,6 +156,36 @@ pub struct CommitDetail {
     pub files: Vec<FileEntry>,
 }
 
+// ---- Conflict resolution -----------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictLabels {
+    pub ours: String,
+    pub theirs: String,
+    /// "merge" | "rebase" | "cherry-pick" | "revert" | "stash" | "unknown"
+    pub operation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictInfo {
+    pub path: String,
+    /// "text" | "deleteModify" | "addedBoth" | "binary" | "submodule"
+    pub kind: String,
+    pub base: Option<String>,
+    pub ours: Option<String>,
+    pub theirs: Option<String>,
+    pub worktree: Option<String>,
+    pub has_markers: bool,
+    /// "lf" | "crlf"
+    pub eol: String,
+    pub final_newline: bool,
+    pub labels: ConflictLabels,
+    /// deleteModify only: which side deleted the file.
+    pub deleted_by: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoInfo {
