@@ -400,6 +400,19 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
 /// agent-driven steps, W5). Same rules as startMainAgent -- needs a root,
 /// refuses when one is already running -- so the session it records is
 /// the same one the Home panel shows and bootstrap reattaches.
+/// The workspace whose setup wizard is open, or null. A store rather
+/// than a prop because two surfaces open it: the creation modal and the
+/// Home tab's resume card.
+export const wizardWorkspaceId = writable<string | null>(null);
+
+export function openWizard(workspaceId: string): void {
+  wizardWorkspaceId.set(workspaceId);
+}
+
+export function closeWizard(): void {
+  wizardWorkspaceId.set(null);
+}
+
 export async function startMainAgentWithPrompt(
   workspaceId: string,
   prompt: string

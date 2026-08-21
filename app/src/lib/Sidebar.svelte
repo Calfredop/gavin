@@ -1,11 +1,14 @@
 <script lang="ts">
+  import { get } from "svelte/store";
   import { accentVar } from "./settings";
+  import WorkspaceCreateModal from "./WorkspaceCreateModal.svelte";
   import {
     layoutState,
     switchWorkspace,
     switchWorkspaceView,
     switchPage,
     createWorkspace,
+    openWizard,
     renameWorkspace,
     createPage,
     renamePage,
@@ -161,11 +164,18 @@
     newWorkspaceName = "";
   }
 
+  // The workspace whose creation modal is up, or null.
+  let pendingSetupId = $state<string | null>(null);
+
   function commitNewWorkspace(): void {
     if (!creatingWorkspace) return;
     const trimmed = newWorkspaceName.trim();
     creatingWorkspace = false;
-    if (trimmed) void createWorkspace(trimmed);
+    if (!trimmed) return;
+    void createWorkspace(trimmed).then(() => {
+      // createWorkspace makes the new workspace active, so this is it.
+      pendingSetupId = get(layoutState).activeWorkspaceId;
+    });
   }
 
   function cancelNewWorkspace(): void {
@@ -679,6 +689,18 @@
     </div>
   </div>
 </div>
+
+{#if pendingSetupId}
+  <WorkspaceCreateModal
+    workspaceId={pendingSetupId}
+    onSkip={() => (pendingSetupId = null)}
+    onDone={() => {
+      const id = pendingSetupId;
+      pendingSetupId = null;
+      if (id) openWizard(id);
+    }}
+  />
+{/if}
 
 <style>
   .sidebar {
