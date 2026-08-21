@@ -4,6 +4,7 @@
   // installed @lucide/svelte): Columns2 is the current name for the old
   // SplitSquareHorizontal.
   import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
@@ -102,9 +103,12 @@
         style:padding-left={inset(context.depth)}
         oncontextmenu={(e) => openMenu(e, contextRowMenuItems(context, menuCallbacks()))}
       >
-        <button type="button" class="twisty" onclick={() => toggle(context.folderPath)}>
-          {#if contextCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
-        </button>
+        <IconButton
+          icon={contextCollapsed ? ChevronRight : ChevronDown}
+          label={contextCollapsed ? "Expand context" : "Collapse context"}
+          size={12}
+          onclick={() => toggle(context.folderPath)}
+        />
         <span
           class="name"
           class:outside={context.outside}
@@ -115,14 +119,7 @@
         {#if context.configWarning}
           <span class="warn" title="config.toml could not be parsed"><TriangleAlert size={11} /></span>
         {/if}
-        <button
-          type="button"
-          class="add"
-          title="New file in this context"
-          onclick={() => openComposer(context.folderPath)}
-        >
-          <Plus size={12} />
-        </button>
+        <IconButton icon={Plus} label="New file in this context" size={12} class="add" onclick={() => openComposer(context.folderPath)} />
       </div>
 
       {#if composer && composer.folderPath === context.folderPath}
@@ -164,9 +161,12 @@
             style:padding-left={inset(context.depth + 1)}
             oncontextmenu={(e) => openMenu(e, groupRowMenuItems(context, group.group, menuCallbacks()))}
           >
-            <button type="button" class="twisty" onclick={() => toggle(groupId)}>
-              {#if groupCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
-            </button>
+            <IconButton
+              icon={groupCollapsed ? ChevronRight : ChevronDown}
+              label={groupCollapsed ? "Expand group" : "Collapse group"}
+              size={12}
+              onclick={() => toggle(groupId)}
+            />
             <span class="group-label">{group.label}</span>
             <span class="count">{group.files.length}</span>
           </div>
@@ -193,14 +193,13 @@
                   {/if}
                 </button>
                 {#if onOpenInSplit}
-                  <button
-                    type="button"
+                  <IconButton
+                    icon={Columns2}
+                    label="Open beside a terminal"
+                    size={11}
                     class="split"
-                    title="Open beside a terminal"
                     onclick={() => onOpenInSplit?.(file.path)}
-                  >
-                    <Columns2 size={11} />
-                  </button>
+                  />
                 {/if}
               </div>
             {/each}
@@ -235,24 +234,13 @@
   .group-row:hover {
     background: var(--surface-raised);
   }
-  .twisty,
-  .add,
-  .split {
-    background: transparent;
-    border: none;
-    color: var(--text-subtle);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    padding: 0 2px;
-  }
-  .add,
-  .split {
+  :global(.add),
+  :global(.split) {
     margin-left: auto;
     opacity: 0;
   }
-  .context-row:hover .add,
-  .file-row:hover .split {
+  .context-row:hover :global(.add),
+  .file-row:hover :global(.split) {
     opacity: 1;
   }
   .name {
