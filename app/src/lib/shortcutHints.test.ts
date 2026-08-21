@@ -197,3 +197,42 @@ describe("createHintTracker", () => {
     expect(last()).toBeNull();
   });
 });
+
+describe("default clock", () => {
+  // Regression: the default clock used to be `{ setTimeout, clearTimeout }`,
+  // so calling `clock.setTimeout(...)` invoked it with `this === clock`.
+  // WebKit rejects that ("Can only call Window.setTimeout on instances of
+  // Window"), which threw on every ⌘ keydown and meant the badges never
+  // appeared in the app -- while every test passed, because Node's timers
+  // do not care about `this`. This stub makes Node behave like WebKit.
+  it("schedules through the global timer without rebinding it", () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const scheduled: (() => void)[] = [];
+    try {
+      globalThis.setTimeout = function (this: unknown, fn: () => void) {
+        if (this !== undefined && this !== globalThis) {
+          throw new TypeError("Can only call Window.setTimeout on instances of Window");
+        }
+        scheduled.push(fn);
+        return 1;
+      } as unknown as typeof globalThis.setTimeout;
+      globalThis.clearTimeout = function (this: unknown) {
+        if (this !== undefined && this !== globalThis) {
+          throw new TypeError("Can only call Window.clearTimeout on instances of Window");
+        }
+      } as unknown as typeof globalThis.clearTimeout;
+
+      const modes: (HintMode | null)[] = [];
+      const t = createHintTracker((mode) => modes.push(mode));
+      t.keydown({ key: "Meta", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+      expect(scheduled).toHaveLength(1);
+      scheduled[0]();
+      expect(modes[modes.length - 1]).toBe("cmd");
+      t.dispose();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
+  });
+});

@@ -103,7 +103,14 @@ export interface HintClock {
 /// badge or a leaked timer would come from -- can be tested directly.
 export function createHintTracker(
   onMode: (mode: HintMode | null) => void,
-  clock: HintClock = { setTimeout, clearTimeout },
+  // Wrapped in arrows on purpose: `{ setTimeout, clearTimeout }` would be
+  // called as methods of this object, and WebKit refuses that with "Can
+  // only call Window.setTimeout on instances of Window" -- which threw on
+  // every ⌘ keydown and left the badges permanently off.
+  clock: HintClock = {
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (handle) => clearTimeout(handle),
+  },
   holdMs: number = HINT_HOLD_MS
 ): HintTracker {
   let current = INITIAL_HINT_STATE;
