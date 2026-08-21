@@ -165,6 +165,31 @@ pub enum Request {
         workspace_id: String,
         path: String,
     },
+    /// The workspace's orchestration plan plus its run state. Never an
+    /// error for an unknown workspace -- an empty Orchestration.
+    GetOrchestration {
+        workspace_id: String,
+    },
+    /// Replaces the whole plan (spec O11). Run state survives for step
+    /// and rail ids that are still present. Refused when it would delete
+    /// a step whose StepRun is `running`.
+    SetOrchestration {
+        workspace_id: String,
+        rails: Vec<Rail>,
+        #[serde(default)]
+        conflict_notes: Vec<ConflictNote>,
+    },
+    SetRailRun {
+        rail_id: String,
+        state: String,
+        current_stage_id: Option<String>,
+    },
+    SetStepRun {
+        step_id: String,
+        state: String,
+        session_id: Option<String>,
+        reason: Option<String>,
+    },
     GetProtocolVersion,
 }
 
@@ -180,6 +205,12 @@ pub enum Response {
     GitStatusChanged { id: String, status: Option<GitStatus> },
     SessionRestored { id: String },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
+    Orchestration {
+        rails: Vec<Rail>,
+        conflict_notes: Vec<ConflictNote>,
+        rail_runs: Vec<RailRun>,
+        step_runs: Vec<StepRun>,
+    },
     GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
     GavinTreeChanged { workspace_id: String, tree: GavinTree },
     GavinTreeScanned { tree: GavinTree },
@@ -286,6 +317,86 @@ pub struct Board {
     pub labels: Vec<Label>,
     #[serde(default)]
     pub card_sessions: Vec<CardSession>,
+}
+
+/// One orchestration rail: an ordered column of stages over the board's
+/// cards. `worktree_path` is the cwd its steps' sessions get; `page_id`
+/// is the workspace page they land on. Both optional -- a rail is a name
+/// until it is bound (orchestration spec O5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Rail {
+    pub id: String,
+    pub name: String,
+    pub position: i64,
+    pub worktree_path: Option<String>,
+    pub page_id: Option<String>,
+    pub stages: Vec<Stage>,
+}
+
+/// Stages run one after another; a stage's steps run in parallel, in the
+/// SAME checkout, since they share the rail's worktree.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Stage {
+    pub id: String,
+    pub position: i64,
+    pub steps: Vec<Step>,
+}
+
+/// A step is a REFERENCE to a card file (spec O2) -- title, prompt,
+/// status and checklist all stay in the card.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Step {
+    pub id: String,
+    pub position: i64,
+    pub card_path: String,
+}
+
+/// The agent's own judgement about a set of steps, rendered beside the
+/// computed conflicts. Written only through SetOrchestration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictNote {
+    pub id: String,
+    pub step_ids: Vec<String>,
+    pub note: String,
+}
+
+/// Machine-local runtime bookkeeping; the agent never writes these.
+/// A rail with no row is "idle"; a step with no row is "pending".
+///
+/// `state` is a String, not an enum, deliberately: the daemon only
+/// stores and compares it, and a widened vocabulary must not become a
+/// wire break.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RailRun {
+    pub rail_id: String,
+    /// idle | running | paused
+    pub state: String,
+    pub current_stage_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StepRun {
+    pub step_id: String,
+    /// pending | running | done | stalled
+    pub state: String,
+    pub session_id: Option<String>,
+    /// Human-readable stall cause; None otherwise.
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Orchestration {
+    pub rails: Vec<Rail>,
+    pub conflict_notes: Vec<ConflictNote>,
+    pub rail_runs: Vec<RailRun>,
+    pub step_runs: Vec<StepRun>,
 }
 
 /// What a card file IS (card-model spec §1): a reminder, a single agent
@@ -1108,5 +1219,44 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn orchestration_types_are_camel_case_on_the_wire() {
+        let rail = Rail {
+            id: "r1".into(),
+            name: "backend".into(),
+            position: 0,
+            worktree_path: Some("/x/gavin-backend".into()),
+            page_id: None,
+            stages: vec![Stage {
+                id: "s1".into(),
+                position: 0,
+                steps: vec![Step { id: "t1".into(), position: 0, card_path: "/x/a.md".into() }],
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&rail).unwrap(),
+            serde_json::json!({
+                "id": "r1",
+                "name": "backend",
+                "position": 0,
+                "worktreePath": "/x/gavin-backend",
+                "pageId": null,
+                "stages": [{ "id": "s1", "position": 0,
+                             "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md" }] }]
+            })
+        );
+
+        let run = StepRun {
+            step_id: "t1".into(),
+            state: "running".into(),
+            session_id: Some("sess-1".into()),
+            reason: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&run).unwrap(),
+            serde_json::json!({ "stepId": "t1", "state": "running", "sessionId": "sess-1", "reason": null })
+        );
     }
 }
