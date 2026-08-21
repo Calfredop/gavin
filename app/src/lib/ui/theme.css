@@ -1,0 +1,111 @@
+/* Tier 1 -- primitive ramps. Theme-independent: defined once, never
+   redefined. Components must NOT reference these directly; they exist so
+   the tier-2 roles below can be re-pointed per theme. */
+:root {
+  --grey-0: #1a1a1a;
+  --grey-1: #1e1e1e;
+  --grey-2: #232323;
+  --grey-3: #2f2f2f;
+  --grey-4: #3a3a3a;
+  --grey-5: #444;
+  --grey-6: #555;
+  --grey-7: #666;
+  --grey-8: #888;
+  --grey-9: #999;
+  --grey-10: #bbb;
+  --grey-11: #ddd;
+  --grey-12: #eee;
+  --grey-13: #f4f4f4; /* NEW -- light raised surface */
+  --grey-14: #fbfbfb; /* NEW -- light base surface */
+  --grey-15: #fff;
+
+  --blue-1: #2a3a4a;
+  --blue-2: #4a6a8a;
+  --blue-3: #4a9eff;
+  --blue-4: #7ea8d8;
+  --blue-5: #d3e4f7; /* NEW */
+
+  --green-1: #2c4a2c; /* NEW */
+  --green-2: #3f6b3f;
+  --green-3: #6b8e6b;
+  --green-4: #8bc98b;
+  --green-5: #cfe8cf;
+
+  --red-1: #7a3030;
+  --red-2: #b03a32; /* NEW */
+  --red-3: #e0524a;
+  --red-4: #e08a8a;
+  --red-5: #f0c0c0;
+
+  --amber-1: #6b3d1f; /* NEW */
+  --amber-2: #a15c2f;
+  --amber-3: #d9a648;
+  --amber-4: #d9b45c;
+  --amber-5: #e0b08a;
+}
+
+/* Tier 2 -- semantic roles. Bare :root carries the DARK values so that
+   every failure path (pre-boot stamp missing, config unreadable, system
+   appearance unavailable) lands on the app's current look. */
+:root,
+:root[data-theme="dark"] {
+  --surface-base: var(--grey-1);
+  --surface-raised: var(--grey-3);
+  --surface-overlay: var(--grey-4);
+  --surface-sunken: var(--grey-0);
+  --surface-hover: var(--grey-2);
+  --surface-selected: var(--grey-4);
+
+  --border: var(--grey-4);
+  --border-strong: var(--grey-6);
+  --border-focus: var(--blue-3);
+
+  --text: var(--grey-12);
+  --text-muted: var(--grey-9);
+  --text-subtle: var(--grey-7);
+  --text-inverted: var(--grey-0);
+
+  --accent: var(--blue-3);
+  --accent-hover: var(--blue-4);
+  --accent-text: var(--blue-4);
+
+  --success: var(--green-4);
+  --success-text: var(--green-4);
+  --warning: var(--amber-3);
+  --warning-text: var(--amber-3);
+  --danger: var(--red-3);
+  --danger-text: var(--red-4);
+}
+
+/* Light borders step INWARD rather than mirroring the dark ones: an
+   equal-contrast hairline reads much heavier on a light surface. */
+:root[data-theme="light"] {
+  --surface-base: var(--grey-15);
+  --surface-raised: var(--grey-14);
+  --surface-overlay: var(--grey-15);
+  --surface-sunken: var(--grey-13);
+  --surface-hover: var(--grey-13);
+  --surface-selected: var(--grey-12);
+
+  --border: var(--grey-11);
+  --border-strong: var(--grey-10);
+  --border-focus: var(--blue-3);
+
+  --text: var(--grey-0);
+  --text-muted: var(--grey-7);
+  --text-subtle: var(--grey-8);
+  --text-inverted: var(--grey-15);
+
+  /* Fills stay vivid; anything that renders as TEXT drops to blue-2,
+     which clears 4.5:1 on white where blue-3 does not. */
+  --accent: var(--blue-3);
+  --accent-hover: var(--blue-2);
+  --accent-text: var(--blue-2);
+
+  --success: var(--green-2);
+  --success-text: var(--green-1);
+  --warning: var(--amber-2);
+  --warning-text: var(--amber-1);
+  --danger: var(--red-2);
+  --danger-text: var(--red-1);
+}
