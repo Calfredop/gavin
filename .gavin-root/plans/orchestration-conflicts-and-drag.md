@@ -14,12 +14,12 @@ Plan: `docs/superpowers/plans/2026-08-21-orchestration-conflicts-and-drag.md`
 
 ## Steps
 
-- [ ] `detectConflicts`, numbering and lookup helpers (+ tests)
-- [ ] Conflicts box with hover linking
-- [ ] Severity colouring and pairing badges on chips and rail headers
-- [ ] Move mutators for steps between stages and rails (+ tests)
-- [ ] `orchestrationDrag.ts` pure hit-testing (+ tests)
-- [ ] `orchestrationDragGlue.ts` controller and DOM glue
-- [ ] Drag wiring: data attributes, placeholders, floating preview
-- [ ] Unplaced-cards drawer
-- [ ] Rail binding dialog: worktree and page
+- [x] `detectConflicts`, numbering and lookup helpers (+ tests)
+- [x] Conflicts box with hover linking
+- [x] Severity colouring and pairing badges on chips and rail headers
+- [x] Move mutators for steps between stages and rails (+ tests)
+- [x] `orchestrationDrag.ts` pure hit-testing (+ tests)
+- [x] `orchestrationDragGlue.ts` controller and DOM glue
+- [x] Drag wiring: data attributes, placeholders, floating preview
+- [x] Unplaced-cards drawer
+- [x] Rail binding dialog: worktree and page

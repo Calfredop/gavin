@@ -5,6 +5,7 @@
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
   import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
+  import RailBindDialog from "./RailBindDialog.svelte";
   import { attachOrchestrationDrag } from "./orchestrationDragGlue";
   import Modal from "./Modal.svelte";
   import { gavinTrees } from "./gavinState";
@@ -19,7 +20,6 @@
     saveErrors,
     dismissSaveError,
     addRailAction,
-    bindRailAction,
     deleteRailAction,
     addStepAsStageAction,
     removeStepAction,
@@ -53,8 +53,8 @@
   const numbered = $derived(orch ? numberConflicts(detectConflicts(orch, tree, worktrees)) : []);
 
   let picking = $state<string | null>(null);
-  // Written by the conflicts box's inline fix; SP2 Task 9 turns it into
-  // the real binding dialog. Written, never read, until then.
+  // The rail whose bindings are being edited, set by the rail header and
+  // by the conflicts box's inline fix.
   let binding = $state<string | null>(null);
 
   // The cards a rail can take on: every runnable card not already on one.
@@ -160,7 +160,8 @@
           onPause={() => void pauseRail(workspaceId, rail.id)}
           onReset={() => void resetRail(workspaceId, rail.id)}
           onDelete={() => void deleteRailAction(workspaceId, rail.id)}
-          onBind={(patch) => void bindRailAction(workspaceId, rail.id, patch)}
+          pageName={ws?.pages.find((p) => p.id === rail.pageId)?.name ?? null}
+          onBind={() => (binding = rail.id)}
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
@@ -177,6 +178,13 @@
 </div>
 
 <OrchestrationDragPreview {orch} {cards} root={gridEl} />
+
+{#if binding && orch}
+  {@const bindingRail = orch.rails.find((r) => r.id === binding)}
+  {#if bindingRail}
+    <RailBindDialog {workspaceId} rail={bindingRail} onClose={() => (binding = null)} />
+  {/if}
+{/if}
 
 {#if picking}
   {@const railId = picking}

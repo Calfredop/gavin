@@ -951,20 +951,23 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
 // per-workspace "+" button) can add a page to a workspace without first
 // switching to it. The new page (and its workspace) become active,
 // mirroring "a new tab becomes the active one" elsewhere in this app.
+/// Returns the new page's id, so a caller that must bind something to it
+/// (an orchestration rail) does not have to guess which page appeared.
+/// Null when the workspace is unknown or session creation failed.
 export async function createPage(
   workspaceId: string,
   buildTree: (freshIds: string[]) => LayoutNode,
   sessionCount: number,
   name: string
-): Promise<void> {
+): Promise<string | null> {
   const state = get(layoutState);
-  if (!state.workspaces.some((w) => w.id === workspaceId)) return;
+  if (!state.workspaces.some((w) => w.id === workspaceId)) return null;
   let freshIds: string[];
   try {
     freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession()));
   } catch (e) {
     setError(String(e));
-    return;
+    return null;
   }
   const tree = buildTree(freshIds);
   const pageId = crypto.randomUUID();
@@ -978,6 +981,7 @@ export async function createPage(
     focusedSessionId,
   }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  return pageId;
 }
 
 // Creates a fresh session for a kanban card link, homing it in the given

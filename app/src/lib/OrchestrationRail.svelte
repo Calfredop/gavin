@@ -26,7 +26,9 @@
     onPause: () => void;
     onReset: () => void;
     onDelete: () => void;
-    onBind: (patch: { worktreePath?: string | null; pageId?: string | null }) => void;
+    /// Resolved page name for the bindings row; null when unbound.
+    pageName: string | null;
+    onBind: () => void;
     onAddStep: () => void;
     onRetryStep: (stepId: string) => void;
     onRemoveStep: (stepId: string) => void;
@@ -37,6 +39,7 @@
     cards,
     doneColumnName,
     numbered,
+    pageName,
     onStart,
     onPause,
     onReset,
@@ -100,24 +103,10 @@
       <IconButton icon={RotateCcw} label="Reset run state" onclick={onReset} />
       <IconButton icon={Trash2} label="Delete rail" tone="danger" onclick={onDelete} />
     </div>
-    <!-- SP1 binds with plain inputs; SP2 replaces these with the fork
-         dialog and a page picker. -->
-    <label class="bind">
-      <span>worktree</span>
-      <input
-        value={rail.worktreePath ?? ""}
-        placeholder="(the card's own folder)"
-        onchange={(e) => onBind({ worktreePath: e.currentTarget.value.trim() || null })}
-      />
-    </label>
-    <label class="bind">
-      <span>page id</span>
-      <input
-        value={rail.pageId ?? ""}
-        placeholder="(the Agents page)"
-        onchange={(e) => onBind({ pageId: e.currentTarget.value.trim() || null })}
-      />
-    </label>
+    <button type="button" class="bindings" onclick={onBind}>
+      <span class="wt">{rail.worktreePath ?? "no worktree"}</span>
+      <span class="pg">{pageName ?? "Agents page"}</span>
+    </button>
     {#if !doneColumnName}
       <p class="warn">This board has no columns — nothing can complete.</p>
     {/if}
@@ -223,25 +212,31 @@
   .rail-badge.lit {
     background: var(--surface-overlay);
   }
-  .bind {
+  .bindings {
     display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-  .bind span {
-    flex: none;
-  }
-  .bind input {
-    flex: 1;
-    min-width: 0;
-    background: var(--surface-sunken);
-    border: 1px solid var(--border);
+    flex-direction: column;
+    gap: 1px;
+    padding: 3px 5px;
+    background: none;
+    border: 1px solid transparent;
     border-radius: 4px;
-    color: var(--text);
-    padding: 2px 4px;
+    color: var(--text-muted);
     font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .bindings:hover {
+    background: var(--surface-hover);
+    border-color: var(--border);
+  }
+  .bindings span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bindings .pg {
+    color: var(--text-subtle);
+    font-size: 10px;
   }
   .warn {
     margin: 0;
