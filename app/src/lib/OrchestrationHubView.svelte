@@ -12,7 +12,14 @@
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { layoutState, switchWorkspaceView } from "./layoutState";
-  import { cardIndex, doneColumn, detectConflicts, numberConflicts, describeConflict } from "./orchestration";
+  import {
+    cardIndex,
+    doneColumn,
+    detectConflicts,
+    numberConflicts,
+    describeConflict,
+    groupUnplacedByStatus,
+  } from "./orchestration";
   import {
     orchestrations,
     fetchOrchestration,
@@ -33,6 +40,7 @@
     moveStepIntoStageAction,
     moveStepToNewStageAction,
     requestReorganize,
+    renameRailAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -65,6 +73,15 @@
   const available = $derived(
     [...cards.values()].filter((e) => e.plan.kind !== "note" && !placed.has(e.plan.path))
   );
+  const unplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
+
+  // Which rail's name is being edited. Owned here so a rail created by
+  // the button below can open straight into rename mode.
+  let editingRailId = $state<string | null>(null);
+
+  async function newRail(): Promise<void> {
+    editingRailId = await addRailAction(workspaceId, "New rail");
+  }
 
   $effect(() => {
     void fetchOrchestration(workspaceId);
@@ -142,7 +159,7 @@
     >
       Reorganize with agent…
     </button>
-    <button type="button" class="add-rail" onclick={() => void addRailAction(workspaceId, "New rail")}>
+    <button type="button" class="add-rail" onclick={() => void newRail()}>
       <Plus size={14} /> Rail
     </button>
   </header>
@@ -185,6 +202,13 @@
           onReset={() => void resetRail(workspaceId, rail.id)}
           onDelete={() => void deleteRailAction(workspaceId, rail.id)}
           pageName={ws?.pages.find((p) => p.id === rail.pageId)?.name ?? null}
+          editing={editingRailId === rail.id}
+          onStartEdit={() => (editingRailId = rail.id)}
+          onRename={(name) => {
+            void renameRailAction(workspaceId, rail.id, name);
+            editingRailId = null;
+          }}
+          onCancelEdit={() => (editingRailId = null)}
           onBind={() => (binding = rail.id)}
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
@@ -193,7 +217,7 @@
       {/each}
       </div>
       <OrchestrationDrawer
-        {available}
+        groups={unplacedGroups}
         targetRailId={rails[0]?.id ?? null}
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
       />

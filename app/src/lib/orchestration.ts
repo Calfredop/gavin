@@ -483,6 +483,71 @@ export function splitStageIntoSequence(orch: Orchestration, stageId: string): Or
   };
 }
 
+/// One status bucket of unplaced cards, for the drawer.
+export interface UnplacedGroup {
+  /// Display label -- the board column's own spelling, or the card's raw
+  /// status for a status the board has no column for.
+  status: string;
+  slug: string;
+  cards: CardEntry[];
+  /// The board's done column. The drawer starts these collapsed: work
+  /// that is finished but never placed on a rail is the least
+  /// interesting thing in the list.
+  isDone: boolean;
+}
+
+/// Groups unplaced cards the way the board groups placed ones, so the
+/// drawer reads in the same order as the Kanban tab: known columns by
+/// `position`, then one group per unrecognized status. Mirrors
+/// mergePlanCards' rules deliberately -- a card with no status lands in
+/// the first column, and two spellings of one status share a group.
+export function groupUnplacedByStatus(cards: CardEntry[], board: Board): UnplacedGroup[] {
+  const columns = [...board.columns].sort((a, b) => a.position - b.position);
+  const done = doneColumn(board);
+
+  const known = new Map<string, UnplacedGroup>();
+  for (const c of columns) {
+    const slug = slugStatus(c.name);
+    if (!slug || known.has(slug)) continue;
+    known.set(slug, { status: c.name, slug, cards: [], isDone: c.id === done?.id });
+  }
+
+  const NO_STATUS = "(no status)";
+  const extra = new Map<string, UnplacedGroup>();
+  for (const entry of cards) {
+    const slug = entry.plan.status ? slugStatus(entry.plan.status) : "";
+    if (!slug) {
+      // No status: the first column, exactly as the board does it.
+      const first = columns.length > 0 ? known.get(slugStatus(columns[0].name)) : undefined;
+      if (first) {
+        first.cards.push(entry);
+      } else {
+        const group = extra.get("") ?? { status: NO_STATUS, slug: "", cards: [], isDone: false };
+        group.cards.push(entry);
+        extra.set("", group);
+      }
+      continue;
+    }
+    const target = known.get(slug);
+    if (target) {
+      target.cards.push(entry);
+      continue;
+    }
+    // Keyed by slug so "Blocked" and "blocked" share a group; labelled
+    // with the first raw spelling seen.
+    const group = extra.get(slug) ?? {
+      status: entry.plan.status ?? slug,
+      slug,
+      cards: [],
+      isDone: false,
+    };
+    group.cards.push(entry);
+    extra.set(slug, group);
+  }
+
+  return [...known.values(), ...extra.values()].filter((g) => g.cards.length > 0);
+}
+
 // ---- Conflicts -------------------------------------------------------------
 // Computed at render time from the plan, the tree and the worktree list;
 // nothing here is persisted. Gavin never BLOCKS on any of this (spec
