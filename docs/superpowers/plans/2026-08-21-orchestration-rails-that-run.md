@@ -1436,7 +1436,8 @@ export interface Rail {
   name: string;
   position: number;
   /// cwd for this rail's steps. Null falls back to each card's own
-  /// contextFolder (spec §5, rail-unbound).
+  /// contextFolder (see effectiveWorktree) and raises a `rail-unbound`
+  /// conflict in SP2.
   worktreePath: string | null;
   /// Workspace page its sessions land on; null uses the Agents-page
   /// posture handleAgentSessionSpawned already applies.
@@ -1507,6 +1508,10 @@ export function cardIndex(tree: GavinTree | undefined): Map<string, CardEntry> {
   return index;
 }
 
+/// WHERE AN AGENT'S SHELL STARTS. Not the isolation question: SP2 adds
+/// `conflictCheckout` for that, because a card's contextFolder is a
+/// subdirectory of the root checkout rather than a checkout of its own
+/// (spec O13). Keep the two apart.
 export function effectiveWorktree(rail: Rail, entry: CardEntry | undefined): string | null {
   return rail.worktreePath ?? entry?.contextFolder ?? null;
 }

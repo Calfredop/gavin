@@ -16,6 +16,7 @@
 
 - **Gavin never blocks a run because of a conflict** (spec O4). Everything here is display and repair; no code path may refuse to launch a step because a conflict exists.
 - **Two independent colour axes** (spec O9): *severity* is the colour (`--surface-danger`/`--border-danger` for `live`, `--surface-warning`/`--border-warning` for `potential`), *group identity* is a number badge. Never encode pairing as a hue. The `--lane-*` tokens stay reserved for the git graph.
+- **Separate worktrees are never a conflict** (spec O13), on the same rail or across rails. Conflict detection keys on `conflictCheckout(rail, tree) = rail.worktreePath ?? tree.rootPath` — **not** on `effectiveWorktree`, which answers a different question (the agent's cwd). A card's `contextFolder` is a subdirectory of the root checkout, not a checkout of its own.
 - Conflicts are **computed at render time and never persisted**. The only stored conflict data is `conflictNotes`, which the agent writes (SP3).
 - `detectConflicts` takes `worktrees: WorktreeInfo[] | null`; **null means "not loaded yet"** and must suppress `worktree-missing`, exactly as `nextActions` already does.
 - Drag indices are computed against lists **with the dragged step excluded**, so they are post-removal indices by construction — the same contract `kanbanDrag` documents.
@@ -89,7 +90,7 @@ Tick each item as you finish the matching task.
 
 **Interfaces:**
 - Consumes: SP1's `Orchestration`, `Rail`, `cardIndex`, `effectiveWorktree`, `stepStateOf`, `CardEntry`.
-- Produces: `ConflictSeverity`, `Conflict`, `NumberedConflict`; `detectConflicts(orch, tree, worktrees) → Conflict[]`; `numberConflicts(conflicts) → NumberedConflict[]`; `numbersForStep(numbered, stepId) → number[]`; `numbersForRail(numbered, railId) → number[]`; `severityForStep(numbered, stepId) → ConflictSeverity | null`; `severityForRail(numbered, railId) → ConflictSeverity | null`; `describeConflict(c, cards, orch) → string`.
+- Produces: `ConflictSeverity`, `Conflict`, `NumberedConflict`; `conflictCheckout(rail, tree) → string | null`; `detectConflicts(orch, tree, worktrees) → Conflict[]`; `numberConflicts(conflicts) → NumberedConflict[]`; `numbersForStep(numbered, stepId) → number[]`; `numbersForRail(numbered, railId) → number[]`; `severityForStep(numbered, stepId) → ConflictSeverity | null`; `severityForRail(numbered, railId) → ConflictSeverity | null`; `describeConflict(c, cards, orch) → string`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -132,11 +133,20 @@ describe("detectConflicts — same worktree", () => {
       {
         kind: "same-worktree",
         scope: "stage",
+        stageId: "r1-s0",
         severity: "potential",
         stepIds: ["t1", "t2"],
         worktreePath: "/x/wt-a",
       },
     ]);
+  });
+
+  it("still flags a parallel stage on an UNBOUND rail — it shares the root checkout", () => {
+    const o = orchOf([bound("r1", null, [[["t1", A], ["t2", B]]])]);
+    const found = detectConflicts(o, CARDS, WT);
+    expect(found).toContainEqual(
+      expect.objectContaining({ kind: "same-worktree", scope: "stage", worktreePath: "/ws" })
+    );
   });
 
   it("does NOT flag different stages of one rail — they are strictly sequential", () => {
@@ -151,7 +161,12 @@ describe("detectConflicts — same worktree", () => {
     ]);
     const found = detectConflicts(o, CARDS, WT);
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ kind: "same-worktree", scope: "rails", worktreePath: "/x/wt-a" });
+    expect(found[0]).toMatchObject({
+      kind: "same-worktree",
+      scope: "rails",
+      stageId: null,
+      worktreePath: "/x/wt-a",
+    });
     expect(found[0].kind === "same-worktree" && found[0].stepIds.sort()).toEqual(["t1", "t2", "t3"]);
   });
 
@@ -187,10 +202,28 @@ describe("detectConflicts — same worktree", () => {
     expect(detectConflicts(o, CARDS, WT)[0].severity).toBe("potential");
   });
 
-  it("treats unbound rails by their cards' context folder, so two unbound rails collide", () => {
+  it("collides two unbound rails on the ROOT checkout, not on their cards' folders", () => {
     const o = orchOf([bound("r1", null, [[["t1", A]]]), bound("r2", null, [[["t2", B]]])]);
     const found = detectConflicts(o, CARDS, WT);
-    expect(found.some((c) => c.kind === "same-worktree" && c.worktreePath === "/ws/.gavin-root")).toBe(true);
+    // /ws, the tree's rootPath -- NOT /ws/.gavin-root, which is merely a
+    // subdirectory of that same working tree (spec O13).
+    expect(found.some((c) => c.kind === "same-worktree" && c.worktreePath === "/ws")).toBe(true);
+    expect(found.some((c) => c.kind === "same-worktree" && c.worktreePath === "/ws/.gavin-root")).toBe(false);
+  });
+
+  it("does not collide two unbound rails whose cards sit in different contexts", () => {
+    // Both still run in the root checkout, so this must STILL conflict --
+    // the guard against mistaking a subfolder for isolation.
+    const o = orchOf([bound("r1", null, [[["t1", A]]]), bound("r2", null, [[["t2", B]]])]);
+    expect(detectConflicts(o, CARDS, WT).some((c) => c.kind === "same-worktree")).toBe(true);
+  });
+
+  it("says nothing when every rail is on its own worktree", () => {
+    const o = orchOf([
+      bound("r1", "/x/wt-a", [[["t1", A]], [["t2", B]]]),
+      bound("r2", "/x/main", [[["t3", C]]]),
+    ]);
+    expect(detectConflicts(o, CARDS, WT)).toEqual([]);
   });
 });
 
@@ -254,7 +287,14 @@ describe("numberConflicts", () => {
     const conflicts: Conflict[] = [
       { kind: "rail-unbound", severity: "potential", railId: "r9" },
       { kind: "declared", severity: "potential", id: "n1", stepIds: ["t1"], note: "x" },
-      { kind: "same-worktree", scope: "stage", severity: "live", stepIds: ["t1", "t2"], worktreePath: "/x/wt-a" },
+      {
+        kind: "same-worktree",
+        scope: "stage",
+        stageId: "s1",
+        severity: "live",
+        stepIds: ["t1", "t2"],
+        worktreePath: "/x/wt-a",
+      },
       { kind: "duplicate-card", severity: "potential", stepIds: ["t3", "t4"], cardPath: A },
     ];
     expect(numberConflicts(conflicts).map((n) => [n.n, n.conflict.kind])).toEqual([
@@ -279,7 +319,14 @@ describe("numberConflicts", () => {
 
 describe("conflict lookups", () => {
   const numbered = numberConflicts([
-    { kind: "same-worktree", scope: "stage", severity: "live", stepIds: ["t1", "t2"], worktreePath: "/x/wt-a" },
+    {
+      kind: "same-worktree",
+      scope: "stage",
+      stageId: "s1",
+      severity: "live",
+      stepIds: ["t1", "t2"],
+      worktreePath: "/x/wt-a",
+    },
     { kind: "duplicate-card", severity: "potential", stepIds: ["t2", "t3"], cardPath: A },
     { kind: "rail-unbound", severity: "potential", railId: "r2" },
   ]);
@@ -325,6 +372,9 @@ export type Conflict =
       /// checkout. "rails" -- two or more rails bound to one checkout,
       /// which have no ordering guarantee between them.
       scope: "stage" | "rails";
+      /// The stage to split, for the box's "Make sequential" repair.
+      /// Null for scope "rails", which no single stage can fix.
+      stageId: string | null;
       severity: ConflictSeverity;
       stepIds: string[];
       worktreePath: string;
@@ -357,18 +407,32 @@ export function conflictRailId(c: Conflict): string | null {
   return c.kind === "worktree-missing" || c.kind === "rail-unbound" ? c.railId : null;
 }
 
+/// WHICH WORKING TREE a rail's steps edit -- the isolation question,
+/// and the only thing that makes two steps conflict (spec O13).
+///
+/// Deliberately NOT effectiveWorktree, which answers where an agent's
+/// shell starts. An unbound rail launches each step in its card's
+/// contextFolder, but that folder is a SUBDIRECTORY of the root
+/// checkout, not a checkout of its own -- keying conflicts on it would
+/// report isolation that does not exist, and two unbound rails editing
+/// the same repo would look safe.
+export function conflictCheckout(rail: Rail, tree: GavinTree | undefined): string | null {
+  return rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
+}
+
 interface PlacedStep {
   stepId: string;
   railId: string;
   stageId: string;
   cardPath: string;
-  worktree: string | null;
+  checkout: string | null;
   state: StepState;
 }
 
-function placedSteps(orch: Orchestration, cards: Map<string, CardEntry>): PlacedStep[] {
+function placedSteps(orch: Orchestration, tree: GavinTree | undefined): PlacedStep[] {
   const out: PlacedStep[] = [];
   for (const rail of orch.rails) {
+    const checkout = conflictCheckout(rail, tree);
     for (const stage of rail.stages) {
       for (const step of stage.steps) {
         out.push({
@@ -376,7 +440,7 @@ function placedSteps(orch: Orchestration, cards: Map<string, CardEntry>): Placed
           railId: rail.id,
           stageId: stage.id,
           cardPath: step.cardPath,
-          worktree: effectiveWorktree(rail, cards.get(step.cardPath)),
+          checkout,
           state: stepStateOf(orch, step.id),
         });
       }
@@ -391,13 +455,15 @@ function severityOf(group: PlacedStep[]): ConflictSeverity {
   return group.filter((s) => s.state === "running").length >= 2 ? "live" : "potential";
 }
 
+/// `tree` supplies the root checkout for unbound rails; `worktrees` is
+/// null while the refs snapshot is still loading, which must suppress
+/// `worktree-missing` rather than read as "gone".
 export function detectConflicts(
   orch: Orchestration,
   tree: GavinTree | undefined,
   worktrees: WorktreeInfo[] | null
 ): Conflict[] {
-  const cards = cardIndex(tree);
-  const steps = placedSteps(orch, cards).filter((s) => s.state !== "done");
+  const steps = placedSteps(orch, tree).filter((s) => s.state !== "done");
   const conflicts: Conflict[] = [];
 
   // 1. A parallel stage IS a same-worktree conflict by construction: its
@@ -405,37 +471,41 @@ export function detectConflicts(
   // loud beats pretending it is safe (spec §5).
   const byStage = new Map<string, PlacedStep[]>();
   for (const s of steps) {
-    if (!s.worktree) continue;
+    if (!s.checkout) continue;
     const group = byStage.get(s.stageId) ?? [];
     group.push(s);
     byStage.set(s.stageId, group);
   }
-  for (const group of byStage.values()) {
+  for (const [stageId, group] of byStage) {
     if (group.length < 2) continue;
     conflicts.push({
       kind: "same-worktree",
       scope: "stage",
+      stageId,
       severity: severityOf(group),
       stepIds: group.map((s) => s.stepId),
-      worktreePath: group[0].worktree as string,
+      worktreePath: group[0].checkout as string,
     });
   }
 
   // 2. Across rails there is NO ordering guarantee, so every not-done
   // step in a shared checkout is a potential collision with every other.
   // Reported once per worktree rather than as a pair explosion.
-  const byWorktree = new Map<string, PlacedStep[]>();
+  const byCheckout = new Map<string, PlacedStep[]>();
   for (const s of steps) {
-    if (!s.worktree) continue;
-    const group = byWorktree.get(s.worktree) ?? [];
+    if (!s.checkout) continue;
+    const group = byCheckout.get(s.checkout) ?? [];
     group.push(s);
-    byWorktree.set(s.worktree, group);
+    byCheckout.set(s.checkout, group);
   }
-  for (const [worktreePath, group] of byWorktree) {
+  for (const [worktreePath, group] of byCheckout) {
+    // Rails on DIFFERENT checkouts never land in the same group, which
+    // is the whole of spec O13: isolation buys silence.
     if (new Set(group.map((s) => s.railId)).size < 2) continue;
     conflicts.push({
       kind: "same-worktree",
       scope: "rails",
+      stageId: null,
       severity: severityOf(group),
       stepIds: group.map((s) => s.stepId),
       worktreePath,
@@ -572,7 +642,7 @@ export function describeConflict(
   switch (c.kind) {
     case "same-worktree": {
       if (c.scope === "stage") {
-        return `${list(c.stepIds)} run in parallel in one checkout (${c.worktreePath})`;
+        return `${list(c.stepIds)} run in parallel in one checkout (${c.worktreePath}) — run them one after another, or move one to a rail with its own worktree`;
       }
       const rails = railNamesFor(c.stepIds);
       return `rails ${rails.map((n) => `“${n}”`).join(" and ")} share ${c.worktreePath}: ${list(c.stepIds)}`;
@@ -612,7 +682,7 @@ git commit -m "feat(app): orchestration conflict detection, numbering and lookup
 
 **Interfaces:**
 - Consumes: Task 1's `NumberedConflict`, `describeConflict`, `conflictStepIds`, `conflictRailId`.
-- Produces: `highlightedConflict` (a `writable<number | null>` in `orchestrationState.ts`); the `OrchestrationConflicts` component with props `{ numbered, cards, orch, onBindWorktree: (railId: string) => void }`.
+- Produces: `highlightedConflict` (a `writable<number | null>` in `orchestrationState.ts`); the `OrchestrationConflicts` component with props `{ numbered, cards, orch, onBindWorktree: (railId: string) => void, onMakeSequential: (stageId: string) => void }`.
 
 - [ ] **Step 1: Add the highlight store**
 
@@ -643,8 +713,12 @@ Create `app/src/lib/OrchestrationConflicts.svelte`:
     cards: Map<string, CardEntry>;
     orch: Orchestration;
     onBindWorktree: (railId: string) => void;
+    /// The repair for a parallel stage (spec O13): split it into
+    /// consecutive single-step stages. Only offered for scope "stage" --
+    /// no single stage can fix two rails sharing a checkout.
+    onMakeSequential: (stageId: string) => void;
   }
-  let { numbered, cards, orch, onBindWorktree }: Props = $props();
+  let { numbered, cards, orch, onBindWorktree, onMakeSequential }: Props = $props();
 
   let collapsed = $state(false);
 
@@ -681,6 +755,14 @@ Create `app/src/lib/OrchestrationConflicts.svelte`:
             {#if railId}
               <button type="button" class="fix" onclick={() => onBindWorktree(railId)}>
                 Bind worktree…
+              </button>
+            {:else if conflict.kind === "same-worktree" && conflict.stageId}
+              <button
+                type="button"
+                class="fix"
+                onclick={() => onMakeSequential(conflict.stageId as string)}
+              >
+                Make sequential
               </button>
             {/if}
           </li>
@@ -786,6 +868,7 @@ In `app/src/lib/OrchestrationHubView.svelte`, add the imports:
 ```ts
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import { detectConflicts, numberConflicts } from "./orchestration";
+  import { makeStageSequentialAction } from "./orchestrationState";
 ```
 
 add the derived state beside the existing ones:
@@ -806,6 +889,7 @@ and render it directly under the save-error strip, above the `{#if !orch}` block
       {cards}
       {orch}
       onBindWorktree={(railId) => (binding = railId)}
+      onMakeSequential={(stageId) => void makeStageSequentialAction(workspaceId, stageId)}
     />
   {/if}
 ```
@@ -816,6 +900,10 @@ Add `let binding = $state<string | null>(null);` beside `picking`. Task 9 turns 
 
 Run: `cd app && npm run check && npm test`
 Expected: clean, suite green.
+
+`makeStageSequentialAction` lands in Task 4. If you are working strictly in
+order, stub the `onMakeSequential` prop as `() => {}` here and wire the real
+action when Task 4 adds it — do not leave a dangling import.
 
 - [ ] **Step 5: Commit**
 
@@ -940,7 +1028,7 @@ git commit -m "feat(app): orchestration conflict colouring and pairing badges"
 
 **Interfaces:**
 - Consumes: SP1's `removeStep`, `renumber`, `sweepOrphans`.
-- Produces: `moveStepToNewStage(orch, stepId, railId, index) → Orchestration`; `moveStepIntoStage(orch, stepId, stageId) → Orchestration`; and `moveStepToNewStageAction`, `moveStepIntoStageAction` in `orchestrationState.ts`.
+- Produces: `moveStepToNewStage(orch, stepId, railId, index) → Orchestration`; `moveStepIntoStage(orch, stepId, stageId) → Orchestration`; `splitStageIntoSequence(orch, stageId) → Orchestration`; and `moveStepToNewStageAction`, `moveStepIntoStageAction`, `makeStageSequentialAction` in `orchestrationState.ts`.
 
 **CONTRACT:** `index` counts stage positions in the target rail **with the dragged step's own stage removed if that removal emptied it** — which is exactly what the drag glue measures, since the dragged chip is excluded from measurement.
 
@@ -949,7 +1037,7 @@ git commit -m "feat(app): orchestration conflict colouring and pairing badges"
 Append to `app/src/lib/orchestration.test.ts`:
 
 ```ts
-import { moveStepToNewStage, moveStepIntoStage } from "./orchestration";
+import { moveStepToNewStage, moveStepIntoStage, splitStageIntoSequence } from "./orchestration";
 
 function built(): Orchestration {
   // r1: [t1] [t2, t3]   r2: [t4]
@@ -1042,6 +1130,46 @@ describe("moveStepToNewStage", () => {
     const before = built();
     expect(stageMap(moveStepToNewStage(before, "nope", "r1", 0))).toEqual(stageMap(before));
     expect(stageMap(moveStepToNewStage(before, "t1", "nope", 0))).toEqual(stageMap(before));
+  });
+});
+
+describe("splitStageIntoSequence", () => {
+  it("turns a parallel stage into consecutive single-step stages, in order", () => {
+    const o = splitStageIntoSequence(built(), "s2");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t1"], ["t2"], ["t3"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("keeps the original stage id on the FIRST slice", () => {
+    // A running rail's currentStageId points at this stage; reusing the
+    // id is what stops the split from orphaning it.
+    const o = splitStageIntoSequence(built(), "s2");
+    expect(o.rails[0].stages.map((s) => s.id)).toEqual(["s1", "s2", expect.any(String)]);
+  });
+
+  it("renumbers every stage after the split", () => {
+    const o = splitStageIntoSequence(built(), "s2");
+    expect(o.rails[0].stages.map((s) => s.position)).toEqual([0, 1, 2]);
+  });
+
+  it("preserves step ids, so run state and notes survive", () => {
+    let o = built();
+    o = {
+      ...o,
+      stepRuns: [{ stepId: "t3", state: "running", sessionId: "s9", reason: null }],
+      conflictNotes: [{ id: "n1", stepIds: ["t2", "t3"], note: "careful" }],
+    };
+    const split = splitStageIntoSequence(o, "s2");
+    expect(split.stepRuns).toEqual([{ stepId: "t3", state: "running", sessionId: "s9", reason: null }]);
+    expect(split.conflictNotes).toHaveLength(1);
+  });
+
+  it("is a no-op for a single-step stage or an unknown stage", () => {
+    const before = built();
+    expect(stageMap(splitStageIntoSequence(before, "s1"))).toEqual(stageMap(before));
+    expect(stageMap(splitStageIntoSequence(before, "nope"))).toEqual(stageMap(before));
   });
 });
 ```
@@ -1138,6 +1266,38 @@ export function moveStepToNewStage(
 }
 ```
 
+And the repair the conflicts box offers for a parallel stage (spec O13):
+
+```ts
+/// Split one stage of N steps into N consecutive single-step stages, in
+/// step order -- the "Make sequential" repair for a same-worktree
+/// conflict of scope "stage".
+///
+/// The FIRST slice keeps the original stage id on purpose: a running
+/// rail's `currentStageId` may point at this stage, and minting a fresh
+/// id for every slice would strand it mid-run. Step ids are untouched
+/// throughout, so run state and conflict notes ride along.
+export function splitStageIntoSequence(orch: Orchestration, stageId: string): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => {
+      if (!r.stages.some((s) => s.id === stageId)) return r;
+      const stages = r.stages.flatMap((s) => {
+        if (s.id !== stageId || s.steps.length < 2) return [s];
+        return [...s.steps]
+          .sort((a, b) => a.position - b.position)
+          .map((step, i) => ({
+            id: i === 0 ? s.id : crypto.randomUUID(),
+            position: 0, // renumber() fixes these up below
+            steps: [{ ...step, position: 0 }],
+          }));
+      });
+      return { ...r, stages: renumber(stages) };
+    }),
+  };
+}
+```
+
 `renumber` was declared in SP1's mutator block; reuse it rather than redeclaring.
 
 - [ ] **Step 4: Add the action wrappers**
@@ -1160,6 +1320,10 @@ export function moveStepToNewStageAction(
   index: number
 ): Promise<void> {
   return mutatePlan(workspaceId, (o) => moveStepToNewStage(o, stepId, railId, index));
+}
+
+export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<void> {
+  return mutatePlan(workspaceId, (o) => splitStageIntoSequence(o, stageId));
 }
 ```
 
@@ -2536,7 +2700,8 @@ Then, in the app:
 1. Open a rail's bindings; pick an existing worktree; confirm the header updates and the `rail-unbound` conflict disappears.
 2. Use **New worktree…**; confirm the worktree is created, the rail binds to it, **and the Git tab stays where it was** (the `switchAfter={false}` behaviour).
 3. Bind a new page named after the rail; Start the rail; confirm its session lands on that page, not the active one.
-4. Point two rails at one worktree; confirm a `same-worktree` conflict with `scope: "rails"` appears and both rails' chips carry the badge.
+4. Point two rails at one worktree; confirm a `same-worktree` conflict with `scope: "rails"` appears and both rails' chips carry the badge. Then give each rail its own worktree and confirm the row **disappears entirely** — separate checkouts are never a conflict (spec O13).
+5. Build a parallel stage; confirm its row offers **Make sequential**, and that clicking it splits the stage into consecutive beats and clears the conflict.
 5. Delete a worktree from the Git tab while a rail is bound to it; confirm `worktree-missing` appears with its inline **Bind worktree…** fix, and that Start stalls rather than spawning.
 
 - [ ] **Step 6: Commit**

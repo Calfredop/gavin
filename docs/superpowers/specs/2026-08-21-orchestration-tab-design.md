@@ -311,7 +311,7 @@ mount tick is just the first tick.
 
 ```ts
 type Conflict =
-  | { kind: "same-worktree";  scope: "stage" | "rails"; severity: "live" | "potential"; stepIds: string[]; worktreePath: string }
+  | { kind: "same-worktree";  scope: "stage" | "rails"; stageId: string | null; severity: "live" | "potential"; stepIds: string[]; worktreePath: string }
   | { kind: "duplicate-card"; severity: "potential"; stepIds: string[]; cardPath: string }
   | { kind: "worktree-missing"; severity: "potential"; railId: string; worktreePath: string }
   | { kind: "rail-unbound";   severity: "potential"; railId: string }
