@@ -29,6 +29,8 @@
     composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
+    onSendToAgent?: ((card: CardView) => void) | null;
+    agentAvailable?: boolean;
     onDeleteCard?: ((card: CardView) => void) | null;
     onCardContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
     // The full projection (nested included) -- the column-cascade plan
@@ -44,6 +46,8 @@
     composerContext = null,
     onOpenPlanCard,
     onRunCard = null,
+    onSendToAgent = null,
+    agentAvailable = false,
     onDeleteCard = null,
     onCardContextMenu = null,
     allCards = [],
@@ -299,7 +303,7 @@
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} onDelete={onDeleteCard} onContextMenu={onCardContextMenu} />
+            <BoardCard card={slot.item} labelDefs={labels} onOpen={onOpenPlanCard} {workspaceId} onRun={onRunCard} {onSendToAgent} {agentAvailable} onDelete={onDeleteCard} onContextMenu={onCardContextMenu} />
           </div>
         {:else}
           <div class="slot-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 40}px"></div>

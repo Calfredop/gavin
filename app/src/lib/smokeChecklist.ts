@@ -176,12 +176,12 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       {
         id: "run-task",
-        text: "▶ Run on a task card spawns the agent on the Agents page (attached, no focus steal) and sets In Progress",
+        text: "Hover pills: blue ▶ session spawns a dedicated bound agent (Agents page, attached, no focus steal) and sets In Progress",
         hint: "The composed command is agentCommand + the quoted prompt; cwd = the card's context folder.",
       },
       {
         id: "run-plan",
-        text: "▶ Run on a plan card hands the agent a pointer prompt (read the file, tick items, promote, keep status)",
+        text: "▶ session on a plan hands the agent a pointer prompt (read the file, tick items, promote, keep status)",
       },
       {
         id: "run-dot",
@@ -198,6 +198,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       { id: "run-relaunch", text: "After the session exits, Re-launch in the detail recreates it with the same cwd/command" },
       { id: "run-unlink", text: "Unlink clears the dot and the binding; the next Run spawns fresh" },
+      {
+        id: "run-send-agent",
+        text: "Green ▶ agent pill pastes the prompt into the RUNNING main agent and jumps Home; disabled (with tooltip) when none runs",
+        hint: "No binding/dot for main-agent sends — the card's status is the tracking.",
+      },
       { id: "run-now-composer", text: "Composer task chip + “Run now” creates the card and immediately runs it" },
       {
         id: "skill-updated",

@@ -62,6 +62,8 @@ function hooks(): CardMenuHooks {
     openDetail: vi.fn(),
     requestDelete: vi.fn(),
     run: vi.fn(),
+    sendToAgent: vi.fn(),
+    agentAvailable: false,
     reportError: vi.fn(),
   };
 }
@@ -90,10 +92,14 @@ describe("buildCardMenuEntries", () => {
     expect(l.join()).not.toContain("session");
   });
 
-  it("an unbound task offers Run; the current column is disabled-active", () => {
+  it("an unbound task offers both run modes; the current column is disabled-active", () => {
     const entries = buildCardMenuEntries(card("task", "To Do"), hooks());
     const l = labels(entries);
-    expect(l).toContain("Run task with agent");
+    expect(l).toContain("Run in dedicated session");
+    const send = entries.find(
+      (e): e is ContextMenuItem => !isSeparator(e) && e.label === "Send to workspace agent"
+    );
+    expect(send?.disabled).toBe(true); // no main agent in these hooks
     const current = entries.find(
       (e): e is ContextMenuItem => !isSeparator(e) && e.label === "Move to To Do"
     );
