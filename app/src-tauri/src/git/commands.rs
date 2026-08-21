@@ -623,6 +623,8 @@ pub(crate) mod testutil {
         git(cwd, &["config", "user.email", "t@example.com"]);
         git(cwd, &["config", "user.name", "Test User"]);
         git(cwd, &["config", "commit.gpgsign", "false"]);
+        // Byte-exact blobs regardless of the machine's autocrlf setting.
+        git(cwd, &["config", "core.autocrlf", "false"]);
         fs::write(dir.path().join("f.txt"), "alpha\nbeta\ngamma\ndelta\nepsilon\n").unwrap();
         git(cwd, &["add", "f.txt"]);
         git(cwd, &["commit", "-q", "-m", "base"]);

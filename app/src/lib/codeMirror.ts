@@ -66,6 +66,12 @@ export interface EditorHandle {
   setDoc(text: string): void;
   setReadOnly(readOnly: boolean): void;
   setTheme(theme: "light" | "dark"): void;
+  /// Current buffer (LF-normalised by CodeMirror).
+  getDoc(): string;
+  /// Scrolls the 0-based line into view, centred.
+  scrollToLine(line: number): void;
+  /// Dispatches state effects (used by decoration extensions).
+  dispatchEffects(effects: unknown[]): void;
   measure(): void;
   destroy(): void;
 }
@@ -78,6 +84,9 @@ export interface CreateEditorOptions {
   theme: "light" | "dark";
   onChange: (value: string) => void;
   onSave: () => void;
+  /// Extra CodeMirror extensions appended to the defaults (e.g. the merge
+  /// editor's region decorations).
+  extensions?: unknown[];
 }
 
 export async function createEditor(options: CreateEditorOptions): Promise<EditorHandle> {
@@ -153,6 +162,7 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
         if (update.docChanged) options.onChange(update.state.doc.toString());
       }),
       ...language,
+      ...((options.extensions ?? []) as never[]),
     ],
   });
 
@@ -178,6 +188,16 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
       // Compartment reconfigure, same reason as setReadOnly: a theme flip
       // must not throw away scroll position or undo history.
       editorView.dispatch({ effects: themeCompartment.reconfigure(themeFor(theme)) });
+    },
+    getDoc() {
+      return editorView.state.doc.toString();
+    },
+    scrollToLine(line: number) {
+      const n = Math.min(Math.max(1, line + 1), editorView.state.doc.lines);
+      editorView.dispatch({ effects: EditorView.scrollIntoView(editorView.state.doc.line(n).from, { y: "center" }) });
+    },
+    dispatchEffects(effects: unknown[]) {
+      editorView.dispatch({ effects: effects as never[] });
     },
     measure() {
       editorView.requestMeasure();

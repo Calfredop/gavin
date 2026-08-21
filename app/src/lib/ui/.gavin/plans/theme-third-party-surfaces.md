@@ -13,5 +13,5 @@ Done 2026-08-21.
 - [x] CodeMirror light arm + `defaultHighlightStyle` (oneDark was the only
       source of syntax colour), both via a `Compartment` so scroll and
       undo survive a flip
-- [ ] Human visual pass: terminal colours, diff readability, syntax
+- [ ] [Human visual pass: terminal colours, diff readability, syntax](./human-visual-pass-terminal-colours-diff-readability-syntax.md)
       highlighting in light

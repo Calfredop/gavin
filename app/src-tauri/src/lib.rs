@@ -128,7 +128,13 @@ pub fn run() {
             git::git_cherry_pick,
             git::git_revert,
             git::git_reset,
-            git::git_continue_in_progress
+            git::git_continue_in_progress,
+            git::git_conflict,
+            git::git_mark_resolved,
+            git::git_resolve_whole,
+            git::git_resolve_deleted,
+            git::git_restore_conflict,
+            git::git_merge_tool_name
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -17,6 +17,7 @@
   import GitNav from "./GitNav.svelte";
   import GitChanges from "./GitChanges.svelte";
   import GitDiff from "./GitDiff.svelte";
+  import GitConflictView from "./GitConflictView.svelte";
   import GitGraph from "./GitGraph.svelte";
   import GitCommitDetail from "./GitCommitDetail.svelte";
 
@@ -125,10 +126,14 @@
     <GitOpBar {workspaceId} />
     {#if view.repo?.inProgress}
       {@const kind = view.repo.inProgress}
-      {@const conflicts = view.status?.unstaged.some((e) => e.status === "U") ?? false}
+      {@const conflictCount = view.status?.unstaged.filter((e) => e.status === "U").length ?? 0}
+      {@const conflicts = conflictCount > 0}
       {@const label = kind === "merge" ? "Merge" : kind === "rebase" ? "Rebase" : kind === "cherry-pick" ? "Cherry-pick" : "Revert"}
       <div class="banner info">
-        <span>{label} in progress — resolve conflicts and {kind === "merge" ? "commit" : "continue"}</span>
+        <span>
+          {label} in progress —
+          {#if conflicts}{conflictCount} file{conflictCount === 1 ? "" : "s"} conflicted; resolve {conflictCount === 1 ? "it" : "them"} and {kind === "merge" ? "commit" : "continue"}{:else}no conflicts left — {kind === "merge" ? "commit" : "continue"} when ready{/if}
+        </span>
         {#if kind !== "merge"}
           <button
             type="button"
@@ -159,7 +164,13 @@
       {:else}
         <div class="pane"><GitChanges {workspaceId} /></div>
         <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
-        <div class="pane"><GitDiff {workspaceId} /></div>
+        <div class="pane">
+          {#if view.selected && view.status?.unstaged.some((e) => e.status === "U" && e.path === view.selected?.path && view.selected.area === "unstaged")}
+            <GitConflictView {workspaceId} />
+          {:else}
+            <GitDiff {workspaceId} />
+          {/if}
+        </div>
       {/if}
     </div>
   </div>

@@ -177,3 +177,41 @@ Notes:
   without re-laying lanes (rows stay 1:1 with the full list).
 - Relative dates in rows are computed at render time (no timer), exact ISO
   date in the detail header.
+
+## Conflict resolution decisions (2026-08-21)
+
+- **G17:** **Fork 3-pane editor** (recommended, approved): Ours | [Base] |
+  Theirs read-only on top, editable Result below. The Result document IS the
+  on-disk file with git's markers; per-block choices rewrite marker regions;
+  "resolved" = no markers. Parser handles merge/diff3/zdiff3 styles.
+- **G18:** Full scope (owner picked all four): base pane + next/prev
+  navigation + auto-advance; whole-file Use ours/theirs and choosers for
+  delete/modify, added-by-both, binary, submodule; Restore markers (undo),
+  marker-checked Mark resolved (server-side too), Save vs Mark resolved,
+  CRLF/final-newline preservation; "Open in <merge.tool>" via a terminal
+  pane running `git mergetool`.
+
+Spec: `docs/superpowers/specs/2026-08-21-git-tab-conflicts-design.md`.
+
+## Execution notes — conflict resolution (2026-08-21)
+
+Branch `git-conflicts` from `main` (26bedcc). Rust: 65 git tests (10 new —
+real merge/rebase/cherry-pick conflicts with labels, delete/modify both
+ways, added-by-both, binary, CRLF, marker refusal, restore, resolve whole /
+deleted, merge.tool). Vitest: 600 (11 new — marker parser on three styles,
+applyChoice, locateRegion, EOL round trip, store routing).
+
+Notes:
+
+- `core.autocrlf=false` is pinned in the temp-repo helper: the machine's
+  `autocrlf=input` normalised CRLF blobs on commit and masked the EOL test.
+- Rebase labels read the upstream from `rebase-merge/onto` via `name-rev`,
+  so they say "main (upstream)" / "feature (rebasing)" rather than HEAD.
+- `stageAll` refuses while any `U` entry exists (it would `git add -A`
+  files with markers); `stageFiles` routes `U` paths through the
+  marker-checked `git_mark_resolved`.
+- The panes are the app's `createEditor` plus a small decoration extension
+  (`mergeDecorations.ts`); `createEditor` gained `extensions`, `getDoc`,
+  `scrollToLine`, `dispatchEffects`.
+- Side-pane highlights locate each block's lines by ordered search in the
+  full stage text; a block edited by hand simply stops highlighting.
