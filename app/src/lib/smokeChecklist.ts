@@ -356,6 +356,36 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Init wizard",
+    items: [
+      { id: "wiz-create", text: "Creating a workspace opens the setup modal; Continue is disabled until a folder is bound" },
+      { id: "wiz-skip-create", text: "Skip setup leaves a usable, unrooted workspace — exactly as before" },
+      { id: "wiz-steps", text: "The wizard opens on the first unfinished step and walks Agent → Integration → PRD → Launch" },
+      {
+        id: "wiz-resume",
+        text: "Closing the wizard mid-way leaves the workspace usable; the Home tab offers “n of 4 done — continue”",
+      },
+      {
+        id: "wiz-derived",
+        text: "Doing a step by hand (bind a root, run Set up integration in Settings) marks it done without visiting the wizard",
+        hint: "Progress is derived from disk, never stored — that's the property this checks.",
+      },
+      { id: "wiz-prd-fields", text: "Filling only Vision writes it into PRD.md and leaves the other two placeholders" },
+      {
+        id: "wiz-prd-agent",
+        text: "“Ask the agent” starts the main agent already writing the PRD; Launch then says “already running”",
+      },
+      { id: "wiz-agent-gate", text: "With a non-Claude profile, “Ask the agent” is absent and the step says why" },
+      {
+        id: "wiz-integration-degrades",
+        text: "With Codex selected, Integration still writes AGENTS.md and lists the skill file and MCP config as skipped, with reasons",
+        hint: "This is the behaviour change: before, that profile got nothing at all.",
+      },
+      { id: "wiz-complete", text: "Once all four are done the Home card disappears" },
+      { id: "wiz-unfiled", text: "The Unfiled workspace never offers the wizard" },
+    ],
+  },
+  {
     title: "Context boards",
     items: [
       { id: "board-icon", text: "cd into a .gavin context → kanban icon appears on the pane tab bar" },

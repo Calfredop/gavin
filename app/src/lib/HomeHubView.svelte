@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { layoutState, switchWorkspaceView, agentProfilesStore } from "./layoutState";
+  import { layoutState, switchWorkspaceView, agentProfilesStore, openWizard } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
+  import { setupProgress } from "./setupWizard";
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { boardSummary, planSummary, prdExcerpt } from "./homeSummary";
@@ -34,6 +35,21 @@
   let agent = $state<{ fit: () => void } | null>(null);
   let gridEl = $state<HTMLElement | null>(null);
 
+  // Whole bodies for the setup derivation; the summaries above are
+  // derived from the same two reads.
+  let prdBody = $state<string | null>(null);
+  let agentFileBody = $state<string | null>(null);
+
+  const setup = $derived(
+    setupProgress({
+      hasRoot: Boolean(root),
+      configCommand: tree?.contexts.find((c) => c.kind === "root")?.agent?.command ?? null,
+      agentFileBody,
+      prdBody,
+      mainSessionId: ws?.mainSessionId ?? null,
+    })
+  );
+
   $effect(() => {
     void fetchBoard(workspaceId);
   });
@@ -45,12 +61,26 @@
     if (!r) return;
     void backend
       .readFileForViewer(`${r}/.gavin-root/PRD.md`)
-      .then((res) => (prdLines = prdExcerpt(res.content, EXCERPT_LINES)))
-      .catch(() => (prdLines = []));
+      .then((res) => {
+        prdLines = prdExcerpt(res.content, EXCERPT_LINES);
+        // Kept whole as well: setupProgress needs the body to tell a
+        // written PRD from an untouched scaffold.
+        prdBody = res.exists ? res.content : null;
+      })
+      .catch(() => {
+        prdLines = [];
+        prdBody = null;
+      });
     void backend
       .readFileForViewer(`${r}/${agentCfg.file}`)
-      .then((res) => (agentFileExists = res.exists))
-      .catch(() => (agentFileExists = null));
+      .then((res) => {
+        agentFileExists = res.exists;
+        agentFileBody = res.exists ? res.content : null;
+      })
+      .catch(() => {
+        agentFileExists = null;
+        agentFileBody = null;
+      });
     // One-shot git status for the tile — no watcher here; the Git tab
     // itself holds the live one.
     ensureGitView(workspaceId, r);
@@ -84,6 +114,12 @@
   <div class="empty">No root folder set for this workspace.</div>
 {:else}
   <div class="home">
+    {#if root && !setup.complete}
+      <button type="button" class="setup-card" onclick={() => openWizard(workspaceId)}>
+        <b>Finish setting up this workspace</b>
+        <span>{setup.done.length} of 4 done — continue</span>
+      </button>
+    {/if}
     <div class="grid" bind:this={gridEl}>
       <div class="agent-cell">
         <MainAgentPanel bind:this={agent} {workspaceId} />
@@ -143,6 +179,25 @@
 {/if}
 
 <style>
+  .setup-card {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    align-items: flex-start;
+    text-align: left;
+    background: #1a1a1a;
+    border: 1px solid #3a4a3a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: #ccc;
+    font-family: monospace;
+    font-size: 0.8em;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .setup-card span {
+    color: #8bc98b;
+  }
   .home {
     display: flex;
     flex-direction: column;
