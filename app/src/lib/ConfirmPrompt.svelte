@@ -37,13 +37,13 @@
   .title {
     font-family: monospace;
     font-weight: bold;
-    color: #eee;
+    color: var(--text);
     margin-bottom: 10px;
   }
   .lines {
     font-family: monospace;
     font-size: 0.85em;
-    color: #bbb;
+    color: var(--text-muted);
     margin: 0 0 14px;
     padding-left: 18px;
   }
@@ -56,19 +56,19 @@
     gap: 8px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 6px 14px;
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
   }
   .actions button.danger {
-    background: #5a2f2a;
-    color: #f0c0b8;
+    background: var(--surface-danger);
+    color: var(--danger-text);
   }
   .actions button.danger:hover {
-    background: #6e3730;
+    background: var(--surface-danger);
   }
 </style>

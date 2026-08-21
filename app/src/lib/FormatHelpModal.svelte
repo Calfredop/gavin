@@ -55,16 +55,16 @@ extra_contexts = ["/abs/folder"]  # contexts outside the workspace</pre>
   .help {
     font-family: monospace;
     font-size: 0.85em;
-    color: #ccc;
+    color: var(--text);
     max-width: 440px;
   }
   .title {
     font-weight: bold;
-    color: #eee;
+    color: var(--text);
     margin-bottom: 10px;
   }
   .section {
-    color: #8bc98b;
+    color: var(--success-text);
     margin: 14px 0 4px;
   }
   p {
@@ -79,19 +79,19 @@ extra_contexts = ["/abs/folder"]  # contexts outside the workspace</pre>
     margin-bottom: 3px;
   }
   pre {
-    background: #1e1e1e;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px 10px;
     overflow-x: auto;
     font-size: 0.95em;
     line-height: 1.4;
-    color: #bbb;
+    color: var(--text-muted);
   }
   code {
-    color: #d9a648;
+    color: var(--warning-text);
   }
   b {
-    color: #ddd;
+    color: var(--text);
   }
 </style>

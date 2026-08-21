@@ -76,8 +76,8 @@
     z-index: 2500;
     min-width: 180px;
     max-width: 280px;
-    background: #232323;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 6px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     padding: 4px;
@@ -88,7 +88,7 @@
     background: transparent;
     border: none;
     border-radius: 4px;
-    color: #ddd;
+    color: var(--text);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -102,26 +102,26 @@
     text-overflow: ellipsis;
   }
   .item:hover:not(:disabled) {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
   }
   .item:disabled {
     opacity: 0.4;
     cursor: default;
   }
   .item.danger {
-    color: #e0847a;
+    color: var(--danger-text);
   }
   .item.danger:hover:not(:disabled) {
-    background: #4a2723;
+    background: var(--surface-danger);
   }
   .marker {
     width: 10px;
     flex: 0 0 auto;
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .separator {
     height: 1px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     margin: 4px 6px;
   }
 </style>

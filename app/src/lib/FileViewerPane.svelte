@@ -29,8 +29,8 @@
     inset: 0;
     width: 100%;
     height: 100%;
-    background: #1e1e1e;
-    color: #eee;
+    background: var(--surface-base);
+    color: var(--text);
   }
   .inactive {
     visibility: hidden;

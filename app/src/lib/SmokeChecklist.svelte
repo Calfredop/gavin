@@ -69,7 +69,7 @@
     overflow-y: auto;
     padding: 16px 20px 32px;
     box-sizing: border-box;
-    color: #ddd;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
   }
@@ -78,22 +78,22 @@
     align-items: center;
     gap: 12px;
     padding-bottom: 10px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border);
     margin-bottom: 8px;
     flex-wrap: wrap;
   }
   .progress {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .note {
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.9em;
   }
   .head button {
     margin-left: auto;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 3px 10px;
     border-radius: 4px;
     cursor: pointer;
@@ -101,7 +101,7 @@
     font-size: 1em;
   }
   h3 {
-    color: #aaa;
+    color: var(--text-muted);
     font-size: 0.9em;
     font-weight: normal;
     text-transform: uppercase;
@@ -117,20 +117,20 @@
     line-height: 1.45;
   }
   .item.done .text {
-    color: #6d7d6d;
+    color: var(--text-subtle);
     text-decoration: line-through;
   }
   .item input {
     margin-top: 3px;
     flex: 0 0 auto;
-    accent-color: #8bc98b;
+    accent-color: var(--success);
   }
   .text {
     display: flex;
     flex-direction: column;
   }
   .hint {
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.9em;
     text-decoration: none;
   }

@@ -39,16 +39,16 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     height: 100%;
   }
   .overlay button {
     margin-top: 12px;
     padding: 8px 16px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;

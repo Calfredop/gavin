@@ -52,13 +52,13 @@
     padding: 0;
   }
   .swatch.selected {
-    border-color: #eee;
+    border-color: var(--text);
   }
   .custom {
     display: flex;
     align-items: center;
     gap: 5px;
-    color: #999;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -67,7 +67,7 @@
     height: 20px;
     padding: 0;
     background: transparent;
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 4px;
   }
   .preview {
