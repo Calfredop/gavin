@@ -13,6 +13,7 @@
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
   import { initPlatform } from "$lib/platform";
+  import { installHintTracking } from "$lib/shortcutHints";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
@@ -27,6 +28,7 @@
 
   let closeConfirmed = false;
   let uninstallShortcuts: (() => void) | null = null;
+  let uninstallHints: (() => void) | null = null;
   let unlistenClose: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
@@ -82,11 +84,13 @@
     }
 
     uninstallShortcuts = installKeyboardShortcuts();
+    uninstallHints = installHintTracking();
   });
 
   onDestroy(() => {
     unlistenClose?.();
     uninstallShortcuts?.();
+    uninstallHints?.();
     teardown();
   });
 </script>
