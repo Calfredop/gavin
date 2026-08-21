@@ -218,7 +218,7 @@
     padding: 8px 4px;
     font-family: monospace;
     font-size: 0.8em;
-    color: #ccc;
+    color: var(--text);
   }
   .row {
     display: flex;
@@ -228,19 +228,19 @@
     border-radius: 4px;
   }
   .file-row.selected {
-    background: #2f3a2f;
+    background: var(--surface-success);
   }
   .file-row:hover,
   .context-row:hover,
   .group-row:hover {
-    background: #2a2a2a;
+    background: var(--surface-raised);
   }
   .twisty,
   .add,
   .split {
     background: transparent;
     border: none;
-    color: #888;
+    color: var(--text-subtle);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -256,22 +256,22 @@
     opacity: 1;
   }
   .name {
-    color: #8bc98b;
+    color: var(--success-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .name.outside {
-    color: #e08a3c;
+    color: var(--warning-text);
   }
   .group-label {
-    color: #999;
+    color: var(--text-muted);
     text-transform: uppercase;
     font-size: 0.85em;
     letter-spacing: 0.05em;
   }
   .count {
-    color: #666;
+    color: var(--text-subtle);
     font-size: 0.85em;
   }
   .file {
@@ -296,11 +296,11 @@
   }
   .glyph {
     display: flex;
-    color: #7a8a7a;
+    color: var(--text-subtle);
     flex: 0 0 auto;
   }
   .status {
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.85em;
     flex: 0 0 auto;
   }
@@ -311,20 +311,20 @@
     flex: 0 0 auto;
   }
   .priority-low {
-    background: #6b8e6b;
+    background: var(--surface-success);
   }
   .priority-medium {
-    background: #d9a648;
+    background: var(--warning);
   }
   .priority-high {
-    background: #d97748;
+    background: var(--warning);
   }
   .priority-urgent {
-    background: #d94848;
+    background: var(--danger);
   }
   .warn {
     display: flex;
-    color: #d9a648;
+    color: var(--warning-text);
     flex: 0 0 auto;
   }
   .composer {
@@ -341,17 +341,17 @@
   }
   .group-picker button {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #999;
+    color: var(--text-muted);
     font-family: inherit;
     font-size: 0.85em;
     padding: 1px 6px;
     cursor: pointer;
   }
   .group-picker button.active {
-    background: #333;
-    color: #eee;
+    background: var(--surface-overlay);
+    color: var(--text);
   }
   .group-picker button.close {
     border: none;
@@ -361,13 +361,13 @@
     padding: 1px 2px;
   }
   .group-picker button.close:hover {
-    color: #ddd;
+    color: var(--text);
   }
   .composer input {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: inherit;
     font-size: inherit;
     padding: 2px 6px;

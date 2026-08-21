@@ -171,26 +171,26 @@
     gap: 10px;
     padding: 6px 12px;
     margin: 6px 10px 0;
-    background: #2a2a2a;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ccc;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.8em;
   }
   .banner.warning {
-    border-color: #a15c2f;
-    color: #e0b08a;
+    border-color: var(--border-warning);
+    color: var(--warning-text);
   }
   .banner.seed {
-    border-color: #3d5a3d;
-    color: #8bc98b;
+    border-color: var(--border-success);
+    color: var(--success-text);
   }
   .banner button,
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 4px 10px;
     border-radius: 4px;
     cursor: pointer;
@@ -203,7 +203,7 @@
     gap: 6px;
     margin: 6px 10px 0;
     padding: 3px 10px;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.75em;
   }
@@ -217,12 +217,12 @@
   .gear {
     background: transparent;
     border: none;
-    color: #888;
+    color: var(--text-subtle);
     cursor: pointer;
     padding: 0 2px;
   }
   .gear:hover {
-    color: #eee;
+    color: var(--text);
   }
   .detail {
     opacity: 0.7;

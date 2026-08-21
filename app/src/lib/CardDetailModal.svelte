@@ -387,26 +387,26 @@
     letter-spacing: 0.05em;
   }
   .kind-badge.kind-note {
-    border: 1px solid #8a7d55;
-    color: #b8a978;
+    border: 1px solid var(--border-warning);
+    color: var(--warning-text);
   }
   .kind-badge.kind-task {
-    border: 1px solid #4a5568;
-    color: #7ea8d8;
+    border: 1px solid var(--border-accent);
+    color: var(--accent-text);
   }
   .kind-badge.kind-plan {
-    border: 1px solid #4c584c;
-    color: #8bc98b;
+    border: 1px solid var(--border-success);
+    color: var(--success-text);
   }
   .meta {
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.8em;
   }
   .title {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1.05em;
     font-weight: bold;
@@ -415,13 +415,13 @@
     box-sizing: border-box;
   }
   .path {
-    color: #666;
+    color: var(--text-subtle);
     font-size: 0.7em;
     margin: 4px 0 10px;
     word-break: break-all;
   }
   .warning {
-    color: #d9a648;
+    color: var(--warning-text);
     font-size: 0.8em;
   }
   .row {
@@ -432,20 +432,20 @@
     font-size: 0.85em;
   }
   .row .label {
-    color: #999;
+    color: var(--text-muted);
     width: 70px;
     flex: 0 0 auto;
   }
   .row select {
-    background: #1e1e1e;
-    border: 1px solid #444;
-    color: #eee;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    color: var(--text);
     font-family: monospace;
     padding: 3px 6px;
     border-radius: 4px;
   }
   .broken {
-    color: #e0b08a;
+    color: var(--warning-text);
   }
   .chips {
     display: flex;
@@ -454,8 +454,8 @@
   }
   .chip {
     background: transparent;
-    border: 1px solid #666;
-    color: #999;
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
     border-radius: 12px;
     padding: 1px 10px;
     font-size: 0.9em;
@@ -463,14 +463,14 @@
     font-family: monospace;
   }
   .chip.active {
-    background: #3a3a3a;
-    color: #eee;
+    background: var(--surface-overlay);
+    color: var(--text);
   }
   .section {
     margin: 12px 0;
   }
   .section-title {
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.8em;
     margin-bottom: 6px;
   }
@@ -482,19 +482,19 @@
     padding: 2px 0;
   }
   .check-text.done {
-    color: #777;
+    color: var(--text-subtle);
     text-decoration: line-through;
   }
   .promoted {
-    color: #7ea8d8;
+    color: var(--accent-text);
     font-size: 0.8em;
   }
   .promote,
   .unparent {
     background: transparent;
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-family: monospace;
     font-size: 0.75em;
@@ -502,7 +502,7 @@
     margin-left: auto;
   }
   .check-item input {
-    accent-color: #8bc98b;
+    accent-color: var(--success);
   }
   .child-row {
     display: flex;
@@ -512,11 +512,11 @@
     padding: 2px 0;
   }
   .child-status {
-    color: #999;
+    color: var(--text-muted);
   }
   .prompt {
-    background: #1e1e1e;
-    border: 1px solid #333;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px;
     font-size: 0.8em;
@@ -528,8 +528,8 @@
   .body-preview {
     -webkit-user-select: text;
     user-select: text;
-    background: #1e1e1e;
-    border: 1px solid #333;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px 12px;
     font-size: 0.85em;
@@ -537,7 +537,7 @@
     overflow-y: auto;
   }
   .error {
-    color: #e0524a;
+    color: var(--danger-text);
     font-size: 0.8em;
   }
   .session-info {
@@ -562,9 +562,9 @@
     flex-wrap: wrap;
   }
   .session-actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 4px 10px;
     border-radius: 4px;
     cursor: pointer;
@@ -582,17 +582,17 @@
     margin-top: 16px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 6px 14px;
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
   }
   .actions button.danger {
-    background: #5a2f2a;
-    color: #f0c0b8;
+    background: var(--surface-danger);
+    color: var(--danger-text);
     margin-right: auto;
   }
 </style>

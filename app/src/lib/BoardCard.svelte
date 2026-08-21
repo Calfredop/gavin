@@ -235,7 +235,7 @@
     padding: 8px;
     margin-bottom: 6px;
     cursor: pointer;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     user-select: none;
@@ -243,19 +243,19 @@
     transition: box-shadow 120ms, border-color 120ms;
   }
   .card.kind-note {
-    background: #2a2a2a;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
   }
   .card.kind-task {
-    background: #26292e;
-    border: 1px dashed #4a5568;
+    background: var(--surface-accent);
+    border: 1px dashed var(--border-accent);
   }
   .card.kind-plan {
-    background: #262b26;
-    border: 1px dashed #4c584c;
+    background: var(--surface-success);
+    border: 1px dashed var(--border-success);
   }
   .card:hover {
-    border-color: #6a6a6a;
+    border-color: var(--border-strong);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .card.nested {
@@ -276,13 +276,13 @@
   .glyph {
     display: flex;
     align-items: center;
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .kind-task .glyph {
-    color: #7ea8d8;
+    color: var(--accent-text);
   }
   .kind-note .glyph {
-    color: #b8a978;
+    color: var(--warning-text);
   }
   .priority {
     display: inline-block;
@@ -292,31 +292,31 @@
     flex: 0 0 auto;
   }
   .priority-low {
-    background: #6b8e6b;
+    background: var(--surface-success);
   }
   .priority-medium {
-    background: #d9a648;
+    background: var(--warning);
   }
   .priority-high {
-    background: #d97748;
+    background: var(--warning);
   }
   .priority-urgent {
-    background: #d94848;
+    background: var(--danger);
   }
   .progress {
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.85em;
   }
   .warning {
     display: flex;
     align-items: center;
-    color: #d9a648;
+    color: var(--warning-text);
     margin-left: auto;
   }
   .chevron {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -361,31 +361,31 @@
     }
   }
   .card.session-working {
-    border-left: 3px solid #4a9eff;
+    border-left: 3px solid var(--border-focus);
   }
   .card.session-waiting {
-    border-left: 3px solid #e0524a;
+    border-left: 3px solid var(--border-danger);
   }
   .card.session-idle {
-    border-left: 3px solid #6b8e6b;
+    border-left: 3px solid var(--border-success);
   }
   .status-dot.status-working {
-    background: #4a9eff;
+    background: var(--accent);
   }
   .status-dot.status-waiting {
-    background: #e0524a;
+    background: var(--danger);
   }
   .status-dot.status-idle {
-    background: #6b8e6b;
+    background: var(--surface-success);
   }
   .status-dot.status-exited {
     background: transparent;
-    border: 1px solid #666;
+    border: 1px solid var(--border-strong);
   }
   .run {
     background: transparent;
     border: none;
-    color: #7ea8d8;
+    color: var(--accent-text);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -404,7 +404,7 @@
     background: rgba(30, 30, 30, 0.85);
     border: none;
     border-radius: 4px;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 1.05em;
     line-height: 1;
@@ -414,7 +414,7 @@
     z-index: 1;
   }
   .delete:hover {
-    color: #e0524a;
+    color: var(--danger-text);
     background: rgba(60, 30, 28, 0.95);
   }
   .card:hover .delete,
@@ -426,11 +426,11 @@
   }
   .parent-chip {
     display: inline-block;
-    border: 1px solid #4a5568;
+    border: 1px solid var(--border-accent);
     border-radius: 10px;
     padding: 0 6px;
     font-size: 0.8em;
-    color: #7ea8d8;
+    color: var(--accent-text);
     margin-top: 6px;
     max-width: 100%;
     overflow: hidden;
@@ -439,8 +439,8 @@
     box-sizing: border-box;
   }
   .parent-chip.broken {
-    border-color: #a15c2f;
-    color: #e0b08a;
+    border-color: var(--border-warning);
+    color: var(--warning-text);
   }
   .labels {
     display: flex;
@@ -449,18 +449,18 @@
     margin-top: 6px;
   }
   .label-chip {
-    border: 1px solid #666;
+    border: 1px solid var(--border-strong);
     border-radius: 10px;
     padding: 1px 6px;
     font-size: 0.85em;
   }
   .context-badge {
     display: inline-block;
-    border: 1px solid #555;
+    border: 1px solid var(--border-strong);
     border-radius: 10px;
     padding: 1px 6px;
     font-size: 0.8em;
-    color: #999;
+    color: var(--text-muted);
     margin-top: 6px;
     max-width: 100%;
     overflow: hidden;
@@ -469,8 +469,8 @@
     box-sizing: border-box;
   }
   .kind-plan .context-badge {
-    color: #8bc98b;
-    border-color: #4c584c;
+    color: var(--success-text);
+    border-color: var(--border-success);
   }
   .nested-area {
     margin-top: 8px;
@@ -479,9 +479,9 @@
     background: rgba(0, 0, 0, 0.25);
   }
   .nested-placeholder {
-    border: 1px dashed #555;
+    border: 1px dashed var(--border-strong);
     border-radius: 6px;
-    background: #202020;
+    background: var(--surface-sunken);
     margin-bottom: 4px;
     box-sizing: border-box;
   }

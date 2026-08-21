@@ -250,13 +250,13 @@
     overflow-y: auto;
     height: 100%;
     box-sizing: border-box;
-    color: #ccc;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
   }
   h3 {
     margin: 0 0 10px;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.85em;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -271,14 +271,14 @@
   .row > span:first-child {
     width: 90px;
     flex: 0 0 auto;
-    color: #999;
+    color: var(--text-muted);
   }
   .row input,
   .row select {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 3px 8px;
@@ -291,11 +291,11 @@
     margin-bottom: 6px;
   }
   .hint {
-    color: #777;
+    color: var(--text-subtle);
     margin: 6px 0 0;
   }
   .hint.warn {
-    color: #e0b08a;
+    color: var(--warning-text);
   }
   .detail {
     opacity: 0.75;
@@ -308,9 +308,9 @@
     margin-top: 12px;
   }
   .actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;

@@ -164,11 +164,11 @@
     filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.3));
   }
   .column-shell {
-    background: #232323;
-    border: 1px solid #444;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 10px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
   }
   .column-title {
@@ -176,7 +176,7 @@
     margin-bottom: 4px;
   }
   .column-count {
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.85em;
   }
 </style>

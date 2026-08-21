@@ -214,11 +214,11 @@
     position: absolute;
     inset: 0;
     flex-direction: column;
-    background: #1e1e1e;
+    background: var(--surface-base);
     overflow: hidden;
   }
   .context-title {
-    color: #8bc98b;
+    color: var(--success-text);
     font-family: monospace;
     font-size: 0.8em;
     padding: 8px 12px 0;
@@ -240,9 +240,9 @@
     gap: 10px;
     margin: 8px 12px 0;
     padding: 6px 10px;
-    border: 1px solid #a15c2f;
+    border: 1px solid var(--border-warning);
     border-radius: 6px;
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
     flex: 0 0 auto;
@@ -260,7 +260,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     height: 100%;
   }
@@ -272,9 +272,9 @@
   .overlay button {
     margin-top: 12px;
     padding: 8px 16px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;

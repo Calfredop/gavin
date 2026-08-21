@@ -311,7 +311,7 @@
   .sidebar {
     width: 260px;
     flex: 0 0 auto;
-    border-right: 1px solid #2f2f2f;
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -321,8 +321,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 6px 8px;
-    border-bottom: 1px solid #2f2f2f;
-    color: #999;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.75em;
     text-transform: uppercase;
@@ -335,9 +335,9 @@
   }
   .sidebar-head button {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #999;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 1em;
     padding: 1px 6px;
@@ -355,7 +355,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.85em;
     padding: 8px;
@@ -371,9 +371,9 @@
     gap: 10px;
     margin: 8px;
     padding: 6px 10px;
-    border: 1px solid #a15c2f;
+    border: 1px solid var(--border-warning);
     border-radius: 6px;
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
     flex: 0 0 auto;

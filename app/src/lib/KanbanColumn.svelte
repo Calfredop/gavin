@@ -400,7 +400,7 @@
 
 <style>
   .column {
-    background: #232323;
+    background: var(--surface-raised);
     border-radius: 8px;
     padding: 10px;
     width: 240px;
@@ -414,7 +414,7 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 8px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-weight: bold;
     cursor: grab;
@@ -422,16 +422,16 @@
     -webkit-user-select: none;
   }
   .slot-placeholder {
-    border: 1px dashed #555;
+    border: 1px dashed var(--border-strong);
     border-radius: 6px;
-    background: #202020;
+    background: var(--surface-sunken);
     margin-bottom: 6px;
     box-sizing: border-box;
   }
   .header input {
-    background: #1e1e1e;
-    border: 1px solid #444;
-    color: #eee;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    color: var(--text);
     font-family: monospace;
     padding: 2px 4px;
     border-radius: 4px;
@@ -458,7 +458,7 @@
     cursor: default;
   }
   .count {
-    color: #888;
+    color: var(--text-subtle);
     font-weight: normal;
     font-size: 0.85em;
     margin-left: 6px;
@@ -467,15 +467,15 @@
   .delete {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 1.1em;
   }
   .run-all {
     background: transparent;
-    border: 1px solid #4a5568;
+    border: 1px solid var(--border-accent);
     border-radius: 10px;
-    color: #7ea8d8;
+    color: var(--accent-text);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -498,7 +498,7 @@
   .add-card {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-family: monospace;
     text-align: left;
@@ -517,25 +517,25 @@
   }
   .kind-chip {
     background: transparent;
-    border: 1px solid #444;
+    border: 1px solid var(--border);
     border-radius: 10px;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-family: monospace;
     font-size: 0.75em;
     padding: 1px 8px;
   }
   .kind-chip.active {
-    background: #3a3a3a;
-    color: #eee;
-    border-color: #666;
+    background: var(--surface-overlay);
+    color: var(--text);
+    border-color: var(--border-strong);
   }
   .compose-title,
   .compose-body {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     padding: 8px;
@@ -544,20 +544,20 @@
     box-sizing: border-box;
   }
   .compose-context {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
     padding: 4px;
   }
   .compose-error {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-size: 0.75em;
   }
   .delete-error {
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.75em;
     margin-top: 4px;
@@ -566,21 +566,21 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.8em;
   }
   .run-now input {
-    accent-color: #7ea8d8;
+    accent-color: var(--accent);
   }
   .compose-actions {
     display: flex;
     gap: 6px;
   }
   .compose-actions button {
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
     border-radius: 4px;
-    color: #eee;
+    color: var(--text);
     cursor: pointer;
     font-family: monospace;
     font-size: 0.8em;

@@ -1,6 +1,6 @@
 ---
 title: Theme xterm + CodeMirror (SP4 of 4)
-status: To Do
+status: In Progress
 priority: medium
 labels: ui
 ---

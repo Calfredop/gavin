@@ -271,17 +271,17 @@
   }
   .column-placeholder {
     width: 240px;
-    border: 1px dashed #555;
+    border: 1px dashed var(--border-strong);
     border-radius: 8px;
-    background: #202020;
+    background: var(--surface-sunken);
     align-self: stretch;
     box-sizing: border-box;
   }
   .add-column {
     background: transparent;
-    border: 1px dashed #444;
+    border: 1px dashed var(--border);
     border-radius: 8px;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-family: monospace;
     padding: 10px;
@@ -290,10 +290,10 @@
     align-self: flex-start;
   }
   .column-composer {
-    background: #1e1e1e;
-    border: 1px solid #444;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 8px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     padding: 10px;
     width: 240px;
@@ -307,9 +307,9 @@
     gap: 10px;
     margin: 8px 16px 0;
     padding: 6px 10px;
-    border: 1px solid #a15c2f;
+    border: 1px solid var(--border-warning);
     border-radius: 6px;
-    color: #e0b08a;
+    color: var(--warning-text);
     font-family: monospace;
     font-size: 0.8em;
   }
@@ -326,7 +326,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     height: 100%;
   }
@@ -337,9 +337,9 @@
   .overlay button {
     margin-top: 12px;
     padding: 8px 16px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #eee;
+    color: var(--text);
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;

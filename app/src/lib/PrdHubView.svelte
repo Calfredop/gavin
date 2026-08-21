@@ -27,7 +27,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: #888;
+    color: var(--text-subtle);
     font-family: monospace;
     font-size: 0.85em;
   }
