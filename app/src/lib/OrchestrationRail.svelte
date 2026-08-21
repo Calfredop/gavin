@@ -12,6 +12,7 @@
     severityForRail,
   } from "./orchestration";
   import { highlightedConflict } from "./orchestrationState";
+  import { orchDragState } from "./orchestrationDrag";
 
   interface Props {
     rail: Rail;
@@ -56,9 +57,23 @@
   function runOf(id: string) {
     return orch.stepRuns.find((r) => r.stepId === id) ?? null;
   }
+
+  const drag = $derived($orchDragState);
+  // The dragged chip is hidden while it flies, and a stage left holding
+  // only it collapses -- matching exactly what the glue measures, so the
+  // placeholder index and the commit index agree.
+  const stagesShown = $derived(
+    stages
+      .map((s) => ({ ...s, steps: s.steps.filter((t) => t.id !== drag?.id) }))
+      .filter((s) => s.steps.length > 0)
+  );
+  const newStageAt = $derived(
+    drag?.target?.kind === "new-stage" && drag.target.railId === rail.id ? drag.target.index : null
+  );
+  const intoStage = $derived(drag?.target?.kind === "into-stage" ? drag.target.stageId : null);
 </script>
 
-<div class="rail">
+<div class="rail" data-orch-rail={rail.id}>
   <header>
     <div class="name-row">
       <span class="name">{rail.name}</span>
@@ -108,15 +123,23 @@
     {/if}
   </header>
 
-  {#each stages as stage, i (stage.id)}
-    {#if i > 0}<div class="connector"></div>{/if}
-    <section class="stage" class:parallel={stage.steps.length > 1}>
+  {#each stagesShown as stage, i (stage.id)}
+    {#if newStageAt === i}<div class="stage-placeholder"></div>{/if}
+    {#if i > 0 && newStageAt !== i}<div class="connector"></div>{/if}
+    <section
+      class="stage"
+      class:parallel={stage.steps.length > 1}
+      class:drop-into={intoStage === stage.id}
+      data-orch-stage={stage.id}
+      data-orch-stage-pos={stage.position}
+    >
       {#if stage.steps.length > 1}
         <span class="stage-label">stage {i + 1} — parallel</span>
       {/if}
       <div class="steps">
         {#each [...stage.steps].sort((a, b) => a.position - b.position) as step (step.id)}
           <OrchestrationStepChip
+            stepId={step.id}
             cardPath={step.cardPath}
             entry={cards.get(step.cardPath)}
             state={stepStateOf(orch, step.id)}
@@ -130,6 +153,7 @@
       </div>
     </section>
   {/each}
+  {#if newStageAt === stagesShown.length}<div class="stage-placeholder"></div>{/if}
 
   <button type="button" class="add-step" onclick={onAddStep}>
     <Plus size={13} /> Add step
@@ -230,6 +254,16 @@
     border: 1px dashed var(--border-strong);
     border-radius: 8px;
     padding: 6px;
+  }
+  .stage.drop-into {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+  }
+  .stage-placeholder {
+    height: 34px;
+    border: 1px dashed var(--border-focus);
+    border-radius: 8px;
+    background: var(--surface-accent);
   }
   .stage-label {
     display: block;

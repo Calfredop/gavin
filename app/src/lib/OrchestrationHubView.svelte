@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { Plus } from "@lucide/svelte";
   import OrchestrationRail from "./OrchestrationRail.svelte";
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
+  import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
+  import { attachOrchestrationDrag } from "./orchestrationDragGlue";
   import Modal from "./Modal.svelte";
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
@@ -26,6 +29,8 @@
     retryStep,
     tick,
     makeStageSequentialAction,
+    moveStepIntoStageAction,
+    moveStepToNewStageAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -79,6 +84,30 @@
     void tick(workspaceId);
   });
 
+  let gridEl = $state<HTMLElement | null>(null);
+
+  // onMount returns the detach function, so the engine is torn down with
+  // the tab.
+  onMount(() => {
+    if (!gridEl) return;
+    return attachOrchestrationDrag({
+      root: gridEl,
+      commit: (drag) => {
+        if (drag.target.kind === "unplace") {
+          void removeStepAction(workspaceId, drag.id);
+        } else if (drag.target.kind === "into-stage") {
+          void moveStepIntoStageAction(workspaceId, drag.id, drag.target.stageId);
+        } else {
+          void moveStepToNewStageAction(workspaceId, drag.id, drag.target.railId, drag.target.index);
+        }
+      },
+      // A press with no movement does nothing here: the chip's own
+      // buttons handle clicks, and the glue already ignores pointerdowns
+      // that land on a button.
+      click: () => {},
+    });
+  });
+
   function onStart(railId: string): void {
     const paused = orch?.railRuns.find((r) => r.railId === railId)?.state === "paused";
     void (paused ? resumeRail(workspaceId, railId) : startRail(workspaceId, railId));
@@ -117,7 +146,7 @@
       No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
     </p>
   {:else}
-    <div class="grid">
+    <div class="grid" bind:this={gridEl}>
       {#each rails as rail (rail.id)}
         <OrchestrationRail
           {rail}
@@ -138,6 +167,8 @@
     </div>
   {/if}
 </div>
+
+<OrchestrationDragPreview {orch} {cards} root={gridEl} />
 
 {#if picking}
   {@const railId = picking}

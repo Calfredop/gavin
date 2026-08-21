@@ -6,6 +6,10 @@
   import type { CardEntry, StepState } from "./orchestration";
 
   interface Props {
+    /// Drives the drag engine's [data-orch-step] hook. On the chip's own
+    /// root, never a wrapper: a display:contents wrapper measures as a
+    /// zero rect, which would break the grab offset and the ghost size.
+    stepId: string;
     cardPath: string;
     entry: CardEntry | undefined;
     state: StepState;
@@ -17,7 +21,7 @@
     onRetry: () => void;
     onRemove: () => void;
   }
-  let { cardPath, entry, state, reason, badges, severity, onRetry, onRemove }: Props = $props();
+  let { stepId, cardPath, entry, state, reason, badges, severity, onRetry, onRemove }: Props = $props();
 
   const title = $derived(entry?.plan.title ?? cardPath.split("/").pop() ?? cardPath);
   const kind = $derived(entry?.plan.kind ?? "task");
@@ -25,6 +29,7 @@
 </script>
 
 <div
+  data-orch-step={stepId}
   class="chip {state}"
   class:sev-live={severity === "live"}
   class:sev-potential={severity === "potential"}
