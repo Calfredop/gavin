@@ -13,6 +13,17 @@ export interface Chord {
   alt?: boolean;
 }
 
+/// Just the parts of a KeyboardEvent a chord is matched against. A real
+/// KeyboardEvent satisfies it structurally, so callers pass one straight
+/// in while tests build a plain object.
+export interface ChordEvent {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}
+
 export type ShortcutId = "new-tab" | "close-tab" | "split-right" | "split-down";
 
 export const SHORTCUTS: Record<ShortcutId, Chord> = {
@@ -22,7 +33,7 @@ export const SHORTCUTS: Record<ShortcutId, Chord> = {
   "split-down": { key: "d", shift: true },
 };
 
-export function matchesChord(e: KeyboardEvent, chord: Chord, isMac: boolean): boolean {
+export function matchesChord(e: ChordEvent, chord: Chord, isMac: boolean): boolean {
   const cmd = isMac ? e.metaKey : e.ctrlKey;
   const otherMod = isMac ? e.ctrlKey : e.metaKey;
   if (!cmd || otherMod) return false;
