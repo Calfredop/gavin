@@ -1,7 +1,8 @@
 // Holding the command key for HINT_HOLD_MS reveals the shortcut badges
-// on tabs, hub tabs and sidebar rows. The state machine is a pure
-// reducer so its rules -- a typed shortcut must NOT flash hints, blur
-// must clear them -- are testable without a DOM.
+// on tabs, hub tabs and sidebar rows. Split in two so both halves are
+// testable without a DOM: `reduceHint` says WHAT the state is, and
+// `createHintTracker` says WHEN the hold has lasted long enough.
+// `installHintTracking` is then only the DOM wiring.
 import { readonly, writable, type Readable } from "svelte/store";
 import { cmdHeld } from "./platform";
 
@@ -35,7 +36,11 @@ export const INITIAL_HINT_STATE: HintState = {
 };
 export const HINT_HOLD_MS = 500;
 
-function modeFor(shift: boolean, alt: boolean): HintMode {
+// null for ⌘⇧⌥: the router refuses that combination, and a badge that
+// advertises an action which will not fire is the one thing this feature
+// must never do.
+function modeFor(shift: boolean, alt: boolean): HintMode | null {
+  if (shift && alt) return null;
   if (shift) return "cmd-shift";
   if (alt) return "cmd-alt";
   return "cmd";
@@ -49,7 +54,8 @@ export function reduceHint(state: HintState, event: HintEvent): HintState {
       const seen = { ...state, armed: true, shift: event.shift, alt: event.alt };
       if (state.cancelled) return seen;
       // Already showing: follow Shift/Alt live, so the badges always
-      // describe the combination that would fire right now.
+      // describe the combination that would fire right now (and vanish
+      // for a combination that would fire nothing).
       if (state.mode) return { ...seen, mode: modeFor(event.shift, event.alt) };
       return seen;
     }
@@ -70,12 +76,41 @@ export const hintMode: Readable<HintMode | null> = readonly(modeStore);
 
 const MODIFIER_KEYS = new Set(["Meta", "Control", "Shift", "Alt", "CapsLock"]);
 
-export function installHintTracking(): () => void {
+/// Just the facts a tracker needs from a keyboard event.
+export interface HintKeyEvent {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}
+
+export interface HintTracker {
+  keydown(e: HintKeyEvent): void;
+  keyup(e: HintKeyEvent): void;
+  blur(): void;
+  /// Cancels any pending hold timer.
+  dispose(): void;
+}
+
+export interface HintClock {
+  setTimeout: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimeout: (handle: ReturnType<typeof setTimeout>) => void;
+}
+
+/// The timer half of the hint layer, with no DOM in sight. The clock and
+/// the mode sink are injectable so the wiring -- which is where a stuck
+/// badge or a leaked timer would come from -- can be tested directly.
+export function createHintTracker(
+  onMode: (mode: HintMode | null) => void,
+  clock: HintClock = { setTimeout, clearTimeout },
+  holdMs: number = HINT_HOLD_MS
+): HintTracker {
   let current = INITIAL_HINT_STATE;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   function clearTimer(): void {
-    if (timer) clearTimeout(timer);
+    if (timer !== null) clock.clearTimeout(timer);
     timer = null;
   }
 
@@ -83,41 +118,56 @@ export function installHintTracking(): () => void {
     const previous = current;
     const next = reduceHint(previous, event);
     current = next;
-    modeStore.set(next.mode);
+    onMode(next.mode);
 
     const waiting = next.armed && !next.cancelled && next.mode === null;
     const wasWaiting = previous.armed && !previous.cancelled && previous.mode === null;
+    // Only on the transition INTO waiting: modifier key-repeat, and
+    // adding Shift mid-hold, must not re-charge the user another holdMs.
     if (waiting && !wasWaiting) {
       clearTimer();
-      timer = setTimeout(() => {
+      timer = clock.setTimeout(() => {
         timer = null;
         apply({ type: "hold-elapsed" });
-      }, HINT_HOLD_MS);
+      }, holdMs);
     } else if (!waiting) {
       clearTimer();
     }
   }
 
-  function onKeydown(e: KeyboardEvent): void {
-    if (!MODIFIER_KEYS.has(e.key)) {
-      apply({ type: "other-key" });
-      return;
-    }
-    apply({ type: "modifier-state", cmd: cmdHeld(e), shift: e.shiftKey, alt: e.altKey });
-  }
+  return {
+    keydown(e) {
+      if (!MODIFIER_KEYS.has(e.key)) {
+        apply({ type: "other-key" });
+        return;
+      }
+      apply({ type: "modifier-state", cmd: cmdHeld(e), shift: e.shiftKey, alt: e.altKey });
+    },
+    keyup(e) {
+      // A non-modifier keyup says nothing: the cancel stands until the
+      // command key itself comes up.
+      if (!MODIFIER_KEYS.has(e.key)) return;
+      apply({ type: "modifier-state", cmd: cmdHeld(e), shift: e.shiftKey, alt: e.altKey });
+    },
+    blur() {
+      apply({ type: "blur" });
+    },
+    dispose() {
+      clearTimer();
+      current = INITIAL_HINT_STATE;
+    },
+  };
+}
 
-  function onKeyup(e: KeyboardEvent): void {
-    if (!MODIFIER_KEYS.has(e.key)) return;
-    apply({ type: "modifier-state", cmd: cmdHeld(e), shift: e.shiftKey, alt: e.altKey });
-  }
+export function installHintTracking(): () => void {
+  const tracker = createHintTracker((mode) => modeStore.set(mode));
 
-  function onBlur(): void {
-    apply({ type: "blur" });
-  }
-
-  function onVisibility(): void {
-    if (document.visibilityState === "hidden") apply({ type: "blur" });
-  }
+  const onKeydown = (e: KeyboardEvent): void => tracker.keydown(e);
+  const onKeyup = (e: KeyboardEvent): void => tracker.keyup(e);
+  const onBlur = (): void => tracker.blur();
+  const onVisibility = (): void => {
+    if (document.visibilityState === "hidden") tracker.blur();
+  };
 
   // Capture, like the shortcut listener: xterm stops propagation first.
   // window blur matters on its own -- ⌘Tab away and the keyup for Meta
@@ -128,12 +178,11 @@ export function installHintTracking(): () => void {
   document.addEventListener("visibilitychange", onVisibility);
 
   return () => {
-    clearTimer();
     window.removeEventListener("keydown", onKeydown, true);
     window.removeEventListener("keyup", onKeyup, true);
     window.removeEventListener("blur", onBlur);
     document.removeEventListener("visibilitychange", onVisibility);
-    current = INITIAL_HINT_STATE;
+    tracker.dispose();
     modeStore.set(null);
   };
 }

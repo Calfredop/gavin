@@ -1,5 +1,15 @@
-import { describe, it, expect } from "vitest";
-import { reduceHint, INITIAL_HINT_STATE, type HintEvent, type HintState } from "./shortcutHints";
+import { describe, it, expect, vi } from "vitest";
+import {
+  reduceHint,
+  createHintTracker,
+  INITIAL_HINT_STATE,
+  type HintEvent,
+  type HintState,
+  type HintKeyEvent,
+  type HintMode,
+} from "./shortcutHints";
+
+vi.mock("./platform", () => ({ cmdHeld: (e: HintKeyEvent) => e.metaKey }));
 
 const mods = (cmd: boolean, shift = false, alt = false): HintEvent => ({
   type: "modifier-state",
@@ -23,6 +33,13 @@ describe("reduceHint", () => {
   it("shows cmd-shift or cmd-alt when that modifier is down", () => {
     expect(run(mods(true, true, false), { type: "hold-elapsed" }).mode).toBe("cmd-shift");
     expect(run(mods(true, false, true), { type: "hold-elapsed" }).mode).toBe("cmd-alt");
+  });
+
+  it("shows nothing for ⌘⇧⌥, which the router refuses to act on", () => {
+    expect(run(mods(true, true, true), { type: "hold-elapsed" }).mode).toBeNull();
+    // and it hides badges that were already up when the combination is reached
+    const shown = run(mods(true), { type: "hold-elapsed" });
+    expect(reduceHint(shown, mods(true, true, true)).mode).toBeNull();
   });
 
   it("switches mode live while the hints are up", () => {
@@ -63,5 +80,120 @@ describe("reduceHint", () => {
 
   it("ignores a stray other-key when nothing is armed", () => {
     expect(reduceHint(INITIAL_HINT_STATE, { type: "other-key" })).toEqual(INITIAL_HINT_STATE);
+  });
+});
+
+// A hand-cranked clock: nothing here waits on real time, and a pending
+// timer that should have been cancelled shows up as a leftover entry.
+function fakeClock() {
+  const pending = new Map<number, () => void>();
+  let next = 1;
+  return {
+    pending,
+    clock: {
+      setTimeout: (fn: () => void) => {
+        const handle = next++;
+        pending.set(handle, fn);
+        return handle as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimeout: (handle: ReturnType<typeof setTimeout>) => {
+        pending.delete(handle as unknown as number);
+      },
+    },
+    /// Fires every armed timer, as the real clock would after the delay.
+    tick() {
+      const fns = [...pending.values()];
+      pending.clear();
+      fns.forEach((fn) => fn());
+    },
+  };
+}
+
+const key = (k: string, over: Partial<HintKeyEvent> = {}): HintKeyEvent => ({
+  key: k,
+  metaKey: k === "Meta",
+  ctrlKey: false,
+  shiftKey: k === "Shift",
+  altKey: k === "Alt",
+  ...over,
+});
+
+function tracker() {
+  const modes: (HintMode | null)[] = [];
+  const { clock, tick, pending } = fakeClock();
+  const t = createHintTracker((mode) => modes.push(mode), clock, 500);
+  return { t, modes, tick, pending, last: () => modes[modes.length - 1] ?? null };
+}
+
+describe("createHintTracker", () => {
+  it("shows the badges only once the hold elapses", () => {
+    const { t, tick, last } = tracker();
+    t.keydown(key("Meta"));
+    expect(last()).toBeNull();
+    tick();
+    expect(last()).toBe("cmd");
+  });
+
+  it("shows nothing when the key comes up before the hold elapses", () => {
+    const { t, tick, last, pending } = tracker();
+    t.keydown(key("Meta"));
+    t.keyup(key("Meta", { metaKey: false }));
+    expect(pending.size).toBe(0);
+    tick();
+    expect(last()).toBeNull();
+  });
+
+  it("a shortcut typed during the hold never flashes hints", () => {
+    const { t, tick, last, pending } = tracker();
+    t.keydown(key("Meta"));
+    t.keydown(key("t", { metaKey: true }));
+    expect(pending.size).toBe(0);
+    tick();
+    expect(last()).toBeNull();
+  });
+
+  it("adding Shift mid-hold does not restart the timer", () => {
+    const { t, tick, last } = tracker();
+    t.keydown(key("Meta"));
+    t.keydown(key("Shift", { metaKey: true, shiftKey: true }));
+    tick();
+    expect(last()).toBe("cmd-shift");
+  });
+
+  it("modifier key repeat does not restart the timer either", () => {
+    const { t, tick, last } = tracker();
+    t.keydown(key("Meta"));
+    t.keydown(key("Meta"));
+    t.keydown(key("Meta"));
+    tick();
+    expect(last()).toBe("cmd");
+  });
+
+  it("blur clears the badges and any pending timer", () => {
+    const { t, tick, last, pending } = tracker();
+    t.keydown(key("Meta"));
+    tick();
+    expect(last()).toBe("cmd");
+    t.blur();
+    expect(last()).toBeNull();
+    expect(pending.size).toBe(0);
+  });
+
+  it("dispose cancels a pending hold so no badge appears afterwards", () => {
+    const { t, tick, last, pending } = tracker();
+    t.keydown(key("Meta"));
+    t.dispose();
+    expect(pending.size).toBe(0);
+    tick();
+    expect(last()).toBeNull();
+  });
+
+  it("ignores a non-modifier keyup, so a cancel outlives the key that caused it", () => {
+    const { t, tick, last } = tracker();
+    t.keydown(key("Meta"));
+    t.keydown(key("t", { metaKey: true }));
+    t.keyup(key("t", { metaKey: true }));
+    tick();
+    expect(last()).toBeNull();
   });
 });

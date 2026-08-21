@@ -24,10 +24,15 @@ vi.mock("./clipboard", () => ({
   pasteClipboard: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
-vi.mock("./platform", () => ({
-  isMacSync: () => true,
-  cmdHeld: (e: KeyboardEvent) => e.metaKey,
-}));
+// Switchable per test via globalThis, which the hoisted factory can read
+// without closing over module scope (that would be uninitialized here).
+vi.mock("./platform", () => {
+  const mac = () => (globalThis as Record<string, unknown>).__testIsMac !== false;
+  return {
+    isMacSync: mac,
+    cmdHeld: (e: KeyboardEvent) => (mac() ? e.metaKey : e.ctrlKey),
+  };
+});
 
 import {
   layoutState,
@@ -70,6 +75,7 @@ function setState(over: Record<string, unknown> = {}): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  (globalThis as Record<string, unknown>).__testIsMac = true;
   setState();
 });
 
@@ -141,6 +147,45 @@ describe("digit navigation", () => {
   it("ignores the digit without the command key", async () => {
     expect(await press("Digit2", { metaKey: false })).toBe(false);
     expect(switchToTab).not.toHaveBeenCalled();
+  });
+
+  it("consumes the event BEFORE awaiting the action", async () => {
+    // Regression guard: preventDefault() after an await lands a task turn
+    // too late and the terminal has already seen the key.
+    let preventedBeforeAction: boolean | null = null;
+    const e = event({ code: "Digit2" });
+    vi.mocked(switchToTab).mockImplementationOnce(async () => {
+      preventedBeforeAction = vi.mocked(e.preventDefault).mock.calls.length > 0;
+    });
+    await handleShortcutKeydown(e);
+    expect(preventedBeforeAction).toBe(true);
+    expect(e.stopPropagation).toHaveBeenCalled();
+  });
+
+  it("leaves an unhandled digit alone for the terminal", async () => {
+    const e = event({ code: "Digit7" });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(e.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it("ignores ⌃⌘1 on macOS -- the other command key must be up", async () => {
+    expect(await press("Digit1", { ctrlKey: true })).toBe(false);
+    expect(switchToTab).not.toHaveBeenCalled();
+  });
+
+  it("on Windows/Linux, ignores AltGr+digit (ctrl+alt) so layouts can still type ² @ ~", async () => {
+    (globalThis as Record<string, unknown>).__testIsMac = false;
+    const e = event({ code: "Digit2", metaKey: false, ctrlKey: true, altKey: true });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(switchWorkspace).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("on Windows/Linux, Ctrl+2 still switches tabs", async () => {
+    (globalThis as Record<string, unknown>).__testIsMac = false;
+    await handleShortcutKeydown(event({ code: "Digit2", metaKey: false, ctrlKey: true }));
+    expect(switchToTab).toHaveBeenCalledWith("b");
   });
 
   it("ignores a digit with both shift and alt", async () => {

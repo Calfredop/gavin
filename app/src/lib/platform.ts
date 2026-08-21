@@ -1,31 +1,31 @@
 import { platform } from "@tauri-apps/plugin-os";
-import { readonly, writable, type Readable } from "svelte/store";
 
-// Keydown handlers cannot await, so the platform is resolved once at
-// bootstrap and read synchronously afterwards. Until initPlatform
-// resolves this reads false -- a few milliseconds at startup where a
-// Ctrl chord would match instead of a Cmd one, never a crash.
-let cachedIsMac = false;
-// Components render before initPlatform resolves (the title bar paints
-// on first frame), so the flag is also a store: a $derived reading
-// isMacSync() alone would keep a "Ctrl+T" label on macOS forever.
-const isMacStore = writable(false);
-export const isMac: Readable<boolean> = readonly(isMacStore);
-
-export async function isMacOS(): Promise<boolean> {
-  return (await platform()) === "macos";
-}
-
-export async function initPlatform(): Promise<void> {
-  cachedIsMac = await isMacOS();
-  isMacStore.set(cachedIsMac);
-}
+// plugin-os's platform() is a synchronous global read (it returns
+// window.__TAURI_OS_PLUGIN_INTERNALS__.platform), so this needs no
+// bootstrap step: the first keydown and the first paint's tooltips can
+// both just ask. Cached because the answer cannot change; guarded
+// because the global is absent outside a Tauri window (unit tests, a
+// plain browser preview), where "not macOS" is the safe answer -- and
+// deliberately NOT cached in that case, so a later call inside a real
+// window still gets the true answer.
+let cached: boolean | null = null;
 
 export function isMacSync(): boolean {
-  return cachedIsMac;
+  if (cached === null) {
+    try {
+      cached = platform() === "macos";
+    } catch {
+      return false;
+    }
+  }
+  return cached;
+}
+
+export async function isMacOS(): Promise<boolean> {
+  return isMacSync();
 }
 
 /// "⌘" for shortcut purposes: Command on macOS, Control everywhere else.
 export function cmdHeld(e: { metaKey: boolean; ctrlKey: boolean }): boolean {
-  return cachedIsMac ? e.metaKey : e.ctrlKey;
+  return isMacSync() ? e.metaKey : e.ctrlKey;
 }

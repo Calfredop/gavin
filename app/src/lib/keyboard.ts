@@ -36,51 +36,62 @@ export interface ShortcutKeyEvent {
 // addressed depends on the modifiers and what is on screen: plain ⌘ =
 // the focused pane's tabs (session page) or the hub tabs (workspace
 // page); ⌘⇧ = the active workspace's pages; ⌘⌥ = the workspaces.
-async function routeDigit(
+//
+// Deliberately SYNCHRONOUS, returning the action to run rather than
+// running it: the caller has to preventDefault() before the first await,
+// or dispatch has already finished and the terminal has seen the key.
+function routeDigit(
   event: ShortcutKeyEvent,
   digit: number,
-  state: LayoutState
-): Promise<boolean> {
+  state: LayoutState,
+  isMac: boolean
+): (() => Promise<void>) | null {
   const { shiftKey, altKey } = event;
-  if (shiftKey && altKey) return false;
+  if (shiftKey && altKey) return null;
+  // The other platform's command key must be up, exactly as matchesChord
+  // requires for letters -- ⌃⌘1 on macOS is not ⌘1.
+  if (isMac ? event.ctrlKey : event.metaKey) return null;
+  // On Windows/Linux AltGr arrives as ctrl+alt, which is how a German or
+  // French layout types ² @ ~ -- never a workspace switch.
+  if (!isMac && event.ctrlKey && event.altKey) return null;
 
   if (altKey) {
     const list = sidebarWorkspaceOrder(state.workspaces);
     const index = resolveIndex(digit, list.length);
-    if (index === null) return false;
-    await switchWorkspace(list[index].id);
-    return true;
+    if (index === null) return null;
+    const workspaceId = list[index].id;
+    return () => switchWorkspace(workspaceId);
   }
 
   const ws = getActiveWorkspace(state);
-  if (!ws) return false;
+  if (!ws) return null;
 
   if (shiftKey) {
     const index = resolveIndex(digit, ws.pages.length);
-    if (index === null) return false;
-    await switchPage(ws.id, ws.pages[index].id);
-    return true;
+    if (index === null) return null;
+    const pageId = ws.pages[index].id;
+    return () => switchPage(ws.id, pageId);
   }
 
   if (getActiveView(ws) === "terminal") {
     const tree = getActiveTree(state);
     const focused = state.focusedSessionId;
-    if (!tree || !focused) return false;
+    if (!tree || !focused) return null;
     const path = findLeafPath(tree, focused);
-    if (!path) return false;
+    if (!path) return null;
     const leaf = getNodeAtPath(tree, path);
-    if (leaf.type !== "leaf") return false;
+    if (leaf.type !== "leaf") return null;
     const index = resolveIndex(digit, leaf.tabs.length);
-    if (index === null) return false;
-    await switchToTab(leaf.tabs[index]);
-    return true;
+    if (index === null) return null;
+    const tabId = leaf.tabs[index];
+    return () => switchToTab(tabId);
   }
 
   const views = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
   const index = resolveIndex(digit, views.length);
-  if (index === null) return false;
-  await switchWorkspaceView(ws.id, views[index]);
-  return true;
+  if (index === null) return null;
+  const viewId = views[index];
+  return () => switchWorkspaceView(ws.id, viewId);
 }
 
 /// Handles one keydown. Exported for tests; the window listener below is
@@ -92,12 +103,14 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
 
   const digit = digitFromCode(event.code);
   if (digit !== null) {
-    const handled = await routeDigit(event, digit, state);
-    if (handled) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-    return handled;
+    const action = routeDigit(event, digit, state, isMac);
+    if (!action) return false;
+    // Before the await: a preventDefault() after one lands a task turn
+    // too late, once dispatch has already handed the key to xterm.
+    event.preventDefault();
+    event.stopPropagation();
+    await action();
+    return true;
   }
 
   // Everything below acts on the focused terminal session.

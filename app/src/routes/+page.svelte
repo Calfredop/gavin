@@ -12,7 +12,6 @@
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
-  import { initPlatform } from "$lib/platform";
   import { installHintTracking, hintMode } from "$lib/shortcutHints";
   import { hintDigitFor } from "$lib/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
@@ -74,10 +73,6 @@
         await quitApp();
       }
     });
-
-    // Before bootstrap: every keydown handler reads the platform
-    // synchronously to decide whether "⌘" means Meta or Control.
-    await initPlatform();
 
     try {
       await bootstrap();
@@ -208,6 +203,9 @@
     flex: 0 0 auto;
   }
   .tab {
+    /* Anchors the hold-⌘ hint badge (absolutely positioned, so holding
+       ⌘ never reflows the tab row). */
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;

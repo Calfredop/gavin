@@ -4,7 +4,6 @@ import {
   matchesChord,
   formatChord,
   formatShortcut,
-  formatDigitChord,
   digitFromCode,
   resolveIndex,
   hintDigitFor,
@@ -67,12 +66,6 @@ describe("formatChord", () => {
   it("formatShortcut resolves the registry", () => {
     expect(formatShortcut("close-tab", true)).toBe("⌘W");
     expect(formatShortcut("split-down", false)).toBe("Ctrl+Shift+D");
-  });
-
-  it("formatDigitChord covers the three hint modes", () => {
-    expect(formatDigitChord(3, "cmd", true)).toBe("⌘3");
-    expect(formatDigitChord(3, "cmd-shift", true)).toBe("⇧⌘3");
-    expect(formatDigitChord(3, "cmd-alt", false)).toBe("Ctrl+Alt+3");
   });
 });
 

@@ -18,7 +18,12 @@ export interface HubView extends HubViewMeta {
   component: Component<{ workspaceId: string }>;
 }
 
-const COMPONENTS: Record<string, { icon: Component; component: Component<{ workspaceId: string }> }> = {
+// Keyed by the metadata's own ids: a typo, or a new id added to
+// HUB_VIEW_META without a component, is then a compile error rather than
+// an undefined spread that crashes at render.
+type HubViewId = (typeof HUB_VIEW_META)[number]["id"];
+
+const COMPONENTS: Record<HubViewId, { icon: Component; component: Component<{ workspaceId: string }> }> = {
   home: { icon: LayoutDashboard, component: HomeHubView },
   git: { icon: GitBranch, component: GitHubView },
   kanban: { icon: Kanban, component: KanbanBoard },
@@ -29,6 +34,11 @@ const COMPONENTS: Record<string, { icon: Component; component: Component<{ works
   checklist: { icon: ListChecks, component: SmokeChecklist },
 };
 
+// Built by mapping the metadata in order, and filtered below by the very
+// id set the keyboard router uses -- that shared derivation is what
+// keeps a "3" badge and ⌘3 pointing at the same tab. (Not covered by a
+// test: asserting it would mean importing this module, and its eight
+// components, into a unit test.)
 export const HUB_VIEWS: HubView[] = HUB_VIEW_META.map((meta) => ({ ...meta, ...COMPONENTS[meta.id] }));
 
 // The hub tabs a given workspace should offer, in the order they render.

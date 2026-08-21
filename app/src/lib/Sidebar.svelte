@@ -460,8 +460,9 @@
               onclick={() => togglePageGitExpand(page.id)}
             />
           {/if}
-          {#if pageHint(ws, pageIndex)}
-            <ShortcutHint text={pageHint(ws, pageIndex) ?? ""} />
+          {#if $hintMode === "cmd-shift"}
+            {@const hint = pageHint(ws, pageIndex)}
+            {#if hint}<ShortcutHint text={hint} />{/if}
           {/if}
           {#if editingPageId === page.id}
             <input
@@ -599,8 +600,9 @@
             size={12}
             onclick={() => toggleExpand(ws.id)}
           />
-          {#if workspaceHint(ws.id)}
-            <ShortcutHint text={workspaceHint(ws.id) ?? ""} />
+          {#if $hintMode === "cmd-alt"}
+            {@const hint = workspaceHint(ws.id)}
+            {#if hint}<ShortcutHint text={hint} />{/if}
           {/if}
           <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
           {#if workspaceWaitingForInputCount(ws) > 0}
@@ -658,8 +660,9 @@
               }}
             />
           {:else}
-            {#if workspaceHint(ws.id)}
-              <ShortcutHint text={workspaceHint(ws.id) ?? ""} />
+            {#if $hintMode === "cmd-alt"}
+              {@const hint = workspaceHint(ws.id)}
+              {#if hint}<ShortcutHint text={hint} />{/if}
             {/if}
             <span
               class="workspace-name"
@@ -767,6 +770,8 @@
     box-sizing: border-box;
   }
   .workspace-row {
+    /* Anchors the hold-⌘ hint badge. */
+    position: relative;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -862,6 +867,9 @@
     flex-direction: column;
   }
   .page-row {
+    /* Anchors the hold-⌘ hint badge, which overlays the row rather than
+       reflowing (and re-truncating) its name. */
+    position: relative;
     display: flex;
     align-items: center;
     gap: 4px;

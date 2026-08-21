@@ -462,6 +462,9 @@
     flex: 0 0 auto;
   }
   .tab {
+    /* Anchors the hold-⌘ hint badge, which overlays rather than
+       reflowing the tab bar. */
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;

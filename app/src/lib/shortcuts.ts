@@ -59,14 +59,6 @@ export function formatShortcut(id: ShortcutId, isMac: boolean): string {
   return formatChord(SHORTCUTS[id], isMac);
 }
 
-export function formatDigitChord(
-  digit: number,
-  mode: "cmd" | "cmd-shift" | "cmd-alt",
-  isMac: boolean
-): string {
-  return formatChord({ key: String(digit), shift: mode === "cmd-shift", alt: mode === "cmd-alt" }, isMac);
-}
-
 const DIGIT_CODE = /^(?:Digit|Numpad)(\d)$/;
 
 export function digitFromCode(code: string): number | null {

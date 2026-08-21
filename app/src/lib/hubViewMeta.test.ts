@@ -22,3 +22,4 @@ describe("visibleHubViewIds", () => {
     expect(visibleHubViewIds(SMOKETEST_WORKSPACE_ID, false, true)).not.toContain("checklist");
   });
 });
+

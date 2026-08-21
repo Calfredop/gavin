@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { invoke } from "@tauri-apps/api/core";
   import { layoutState, splitPane, closePane, createPage } from "./layoutState";
@@ -9,13 +8,12 @@
   import { Columns2, Rows2, X, Square, Grid2x2 } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import WindowControls from "./WindowControls.svelte";
-  import { isMacOS } from "./platform";
+  import { isMacSync } from "./platform";
   import { createDoubleClickTracker, doubleClickAction } from "./titleBarGesture";
 
-  let macOS = $state(false);
-  onMount(async () => {
-    macOS = await isMacOS();
-  });
+  // Synchronous: the traffic lights must be on the correct side in the
+  // first frame, and plugin-os's platform() is a plain global read.
+  const macOS = isMacSync();
 
   // data-tauri-drag-region alone is unreliable depending on the webview
   // version -- startDragging() is the documented, directly-controlled
