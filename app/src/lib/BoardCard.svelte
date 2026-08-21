@@ -187,7 +187,7 @@
     {/if}
   </div>
   <div class="title">{card.title}</div>
-  {#if card.parent}
+  {#if card.parent && !nested}
     <span class="parent-chip" class:broken={card.parentBroken} use:tooltip={card.parentBroken ? `parent: ${card.parent} — file not found in this context` : `Part of the plan "${card.parentTitle}"`}>
       {card.parentBroken ? `⚠ ${card.parent}` : card.parentTitle}
     </span>
@@ -296,6 +296,15 @@
   /* Keep header icons clear of the absolute delete button. */
   .card.deletable .header {
     padding-right: 18px;
+  }
+  .card.nested.deletable .header {
+    padding-right: 14px;
+  }
+  .card.nested .delete {
+    top: 2px;
+    right: 2px;
+    padding: 0 4px;
+    font-size: 0.95em;
   }
   .glyph {
     display: flex;
@@ -406,15 +415,28 @@
     background: transparent;
     border: 1px solid var(--border-strong);
   }
+  /* In flow, not overlaid: a compact nested card has no spare room, and
+     an expanded plan's pills must sit with ITS content rather than below
+     its children. Always laid out, so hover changes opacity only --
+     never layout. pointer-events follow visibility: an invisible run
+     button must never be clickable. */
   .run-pills {
-    position: absolute;
-    right: 4px;
-    bottom: 4px;
     display: flex;
+    justify-content: flex-end;
     gap: 4px;
+    margin-top: 6px;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 120ms;
-    z-index: 1;
+  }
+  .card:hover > .run-pills,
+  .card:focus-within > .run-pills {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .card.nested .run-pills {
+    margin-top: 4px;
+    gap: 3px;
   }
   .card:hover .run-pills,
   .card:focus-within .run-pills {
@@ -442,6 +464,11 @@
   }
   .pill-agent:hover:not(:disabled) {
     background: var(--surface-success);
+  }
+  .card.nested .pill {
+    font-size: 0.66em;
+    padding: 0 6px;
+    line-height: 1.6;
   }
   .pill:disabled {
     opacity: 0.45;
