@@ -28,11 +28,10 @@ tokens work.
 icon-button styles it replaces.
 
 **Out (sub-project 3):** the remaining 47 components and their ~600
-hex literals.
+hex literals. *Completed 2026-08-21; see D53–D54.*
 
 **Out (sub-project 4):** the xterm terminal theme and the CodeMirror
-`oneDark` swap. Both stay dark under a light theme after this
-sub-project — see §7.
+`oneDark` swap. *Completed 2026-08-21; see D55.*
 
 **Out entirely:** spacing, radius, font-size and icon-size scales;
 per-workspace theme; user-authored themes; high-contrast mode.
@@ -106,6 +105,29 @@ Continuing the log from `2026-08-20-workspace-settings-design.md`
   `#fff > #fbfbfb > #f4f4f4 > #eee > #ddd`, monotonic, every layer
   separable. This is the concrete form of D46's "not inverted" — the
   *ordering* flips too, not only the values.
+
+- **D53 — Tinted surfaces are a separate role from semantic strengths.**
+  Found in SP3. A diff's added line was `#17301a` — a dark green *tint*,
+  not `--success`, which is a foreground strength; painting a row in
+  `--success` gives a vivid block, not a highlight. Adds
+  `--surface-{accent,success,warning,danger}` and matching `--border-*`,
+  seeded from the ~20 one-off tints already in the codebase. This also
+  retires the compromise in SP1 where the sidebar's blue drop-target was
+  flattened to a neutral `--surface-selected`.
+- **D54 — Graph lanes are categorical, not semantic.** The commit
+  graph's eight lane colours exist only so adjacent lanes differ. They
+  become `--lane-1..8`, resolving to a different set per theme because a
+  palette tuned for a dark background washes out on white. They reach
+  the SVG through `style:` bindings, since `stroke="var(--lane-1)"` does
+  not resolve in a presentation attribute but `style:stroke` does.
+- **D55 — The two third-party surfaces keep their own palettes.** xterm
+  needs 16 ANSI slots and CodeMirror needs a syntax HighlightStyle;
+  neither maps onto a semantic token set, and neither reads CSS. They
+  get literal palettes in `ui/terminalTheme.ts` and `codeMirror.ts`,
+  documented as mirroring the token families. Both swap live —
+  `applyTerminalTheme` walks the terminal registry (terminals outlive
+  their components), and CodeMirror reconfigures a `Compartment` so a
+  theme flip preserves scroll position and undo history.
 
 ## 3. File layout
 
