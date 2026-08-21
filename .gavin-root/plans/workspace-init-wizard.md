@@ -10,10 +10,8 @@ labels: ui
 Two-stage onboarding for a new workspace: a creation modal for the folder
 and fundamental settings, then a guided wizard for agent setup.
 
-**Blocked on** the multi-agent MCP writers — the wizard's Integration step
-cannot complete for Codex/Gemini/Cursor/opencode until those exist, and
-the owner chose to build them first rather than ship a wizard that
-degrades for four of six profiles.
+Ships before the multi-agent MCP writers: the Integration step degrades
+honestly for profiles that have no MCP support yet (W4).
 
 ## Decisions taken in brainstorming (2026-08-21)
 
@@ -28,8 +26,15 @@ degrades for four of six profiles.
 - **W3 — The PRD step prompts for the template's three sections**
   (Vision / Current focus / Out of scope) and writes them into the
   existing `PRD.md` structure. Blank fields keep the placeholders.
-- **W4 — Sub-project B lands first**, so every profile's Integration step
-  can actually complete.
+- **W4 — Integration degrades honestly.** `setup_agent_integration`
+  splits so the agent-file block is written for ANY profile; the skill
+  file and MCP config are skipped with a named reason when the profile
+  has no `McpLayout`. Agents without a skill mechanism get the guidance
+  inline in the block.
+- **W5 — Agent-driven authoring for both documents.** The PRD and
+  agent-file steps each offer "I'll write it" or "ask the agent";
+  choosing the agent starts the session on that step, one deliberate
+  press, so D12 holds. The Launch step then reports it already running.
 
 ## Still open
 
