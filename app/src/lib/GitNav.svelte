@@ -1,10 +1,11 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import { ChevronDown, ChevronRight, Plus, FileDiff, GitBranch, Cloud, Archive, Trash2, GitMerge, LogIn } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, Plus, FileDiff, GitBranch, Cloud, Archive, Trash2, GitMerge, LogIn, History } from "@lucide/svelte";
   import { layoutState, setGitViewPrefs } from "./layoutState";
   import {
     gitStore,
     selectChanges,
+    selectCommits,
     selectStash,
     checkout,
     createBranch,
@@ -96,6 +97,10 @@
     <FileDiff size={13} />
     <span class="label">Local Changes</span>
     {#if view?.status}{@const n = changedCount(view.status)}{#if n > 0}<span class="count">{n}</span>{/if}{/if}
+  </button>
+  <button type="button" class="item top" class:active={nav === "commits"} onclick={() => selectCommits(workspaceId)}>
+    <History size={13} />
+    <span class="label">All Commits</span>
   </button>
 
   <!-- Branches -->

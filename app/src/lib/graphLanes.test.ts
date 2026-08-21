@@ -12,6 +12,7 @@ describe("computeGraph", () => {
     expect(rows.map((r) => r.lane)).toEqual([0, 0, 0]);
     expect(rows.every((r) => r.incoming.length === 0 && r.outgoing.length === 0 && r.passes.length === 0)).toBe(true);
     expect(rows.map((r) => r.hasParent)).toEqual([true, true, false]);
+    expect(rows.map((r) => r.fromAbove)).toEqual([false, true, true]);
     expect(rows.map((r) => r.lanes)).toEqual([1, 1, 1]);
   });
 

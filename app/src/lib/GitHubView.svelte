@@ -8,7 +8,7 @@
     dismissError,
     initRepo,
     abortInProgress,
-    continueRebase,
+    continueInProgress,
   } from "./gitState";
   import { tooltip } from "./tooltip";
   import GitToolbar from "./GitToolbar.svelte";
@@ -17,6 +17,8 @@
   import GitNav from "./GitNav.svelte";
   import GitChanges from "./GitChanges.svelte";
   import GitDiff from "./GitDiff.svelte";
+  import GitGraph from "./GitGraph.svelte";
+  import GitCommitDetail from "./GitCommitDetail.svelte";
 
   interface Props {
     workspaceId: string;
@@ -124,15 +126,16 @@
     {#if view.repo?.inProgress}
       {@const kind = view.repo.inProgress}
       {@const conflicts = view.status?.unstaged.some((e) => e.status === "U") ?? false}
+      {@const label = kind === "merge" ? "Merge" : kind === "rebase" ? "Rebase" : kind === "cherry-pick" ? "Cherry-pick" : "Revert"}
       <div class="banner info">
-        <span>{kind === "merge" ? "Merge" : "Rebase"} in progress — resolve conflicts and {kind === "merge" ? "commit" : "continue"}</span>
-        {#if kind === "rebase"}
+        <span>{label} in progress — resolve conflicts and {kind === "merge" ? "commit" : "continue"}</span>
+        {#if kind !== "merge"}
           <button
             type="button"
             class="banner-act"
             disabled={busy || conflicts}
-            use:tooltip={conflicts ? "Resolve the conflicted files first" : "git rebase --continue"}
-            onclick={() => continueRebase(workspaceId)}
+            use:tooltip={conflicts ? "Resolve the conflicted files first" : `git ${kind} --continue`}
+            onclick={() => continueInProgress(workspaceId, kind)}
           >Continue</button>
         {/if}
         <button type="button" class="banner-act danger" disabled={busy} onclick={() => abortInProgress(workspaceId, kind)}>
@@ -149,9 +152,15 @@
     <div class="panes" style:grid-template-columns="{navWidth}px 4px {listWidth}px 4px minmax(0, 1fr)">
       <div class="pane"><GitNav {workspaceId} /></div>
       <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("nav", e)}></div>
-      <div class="pane"><GitChanges {workspaceId} /></div>
-      <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
-      <div class="pane"><GitDiff {workspaceId} /></div>
+      {#if view.navSelection === "commits"}
+        <div class="pane"><GitGraph {workspaceId} /></div>
+        <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
+        <div class="pane"><GitCommitDetail {workspaceId} /></div>
+      {:else}
+        <div class="pane"><GitChanges {workspaceId} /></div>
+        <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
+        <div class="pane"><GitDiff {workspaceId} /></div>
+      {/if}
     </div>
   </div>
 {/if}

@@ -24,6 +24,9 @@ export interface GraphRow {
   outgoing: number[];
   /// Whether the commit's own lane continues below the dot.
   hasParent: boolean;
+  /// Whether the commit's lane was already running above it (a child
+  /// pointed here); false for a lane's topmost commit.
+  fromAbove: boolean;
 }
 
 export function computeGraph(commits: CommitInfo[]): GraphRow[] {
@@ -33,6 +36,7 @@ export function computeGraph(commits: CommitInfo[]): GraphRow[] {
   for (const commit of commits) {
     const widthBefore = active.length;
     let lane = active.indexOf(commit.sha);
+    const fromAbove = lane >= 0;
     if (lane < 0) {
       lane = active.indexOf(null);
       if (lane < 0) {
@@ -81,6 +85,7 @@ export function computeGraph(commits: CommitInfo[]): GraphRow[] {
       incoming,
       outgoing,
       hasParent: commit.parents.length > 0,
+      fromAbove,
     });
   }
   return rows;
