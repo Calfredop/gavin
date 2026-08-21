@@ -241,6 +241,7 @@
 
 <style>
   .view {
+    font-family: monospace;
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -262,6 +263,7 @@
     font-weight: 600;
   }
   .add-rail {
+    font-family: monospace;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -291,6 +293,7 @@
     font-size: 12px;
   }
   .save-error button {
+    font-family: monospace;
     margin-left: auto;
     background: none;
     border: none;
@@ -336,6 +339,7 @@
     overflow-y: auto;
   }
   .picker button {
+    font-family: monospace;
     display: flex;
     align-items: center;
     width: 100%;

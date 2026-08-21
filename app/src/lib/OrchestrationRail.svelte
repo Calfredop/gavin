@@ -151,6 +151,7 @@
 
 <style>
   .rail {
+    font-family: monospace;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -213,6 +214,7 @@
     background: var(--surface-overlay);
   }
   .bindings {
+    font-family: monospace;
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -285,6 +287,7 @@
     flex: 1 1 120px;
   }
   .add-step {
+    font-family: monospace;
     display: flex;
     align-items: center;
     justify-content: center;

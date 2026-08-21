@@ -44,6 +44,7 @@
 
 <style>
   .drawer {
+    font-family: monospace;
     flex: none;
     width: 220px;
     display: flex;
@@ -60,6 +61,7 @@
     outline-offset: -2px;
   }
   .toggle {
+    font-family: monospace;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -83,6 +85,7 @@
     padding: 4px;
   }
   li button {
+    font-family: monospace;
     display: flex;
     align-items: center;
     gap: 6px;

@@ -42,6 +42,7 @@
 
 <style>
   .ghost {
+    font-family: monospace;
     position: fixed;
     z-index: 1000;
     pointer-events: none;
