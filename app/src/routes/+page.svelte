@@ -12,6 +12,9 @@
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
+  import { installHintTracking, hintMode } from "$lib/shortcutHints";
+  import { hintDigitFor } from "$lib/shortcuts";
+  import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
@@ -26,6 +29,7 @@
 
   let closeConfirmed = false;
   let uninstallShortcuts: (() => void) | null = null;
+  let uninstallHints: (() => void) | null = null;
   let unlistenClose: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
@@ -77,11 +81,13 @@
     }
 
     uninstallShortcuts = installKeyboardShortcuts();
+    uninstallHints = installHintTracking();
   });
 
   onDestroy(() => {
     unlistenClose?.();
     uninstallShortcuts?.();
+    uninstallHints?.();
     teardown();
   });
 </script>
@@ -121,7 +127,7 @@
             <WorkspaceRootControl workspace={activeWorkspace} />
           {/if}
           <div class="tabs">
-            {#each hubViews as view (view.id)}
+            {#each hubViews as view, viewIndex (view.id)}
               <button
                 type="button"
                 class="tab"
@@ -130,6 +136,12 @@
               >
                 <view.icon size={14} />
                 {hubLabel(view, activeAgent.file)}
+                {#if $hintMode === "cmd"}
+                  {@const digit = hintDigitFor(viewIndex, hubViews.length)}
+                  {#if digit !== null}
+                    <ShortcutHint text={String(digit)} />
+                  {/if}
+                {/if}
               </button>
             {/each}
           </div>
@@ -191,6 +203,9 @@
     flex: 0 0 auto;
   }
   .tab {
+    /* Anchors the hold-⌘ hint badge (absolutely positioned, so holding
+       ⌘ never reflows the tab row). */
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;

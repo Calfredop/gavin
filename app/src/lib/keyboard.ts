@@ -1,49 +1,165 @@
 import { get } from "svelte/store";
-import { layoutState, splitPane, addTab, closeSession } from "./layoutState";
+import {
+  layoutState,
+  splitPane,
+  addTab,
+  closeSession,
+  switchToTab,
+  switchWorkspaceView,
+  switchPage,
+  switchWorkspace,
+  type LayoutState,
+} from "./layoutState";
 import { copySelection, pasteClipboard } from "./clipboard";
 import { confirmTabClose } from "./confirmClose";
-import { isPinned } from "./layout";
-import { getActiveTree } from "./workspace";
+import { findLeafPath, getNodeAtPath, isPinned } from "./layout";
+import { getActiveTree, getActiveWorkspace, getActiveView, sidebarWorkspaceOrder } from "./workspace";
+import { visibleHubViewIds } from "./hubViewMeta";
+import { cmdHeld, isMacSync } from "./platform";
+import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "./shortcuts";
 
-async function handleKeydown(event: KeyboardEvent): Promise<void> {
-  // metaKey is Cmd on macOS -- the app is macOS-first per the project roadmap.
-  if (!event.metaKey) return;
+/// Just the parts of a KeyboardEvent the shortcut layer reads. A real
+/// KeyboardEvent satisfies it structurally; tests build one by hand,
+/// which is why the routing needs no DOM.
+export interface ShortcutKeyEvent {
+  key: string;
+  code: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  preventDefault(): void;
+  stopPropagation(): void;
+}
+
+// ⌘1-8 select that position, ⌘9 the last, ⌘0 the first. Which LIST is
+// addressed depends on the modifiers and what is on screen: plain ⌘ =
+// the focused pane's tabs (session page) or the hub tabs (workspace
+// page); ⌘⇧ = the active workspace's pages; ⌘⌥ = the workspaces.
+//
+// Deliberately SYNCHRONOUS, returning the action to run rather than
+// running it: the caller has to preventDefault() before the first await,
+// or dispatch has already finished and the terminal has seen the key.
+function routeDigit(
+  event: ShortcutKeyEvent,
+  digit: number,
+  state: LayoutState,
+  isMac: boolean
+): (() => Promise<void>) | null {
+  const { shiftKey, altKey } = event;
+  if (shiftKey && altKey) return null;
+  // The other platform's command key must be up, exactly as matchesChord
+  // requires for letters -- ⌃⌘1 on macOS is not ⌘1.
+  if (isMac ? event.ctrlKey : event.metaKey) return null;
+  // On Windows/Linux AltGr arrives as ctrl+alt, which is how a German or
+  // French layout types ² @ ~ -- never a workspace switch.
+  if (!isMac && event.ctrlKey && event.altKey) return null;
+
+  if (altKey) {
+    const list = sidebarWorkspaceOrder(state.workspaces);
+    const index = resolveIndex(digit, list.length);
+    if (index === null) return null;
+    const workspaceId = list[index].id;
+    return () => switchWorkspace(workspaceId);
+  }
+
+  const ws = getActiveWorkspace(state);
+  if (!ws) return null;
+
+  if (shiftKey) {
+    const index = resolveIndex(digit, ws.pages.length);
+    if (index === null) return null;
+    const pageId = ws.pages[index].id;
+    return () => switchPage(ws.id, pageId);
+  }
+
+  if (getActiveView(ws) === "terminal") {
+    const tree = getActiveTree(state);
+    const focused = state.focusedSessionId;
+    if (!tree || !focused) return null;
+    const path = findLeafPath(tree, focused);
+    if (!path) return null;
+    const leaf = getNodeAtPath(tree, path);
+    if (leaf.type !== "leaf") return null;
+    const index = resolveIndex(digit, leaf.tabs.length);
+    if (index === null) return null;
+    const tabId = leaf.tabs[index];
+    return () => switchToTab(tabId);
+  }
+
+  const views = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
+  const index = resolveIndex(digit, views.length);
+  if (index === null) return null;
+  const viewId = views[index];
+  return () => switchWorkspaceView(ws.id, viewId);
+}
+
+/// Handles one keydown. Exported for tests; the window listener below is
+/// the only production caller. Returns whether the event was consumed.
+export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<boolean> {
+  if (!cmdHeld(event)) return false;
   const state = get(layoutState);
-  if (!state.focusedSessionId) return;
+  const isMac = isMacSync();
 
-  const key = event.key.toLowerCase();
-
-  if (key === "d" && event.shiftKey) {
+  const digit = digitFromCode(event.code);
+  if (digit !== null) {
+    const action = routeDigit(event, digit, state, isMac);
+    if (!action) return false;
+    // Before the await: a preventDefault() after one lands a task turn
+    // too late, once dispatch has already handed the key to xterm.
     event.preventDefault();
     event.stopPropagation();
+    await action();
+    return true;
+  }
+
+  // Everything below acts on the focused terminal session.
+  if (!state.focusedSessionId) return false;
+
+  const consume = (): void => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  if (matchesChord(event, SHORTCUTS["split-down"], isMac)) {
+    consume();
     await splitPane(state.focusedSessionId, "column");
-  } else if (key === "d") {
-    event.preventDefault();
-    event.stopPropagation();
+    return true;
+  }
+  if (matchesChord(event, SHORTCUTS["split-right"], isMac)) {
+    consume();
     await splitPane(state.focusedSessionId, "row");
-  } else if (key === "t") {
-    event.preventDefault();
-    event.stopPropagation();
+    return true;
+  }
+  if (matchesChord(event, SHORTCUTS["new-tab"], isMac)) {
+    consume();
     await addTab(state.focusedSessionId);
-  } else if (key === "w") {
-    event.preventDefault();
-    event.stopPropagation();
+    return true;
+  }
+  if (matchesChord(event, SHORTCUTS["close-tab"], isMac)) {
+    consume();
     // A pinned tab is protected from the close shortcut (browser-style);
     // the tab menu's explicit Close still works.
     const tree = getActiveTree(state);
-    if (tree && isPinned(tree, state.focusedSessionId)) return;
+    if (tree && isPinned(tree, state.focusedSessionId)) return true;
     if (await confirmTabClose(state.focusedSessionId)) {
       await closeSession(state.focusedSessionId);
     }
-  } else if (key === "c") {
-    event.preventDefault();
-    event.stopPropagation();
-    await copySelection();
-  } else if (key === "v") {
-    event.preventDefault();
-    event.stopPropagation();
-    await pasteClipboard();
+    return true;
   }
+  // Copy/paste stay macOS-only on metaKey: on Linux/Windows Ctrl+C in a
+  // terminal must remain SIGINT, not a copy.
+  if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "c") {
+    consume();
+    await copySelection();
+    return true;
+  }
+  if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "v") {
+    consume();
+    await pasteClipboard();
+    return true;
+  }
+  return false;
 }
 
 export function installKeyboardShortcuts(): () => void {
@@ -51,7 +167,7 @@ export function installKeyboardShortcuts(): () => void {
   // propagation before a bubble-phase window listener would ever see it
   // (established the hard way in Milestone B).
   const listener = (event: KeyboardEvent) => {
-    void handleKeydown(event);
+    void handleShortcutKeydown(event);
   };
   window.addEventListener("keydown", listener, true);
   return () => window.removeEventListener("keydown", listener, true);

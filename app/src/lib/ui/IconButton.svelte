@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { Component, Snippet } from "svelte";
   import { tooltip as tooltipAction } from "../tooltip";
+  import { formatShortcut, type ShortcutId } from "../shortcuts";
+  import { isMacSync } from "../platform";
+  import { hintMode } from "../shortcutHints";
+  import ShortcutHint from "./ShortcutHint.svelte";
 
   type Variant = "bare" | "outlined" | "filled" | "segmented";
   type Tone = "default" | "accent" | "danger" | "success" | "warning";
@@ -25,6 +29,10 @@
     /// a disabled button explaining WHY it is disabled). `null` opts out
     /// of the tooltip entirely without losing the aria-label.
     tip?: string | null;
+    /// A registered shortcut for this action: appended to the tooltip
+    /// ("New Tab (⌘T)") and shown as a badge while the command key is
+    /// held. Formatted per platform in one place.
+    shortcut?: ShortcutId;
     /// Declared explicitly rather than left to the index signature below,
     /// which would type the event as `unknown` and make every inline
     /// handler an implicit-any at the call site.
@@ -47,11 +55,14 @@
     active = false,
     disabled = false,
     tip,
+    shortcut,
     class: extraClass = "",
     ...rest
   }: Props = $props();
 
-  const tipText = $derived(tip === undefined ? label : tip);
+  const baseTip = $derived(tip === undefined ? label : tip);
+  const shortcutText = $derived(shortcut ? formatShortcut(shortcut, isMacSync()) : null);
+  const tipText = $derived(baseTip && shortcutText ? `${baseTip} (${shortcutText})` : baseTip);
 </script>
 
 <button
@@ -66,11 +77,16 @@
 >
   <Icon {size} />
   {#if text}<span class="text">{text}</span>{/if}
+  {#if shortcutText && $hintMode === "cmd"}
+    <ShortcutHint text={shortcutText} placement="center" />
+  {/if}
   {@render children?.()}
 </button>
 
 <style>
   .icon-button {
+    /* Anchors the hold-⌘ hint badge. */
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
