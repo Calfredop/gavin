@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
-import type { ApplyMode, FileDiff, FileEntry, InProgressKind, RefsSnapshot, RepoInfo, StatusResult } from "./git";
+import type { ApplyMode, CommitDetail, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -244,9 +244,10 @@ export function gitDiff(
   path: string,
   oldPath: string | null,
   staged: boolean,
-  untracked: boolean
+  untracked: boolean,
+  rev: string | null = null
 ): Promise<FileDiff> {
-  return invoke("git_diff", { cwd, path, oldPath, staged, untracked });
+  return invoke("git_diff", { cwd, path, oldPath, staged, untracked, rev });
 }
 
 export function gitStageFiles(cwd: string, paths: string[]): Promise<void> {
@@ -375,4 +376,34 @@ export function gitWorktreeRemove(cwd: string, path: string, force: boolean): Pr
 
 export function gitWorktreePrune(cwd: string): Promise<void> {
   return invoke("git_worktree_prune", { cwd });
+}
+
+// --- Git tab SP4: history ---------------------------------------------------
+
+export function gitLog(cwd: string, all: boolean, skip: number, limit: number): Promise<LogPage> {
+  return invoke("git_log", { cwd, all, skip, limit });
+}
+
+export function gitCommitDetail(cwd: string, sha: string): Promise<CommitDetail> {
+  return invoke("git_commit_detail", { cwd, sha });
+}
+
+export function gitCheckoutCommit(cwd: string, sha: string): Promise<void> {
+  return invoke("git_checkout_commit", { cwd, sha });
+}
+
+export function gitCherryPick(cwd: string, sha: string): Promise<void> {
+  return invoke("git_cherry_pick", { cwd, sha });
+}
+
+export function gitRevert(cwd: string, sha: string): Promise<void> {
+  return invoke("git_revert", { cwd, sha });
+}
+
+export function gitReset(cwd: string, sha: string, mode: ResetMode): Promise<void> {
+  return invoke("git_reset", { cwd, sha, mode });
+}
+
+export function gitContinueInProgress(cwd: string, kind: InProgressKind): Promise<void> {
+  return invoke("git_continue_in_progress", { cwd, kind });
 }

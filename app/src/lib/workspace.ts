@@ -17,6 +17,8 @@ export interface GitViewPrefs {
   navCollapsed?: Record<string, boolean>;
   /// Selected worktree path; absent = the root checkout.
   worktree?: string;
+  /// History graph scope: all branches (default) or the current branch.
+  graphAll?: boolean;
 }
 
 export interface Workspace {

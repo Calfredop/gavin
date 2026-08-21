@@ -56,7 +56,7 @@ export interface RepoInfo {
   unborn: boolean;
   author: Author | null;
   headMessage: string | null;
-  inProgress: "merge" | "rebase" | null;
+  inProgress: InProgressKind | null;
 }
 
 // ---- SP2/SP3: refs snapshot ------------------------------------------------
@@ -100,8 +100,56 @@ export interface RefsSnapshot {
   headBranch: string | null;
 }
 
-export type NavSelection = "changes" | { stash: number };
-export type InProgressKind = "merge" | "rebase";
+export type NavSelection = "changes" | "commits" | { stash: number };
+export type InProgressKind = "merge" | "rebase" | "cherry-pick" | "revert";
+
+// ---- SP4: history ----------------------------------------------------------
+
+export interface RefLabel {
+  name: string;
+  kind: "head" | "local" | "remote" | "tag" | "stash";
+}
+
+export interface CommitInfo {
+  sha: string;
+  parents: string[];
+  author: string;
+  email: string;
+  date: string;
+  subject: string;
+  refs: RefLabel[];
+  isHead: boolean;
+}
+
+export interface LogPage {
+  commits: CommitInfo[];
+  hasMore: boolean;
+}
+
+export interface CommitDetail {
+  body: string;
+  files: FileEntry[];
+}
+
+export type ResetMode = "soft" | "mixed" | "hard";
+
+export const LOG_PAGE_SIZE = 300;
+
+export function shortSha(sha: string): string {
+  return sha.slice(0, 7);
+}
+
+/// Client-side graph filter: subject, author, email, or a SHA prefix.
+export function matchesFilter(commit: CommitInfo, text: string): boolean {
+  const q = text.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    commit.subject.toLowerCase().includes(q) ||
+    commit.author.toLowerCase().includes(q) ||
+    commit.email.toLowerCase().includes(q) ||
+    commit.sha.startsWith(q)
+  );
+}
 
 /// Hunks longer than this render collapsed (spec §3).
 export const LARGE_HUNK_LINES = 500;

@@ -36,9 +36,19 @@ vi.mock("./backend", () => ({
   gitWorktreeAdd: vi.fn().mockResolvedValue(undefined),
   gitWorktreeRemove: vi.fn().mockResolvedValue(undefined),
   gitWorktreePrune: vi.fn().mockResolvedValue(undefined),
+  gitLog: vi.fn(),
+  gitCommitDetail: vi.fn(),
+  gitCheckoutCommit: vi.fn().mockResolvedValue(undefined),
+  gitCherryPick: vi.fn().mockResolvedValue(undefined),
+  gitRevert: vi.fn().mockResolvedValue(undefined),
+  gitReset: vi.fn().mockResolvedValue(undefined),
+  gitContinueInProgress: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
-vi.mock("./layoutState", () => ({ setGitViewPrefs: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("./layoutState", async () => {
+  const { writable } = await import("svelte/store");
+  return { setGitViewPrefs: vi.fn().mockResolvedValue(undefined), layoutState: writable({ workspaces: [] }) };
+});
 
 import * as backend from "./backend";
 import { listen } from "@tauri-apps/api/event";
@@ -48,6 +58,7 @@ import {
   ensureGitView, refresh, select, run, stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
   effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
   switchWorktree, mergeBack, rootPathOf, removeWorktree,
+  selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
 } from "./gitState";
 import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
@@ -75,7 +86,13 @@ beforeEach(() => {
   vi.mocked(backend.gitStatus).mockResolvedValue(status);
   vi.mocked(backend.gitDiff).mockResolvedValue({ path: "a.ts", binary: false, tooLarge: false, hunks: [] });
   vi.mocked(backend.gitRefs).mockResolvedValue(snapshot);
+  vi.mocked(backend.gitLog).mockResolvedValue({ commits: [commitInfo("aaa", ["bbb"]), commitInfo("bbb", [])], hasMore: true });
+  vi.mocked(backend.gitCommitDetail).mockResolvedValue({ body: "subject\n\nbody", files: [{ path: "a.ts", status: "M" }, { path: "b.ts", status: "A" }] });
 });
+
+function commitInfo(sha: string, parents: string[]) {
+  return { sha, parents, author: "A", email: "a@b", date: "2026-08-21T00:00:00Z", subject: `s ${sha}`, refs: [], isHead: false };
+}
 
 describe("followSelection", () => {
   it("keeps a selection that still exists", () => {
@@ -321,5 +338,46 @@ describe("worktrees", () => {
     await removeWorktree("ws", "/r-feature", false, "feature");
     expect(backend.gitWorktreeRemove).toHaveBeenCalledWith("/r", "/r-feature", false);
     expect(backend.gitDeleteBranch).toHaveBeenCalledWith("/r", "feature", false);
+  });
+});
+
+describe("history", () => {
+  it("selectCommits loads page 0 over all branches and loadMore appends the next page", async () => {
+    ensureGitView("ws", "/r");
+    await selectCommits("ws");
+    expect(get(gitStore)["ws"].navSelection).toBe("commits");
+    expect(backend.gitLog).toHaveBeenLastCalledWith("/r", true, 0, 300);
+    expect(get(gitStore)["ws"].log?.commits.map((c) => c.sha)).toEqual(["aaa", "bbb"]);
+    vi.mocked(backend.gitLog).mockResolvedValueOnce({ commits: [commitInfo("ccc", [])], hasMore: false });
+    await loadMore("ws");
+    expect(backend.gitLog).toHaveBeenLastCalledWith("/r", true, 2, 300);
+    expect(get(gitStore)["ws"].log).toMatchObject({ hasMore: false });
+    expect(get(gitStore)["ws"].log?.commits).toHaveLength(3);
+  });
+
+  it("selectCommit loads the detail and the first file's diff at that revision; refresh keeps it", async () => {
+    ensureGitView("ws", "/r");
+    await selectCommits("ws");
+    await selectCommit("ws", "aaa");
+    const s = get(gitStore)["ws"];
+    expect(s.commitDetail?.body).toBe("subject\n\nbody");
+    expect(s.detailFile).toBe("a.ts");
+    expect(backend.gitDiff).toHaveBeenLastCalledWith("/r", "a.ts", null, false, false, "aaa");
+    await selectDetailFile("ws", "b.ts");
+    expect(backend.gitDiff).toHaveBeenLastCalledWith("/r", "b.ts", null, false, false, "aaa");
+    await refresh("ws");
+    expect(get(gitStore)["ws"].selectedCommit).toBe("aaa");
+    vi.mocked(backend.gitLog).mockResolvedValueOnce({ commits: [commitInfo("zzz", [])], hasMore: false });
+    await refresh("ws");
+    expect(get(gitStore)["ws"].selectedCommit).toBeNull();
+    expect(get(gitStore)["ws"].commitDetail).toBeNull();
+  });
+
+  it("setGraphAll persists the scope and reloads page 0", async () => {
+    ensureGitView("ws", "/r");
+    await selectCommits("ws");
+    await setGraphAll("ws", false);
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { graphAll: false });
+    expect(backend.gitLog).toHaveBeenLastCalledWith("/r", false, 0, 300);
   });
 });

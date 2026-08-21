@@ -5,8 +5,22 @@
 import { writable, get } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
-import { setGitViewPrefs } from "./layoutState";
-import type { ApplyMode, Area, FileDiff, FileEntry, InProgressKind, NavSelection, RefsSnapshot, RepoInfo, StatusResult } from "./git";
+import { layoutState, setGitViewPrefs } from "./layoutState";
+import type {
+  ApplyMode,
+  Area,
+  CommitDetail,
+  CommitInfo,
+  FileDiff,
+  FileEntry,
+  InProgressKind,
+  NavSelection,
+  RefsSnapshot,
+  RepoInfo,
+  ResetMode,
+  StatusResult,
+} from "./git";
+import { LOG_PAGE_SIZE } from "./git";
 
 export interface Selection {
   path: string;
@@ -43,6 +57,16 @@ export interface GitViewState {
   stashFiles: FileEntry[] | null;
   /// A running long op (fetch/pull/push) with its latest progress line.
   op: { id: string; label: string; line: string | null } | null;
+  // ---- SP4 ----
+  log: { commits: CommitInfo[]; hasMore: boolean; all: boolean } | null;
+  logLoading: boolean;
+  logFilter: string;
+  logToken: number;
+  selectedCommit: string | null;
+  commitDetail: CommitDetail | null;
+  detailFile: string | null;
+  detailDiff: FileDiff | null;
+  detailToken: number;
 }
 
 export const GIT_NOT_FOUND = "git was not found on PATH";
@@ -69,6 +93,15 @@ export function initialState(cwd: string): GitViewState {
     navSelection: "changes",
     stashFiles: null,
     op: null,
+    log: null,
+    logLoading: false,
+    logFilter: "",
+    logToken: 0,
+    selectedCommit: null,
+    commitDetail: null,
+    detailFile: null,
+    detailDiff: null,
+    detailToken: 0,
   };
 }
 
@@ -209,7 +242,10 @@ export async function refresh(workspaceId: string): Promise<void> {
       }
       return { ...applyStatus(st, status), repo, refs, gitMissing: false };
     });
-    if (!stale) await loadDiff(workspaceId);
+    if (!stale) {
+      await loadDiff(workspaceId);
+      if (current(workspaceId)?.navSelection === "commits") await loadLog(workspaceId, true);
+    }
   } catch (e) {
     const text = errorText(e);
     update(workspaceId, (st) => {
@@ -395,7 +431,7 @@ export function mergeBranch(workspaceId: string, branch: string): Promise<boolea
 }
 
 export function abortInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
-  return run(workspaceId, kind === "merge" ? "Abort merge" : "Abort rebase", (cwd) => backend.gitAbortInProgress(cwd, kind));
+  return run(workspaceId, `Abort ${kind}`, (cwd) => backend.gitAbortInProgress(cwd, kind));
 }
 
 export function continueRebase(workspaceId: string): Promise<boolean> {
@@ -449,6 +485,118 @@ export async function selectStash(workspaceId: string, index: number): Promise<v
 
 export function selectChanges(workspaceId: string): void {
   update(workspaceId, (st) => ({ ...st, navSelection: "changes", stashFiles: null }));
+}
+
+// ---- SP4: history ----------------------------------------------------------
+
+function graphAllPref(workspaceId: string): boolean {
+  return get(layoutState).workspaces.find((w) => w.id === workspaceId)?.gitView?.graphAll ?? true;
+}
+
+/// Sidebar → All Commits: swaps the middle/diff columns for the graph and
+/// the commit detail, loading the first page.
+export async function selectCommits(workspaceId: string): Promise<void> {
+  update(workspaceId, (st) => ({ ...st, navSelection: "commits", stashFiles: null }));
+  await loadLog(workspaceId, true);
+}
+
+/// Page 0 (`reset`) or the next page, appended. A reload keeps the
+/// selected commit when it is still present (spec SP4 §3.1).
+export async function loadLog(workspaceId: string, reset: boolean): Promise<void> {
+  const s = current(workspaceId);
+  if (!s) return;
+  const all = s.log?.all ?? graphAllPref(workspaceId);
+  const skip = reset ? 0 : (s.log?.commits.length ?? 0);
+  const token = s.logToken + 1;
+  update(workspaceId, (st) => ({ ...st, logToken: token, logLoading: true }));
+  try {
+    const page = await backend.gitLog(s.cwd, all, skip, LOG_PAGE_SIZE);
+    update(workspaceId, (st) => {
+      if (st.logToken !== token) return st;
+      const commits = reset ? page.commits : [...(st.log?.commits ?? []), ...page.commits];
+      const stillThere = st.selectedCommit !== null && commits.some((c) => c.sha === st.selectedCommit);
+      return {
+        ...st,
+        log: { commits, hasMore: page.hasMore, all },
+        logLoading: false,
+        selectedCommit: stillThere ? st.selectedCommit : null,
+        commitDetail: stillThere ? st.commitDetail : null,
+        detailFile: stillThere ? st.detailFile : null,
+        detailDiff: stillThere ? st.detailDiff : null,
+      };
+    });
+  } catch (e) {
+    update(workspaceId, (st) => (st.logToken === token ? { ...st, logLoading: false, error: `History failed: ${errorText(e)}` } : st));
+  }
+}
+
+export function loadMore(workspaceId: string): Promise<void> {
+  return loadLog(workspaceId, false);
+}
+
+export async function setGraphAll(workspaceId: string, all: boolean): Promise<void> {
+  update(workspaceId, (st) => ({ ...st, log: st.log ? { ...st.log, all } : { commits: [], hasMore: false, all } }));
+  await setGitViewPrefs(workspaceId, { graphAll: all });
+  await loadLog(workspaceId, true);
+}
+
+export function setLogFilter(workspaceId: string, text: string): void {
+  update(workspaceId, (st) => ({ ...st, logFilter: text }));
+}
+
+async function loadDetailDiff(workspaceId: string, sha: string, file: FileEntry, token: number): Promise<void> {
+  const s = current(workspaceId);
+  if (!s) return;
+  try {
+    const diff = await backend.gitDiff(s.cwd, file.path, file.oldPath ?? null, false, false, sha);
+    update(workspaceId, (st) => (st.detailToken === token ? { ...st, detailDiff: diff } : st));
+  } catch (e) {
+    update(workspaceId, (st) => (st.detailToken === token ? { ...st, error: `Diff failed: ${errorText(e)}` } : st));
+  }
+}
+
+export async function selectCommit(workspaceId: string, sha: string): Promise<void> {
+  const s = current(workspaceId);
+  if (!s) return;
+  const token = s.detailToken + 1;
+  update(workspaceId, (st) => ({ ...st, selectedCommit: sha, commitDetail: null, detailFile: null, detailDiff: null, detailToken: token }));
+  try {
+    const detail = await backend.gitCommitDetail(s.cwd, sha);
+    const first = detail.files[0] ?? null;
+    update(workspaceId, (st) => (st.detailToken === token ? { ...st, commitDetail: detail, detailFile: first?.path ?? null } : st));
+    if (first) await loadDetailDiff(workspaceId, sha, first, token);
+  } catch (e) {
+    update(workspaceId, (st) => (st.detailToken === token ? { ...st, error: `Commit failed to load: ${errorText(e)}` } : st));
+  }
+}
+
+export async function selectDetailFile(workspaceId: string, path: string): Promise<void> {
+  const s = current(workspaceId);
+  const file = s?.commitDetail?.files.find((f) => f.path === path);
+  if (!s || !s.selectedCommit || !file) return;
+  const token = s.detailToken + 1;
+  update(workspaceId, (st) => ({ ...st, detailFile: path, detailDiff: null, detailToken: token }));
+  await loadDetailDiff(workspaceId, s.selectedCommit, file, token);
+}
+
+export function checkoutCommit(workspaceId: string, sha: string): Promise<boolean> {
+  return run(workspaceId, "Checkout commit", (cwd) => backend.gitCheckoutCommit(cwd, sha));
+}
+
+export function cherryPick(workspaceId: string, sha: string): Promise<boolean> {
+  return run(workspaceId, "Cherry-pick", (cwd) => backend.gitCherryPick(cwd, sha));
+}
+
+export function revertCommit(workspaceId: string, sha: string): Promise<boolean> {
+  return run(workspaceId, "Revert", (cwd) => backend.gitRevert(cwd, sha));
+}
+
+export function resetTo(workspaceId: string, sha: string, mode: ResetMode): Promise<boolean> {
+  return run(workspaceId, `Reset (${mode})`, (cwd) => backend.gitReset(cwd, sha, mode));
+}
+
+export function continueInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
+  return run(workspaceId, `Continue ${kind}`, (cwd) => backend.gitContinueInProgress(cwd, kind));
 }
 
 // ---- SP3: worktrees --------------------------------------------------------

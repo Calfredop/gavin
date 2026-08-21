@@ -53,6 +53,9 @@ pub struct GitViewPrefs {
     /// Selected worktree path (SP3); absent = the root checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<String>,
+    /// History graph scope (SP4): all branches when absent/true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_all: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -372,6 +375,7 @@ mod tests {
             skip_hunk_discard_confirm: true,
             nav_collapsed: None,
             worktree: Some("/r/repo-feature".to_string()),
+            graph_all: Some(false),
         });
         let config = AppConfig {
             workspaces: vec![ws],
