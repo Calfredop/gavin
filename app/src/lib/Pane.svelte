@@ -449,7 +449,7 @@
   }
   .tab-bar {
     display: flex;
-    background: #2a2a2a;
+    background: var(--surface-raised);
     flex: 0 0 auto;
   }
   .tab {
@@ -464,14 +464,14 @@
     border: none;
     border-top: 2px solid transparent;
     box-sizing: border-box;
-    color: #aaa;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.8em;
     cursor: pointer;
   }
   .tab.active {
-    background: #1e1e1e;
-    color: #fff;
+    background: var(--surface-base);
+    color: var(--text);
   }
   .tab.focused {
     border-top-color: var(--ws-accent, #4a9eff);
@@ -491,7 +491,7 @@
   .pin-glyph {
     display: inline-flex;
     align-items: center;
-    color: #999;
+    color: var(--text-muted);
     margin-right: 2px;
   }
   .tab.pinned {
@@ -504,17 +504,17 @@
     flex: 0 0 auto;
   }
   .status-dot.status-working {
-    background: #4a9eff;
+    background: var(--accent);
   }
   .status-dot.status-waiting {
-    background: #e0524a;
+    background: var(--danger);
   }
   .dirty-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     flex: 0 0 auto;
-    background: #d9a648;
+    background: var(--warning);
   }
   .git-dot {
     width: 6px;
@@ -524,24 +524,24 @@
     box-sizing: border-box;
   }
   .git-dot.dirty {
-    background: #d9a648;
+    background: var(--warning);
   }
   .git-dot.clean {
     background: transparent;
-    border: 1px solid #d9a648;
+    border: 1px solid var(--warning);
   }
   .restored-badge {
     display: flex;
     align-items: center;
     flex: 0 0 auto;
-    color: #8bc98b;
+    color: var(--success);
   }
   .tab-label-input {
     max-width: 120px;
     width: 100px;
-    background: #111;
-    color: #fff;
-    border: 1px solid #4a9eff;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border-focus);
     border-radius: 3px;
     font-family: monospace;
     font-size: 1em;
@@ -558,7 +558,7 @@
     border: none;
     border-top: 2px solid transparent;
     box-sizing: border-box;
-    color: #aaa;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 4px 8px;
   }

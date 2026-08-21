@@ -673,14 +673,14 @@
   .sidebar {
     width: 200px;
     flex: 0 0 auto;
-    background: #232323;
-    color: #ccc;
+    background: var(--surface-raised);
+    color: var(--text);
     font-family: monospace;
     font-size: 0.8em;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    border-right: 1px solid #1a1a1a;
+    border-right: 1px solid var(--border);
   }
   .sidebar-header {
     display: flex;
@@ -688,21 +688,21 @@
     justify-content: space-between;
     padding: 8px;
     font-weight: bold;
-    color: #999;
+    color: var(--text-muted);
   }
   .sidebar-header button {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 2px;
   }
   .new-workspace-input,
   .workspace-name-input,
   .page-name-input {
-    background: #111;
-    color: #fff;
-    border: 1px solid #4a9eff;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border-focus);
     border-radius: 3px;
     font-family: monospace;
     font-size: 1em;
@@ -724,21 +724,21 @@
     cursor: pointer;
   }
   .workspace-row.active {
-    background: #2a2a2a;
+    background: var(--surface-raised);
   }
   .workspace-row.pinned {
     font-style: italic;
-    color: #999;
-    border-bottom: 1px solid #333;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
     margin-bottom: 2px;
   }
   .workspace-row.pinned.active {
-    color: #ccc;
+    color: var(--text);
   }
   .expand-toggle {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 0;
     display: flex;
@@ -751,8 +751,8 @@
   }
   .waiting-badge {
     flex: 0 0 auto;
-    background: #e0524a;
-    color: #fff;
+    background: var(--danger);
+    color: var(--text-inverted);
     border-radius: 8px;
     padding: 0 5px;
     font-size: 0.85em;
@@ -766,7 +766,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
   }
   .git-dot {
     width: 6px;
@@ -776,24 +776,24 @@
     box-sizing: border-box;
   }
   .git-dot.dirty {
-    background: #d9a648;
+    background: var(--warning);
   }
   .git-dot.clean {
     background: transparent;
-    border: 1px solid #d9a648;
+    border: 1px solid var(--warning);
   }
   .git-ahead-behind {
     flex: 0 1 auto;
     overflow: hidden;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.9em;
   }
   .git-repo-count {
     flex: 0 1 auto;
     overflow: hidden;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
     font-size: 0.9em;
   }
   .add-page,
@@ -801,7 +801,7 @@
   .close-page {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 2px;
     opacity: 0.6;
@@ -824,41 +824,41 @@
     cursor: pointer;
   }
   .page-row.active {
-    background: #1e1e1e;
-    color: #fff;
+    background: var(--surface-base);
+    color: var(--text);
   }
   .page-row.home {
     justify-content: center;
-    color: #999;
+    color: var(--text-muted);
   }
   .page-row.home.active {
-    color: #eee;
+    color: var(--text);
   }
   .workspace-row.drop-before,
   .page-row.drop-before {
-    box-shadow: inset 0 2px 0 0 #4a9eff;
+    box-shadow: inset 0 2px 0 0 var(--accent);
   }
   .workspace-row.drop-after,
   .page-row.drop-after {
-    box-shadow: inset 0 -2px 0 0 #4a9eff;
+    box-shadow: inset 0 -2px 0 0 var(--accent);
   }
   .workspace-row.drop-append {
-    background: #2d4a6a;
+    background: var(--surface-selected);
   }
   .page-row.drop-zone-left {
-    box-shadow: inset 2px 0 0 0 #4a9eff;
+    box-shadow: inset 2px 0 0 0 var(--accent);
   }
   .page-row.drop-zone-right {
-    box-shadow: inset -2px 0 0 0 #4a9eff;
+    box-shadow: inset -2px 0 0 0 var(--accent);
   }
   .page-row.drop-zone-top {
-    box-shadow: inset 0 2px 0 0 #4a9eff;
+    box-shadow: inset 0 2px 0 0 var(--accent);
   }
   .page-row.drop-zone-bottom {
-    box-shadow: inset 0 -2px 0 0 #4a9eff;
+    box-shadow: inset 0 -2px 0 0 var(--accent);
   }
   .page-row.drop-zone-center {
-    background: #2d4a6a;
+    background: var(--surface-selected);
   }
   .page-name {
     flex: 1 1 auto;
@@ -869,7 +869,7 @@
   .git-expand-toggle {
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     padding: 0;
     display: flex;
@@ -888,13 +888,13 @@
     font-size: 0.9em;
   }
   .git-session-row:hover {
-    background: #1e1e1e;
+    background: var(--surface-base);
   }
   .git-session-label {
     flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #999;
+    color: var(--text-muted);
   }
 </style>

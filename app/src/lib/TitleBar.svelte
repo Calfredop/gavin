@@ -122,8 +122,8 @@
   .titlebar {
     display: flex;
     align-items: center;
-    background: #2a2a2a;
-    color: #ccc;
+    background: var(--surface-raised);
+    color: var(--text);
     font-family: sans-serif;
     font-size: 0.8em;
     flex: 0 0 auto;
@@ -143,15 +143,15 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    background: #3a3a3a;
+    background: var(--surface-overlay);
     border: none;
-    color: #ccc;
+    color: var(--text);
     padding: 4px 8px;
     border-radius: 3px;
     cursor: pointer;
   }
   .actions button:hover {
-    background: #4a4a4a;
+    background: var(--surface-selected);
   }
   .presets {
     display: flex;

@@ -63,7 +63,11 @@
   --text: var(--grey-12);
   --text-muted: var(--grey-9);
   --text-subtle: var(--grey-7);
-  --text-inverted: var(--grey-0);
+  /* Foreground on a COLOURED fill (accent/danger/warning badges), not the
+     inverse of --text. Those fills stay mid-to-dark in both themes, so
+     this is white in both -- inverting it here would put near-black on a
+     mid-red badge. */
+  --text-inverted: var(--grey-15);
 
   --accent: var(--blue-3);
   --accent-hover: var(--blue-4);

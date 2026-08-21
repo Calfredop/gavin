@@ -70,6 +70,9 @@
   .mac-controls:hover .mac-btn {
     color: rgba(0, 0, 0, 0.5);
   }
+  /* The traffic lights and the Windows close red below are fixed
+     platform colours, not theme roles -- macOS draws the same three
+     hexes in light and dark, so they stay literal on purpose. */
   .mac-btn.close {
     background: #ff5f57;
   }
@@ -93,11 +96,11 @@
     height: 100%;
     background: transparent;
     border: none;
-    color: #ccc;
+    color: var(--text);
     cursor: pointer;
   }
   .default-controls button:hover {
-    background: #3a3a3a;
+    background: var(--surface-hover);
   }
   .default-controls button.close:hover {
     background: #e81123;
