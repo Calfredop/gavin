@@ -159,6 +159,8 @@ fn instructions_block_for(profile: &AgentProfile) -> &'static str {
 }
 
 const SKILL_MD: &str = include_str!("gavin_skill.md");
+const PRD_SKILL_MD: &str = include_str!("gavin_prd_skill.md");
+const AGENT_FILE_SKILL_MD: &str = include_str!("gavin_agent_file_skill.md");
 
 fn resolve_mcp_binary_path() -> anyhow::Result<PathBuf> {
     let current_exe = std::env::current_exe()?;
@@ -303,6 +305,67 @@ pub fn setup_agent_integration(root_path: String) -> Result<IntegrationResult, S
         }
     }
     Ok(IntegrationResult { written, skipped })
+}
+
+/// One authored document per agent-driven flow (W6), delivered two ways:
+/// installed as a real skill where the profile has a skill mechanism, and
+/// inlined into the prompt where it does not. One source either way, so
+/// the guidance can be reviewed as a file rather than a format string.
+struct StepSkill {
+    /// Directory name under the profile's skill root, and the name the
+    /// prompt invokes.
+    name: &'static str,
+    document: &'static str,
+}
+
+fn step_skill(flow: &str) -> Option<StepSkill> {
+    match flow {
+        "prd" => Some(StepSkill { name: "gavin-write-prd", document: PRD_SKILL_MD }),
+        "agent-file" => {
+            Some(StepSkill { name: "gavin-write-agent-file", document: AGENT_FILE_SKILL_MD })
+        }
+        _ => None,
+    }
+}
+
+/// Installs the flow's skill (when the profile supports skills) and
+/// returns the prompt that starts the agent on it. The caller wraps this
+/// with buildRunCommand; only profiles with prompt_arg get that far.
+#[tauri::command]
+pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, String> {
+    let root = Path::new(&root_path);
+    if !root.is_dir() {
+        return Err(format!("root does not exist: {root_path}"));
+    }
+    let skill = step_skill(&flow).ok_or_else(|| format!("unknown flow: {flow}"))?;
+    let profile = profile_by_id(&read_profile_id(root));
+    let instructions_file = resolved_instructions_file(root, profile);
+    let target = match flow.as_str() {
+        "prd" => ".gavin-root/PRD.md".to_string(),
+        _ => instructions_file,
+    };
+
+    match profile.mcp.as_ref() {
+        Some(layout) => {
+            // The step skill sits beside the main gavin skill: same parent
+            // directory, one directory per skill, matching the profile.
+            let parent = Path::new(layout.skill_dir)
+                .parent()
+                .ok_or_else(|| "profile skill_dir has no parent".to_string())?;
+            let dir = root.join(parent).join(skill.name);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(layout.skill_file), skill.document)
+                .map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Use the {} skill to write {target} for this repo. Interview me first.",
+                skill.name
+            ))
+        }
+        None => Ok(format!(
+            "Write {target} for this repo, following these instructions exactly.\n\n{}",
+            skill.document
+        )),
+    }
 }
 
 /// The profile table, flattened for the frontend. Mirrors
@@ -490,6 +553,56 @@ mod tests {
         assert!(block.contains(".claude/skills/gavin/SKILL.md"));
         assert!(profile_by_id("claude-code").mcp.is_some());
         assert!(instructions_block_for(profile_by_id("codex")) != block);
+    }
+
+    #[test]
+    fn compose_prompt_invokes_the_skill_by_name_for_a_skill_capable_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "claude-code");
+
+        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+
+        assert!(prompt.contains("gavin-write-prd"), "invokes the skill by name");
+        assert!(prompt.len() < 400, "a skill-capable profile gets a short prompt, not the doc");
+        assert!(dir.path().join(".claude/skills/gavin-write-prd/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn compose_prompt_inlines_the_document_when_there_is_no_skill_mechanism() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "codex");
+
+        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+
+        assert!(prompt.contains("## Vision"), "the guidance itself is in the prompt");
+        assert!(!dir.path().join(".claude").exists(), "no skill dir for a profile without one");
+    }
+
+    #[test]
+    fn compose_prompt_names_the_configured_agent_file_for_the_agent_file_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join(".gavin-root");
+        std::fs::create_dir_all(&g).unwrap();
+        std::fs::write(
+            g.join("config.toml"),
+            "[agent]\nprofile = \"claude-code\"\nfile = \"NOTES.md\"\n",
+        )
+        .unwrap();
+
+        let prompt = compose_agent_prompt(
+            dir.path().to_string_lossy().to_string(),
+            "agent-file".to_string(),
+        )
+        .unwrap();
+
+        assert!(prompt.contains("NOTES.md"), "the prompt names the configured file");
+    }
+
+    #[test]
+    fn compose_prompt_rejects_an_unknown_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "claude-code");
+        assert!(compose_agent_prompt(root, "not-a-flow".to_string()).is_err());
     }
 
     #[test]
