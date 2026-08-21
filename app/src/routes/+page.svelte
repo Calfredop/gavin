@@ -12,6 +12,7 @@
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
+  import { initPlatform } from "$lib/platform";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
@@ -69,6 +70,10 @@
         await quitApp();
       }
     });
+
+    // Before bootstrap: every keydown handler reads the platform
+    // synchronously to decide whether "⌘" means Meta or Control.
+    await initPlatform();
 
     try {
       await bootstrap();
