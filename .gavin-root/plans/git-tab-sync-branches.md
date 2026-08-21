@@ -1,6 +1,7 @@
 ---
+order: 4096
 title: Git tab — Sync, branches, stashes (SP2 of 3)
-status: In Progress
+status: Done
 priority: high
 ---
 # Git tab — Sync, branches, stashes (SP2 of 3)

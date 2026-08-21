@@ -1,7 +1,8 @@
 ---
+order: 4096
 title: Workspace init wizard
 kind: plan
-status: To Do
+status: In Progress
 priority: medium
 labels: ui
 ---

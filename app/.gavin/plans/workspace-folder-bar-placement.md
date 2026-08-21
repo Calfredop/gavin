@@ -1,4 +1,5 @@
 ---
+order: 11264
 title: Workspace folder bar above the tabs; picking is settings-only
 status: Done
 priority: medium

@@ -1,4 +1,5 @@
 ---
+order: 6144
 title: Custom app icon (terminal + "> G")
 status: Done
 priority: low

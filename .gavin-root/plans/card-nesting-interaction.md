@@ -1,7 +1,7 @@
 ---
-order: 3072
+order: 1024
 title: Card nesting interaction (plan 2/3)
-status: Done
+status: In Progress
 priority: high
 ---
 # Card nesting interaction (plan 2/3)

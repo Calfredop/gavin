@@ -1,6 +1,7 @@
 ---
+order: 4608
 title: Tab & sidebar context menus + tab pinning
-status: In Progress
+status: Done
 priority: medium
 labels: ui
 ---
