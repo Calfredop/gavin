@@ -1,6 +1,7 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import { ChevronDown, ChevronRight, Plus, FileDiff, GitBranch, Cloud, Archive, Trash2, GitMerge, LogIn, History } from "@lucide/svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import { layoutState, setGitViewPrefs } from "./layoutState";
   import {
     gitStore,
@@ -111,9 +112,7 @@
         <GitBranch size={12} />
         <span>Branches</span>
       </button>
-      <button type="button" class="plus" use:tooltip={"New branch from HEAD"} disabled={locked || !refs} onclick={() => (prompt = "branch")}>
-        <Plus size={12} />
-      </button>
+      <IconButton icon={Plus} label="New branch from HEAD" size={12} disabled={locked || !refs} onclick={() => (prompt = "branch")} />
     </div>
     {#if !collapsed.branches}
       {#if view?.repo?.unborn}
@@ -128,9 +127,9 @@
             {/if}
             {#if !b.current}
               <span class="acts">
-                <button type="button" use:tooltip={`Checkout ${b.name}`} disabled={locked} onclick={() => checkout(workspaceId, b.name, null)}><LogIn size={11} /></button>
-                <button type="button" use:tooltip={`Merge ${b.name} into current`} disabled={locked} onclick={() => mergeBranch(workspaceId, b.name)}><GitMerge size={11} /></button>
-                <button type="button" class="danger" use:tooltip={"Delete branch"} disabled={locked} onclick={() => onDeleteBranch(b.name)}><Trash2 size={11} /></button>
+                <IconButton icon={LogIn} label={`Checkout ${b.name}`} size={11} disabled={locked} onclick={() => checkout(workspaceId, b.name, null)} />
+                <IconButton icon={GitMerge} label={`Merge ${b.name} into current`} size={11} disabled={locked} onclick={() => mergeBranch(workspaceId, b.name)} />
+                <IconButton icon={Trash2} label="Delete branch" tone="danger" size={11} disabled={locked} onclick={() => onDeleteBranch(b.name)} />
               </span>
             {/if}
           </div>
@@ -147,9 +146,7 @@
         <Cloud size={12} />
         <span>Remotes</span>
       </button>
-      <button type="button" class="plus" use:tooltip={"Add remote"} disabled={locked || !refs} onclick={() => (prompt = "remote")}>
-        <Plus size={12} />
-      </button>
+      <IconButton icon={Plus} label="Add remote" size={12} disabled={locked || !refs} onclick={() => (prompt = "remote")} />
     </div>
     {#if !collapsed.remotes && refs}
       {#if refs.remotes.length === 0}
@@ -160,7 +157,7 @@
           <span class="dot"></span>
           <span class="name">{r.name}</span>
           <span class="acts">
-            <button type="button" class="danger" use:tooltip={"Remove remote"} disabled={locked} onclick={() => onRemoveRemote(r.name)}><Trash2 size={11} /></button>
+            <IconButton icon={Trash2} label="Remove remote" tone="danger" size={11} disabled={locked} onclick={() => onRemoveRemote(r.name)} />
           </span>
         </div>
         {#each r.branches as rb (r.name + "/" + rb)}
@@ -168,7 +165,7 @@
             <span class="dot"></span>
             <span class="name">{rb}</span>
             <span class="acts">
-              <button type="button" use:tooltip={`Checkout ${r.name}/${rb}`} disabled={locked} onclick={() => checkout(workspaceId, rb, r.name)}><LogIn size={11} /></button>
+              <IconButton icon={LogIn} label={`Checkout ${r.name}/${rb}`} size={11} disabled={locked} onclick={() => checkout(workspaceId, rb, r.name)} />
             </span>
           </div>
         {/each}
@@ -200,7 +197,7 @@
           <span class="acts">
             <button type="button" use:tooltip={"Pop (apply and drop)"} disabled={locked} onclick={(e) => { e.stopPropagation(); void stashPop(workspaceId, s.index); }}>pop</button>
             <button type="button" use:tooltip={"Apply (keep the stash)"} disabled={locked} onclick={(e) => { e.stopPropagation(); void stashApply(workspaceId, s.index); }}>apply</button>
-            <button type="button" class="danger" use:tooltip={"Drop"} disabled={locked} onclick={(e) => { e.stopPropagation(); onDropStash(s.index, s.message); }}><Trash2 size={11} /></button>
+            <IconButton icon={Trash2} label="Drop" tone="danger" size={11} disabled={locked} onclick={(e) => { e.stopPropagation(); onDropStash(s.index, s.message); }} />
           </span>
         </div>
       {/each}
@@ -306,26 +303,6 @@
   .toggle:hover {
     color: var(--text);
   }
-  .plus {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text-muted);
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-  }
-  .plus:hover:not(:disabled) {
-    border-color: var(--border-strong);
-    color: var(--text);
-  }
-  .plus:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
   .row {
     display: flex;
     align-items: center;
@@ -397,10 +374,6 @@
   .acts button:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .acts .danger:hover:not(:disabled) {
-    border-color: var(--border-danger);
-    color: var(--danger-text);
   }
   .none {
     padding: 2px 10px;

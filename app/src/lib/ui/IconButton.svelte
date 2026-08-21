@@ -25,6 +25,10 @@
     /// a disabled button explaining WHY it is disabled). `null` opts out
     /// of the tooltip entirely without losing the aria-label.
     tip?: string | null;
+    /// Declared explicitly rather than left to the index signature below,
+    /// which would type the event as `unknown` and make every inline
+    /// handler an implicit-any at the call site.
+    onclick?: (event: MouseEvent) => void;
     /// Extra classes for positioning by the host -- margins, grid
     /// placement, opacity-reveal on parent hover. Appearance belongs to
     /// the variant; the host only ever says WHERE the button sits.

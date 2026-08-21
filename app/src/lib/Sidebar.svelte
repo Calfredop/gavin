@@ -16,6 +16,7 @@
   import { presetSingle, allSessionIds } from "./layout";
   import { ChevronRight, ChevronDown, Plus, X, House, Sun, Moon, Monitor, Settings } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
+  import IconButton from "./ui/IconButton.svelte";
   import type { ThemePref } from "./ui/theme";
 
   /// System first, matching the default -- and matching the order the
@@ -428,17 +429,12 @@
           oncontextmenu={(e) => openPageMenu(e, ws, page)}
         >
           {#if gitSummary.kind === "multiple"}
-            <button
-              class="git-expand-toggle"
-              aria-label={isPageGitExpanded(page.id) ? "Collapse git detail" : "Expand git detail"}
+            <IconButton
+              icon={isPageGitExpanded(page.id) ? ChevronDown : ChevronRight}
+              label={isPageGitExpanded(page.id) ? "Collapse git detail" : "Expand git detail"}
+              size={10}
               onclick={() => togglePageGitExpand(page.id)}
-            >
-              {#if isPageGitExpanded(page.id)}
-                <ChevronDown size={10} />
-              {:else}
-                <ChevronRight size={10} />
-              {/if}
-            </button>
+            />
           {/if}
           {#if editingPageId === page.id}
             <input
@@ -536,9 +532,7 @@
 <div class="sidebar">
   <div class="sidebar-header">
     <span>Workspaces</span>
-    <button aria-label="New Workspace" title="New Workspace" onclick={startCreatingWorkspace}>
-      <Plus size={14} />
-    </button>
+    <IconButton icon={Plus} label="New Workspace" size={14} onclick={startCreatingWorkspace} />
   </div>
   {#if creatingWorkspace}
     <input
@@ -572,24 +566,17 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
-          <button
-            class="expand-toggle"
-            aria-label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+          <IconButton
+            icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
+            label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+            size={12}
             onclick={() => toggleExpand(ws.id)}
-          >
-            {#if isExpanded(ws.id)}
-              <ChevronDown size={12} />
-            {:else}
-              <ChevronRight size={12} />
-            {/if}
-          </button>
+          />
           <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
           {#if workspaceWaitingForInputCount(ws) > 0}
             <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
           {/if}
-          <button class="add-page" aria-label="New Page" title="New Page" onclick={() => quickAddPage(ws.id)}>
-            <Plus size={12} />
-          </button>
+          <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
         </div>
         {#if isExpanded(ws.id)}
           {@render pageList(ws, false)}
@@ -617,17 +604,12 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
-          <button
-            class="expand-toggle"
-            aria-label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+          <IconButton
+            icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
+            label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+            size={12}
             onclick={() => toggleExpand(ws.id)}
-          >
-            {#if isExpanded(ws.id)}
-              <ChevronDown size={12} />
-            {:else}
-              <ChevronRight size={12} />
-            {/if}
-          </button>
+          />
           {#if editingWorkspaceId === ws.id}
             <input
               class="workspace-name-input"
@@ -655,9 +637,7 @@
           {#if workspaceWaitingForInputCount(ws) > 0}
             <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
           {/if}
-          <button class="add-page" aria-label="New Page" title="New Page" onclick={() => quickAddPage(ws.id)}>
-            <Plus size={12} />
-          </button>
+          <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
           <button
             class="close-workspace"
             aria-label="Close Workspace"
@@ -686,17 +666,14 @@
       <span>Theme</span>
       <div class="theme-toggle">
         {#each THEME_OPTIONS as opt (opt.pref)}
-          <button
-            type="button"
-            class="theme-btn"
-            class:active={themeState.pref === opt.pref}
-            aria-pressed={themeState.pref === opt.pref}
-            aria-label={opt.label}
-            title={opt.label}
+          <IconButton
+            icon={opt.icon}
+            label={opt.label}
+            variant="segmented"
+            size={12}
+            active={themeState.pref === opt.pref}
             onclick={() => void themeState.setPref(opt.pref)}
-          >
-            <opt.icon size={12} />
-          </button>
+          />
         {/each}
       </div>
     </div>
@@ -780,14 +757,6 @@
   .workspace-row.pinned.active {
     color: var(--text);
   }
-  .expand-toggle {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 0;
-    display: flex;
-  }
   .workspace-name {
     flex: 1 1 auto;
     overflow: hidden;
@@ -841,7 +810,6 @@
     color: var(--text-muted);
     font-size: 0.9em;
   }
-  .add-page,
   .close-workspace,
   .close-page {
     background: transparent;
@@ -852,7 +820,6 @@
     opacity: 0.6;
     flex: 0 0 auto;
   }
-  .add-page:hover,
   .close-workspace:hover,
   .close-page:hover {
     opacity: 1;
@@ -910,15 +877,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .git-expand-toggle {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 0;
-    display: flex;
-    flex: 0 0 auto;
   }
   .page-git-detail {
     display: flex;
@@ -983,27 +941,5 @@
     background: var(--surface-sunken);
     border-radius: 4px;
     padding: 1px;
-  }
-  .theme-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2px 5px;
-    background: transparent;
-    border: none;
-    border-radius: 3px;
-    color: var(--text-subtle);
-    cursor: pointer;
-  }
-  .theme-btn:hover {
-    color: var(--text);
-  }
-  .theme-btn.active {
-    background: var(--surface-selected);
-    color: var(--text);
-  }
-  .theme-btn:focus-visible {
-    outline: 1px solid var(--border-focus);
-    outline-offset: -1px;
   }
 </style>
