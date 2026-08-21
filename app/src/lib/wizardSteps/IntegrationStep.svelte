@@ -1,0 +1,115 @@
+<script lang="ts">
+  import { layoutState } from "./../layoutState";
+  import * as backend from "./../backend";
+
+  interface Props {
+    workspaceId: string;
+    onDone: () => void;
+  }
+  let { workspaceId, onDone }: Props = $props();
+
+  const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+
+  let result = $state<backend.IntegrationResult | null>(null);
+  let error = $state<string | null>(null);
+  let running = $state(false);
+
+  async function run(): Promise<void> {
+    if (!ws?.rootPath) return;
+    running = true;
+    error = null;
+    try {
+      result = await backend.setupAgentIntegration(ws.rootPath);
+    } catch (e) {
+      error = String(e);
+    }
+    running = false;
+  }
+
+  function short(path: string): string {
+    return ws?.rootPath ? path.replace(ws.rootPath + "/", "") : path;
+  }
+</script>
+
+<h3>Integration files</h3>
+<p class="hint">
+  Teaches your agent about this workspace. Safe to re-run — hand-written content outside gavin's
+  markers is never touched.
+</p>
+
+{#if result}
+  <ul class="results">
+    {#each result.written as path (path)}
+      <li class="ok">✓ {short(path)}</li>
+    {/each}
+    {#each result.skipped as [what, why] (what)}
+      <li class="skip">— {what}: {why}</li>
+    {/each}
+  </ul>
+{:else if error}
+  <p class="warn">{error}</p>
+{/if}
+
+<div class="actions">
+  {#if result}
+    <button type="button" onclick={onDone}>Continue →</button>
+  {:else}
+    <button type="button" disabled={running} onclick={() => void run()}>
+      {running ? "Writing…" : "Set up integration"}
+    </button>
+  {/if}
+</div>
+
+<style>
+  h3 {
+    margin: 0 0 4px;
+    font-size: 0.95em;
+    font-family: monospace;
+    color: #eee;
+  }
+  .hint {
+    margin: 0 0 16px;
+    color: #888;
+    font-family: monospace;
+    font-size: 0.8em;
+  }
+  .results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-family: monospace;
+    font-size: 0.8em;
+  }
+  .results li {
+    margin-bottom: 6px;
+  }
+  .ok {
+    color: #8bc98b;
+  }
+  .skip {
+    color: #888;
+  }
+  .warn {
+    color: #e0b08a;
+    font-family: monospace;
+    font-size: 0.8em;
+  }
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 18px;
+  }
+  .actions button {
+    background: #3a3a3a;
+    border: none;
+    color: #eee;
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
+  .actions button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+</style>

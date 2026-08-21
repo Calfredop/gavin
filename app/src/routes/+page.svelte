@@ -15,7 +15,8 @@
   import ContextMenu from "$lib/ContextMenu.svelte";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
-  import { agentProfilesStore } from "$lib/layoutState";
+  import { agentProfilesStore, wizardWorkspaceId } from "$lib/layoutState";
+  import SetupWizard from "$lib/SetupWizard.svelte";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { visibleHubViews } from "$lib/workspaceViews";
@@ -144,6 +145,10 @@
        singleton, so a second mount would draw a duplicate menu. -->
   <ContextMenu />
 </div>
+
+{#if $wizardWorkspaceId}
+  <SetupWizard workspaceId={$wizardWorkspaceId} />
+{/if}
 
 <style>
   /* App chrome is not selectable, like a native window. WKWebView only
