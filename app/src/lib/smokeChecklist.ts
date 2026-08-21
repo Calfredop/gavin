@@ -451,6 +451,24 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "wt-prune", text: "rm -rf a worktree folder → it shows “(missing)” and Prune clears it" },
     ],
   },
+  {
+    title: "Git tab — history",
+    items: [
+      {
+        id: "hist-graph",
+        text: "All Commits draws the workspace repo with coloured lanes; merges fork and rejoin; HEAD/branch/remote/tag chips sit on the right tips",
+      },
+      { id: "hist-scope", text: "“Current” narrows to the checked-out branch and the choice survives an app restart" },
+      { id: "hist-detail", text: "Clicking a commit shows message, files and a read-only diff; the Unified/Split toggle still applies" },
+      { id: "hist-filter", text: "The filter box narrows rows by subject/author/sha and shows “n of m”" },
+      { id: "hist-load-more", text: "On a repo with > 300 commits “Load more” appends without losing the selection" },
+      {
+        id: "hist-actions",
+        text: "Right-click: checkout detached, new branch here, copy SHA; cherry-pick a conflicting commit → banner with Abort cherry-pick",
+      },
+      { id: "hist-reset-hard", text: "Reset → Hard stays disabled until the short SHA is typed; Soft/Mixed behave as labelled" },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

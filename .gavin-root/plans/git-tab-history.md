@@ -15,7 +15,8 @@ Plan: `docs/superpowers/plans/2026-08-21-git-tab-history.md`
 
 ## Steps
 
-- [ ] Backend: log + decorations parsing, commit detail, revision diffs, cherry-pick/revert/reset, in-progress kinds (+ tests)
-- [ ] Lane model `graphLanes.ts` + history store (+ tests)
-- [ ] Graph, detail pane, reset dialog, context menu, banner kinds
-- [ ] Smoke entries; whole-feature manual pass
+- [x] Backend: log + decorations parsing, commit detail, revision diffs, cherry-pick/revert/reset, in-progress kinds (+ tests)
+- [x] Lane model `graphLanes.ts` + history store (+ tests)
+- [x] Graph, detail pane, reset dialog, context menu, banner kinds
+- [x] Smoke entries
+- [ ] Whole-feature manual pass (Smoke Test workspace → the four “Git tab” sections)

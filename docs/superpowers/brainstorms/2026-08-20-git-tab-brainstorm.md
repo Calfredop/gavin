@@ -157,3 +157,23 @@ Deviations / notes:
   read-only.
 
 Spec: `docs/superpowers/specs/2026-08-21-git-tab-history-design.md`.
+
+## Execution notes — SP4 (history graph, 2026-08-21)
+
+On the same branch. Rust: 55 git tests (6 new — decorations/log parsers, log
+paging with tags and a merge, root-commit detail + revision diff,
+cherry-pick conflict → abort, revert, reset soft/mixed/hard). Vitest: 589
+(8 new — lane model on four shapes, history store paging/selection/scope).
+
+Notes:
+
+- `git_diff` gained a `rev` parameter instead of a separate command; SP1's
+  viewer renders commit diffs with `canAct={false}`.
+- The lane model exposes `fromAbove` so the SVG knows whether a lane's top
+  half is drawn — the first draft guessed it from lane counts.
+- `git_continue_rebase` now delegates to `git_continue_in_progress(kind)`;
+  the banner handles merge/rebase/cherry-pick/revert uniformly.
+- No row virtualisation: 300-commit pages render fine; filtering hides rows
+  without re-laying lanes (rows stay 1:1 with the full list).
+- Relative dates in rows are computed at render time (no timer), exact ISO
+  date in the detail header.
