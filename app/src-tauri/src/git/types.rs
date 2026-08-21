@@ -118,6 +118,44 @@ pub struct RefsSnapshot {
     pub head_branch: Option<String>,
 }
 
+// ---- SP4: history ------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefLabel {
+    pub name: String,
+    /// "head" | "local" | "remote" | "tag" | "stash"
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub email: String,
+    /// ISO-8601 strict.
+    pub date: String,
+    pub subject: String,
+    pub refs: Vec<RefLabel>,
+    pub is_head: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LogPage {
+    pub commits: Vec<CommitInfo>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetail {
+    pub body: String,
+    pub files: Vec<FileEntry>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoInfo {

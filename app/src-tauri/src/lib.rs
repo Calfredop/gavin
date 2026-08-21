@@ -119,7 +119,14 @@ pub fn run() {
             git::git_stash_files,
             git::git_worktree_add,
             git::git_worktree_remove,
-            git::git_worktree_prune
+            git::git_worktree_prune,
+            git::git_log,
+            git::git_commit_detail,
+            git::git_checkout_commit,
+            git::git_cherry_pick,
+            git::git_revert,
+            git::git_reset,
+            git::git_continue_in_progress
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

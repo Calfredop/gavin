@@ -1,7 +1,7 @@
 //! Pure parsers for git's machine-readable output (spec §2). Both are
 //! exact by necessity: the frontend patch builder reverses `parse_diff`.
 
-use crate::git::types::{BranchInfo, FileDiff, FileEntry, Hunk, Line, RemoteInfo, StashInfo, StatusResult, WorktreeInfo};
+use crate::git::types::{BranchInfo, CommitInfo, FileDiff, FileEntry, Hunk, Line, RefLabel, RemoteInfo, StashInfo, StatusResult, WorktreeInfo};
 
 /// `worktree list --porcelain`: blank-line separated blocks of
 /// `worktree <path>` / `HEAD <sha>` / `branch refs/heads/<n>` | `detached` /
@@ -459,5 +459,130 @@ mod diff_tests {
     #[test]
     fn empty_output_is_an_empty_diff() {
         assert!(parse_diff("x", None, "").hunks.is_empty());
+    }
+}
+
+// ---- SP4: history ------------------------------------------------------------
+
+/// `%D` → ref chips. `HEAD -> main` marks HEAD and yields `main`; a bare
+/// `HEAD` (detached) marks HEAD only; `tag: v1` → tag; `refs/stash` → stash;
+/// `<remote>/<x>` for a known remote → remote; everything else → local.
+pub fn parse_decorations(raw: &str, remotes: &[String]) -> (Vec<RefLabel>, bool) {
+    let mut refs = Vec::new();
+    let mut is_head = false;
+    for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let part = match part.strip_prefix("HEAD -> ") {
+            Some(rest) => {
+                is_head = true;
+                rest.trim()
+            }
+            None => part,
+        };
+        if part == "HEAD" {
+            is_head = true;
+            continue;
+        }
+        if let Some(tag) = part.strip_prefix("tag: ") {
+            refs.push(RefLabel { name: tag.to_string(), kind: "tag".into() });
+        } else if part == "refs/stash" {
+            refs.push(RefLabel { name: "stash".into(), kind: "stash".into() });
+        } else if part.split_once('/').is_some_and(|(r, _)| remotes.iter().any(|n| n == r)) {
+            refs.push(RefLabel { name: part.to_string(), kind: "remote".into() });
+        } else {
+            refs.push(RefLabel { name: part.to_string(), kind: "local".into() });
+        }
+    }
+    (refs, is_head)
+}
+
+/// Records of `log --format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%s%x00%D%x1e`.
+pub fn parse_log(raw: &str, remotes: &[String]) -> Vec<CommitInfo> {
+    raw.split('\x1e')
+        .map(|r| r.trim_start_matches('\n'))
+        .filter(|r| !r.trim().is_empty())
+        .filter_map(|rec| {
+            let f: Vec<&str> = rec.split('\0').collect();
+            if f.len() < 7 {
+                return None;
+            }
+            let (refs, is_head) = parse_decorations(f[6].trim_end(), remotes);
+            Some(CommitInfo {
+                sha: f[0].to_string(),
+                parents: f[1].split_whitespace().map(str::to_string).collect(),
+                author: f[2].to_string(),
+                email: f[3].to_string(),
+                date: f[4].to_string(),
+                subject: f[5].to_string(),
+                refs,
+                is_head,
+            })
+        })
+        .collect()
+}
+
+/// `--name-status` lines (`M\tpath`, `R100\told\tnew`) → entries sorted by path.
+pub fn parse_name_status(raw: &str) -> Vec<FileEntry> {
+    let mut entries: Vec<FileEntry> = raw
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.split('\t');
+            let code = parts.next()?.trim();
+            let first = code.chars().next()?;
+            let a = parts.next()?.to_string();
+            let b = parts.next().map(str::to_string);
+            let status = match first {
+                'M' | 'T' => "M",
+                'A' => "A",
+                'D' => "D",
+                'R' => "R",
+                'C' => "C",
+                _ => "M",
+            };
+            Some(match (first, b) {
+                ('R' | 'C', Some(new)) => FileEntry { path: new, old_path: Some(a), status: status.into() },
+                _ => FileEntry { path: a, old_path: None, status: status.into() },
+            })
+        })
+        .collect();
+    entries.sort_by(|x, y| x.path.cmp(&y.path));
+    entries
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn remotes() -> Vec<String> {
+        vec!["origin".into(), "upstream".into()]
+    }
+
+    #[test]
+    fn decorations_classify_head_local_remote_tag_and_stash() {
+        let (refs, head) = parse_decorations("HEAD -> main, origin/main, tag: v1, refs/stash, feature/x", &remotes());
+        assert!(head);
+        let kinds: Vec<(&str, &str)> = refs.iter().map(|r| (r.name.as_str(), r.kind.as_str())).collect();
+        assert_eq!(kinds, vec![("main", "local"), ("origin/main", "remote"), ("v1", "tag"), ("stash", "stash"), ("feature/x", "local")]);
+        let (refs, head) = parse_decorations("HEAD", &remotes());
+        assert!(head && refs.is_empty());
+        let (refs, head) = parse_decorations("", &remotes());
+        assert!(!head && refs.is_empty());
+    }
+
+    #[test]
+    fn log_records_parse_parents_and_fields() {
+        let raw = "aaa\0bbb ccc\0Ann\0a@x\02026-08-21T10:00:00+02:00\0Merge branch 'x', again\0HEAD -> main\x1e\nbbb\0\0Bob\0b@x\02026-08-20T09:00:00+02:00\0root\0\x1e\n";
+        let c = parse_log(raw, &remotes());
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].parents, vec!["bbb", "ccc"]);
+        assert!(c[0].is_head && c[0].subject == "Merge branch 'x', again");
+        assert!(c[1].parents.is_empty() && c[1].refs.is_empty() && !c[1].is_head);
+    }
+
+    #[test]
+    fn name_status_handles_renames_and_sorts() {
+        let e = parse_name_status("M\tz.txt\nR100\told.txt\tnew.txt\nA\ta.txt\n");
+        assert_eq!(e.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.txt", "new.txt", "z.txt"]);
+        assert_eq!(e[1].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(e[1].status, "R");
     }
 }

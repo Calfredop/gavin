@@ -2,9 +2,9 @@
 //! thin wrapper over a plain function so the temp-repo tests below call the
 //! real code path without a Tauri runtime.
 
-use crate::git::parse::{parse_branches, parse_diff, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
+use crate::git::parse::{parse_branches, parse_diff, parse_log, parse_name_status, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
 use crate::git::run::{ok, run_git, run_git_env, run_git_ro};
-use crate::git::types::{Author, FileDiff, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
+use crate::git::types::{Author, CommitDetail, FileDiff, LogPage, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
 use std::path::Path;
 
 /// Diffs larger than this are not rendered (spec §1: "Diff too large").
@@ -49,6 +49,10 @@ pub fn repo_info(cwd: &str) -> Result<RepoInfo, String> {
         Some("merge".to_string())
     } else if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
         Some("rebase".to_string())
+    } else if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        Some("cherry-pick".to_string())
+    } else if git_dir.join("REVERT_HEAD").exists() {
+        Some("revert".to_string())
     } else {
         None
     };
@@ -86,6 +90,109 @@ pub fn refs(cwd: &str) -> Result<RefsSnapshot, String> {
         worktrees: worktrees(cwd)?,
         head_branch,
     })
+}
+
+// ---- SP4: history -----------------------------------------------------------
+
+#[cfg(test)]
+pub const LOG_PAGE: usize = 300;
+
+fn remote_names(cwd: &str) -> Result<Vec<String>, String> {
+    let out = ok(run_git_ro(cwd, &["remote"])?)?;
+    Ok(out.stdout_str().lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+}
+
+/// One page of `git log --topo-order`; `limit + 1` rows are requested so
+/// `has_more` is exact. An unborn HEAD is an empty page, not an error.
+pub fn log(cwd: &str, all: bool, skip: usize, limit: usize) -> Result<LogPage, String> {
+    let skip_s = format!("--skip={skip}");
+    let max_s = format!("--max-count={}", limit + 1);
+    let mut args: Vec<&str> = vec![
+        "log",
+        "--date=iso-strict",
+        "--topo-order",
+        "--format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%s%x00%D%x1e",
+        &skip_s,
+        &max_s,
+    ];
+    if all {
+        args.push("--all");
+    }
+    let out = run_git_ro(cwd, &args)?;
+    if out.code != 0 {
+        if out.stderr.contains("does not have any commits yet") || out.stderr.contains("bad default revision") {
+            return Ok(LogPage::default());
+        }
+        return Err(out.stderr.trim().to_string());
+    }
+    let remotes = remote_names(cwd)?;
+    let mut commits = parse_log(&out.stdout_str(), &remotes);
+    let has_more = commits.len() > limit;
+    commits.truncate(limit);
+    Ok(LogPage { commits, has_more })
+}
+
+pub fn commit_detail(cwd: &str, sha: &str) -> Result<CommitDetail, String> {
+    let body = ok(run_git_ro(cwd, &["show", "-s", "--format=%B", sha])?)?.stdout_str().trim_end().to_string();
+    let files = ok(run_git_ro(cwd, &["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-M", sha])?)?;
+    Ok(CommitDetail { body, files: parse_name_status(&files.stdout_str()) })
+}
+
+pub fn checkout_commit(cwd: &str, sha: &str) -> Result<(), String> {
+    ok(run_git(cwd, &["switch", "--detach", sha], None)?).map(|_| ())
+}
+
+pub fn cherry_pick(cwd: &str, sha: &str) -> Result<(), String> {
+    ok(run_git_env(cwd, &["cherry-pick", sha], &[("GIT_EDITOR", "true")])?).map(|_| ())
+}
+
+pub fn revert(cwd: &str, sha: &str) -> Result<(), String> {
+    ok(run_git(cwd, &["revert", "--no-edit", sha], None)?).map(|_| ())
+}
+
+pub fn reset(cwd: &str, sha: &str, mode: &str) -> Result<(), String> {
+    let flag = match mode {
+        "soft" => "--soft",
+        "mixed" => "--mixed",
+        "hard" => "--hard",
+        other => return Err(format!("unknown reset mode: {other}")),
+    };
+    ok(run_git(cwd, &["reset", flag, sha], None)?).map(|_| ())
+}
+
+#[tauri::command]
+pub fn git_log(cwd: String, all: bool, skip: usize, limit: usize) -> Result<LogPage, String> {
+    log(&cwd, all, skip, limit.clamp(1, 1000))
+}
+
+#[tauri::command]
+pub fn git_commit_detail(cwd: String, sha: String) -> Result<CommitDetail, String> {
+    commit_detail(&cwd, &sha)
+}
+
+#[tauri::command]
+pub fn git_checkout_commit(cwd: String, sha: String) -> Result<(), String> {
+    checkout_commit(&cwd, &sha)
+}
+
+#[tauri::command]
+pub fn git_cherry_pick(cwd: String, sha: String) -> Result<(), String> {
+    cherry_pick(&cwd, &sha)
+}
+
+#[tauri::command]
+pub fn git_revert(cwd: String, sha: String) -> Result<(), String> {
+    revert(&cwd, &sha)
+}
+
+#[tauri::command]
+pub fn git_reset(cwd: String, sha: String, mode: String) -> Result<(), String> {
+    reset(&cwd, &sha, &mode)
+}
+
+#[tauri::command]
+pub fn git_continue_in_progress(cwd: String, kind: String) -> Result<(), String> {
+    continue_in_progress(&cwd, &kind)
 }
 
 // ---- SP3: worktrees ---------------------------------------------------------
@@ -143,9 +250,29 @@ pub fn git_refs(cwd: String) -> Result<RefsSnapshot, String> {
     refs(&cwd)
 }
 
+/// The well-known empty tree: the base for a root commit's diff.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+#[cfg(test)]
 pub fn diff(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untracked: bool) -> Result<FileDiff, String> {
+    diff_at(cwd, path, old_path, staged, untracked, None)
+}
+
+/// `rev` (SP4) diffs `<rev>^..<rev>` (the empty tree for a root commit) and
+/// ignores `staged`/`untracked`.
+pub fn diff_at(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untracked: bool, rev: Option<&str>) -> Result<FileDiff, String> {
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-U3"];
-    if untracked {
+    let parent: String;
+    if let Some(rev) = rev {
+        let parent_ref = format!("{rev}^");
+        let has_parent = run_git_ro(cwd, &["rev-parse", "--verify", "-q", &parent_ref])?.code == 0;
+        parent = if has_parent { parent_ref } else { EMPTY_TREE.to_string() };
+        args.extend(["-M", &parent, rev, "--"]);
+        if let Some(old) = old_path {
+            args.push(old);
+        }
+        args.push(path);
+    } else if untracked {
         args.extend(["--no-index", "--", "/dev/null", path]);
     } else {
         if staged {
@@ -294,14 +421,24 @@ pub fn abort_in_progress(cwd: &str, kind: &str) -> Result<(), String> {
     let args: &[&str] = match kind {
         "merge" => &["merge", "--abort"],
         "rebase" => &["rebase", "--abort"],
+        "cherry-pick" => &["cherry-pick", "--abort"],
+        "revert" => &["revert", "--abort"],
         other => return Err(format!("unknown in-progress kind: {other}")),
     };
     ok(run_git(cwd, args, None)?).map(|_| ())
 }
 
-/// `rebase --continue` with GIT_EDITOR=true so it never opens an editor.
+/// `<kind> --continue` with GIT_EDITOR=true so it never opens an editor.
+pub fn continue_in_progress(cwd: &str, kind: &str) -> Result<(), String> {
+    let verb = match kind {
+        "rebase" | "cherry-pick" | "revert" => kind,
+        other => return Err(format!("cannot continue a {other}")),
+    };
+    ok(run_git_env(cwd, &[verb, "--continue"], &[("GIT_EDITOR", "true")])?).map(|_| ())
+}
+
 pub fn continue_rebase(cwd: &str) -> Result<(), String> {
-    ok(run_git_env(cwd, &["rebase", "--continue"], &[("GIT_EDITOR", "true")])?).map(|_| ())
+    continue_in_progress(cwd, "rebase")
 }
 
 pub fn add_remote(cwd: &str, name: &str, url: &str) -> Result<(), String> {
@@ -349,31 +486,7 @@ pub fn stash_files(cwd: &str, index: u32) -> Result<Vec<crate::git::types::FileE
         out = run_git_ro(cwd, &["stash", "show", "--name-status", &r])?;
     }
     let out = ok(out)?;
-    let mut entries: Vec<crate::git::types::FileEntry> = out
-        .stdout_str()
-        .lines()
-        .filter_map(|l| {
-            let mut parts = l.split('\t');
-            let code = parts.next()?.trim();
-            let first = code.chars().next()?;
-            let a = parts.next()?.to_string();
-            let b = parts.next().map(str::to_string);
-            let status = match first {
-                'M' | 'T' => "M",
-                'A' => "A",
-                'D' => "D",
-                'R' => "R",
-                'C' => "C",
-                _ => "M",
-            };
-            Some(match (first, b) {
-                ('R' | 'C', Some(new)) => crate::git::types::FileEntry { path: new, old_path: Some(a), status: status.into() },
-                _ => crate::git::types::FileEntry { path: a, old_path: None, status: status.into() },
-            })
-        })
-        .collect();
-    entries.sort_by(|x, y| x.path.cmp(&y.path));
-    Ok(entries)
+    Ok(parse_name_status(&out.stdout_str()))
 }
 
 #[tauri::command]
@@ -492,8 +605,8 @@ pub fn git_status(cwd: String) -> Result<StatusResult, String> {
 }
 
 #[tauri::command]
-pub fn git_diff(cwd: String, path: String, old_path: Option<String>, staged: bool, untracked: bool) -> Result<FileDiff, String> {
-    diff(&cwd, &path, old_path.as_deref(), staged, untracked)
+pub fn git_diff(cwd: String, path: String, old_path: Option<String>, staged: bool, untracked: bool, rev: Option<String>) -> Result<FileDiff, String> {
+    diff_at(&cwd, &path, old_path.as_deref(), staged, untracked, rev.as_deref())
 }
 
 #[cfg(test)]
@@ -888,6 +1001,88 @@ mod ref_tests {
         stash_push(cwd(&dir), "", false).unwrap();
         stash_drop(cwd(&dir), 0).unwrap();
         assert!(refs(cwd(&dir)).unwrap().stashes.is_empty());
+    }
+
+    #[test]
+    fn log_pages_over_all_branches_with_decorations() {
+        let dir = temp_repo();
+        create_branch(cwd(&dir), "side", None, true).unwrap();
+        write(&dir, "s.txt", "s\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "side work", false).unwrap();
+        checkout(cwd(&dir), "main", None).unwrap();
+        write(&dir, "m.txt", "m\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "main work", false).unwrap();
+        git(cwd(&dir), &["tag", "v1"]);
+        merge(cwd(&dir), "side").unwrap();
+
+        let page = log(cwd(&dir), true, 0, LOG_PAGE).unwrap();
+        assert!(!page.has_more);
+        assert_eq!(page.commits.len(), 4);
+        let head = &page.commits[0];
+        assert!(head.is_head && head.parents.len() == 2);
+        assert!(head.refs.iter().any(|r| r.name == "main" && r.kind == "local"));
+        assert!(page.commits.iter().any(|c| c.refs.iter().any(|r| r.name == "v1" && r.kind == "tag")));
+        assert!(page.commits.iter().any(|c| c.refs.iter().any(|r| r.name == "side")));
+
+        let first = log(cwd(&dir), true, 0, 2).unwrap();
+        assert!(first.has_more && first.commits.len() == 2);
+        let rest = log(cwd(&dir), true, 2, 2).unwrap();
+        assert!(!rest.has_more && rest.commits.len() == 2);
+        assert_eq!(rest.commits[1].subject, "base");
+
+        let fresh = tempfile::tempdir().unwrap();
+        git(cwd(&fresh), &["init", "-q", "-b", "main"]);
+        assert!(log(cwd(&fresh), false, 0, 10).unwrap().commits.is_empty());
+    }
+
+    #[test]
+    fn commit_detail_and_revision_diff_work_for_a_root_commit() {
+        let dir = temp_repo();
+        let root = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        let d = commit_detail(cwd(&dir), &root).unwrap();
+        assert_eq!(d.body, "base");
+        assert_eq!(d.files.len(), 1);
+        assert_eq!((d.files[0].path.as_str(), d.files[0].status.as_str()), ("f.txt", "A"));
+        let diff = diff_at(cwd(&dir), "f.txt", None, false, false, Some(&root)).unwrap();
+        assert_eq!(diff.hunks.len(), 1);
+        assert_eq!(diff.hunks[0].lines.iter().filter(|l| l.kind == "add").count(), 5);
+    }
+
+    #[test]
+    fn cherry_pick_conflict_revert_and_reset_modes() {
+        let dir = temp_repo();
+        create_branch(cwd(&dir), "b", None, true).unwrap();
+        write(&dir, "f.txt", "B\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "b", false).unwrap();
+        let b_sha = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        checkout(cwd(&dir), "main", None).unwrap();
+        write(&dir, "f.txt", "A\n");
+        stage_all(cwd(&dir)).unwrap();
+        commit(cwd(&dir), "a", false).unwrap();
+        let a_sha = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+
+        assert!(cherry_pick(cwd(&dir), &b_sha).is_err());
+        assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress.as_deref(), Some("cherry-pick"));
+        abort_in_progress(cwd(&dir), "cherry-pick").unwrap();
+        assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress, None);
+
+        revert(cwd(&dir), &a_sha).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        assert_eq!(log(cwd(&dir), false, 0, 10).unwrap().commits.len(), 3);
+
+        // soft: index keeps the revert's change; mixed: worktree keeps it; hard: gone.
+        reset(cwd(&dir), &a_sha, "soft").unwrap();
+        assert_eq!(status(cwd(&dir)).unwrap().staged.len(), 1);
+        reset(cwd(&dir), &a_sha, "mixed").unwrap();
+        let s = status(cwd(&dir)).unwrap();
+        assert!(s.staged.is_empty() && s.unstaged.len() == 1);
+        reset(cwd(&dir), &a_sha, "hard").unwrap();
+        assert_eq!(status(cwd(&dir)).unwrap(), StatusResult::default());
+        checkout_commit(cwd(&dir), &b_sha).unwrap();
+        assert!(repo_info(cwd(&dir)).unwrap().detached);
     }
 
     #[test]
