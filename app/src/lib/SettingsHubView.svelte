@@ -12,6 +12,8 @@
   import * as backend from "./backend";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
+  import { themeState } from "./ui/themeState.svelte";
+  import type { ThemePref } from "./ui/theme";
   import Modal from "./Modal.svelte";
 
   interface Props {
@@ -159,6 +161,22 @@
         When a session finishes working
       </label>
       <p class="hint">Never shown while the gavin window is focused.</p>
+    </section>
+
+    <section>
+      <h3>Appearance</h3>
+      <div class="row">
+        <span>Theme</span>
+        <select
+          value={themeState.pref}
+          onchange={(e) => void themeState.setPref(e.currentTarget.value as ThemePref)}
+        >
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+      <p class="hint">Applies to the whole app, not just this workspace.</p>
     </section>
 
     <section>
