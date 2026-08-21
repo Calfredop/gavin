@@ -1,4 +1,5 @@
 ---
+order: 16384
 title: Re-pick accent PALETTE for two-theme legibility
 status: Done
 priority: low

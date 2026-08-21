@@ -1983,8 +1983,13 @@ mod tests {
         let get_resp = handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".to_string() });
         match get_resp {
             Response::Board { columns: got, .. } => {
-                assert_eq!(got.len(), 1);
+                // The written column round-trips first; get_board then
+                // restores the three permanent statuses behind it.
                 assert_eq!(got[0].name, "Only column");
+                assert_eq!(got.len(), 4);
+                for name in ["To Do", "In Progress", "Done"] {
+                    assert!(got.iter().any(|c| c.name == name), "permanent column {name} restored");
+                }
             }
             other => panic!("expected Board, got {other:?}"),
         }

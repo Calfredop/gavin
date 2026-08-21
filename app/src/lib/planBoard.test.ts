@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { slugStatus, mergePlanCards, nearestContext } from "./planBoard";
+import { slugStatus, mergePlanCards, nearestContext, isPermanentColumn } from "./planBoard";
 import type { Board, Column } from "./kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 
@@ -41,6 +41,20 @@ describe("slugStatus", () => {
       expect(slugStatus(s)).toBe("in-progress");
     }
     expect(slugStatus("—")).toBe("");
+  });
+});
+
+describe("isPermanentColumn", () => {
+  it("matches the three canonical statuses slug-insensitively", () => {
+    for (const n of ["To Do", "to do", "to-do", "TO  DO", "In Progress", "in_progress", "Done", "done"]) {
+      expect(isPermanentColumn(n), n).toBe(true);
+    }
+  });
+
+  it("leaves custom columns alone", () => {
+    for (const n of ["Blocked", "Review", "Shipped", "Doing", ""]) {
+      expect(isPermanentColumn(n), n).toBe(false);
+    }
   });
 });
 

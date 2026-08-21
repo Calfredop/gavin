@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Column, Label } from "./kanban";
-  import type { CardView } from "./planBoard";
+  import { isPermanentColumn, type CardView } from "./planBoard";
   import type { PlanFileInfo } from "./gavin";
   import BoardCard from "./BoardCard.svelte";
   import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
@@ -11,6 +11,7 @@
   import { tooltip } from "./tooltip";
   import { Play } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import { X } from "@lucide/svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
   import { columnDeletionPlan, executeDeletion } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -81,7 +82,13 @@
   // Deleting an EMPTY column is direct. A non-empty one prompts with two
   // choices (card-model delete design): column only (its cards fall back
   // to an auto column, D6) or column + cascade of its card files.
-  let confirmingColumnDelete = $state(false);
+  // The three canonical statuses are permanent: never deleted, never
+  // renamed (renaming would break the identity that makes them
+  // permanent), but freely reorderable like any other column. Their X
+  // CLEARS instead -- the column stays, its cards go.
+  const permanent = $derived(isPermanentColumn(column.name));
+
+  let columnPrompt = $state<"delete" | "clear" | null>(null);
   let deleteError = $state<string | null>(null);
 
   const cascade = $derived(columnDeletionPlan(planCards, allCards));
@@ -90,17 +97,22 @@
     if (planCards.length === 0) {
       void deleteColumnAction(workspaceId, column.id);
     } else {
-      confirmingColumnDelete = true;
+      columnPrompt = "delete";
     }
   }
 
+  function requestClearColumn(): void {
+    if (planCards.length === 0) return;
+    columnPrompt = "clear";
+  }
+
   function deleteColumnOnly(): void {
-    confirmingColumnDelete = false;
+    columnPrompt = null;
     void deleteColumnAction(workspaceId, column.id);
   }
 
   async function deleteColumnCascade(): Promise<void> {
-    confirmingColumnDelete = false;
+    columnPrompt = null;
     deleteError = null;
     const err = await executeDeletion(workspaceId, cascade);
     if (err) {
@@ -108,6 +120,13 @@
       return;
     }
     await deleteColumnAction(workspaceId, column.id);
+  }
+
+  async function clearColumn(): Promise<void> {
+    columnPrompt = null;
+    deleteError = null;
+    const err = await executeDeletion(workspaceId, cascade);
+    if (err) deleteError = err;
   }
 
   // Run all (card-model spec §3): every plan/task in this column with no
@@ -240,7 +259,7 @@
   function handleHeaderContextMenu(e: MouseEvent): void {
     const entries: ContextMenuEntry[] = [];
     if (mode === "full") {
-      entries.push({ label: "Rename column", onPick: startRename });
+      if (!permanent) entries.push({ label: "Rename column", onPick: startRename });
       entries.push({ label: "Add card", onPick: () => (composing = true) });
     }
     if (runnable.length > 0) {
@@ -251,7 +270,15 @@
     }
     if (mode === "full") {
       entries.push({ separator: true });
-      entries.push({ label: "Delete column…", danger: true, onPick: requestDeleteColumn });
+      entries.push({
+        label: "Clear column…",
+        danger: true,
+        disabled: planCards.length === 0,
+        onPick: requestClearColumn,
+      });
+      if (!permanent) {
+        entries.push({ label: "Delete column…", danger: true, onPick: requestDeleteColumn });
+      }
     }
     openContextMenuFromEvent(e, entries);
   }
@@ -279,6 +306,9 @@
         onblur={commitRename}
         onkeydown={(e) => e.key === "Enter" && commitRename()}
       />
+    {:else if permanent}
+      <span class="name readonly" use:tooltip={"Permanent column — one of the three canonical statuses. Reorder it freely; it can't be renamed or deleted."}>{column.name}</span>
+      <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
     {:else}
       <button type="button" class="name" onclick={startRename} use:tooltip={"Rename column — its name is the status vocabulary"}>{column.name}</button>
       <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
@@ -299,7 +329,19 @@
       </IconButton>
     {/if}
     {#if mode === "full"}
-      <button type="button" class="delete" aria-label="Delete column" use:tooltip={"Delete column — its cards fall back to an auto column by status"} onclick={requestDeleteColumn}>×</button>
+      <IconButton
+        icon={X}
+        label={permanent ? "Clear column" : "Delete column"}
+        tone="danger"
+        size={13}
+        disabled={permanent && planCards.length === 0}
+        tip={permanent
+          ? planCards.length === 0
+            ? "Nothing to clear — this column is empty"
+            : `Clear column — deletes its ${planCards.length} ${planCards.length === 1 ? "card" : "cards"}; the column stays`
+          : "Delete column — its cards fall back to an auto column by status"}
+        onclick={permanent ? requestClearColumn : requestDeleteColumn}
+      />
     {/if}
   </div>
   <div class="cards" data-kb-cards>
@@ -388,7 +430,27 @@
   {/if}
 </div>
 
-{#if confirmingColumnDelete}
+{#if columnPrompt === "clear"}
+  <ConfirmPrompt
+    title={`Clear column "${column.name}"?`}
+    lines={[
+      `Deletes ${cascade.files.length} card ${cascade.files.length === 1 ? "file" : "files"} permanently (nested tasks included).`,
+      ...(cascade.unparent.length > 0 ? [`${cascade.unparent.length} elsewhere un-parented.`] : []),
+      "The column itself stays — it's one of the three permanent statuses.",
+      "Bound agent sessions keep running on the Agents page.",
+    ]}
+    choices={[
+      {
+        label: `Delete ${cascade.files.length} ${cascade.files.length === 1 ? "card" : "cards"}`,
+        danger: true,
+        onPick: () => void clearColumn(),
+      },
+    ]}
+    onCancel={() => (columnPrompt = null)}
+  />
+{/if}
+
+{#if columnPrompt === "delete"}
   <ConfirmPrompt
     title={`Delete column "${column.name}"?`}
     lines={[
@@ -402,7 +464,7 @@
       { label: "Delete column only", onPick: deleteColumnOnly },
       { label: `Delete column + ${cascade.files.length} cards`, danger: true, onPick: () => void deleteColumnCascade() },
     ]}
-    onCancel={() => (confirmingColumnDelete = false)}
+    onCancel={() => (columnPrompt = null)}
   />
 {/if}
 
@@ -471,13 +533,6 @@
     font-size: 0.85em;
     margin-left: 6px;
     margin-right: auto;
-  }
-  .delete {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 1.1em;
   }
   :global(.run-all) {
     flex: 0 0 auto;

@@ -124,7 +124,12 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "delete-column-cascade",
-        text: "Deleting a non-empty column offers “column only” (cards → auto column) vs cascade (files deleted)",
+        text: "Deleting a non-empty CUSTOM column offers “column only” (cards → auto column) vs cascade (files deleted)",
+      },
+      {
+        id: "permanent-columns",
+        text: "To Do / In Progress / Done can't be renamed or deleted — their red × CLEARS the cards, column stays; still drag-reorderable",
+        hint: "Delete one via SQLite or an old board: the next board load restores it (empty, at the end).",
       },
       {
         id: "context-menu",

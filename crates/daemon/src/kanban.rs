@@ -1,6 +1,29 @@
 use protocol::{Board, CardSession, Column, Label};
 use rusqlite::{params, Connection};
 
+/// The three canonical statuses (D6's vocabulary). Permanent: the board
+/// UI never deletes them, and get_board re-adds any that went missing --
+/// so "permanent" holds even against an older board or a stale client,
+/// not just the current UI.
+const PERMANENT_COLUMNS: [&str; 3] = ["To Do", "In Progress", "Done"];
+
+/// Mirrors the frontend's slugStatus: lowercase, every run of
+/// non-alphanumerics collapsed to one "-", trimmed.
+fn column_slug(name: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = true;
+    for c in name.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
 pub struct KanbanStore {
     conn: Connection,
 }
@@ -63,7 +86,26 @@ impl KanbanStore {
             ];
             self.replace_board(workspace_id, &default_columns, &[])?;
         }
-        self.read_board(workspace_id)
+        let mut board = self.read_board(workspace_id)?;
+        let present: std::collections::HashSet<String> =
+            board.columns.iter().map(|c| column_slug(&c.name)).collect();
+        let missing: Vec<&str> = PERMANENT_COLUMNS
+            .iter()
+            .copied()
+            .filter(|name| !present.contains(&column_slug(name)))
+            .collect();
+        if !missing.is_empty() {
+            for name in missing {
+                board.columns.push(Column {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: name.to_string(),
+                    position: board.columns.len() as i64,
+                });
+            }
+            self.replace_board(workspace_id, &board.columns, &board.labels)?;
+            board = self.read_board(workspace_id)?;
+        }
+        Ok(board)
     }
 
     fn read_board(&self, workspace_id: &str) -> anyhow::Result<Board> {
@@ -223,19 +265,33 @@ mod tests {
         assert!(board.labels.is_empty());
     }
 
+    // Permanent columns come back (above), but the marker-table rule they
+    // ride on still holds for everything else: an edited board is never
+    // RESEEDED wholesale -- custom columns survive, kept permanent ones
+    // keep their identity, and nothing is duplicated.
     #[test]
-    fn get_board_is_idempotent_and_does_not_reseed_over_an_edited_board() {
+    fn get_board_does_not_reseed_over_an_edited_board() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
         let first = store.get_board("ws-1").unwrap();
-        let remaining: Vec<Column> = first.columns.into_iter().take(1).collect();
-        store.replace_board("ws-1", &remaining, &[]).unwrap();
+        let kept = first.columns[0].clone(); // "To Do", with its original id
+        store
+            .replace_board("ws-1", &[kept.clone(), column("custom", "Blocked", 1)], &[])
+            .unwrap();
 
         let second = store.get_board("ws-1").unwrap();
 
-        assert_eq!(second.columns.len(), 1, "a second get_board must not reseed over a deliberately-edited board");
+        assert_eq!(second.columns[0].id, kept.id, "the kept column keeps its identity, not a fresh seed");
+        assert_eq!(
+            second.columns.iter().filter(|c| c.name == "To Do").count(),
+            1,
+            "a kept permanent column must never be duplicated"
+        );
+        assert!(second.columns.iter().any(|c| c.name == "Blocked"), "custom columns survive an edit");
     }
 
+    // Storage-level replace semantics, read back through read_board so
+    // get_board's permanent-column restoration can't mask them.
     #[test]
     fn replace_board_replaces_rather_than_appends() {
         let dir = tempfile::tempdir().unwrap();
@@ -244,9 +300,9 @@ mod tests {
 
         store.replace_board("ws-1", &[column("c2", "Second", 0)], &[]).unwrap();
 
-        let board = store.get_board("ws-1").unwrap();
-        assert_eq!(board.columns.len(), 1);
-        assert_eq!(board.columns[0].id, "c2");
+        let stored = store.read_board("ws-1").unwrap();
+        assert_eq!(stored.columns.len(), 1);
+        assert_eq!(stored.columns[0].id, "c2");
     }
 
     #[test]
@@ -319,6 +375,27 @@ mod tests {
         assert!(store.get_board("ws-1").unwrap().card_sessions.iter().all(|cs| cs.path != "/p/t.md"));
         assert!(store.get_board("ws-2").unwrap().card_sessions.is_empty());
         assert_eq!(store.get_board("ws-1").unwrap().card_sessions.len(), 1);
+    }
+
+    #[test]
+    fn get_board_restores_missing_permanent_columns_and_keeps_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        // A board that kept only a renamed-order "done" plus a custom one.
+        store
+            .replace_board("ws-1", &[column("c1", "done", 0), column("c2", "Blocked", 1)], &[])
+            .unwrap();
+
+        let board = store.get_board("ws-1").unwrap();
+
+        let names: Vec<&str> = board.columns.iter().map(|c| c.name.as_str()).collect();
+        // The surviving "done" counts (slug match) and keeps its place;
+        // only the genuinely absent ones are appended.
+        assert_eq!(names, vec!["done", "Blocked", "To Do", "In Progress"]);
+        assert_eq!(board.columns.iter().map(|c| c.position).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+
+        // Idempotent: a second read adds nothing.
+        assert_eq!(store.get_board("ws-1").unwrap().columns.len(), 4);
     }
 
     #[test]

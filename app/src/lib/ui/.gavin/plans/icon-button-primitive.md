@@ -1,4 +1,5 @@
 ---
+order: 14336
 title: IconButton primitive (SP2 of 4)
 status: Done
 priority: medium
