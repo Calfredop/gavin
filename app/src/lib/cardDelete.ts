@@ -1,5 +1,6 @@
-// Deletion planning + execution for card files (card-model delete
-// design). Deleting a plan cascades its NESTED children (they live
+// Removal flows for cards and columns (card-model delete design):
+// deleting card files, or relocating a column's cards before the column
+// itself goes. Deleting a plan cascades its NESTED children (they live
 // inside it) and un-parents its free-standing children (they keep their
 // own column life -- no broken chips left behind). Bindings die with the
 // files daemon-side; a live agent session stays visible on the Agents
@@ -81,5 +82,29 @@ export async function executeDeletion(workspaceId: string, plan: DeletionPlan): 
     return `Couldn't delete ${fileName}: ${e instanceof Error ? e.message : e}`;
   } finally {
     void refreshBoard(workspaceId);
+  }
+}
+
+// Relocates a column's cards to another column by writing each card's
+// `status:` -- the "move cards where?" branch of deleting a custom
+// column. Only top-level cards are listed: a plan's nested children
+// have no status and travel with their parent. Same sequential,
+// patch-on-success, stop-on-failure contract as executeDeletion.
+export async function executeMoveCards(
+  workspaceId: string,
+  cards: CardView[],
+  destinationName: string
+): Promise<string | null> {
+  let current = "";
+  try {
+    for (const card of cards) {
+      current = card.id;
+      await backend.setPlanFrontmatterField(card.id, "status", destinationName);
+      patchPlanField(workspaceId, card.id, "status", destinationName);
+    }
+    return null;
+  } catch (e) {
+    const fileName = current.split("/").at(-1) ?? current;
+    return `Couldn't move ${fileName}: ${e instanceof Error ? e.message : e}`;
   }
 }

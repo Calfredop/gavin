@@ -13,7 +13,7 @@
   import IconButton from "./ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
-  import { columnDeletionPlan, executeDeletion } from "./cardDelete";
+  import { columnDeletionPlan, executeDeletion, executeMoveCards } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
   import * as backend from "./backend";
@@ -115,6 +115,25 @@
     columnPrompt = null;
     deleteError = null;
     const err = await executeDeletion(workspaceId, cascade);
+    if (err) {
+      deleteError = err;
+      return;
+    }
+    await deleteColumnAction(workspaceId, column.id);
+  }
+
+  // Where a deleted column's cards can go: every OTHER real column
+  // (auto columns aren't real -- they exist only while some card wears
+  // an unmatched status).
+  const moveTargets = $derived(
+    ($kanbanState[workspaceId]?.columns ?? []).filter((c) => c.id !== column.id)
+  );
+
+  async function moveCardsAndDelete(destinationName: string | null): Promise<void> {
+    columnPrompt = null;
+    deleteError = null;
+    if (!destinationName) return;
+    const err = await executeMoveCards(workspaceId, planCards, destinationName);
     if (err) {
       deleteError = err;
       return;
@@ -455,13 +474,22 @@
     title={`Delete column "${column.name}"?`}
     lines={[
       `${planCards.length} ${planCards.length === 1 ? "card is" : "cards are"} in this column.`,
-      `Column only: the cards fall back to an auto column named "${column.name}".`,
+      `Move: each card's status: is rewritten to the column you pick.`,
+      `Leave: the cards fall back to an auto column named "${column.name}".`,
       `Cascade: ${cascade.files.length} card ${cascade.files.length === 1 ? "file" : "files"} deleted (nested tasks included)` +
         (cascade.unparent.length > 0 ? `; ${cascade.unparent.length} elsewhere un-parented.` : "."),
       "Bound agent sessions keep running on the Agents page.",
     ]}
+    picker={moveTargets.length > 0
+      ? { label: "Move cards to", options: moveTargets.map((c) => ({ value: c.name, label: c.name })) }
+      : null}
     choices={[
-      { label: "Delete column only", onPick: deleteColumnOnly },
+      {
+        label: "Move cards & delete",
+        needsPick: true,
+        onPick: (picked) => void moveCardsAndDelete(picked),
+      },
+      { label: "Leave cards (auto column)", onPick: deleteColumnOnly },
       { label: `Delete column + ${cascade.files.length} cards`, danger: true, onPick: () => void deleteColumnCascade() },
     ]}
     onCancel={() => (columnPrompt = null)}

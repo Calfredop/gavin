@@ -124,7 +124,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "delete-column-cascade",
-        text: "Deleting a non-empty CUSTOM column offers “column only” (cards → auto column) vs cascade (files deleted)",
+        text: "Deleting a non-empty CUSTOM column offers three ways out: move cards to a picked column, leave them (auto column), or delete them",
+        hint: "The picker lists every other real column; “move” rewrites each card's status: line.",
       },
       {
         id: "permanent-columns",

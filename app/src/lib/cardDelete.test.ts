@@ -10,7 +10,7 @@ vi.mock("./backend", () => ({
 }));
 
 import * as backend from "./backend";
-import { deletionPlanFor, columnDeletionPlan, executeDeletion } from "./cardDelete";
+import { deletionPlanFor, columnDeletionPlan, executeDeletion, executeMoveCards } from "./cardDelete";
 import { kanbanState } from "./kanbanState";
 import type { CardView } from "./planBoard";
 
@@ -97,5 +97,35 @@ describe("executeDeletion", () => {
     expect(err).toContain("locked");
     expect(backend.deleteCardFile).toHaveBeenCalledTimes(2);
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+});
+
+describe("executeMoveCards", () => {
+  it("writes each card's status to the destination, in order", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    const err = await executeMoveCards(
+      "ws",
+      [view("/p/a.md", "plan", "Blocked"), view("/p/b.md", "note", "Blocked")],
+      "In Progress"
+    );
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/p/a.md", "status", "In Progress"],
+      ["/p/b.md", "status", "In Progress"],
+    ]);
+  });
+
+  it("stops on the first failure and names the file", async () => {
+    vi.mocked(backend.setPlanFrontmatterField)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("read-only"));
+    const err = await executeMoveCards(
+      "ws",
+      [view("/p/a.md", "note", "X"), view("/p/b.md", "note", "X"), view("/p/c.md", "note", "X")],
+      "Done"
+    );
+    expect(err).toContain("b.md");
+    expect(err).toContain("read-only");
+    expect(backend.setPlanFrontmatterField).toHaveBeenCalledTimes(2);
   });
 });
