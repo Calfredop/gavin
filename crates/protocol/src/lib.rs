@@ -190,6 +190,13 @@ pub enum Request {
         session_id: Option<String>,
         reason: Option<String>,
     },
+    /// Paths with uncommitted changes in `cwd`, capped at `limit` --
+    /// evidence for the reorganize skill (spec §8.1), never used by the
+    /// app's own conflict detection.
+    GitDirtyPaths {
+        cwd: String,
+        limit: u32,
+    },
     GetProtocolVersion,
 }
 
@@ -205,6 +212,7 @@ pub enum Response {
     GitStatusChanged { id: String, status: Option<GitStatus> },
     SessionRestored { id: String },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
+    DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
         rails: Vec<Rail>,
         conflict_notes: Vec<ConflictNote>,

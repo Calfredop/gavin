@@ -1240,6 +1240,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .set_board(&workspace_id, columns, labels)
             .map(|_| Response::Ok),
         Request::DeleteBoard { workspace_id } => manager.delete_board(&workspace_id).map(|_| Response::Ok),
+        Request::GitDirtyPaths { cwd, limit } => Ok(
+            match crate::git_status::dirty_paths(&cwd, limit as usize) {
+                Some((paths, truncated)) => Response::DirtyPaths { paths, truncated },
+                // Not a repo, or git was too slow: empty evidence, not an
+                // error -- one unreadable worktree must not fail the
+                // whole gavin_get_orchestration payload.
+                None => Response::DirtyPaths { paths: vec![], truncated: false },
+            },
+        ),
         Request::GetOrchestration { workspace_id } => {
             manager.get_orchestration(&workspace_id).map(|o| Response::Orchestration {
                 rails: o.rails,
