@@ -761,7 +761,46 @@ impl SessionManager {
         rails: Vec<protocol::Rail>,
         conflict_notes: Vec<protocol::ConflictNote>,
     ) -> anyhow::Result<()> {
-        self.orchestration.lock().unwrap().replace_plan(workspace_id, &rails, &conflict_notes)
+        // The `?` before the push is deliberate: a refused write (the
+        // running-step guard) must not push a plan that was never stored.
+        // The lock is released at the end of this statement, which
+        // matters -- push_orchestration re-reads through the same mutex.
+        self.orchestration.lock().unwrap().replace_plan(workspace_id, &rails, &conflict_notes)?;
+        self.push_orchestration(workspace_id);
+        Ok(())
+    }
+
+    pub fn orchestration_by_root(&self, root_path: &str) -> anyhow::Result<protocol::Orchestration> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.get_orchestration(&watcher.workspace_id)
+    }
+
+    pub fn set_orchestration_by_root(
+        &self,
+        root_path: &str,
+        rails: Vec<protocol::Rail>,
+        conflict_notes: Vec<protocol::ConflictNote>,
+    ) -> anyhow::Result<()> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.set_orchestration(&watcher.workspace_id, rails, conflict_notes)
+    }
+
+    /// Best-effort push of the whole orchestration on the watching app
+    /// connection. Silent when the workspace is not watched (a headless
+    /// agent with the app closed) or the writer is dead -- the app's next
+    /// fetch catches up either way.
+    fn push_orchestration(&self, workspace_id: &str) {
+        let watcher = self.gavin_watchers.lock().unwrap().get(workspace_id).cloned();
+        let Some(watcher) = watcher else { return };
+        let Ok(orchestration) = self.get_orchestration(workspace_id) else { return };
+        watcher.push_response(&protocol::Response::OrchestrationChanged {
+            workspace_id: workspace_id.to_string(),
+            orchestration,
+        });
     }
 
     pub fn set_rail_run(
@@ -1240,6 +1279,17 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .set_board(&workspace_id, columns, labels)
             .map(|_| Response::Ok),
         Request::DeleteBoard { workspace_id } => manager.delete_board(&workspace_id).map(|_| Response::Ok),
+        Request::GetOrchestrationByRoot { root_path } => {
+            manager.orchestration_by_root(&root_path).map(|o| Response::Orchestration {
+                rails: o.rails,
+                conflict_notes: o.conflict_notes,
+                rail_runs: o.rail_runs,
+                step_runs: o.step_runs,
+            })
+        }
+        Request::SetOrchestrationByRoot { root_path, rails, conflict_notes } => manager
+            .set_orchestration_by_root(&root_path, rails, conflict_notes)
+            .map(|_| Response::Ok),
         Request::GitDirtyPaths { cwd, limit } => Ok(
             match crate::git_status::dirty_paths(&cwd, limit as usize) {
                 Some((paths, truncated)) => Response::DirtyPaths { paths, truncated },
@@ -1584,6 +1634,96 @@ mod tests {
         write_message(stream, req).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         read_message(&mut reader).unwrap().unwrap()
+    }
+
+    #[test]
+    fn orchestration_by_root_errors_when_the_workspace_is_not_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        match handle_request(
+            &manager,
+            Request::GetOrchestrationByRoot { root_path: "/nowhere".into() },
+        ) {
+            Response::Error { message } => assert!(message.contains("not open in gavin"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_orchestration_by_root_writes_the_watched_workspaces_plan_and_pushes() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+
+        // A watching connection is what makes the root resolvable.
+        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut watcher,
+            &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut reader = BufReader::new(watcher.try_clone().unwrap());
+        let first: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::SetOrchestrationByRoot {
+                root_path: root.clone(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        // Readable by workspace id, and the write pushed.
+        match request(&mut cmd, &Request::GetOrchestration { workspace_id: "ws-1".into() }) {
+            Response::Orchestration { rails, .. } => assert_eq!(rails[0].id, "r1"),
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+        match read_message(&mut reader).unwrap() {
+            Some(Response::OrchestrationChanged { workspace_id, orchestration }) => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(orchestration.rails[0].stages[0].steps[0].id, "t1");
+            }
+            other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_write_through_the_root_path_still_reports_the_running_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        handle_request(
+            &manager,
+            Request::SetStepRun {
+                step_id: "t1".into(),
+                state: "running".into(),
+                session_id: None,
+                reason: None,
+            },
+        );
+        match handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t2")],
+                conflict_notes: vec![],
+            },
+        ) {
+            Response::Error { message } => assert!(message.contains("is running"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]

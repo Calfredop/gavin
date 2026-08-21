@@ -193,6 +193,17 @@ pub enum Request {
     /// Paths with uncommitted changes in `cwd`, capped at `limit` --
     /// evidence for the reorganize skill (spec §8.1), never used by the
     /// app's own conflict detection.
+    /// The orchestration of the WATCHED workspace whose root matches --
+    /// same resolution as GetBoardByRoot.
+    GetOrchestrationByRoot {
+        root_path: String,
+    },
+    SetOrchestrationByRoot {
+        root_path: String,
+        rails: Vec<Rail>,
+        #[serde(default)]
+        conflict_notes: Vec<ConflictNote>,
+    },
     GitDirtyPaths {
         cwd: String,
         limit: u32,
@@ -221,6 +232,11 @@ pub enum Response {
     },
     GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
     GavinTreeChanged { workspace_id: String, tree: GavinTree },
+    /// Pushed on the watching connection after any SetOrchestration, so
+    /// an agent's rewrite lands in the open tab without a poll. Run-state
+    /// writes deliberately do NOT push: they always originate in the app
+    /// that already holds the state.
+    OrchestrationChanged { workspace_id: String, orchestration: Orchestration },
     GavinTreeScanned { tree: GavinTree },
     PrdContent { content: String },
     PlanCreated { path: String },
