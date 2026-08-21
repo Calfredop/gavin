@@ -18,6 +18,7 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   { id: "home", label: "Home", requiresRoot: true },
   { id: "git", label: "Git", requiresRoot: true },
   { id: "kanban", label: "Kanban" },
+  { id: "orchestration", label: "Orchestration", requiresRoot: true },
   { id: "prd", label: "PRD", requiresRoot: true },
   { id: "agent-file", label: "CLAUDE.md", requiresRoot: true },
   { id: "plans", label: "Plans", requiresRoot: true },
