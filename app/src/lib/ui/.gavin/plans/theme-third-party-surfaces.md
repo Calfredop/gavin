@@ -1,4 +1,5 @@
 ---
+order: 17408
 title: Theme xterm + CodeMirror (SP4 of 4)
 status: Done
 priority: medium

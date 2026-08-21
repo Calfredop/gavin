@@ -1,4 +1,5 @@
 ---
+order: 12288
 title: Design tokens + light/dark (SP1 of 4)
 status: Done
 priority: high

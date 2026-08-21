@@ -520,7 +520,7 @@ No arguments. Composed by the MCP server from three daemon calls —
 {
   "rails": [{
     "id": "r1", "name": "backend", "worktreePath": "/x/gavin-backend",
-    "branch": "backend", "pageId": "p2",
+    "pageId": "p2",
     "dirtyPaths": ["app/src/lib/git.ts", "…"], "dirtyTruncated": false,
     "stages": [{ "id": "s1", "steps": [
       { "id": "t1", "cardPath": "…/wire-api.md", "title": "Wire the API",
@@ -534,7 +534,9 @@ No arguments. Composed by the MCP server from three daemon calls —
 ```
 
 `dirtyPaths` is capped at 200 per worktree with `dirtyTruncated` telling the
-truth about it.
+truth about it. The rail's *branch* is deliberately absent: naming it would
+cost another daemon request type, and the worktree path already identifies
+the checkout the agent is reasoning about.
 
 The payload carries **facts, not gavin's computed conflict list**. That list
 is `detectConflicts` (§5), which is TypeScript in the app, while this server

@@ -322,6 +322,15 @@ export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
   return workspace.pages.flatMap((p) => allSessionIds(p.layout));
 }
 
+/// The order the sidebar renders workspaces in: Unfiled pinned to the
+/// top, then the rest as stored. Shared with the ⌘⌥-number router so a
+/// hint badge and the shortcut can never point at different workspaces.
+export function sidebarWorkspaceOrder(workspaces: Workspace[]): Workspace[] {
+  const unfiled = workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID);
+  const rest = workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID);
+  return [...unfiled, ...rest];
+}
+
 // Searches every workspace's every page for sessionId, fresh at call time
 // (never cached) -- a card's sessionLink only stores a bare sessionId, and
 // this is how "jump to session"/"is this session still alive" resolve

@@ -26,6 +26,7 @@ import {
   SMOKETEST_WORKSPACE_ID,
   showsDevOnlyViews,
   hubViewIsVisible,
+  sidebarWorkspaceOrder,
   summarizePageGitStatus,
   type WorkspacesData,
   type Workspace,
@@ -474,5 +475,18 @@ describe("workspaceIdForSession", () => {
   it("returns null for a session that belongs to no workspace", () => {
     const state = { workspaces: [{ id: "ws-1", name: "A", pages: [], activePageId: null }] };
     expect(workspaceIdForSession(state as never, "nope")).toBeNull();
+  });
+});
+
+describe("sidebarWorkspaceOrder", () => {
+  const w = (id: string): Workspace => ({ id, name: id, pages: [], activePageId: null });
+
+  it("puts Unfiled first and keeps the rest in order", () => {
+    const list = [w("a"), w(UNFILED_WORKSPACE_ID), w("b")];
+    expect(sidebarWorkspaceOrder(list).map((x) => x.id)).toEqual([UNFILED_WORKSPACE_ID, "a", "b"]);
+  });
+
+  it("is a no-op when Unfiled is absent", () => {
+    expect(sidebarWorkspaceOrder([w("a"), w("b")]).map((x) => x.id)).toEqual(["a", "b"]);
   });
 });
