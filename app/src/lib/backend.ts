@@ -54,6 +54,16 @@ export function setWorkspacesState(workspaces: Workspace[], activeWorkspaceId: s
   return invoke("set_workspaces_state", { workspaces, activeWorkspaceId });
 }
 
+/// The app-global light/dark preference. null means System -- the Rust
+/// side stores absence rather than the literal string.
+export function getThemePref(): Promise<string | null> {
+  return invoke("get_theme_pref");
+}
+
+export function setThemePref(theme: string | null): Promise<void> {
+  return invoke("set_theme_pref", { theme });
+}
+
 // Set once by layoutState.ts's bootstrap() -- both real input paths in
 // this app (terminalRegistry.ts's per-keystroke term.onData, and
 // clipboard.ts's paste action) already call writeInput directly, so
