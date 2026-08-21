@@ -5,12 +5,13 @@
 import { writable, get } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
-import { layoutState, setGitViewPrefs } from "./layoutState";
+import { layoutState, setGitViewPrefs, createSessionForCard } from "./layoutState";
 import type {
   ApplyMode,
   Area,
   CommitDetail,
   CommitInfo,
+  ConflictInfo,
   FileDiff,
   FileEntry,
   InProgressKind,
@@ -67,6 +68,12 @@ export interface GitViewState {
   detailFile: string | null;
   detailDiff: FileDiff | null;
   detailToken: number;
+  // ---- conflicts ----
+  /// Loaded instead of `diff` when the selected row is a `U` entry.
+  conflict: ConflictInfo | null;
+  conflictToken: number;
+  /// `merge.tool` from git config, null when unset.
+  mergeTool: string | null;
 }
 
 export const GIT_NOT_FOUND = "git was not found on PATH";
@@ -102,6 +109,9 @@ export function initialState(cwd: string): GitViewState {
     detailFile: null,
     detailDiff: null,
     detailToken: 0,
+    conflict: null,
+    conflictToken: 0,
+    mergeTool: null,
   };
 }
 
@@ -211,9 +221,15 @@ async function loadDiff(workspaceId: string): Promise<void> {
   if (!s) return;
   const entry = findEntry(s.status, s.selected);
   if (!s.selected || !entry) {
-    update(workspaceId, (st) => ({ ...st, diff: null }));
+    update(workspaceId, (st) => ({ ...st, diff: null, conflict: null }));
     return;
   }
+  if (entry.status === "U") {
+    update(workspaceId, (st) => ({ ...st, diff: null }));
+    await loadConflict(workspaceId);
+    return;
+  }
+  update(workspaceId, (st) => (st.conflict ? { ...st, conflict: null } : st));
   const token = s.diffToken + 1;
   update(workspaceId, (st) => ({ ...st, diffToken: token }));
   const sel = s.selected;
@@ -234,13 +250,14 @@ export async function refresh(workspaceId: string): Promise<void> {
     const repo = await backend.gitRepoInfo(s.cwd);
     const status = repo.notARepo ? { unstaged: [], staged: [] } : await backend.gitStatus(s.cwd);
     const refs = repo.notARepo ? null : await backend.gitRefs(s.cwd);
+    const mergeTool = repo.notARepo ? null : await backend.gitMergeToolName(s.cwd).catch(() => null);
     let stale = false;
     update(workspaceId, (st) => {
       if (st.refreshToken !== token) {
         stale = true;
         return st;
       }
-      return { ...applyStatus(st, status), repo, refs, gitMissing: false };
+      return { ...applyStatus(st, status), repo, refs, mergeTool, gitMissing: false };
     });
     if (!stale) {
       await loadDiff(workspaceId);
@@ -311,8 +328,20 @@ export async function run(workspaceId: string, label: string, op: (cwd: string) 
   return okResult;
 }
 
+function conflictedPaths(workspaceId: string): Set<string> {
+  return new Set((current(workspaceId)?.status?.unstaged ?? []).filter((e) => e.status === "U").map((e) => e.path));
+}
+
+/// `U` paths never go through a raw `git add`: they are routed to the
+/// marker-checked mark-resolved command (spec conflicts §2.2).
 export function stageFiles(workspaceId: string, paths: string[]): Promise<boolean> {
-  return run(workspaceId, "Stage", (cwd) => backend.gitStageFiles(cwd, paths));
+  const u = conflictedPaths(workspaceId);
+  const conflicted = paths.filter((p) => u.has(p));
+  const plain = paths.filter((p) => !u.has(p));
+  return run(workspaceId, conflicted.length ? "Mark resolved" : "Stage", async (cwd) => {
+    if (plain.length) await backend.gitStageFiles(cwd, plain);
+    for (const p of conflicted) await backend.gitMarkResolved(cwd, p);
+  });
 }
 
 export function unstageFiles(workspaceId: string, paths: string[]): Promise<boolean> {
@@ -320,6 +349,11 @@ export function unstageFiles(workspaceId: string, paths: string[]): Promise<bool
 }
 
 export function stageAll(workspaceId: string): Promise<boolean> {
+  const u = conflictedPaths(workspaceId);
+  if (u.size > 0) {
+    noteError(workspaceId, `Resolve the ${u.size} conflicted file${u.size === 1 ? "" : "s"} first — Stage all would mark them resolved as-is`);
+    return Promise.resolve(false);
+  }
   return run(workspaceId, "Stage all", (cwd) => backend.gitStageAll(cwd));
 }
 
@@ -641,6 +675,77 @@ export async function mergeBack(workspaceId: string, rootPath: string, branch: s
   if (done) return "merged";
   const info = await backend.gitRepoInfo(rootPath).catch(() => null);
   return info?.inProgress === "merge" ? "conflict" : "failed";
+}
+
+// ---- Conflict resolution ---------------------------------------------------
+
+export async function loadConflict(workspaceId: string): Promise<void> {
+  const s = current(workspaceId);
+  const sel = s?.selected;
+  if (!s || !sel) return;
+  const token = s.conflictToken + 1;
+  update(workspaceId, (st) => ({ ...st, conflictToken: token }));
+  try {
+    const conflict = await backend.gitConflict(s.cwd, sel.path);
+    update(workspaceId, (st) => (st.conflictToken === token ? { ...st, conflict } : st));
+  } catch (e) {
+    update(workspaceId, (st) => (st.conflictToken === token ? { ...st, conflict: null, error: `Conflict failed to load: ${errorText(e)}` } : st));
+  }
+}
+
+function selectedConflictPath(workspaceId: string): string | null {
+  const s = current(workspaceId);
+  const entry = s ? findEntry(s.status, s.selected) : null;
+  return entry?.status === "U" ? entry.path : null;
+}
+
+/// Writes the Result document back to the file (EOL already applied by the
+/// caller) and reloads the conflict view through the normal refresh.
+export function saveConflict(workspaceId: string, text: string): Promise<boolean> {
+  const path = selectedConflictPath(workspaceId);
+  if (!path) return Promise.resolve(false);
+  return run(workspaceId, "Save", (cwd) => backend.writeFileForEditor(`${cwd}/${path}`, text));
+}
+
+/// Mark the selected conflicted file resolved, then move on to the next
+/// conflicted file if there is one.
+export async function markResolved(workspaceId: string): Promise<boolean> {
+  const path = selectedConflictPath(workspaceId);
+  if (!path) return false;
+  const done = await run(workspaceId, "Mark resolved", (cwd) => backend.gitMarkResolved(cwd, path));
+  if (done) {
+    const next = current(workspaceId)?.status?.unstaged.find((e) => e.status === "U");
+    if (next) await select(workspaceId, { path: next.path, area: "unstaged" });
+  }
+  return done;
+}
+
+export function resolveWhole(workspaceId: string, side: "ours" | "theirs"): Promise<boolean> {
+  const path = selectedConflictPath(workspaceId);
+  if (!path) return Promise.resolve(false);
+  return run(workspaceId, `Use ${side}`, (cwd) => backend.gitResolveWhole(cwd, path, side));
+}
+
+export function resolveDeleted(workspaceId: string, keep: boolean): Promise<boolean> {
+  const path = selectedConflictPath(workspaceId);
+  if (!path) return Promise.resolve(false);
+  return run(workspaceId, keep ? "Keep file" : "Delete file", (cwd) => backend.gitResolveDeleted(cwd, path, keep));
+}
+
+export function restoreConflict(workspaceId: string): Promise<boolean> {
+  const path = selectedConflictPath(workspaceId);
+  if (!path) return Promise.resolve(false);
+  return run(workspaceId, "Restore markers", (cwd) => backend.gitRestoreConflict(cwd, path));
+}
+
+/// Opens `git mergetool` for the selected file in a terminal pane; the
+/// watcher reloads the editor when the tool writes the file.
+export async function openMergeTool(workspaceId: string): Promise<void> {
+  const s = current(workspaceId);
+  const path = selectedConflictPath(workspaceId);
+  if (!s || !path) return;
+  const quoted = `'${path.replace(/'/g, "'\\''")}'`;
+  await createSessionForCard(workspaceId, s.cwd, `git mergetool --no-prompt -- ${quoted}`);
 }
 
 /// Starts the worktree watcher for this workspace's cwd and subscribes to

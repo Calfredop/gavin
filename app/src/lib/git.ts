@@ -210,3 +210,27 @@ export function validateBranchName(name: string): string | null {
   if (name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) return "Cannot start or end with '/' or end with '.'";
   return null;
 }
+
+// ---- Conflict resolution ---------------------------------------------------
+
+export type ConflictKind = "text" | "deleteModify" | "addedBoth" | "binary" | "submodule";
+
+export interface ConflictLabels {
+  ours: string;
+  theirs: string;
+  operation: InProgressKind | "stash" | "unknown";
+}
+
+export interface ConflictInfo {
+  path: string;
+  kind: ConflictKind;
+  base: string | null;
+  ours: string | null;
+  theirs: string | null;
+  worktree: string | null;
+  hasMarkers: boolean;
+  eol: "lf" | "crlf";
+  finalNewline: boolean;
+  labels: ConflictLabels;
+  deletedBy: "ours" | "theirs" | "both" | null;
+}

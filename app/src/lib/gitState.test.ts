@@ -43,22 +43,34 @@ vi.mock("./backend", () => ({
   gitRevert: vi.fn().mockResolvedValue(undefined),
   gitReset: vi.fn().mockResolvedValue(undefined),
   gitContinueInProgress: vi.fn().mockResolvedValue(undefined),
+  gitConflict: vi.fn(),
+  gitMarkResolved: vi.fn().mockResolvedValue(undefined),
+  gitResolveWhole: vi.fn().mockResolvedValue(undefined),
+  gitResolveDeleted: vi.fn().mockResolvedValue(undefined),
+  gitRestoreConflict: vi.fn().mockResolvedValue(undefined),
+  gitMergeToolName: vi.fn().mockResolvedValue(null),
+  writeFileForEditor: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 vi.mock("./layoutState", async () => {
   const { writable } = await import("svelte/store");
-  return { setGitViewPrefs: vi.fn().mockResolvedValue(undefined), layoutState: writable({ workspaces: [] }) };
+  return {
+    setGitViewPrefs: vi.fn().mockResolvedValue(undefined),
+    layoutState: writable({ workspaces: [] }),
+    createSessionForCard: vi.fn().mockResolvedValue("sess-1"),
+  };
 });
 
 import * as backend from "./backend";
 import { listen } from "@tauri-apps/api/event";
-import { setGitViewPrefs } from "./layoutState";
+import { setGitViewPrefs, createSessionForCard } from "./layoutState";
 import {
   gitStore, initialState, applyStatus, followSelection, splitMessage, joinMessage, canCommit,
   ensureGitView, refresh, select, run, stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
   effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
   switchWorktree, mergeBack, rootPathOf, removeWorktree,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
+  markResolved, saveConflict, openMergeTool,
 } from "./gitState";
 import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
@@ -379,5 +391,60 @@ describe("history", () => {
     await setGraphAll("ws", false);
     expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { graphAll: false });
     expect(backend.gitLog).toHaveBeenLastCalledWith("/r", false, 0, 300);
+  });
+});
+
+describe("conflicts", () => {
+  const conflicted: StatusResult = {
+    unstaged: [{ path: "a.ts", status: "U" }, { path: "b.ts", status: "U" }, { path: "c.ts", status: "M" }],
+    staged: [],
+  };
+  const info = {
+    path: "a.ts", kind: "text" as const, base: "b", ours: "o", theirs: "t", worktree: "<<<<<<< HEAD\no\n=======\nt\n>>>>>>> x\n",
+    hasMarkers: true, eol: "lf" as const, finalNewline: true, labels: { ours: "main", theirs: "x", operation: "merge" as const }, deletedBy: null,
+  };
+
+  it("selecting a U row loads the conflict instead of a diff", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+    vi.mocked(backend.gitConflict).mockResolvedValue(info);
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    await select("ws", { path: "a.ts", area: "unstaged" });
+    const s = get(gitStore)["ws"];
+    expect(s.conflict?.path).toBe("a.ts");
+    expect(s.diff).toBeNull();
+    expect(backend.gitDiff).not.toHaveBeenCalled();
+  });
+
+  it("markResolved advances to the next conflicted file; stageFiles routes U paths; stageAll refuses", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+    vi.mocked(backend.gitConflict).mockResolvedValue(info);
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    await select("ws", { path: "a.ts", area: "unstaged" });
+    vi.mocked(backend.gitStatus).mockResolvedValue({ unstaged: [{ path: "b.ts", status: "U" }, { path: "c.ts", status: "M" }], staged: [{ path: "a.ts", status: "M" }] });
+    expect(await markResolved("ws")).toBe(true);
+    expect(backend.gitMarkResolved).toHaveBeenCalledWith("/r", "a.ts");
+    expect(get(gitStore)["ws"].selected).toEqual({ path: "b.ts", area: "unstaged" });
+
+    await stageFiles("ws", ["b.ts", "c.ts"]);
+    expect(backend.gitStageFiles).toHaveBeenCalledWith("/r", ["c.ts"]);
+    expect(backend.gitMarkResolved).toHaveBeenCalledWith("/r", "b.ts");
+
+    expect(await stageAll("ws")).toBe(false);
+    expect(get(gitStore)["ws"].error).toMatch(/Resolve the 1 conflicted file first/);
+    expect(backend.gitStageAll).not.toHaveBeenCalled();
+  });
+
+  it("saveConflict writes the file and openMergeTool opens a terminal in the worktree", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+    vi.mocked(backend.gitConflict).mockResolvedValue(info);
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    await select("ws", { path: "a.ts", area: "unstaged" });
+    expect(await saveConflict("ws", "resolved\n")).toBe(true);
+    expect(backend.writeFileForEditor).toHaveBeenCalledWith("/r/a.ts", "resolved\n");
+    await openMergeTool("ws");
+    expect(createSessionForCard).toHaveBeenCalledWith("ws", "/r", "git mergetool --no-prompt -- 'a.ts'");
   });
 });

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
-import type { ApplyMode, CommitDetail, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
+import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -406,4 +406,30 @@ export function gitReset(cwd: string, sha: string, mode: ResetMode): Promise<voi
 
 export function gitContinueInProgress(cwd: string, kind: InProgressKind): Promise<void> {
   return invoke("git_continue_in_progress", { cwd, kind });
+}
+
+// --- Git tab: conflict resolution -------------------------------------------
+
+export function gitConflict(cwd: string, path: string): Promise<ConflictInfo> {
+  return invoke("git_conflict", { cwd, path });
+}
+
+export function gitMarkResolved(cwd: string, path: string): Promise<void> {
+  return invoke("git_mark_resolved", { cwd, path });
+}
+
+export function gitResolveWhole(cwd: string, path: string, side: "ours" | "theirs"): Promise<void> {
+  return invoke("git_resolve_whole", { cwd, path, side });
+}
+
+export function gitResolveDeleted(cwd: string, path: string, keep: boolean): Promise<void> {
+  return invoke("git_resolve_deleted", { cwd, path, keep });
+}
+
+export function gitRestoreConflict(cwd: string, path: string): Promise<void> {
+  return invoke("git_restore_conflict", { cwd, path });
+}
+
+export function gitMergeToolName(cwd: string): Promise<string | null> {
+  return invoke("git_merge_tool_name", { cwd });
 }
