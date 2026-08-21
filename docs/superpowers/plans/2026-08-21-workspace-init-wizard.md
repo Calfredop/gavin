@@ -10,25 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-21-workspace-init-wizard-design.md` (W1–W6).
 
-## ⚠ Conflict to resolve before Task 5
+## Resolved: the D56 conflict
 
-**D56 was added to the workspace-settings spec on 2026-08-21, after this
-wizard's spec was approved.** It reads: *"Settings owns every
-folder-picking and integration action; the hub folder bar is read-only."*
-The ⚙ picker, "Set root…"/"Re-pick…" and the "Agent integration" row now
-render **only** in `WorkspaceRootControl`'s `settings` variant.
+D56 ("Settings owns every folder-picking and integration action") was added
+after this wizard's spec was approved, which made the wizard a second owner
+of actions assigned solely to Settings.
 
-This wizard needs both a folder picker (§4) and the integration action
-(§5.2), which makes it a second owner of actions D56 assigns solely to
-Settings. Embedding the `settings` variant satisfies D56's letter but not
-its intent.
-
-**Do not resolve this by guessing.** Ask the human partner which governs
-before starting Task 5. The recommended amendment: D56 becomes *"Settings
-and the init wizard own every folder-picking and integration action"* —
-the wizard is a setup flow, which is the same job D37 gave Settings when
-it made the panel work unrooted. Tasks 1–4 are unaffected and can proceed
-either way.
+**Ruled 2026-08-21: D56 widens to name the wizard**, recorded as D57 in
+`docs/superpowers/specs/2026-08-20-workspace-settings-design.md`. Task 5
+proceeds as written — the creation modal embeds `WorkspaceRootControl` in
+its `settings` variant, and the Integration step calls
+`setup_agent_integration` directly. The hub banner stays read-only.
 
 ## Global Constraints
 

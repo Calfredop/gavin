@@ -70,6 +70,13 @@ Continuing the log in
   of the open page) rather than under it. An unbound or missing root is
   still not a dead end: the banner offers "Open settings", which switches
   the hub view instead of opening a folder dialog.
+- **D57 — D56 widens to name the init wizard.** Added 2026-08-21, when the
+  wizard's spec turned out to need both a folder picker and the integration
+  action. D56 now reads: *Settings **and the init wizard** own every
+  folder-picking and integration action; the hub folder bar is read-only.*
+  The wizard is a setup flow, which is the same job D37 gave Settings when
+  it made the panel work unrooted — and D56's actual target, the read-only
+  hub banner, is untouched.
 
 ## 3. Storage and ownership
 
