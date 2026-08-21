@@ -202,9 +202,9 @@
     align-items: center;
     gap: 5px;
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #eee;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     font-weight: 600;
@@ -213,7 +213,7 @@
     max-width: 320px;
   }
   .current:hover {
-    border-color: #555;
+    border-color: var(--border-strong);
   }
   .name {
     overflow: hidden;
@@ -226,8 +226,8 @@
     left: 0;
     z-index: 50;
     min-width: 340px;
-    background: #1e1e1e;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
     padding: 4px;
@@ -239,14 +239,14 @@
     border-radius: 6px;
   }
   .row:hover {
-    background: #262626;
+    background: var(--surface-raised);
   }
   .row.active .lbl {
-    color: #eee;
+    color: var(--text);
     font-weight: 600;
   }
   .row.prunable .lbl {
-    color: #666;
+    color: var(--text-subtle);
   }
   .pick {
     flex: 1 1 auto;
@@ -255,7 +255,7 @@
     gap: 6px;
     background: transparent;
     border: 0;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 1em;
     padding: 5px 6px;
@@ -268,7 +268,7 @@
   }
   .dot {
     width: 8px;
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .lbl {
     overflow: hidden;
@@ -286,9 +286,9 @@
   .acts button,
   .foot button {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.95em;
     padding: 1px 6px;
@@ -299,8 +299,8 @@
   }
   .acts button:hover:not(:disabled),
   .foot button:hover:not(:disabled) {
-    border-color: #666;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .acts button:disabled,
   .foot button:disabled {
@@ -308,14 +308,14 @@
     cursor: default;
   }
   .acts .danger:hover:not(:disabled) {
-    border-color: #7a3030;
-    color: #f0c0c0;
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   .foot {
     display: flex;
     gap: 6px;
     padding: 6px 4px 2px;
     margin-top: 4px;
-    border-top: 1px solid #2f2f2f;
+    border-top: 1px solid var(--border);
   }
 </style>

@@ -245,8 +245,8 @@
     height: 100%;
     padding: 8px 6px;
     box-sizing: border-box;
-    background: #161616;
-    border-right: 1px solid #2f2f2f;
+    background: var(--surface-sunken);
+    border-right: 1px solid var(--border);
     font-family: monospace;
     font-size: 0.78em;
     overflow-y: auto;
@@ -263,21 +263,21 @@
     background: transparent;
     border: 0;
     border-radius: 6px;
-    color: #bbb;
+    color: var(--text-muted);
     cursor: pointer;
     text-align: left;
     font-family: monospace;
     font-size: 1em;
   }
   .item.active {
-    background: #252525;
-    color: #eee;
+    background: var(--surface-raised);
+    color: var(--text);
   }
   .label {
     flex: 1 1 auto;
   }
   .count {
-    color: #8bc98b;
+    color: var(--success-text);
   }
   .section {
     display: flex;
@@ -295,7 +295,7 @@
     padding: 4px 6px;
     background: transparent;
     border: 0;
-    color: #999;
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-family: monospace;
@@ -304,13 +304,13 @@
     text-align: left;
   }
   .toggle:hover {
-    color: #ddd;
+    color: var(--text);
   }
   .plus {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     width: 18px;
     height: 18px;
     display: inline-flex;
@@ -319,8 +319,8 @@
     cursor: pointer;
   }
   .plus:hover:not(:disabled) {
-    border-color: #666;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .plus:disabled {
     opacity: 0.4;
@@ -332,31 +332,31 @@
     gap: 5px;
     padding: 2px 6px 2px 10px;
     border-radius: 4px;
-    color: #bbb;
+    color: var(--text-muted);
     white-space: nowrap;
     user-select: none;
   }
   .row:hover {
-    background: #222;
+    background: var(--surface-sunken);
   }
   .row.current {
-    color: #eee;
+    color: var(--text);
     font-weight: 600;
   }
   .row.sub {
     padding-left: 22px;
-    color: #999;
+    color: var(--text-muted);
   }
   .row.stash {
     cursor: pointer;
   }
   .row.active {
-    background: #2a3a4a;
-    color: #eee;
+    background: var(--surface-accent);
+    color: var(--text);
   }
   .dot {
     width: 8px;
-    color: #8bc98b;
+    color: var(--success-text);
     flex: 0 0 auto;
   }
   .name {
@@ -367,7 +367,7 @@
   }
   .track,
   .date {
-    color: #777;
+    color: var(--text-subtle);
     font-size: 0.9em;
   }
   .acts {
@@ -379,9 +379,9 @@
   }
   .acts button {
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 3px;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.9em;
     padding: 0 4px;
@@ -391,19 +391,19 @@
     cursor: pointer;
   }
   .acts button:hover:not(:disabled) {
-    border-color: #666;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .acts button:disabled {
     opacity: 0.4;
     cursor: default;
   }
   .acts .danger:hover:not(:disabled) {
-    border-color: #7a3030;
-    color: #f0c0c0;
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   .none {
     padding: 2px 10px;
-    color: #666;
+    color: var(--text-subtle);
   }
 </style>

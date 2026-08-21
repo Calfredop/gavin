@@ -121,10 +121,10 @@
     align-items: center;
     gap: 6px;
     padding: 3px 8px;
-    background: #20242a;
-    color: #8ab4e0;
-    border-top: 1px solid #2f2f2f;
-    border-bottom: 1px solid #2f2f2f;
+    background: var(--surface-accent);
+    color: var(--accent-text);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
     z-index: 1;
   }
   .header {
@@ -137,9 +137,9 @@
   }
   .act {
     background: transparent;
-    border: 1px solid #3a4a5a;
+    border: 1px solid var(--border-accent);
     border-radius: 4px;
-    color: #bcd;
+    color: var(--accent-text);
     font-family: monospace;
     font-size: 0.95em;
     padding: 1px 7px;
@@ -147,16 +147,16 @@
     white-space: nowrap;
   }
   .act:hover {
-    border-color: #6a8aaa;
-    color: #eee;
+    border-color: var(--border-accent);
+    color: var(--text);
   }
   .act.danger {
-    border-color: #5a3030;
-    color: #e0a0a0;
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   .act.danger:hover {
-    border-color: #9a4040;
-    color: #fcc;
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   .pair {
     display: grid;
@@ -166,7 +166,7 @@
     display: grid;
     grid-template-columns: 3.5em minmax(0, 1fr);
     white-space: pre;
-    border-right: 1px solid #2a2a2a;
+    border-right: 1px solid var(--border);
   }
   .selectable {
     cursor: pointer;
@@ -175,14 +175,14 @@
     cursor: ns-resize;
   }
   .cell.selected {
-    outline: 1px solid #6a8aaa;
+    outline: 1px solid var(--border-accent);
     outline-offset: -1px;
     filter: brightness(1.25);
   }
   .no {
     text-align: right;
     padding-right: 6px;
-    color: #666;
+    color: var(--text-subtle);
     user-select: none;
   }
   .text {
@@ -190,17 +190,17 @@
     text-overflow: ellipsis;
   }
   .add {
-    background: #17301a;
-    color: #b6e3b6;
+    background: var(--surface-success);
+    color: var(--success-text);
   }
   .del {
-    background: #3a1a1a;
-    color: #e8b4b4;
+    background: var(--surface-danger);
+    color: var(--danger-text);
   }
   .context {
-    color: #bbb;
+    color: var(--text-muted);
   }
   .blank {
-    background: #1b1b1b;
+    background: var(--surface-base);
   }
 </style>

@@ -129,11 +129,11 @@
   h3 {
     margin: 0;
     font-size: 1em;
-    color: #eee;
+    color: var(--text);
   }
   .mode {
     display: inline-flex;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
     overflow: hidden;
     align-self: flex-start;
@@ -141,29 +141,29 @@
   .mode button {
     background: transparent;
     border: 0;
-    color: #999;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 0.85em;
     padding: 3px 10px;
     cursor: pointer;
   }
   .mode button.on {
-    background: #2a3a4a;
-    color: #eee;
+    background: var(--surface-accent);
+    color: var(--text);
   }
   .field {
     display: flex;
     flex-direction: column;
     gap: 4px;
     font-size: 0.8em;
-    color: #999;
+    color: var(--text-muted);
   }
   .field input,
   .field select {
-    background: #1e1e1e;
-    border: 1px solid #333;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ddd;
+    color: var(--text);
     font-family: monospace;
     font-size: 1em;
     padding: 5px 8px;
@@ -171,21 +171,21 @@
   .field input:focus,
   .field select:focus {
     outline: none;
-    border-color: #4a6a8a;
+    border-color: var(--border-accent);
   }
   .err {
-    color: #e08a8a;
+    color: var(--danger-text);
     font-size: 0.78em;
   }
   .check {
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #bbb;
+    color: var(--text-muted);
     font-size: 0.8em;
   }
   .cmd {
-    color: #777;
+    color: var(--text-subtle);
   }
   .actions {
     display: flex;
@@ -194,18 +194,18 @@
     margin-top: 4px;
   }
   .actions button {
-    background: #333;
-    border: 1px solid #444;
+    background: var(--surface-overlay);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ddd;
+    color: var(--text);
     padding: 5px 12px;
     font-family: monospace;
     cursor: pointer;
   }
   .actions .primary {
-    background: #2d4a2d;
-    border-color: #3f6b3f;
-    color: #cfe8cf;
+    background: var(--surface-success);
+    border-color: var(--border-success);
+    color: var(--success-text);
   }
   .actions .primary:disabled {
     opacity: 0.45;

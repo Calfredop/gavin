@@ -24,16 +24,16 @@
     align-items: center;
     gap: 8px;
     padding: 4px 10px;
-    background: #1c2430;
-    border-bottom: 1px solid #2f3a4a;
+    background: var(--surface-accent);
+    border-bottom: 1px solid var(--border-accent);
     font-family: monospace;
     font-size: 0.75em;
-    color: #bcd;
+    color: var(--accent-text);
   }
   .spinner {
     width: 10px;
     height: 10px;
-    border: 2px solid #4a6a8a;
+    border: 2px solid var(--border-accent);
     border-top-color: transparent;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
@@ -44,7 +44,7 @@
     }
   }
   .label {
-    color: #eee;
+    color: var(--text);
   }
   .line {
     flex: 1 1 auto;
@@ -52,19 +52,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #8ab4e0;
+    color: var(--accent-text);
   }
   button {
     background: transparent;
-    border: 1px solid #3a4a5a;
+    border: 1px solid var(--border-accent);
     border-radius: 4px;
-    color: #bcd;
+    color: var(--accent-text);
     font-family: monospace;
     padding: 1px 8px;
     cursor: pointer;
   }
   button:hover {
-    border-color: #6a8aaa;
-    color: #eee;
+    border-color: var(--border-accent);
+    color: var(--text);
   }
 </style>

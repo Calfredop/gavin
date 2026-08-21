@@ -122,13 +122,13 @@
     align-items: center;
     gap: 10px;
     padding: 6px 10px;
-    border-bottom: 1px solid #2f2f2f;
+    border-bottom: 1px solid var(--border);
     font-size: 0.8em;
     font-family: monospace;
-    color: #ccc;
+    color: var(--text);
   }
   .repo {
-    color: #eee;
+    color: var(--text);
     font-weight: 600;
   }
   .branch {
@@ -136,30 +136,30 @@
     align-items: center;
     gap: 4px;
     padding: 1px 7px;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 10px;
-    color: #bbb;
+    color: var(--text-muted);
     white-space: nowrap;
   }
   .branch.detached {
-    border-color: #8a6d2b;
-    color: #d9b45c;
+    border-color: var(--border-warning);
+    color: var(--warning-text);
   }
   .group {
     display: inline-flex;
     align-items: center;
     gap: 4px;
     padding-left: 10px;
-    border-left: 1px solid #2f2f2f;
+    border-left: 1px solid var(--border);
   }
   .act {
     display: inline-flex;
     align-items: center;
     gap: 4px;
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #bbb;
+    color: var(--text-muted);
     padding: 3px 8px;
     font-family: monospace;
     font-size: 1em;
@@ -167,22 +167,22 @@
     white-space: nowrap;
   }
   .act:hover:not(:disabled) {
-    border-color: #555;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .act:disabled {
     opacity: 0.45;
     cursor: default;
   }
   .badge {
-    color: #8bc98b;
+    color: var(--success-text);
     font-size: 0.9em;
   }
   .remote {
-    background: #1e1e1e;
-    border: 1px solid #3a3a3a;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #bbb;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 1em;
     padding: 2px 6px;
@@ -194,15 +194,15 @@
     display: inline-flex;
     align-items: center;
     background: transparent;
-    border: 1px solid #3a3a3a;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #bbb;
+    color: var(--text-muted);
     padding: 3px 6px;
     cursor: pointer;
   }
   .icon:hover:not(:disabled) {
-    border-color: #555;
-    color: #eee;
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .icon:disabled {
     opacity: 0.5;

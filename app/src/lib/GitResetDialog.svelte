@@ -45,36 +45,36 @@
   h3 {
     margin: 0;
     font-size: 1em;
-    color: #eee;
+    color: var(--text);
   }
   .opt {
     display: flex;
     gap: 8px;
     align-items: baseline;
-    color: #bbb;
+    color: var(--text-muted);
     font-size: 0.8em;
   }
   .opt b {
-    color: #eee;
+    color: var(--text);
   }
   .opt.danger b {
-    color: #e08a8a;
+    color: var(--danger-text);
   }
   .confirm {
     display: flex;
     flex-direction: column;
     gap: 4px;
     font-size: 0.8em;
-    color: #d9b45c;
+    color: var(--warning-text);
   }
   .confirm code {
-    color: #eee;
+    color: var(--text);
   }
   .confirm input {
-    background: #1e1e1e;
-    border: 1px solid #6a3030;
+    background: var(--surface-base);
+    border: 1px solid var(--border-danger);
     border-radius: 6px;
-    color: #ddd;
+    color: var(--text);
     font-family: monospace;
     padding: 5px 8px;
   }
@@ -84,18 +84,18 @@
     gap: 8px;
   }
   .actions button {
-    background: #333;
-    border: 1px solid #444;
+    background: var(--surface-overlay);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    color: #ddd;
+    color: var(--text);
     padding: 5px 12px;
     font-family: monospace;
     cursor: pointer;
   }
   .actions button.danger {
-    background: #4a2020;
-    border-color: #7a3030;
-    color: #f0c0c0;
+    background: var(--surface-danger);
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   .actions button:disabled {
     opacity: 0.45;
