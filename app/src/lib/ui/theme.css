@@ -169,3 +169,30 @@
   --lane-3: var(--lane-light-3);  --lane-7: var(--lane-light-7);
   --lane-4: var(--lane-light-4);  --lane-8: var(--lane-light-8);
 }
+
+/* ---- Base typography -------------------------------------------------
+   The app is monospace. Before this rule every view declared
+   `font-family: monospace` in its own scoped <style>, and a view that
+   forgot fell through to the user-agent default -- serif for text,
+   system sans for buttons -- which is exactly how the Orchestration tab
+   first shipped.
+
+   Only the FAMILY is set here, never the size: components size their own
+   text, and inheriting the UA's font-size onto buttons would reflow
+   them.
+
+   Deliberate exceptions still override this normally: FileEditor's
+   markdown preview (prose reads better proportional) and TitleBar. */
+:root {
+  font-family: monospace;
+}
+
+/* Form controls do not inherit font-family from their ancestors -- they
+   take the UA font unless told otherwise. This is the half that makes
+   the rule above actually reach a <button>. */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}

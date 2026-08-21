@@ -70,7 +70,6 @@
 
 <style>
   .conflicts {
-    font-family: monospace;
     border-bottom: 1px solid var(--border-warning);
     background: var(--surface-warning);
     color: var(--text);
@@ -79,7 +78,6 @@
     border-bottom-color: var(--border-danger);
   }
   .head {
-    font-family: monospace;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -148,7 +146,6 @@
     letter-spacing: 0.04em;
   }
   .fix {
-    font-family: monospace;
     flex: none;
     background: none;
     border: none;

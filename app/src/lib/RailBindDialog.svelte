@@ -143,7 +143,6 @@
     overflow-y: auto;
   }
   li button {
-    font-family: monospace;
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -174,7 +173,6 @@
     font-size: 10px;
   }
   .secondary {
-    font-family: monospace;
     align-self: flex-start;
     padding: 4px 8px;
     background: var(--surface-raised);

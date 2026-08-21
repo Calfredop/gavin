@@ -58,7 +58,6 @@
 
 <style>
   .chip {
-    font-family: monospace;
     display: flex;
     align-items: center;
     gap: 6px;
