@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { Plus } from "@lucide/svelte";
   import OrchestrationRail from "./OrchestrationRail.svelte";
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
@@ -110,9 +109,13 @@
   // so a card can be dragged from one into the other.
   let bodyEl = $state<HTMLElement | null>(null);
 
-  // onMount returns the detach function, so the engine is torn down with
-  // the tab.
-  onMount(() => {
+  // $effect, NOT onMount: the elements below live inside the loaded
+  // branch, so at mount time the plan is still being fetched and both
+  // binds are null. onMount would early-return and never run again --
+  // the drag engine would simply never attach. KanbanBoard attaches the
+  // same way for the same reason. The returned teardown runs when the
+  // elements change or the tab unmounts.
+  $effect(() => {
     if (!bodyEl || !gridEl) return;
     return attachOrchestrationDrag({
       root: bodyEl,
