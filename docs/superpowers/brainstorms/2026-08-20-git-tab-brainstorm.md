@@ -141,3 +141,19 @@ Deviations / notes:
 - `GitDiscardDialog` grew `confirmLabel`/`cancelLabel`/`skipLabel` and now
   serves every destructive confirm (branch delete, stash drop, worktree
   remove, merge-back cleanup).
+
+## SP4 decisions (2026-08-21)
+
+- **G15:** **All branches by default** (recommended, approved): `git log --all
+  --topo-order`, 300-commit pages with Load more; a persisted toggle narrows
+  to the current branch.
+- **G16:** Commit actions (owner picked all four): checkout detached + new
+  branch here; copy SHA/message; cherry-pick + revert (in-progress banner
+  gains cherry-pick/revert kinds with Abort/Continue); reset soft/mixed/hard
+  behind a dialog where *hard* requires typing the short SHA.
+- Sections approved: log backend + lane model; UI/actions/testing. The graph
+  replaces the middle column and the commit detail replaces the diff column
+  while "All Commits" is selected; per-file diffs reuse the SP1 viewer
+  read-only.
+
+Spec: `docs/superpowers/specs/2026-08-21-git-tab-history-design.md`.
