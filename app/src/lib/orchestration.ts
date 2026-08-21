@@ -455,6 +455,33 @@ export function moveStepToNewStage(
   };
 }
 
+/// Place an UNPLACED card into a rail as its own stage at `index` --
+/// what dropping a drawer card into a gap between stages means. Unlike
+/// moveStepToNewStage there is no step to detach first: the step is new.
+export function addCardAsStage(
+  orch: Orchestration,
+  railId: string,
+  index: number,
+  stepId: string,
+  cardPath: string
+): Orchestration {
+  if (!orch.rails.some((r) => r.id === railId)) return orch;
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => {
+      if (r.id !== railId) return r;
+      const stages = [...r.stages];
+      const at = Math.max(0, Math.min(index, stages.length));
+      stages.splice(at, 0, {
+        id: crypto.randomUUID(),
+        position: at,
+        steps: [{ id: stepId, position: 0, cardPath }],
+      });
+      return { ...r, stages: renumber(stages) };
+    }),
+  };
+}
+
 /// Split one stage of N steps into N consecutive single-step stages, in
 /// step order -- the "Make sequential" repair for a same-worktree
 /// conflict of scope "stage".

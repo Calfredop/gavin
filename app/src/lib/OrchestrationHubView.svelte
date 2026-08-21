@@ -39,6 +39,8 @@
     makeStageSequentialAction,
     moveStepIntoStageAction,
     moveStepToNewStageAction,
+    addCardAsStageAction,
+    addStepToStageAction,
     requestReorganize,
     renameRailAction,
   } from "./orchestrationState";
@@ -104,14 +106,28 @@
   });
 
   let gridEl = $state<HTMLElement | null>(null);
+  // Listening happens on the row that holds BOTH the grid and the drawer,
+  // so a card can be dragged from one into the other.
+  let bodyEl = $state<HTMLElement | null>(null);
 
   // onMount returns the detach function, so the engine is torn down with
   // the tab.
   onMount(() => {
-    if (!gridEl) return;
+    if (!bodyEl || !gridEl) return;
     return attachOrchestrationDrag({
-      root: gridEl,
+      root: bodyEl,
+      scrollEl: gridEl,
       commit: (drag) => {
+        // `id` is a step id for a step drag and a card path for a card
+        // drag -- the two commit into different mutators entirely.
+        if (drag.kind === "card") {
+          if (drag.target.kind === "into-stage") {
+            void addStepToStageAction(workspaceId, drag.target.stageId, drag.id);
+          } else if (drag.target.kind === "new-stage") {
+            void addCardAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
+          }
+          return;
+        }
         if (drag.target.kind === "unplace") {
           void removeStepAction(workspaceId, drag.id);
         } else if (drag.target.kind === "into-stage") {
@@ -188,7 +204,7 @@
       No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
     </p>
   {:else}
-    <div class="body">
+    <div class="body" bind:this={bodyEl}>
       <div class="grid" bind:this={gridEl}>
       {#each rails as rail (rail.id)}
         <OrchestrationRail

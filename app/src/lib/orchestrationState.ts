@@ -20,6 +20,7 @@ import {
   addStage,
   addStep,
   removeStep,
+  addCardAsStage,
   moveStepIntoStage,
   moveStepToNewStage,
   splitStageIntoSequence,
@@ -429,6 +430,16 @@ export function moveStepToNewStageAction(
   index: number
 ): Promise<void> {
   return mutatePlan(workspaceId, (o) => moveStepToNewStage(o, stepId, railId, index));
+}
+
+/// Drop an unplaced card into a rail as its own stage at `index`.
+export function addCardAsStageAction(
+  workspaceId: string,
+  railId: string,
+  index: number,
+  cardPath: string
+): Promise<void> {
+  return mutatePlan(workspaceId, (o) => addCardAsStage(o, railId, index, crypto.randomUUID(), cardPath));
 }
 
 export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<void> {

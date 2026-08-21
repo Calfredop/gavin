@@ -29,8 +29,10 @@
   </button>
 
   {#if !collapsed}
-    {#if dragging}
+    {#if dragging && $orchDragState?.kind === "step"}
       <p class="hint">Drop here to take a step off its rail.</p>
+    {:else if !dragging}
+      <p class="hint quiet">Drag a card onto a rail, or click to append it.</p>
     {/if}
     {#each groups as group (group.slug)}
       <button
@@ -46,7 +48,13 @@
         <ul>
           {#each group.cards as entry (entry.plan.path)}
             <li>
-              <button type="button" disabled={!targetRailId} onclick={() => onAdd(entry.plan.path)}>
+              <button
+                type="button"
+                data-orch-card={entry.plan.path}
+                class:dragging={$orchDragState?.id === entry.plan.path}
+                disabled={!targetRailId}
+                onclick={() => onAdd(entry.plan.path)}
+              >
                 {#if entry.plan.kind === "plan"}<ListChecks size={12} />{:else}<FileText size={12} />{/if}
                 <span>{entry.plan.title}</span>
               </button>
@@ -96,6 +104,9 @@
     color: var(--accent-text);
     font-size: 11px;
   }
+  .hint.quiet {
+    color: var(--text-subtle);
+  }
   ul {
     list-style: none;
     margin: 0;
@@ -121,6 +132,11 @@
   }
   li button:hover:not(:disabled) {
     background: var(--surface-hover);
+  }
+  /* Dimmed, not hidden: the row is the drag's grab target, and removing
+     it mid-gesture is what makes WKWebView drop the pointerup. */
+  li button.dragging {
+    opacity: 0.35;
   }
   li button span {
     overflow: hidden;

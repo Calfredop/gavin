@@ -13,15 +13,20 @@
   let { orch, cards, root }: Props = $props();
 
   const ownsDrag = $derived(root !== null && $activeOrchDragRoot === root);
+  const titleOfPath = (path: string): string =>
+    cards.get(path)?.plan.title ?? (path.split("/").pop() ?? "");
+
   const title = $derived.by(() => {
-    const id = $orchDragState?.id;
-    if (!id || !orch) return "";
+    const drag = $orchDragState;
+    if (!drag) return "";
+    // A card drag carries the card PATH; only a step drag needs the
+    // rails walked to find which card it points at.
+    if (drag.kind === "card") return titleOfPath(drag.id);
+    if (!orch) return "";
     for (const rail of orch.rails) {
       for (const stage of rail.stages) {
         for (const step of stage.steps) {
-          if (step.id === id) {
-            return cards.get(step.cardPath)?.plan.title ?? (step.cardPath.split("/").pop() ?? "");
-          }
+          if (step.id === drag.id) return titleOfPath(step.cardPath);
         }
       }
     }

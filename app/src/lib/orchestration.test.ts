@@ -24,6 +24,7 @@ import {
   moveStepIntoStage,
   splitStageIntoSequence,
   groupUnplacedByStatus,
+  addCardAsStage,
 } from "./orchestration";
 import type { Conflict } from "./orchestration";
 import type { WorktreeInfo } from "./git";
@@ -886,5 +887,36 @@ describe("groupUnplacedByStatus", () => {
 
   it("is empty for no cards", () => {
     expect(groupUnplacedByStatus([], B3)).toEqual([]);
+  });
+});
+
+describe("addCardAsStage", () => {
+  it("inserts a new single-step stage at the index", () => {
+    const o = addCardAsStage(built(), "r1", 1, "new", "/x/z.md");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t1"], ["new"], ["t2", "t3"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("clamps an index past the end to an append", () => {
+    const o = addCardAsStage(built(), "r1", 99, "new", "/x/z.md");
+    expect(stageMap(o)[0][1]).toEqual([["t1"], ["t2", "t3"], ["new"]]);
+  });
+
+  it("renumbers stages after the insert", () => {
+    const o = addCardAsStage(built(), "r1", 0, "new", "/x/z.md");
+    expect(o.rails[0].stages.map((s) => s.position)).toEqual([0, 1, 2]);
+  });
+
+  it("adds to an empty rail", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addCardAsStage(o, "r1", 0, "new", "/x/z.md");
+    expect(stageMap(o)).toEqual([["r1", [["new"]]]]);
+  });
+
+  it("is a no-op for an unknown rail", () => {
+    const before = built();
+    expect(stageMap(addCardAsStage(before, "nope", 0, "new", "/x/z.md"))).toEqual(stageMap(before));
   });
 });
