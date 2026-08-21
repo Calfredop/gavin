@@ -21,6 +21,9 @@
     // Enables the session dot + Run affordance (absent in the preview).
     workspaceId?: string | null;
     onRun?: ((card: CardView) => void) | null;
+    // The second run mode: hand the card to the RUNNING workspace agent.
+    onSendToAgent?: ((card: CardView) => void) | null;
+    agentAvailable?: boolean;
     onDelete?: ((card: CardView) => void) | null;
     onContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
   }
@@ -31,6 +34,8 @@
     nested = false,
     workspaceId = null,
     onRun = null,
+    onSendToAgent = null,
+    agentAvailable = false,
     onDelete = null,
     onContextMenu = null,
   }: Props = $props();
@@ -58,7 +63,7 @@
     const result = await jumpToBoundSession(workspaceId, card.id);
     if (result === "exited") onOpen(card.id);
   }
-  const runnable = $derived(onRun !== null && card.kind !== "note" && binding === null);
+  const runnable = $derived(card.kind !== "note" && binding === null && (onRun !== null || onSendToAgent !== null));
 
   let expanded = $state(false);
 
@@ -165,22 +170,6 @@
     {#if card.parseWarning}
       <span class="warning" use:tooltip={"This card's frontmatter has issues — some fields may be unreadable"}><TriangleAlert size={11} /></span>
     {/if}
-    {#if runnable}
-      <button
-        type="button"
-        class="run"
-        use:tooltip={card.kind === "plan"
-          ? "Run this plan with the workspace agent"
-          : "Run this task with the workspace agent"}
-        onpointerdown={shield}
-        onclick={(e) => {
-          e.stopPropagation();
-          onRun?.(card);
-        }}
-      >
-        <Play size={11} />
-      </button>
-    {/if}
     {#if card.kind === "plan" && (card.nestedChildren.length > 0 || nestTargeted)}
       <button
         type="button"
@@ -213,12 +202,47 @@
   {#if !nested}
     <div class="context-badge" use:tooltip={card.id}>{card.contextName}</div>
   {/if}
+  {#if runnable}
+    <div class="run-pills">
+      {#if onRun}
+        <button
+          type="button"
+          class="pill pill-session"
+          use:tooltip={"Run in a dedicated agent session, bound to this card"}
+          onpointerdown={shield}
+          onclick={(e) => {
+            e.stopPropagation();
+            onRun?.(card);
+          }}
+        >
+          ▶ session
+        </button>
+      {/if}
+      {#if onSendToAgent}
+        <button
+          type="button"
+          class="pill pill-agent"
+          disabled={!agentAvailable}
+          use:tooltip={agentAvailable
+            ? "Send to the running workspace agent (Home)"
+            : "No workspace agent running — start it on the Home tab first"}
+          onpointerdown={shield}
+          onclick={(e) => {
+            e.stopPropagation();
+            if (agentAvailable) onSendToAgent?.(card);
+          }}
+        >
+          ▶ agent
+        </button>
+      {/if}
+    </div>
+  {/if}
   {#if card.kind === "plan" && effectiveExpanded && nestedSlots.length > 0}
     <div class="nested-area" data-kb-nest={card.id}>
       {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onDelete} {onContextMenu} />
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onSendToAgent} {agentAvailable} {onDelete} {onContextMenu} />
           </div>
         {:else}
           <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>
@@ -382,20 +406,46 @@
     background: transparent;
     border: 1px solid var(--border-strong);
   }
-  .run {
-    background: transparent;
-    border: none;
-    color: var(--accent-text);
-    cursor: pointer;
+  .run-pills {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
     display: flex;
-    align-items: center;
-    padding: 0 2px;
+    gap: 4px;
     opacity: 0;
     transition: opacity 120ms;
+    z-index: 1;
   }
-  .card:hover .run,
-  .card:focus-within .run {
+  .card:hover .run-pills,
+  .card:focus-within .run-pills {
     opacity: 1;
+  }
+  .pill {
+    border-radius: 10px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.72em;
+    line-height: 1.5;
+    padding: 1px 8px;
+    background: var(--surface-raised);
+  }
+  .pill-session {
+    border: 1px solid var(--border-accent);
+    color: var(--accent-text);
+  }
+  .pill-session:hover {
+    background: var(--surface-accent);
+  }
+  .pill-agent {
+    border: 1px solid var(--border-success);
+    color: var(--success-text);
+  }
+  .pill-agent:hover:not(:disabled) {
+    background: var(--surface-success);
+  }
+  .pill:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .delete {
     position: absolute;

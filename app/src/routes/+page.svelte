@@ -17,6 +17,7 @@
   import { gavinTrees } from "$lib/gavinState";
   import { agentProfilesStore } from "$lib/layoutState";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
+  import { themeState } from "$lib/ui/themeState.svelte";
   import { visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
@@ -43,7 +44,7 @@
       $agentProfilesStore
     )
   );
-  const accent = $derived(accentVar(activeWorkspace?.color));
+  const accent = $derived(accentVar(activeWorkspace?.color, themeState.effective));
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -112,6 +113,13 @@
         </div>
       {:else}
         <div class="content">
+          <!-- Above the tabs: the bound folder is the whole workspace's
+               context, not a property of whichever page is open. The
+               Settings tab embeds this control itself; showing the
+               banner there too would double it up. -->
+          {#if activeView !== "settings"}
+            <WorkspaceRootControl workspace={activeWorkspace} />
+          {/if}
           <div class="tabs">
             {#each hubViews as view (view.id)}
               <button
@@ -125,11 +133,6 @@
               </button>
             {/each}
           </div>
-          <!-- The Settings tab embeds this control itself; showing the
-               banner there too would double it up. -->
-          {#if activeView !== "settings"}
-            <WorkspaceRootControl workspace={activeWorkspace} />
-          {/if}
           <div class="view">
             <activeViewDef.component workspaceId={activeWorkspace.id} />
           </div>

@@ -216,8 +216,7 @@
         {/if}
         {#if agent.mcpSupported}
           <p class="hint">
-            MCP integration is available for this profile — set it up from the root banner on any
-            other hub tab.
+            MCP integration is available for this profile — set it up from the Root row above.
           </p>
         {:else}
           <p class="hint">MCP integration isn't available for {profileLabel} yet.</p>

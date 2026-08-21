@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { setWorkspaceRoot } from "./layoutState";
+  import { setWorkspaceRoot, switchWorkspaceView } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { agentProfilesStore } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
@@ -26,6 +26,13 @@
   const agent = $derived(
     resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
   );
+
+  // The banner variant never picks a folder itself (D56) -- it hands the
+  // user to the one place that does, so an unbound workspace is still a
+  // live path rather than a dead end.
+  function openSettings(): void {
+    void switchWorkspaceView(workspace.id, "settings");
+  }
 
   async function pickRoot(): Promise<void> {
     errorMessage = null;
@@ -78,8 +85,9 @@
     }
   }
 
-  // Agent integration (D20): available for every rooted, healthy
-  // workspace. Writes are merge-aware and re-runnable (gavin-managed
+  // Agent integration (D20): offered for every rooted, healthy workspace,
+  // but only from Settings (D56) -- it is one-time workspace setup, not
+  // per-page context. Writes are merge-aware and re-runnable (gavin-managed
   // files updated in place; everything else preserved).
   let setupNote = $state<string | null>(null);
 
@@ -97,20 +105,33 @@
 
 <div class:settings={variant === "settings"}>
 {#if workspace.id !== UNFILED_WORKSPACE_ID}
+  <!-- Every folder-picking affordance is settings-only (D56). The banner
+       variant states which folder the workspace is bound to and, when
+       that answer is bad news, points at the panel that can fix it. -->
   {#if !workspace.rootPath}
     <div class="banner">
       <span>No root folder set — bind this workspace to a directory to enable gavin features.</span>
-      <button type="button" onclick={pickRoot}>Set root…</button>
+      {#if variant === "settings"}
+        <button type="button" onclick={pickRoot}>Set root…</button>
+      {:else}
+        <button type="button" onclick={openSettings}>Open settings</button>
+      {/if}
     </div>
   {:else if rootMissing}
     <div class="banner warning">
       <span>Root not found: {workspace.rootPath}</span>
-      <button type="button" onclick={pickRoot}>Re-pick…</button>
+      {#if variant === "settings"}
+        <button type="button" onclick={pickRoot}>Re-pick…</button>
+      {:else}
+        <button type="button" onclick={openSettings}>Open settings</button>
+      {/if}
     </div>
   {:else}
     <div class="chip" title={workspace.rootPath}>
       <span class="path">{workspace.rootPath}</span>
-      <button type="button" class="gear" onclick={pickRoot} title="Change workspace root">⚙</button>
+      {#if variant === "settings"}
+        <button type="button" class="gear" onclick={pickRoot} title="Change workspace root">⚙</button>
+      {/if}
     </div>
   {/if}
   {#if errorMessage}
@@ -125,9 +146,10 @@
       <div class="banner seed"><span>{seedNote}</span></div>
     {/if}
   {/if}
-  <!-- Gated on the profile: setup_agent_integration errors for a profile
-       with no McpLayout, so offering the button would be a broken action. -->
-  {#if workspace.rootPath && !rootMissing && agent.mcpSupported}
+  <!-- Settings-only (D56), and gated on the profile: setup_agent_integration
+       errors for a profile with no McpLayout, so offering the button would
+       be a broken action. -->
+  {#if variant === "settings" && workspace.rootPath && !rootMissing && agent.mcpSupported}
     <div class="banner seed">
       <span>Agent integration — write .mcp.json, the gavin skill, and a {agent.file} pointer into this root.</span>
       <button type="button" onclick={setupIntegration}>Set up / update</button>
@@ -164,6 +186,12 @@
     border: none;
     background: transparent;
     padding: 0;
+  }
+  /* Stripping the chrome also strips the spacing, and Settings is now the
+     only home for the agent-integration row -- give the stack some air so
+     it does not butt against the path. */
+  .settings > * + * {
+    margin-top: 8px;
   }
   .banner {
     display: flex;

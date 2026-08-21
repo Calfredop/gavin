@@ -1,4 +1,5 @@
 import type { AgentConfig } from "./gavin";
+import type { EffectiveTheme } from "./ui/theme";
 
 /// Mirrors AgentProfileDto from agent_setup.rs, fetched via
 /// backend.agentProfiles(). Never duplicated as a literal table here --
@@ -107,6 +108,52 @@ export function resolveAgentConfig(
 /// indicator keep its OWN default (the hub nav's amber, a pane tab's
 /// blue), and it stops an uncoloured sidebar row from inheriting the
 /// active workspace's accent from an ancestor.
-export function accentVar(color: string | null | undefined): string | undefined {
-  return typeof color === "string" && color.trim() ? normalizeColor(color) : undefined;
+/// WCAG's non-text contrast floor. The accent renders as thin indicators
+/// -- a 3px sidebar stripe, a 2px tab underline -- so this is the bar
+/// that matters, not the 4.5:1 text bar.
+const MIN_CONTRAST_ON_LIGHT = 3;
+
+function channelLuminance(v: number): number {
+  return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance(r: number, g: number, b: number): number {
+  return (
+    0.2126 * channelLuminance(r / 255) +
+    0.7152 * channelLuminance(g / 255) +
+    0.0722 * channelLuminance(b / 255)
+  );
+}
+
+/// Scales a colour toward black until it clears the contrast floor against
+/// white. Scaling all three channels by the same factor preserves the hue
+/// and the ratios between channels, so a swatch stays recognisably itself
+/// -- #fbbf24 becomes a darker gold, not a grey.
+///
+/// Applied to ANY colour rather than looked up in a table of the eight
+/// presets, so a hand-edited config.json gets the same treatment. The
+/// eight presets were chosen against the #1e1e1e chrome and score
+/// 6.0-10.0 there; on white they score 1.7-2.8, which is why this exists.
+function darkenForLightSurface(hex: string): string {
+  let [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const contrast = () => 1.05 / (relativeLuminance(r, g, b) + 0.05);
+  // Multiplicative decay, floored so a near-black input terminates.
+  for (let i = 0; i < 100 && contrast() < MIN_CONTRAST_ON_LIGHT; i++) {
+    [r, g, b] = [r * 0.97, g * 0.97, b * 0.97];
+  }
+  const hx = (v: number) => Math.round(v).toString(16).padStart(2, "0");
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/// The workspace accent, resolved for the theme it will be drawn on.
+/// Dark is returned untouched: the presets were picked for that chrome and
+/// already read well there, so a user's existing choice looks exactly as it
+/// always has.
+export function accentVar(
+  color: string | null | undefined,
+  theme: EffectiveTheme = "dark"
+): string | undefined {
+  if (typeof color !== "string" || !color.trim()) return undefined;
+  const normalized = normalizeColor(color);
+  return theme === "light" ? darkenForLightSurface(normalized) : normalized;
 }

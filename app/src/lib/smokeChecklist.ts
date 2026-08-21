@@ -34,7 +34,14 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Root binding",
     items: [
       { id: "root-banner", text: "Unrooted workspace hub shows the “No root folder set” banner" },
-      { id: "root-init", text: "Set root… → Initialize scaffolds .gavin-root (PRD, config, plans/docs/specs)" },
+      {
+        id: "root-banner-no-picker",
+        text: "The hub folder bar sits above the tabs and offers no picker — only “Open settings”, which jumps to the Settings tab",
+      },
+      {
+        id: "root-init",
+        text: "Settings → Set root… → Initialize scaffolds .gavin-root (PRD, config, plans/docs/specs)",
+      },
       { id: "root-persists", text: "Root chip survives an app restart" },
       {
         id: "root-missing",
@@ -336,6 +343,10 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Focus the Command field, type, then edit config.toml externally.",
       },
       { id: "set-mcp-gated", text: "A non-Claude profile hides the agent-integration row and says MCP isn't available yet" },
+      {
+        id: "set-mcp-settings-only",
+        text: "The “Agent integration” row shows ONLY on the Settings tab — no other hub tab carries it",
+      },
       { id: "set-unparseable", text: "Corrupting config.toml makes the agent fields read-only rather than overwriting it" },
     ],
   },
@@ -351,7 +362,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
   {
     title: "Agent integration (MCP)",
     items: [
-      { id: "mcp-setup", text: "“Set up / update” writes .mcp.json, the skill, and the CLAUDE.md block" },
+      { id: "mcp-setup", text: "Settings → “Set up / update” writes .mcp.json, the skill, and the CLAUDE.md block" },
       { id: "mcp-idempotent", text: "Re-running it preserves hand-written CLAUDE.md content outside the markers" },
       { id: "mcp-listed", text: "claude in that folder: /mcp lists gavin with 8 tools" },
       { id: "mcp-prd-plan", text: "Agent reads the PRD and creates a plan → card appears on the board" },

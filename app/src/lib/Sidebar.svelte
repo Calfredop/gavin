@@ -563,7 +563,7 @@
       <div class="workspace-row-group">
         <div
           class="workspace-row pinned"
-          style:--row-accent={accentVar(ws.color) ?? "transparent"}
+          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
           ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
@@ -600,7 +600,7 @@
       <div class="workspace-row-group">
         <div
           class="workspace-row"
-          style:--row-accent={accentVar(ws.color) ?? "transparent"}
+          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-before={hoverState?.targetId === ws.id &&
             hoverState.kind === "reorder" &&

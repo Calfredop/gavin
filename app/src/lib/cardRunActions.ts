@@ -75,6 +75,46 @@ export async function runCard(workspaceId: string, card: CardView): Promise<stri
   return null;
 }
 
+// Hands a card to the RUNNING workspace agent (the Home panel's main
+// session, D12) instead of spawning a dedicated one: the same prompt is
+// bracketed-pasted into its terminal and submitted, the card gets In
+// Progress, and the view jumps to Home to watch. No card_sessions
+// binding -- the main agent serves many cards; the card's status
+// lifecycle is the tracking. Never starts the agent (sub-6 invariant:
+// agent launches cost money and attention).
+export async function sendToMainAgent(workspaceId: string, card: CardView): Promise<string | null> {
+  if (card.kind === "note") return "Notes are not runnable";
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  const mainSessionId = workspace?.mainSessionId ?? null;
+  if (!mainSessionId) return "No workspace agent running — start it on the Home tab first";
+
+  let prompt: string;
+  if (card.kind === "task") {
+    const file = await backend.readFileForViewer(card.id);
+    if (!file.exists) return `Card file not found: ${card.id}`;
+    prompt = composeTaskPrompt(card.id, card.title, stripFrontmatter(file.content).trim());
+  } else {
+    prompt = composePlanPrompt(card.id);
+  }
+  try {
+    // Bracketed paste so a multi-line prompt arrives as one block
+    // instead of line-by-line submissions, then Enter.
+    await backend.writeInput(mainSessionId, `\x1b[200~${prompt}\x1b[201~\r`);
+  } catch (e) {
+    return `Couldn't reach the workspace agent: ${e instanceof Error ? e.message : e}`;
+  }
+  if (runStatusNeeded(card.status)) {
+    try {
+      await backend.setPlanFrontmatterField(card.id, "status", "In Progress");
+      patchPlanField(workspaceId, card.id, "status", "In Progress");
+    } catch (e) {
+      return `Sent, but couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
+    }
+  }
+  await switchWorkspaceView(workspaceId, "home");
+  return null;
+}
+
 // Re-launch from the remembered binding (same cwd/command), replacing
 // the stored session id -- the old modal's behavior, file-card edition.
 export async function relaunchCard(workspaceId: string, path: string): Promise<string | null> {
