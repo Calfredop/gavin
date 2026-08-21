@@ -7,6 +7,7 @@ import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
 import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs } from "./workspace";
 import { sessionLabel } from "./paths";
+import { buildRunCommand } from "./cardRun";
 import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
@@ -384,6 +385,32 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   let sessionId: string;
   try {
     sessionId = await backend.createSession(ws.rootPath, resolvedAgentFor(workspaceId).command);
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Starts the main agent already working on something (the wizard's
+/// agent-driven steps, W5). Same rules as startMainAgent -- needs a root,
+/// refuses when one is already running -- so the session it records is
+/// the same one the Home panel shows and bootstrap reattaches.
+export async function startMainAgentWithPrompt(
+  workspaceId: string,
+  prompt: string
+): Promise<void> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws?.rootPath || ws.mainSessionId) return;
+  const command = buildRunCommand(resolvedAgentFor(workspaceId).command, prompt);
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(ws.rootPath, command);
   } catch (e) {
     setError(String(e));
     return;

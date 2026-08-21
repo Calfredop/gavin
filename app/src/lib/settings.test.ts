@@ -11,9 +11,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: false },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, promptArg: true },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: false, promptArg: false },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, promptArg: false },
 ];
 
 describe("normalizeColor", () => {

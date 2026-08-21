@@ -26,6 +26,7 @@ vi.mock("./backend", () => ({
   // real best-effort path.
   setFileTabs: vi.fn().mockResolvedValue(undefined),
   setRootConfigField: vi.fn().mockResolvedValue(undefined),
+  composeAgentPrompt: vi.fn().mockResolvedValue("prompt"),
   agentProfiles: vi.fn().mockResolvedValue([]),
   moveAgentFile: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: endTabs calls .catch() on this, so a bare
@@ -102,6 +103,7 @@ import {
   setNotifyFlag,
   setAgentField,
   setGitViewPrefs,
+  startMainAgentWithPrompt,
 } from "./layoutState";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
@@ -1506,6 +1508,27 @@ describe("main agent session", () => {
 
     expect(backend.killSession).toHaveBeenCalledWith("agent-1");
     expect(get(layoutState).workspaces[0].mainSessionId).toBeUndefined();
+  });
+
+  it("startMainAgentWithPrompt spawns with the composed prompt and records the session", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude" });
+    vi.mocked(backend.createSession).mockResolvedValue("agent-1");
+
+    await startMainAgentWithPrompt("ws-1", "Use the gavin-write-prd skill.");
+
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/tmp/ws",
+      "claude 'Use the gavin-write-prd skill.'"
+    );
+    expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
+  });
+
+  it("startMainAgentWithPrompt refuses when an agent is already running", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws", mainSessionId: "already" }], "ws-1", null);
+    vi.mocked(backend.createSession).mockClear();
+    await startMainAgentWithPrompt("ws-1", "anything");
+    expect(backend.createSession).not.toHaveBeenCalled();
   });
 
   it("handleSessionExited clears the owning workspace's main session only", async () => {

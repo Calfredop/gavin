@@ -234,7 +234,14 @@ export function deleteBoard(workspaceId: string): Promise<void> {
 }
 
 export function agentProfiles(): Promise<
-  Array<{ id: string; label: string; instructionsFile: string; command: string; mcpSupported: boolean }>
+  Array<{
+    id: string;
+    label: string;
+    instructionsFile: string;
+    command: string;
+    mcpSupported: boolean;
+    promptArg: boolean;
+  }>
 > {
   return invoke("agent_profiles");
 }
@@ -450,4 +457,10 @@ export function gitRestoreConflict(cwd: string, path: string): Promise<void> {
 
 export function gitMergeToolName(cwd: string): Promise<string | null> {
   return invoke("git_merge_tool_name", { cwd });
+}
+
+/// Installs the flow's step skill when the profile supports skills, and
+/// returns the prompt that starts the agent on it (spec §7.1).
+export function composeAgentPrompt(rootPath: string, flow: "prd" | "agent-file"): Promise<string> {
+  return invoke("compose_agent_prompt", { rootPath, flow });
 }

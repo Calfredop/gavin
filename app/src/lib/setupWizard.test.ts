@@ -116,8 +116,8 @@ describe("applyPrdSections", () => {
 
 describe("agentFlowAvailable", () => {
   it("is true only for a profile with a verified prompt argument", () => {
-    expect(agentFlowAvailable({ id: "claude-code", promptArg: true })).toBe(true);
-    expect(agentFlowAvailable({ id: "codex", promptArg: false })).toBe(false);
+    expect(agentFlowAvailable({ promptArg: true })).toBe(true);
+    expect(agentFlowAvailable({ promptArg: false })).toBe(false);
     expect(agentFlowAvailable(undefined)).toBe(false);
   });
 });

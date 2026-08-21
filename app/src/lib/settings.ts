@@ -10,6 +10,9 @@ export interface AgentProfileInfo {
   instructionsFile: string;
   command: string;
   mcpSupported: boolean;
+  /// Whether the agent takes a positional prompt argument; gates the
+  /// wizard's agent-driven flows (spec §7.2).
+  promptArg: boolean;
 }
 
 export const DEFAULT_ACCENT = "#4a9eff";
