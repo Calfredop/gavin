@@ -37,6 +37,7 @@ because of a detected conflict.
 | O11 | Plan is replaced **wholesale** (like `replace_board`); run state is keyed by step id and survives. Deleting a **running** step is refused. |
 | O12 | Per-worktree **dirty file paths** are evidence for the agent only. The app's own conflict detection never needs them. |
 | O13 | **Separate worktrees are never a conflict**, same rail or different rails — sharing a checkout is the whole criterion. There is no step-level worktree, so a parallel stage always shares its rail's checkout; the box flags it and offers **Make sequential**. |
+| O14 | A **card step renders the kanban card itself** — one `BoardCard`, with every board feature it has anywhere else. A **tool step keeps the chip**: a tool is not a card. On a rail the card wears the one fact the board leaves implicit — **which column it sits in**. |
 
 ---
 
@@ -410,8 +411,9 @@ stages long.
 
 A **single-step stage** draws bare — the card plus a connector to the next
 stage. A **multi-step stage** draws a labelled band spanning the rail width
-with its steps side by side; three or more wrap into a grid inside the band
-and the chips drop to title-only.
+with its steps side by side, wrapping to a stack once a card-sized step no
+longer fits beside its neighbour; the band, not the row, is what marks them
+concurrent.
 
 ### 6.2 Chips and headers
 
@@ -420,12 +422,26 @@ chip, page chip, run state, and Start/Pause/Resume. Its overflow menu:
 Rename, Bind worktree…, Bind page…, Reset, Delete rail. A rail-level
 conflict (`worktree-missing`, `rail-unbound`) badges the header, not a chip.
 
-**Step chip**: reuses `BoardCard`'s visual language — kind icon, title,
-checklist `n/m`, status dot — plus a run-state ring: `pending` none,
-`running` accent, `done` success + check, `stalled` danger + the reason on
-hover. Its menu: Open card, Jump to session, Retry, Remove from rail. **Retry**
-returns a `stalled` step to `pending` and clears its reason; the next tick
-launches it under the rules of §4.2, so a retry re-reads the card and
+**Card step** (O14): *the* kanban card — the same `BoardCard` over the board's
+own projection, so it opens on click, right-clicks to the board's card menu,
+runs from its own pills, and carries its session dot, labels, priority,
+checklist and nested children exactly as it does on the board. The two
+rail-only facts are drawn **around** it rather than into it: a run-state ring
+on its wrapper (`pending` none, `running` accent, `done` success + dimmed,
+`stalled` danger) and, as the card's last row, a **rail strip** — the state in
+words, the conflict badges, **Retry** while stalled, and **Remove from rail**.
+A card the board has no projection for (deleted out from under the plan, or
+the board still loading) falls back to the slim chip, which can say so.
+
+The card also wears its **column** as a filled badge beside its context badge:
+off the board, the column is no longer the strip the card is standing in. Only
+surfaces off the board pass it — on the board it would be noise on every card.
+
+**Tool step**: keeps the chip (tools spec §5.2). A tool is not a card, and the
+dashed chip is what says so.
+
+**Retry** returns a `stalled` step to `pending` and clears its reason; the next
+tick launches it under the rules of §4.2, so a retry re-reads the card and
 re-checks the worktree rather than replaying the old command.
 
 **Unplaced drawer**: a collapsible right-edge panel listing every task/plan
@@ -460,8 +476,9 @@ Two axes, kept independent (O9):
   second hue axis and survive colourblindness. The `--lane-*` palette stays
   reserved for the git graph.
 
-A chip in more than one conflict shows every badge and takes the highest
-severity's colour.
+A step in more than one conflict shows every badge and takes the highest
+severity's colour — as a tint framing the card, which keeps the card's own
+kind colours intact (O9: two axes, never two fills).
 
 ### 6.5 Drag
 

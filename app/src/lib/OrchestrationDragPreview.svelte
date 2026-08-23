@@ -1,7 +1,10 @@
 <script lang="ts">
   import { orchDragState } from "./orchestrationDrag";
   import { activeOrchDragRoot } from "./orchestrationDragGlue";
-  import type { CardEntry, Orchestration } from "./orchestration";
+  import BoardCard from "./BoardCard.svelte";
+  import type { Label } from "./kanban";
+  import type { PlacedCardView } from "./planBoard";
+  import { findStep, type CardEntry, type Orchestration } from "./orchestration";
   import type { Tool } from "./orchestrationTools";
 
   interface Props {
@@ -17,42 +20,60 @@
     /// instead silently disables the ghost, which is what happened when
     /// the listener moved up to the grid's parent.
     dragRoot: HTMLElement | null;
+    /// The board's projection, so a card drag lifts the CARD rather than
+    /// a text ghost of its title -- the same thing that lands.
+    placedCards: Map<string, PlacedCardView>;
+    labelDefs: Label[];
   }
-  let { orch, cards, tools, dragRoot }: Props = $props();
+  let { orch, cards, tools, dragRoot, placedCards, labelDefs }: Props = $props();
 
   const ownsDrag = $derived(dragRoot !== null && $activeOrchDragRoot === dragRoot);
   const titleOfPath = (path: string): string =>
     cards.get(path)?.plan.title ?? (path.split("/").pop() ?? "");
   const nameOfTool = (id: string): string => tools.find((t) => t.id === id)?.name ?? id;
 
+  /// The card path this drag is carrying, or null for a tool (and for a
+  /// step whose rail no longer holds it).
+  const draggedPath = $derived.by(() => {
+    const drag = $orchDragState;
+    if (!drag) return null;
+    // A drawer drag carries the card PATH or the TOOL ID; only a step
+    // drag needs the rails walked to find what it points at.
+    if (drag.kind === "card") return drag.id;
+    if (drag.kind === "tool") return null;
+    const step = orch ? findStep(orch, drag.id) : null;
+    return step && !step.toolId ? step.cardPath : null;
+  });
+  // The full card whenever the board has one for that path; a drawer row
+  // being dragged, a deleted card, or a board still loading fall back to
+  // the text ghost below.
+  const draggedCard = $derived(draggedPath ? (placedCards.get(draggedPath)?.view ?? null) : null);
+
   const title = $derived.by(() => {
     const drag = $orchDragState;
     if (!drag) return "";
-    // A drawer drag carries the card PATH or the TOOL ID; only a step
-    // drag needs the rails walked to find what it points at.
-    if (drag.kind === "card") return titleOfPath(drag.id);
+    if (draggedPath) return titleOfPath(draggedPath);
     if (drag.kind === "tool") return nameOfTool(drag.id);
-    if (!orch) return "";
-    for (const rail of orch.rails) {
-      for (const stage of rail.stages) {
-        for (const step of stage.steps) {
-          if (step.id !== drag.id) continue;
-          return step.toolId ? nameOfTool(step.toolId) : titleOfPath(step.cardPath);
-        }
-      }
-    }
-    return "";
+    const step = orch ? findStep(orch, drag.id) : null;
+    return step?.toolId ? nameOfTool(step.toolId) : "";
   });
+
+  function noop(): void {}
 </script>
 
 {#if ownsDrag && $orchDragState}
   <div
     class="ghost"
+    class:card={draggedCard !== null}
     style="left: {$orchDragState.pointer.x - $orchDragState.grabOffset.x}px;
            top: {$orchDragState.pointer.y - $orchDragState.grabOffset.y}px;
            width: {$orchDragState.size.width}px;"
   >
-    {title}
+    {#if draggedCard}
+      <BoardCard card={draggedCard} {labelDefs} onOpen={noop} />
+    {:else}
+      {title}
+    {/if}
   </div>
 {/if}
 
@@ -72,5 +93,17 @@
     text-overflow: ellipsis;
     opacity: 0.9;
     box-shadow: 0 6px 20px rgb(0 0 0 / 0.3);
+  }
+  /* A card ghost draws its own box; the chrome above is for the text
+     ghost only. The board tilts its preview the same way. */
+  .ghost.card {
+    padding: 0;
+    border: none;
+    background: none;
+    box-shadow: none;
+    overflow: visible;
+    white-space: normal;
+    transform: rotate(3deg);
+    filter: drop-shadow(0 8px 24px rgb(0 0 0 / 0.5));
   }
 </style>

@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { slugStatus, mergePlanCards, nearestContext, isPermanentColumn } from "./planBoard";
+import {
+  slugStatus,
+  mergePlanCards,
+  nearestContext,
+  isPermanentColumn,
+  indexCardViews,
+} from "./planBoard";
 import type { Board, Column } from "./kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 
@@ -219,5 +225,44 @@ describe("nearestContext", () => {
     expect(nearestContext(undefined, "/ws")).toBeNull();
     expect(nearestContext(t, undefined)).toBeNull();
     expect(nearestContext(t, "/elsewhere")).toBeNull();
+  });
+});
+
+describe("indexCardViews", () => {
+  // A plan with one nested child (a parented, statusless task) and one
+  // free-standing sibling, so the index has to carry all three.
+  const nesting = tree([
+    ctx("/ws", "root", [
+      plan("parent.md", "To Do"),
+      plan("child.md", null, { kind: "task", parent: "parent.md" }),
+      plan("loose.md", "In Progress", { kind: "task" }),
+    ]),
+  ]);
+
+  it("indexes every card by path, with the column it sits in", () => {
+    const index = indexCardViews(mergePlanCards(board, nesting));
+    expect(index.get("/ws/.gavin-root/plans/parent.md")?.columnName).toBe("To Do");
+    expect(index.get("/ws/.gavin-root/plans/loose.md")?.columnName).toBe("In Progress");
+    expect(index.get("/ws/.gavin-root/plans/parent.md")?.view.title).toBe("parent");
+  });
+
+  // Nesting pulls a card out of column flow entirely, so it has no column
+  // to name -- and it must still be reachable, since a rail renders it
+  // inside its parent and a click has to open it.
+  it("includes nested children, with no column of their own", () => {
+    const index = indexCardViews(mergePlanCards(board, nesting));
+    const child = index.get("/ws/.gavin-root/plans/child.md");
+    expect(child?.columnName).toBeNull();
+    expect(child?.view.fileName).toBe("child.md");
+  });
+
+  it("names an auto column by its status", () => {
+    const t = tree([ctx("/ws", "root", [plan("a.md", "Blocked")])]);
+    const index = indexCardViews(mergePlanCards(board, t));
+    expect(index.get("/ws/.gavin-root/plans/a.md")?.columnName).toBe("Blocked");
+  });
+
+  it("is empty for a board with no cards", () => {
+    expect(indexCardViews(mergePlanCards(board, tree([])))).toEqual(new Map());
   });
 });

@@ -9,8 +9,15 @@
   import StepParamsDialog from "./StepParamsDialog.svelte";
   import { attachOrchestrationDrag } from "./orchestrationDragGlue";
   import Modal from "./Modal.svelte";
+  import CardDetailModal from "./CardDetailModal.svelte";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { gavinTrees } from "./gavinState";
-  import { fetchBoard, kanbanState } from "./kanbanState";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "./kanbanState";
+  import { mergePlanCards, indexCardViews, type CardView, type PlacedCardView } from "./planBoard";
+  import { runCard, sendToMainAgent } from "./cardRunActions";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { openContextMenuFromEvent } from "./contextMenu";
+  import { buildCardMenuEntries } from "./cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { layoutState, switchWorkspaceView } from "./layoutState";
   import {
@@ -21,6 +28,7 @@
     describeConflict,
     groupUnplacedByStatus,
     stepParams,
+    findStep,
   } from "./orchestration";
   import { findTool, toolKindLabel } from "./orchestrationTools";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
@@ -65,6 +73,15 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const cards = $derived(cardIndex(tree));
   const doneName = $derived(board ? (doneColumn(board)?.name ?? null) : null);
+  // The board's OWN projection, so a card on a rail is the very same card
+  // object the kanban tab renders -- kind colours, labels, priority,
+  // checklist, nesting and all -- carrying the one fact a rail has to add:
+  // which column it sits in.
+  const merged = $derived(board ? mergePlanCards(board, tree) : null);
+  const placedCards = $derived<Map<string, PlacedCardView>>(
+    merged ? indexCardViews(merged) : new Map()
+  );
+  const allCards = $derived<CardView[]>([...placedCards.values()].map((p) => p.view));
   const rails = $derived([...(orch?.rails ?? [])].sort((a, b) => a.position - b.position));
   // null, not [], while the refs snapshot is still loading -- unknown
   // must not read as "every worktree is gone".
@@ -82,6 +99,79 @@
   // The rail whose bindings are being edited, set by the rail header and
   // by the conflicts box's inline fix.
   let binding = $state<string | null>(null);
+
+  // --- the card surface -------------------------------------------------
+  // A card step IS a kanban card here, so this tab owns the same three
+  // pieces of furniture the board does: the detail modal, the delete
+  // prompt, and an error strip for writes that fail. Everything routes
+  // through the same helpers, so a rail card and a board card cannot
+  // drift apart.
+  let openCardPath = $state<string | null>(null);
+  const openCard = $derived<CardView | null>(
+    openCardPath ? (placedCards.get(openCardPath)?.view ?? null) : null
+  );
+  let cardWriteError = $state<string | null>(null);
+
+  const agentAvailable = $derived(Boolean(ws?.mainSessionId));
+
+  async function handleRun(card: CardView): Promise<void> {
+    cardWriteError = null;
+    const err = await runCard(workspaceId, card);
+    if (err) cardWriteError = err;
+  }
+
+  async function handleSendToAgent(card: CardView): Promise<void> {
+    cardWriteError = null;
+    const err = await sendToMainAgent(workspaceId, card);
+    if (err) cardWriteError = err;
+  }
+
+  function handleCardContextMenu(card: CardView, e: MouseEvent): void {
+    if (!board) return;
+    openContextMenuFromEvent(
+      e,
+      buildCardMenuEntries(card, {
+        workspaceId,
+        columns: board.columns,
+        openDetail: (path) => (openCardPath = path),
+        requestDelete: (c) => (pendingDelete = c),
+        run: (c) => void handleRun(c),
+        sendToAgent: (c) => void handleSendToAgent(c),
+        agentAvailable,
+        reportError: (msg) => (cardWriteError = msg),
+      })
+    );
+  }
+
+  // Deleting a card FILE from a rail is the board's own cascade, prompt
+  // and all -- the step referencing it disappears with the card, because
+  // a step is only ever a reference (spec O2).
+  let pendingDelete = $state<CardView | null>(null);
+  const pendingPlan = $derived<DeletionPlan | null>(
+    pendingDelete ? deletionPlanFor(pendingDelete, allCards) : null
+  );
+  const pendingDeleteLines = $derived.by(() => {
+    if (!pendingDelete || !pendingPlan) return [];
+    const lines = [`Deletes ${pendingDelete.fileName} permanently.`];
+    const nested = pendingPlan.files.length - 1;
+    if (nested > 0) lines.push(`Also deletes ${nested} nested ${nested === 1 ? "task" : "tasks"}.`);
+    if (pendingPlan.unparent.length > 0)
+      lines.push(
+        `${pendingPlan.unparent.length} free-standing ${pendingPlan.unparent.length === 1 ? "task keeps" : "tasks keep"} their column (un-parented).`
+      );
+    if (pendingPlan.files.some((f) => cardSessionFor(board, f.id) !== null))
+      lines.push("A bound agent session keeps running on the Agents page.");
+    return lines;
+  });
+
+  async function confirmDelete(): Promise<void> {
+    const plan = pendingPlan;
+    pendingDelete = null;
+    if (!plan) return;
+    cardWriteError = null;
+    const err = await executeDeletion(workspaceId, plan);
+    if (err) cardWriteError = err;
+  }
 
   // The cards a rail can take on: every runnable card not already on one.
   const placed = $derived(
@@ -103,6 +193,10 @@
   $effect(() => {
     void fetchOrchestration(workspaceId);
     void fetchBoard(workspaceId);
+    // The board is no longer just the status vocabulary here: its columns
+    // and labels are drawn on every card step, so a stale one shows stale
+    // cards. Same refresh the kanban tab does on reveal.
+    void refreshBoard(workspaceId);
     void refreshOrchestration(workspaceId);
     void fetchTools(workspaceId);
     void refreshTools(workspaceId);
@@ -170,14 +264,23 @@
           void moveStepToNewStageAction(workspaceId, drag.id, drag.target.railId, drag.target.index);
         }
       },
-      // A press with no movement does nothing here: the chip's own
-      // buttons handle clicks, and the glue already ignores pointerdowns
-      // that land on a button.
-      click: () => {},
+      // A press with no movement on a CARD step opens that card, exactly
+      // as a click on the board does. `cardPath` is set when the press
+      // landed on a card of its own -- a nested child inside an expanded
+      // plan -- and that one opens as itself. A tool step has no card to
+      // open, and a drawer row fires its own onclick, so both fall
+      // through to nothing.
+      click: (stepId, cardPath) => {
+        if (cardPath) {
+          openCardPath = cardPath;
+          return;
+        }
+        const step = orch ? findStep(orch, stepId) : null;
+        if (step && !step.toolId) openCardPath = step.cardPath;
+      },
     });
   });
 
-  const mainAgentRunning = $derived(Boolean(ws?.mainSessionId));
   const conflictSummary = $derived(
     orch
       ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
@@ -205,8 +308,8 @@
     <button
       type="button"
       class="add-rail"
-      disabled={!mainAgentRunning}
-      title={mainAgentRunning ? "" : "Start the workspace agent on Home first"}
+      disabled={!agentAvailable}
+      title={agentAvailable ? "" : "Start the workspace agent on Home first"}
       onclick={() => void reorganize()}
     >
       Reorganize with agent…
@@ -220,6 +323,15 @@
     <div class="save-error">
       <span>{$saveErrors[workspaceId]}</span>
       <button type="button" onclick={() => dismissSaveError(workspaceId)}>Dismiss</button>
+    </div>
+  {/if}
+
+  <!-- A card write failing is a different fact from the PLAN failing to
+       save, so it gets its own line rather than borrowing that one. -->
+  {#if cardWriteError}
+    <div class="save-error">
+      <span>{cardWriteError}</span>
+      <button type="button" onclick={() => (cardWriteError = null)}>Dismiss</button>
     </div>
   {/if}
 
@@ -249,6 +361,9 @@
           {orch}
           {cards}
           {tools}
+          {placedCards}
+          {workspaceId}
+          labelDefs={board?.labels ?? []}
           doneColumnName={doneName}
           {numbered}
           onStart={() => onStart(rail.id)}
@@ -268,6 +383,11 @@
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
           onEditStepParams={(stepId) => (editingParamsFor = stepId)}
+          onOpenCard={(path) => (openCardPath = path)}
+          onRunCard={(card) => void handleRun(card)}
+          onSendCardToAgent={(card) => void handleSendToAgent(card)}
+          {agentAvailable}
+          onCardContextMenu={handleCardContextMenu}
         />
       {/each}
       </div>
@@ -283,7 +403,14 @@
   {/if}
 </div>
 
-<OrchestrationDragPreview {orch} {cards} {tools} dragRoot={bodyEl} />
+<OrchestrationDragPreview
+  {orch}
+  {cards}
+  {tools}
+  {placedCards}
+  labelDefs={board?.labels ?? []}
+  dragRoot={bodyEl}
+/>
 
 {#if managingTools}
   <ToolLibraryDialog {workspaceId} {tools} onClose={() => (managingTools = false)} />
@@ -309,6 +436,26 @@
   {#if bindingRail}
     <RailBindDialog {workspaceId} rail={bindingRail} onClose={() => (binding = null)} />
   {/if}
+{/if}
+
+{#if pendingDelete}
+  <ConfirmPrompt
+    title={`Delete "${pendingDelete.title}"?`}
+    lines={pendingDeleteLines}
+    choices={[{ label: "Delete", danger: true, onPick: () => void confirmDelete() }]}
+    onCancel={() => (pendingDelete = null)}
+  />
+{/if}
+
+{#if openCard && board}
+  <CardDetailModal
+    card={openCard}
+    {workspaceId}
+    columns={board.columns}
+    labels={board.labels}
+    {allCards}
+    onClose={() => (openCardPath = null)}
+  />
 {/if}
 
 {#if picking}

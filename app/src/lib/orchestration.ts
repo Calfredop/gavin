@@ -629,6 +629,20 @@ function insertAsStage(
   };
 }
 
+/// The step with this id, wherever it sits. Every surface that gets a
+/// step id from the DOM (a click, a drag, a params popover) has to walk
+/// the rails to find what it points at; this is that walk, once.
+export function findStep(orch: Orchestration, stepId: string): Step | null {
+  for (const rail of orch.rails) {
+    for (const stage of rail.stages) {
+      for (const step of stage.steps) {
+        if (step.id === stepId) return step;
+      }
+    }
+  }
+  return null;
+}
+
 /// Where a card sits on the rails right now, for the board surfaces that
 /// offer "send to rail" -- they need to say where it already is before
 /// they can offer to move it.

@@ -123,7 +123,11 @@ export interface OrchDragCallbacks {
   measure: () => MeasuredRail[];
   measureDrawer: () => Rect | null;
   commit: (drag: ActiveOrchDrag & { target: OrchDropTarget }) => void;
-  click: (stepId: string) => void;
+  /// `cardPath` is the card the press actually landed ON, which differs
+  /// from the step's own card only inside an expanded plan: a nested
+  /// child is its own card and must open as itself, not as its parent.
+  /// Null whenever the press was not on a card at all.
+  click: (stepId: string, cardPath: string | null) => void;
 }
 
 export const orchDragState = writable<ActiveOrchDrag | null>(null);
@@ -135,6 +139,9 @@ interface Candidate {
   start: Point;
   grabOffset: Point;
   size: { width: number; height: number };
+  /// The card under the press, for the click path only -- see
+  /// OrchDragCallbacks.click. Never consulted by a drag.
+  clickCardPath: string | null;
 }
 
 let candidate: Candidate | null = null;
@@ -146,7 +153,8 @@ export function beginCandidate(
   sourceStageId: string | null,
   start: Point,
   itemRect: Rect,
-  cbs: OrchDragCallbacks
+  cbs: OrchDragCallbacks,
+  clickCardPath: string | null = null
 ): void {
   candidate = {
     kind,
@@ -155,6 +163,7 @@ export function beginCandidate(
     start,
     grabOffset: { x: start.x - itemRect.left, y: start.y - itemRect.top },
     size: { width: itemRect.width, height: itemRect.height },
+    clickCardPath,
   };
   callbacks = cbs;
 }
@@ -207,7 +216,7 @@ export function endPointer(): void {
   orchDragState.set(null);
   if (!cbs) return;
   if (!active) {
-    if (wasCandidate) cbs.click(wasCandidate.id);
+    if (wasCandidate) cbs.click(wasCandidate.id, wasCandidate.clickCardPath);
     return;
   }
   if (!active.target) return;

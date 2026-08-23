@@ -40,7 +40,7 @@ export interface OrchDragOptions {
   /// because the listening element is its parent.
   scrollEl: HTMLElement;
   commit: (drag: ActiveOrchDrag & { target: OrchDropTarget }) => void;
-  click: (stepId: string) => void;
+  click: (stepId: string, cardPath: string | null) => void;
 }
 
 function toRect(el: Element): Rect {
@@ -98,6 +98,7 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
     let itemEl: Element;
     let draggedId: string;
     let sourceStageId: string | null;
+    let clickCardPath: string | null = null;
 
     if (cardEl) {
       kind = "card";
@@ -117,6 +118,11 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       itemEl = stepEl;
       draggedId = stepEl.getAttribute("data-orch-step") ?? "";
       sourceStageId = stepEl.closest("[data-orch-stage]")?.getAttribute("data-orch-stage") ?? "";
+      // Innermost first, and only when it is inside THIS step -- a
+      // press on the step's own card matches nothing and falls back to
+      // the step's card path.
+      const kbEl = target.closest("[data-kb-plan]");
+      clickCardPath = kbEl && stepEl.contains(kbEl) ? kbEl.getAttribute("data-kb-plan") : null;
     }
 
     const cbs: OrchDragCallbacks = {
@@ -126,7 +132,15 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       click: opts.click,
     };
     activeOrchDragRoot.set(root);
-    beginCandidate(kind, draggedId, sourceStageId, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
+    beginCandidate(
+      kind,
+      draggedId,
+      sourceStageId,
+      { x: e.clientX, y: e.clientY },
+      toRect(itemEl),
+      cbs,
+      clickCardPath
+    );
     // Window-level, capture-phase: the dragged chip's wrapper leaves the
     // DOM at activation and WKWebView then drops the pointerup instead
     // of retargeting it. setPointerCapture stays a best-effort extra.

@@ -144,8 +144,26 @@ describe("orchestration drag controller", () => {
     const c = cbs();
     beginCandidate("step", "t1", "s1", { x: 0, y: 0 }, RECT, c);
     endPointer();
-    expect(c.click).toHaveBeenCalledWith("t1");
+    expect(c.click).toHaveBeenCalledWith("t1", null);
     expect(c.commit).not.toHaveBeenCalled();
+  });
+
+  // A card step renders the whole kanban card, so a press can land on a
+  // NESTED child card inside it -- that one opens as itself.
+  it("reports the card the press landed on, for the click path only", () => {
+    const c = cbs();
+    beginCandidate("step", "t1", "s1", { x: 0, y: 0 }, RECT, c, "/x/nested.md");
+    endPointer();
+    expect(c.click).toHaveBeenCalledWith("t1", "/x/nested.md");
+  });
+
+  it("never lets that card path reach a drop — a drag still moves the STEP", () => {
+    const c = cbs();
+    beginCandidate("step", "t1", "s1", { x: 100, y: 50 }, RECT, c, "/x/nested.md");
+    movePointer({ x: 300, y: 50 });
+    endPointer();
+    expect(c.commit).toHaveBeenCalledWith(expect.objectContaining({ id: "t1" }));
+    expect(c.click).not.toHaveBeenCalled();
   });
 
   it("commits at the last computed target", () => {
@@ -271,7 +289,7 @@ describe("dragging a tool in", () => {
     beginCandidate("tool", "builtin:push", null, { x: 100, y: 50 }, RECT, c);
     endPointer();
     expect(c.commit).not.toHaveBeenCalled();
-    expect(c.click).toHaveBeenCalledWith("builtin:push");
+    expect(c.click).toHaveBeenCalledWith("builtin:push", null);
   });
 });
 

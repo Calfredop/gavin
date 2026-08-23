@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, ChevronRight, ChevronDown } from "@lucide/svelte";
@@ -28,6 +29,16 @@
     agentAvailable?: boolean;
     onDelete?: ((card: CardView) => void) | null;
     onContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
+    // The board column this card sits in, as a chip beside the context
+    // badge. Only surfaces OFF the board pass it: on the board the column
+    // is the strip the card is standing in, and repeating it on every
+    // card would be noise.
+    columnName?: string | null;
+    // Extra controls the surface owns, rendered as the card's last row.
+    // The Orchestration rails hang a step's run state, its conflict
+    // badges and its rail buttons here without this component having to
+    // learn any of those words.
+    adornment?: Snippet;
   }
   let {
     card,
@@ -40,6 +51,8 @@
     agentAvailable = false,
     onDelete = null,
     onContextMenu = null,
+    columnName = null,
+    adornment,
   }: Props = $props();
 
   // Live session binding (card-model spec §3) -- same dot vocabulary the
@@ -208,7 +221,12 @@
     </div>
   {/if}
   {#if !nested}
-    <div class="context-badge" use:tooltip={card.id}>{card.contextName}</div>
+    <div class="meta-row">
+      {#if columnName}
+        <span class="column-badge" use:tooltip={"Column: " + columnName}>{columnName}</span>
+      {/if}
+      <span class="context-badge" use:tooltip={card.id}>{card.contextName}</span>
+    </div>
   {/if}
   {#if runnable}
     <div class="run-pills">
@@ -257,6 +275,12 @@
         {/if}
       {/each}
     </div>
+  {/if}
+  <!-- Last, AFTER the nested children: the surface's controls act on the
+       whole card, expanded plan included. Between the two, the strip
+       would read as a divider cutting a plan off from its own tasks. -->
+  {#if adornment}
+    <div class="adornment">{@render adornment()}</div>
   {/if}
 </div>
 
@@ -540,6 +564,16 @@
     padding: 1px 6px;
     font-size: 0.85em;
   }
+  /* The badges wrap rather than truncate the row: a long column name
+     must never push the context out of sight. */
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+    min-width: 0;
+  }
   .context-badge {
     display: inline-block;
     border: 1px solid var(--border-strong);
@@ -547,12 +581,31 @@
     padding: 1px 6px;
     font-size: 0.8em;
     color: var(--text-muted);
-    margin-top: 6px;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     box-sizing: border-box;
+  }
+  /* Filled, not outlined, so it reads as the card's PLACE rather than as
+     another tag: labels, the parent chip and the context badge are all
+     outlined, and the column is a different kind of fact from all three. */
+  .column-badge {
+    display: inline-block;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 1px 6px;
+    background: var(--surface-overlay);
+    font-size: 0.8em;
+    color: var(--text);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    box-sizing: border-box;
+  }
+  .adornment {
+    margin-top: 6px;
   }
   .kind-plan .context-badge {
     color: var(--success-text);

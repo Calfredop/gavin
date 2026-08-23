@@ -217,7 +217,11 @@ row opens the library dialog.
 `addToolAsStageAction` / `addToolToStageAction`, mirroring the card pair.
 A tool dropped on the drawer is a no-op, like a card.
 
-### 5.2 Step chip
+### 5.2 Tool step chip
+
+The chip is now the **tool** step's shape alone: a card step renders the
+kanban card itself (tab spec O14), and the dashed chip is what says a tool is
+not a card.
 
 A tool step renders the tool's kind icon, its name, and — when the tool
 declares params — a `Sliders` button opening the params popover. Its

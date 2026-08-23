@@ -34,6 +34,7 @@ import {
   conflictStepIds,
   findCardPlacement,
   sendCardToRail,
+  findStep,
 } from "./orchestration";
 import type { Conflict, ToolSummary } from "./orchestration";
 import type { WorktreeInfo } from "./git";
@@ -927,6 +928,17 @@ describe("addCardAsStage", () => {
   it("is a no-op for an unknown rail", () => {
     const before = built();
     expect(stageMap(addCardAsStage(before, "nope", 0, "new", "/x/z.md"))).toEqual(stageMap(before));
+  });
+});
+
+describe("findStep", () => {
+  it("finds a step on any rail, in any stage", () => {
+    expect(findStep(built(), "t3")?.cardPath).toBe("/x/c.md");
+    expect(findStep(built(), "t4")?.cardPath).toBe("/x/d.md");
+  });
+
+  it("is null for an id that is on no rail", () => {
+    expect(findStep(built(), "nope")).toBeNull();
   });
 });
 
