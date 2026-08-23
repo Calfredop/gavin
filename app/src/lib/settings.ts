@@ -10,9 +10,19 @@ export interface AgentProfileInfo {
   instructionsFile: string;
   command: string;
   mcpSupported: boolean;
+  /// The file this profile's agent reads MCP config from, so copy can name
+  /// it. Empty for `custom`, whose path comes from config.toml.
+  mcpConfigFile: string;
   /// Whether the agent takes a positional prompt argument; gates the
   /// wizard's agent-driven flows (spec §7.2).
   promptArg: boolean;
+}
+
+/// Mirrors McpFormatDto from agent_setup.rs, for the `custom` profile's
+/// dialect picker.
+export interface McpFormatInfo {
+  id: string;
+  label: string;
 }
 
 export const DEFAULT_ACCENT = "#4a9eff";
@@ -48,6 +58,24 @@ export function validateAgentFileName(name: string): string | null {
   return null;
 }
 
+/// Returns an error message, or null when the path is usable. Mirrors
+/// usable_mcp_path in agent_setup.rs, which is the authority: without
+/// this the panel would offer to write a file Rust then refuses, and the
+/// integration run would silently report MCP config as skipped instead.
+/// A subpath IS allowed here, unlike the agent file — an MCP config
+/// usually lives in a dot-directory.
+export function validateMcpConfigPath(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return "Enter a file path.";
+  if (trimmed.startsWith("/") || /^[a-z]:[\\/]/i.test(trimmed)) {
+    return "Must be inside the root, not an absolute path.";
+  }
+  if (trimmed.split(/[\\/]/).some((part) => part === "..")) {
+    return "Must stay inside the root — no “..” segments.";
+  }
+  return null;
+}
+
 export type RenameDecision = "prompt" | "point" | "error";
 
 /// The spec's §6 table, as a function. "prompt" means ask before moving;
@@ -69,6 +97,10 @@ export interface ResolvedAgent {
   file: string;
   command: string;
   mcpSupported: boolean;
+  /// The MCP config file gavin would write for this workspace, or "" when
+  /// there is none to write -- which is only ever an unconfigured
+  /// `custom` profile.
+  mcpConfigFile: string;
 }
 
 const FALLBACK_PROFILE = "claude-code";
@@ -85,6 +117,8 @@ export function resolveAgentConfig(
   profiles: AgentProfileInfo[]
 ): ResolvedAgent {
   const requested = nonEmpty(config?.profile) ?? FALLBACK_PROFILE;
+  const configured = nonEmpty(config?.mcpFile);
+  const customMcpFile = configured && !validateMcpConfigPath(configured) ? configured : null;
   const profile = profiles.find((p) => p.id === requested);
   const fallback = profiles.find((p) => p.id === FALLBACK_PROFILE);
   const effective = profile ?? fallback;
@@ -102,7 +136,13 @@ export function resolveAgentConfig(
       nonEmpty(effective?.command) ??
       nonEmpty(fallback?.command) ??
       "claude",
-    mcpSupported: effective?.mcpSupported ?? false,
+    // `custom` has no row in the table to carry a layout, so its support
+    // follows from whether someone has named a USABLE file for it -- the
+    // same resolution order as every other field, config over profile. A
+    // path Rust would refuse counts as no path, so the panel never offers
+    // a write that cannot happen.
+    mcpSupported: Boolean(effective?.mcpSupported || customMcpFile),
+    mcpConfigFile: nonEmpty(effective?.mcpConfigFile) ?? customMcpFile ?? "",
   };
 }
 

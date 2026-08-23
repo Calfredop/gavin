@@ -91,6 +91,7 @@ pub fn run() {
             session::set_root_config_field,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
+            agent_setup::mcp_formats,
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt,
             git::git_repo_info,

@@ -241,10 +241,15 @@ export function agentProfiles(): Promise<
     instructionsFile: string;
     command: string;
     mcpSupported: boolean;
+    mcpConfigFile: string;
     promptArg: boolean;
   }>
 > {
   return invoke("agent_profiles");
+}
+
+export function mcpFormats(): Promise<Array<{ id: string; label: string }>> {
+  return invoke("mcp_formats");
 }
 
 export function moveAgentFile(rootPath: string, from: string, to: string): Promise<void> {

@@ -4,6 +4,7 @@ import {
   PALETTE,
   normalizeColor,
   validateAgentFileName,
+  validateMcpConfigPath,
   renameDecision,
   accentVar,
   resolveAgentConfig,
@@ -11,9 +12,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, promptArg: true },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: false, promptArg: false },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, promptArg: false },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false },
 ];
 
 describe("normalizeColor", () => {
@@ -51,6 +52,22 @@ describe("validateAgentFileName", () => {
   });
 });
 
+describe("validateMcpConfigPath", () => {
+  it("accepts a relative path, with or without a directory", () => {
+    expect(validateMcpConfigPath(".myagent/mcp.json")).toBeNull();
+    expect(validateMcpConfigPath("opencode.json")).toBeNull();
+    expect(validateMcpConfigPath("  tools/mcp/config.toml  ")).toBeNull();
+  });
+
+  it("rejects anything that could write outside the root", () => {
+    // Same set usable_mcp_path refuses in agent_setup.rs — the two must
+    // agree, or the panel offers a write Rust then declines.
+    for (const bad of ["", "   ", "/etc/mcp.json", "../outside.json", "a/../../outside.json", "C:\\mcp.json"]) {
+      expect(validateMcpConfigPath(bad)).toBeTruthy();
+    }
+  });
+});
+
 describe("renameDecision", () => {
   it("prompts when the old file exists and the target does not", () => {
     expect(renameDecision("CLAUDE.md", "AGENTS.md", true, false)).toBe("prompt");
@@ -77,7 +94,13 @@ describe("renameDecision", () => {
 describe("resolveAgentConfig", () => {
   it("prefers explicit config over the profile default", () => {
     const r = resolveAgentConfig({ profile: "codex", file: "NOTES.md", command: "codex --x" }, PROFILES);
-    expect(r).toEqual({ profileId: "codex", file: "NOTES.md", command: "codex --x", mcpSupported: false });
+    expect(r).toEqual({
+      profileId: "codex",
+      file: "NOTES.md",
+      command: "codex --x",
+      mcpSupported: true,
+      mcpConfigFile: ".codex/config.toml",
+    });
   });
 
   it("falls back to the profile's defaults for absent keys", () => {
@@ -88,7 +111,8 @@ describe("resolveAgentConfig", () => {
 
   it("falls back to claude-code for a missing or unknown profile", () => {
     expect(resolveAgentConfig(null, PROFILES)).toEqual({
-      profileId: "claude-code", file: "CLAUDE.md", command: "claude", mcpSupported: true,
+      profileId: "claude-code", file: "CLAUDE.md", command: "claude",
+      mcpSupported: true, mcpConfigFile: ".mcp.json",
     });
     expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES).profileId).toBe(
       "claude-code"
@@ -97,11 +121,56 @@ describe("resolveAgentConfig", () => {
 
   it("keeps custom usable only through its explicit values", () => {
     const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES);
-    expect(r).toEqual({ profileId: "custom", file: "RULES.md", command: "my-agent", mcpSupported: false });
+    expect(r).toEqual({
+      profileId: "custom",
+      file: "RULES.md",
+      command: "my-agent",
+      mcpSupported: false,
+      mcpConfigFile: "",
+    });
     // Custom with nothing filled in still resolves to something safe.
     const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES);
     expect(bare.file).toBe("CLAUDE.md");
     expect(bare.command).toBe("claude");
+  });
+
+  it("gives custom MCP support the moment a config file is named for it", () => {
+    // The one profile with no verified layout of its own: its support
+    // follows from config, the same resolution order as every other field.
+    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES);
+    expect(bare.mcpSupported).toBe(false);
+    expect(bare.mcpConfigFile).toBe("");
+
+    const named = resolveAgentConfig(
+      { profile: "custom", file: null, command: null, mcpFile: ".myagent/mcp.json" },
+      PROFILES
+    );
+    expect(named.mcpSupported).toBe(true);
+    expect(named.mcpConfigFile).toBe(".myagent/mcp.json");
+
+    // A cleared box is not an override, here as everywhere else.
+    const cleared = resolveAgentConfig(
+      { profile: "custom", file: null, command: null, mcpFile: "  " },
+      PROFILES
+    );
+    expect(cleared.mcpSupported).toBe(false);
+
+    // Nor is a path Rust would refuse: a hand-edited config.toml must not
+    // make the panel offer a write that cannot happen.
+    const escaping = resolveAgentConfig(
+      { profile: "custom", file: null, command: null, mcpFile: "../outside.json" },
+      PROFILES
+    );
+    expect(escaping.mcpSupported).toBe(false);
+    expect(escaping.mcpConfigFile).toBe("");
+  });
+
+  it("never lets a config path override a profile's verified layout", () => {
+    const r = resolveAgentConfig(
+      { profile: "codex", file: null, command: null, mcpFile: ".somewhere/else.json" },
+      PROFILES
+    );
+    expect(r.mcpConfigFile).toBe(".codex/config.toml");
   });
 
   it("is empty-string safe — a cleared field is not an override", () => {

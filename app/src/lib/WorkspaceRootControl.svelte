@@ -151,12 +151,15 @@
       <div class="banner seed"><span>{seedNote}</span></div>
     {/if}
   {/if}
-  <!-- Settings-only (D56), and gated on the profile: setup_agent_integration
-       errors for a profile with no McpLayout, so offering the button would
-       be a broken action. -->
+  <!-- Settings-only (D56), and gated on there being an MCP layout to
+       write: without one the run would report MCP config as skipped, so
+       the button would half-work rather than work. -->
   {#if variant === "settings" && workspace.rootPath && !rootMissing && agent.mcpSupported}
     <div class="banner seed">
-      <span>Agent integration — write .mcp.json, the gavin skill, and a {agent.file} pointer into this root.</span>
+      <span
+        >Agent integration — write {agent.mcpConfigFile} and a gavin section in {agent.file} into
+        this root.</span
+      >
       <button type="button" onclick={setupIntegration}>Set up / update</button>
     </div>
     {#if setupNote}
