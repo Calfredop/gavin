@@ -32,6 +32,8 @@ import {
   addToolAsStage,
   setStepParams,
   conflictStepIds,
+  findCardPlacement,
+  sendCardToRail,
 } from "./orchestration";
 import type { Conflict, ToolSummary } from "./orchestration";
 import type { WorktreeInfo } from "./git";
@@ -925,6 +927,65 @@ describe("addCardAsStage", () => {
   it("is a no-op for an unknown rail", () => {
     const before = built();
     expect(stageMap(addCardAsStage(before, "nope", 0, "new", "/x/z.md"))).toEqual(stageMap(before));
+  });
+});
+
+describe("findCardPlacement", () => {
+  it("locates a card's step, its rail, and where the stage sits", () => {
+    expect(findCardPlacement(built(), "/x/c.md")).toEqual({
+      railId: "r1",
+      stageId: "s2",
+      stepId: "t3",
+      stageNumber: 2,
+      stageCount: 2,
+    });
+  });
+
+  it("is null for a card on no rail", () => {
+    expect(findCardPlacement(built(), "/x/z.md")).toBeNull();
+  });
+
+  // A tool step's cardPath is "", which must never match a card.
+  it("never matches a tool step", () => {
+    const o = { ...emptyOrchestration(), rails: [toolRail("r1", [[["t1", "builtin:push"]]])] };
+    expect(findCardPlacement(o, "")).toBeNull();
+  });
+});
+
+describe("sendCardToRail", () => {
+  it("appends an unplaced card as the rail's own trailing stage", () => {
+    const o = sendCardToRail(built(), "r1", "/x/z.md", "new");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t1"], ["t2", "t3"], ["new"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("adds to an empty rail", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = sendCardToRail(o, "r1", "/x/z.md", "new");
+    expect(stageMap(o)).toEqual([["r1", [["new"]]]]);
+  });
+
+  // The step id rides along, so the run state keyed by it survives the
+  // move -- sending a card somewhere is not a reason to forget it ran.
+  it("moves a card already on another rail, keeping its step id", () => {
+    const o = sendCardToRail(built(), "r2", "/x/a.md", "unused");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t2", "t3"]]],
+      ["r2", [["t4"], ["t1"]]],
+    ]);
+  });
+
+  it("leaves a card already on that rail exactly alone", () => {
+    const before = built();
+    const o = sendCardToRail(before, "r1", "/x/a.md", "new");
+    expect(o).toBe(before);
+  });
+
+  it("is a no-op for an unknown rail", () => {
+    const before = built();
+    expect(stageMap(sendCardToRail(before, "nope", "/x/z.md", "new"))).toEqual(stageMap(before));
   });
 });
 

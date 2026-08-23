@@ -13,6 +13,12 @@
   import { switchWorkspaceView, layoutState } from "./layoutState";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, relaunchCard } from "./cardRunActions";
+  import { findCardPlacement, stepStateOf } from "./orchestration";
+  import {
+    orchestrations,
+    sendCardToRailAction,
+    removeCardFromRailAction,
+  } from "./orchestrationState";
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { findSessionLocation } from "./workspace";
@@ -193,6 +199,35 @@
     await unlinkCardSessionAction(workspaceId, card.id);
   }
 
+  // --- orchestration rail (orchestration spec O2) ----------------------
+  // A step is a REFERENCE to this card, so this block only says where the
+  // reference sits and offers to move it; nothing about the card changes.
+  const orch = $derived($orchestrations[workspaceId] ?? null);
+  const rails = $derived([...(orch?.rails ?? [])].sort((a, b) => a.position - b.position));
+  const placement = $derived(orch ? findCardPlacement(orch, card.id) : null);
+  const placedRail = $derived(rails.find((r) => r.id === placement?.railId) ?? null);
+  const placedState = $derived(orch && placement ? stepStateOf(orch, placement.stepId) : null);
+
+  // A chip per rail rather than a picker with a confirm button: there is
+  // no draft to hold, so nothing of the human's survives a plan update
+  // badly, and one click is the whole gesture.
+  async function sendToRail(railId: string): Promise<void> {
+    errorMessage = null;
+    const err = await sendCardToRailAction(workspaceId, railId, card.id);
+    if (err) errorMessage = err;
+  }
+
+  async function takeOffRail(): Promise<void> {
+    errorMessage = null;
+    const err = await removeCardFromRailAction(workspaceId, card.id);
+    if (err) errorMessage = err;
+  }
+
+  function openOrchestrationTab(): void {
+    void switchWorkspaceView(workspaceId, "orchestration");
+    onClose();
+  }
+
   let confirmingDelete = $state(false);
   const delPlan = $derived(deletionPlanFor(card, allCards));
 
@@ -345,6 +380,44 @@
           </button>
         </div>
       {/if}
+    </div>
+    <div class="section">
+      <div class="section-title">Orchestration rail</div>
+      {#if rails.length === 0}
+        <p class="quiet">No rails yet — a rail is a column of stages, built on the Orchestration tab.</p>
+      {:else if placement}
+        <div class="session-info">
+          <span class="rail-where">
+            On “{placedRail?.name}” · stage {placement.stageNumber} of {placement.stageCount}
+          </span>
+          <span class="step-state">{placedState}</span>
+        </div>
+      {:else}
+        <p class="quiet">Not on a rail — it won't run as part of any arrangement.</p>
+      {/if}
+      {#if rails.length > 0}
+        <div class="chips rail-chips">
+          {#each rails as rail (rail.id)}
+            {@const here = rail.id === placement?.railId}
+            <button
+              type="button"
+              class="chip"
+              class:active={here}
+              disabled={here}
+              title={here ? "Already on this rail" : `Send to “${rail.name}” as its last stage`}
+              onclick={() => void sendToRail(rail.id)}
+            >
+              {rail.name}
+            </button>
+          {/each}
+        </div>
+      {/if}
+      <div class="session-actions">
+        {#if placement}
+          <button type="button" onclick={() => void takeOffRail()}>Take off rail</button>
+        {/if}
+        <button type="button" onclick={openOrchestrationTab}>Open Orchestration</button>
+      </div>
     </div>
   {/if}
   {#if errorMessage}
@@ -574,6 +647,26 @@
   .session-actions button:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  .rail-chips {
+    margin-bottom: 8px;
+  }
+  .chip:disabled {
+    cursor: default;
+  }
+  .quiet {
+    margin: 0 0 6px;
+    color: var(--text-muted);
+    font-size: 0.8em;
+  }
+  .rail-where {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .step-state {
+    color: var(--text-muted);
+    margin-left: 10px;
   }
   .actions {
     display: flex;

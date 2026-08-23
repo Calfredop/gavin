@@ -13,6 +13,7 @@
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
+  import { fetchOrchestration } from "./orchestrationState";
   import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import BoardSelectionBar from "./BoardSelectionBar.svelte";
@@ -31,8 +32,12 @@
   let planWriteError = $state<string | null>(null);
   let boardEl = $state<HTMLElement | null>(null);
 
+  // The rails, for the card menu's and the detail modal's "send to rail"
+  // block -- this tab never mounts the Orchestration tab, so nothing else
+  // would ever fetch them.
   $effect(() => {
     void fetchBoard(workspaceId);
+    void fetchOrchestration(workspaceId);
   });
 
   // Staleness (spec §3): the cached board refetches when the hub board

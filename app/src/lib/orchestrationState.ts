@@ -29,6 +29,8 @@ import {
   splitStageIntoSequence,
   isToolStep,
   stepParams,
+  findCardPlacement,
+  sendCardToRail,
 } from "./orchestration";
 import type { Action, Orchestration, Rail, RailState, StepState, Step } from "./orchestration";
 import { findTool, resolveToolBody } from "./orchestrationTools";
@@ -95,24 +97,28 @@ export async function refreshOrchestration(workspaceId: string): Promise<void> {
 /// whole plan, roll back on failure unless a later mutation already
 /// replaced it (reference check -- and that later save carries this
 /// change anyway, since the plan is persisted wholesale).
+///
+/// Returns the failure message as well as recording it in `saveErrors`:
+/// the tab reads the store, but a caller on ANOTHER tab (a card menu on
+/// the board) has its own error strip and would otherwise fail silently.
 export async function mutatePlan(
   workspaceId: string,
   mutate: (orch: Orchestration) => Orchestration
-): Promise<void> {
+): Promise<string | null> {
   const current = get(orchestrations)[workspaceId];
-  if (!current) return;
+  if (!current) return null;
   const updated = mutate(current);
   orchestrations.update((s) => ({ ...s, [workspaceId]: updated }));
   pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 0) + 1);
   try {
     await backend.setOrchestration(workspaceId, updated.rails, updated.conflictNotes);
     dismissSaveError(workspaceId);
+    return null;
   } catch (e) {
     orchestrations.update((s) => (s[workspaceId] === updated ? { ...s, [workspaceId]: current } : s));
-    saveErrors.update((err) => ({
-      ...err,
-      [workspaceId]: String(e instanceof Error ? e.message : e),
-    }));
+    const message = String(e instanceof Error ? e.message : e);
+    saveErrors.update((err) => ({ ...err, [workspaceId]: message }));
+    return message;
   } finally {
     pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 1) - 1);
   }
@@ -461,7 +467,7 @@ export async function addRailAction(workspaceId: string, name: string): Promise<
   return railId;
 }
 
-export function renameRailAction(workspaceId: string, railId: string, name: string): Promise<void> {
+export function renameRailAction(workspaceId: string, railId: string, name: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => renameRail(o, railId, name));
 }
 
@@ -469,18 +475,18 @@ export function bindRailAction(
   workspaceId: string,
   railId: string,
   patch: { worktreePath?: string | null; pageId?: string | null }
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => bindRail(o, railId, patch));
 }
 
-export function deleteRailAction(workspaceId: string, railId: string): Promise<void> {
+export function deleteRailAction(workspaceId: string, railId: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => deleteRail(o, railId));
 }
 
 /// Adds the card as its OWN new stage -- a sequential beat, the safe
 /// default. Parallel is the deliberate act of dropping onto an existing
 /// stage (SP2).
-export function addStepAsStageAction(workspaceId: string, railId: string, cardPath: string): Promise<void> {
+export function addStepAsStageAction(workspaceId: string, railId: string, cardPath: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => {
     const stageId = crypto.randomUUID();
     return addStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), cardPath);
@@ -491,11 +497,11 @@ export function addStepToStageAction(
   workspaceId: string,
   stageId: string,
   cardPath: string
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => addStep(o, stageId, crypto.randomUUID(), cardPath));
 }
 
-export function removeStepAction(workspaceId: string, stepId: string): Promise<void> {
+export function removeStepAction(workspaceId: string, stepId: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => removeStep(o, stepId));
 }
 
@@ -503,7 +509,7 @@ export function moveStepIntoStageAction(
   workspaceId: string,
   stepId: string,
   stageId: string
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => moveStepIntoStage(o, stepId, stageId));
 }
 
@@ -512,7 +518,7 @@ export function moveStepToNewStageAction(
   stepId: string,
   railId: string,
   index: number
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => moveStepToNewStage(o, stepId, railId, index));
 }
 
@@ -522,8 +528,42 @@ export function addCardAsStageAction(
   railId: string,
   index: number,
   cardPath: string
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => addCardAsStage(o, railId, index, crypto.randomUUID(), cardPath));
+}
+
+/// Send a card to a rail from a KANBAN surface -- the composer, a card's
+/// context menu, its detail modal. Those surfaces never mount the
+/// Orchestration tab, so the plan may not have been fetched yet; fetching
+/// here is what makes "send to rail" work on a cold app that has only ever
+/// shown the board.
+///
+/// Returns an error string for the caller's own error strip: the tab's
+/// `saveErrors` banner is on a different tab, and a card that quietly
+/// failed to land is worse than one that says so.
+export async function sendCardToRailAction(
+  workspaceId: string,
+  railId: string,
+  cardPath: string
+): Promise<string | null> {
+  if (!get(orchestrations)[workspaceId]) await fetchOrchestration(workspaceId);
+  if (!get(orchestrations)[workspaceId]) {
+    return "Couldn't reach this workspace's orchestration plan";
+  }
+  return mutatePlan(workspaceId, (o) => sendCardToRail(o, railId, cardPath, crypto.randomUUID()));
+}
+
+/// Take a card OFF whatever rail it sits on -- the inverse of
+/// sendCardToRailAction, offered from the same surfaces so a mis-send is
+/// undone where it was made. A card on no rail is a no-op.
+export async function removeCardFromRailAction(
+  workspaceId: string,
+  cardPath: string
+): Promise<string | null> {
+  const orch = get(orchestrations)[workspaceId];
+  const placement = orch ? findCardPlacement(orch, cardPath) : null;
+  if (!placement) return null;
+  return mutatePlan(workspaceId, (o) => removeStep(o, placement.stepId));
 }
 
 // ---- Tool step actions -----------------------------------------------------
@@ -537,7 +577,7 @@ export function addToolAsStepAction(
   workspaceId: string,
   railId: string,
   toolId: string
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => {
     const stageId = crypto.randomUUID();
     return addToolStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), toolId);
@@ -549,7 +589,7 @@ export function addToolAsStageAction(
   railId: string,
   index: number,
   toolId: string
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) =>
     addToolAsStage(o, railId, index, crypto.randomUUID(), toolId)
   );
@@ -559,7 +599,7 @@ export function addToolToStageAction(
   workspaceId: string,
   stageId: string,
   toolId: string
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => addToolStep(o, stageId, crypto.randomUUID(), toolId));
 }
 
@@ -570,11 +610,11 @@ export function setStepParamsAction(
   workspaceId: string,
   stepId: string,
   params: Record<string, string>
-): Promise<void> {
+): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => setStepParams(o, stepId, params));
 }
 
-export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<void> {
+export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => splitStageIntoSequence(o, stageId));
 }
 

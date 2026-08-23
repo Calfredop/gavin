@@ -629,6 +629,65 @@ function insertAsStage(
   };
 }
 
+/// Where a card sits on the rails right now, for the board surfaces that
+/// offer "send to rail" -- they need to say where it already is before
+/// they can offer to move it.
+export interface CardPlacement {
+  railId: string;
+  stageId: string;
+  stepId: string;
+  /// 1-based, and paired with `stageCount` so a surface can say "stage 2
+  /// of 4" without walking the rail itself.
+  stageNumber: number;
+  stageCount: number;
+}
+
+/// The FIRST step referencing this card, or null. An agent can write the
+/// same card onto two steps -- `duplicate-card` flags that separately, and
+/// this deliberately does not repeat the complaint: the board surfaces
+/// only need somewhere to send the human.
+export function findCardPlacement(orch: Orchestration, cardPath: string): CardPlacement | null {
+  for (const rail of orch.rails) {
+    const stages = [...rail.stages].sort((a, b) => a.position - b.position);
+    for (const [i, stage] of stages.entries()) {
+      for (const step of stage.steps) {
+        if (isToolStep(step) || step.cardPath !== cardPath) continue;
+        return {
+          railId: rail.id,
+          stageId: stage.id,
+          stepId: step.id,
+          stageNumber: i + 1,
+          stageCount: stages.length,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/// Put a card on a rail from OUTSIDE the tab -- the board's composer, a
+/// card's context menu, its detail modal. The card lands as the rail's
+/// own trailing stage, the sequential default the drawer's click already
+/// uses; parallel stays the deliberate act of dropping onto a stage.
+///
+/// A card already on ANOTHER rail MOVES, keeping its step id and so its
+/// run state -- sending a card somewhere is never a reason to forget that
+/// it already ran. A card already on THIS rail is left exactly alone
+/// rather than duplicated, and an unknown rail is a no-op.
+export function sendCardToRail(
+  orch: Orchestration,
+  railId: string,
+  cardPath: string,
+  stepId: string
+): Orchestration {
+  const rail = orch.rails.find((r) => r.id === railId);
+  if (!rail) return orch;
+  const placement = findCardPlacement(orch, cardPath);
+  if (placement?.railId === railId) return orch;
+  if (placement) return moveStepToNewStage(orch, placement.stepId, railId, rail.stages.length);
+  return addCardAsStage(orch, railId, rail.stages.length, stepId, cardPath);
+}
+
 /// Split one stage of N steps into N consecutive single-step stages, in
 /// step order -- the "Make sequential" repair for a same-worktree
 /// conflict of scope "stage".

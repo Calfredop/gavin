@@ -16,6 +16,7 @@
   import { columnDeletionPlan, executeDeletion, executeMoveCards } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
+  import { orchestrations, sendCardToRailAction } from "./orchestrationState";
   import * as backend from "./backend";
 
   interface Props {
@@ -186,6 +187,15 @@
   let composeError = $state<string | null>(null);
   let composeRunNow = $state(false);
   let composeTitleEl = $state<HTMLTextAreaElement | null>(null);
+  // A new card can land on a rail the moment it exists, which is the
+  // point: the arrangement is usually already on screen in the human's
+  // head. Kept across commits on purpose -- filling one rail with three
+  // cards is the flow this row is for.
+  let composeRailId = $state<string | null>(null);
+
+  const rails = $derived(
+    [...($orchestrations[workspaceId]?.rails ?? [])].sort((a, b) => a.position - b.position)
+  );
 
   const contexts = $derived($gavinTrees[workspaceId]?.contexts ?? []);
   const defaultContext = $derived(
@@ -244,6 +254,14 @@
         parseWarning: false,
       };
       patchPlanCreated(workspaceId, contextFolder, created);
+      // Before Run now, so a failure to place the card is not buried
+      // under a spawning agent. The rail is re-checked against the list:
+      // one deleted since the picker rendered took its row off screen
+      // with it, and writing to it would be a placement nobody asked for.
+      const railError =
+        composeRailId && args.kind !== "note" && rails.some((r) => r.id === composeRailId)
+          ? await sendCardToRailAction(workspaceId, composeRailId, path)
+          : null;
       if (composeRunNow && args.kind === "task" && onRunCard) {
         const ctxName = ctx?.name ?? contextFolder.split("/").at(-1) ?? contextFolder;
         onRunCard({
@@ -267,6 +285,10 @@
         });
       }
       resetComposer();
+      // The card IS created; the rail is what failed. Said after the
+      // reset so the next card starts from a clean field but the human
+      // still learns this one is sitting off the rails.
+      if (railError) composeError = `Card created, but it isn't on the rail: ${railError}`;
       composeRunNow = false;
       if (!keepOpen) composing = false;
       else composeTitleEl?.focus();
@@ -414,7 +436,25 @@
           bind:value={composeBody}
         ></textarea>
       {/if}
-      {#if composeKind === "task"}
+      {#if composeKind !== "note" && rails.length > 0}
+        <label class="compose-rail">
+          <span>Rail</span>
+          <select
+            bind:value={composeRailId}
+            onchange={() => {
+              // The rail runs it when the human arms that rail; running it
+              // now as well would put two agents on one card.
+              if (composeRailId) composeRunNow = false;
+            }}
+          >
+            <option value={null}>none</option>
+            {#each rails as rail (rail.id)}
+              <option value={rail.id}>{rail.name}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      {#if composeKind === "task" && !composeRailId}
         <label class="run-now">
           <input type="checkbox" bind:checked={composeRunNow} />
           Run now with the agent
@@ -621,7 +661,8 @@
     width: 100%;
     box-sizing: border-box;
   }
-  .compose-context {
+  .compose-context,
+  .compose-rail select {
     background: var(--surface-base);
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -629,6 +670,17 @@
     font-family: monospace;
     font-size: 0.85em;
     padding: 4px;
+  }
+  .compose-rail {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 0.8em;
+  }
+  .compose-rail select {
+    flex: 1;
+    min-width: 0;
   }
   .compose-error {
     color: var(--warning-text);
