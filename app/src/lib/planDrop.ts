@@ -17,7 +17,7 @@ export interface PlanDropSpec {
 // Applies a plan-card drop: status first (cross-column only), then the
 // order writes. Each field is patched into gavinTrees only after its
 // write resolves (the optimistic-patch contract). On failure: stop --
-// the ~2.5s watcher push reconciles whatever landed -- and return an
+// the watcher push (~170ms) reconciles whatever landed -- and return an
 // error naming the file that failed. Null on success.
 export async function applyPlanDrop(spec: PlanDropSpec): Promise<string | null> {
   let current = spec.path;
@@ -103,7 +103,7 @@ export async function planCommitFromMerged(
 // Nest drop (card-model spec §2): parent write (when changed), status
 // removal (when present), then order writes among the plan's nested
 // children. Same patch-on-success/stop-on-failure contract as
-// applyPlanDrop; the ~2.5s watcher push reconciles partial landings.
+// applyPlanDrop; the watcher push (~170ms) reconciles partial landings.
 async function applyNestDrop(
   workspaceId: string,
   dragged: CardView,

@@ -103,12 +103,14 @@ pub fn resolve_path_under_cursor(candidate: String, cwd: String) -> Option<Strin
     Some(canonical.to_string_lossy().to_string())
 }
 
-/// Active file watchers, keyed by the watched file's path. One per open
-/// file-viewer tab; two tabs viewing the same file share the single entry
-/// (the second `watch_file_for_viewer` call is a no-op), and the entry is
-/// dropped -- shutting down the watcher thread -- by
-/// `unwatch_file_for_viewer`.
-pub struct FileWatchers(pub Mutex<HashMap<String, Debouncer<notify::RecommendedWatcher>>>);
+/// Active file watchers, keyed by the watched file's path, REFCOUNTED so
+/// several surfaces can watch one file independently: an open editor tab,
+/// the Plans tab's editor pane and a card detail modal can all be looking
+/// at the same plan, and whichever closes first must not take the others'
+/// live updates down with it. Matches `GitWatchers`, which is refcounted
+/// for the same reason. The entry -- and with it the watcher thread and
+/// the OS watch -- is dropped when the last holder unwatches.
+pub struct FileWatchers(pub Mutex<HashMap<String, (Debouncer<notify::RecommendedWatcher>, usize)>>);
 
 impl Default for FileWatchers {
     fn default() -> Self {
@@ -158,9 +160,9 @@ where
 }
 
 /// Starts watching a file, emitting `file-changed` (payload: the path) on
-/// every change until `unwatch_file_for_viewer` is called. Watching an
-/// already-watched path is a no-op rather than an error -- two tabs on the
-/// same file both just receive the same event.
+/// every change until the last `unwatch_file_for_viewer` for it. Watching
+/// an already-watched path takes a second reference on the one OS watch
+/// rather than starting another; every watcher receives the same event.
 #[tauri::command]
 pub fn watch_file_for_viewer(
     path: String,
@@ -168,7 +170,8 @@ pub fn watch_file_for_viewer(
     state: State<FileWatchers>,
 ) -> Result<(), String> {
     let mut watchers = state.0.lock().unwrap();
-    if watchers.contains_key(&path) {
+    if let Some(entry) = watchers.get_mut(&path) {
+        entry.1 += 1;
         return Ok(());
     }
     let emitter = app_handle.clone();
@@ -176,16 +179,27 @@ pub fn watch_file_for_viewer(
         let _ = emitter.emit("file-changed", changed);
     })
     .map_err(|e| e.to_string())?;
-    watchers.insert(path, debouncer);
+    watchers.insert(path, (debouncer, 1));
     Ok(())
 }
 
-/// Stops watching a file. Dropping the `Debouncer` is what shuts down its
-/// background thread and releases the OS-level watch. Unwatching a path
-/// that isn't watched is a no-op, not an error.
+/// Releases one reference on a file's watch, shutting it down when the
+/// last one goes. Dropping the `Debouncer` is what stops its background
+/// thread and releases the OS-level watch. Unwatching a path that isn't
+/// watched is a no-op, not an error.
 #[tauri::command]
 pub fn unwatch_file_for_viewer(path: String, state: State<FileWatchers>) -> Result<(), String> {
-    state.0.lock().unwrap().remove(&path);
+    let mut watchers = state.0.lock().unwrap();
+    let remove = match watchers.get_mut(&path) {
+        Some(entry) => {
+            entry.1 = entry.1.saturating_sub(1);
+            entry.1 == 0
+        }
+        None => false,
+    };
+    if remove {
+        watchers.remove(&path);
+    }
     Ok(())
 }
 

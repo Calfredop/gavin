@@ -2,6 +2,7 @@ use protocol::{
     AgentConfig,
     CardKind, GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
 };
+use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -907,16 +908,179 @@ pub fn scan_root(root: &Path) -> GavinTree {
     GavinTree { root_path: root_str, root_missing: false, contexts }
 }
 
-const RESCAN_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Floor between two full rescans, sleeping out the remainder rather than
-/// skipping -- the RepoPoller lesson: without a floor, sustained
-/// working-tree churn (a build, an install) can drive the debouncer to
-/// flush every 500ms indefinitely.
+/// The directories worth watching, and how deeply. Mirrors `scan_root`'s
+/// own walk exactly, because watching what the scanner reads -- and
+/// nothing else -- is the whole performance story: this repo holds 3587
+/// directories under the root and 44 the scanner walks, and the 3543 it
+/// skips (`target/`, `node_modules/`, `.git/`) are precisely the ones a
+/// build churns. Under the old single recursive watch every one of those
+/// events crossed into the daemon just to be thrown away.
+///
+/// A scanned directory is watched NON-recursively, and that is what
+/// catches a context folder being created, deleted, renamed or moved:
+/// those events are reported against the folder's own path, so only its
+/// PARENT's watch can see them. A `.gavin*` marker directory is watched
+/// recursively instead, since `plans/`, `docs/` and `specs/` all churn
+/// below it and every one of those changes is the tree.
+pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
+    use notify::RecursiveMode::{NonRecursive, Recursive};
+    // The root's own watch is permanent, and listed even while the root
+    // is missing. It is what reports the root being renamed away (that
+    // event's path IS the root, which is why `tree_relevant` has an arm
+    // for it), and dropping it the moment the root vanished would mean
+    // nothing was left to see the root come back.
+    let mut targets = vec![(root.to_path_buf(), NonRecursive)];
+    if !root.is_dir() {
+        // Nothing to walk. Deliberately NOT falling back to a watch on
+        // the parent folder: a workspace root's parent is routinely
+        // something like ~/Code with every other project under it, and
+        // subscribing to that to catch one folder reappearing is the
+        // firehose this watch set exists to avoid. A root that is
+        // missing when the watcher starts degrades to scan-on-demand;
+        // one that goes missing later keeps the watch registered above
+        // and heals the moment it is back.
+        return targets;
+    }
+
+    fn walk(dir: &Path, depth: usize, targets: &mut Vec<(PathBuf, notify::RecursiveMode)>) {
+        if depth > MAX_SCAN_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == GAVIN_DIR || name == GAVIN_ROOT_DIR {
+                targets.push((path, Recursive));
+                continue;
+            }
+            if EXCLUDED_DIRS.contains(&name.as_str()) || name.starts_with('.') {
+                continue;
+            }
+            targets.push((path.clone(), NonRecursive));
+            walk(&path, depth + 1, targets);
+        }
+    }
+    walk(root, 1, &mut targets);
+    targets
+}
+
+/// Whether a filesystem event can possibly have changed the scanned tree.
+///
+/// The old rule was "some path component is `.gavin*`", which silently
+/// dropped the case this card exists for. Renaming or moving a folder
+/// that HOLDS a context reports only the folder's own two paths --
+/// verified against the live backend, `mv packages/foo packages/bar` with
+/// `packages/foo/.gavin` present emits exactly `…/packages/foo` and
+/// `…/packages/bar` -- and neither carries a `.gavin` segment, so the
+/// rescan never fired and every tab kept the stale context until the app
+/// restarted. Two rules close it, neither costing more than one `stat`:
+///
+/// - the path is a directory NOW: a folder appeared or moved in, and it
+///   may have brought a `.gavin` with it (only the scan can settle what
+///   it really holds);
+/// - the path is gone, and a context we already know about lived at or
+///   under it: that context's folder was deleted or moved away.
+///
+/// Anything the scanner would never descend into is rejected first. Those
+/// directories are outside the watch set now, so in practice their events
+/// never arrive at all -- this stays as the second line of defence, and
+/// as the rule the unit tests pin.
+pub fn tree_relevant(root: &Path, last_tree: Option<&GavinTree>, path: &Path) -> bool {
+    if path == root {
+        return true; // the root itself renamed away, or back
+    }
+    let Ok(rel) = path.strip_prefix(root) else {
+        // Outside the root -- and yet it reached us, which it can only do
+        // through a watch we registered, and every watch we register is
+        // under the root. So a subtree that WAS ours has just been moved
+        // out, and this event is its arrival at the far end (`mv
+        // packages/api ~/elsewhere` is reported against the destination
+        // as readily as the source). Conservatively relevant, matching
+        // the git watcher's rule for the same situation; the rescan that
+        // follows drops the stale watches.
+        return true;
+    };
+    for component in rel.components() {
+        let name = component.as_os_str().to_string_lossy();
+        if name == GAVIN_DIR || name == GAVIN_ROOT_DIR {
+            return true; // everything under a marker directory IS the tree
+        }
+        // Mirrors the scanner's own skips. A dot-named leaf is covered by
+        // the same rule on purpose: a dot directory is never descended
+        // into, and a dot FILE outside a marker directory (`.DS_Store`,
+        // `.gitignore`) is not the tree either.
+        if EXCLUDED_DIRS.contains(&name.as_ref()) || name.starts_with('.') {
+            return false;
+        }
+    }
+    // No depth cutoff here even though `scan_root` has one: an extra
+    // rescan costs a 44-directory walk, a missed one is the bug above.
+    if path.is_dir() {
+        return true;
+    }
+    last_tree.is_some_and(|tree| {
+        tree.contexts.iter().any(|ctx| Path::new(&ctx.folder_path).starts_with(path))
+    })
+}
+
+/// How long events accumulate before a flush. Short, because the flush
+/// itself is cheap (a component walk per path) and MIN_RESCAN_INTERVAL is
+/// what actually protects against churn -- there is nothing to buy by
+/// waiting longer, and this sits directly in the latency the human sees
+/// after deleting a file.
+const RESCAN_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Floor between two rescans under SUSTAINED churn -- the RepoPoller
+/// lesson: without one, a burst of writes can drive the debouncer to
+/// flush indefinitely.
 const MIN_RESCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// Idle time that ends a burst. Longer than MIN_RESCAN_INTERVAL so a
+/// steady stream of floored rescans can never keep re-earning the free
+/// one and defeat the floor entirely.
+const QUIET_PERIOD: Duration = Duration::from_secs(3);
+/// Rescans a burst gets before the floor starts applying. One: a single
+/// delete, rename or move is the common case and has to land
+/// immediately, and one rescan can never be the churn the floor guards
+/// against.
+const BURST_FREE_SCANS: u32 = 1;
+
+/// How many scans deep into the current burst a rescan starting now
+/// would be. Zero means the burst is over (or never started) and the next
+/// scan is free. Split out from `floor_wait` so `rescan_and_push` can
+/// record it without recomputing.
+fn burst_position(since_last: Option<Duration>, previous: u32) -> u32 {
+    match since_last {
+        // A gap long enough that this cannot be churn -- and the very
+        // first scan of all, which must never count as a burst member or
+        // the human's first action after opening the app would be floored.
+        None => 0,
+        Some(elapsed) if elapsed >= QUIET_PERIOD => 0,
+        Some(_) => previous + 1,
+    }
+}
+
+/// How long a rescan at `position` in the burst must sleep before
+/// scanning. Pure, so the burst policy is testable without a real clock.
+fn floor_wait(since_last: Option<Duration>, position: u32) -> Duration {
+    let Some(elapsed) = since_last else { return Duration::ZERO };
+    if position <= BURST_FREE_SCANS {
+        return Duration::ZERO;
+    }
+    MIN_RESCAN_INTERVAL.saturating_sub(elapsed)
+}
 
 struct WatcherInner {
     last_tree: Option<GavinTree>,
     last_scan: Option<Instant>,
+    /// How deep into the current burst the last rescan was; see
+    /// `burst_position`.
+    burst: u32,
+    /// The watch set currently registered, so re-arming after a rescan
+    /// can diff instead of tearing every watch down and rebuilding it.
+    watched: HashMap<PathBuf, notify::RecursiveMode>,
 }
 
 /// One per watched workspace root. Owns the debouncer; dropping the
@@ -953,7 +1117,12 @@ impl GavinWatcher {
             workspace_id,
             root_path,
             writer,
-            inner: Mutex::new(WatcherInner { last_tree: None, last_scan: None }),
+            inner: Mutex::new(WatcherInner {
+                last_tree: None,
+                last_scan: None,
+                burst: 0,
+                watched: HashMap::new(),
+            }),
             debouncer: Mutex::new(None),
         });
 
@@ -973,34 +1142,69 @@ impl GavinWatcher {
                 // returns None and this is a silent no-op.
                 let Some(watcher) = weak.upgrade() else { return };
                 let Ok(events) = res else { return };
-                // Only events touching a `.gavin*` path segment (which
-                // includes creating/removing the marker dirs themselves)
-                // schedule a rescan -- everything else in the tree churns
-                // freely without cost. An event AT the root itself (the
-                // root renamed away or back) must also count: the spec's
-                // root_missing push depends on it, and the segment check
-                // alone can never match the root's own path (found live by
-                // the wire-level smoke test, not by any unit test).
-                let relevant = events.iter().any(|e| {
-                    e.path == watcher.root_path
-                        || e.path.components().any(|c| {
-                            let s = c.as_os_str().to_string_lossy();
-                            s == GAVIN_DIR || s == GAVIN_ROOT_DIR
-                        })
-                });
+                // The guard is released before rescan_and_push, which
+                // takes the same lock (and may sleep out the floor under
+                // it). The debouncer calls this handler serially, so no
+                // second flush is ever waiting on that sleep.
+                let relevant = {
+                    let inner = watcher.inner.lock().unwrap();
+                    events.iter().any(|e| {
+                        tree_relevant(&watcher.root_path, inner.last_tree.as_ref(), &e.path)
+                    })
+                };
                 if relevant {
                     watcher.rescan_and_push();
                 }
             },
         );
-        if let Ok(mut d) = debounce_result {
-            if d.watcher().watch(&watcher.root_path, notify::RecursiveMode::Recursive).is_ok() {
-                *watcher.debouncer.lock().unwrap() = Some(d);
-            }
+        if let Ok(d) = debounce_result {
+            *watcher.debouncer.lock().unwrap() = Some(d);
+            let mut inner = watcher.inner.lock().unwrap();
+            watcher.sync_watches(&mut inner);
         }
 
         watcher.rescan_and_push();
         watcher
+    }
+
+    /// Registers the current watch set and drops what is no longer in it,
+    /// touching only the difference. Called after every scan because the
+    /// set is derived from the tree's shape: a folder that just appeared
+    /// needs its own watch before anything inside it can be seen, and a
+    /// folder that just left has a watch worth releasing.
+    ///
+    /// A watch that fails to register is simply left out, matching the
+    /// old whole-watch behaviour: that subtree stops updating live rather
+    /// than the whole watcher failing, and GetGavinTree still works.
+    ///
+    /// Takes the caller's `inner` guard rather than locking itself, so
+    /// the lock order is always inner -> debouncer.
+    fn sync_watches(&self, inner: &mut WatcherInner) {
+        let mut guard = self.debouncer.lock().unwrap();
+        let Some(debouncer) = guard.as_mut() else { return };
+        let fs_watcher = debouncer.watcher();
+
+        let desired: HashMap<PathBuf, notify::RecursiveMode> =
+            watch_targets(&self.root_path).into_iter().collect();
+
+        // Unwatch first: a path whose recursion mode changed has to lose
+        // the old watch before the new one can take.
+        for (path, mode) in inner.watched.iter() {
+            if desired.get(path) != Some(mode) {
+                let _ = fs_watcher.unwatch(path);
+            }
+        }
+        let mut registered = HashMap::with_capacity(desired.len());
+        for (path, mode) in desired {
+            if inner.watched.get(&path) == Some(&mode) {
+                registered.insert(path, mode); // already armed, leave it alone
+                continue;
+            }
+            if fs_watcher.watch(&path, mode).is_ok() {
+                registered.insert(path, mode);
+            }
+        }
+        inner.watched = registered;
     }
 
     /// The entire floor-check + scan + compare + emit sequence runs under
@@ -1009,14 +1213,18 @@ impl GavinWatcher {
     /// out-of-order emission.
     pub fn rescan_and_push(&self) {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(last) = inner.last_scan {
-            let elapsed = last.elapsed();
-            if elapsed < MIN_RESCAN_INTERVAL {
-                std::thread::sleep(MIN_RESCAN_INTERVAL - elapsed);
-            }
+        let since_last = inner.last_scan.map(|t| t.elapsed());
+        let position = burst_position(since_last, inner.burst);
+        inner.burst = position;
+        let wait = floor_wait(since_last, position);
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
         }
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
+        // Re-arm against the tree we just scanned, whether or not it
+        // changed shape -- an unchanged tree diffs to zero watch calls.
+        self.sync_watches(&mut inner);
         if inner.last_tree.as_ref() == Some(&tree) {
             return; // change-gated: identical trees never re-emit
         }
@@ -1027,6 +1235,15 @@ impl GavinWatcher {
         // WatchGavinRoot from the fresh connection replaces this watcher.
         let mut writer = self.writer.lock().unwrap();
         let _ = protocol::write_message(&mut *writer, &response);
+    }
+
+    /// The paths currently registered with the OS, for tests that need to
+    /// assert the watch set itself rather than race a filesystem event.
+    #[cfg(test)]
+    pub fn watched_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.inner.lock().unwrap().watched.keys().cloned().collect();
+        paths.sort();
+        paths
     }
 
     /// Best-effort push on the watching app connection -- same
@@ -1050,6 +1267,7 @@ impl GavinWatcher {
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
         inner.last_tree = Some(tree.clone());
+        self.sync_watches(&mut inner);
         tree
     }
 }
@@ -1802,8 +2020,8 @@ mod tests {
         assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
 
         // A manual rescan with NO underlying change must not emit again:
-        // the next read times out instead of yielding a message. (The 2s
-        // floor makes this rescan sleep -- that is the floor working.)
+        // the next read times out instead of yielding a message. (This
+        // one is the burst's free rescan, so it does not sleep.)
         watcher.rescan_and_push();
         let timed_out: Result<Option<Response>, _> = protocol::read_message(&mut reader);
         assert!(timed_out.is_err(), "change-gating failed: an unchanged rescan emitted");
@@ -1818,4 +2036,321 @@ mod tests {
         let after_drop: Result<Option<Response>, _> = protocol::read_message(&mut reader);
         assert!(after_drop.is_err(), "a dropped watcher still emitted");
     }
+
+    // --- watch set + relevance (fs-sync) ---------------------------------
+
+    fn names(root: &Path) -> Vec<(String, bool)> {
+        let mut v: Vec<(String, bool)> = watch_targets(root)
+            .into_iter()
+            .map(|(p, mode)| {
+                let rel = p.strip_prefix(root).unwrap().to_string_lossy().to_string();
+                (if rel.is_empty() { ".".to_string() } else { rel }, mode == notify::RecursiveMode::Recursive)
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn watch_targets_covers_the_scanned_dirs_and_skips_the_churny_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
+        std::fs::create_dir_all(root.join("packages").join("api").join(GAVIN_DIR)).unwrap();
+        // Everything the scanner refuses to descend into.
+        for skipped in ["node_modules/deep/deeper", "target/debug/build", ".git/refs", ".cache"] {
+            std::fs::create_dir_all(root.join(skipped)).unwrap();
+        }
+
+        let targets = names(&root);
+
+        assert!(targets.contains(&(".".to_string(), false)), "{targets:?}");
+        assert!(targets.contains(&("packages".to_string(), false)), "{targets:?}");
+        assert!(targets.contains(&("packages/api".to_string(), false)), "{targets:?}");
+        // Marker directories get the recursive watch -- plans/ churns.
+        assert!(targets.contains(&(GAVIN_ROOT_DIR.to_string(), true)), "{targets:?}");
+        assert!(targets.contains(&("packages/api/.gavin".to_string(), true)), "{targets:?}");
+        // ...and the scanner's own skips are never watched at all.
+        for skipped in ["node_modules", "target", ".git", ".cache"] {
+            assert!(
+                !targets.iter().any(|(p, _)| p == skipped || p.starts_with(&format!("{skipped}/"))),
+                "{skipped} should not be watched: {targets:?}"
+            );
+        }
+        // A marker directory is watched recursively, so its children are
+        // covered without their own entries.
+        assert!(!targets.iter().any(|(p, _)| p == ".gavin-root/plans"), "{targets:?}");
+    }
+
+    #[test]
+    fn a_missing_root_watches_only_itself_never_its_parent() {
+        // Its own entry is how a root renamed away is noticed coming
+        // back; its parent is never watched, because a workspace root's
+        // parent is routinely a folder full of unrelated projects.
+        let targets = watch_targets(Path::new("/definitely/not/real"));
+        let paths: Vec<&Path> = targets.iter().map(|(p, _)| p.as_path()).collect();
+        assert_eq!(paths, vec![Path::new("/definitely/not/real")]);
+    }
+
+    #[test]
+    fn the_roots_own_watch_is_never_dropped_while_the_root_is_gone() {
+        // The regression guard for renaming the root away and back: if
+        // the root left `watch_targets` when it vanished, `sync_watches`
+        // would unwatch it and nothing would ever see it return.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        assert!(watch_targets(&root).iter().any(|(p, _)| *p == root));
+        std::fs::remove_dir(&root).unwrap();
+        assert!(watch_targets(&root).iter().any(|(p, _)| *p == root));
+    }
+
+    fn tree_with_context(folder: &str) -> GavinTree {
+        GavinTree {
+            root_path: "/r".to_string(),
+            root_missing: false,
+            contexts: vec![GavinContext {
+                name: "api".to_string(),
+                folder_path: folder.to_string(),
+                kind: GavinContextKind::Context,
+                outside: false,
+                has_prd: false,
+                config_warning: false,
+                agent: None,
+                plans: vec![],
+                docs: vec![],
+                specs: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_folder_that_moved_in_is_relevant_even_though_no_path_says_gavin() {
+        // The regression this card exists for: `mv ~/elsewhere/api
+        // packages/api` reports only `<root>/packages/api`, and the old
+        // ".gavin somewhere in the path" rule dropped it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let moved_in = root.join("packages").join("api");
+        std::fs::create_dir_all(moved_in.join(GAVIN_DIR)).unwrap();
+
+        assert!(tree_relevant(&root, None, &moved_in));
+    }
+
+    #[test]
+    fn a_folder_that_moved_away_is_relevant_because_a_known_context_lived_there() {
+        let root = Path::new("/r");
+        let gone = Path::new("/r/packages/api");
+        let tree = tree_with_context("/r/packages/api");
+
+        // The context's own folder, and any ancestor of it, both count --
+        // `mv packages elsewhere` reports only `/r/packages`.
+        assert!(tree_relevant(root, Some(&tree), gone));
+        assert!(tree_relevant(root, Some(&tree), Path::new("/r/packages")));
+        // A sibling that never held a context does not.
+        assert!(!tree_relevant(root, Some(&tree), Path::new("/r/packages/web")));
+        // Neither does a near-miss prefix: the match is by path component,
+        // not by string.
+        assert!(!tree_relevant(root, Some(&tree), Path::new("/r/packages/ap")));
+        // With no tree yet there is nothing to have vanished.
+        assert!(!tree_relevant(root, None, gone));
+    }
+
+    #[test]
+    fn ordinary_file_churn_outside_a_marker_directory_is_irrelevant() {
+        let root = Path::new("/r");
+        let tree = tree_with_context("/r/packages/api");
+        for quiet in [
+            "/r/src/lib/Foo.svelte",
+            "/r/README.md",
+            "/r/packages/api/src/main.rs",
+            "/r/.DS_Store",
+            "/r/.gitignore",
+        ] {
+            assert!(!tree_relevant(root, Some(&tree), Path::new(quiet)), "{quiet}");
+        }
+    }
+
+    #[test]
+    fn the_scanners_skipped_directories_are_never_relevant() {
+        let root = Path::new("/r");
+        for churn in [
+            "/r/target/debug/build/foo-123/out",
+            "/r/node_modules/.bin/tsc",
+            "/r/.git/refs/heads/main",
+            "/r/app/node_modules/pkg/dist/index.js",
+            "/r/.venv/lib/python3.12",
+        ] {
+            assert!(!tree_relevant(root, None, Path::new(churn)), "{churn}");
+        }
+    }
+
+    #[test]
+    fn marker_paths_and_the_root_itself_stay_relevant() {
+        let root = Path::new("/r");
+        assert!(tree_relevant(root, None, root));
+        assert!(tree_relevant(root, None, Path::new("/r/.gavin-root/plans/auth.md")));
+        assert!(tree_relevant(root, None, Path::new("/r/packages/api/.gavin/config.toml")));
+        // Outside the root: only reachable through a watch of ours, so
+        // it means a watched subtree was moved away -- relevant.
+        assert!(tree_relevant(root, None, Path::new("/elsewhere/api/.gavin/plans/a.md")));
+    }
+
+    #[test]
+    fn the_first_rescan_after_a_quiet_period_never_waits() {
+        // Position 0 is the very first scan of all; position 1 is the
+        // first flush after a quiet gap. Both go straight through.
+        assert_eq!(burst_position(None, 7), 0);
+        assert_eq!(floor_wait(None, 0), Duration::ZERO);
+        assert_eq!(burst_position(Some(QUIET_PERIOD), 7), 0);
+        assert_eq!(floor_wait(Some(Duration::from_millis(20)), 1), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_sustained_burst_is_floored_to_one_rescan_per_interval() {
+        // Second flush inside the same burst, 300ms after the last scan:
+        // sleeps out the rest of the 2s floor.
+        assert_eq!(burst_position(Some(Duration::from_millis(300)), 1), 2);
+        assert_eq!(
+            floor_wait(Some(Duration::from_millis(300)), 2),
+            MIN_RESCAN_INTERVAL - Duration::from_millis(300)
+        );
+        // A flush that already waited past the floor does not wait again.
+        assert_eq!(floor_wait(Some(MIN_RESCAN_INTERVAL), 9), Duration::ZERO);
+        // The burst keeps deepening while the gaps stay short, so the
+        // floor keeps applying...
+        assert_eq!(burst_position(Some(Duration::from_millis(10)), 2), 3);
+        // ...until one quiet gap ends it.
+        assert_eq!(burst_position(Some(QUIET_PERIOD + Duration::from_millis(1)), 3), 0);
+    }
+
+    #[test]
+    fn renaming_a_context_folder_pushes_a_tree_with_the_new_name() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir_all(root.join("packages").join("api").join(GAVIN_DIR)).unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let _watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+
+        let mut reader = BufReader::new(ours);
+        let first: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        match first {
+            Some(Response::GavinTreeChanged { tree, .. }) => {
+                assert!(tree.contexts.iter().any(|c| c.name == "api"), "{:?}", tree.contexts);
+            }
+            other => panic!("expected the initial push, got {other:?}"),
+        }
+
+        // The regression: neither reported path carries a `.gavin`
+        // segment, so the old filter dropped this rename entirely.
+        std::fs::rename(root.join("packages").join("api"), root.join("packages").join("core"))
+            .unwrap();
+
+        let second: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        match second {
+            Some(Response::GavinTreeChanged { tree, .. }) => {
+                assert!(
+                    tree.contexts.iter().any(|c| c.name == "core"),
+                    "renamed context missing: {:?}",
+                    tree.contexts
+                );
+                assert!(
+                    !tree.contexts.iter().any(|c| c.name == "api"),
+                    "stale context survived: {:?}",
+                    tree.contexts
+                );
+            }
+            other => panic!("expected a push for the folder rename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deleting_a_context_folder_pushes_a_tree_without_it() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir_all(root.join("lib").join(GAVIN_DIR)).unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let _watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+
+        let mut reader = BufReader::new(ours);
+        let _first: Option<Response> = protocol::read_message(&mut reader).unwrap();
+
+        // Moving the folder OUT of the root is the harder half of a
+        // delete: nothing under it is ever reported, only the folder.
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::rename(root.join("lib"), elsewhere.path().join("lib")).unwrap();
+
+        let second: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        match second {
+            Some(Response::GavinTreeChanged { tree, .. }) => {
+                assert_eq!(tree.contexts.len(), 1, "{:?}", tree.contexts);
+                assert!(matches!(tree.contexts[0].kind, GavinContextKind::Root));
+            }
+            other => panic!("expected a push for the folder move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_folder_picks_up_its_own_watch_on_the_next_rescan() {
+        // The watch set is non-recursive per directory, so a folder that
+        // appears after the watcher started must be armed by the very
+        // rescan its own creation triggers -- otherwise a `.gavin`
+        // created inside it a moment later lands in a blind spot.
+        //
+        // Asserted against the registered set rather than a second
+        // filesystem event: the mechanism is what this pins, and racing
+        // FSEvents twice in one test is how you get a suite that fails
+        // only under load.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+
+        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+        assert!(watcher.watched_paths().contains(&root), "the root is always watched");
+        assert!(!watcher.watched_paths().contains(&root.join("services")));
+
+        std::fs::create_dir(root.join("services")).unwrap();
+        watcher.rescan_and_push();
+
+        assert!(
+            watcher.watched_paths().contains(&root.join("services")),
+            "a new folder was left unwatched: {:?}",
+            watcher.watched_paths()
+        );
+    }
+
+    #[test]
+    fn a_folder_that_left_gives_its_watch_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir(root.join("services")).unwrap();
+
+        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+        assert!(watcher.watched_paths().contains(&root.join("services")));
+
+        std::fs::remove_dir(root.join("services")).unwrap();
+        watcher.rescan_and_push();
+
+        assert!(!watcher.watched_paths().contains(&root.join("services")));
+        // ...but never the root's own, which is what sees it come back.
+        assert!(watcher.watched_paths().contains(&root));
+    }
+
 }

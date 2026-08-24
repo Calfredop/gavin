@@ -2,10 +2,11 @@
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openPath } from "@tauri-apps/plugin-opener";
-  import { marked } from "marked";
   import DOMPurify from "dompurify";
+  import { renderMarkdown } from "./markdown";
   import {
     canEdit,
+    classifyExternalRead,
     defaultMode,
     modesFor,
     resolveExternalChange,
@@ -34,6 +35,10 @@
   // Non-null while an external change is waiting on the user's choice;
   // holds their version of the content.
   let conflict = $state<string | null>(null);
+  // The file was on disk and no longer is -- deleted, renamed or moved
+  // while this editor held it open. Distinct from `!exists`, which is the
+  // ordinary "not created yet" state of the PRD and agent-file hub tabs.
+  let deleted = $state(false);
 
   // Gates the editor's first render: CodeMirrorView takes `doc` as
   // INITIAL content only, so mounting it before the first read resolves
@@ -51,7 +56,7 @@
   const rendered = $derived.by(() => {
     if (error !== null || effectiveMode !== "formatted") return "";
     // Renders the BUFFER, so preview reflects unsaved edits.
-    return DOMPurify.sanitize(marked.parse(buffer, { async: false }) as string);
+    return DOMPurify.sanitize(renderMarkdown(buffer));
   });
 
   export function measure(): void {
@@ -72,6 +77,7 @@
       buffer = result.content;
       truncated = result.truncated;
       exists = result.exists;
+      deleted = false;
       error = null;
       setDirty(false);
       editor?.setDoc(result.content);
@@ -92,8 +98,9 @@
     setDirty(true);
     // Autosave stays suspended while a conflict is unresolved -- else the
     // next keystroke would silently overwrite the change the banner is
-    // warning about.
-    if (conflict !== null) return;
+    // warning about -- and while the file is deleted, where it would
+    // silently recreate the file someone just removed.
+    if (conflict !== null || deleted) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void save(), AUTOSAVE_MS);
   }
@@ -114,9 +121,14 @@
     }
   }
 
-  // Cmd+S during a conflict means "keep mine": resolve, then write.
+  // Cmd+S during a conflict means "keep mine": resolve, then write. On a
+  // deleted file it means "put it back", same as the banner's button.
   function saveNow(): void {
     conflict = null;
+    if (deleted) {
+      restore();
+      return;
+    }
     void save();
   }
 
@@ -127,6 +139,15 @@
 
   function keepMine(): void {
     conflict = null;
+    void save();
+  }
+
+  // Writing a deleted file back is always an explicit act -- never
+  // autosave. setDirty first because save() no-ops on a clean buffer, and
+  // after a delete the buffer usually IS clean.
+  function restore(): void {
+    deleted = false;
+    setDirty(true);
     void save();
   }
 
@@ -148,27 +169,40 @@
   }
 
   async function handleExternalChange(): Promise<void> {
-    let incoming: string;
+    let result: Awaited<ReturnType<typeof backend.readFileForViewer>>;
     try {
-      const result = await backend.readFileForViewer(path);
-      incoming = result.content;
-      truncated = result.truncated;
-      exists = result.exists;
+      result = await backend.readFileForViewer(path);
     } catch {
       // A transient read failure mid-write is not worth a banner; the
       // next event re-reads.
       return;
     }
-    switch (resolveExternalChange({ incoming, buffer, dirty })) {
+    if (classifyExternalRead({ existsNow: result.exists, existedBefore: exists }) === "deleted") {
+      // NEVER reload this as "the file is now empty": the buffer on
+      // screen is the only copy left. Autosave stops too (handleChange),
+      // so nothing recreates the file behind the human's back.
+      deleted = true;
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      return;
+    }
+    // Back on disk (restored, or a rename landed back on this path), or
+    // still uncreated -- either way this is an ordinary read again.
+    deleted = false;
+    truncated = result.truncated;
+    exists = result.exists;
+    switch (resolveExternalChange({ incoming: result.content, buffer, dirty })) {
       case "ignore":
         return;
       case "reload":
-        buffer = incoming;
+        buffer = result.content;
         setDirty(false);
-        editor?.setDoc(incoming);
+        editor?.setDoc(result.content);
         return;
       case "conflict":
-        conflict = incoming;
+        conflict = result.content;
         return;
     }
   }
@@ -185,7 +219,8 @@
     unlisten?.();
     // Fire-and-forget: the component is going away, but an unsaved
     // buffer must still reach disk. Autosave caps the loss at ~1s anyway.
-    if (dirty && editable) void backend.writeFileForEditor(path, buffer).catch(() => {});
+    // Never for a deleted file -- closing the tab would resurrect it.
+    if (dirty && editable && !deleted) void backend.writeFileForEditor(path, buffer).catch(() => {});
     setPathDirty(path, false);
     if (saveTimer) clearTimeout(saveTimer);
     void backend.unwatchFileForViewer(path).catch(() => {});
@@ -217,6 +252,13 @@
       <button onclick={takeTheirs}>Take theirs</button>
     </div>
   {/if}
+  {#if deleted}
+    <div class="notice error">
+      This file was deleted on disk. Your copy is still here and nothing will be written back
+      unless you say so.
+      <button onclick={restore}>Save it back</button>
+    </div>
+  {/if}
   {#if saveError !== null}
     <div class="notice error">Couldn't save: {saveError}</div>
   {/if}
@@ -238,7 +280,7 @@
         <button onclick={openExternally}>Open externally</button>
       </div>
     {/if}
-    {#if !exists}
+    {#if !exists && !deleted}
       <div class="notice">This file doesn't exist yet — saving will create it.</div>
     {/if}
     {#if effectiveMode === "formatted"}
