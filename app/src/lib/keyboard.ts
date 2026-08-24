@@ -17,6 +17,7 @@ import { getActiveTree, getActiveWorkspace, getActiveView, sidebarWorkspaceOrder
 import { visibleHubViewIds } from "./hubViewMeta";
 import { cmdHeld, isMacSync } from "./platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "./shortcuts";
+import { requestedCompose, resolveComposeTarget } from "./composeRequest";
 
 /// Just the parts of a KeyboardEvent the shortcut layer reads. A real
 /// KeyboardEvent satisfies it structurally; tests build one by hand,
@@ -137,13 +138,29 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
     return true;
   }
 
-  // Everything below acts on the focused terminal session.
-  if (!state.focusedSessionId) return false;
-
   const consume = (): void => {
     event.preventDefault();
     event.stopPropagation();
   };
+
+  // New card: the one letter chord that is NOT about the focused
+  // terminal, so it is routed before the guard below. It fires only
+  // while a board is on screen -- with none showing the key stays the
+  // terminal's, which is what keeps ⌘N usable inside a shell.
+  if (matchesChord(event, SHORTCUTS["new-card"], isMac)) {
+    const target = resolveComposeTarget(
+      getActiveWorkspace(state),
+      state.focusedSessionId,
+      state.boardTabsById
+    );
+    if (!target) return false;
+    consume();
+    requestedCompose.set(target);
+    return true;
+  }
+
+  // Everything below acts on the focused terminal session.
+  if (!state.focusedSessionId) return false;
 
   if (matchesChord(event, SHORTCUTS["split-down"], isMac)) {
     consume();

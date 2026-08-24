@@ -70,7 +70,20 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Dragging near the board's left/right edge scrolls the strip; near a tall column's top/bottom scrolls its list",
       },
       { id: "column-reorder", text: "Dragging a column by its header lands it exactly at the placeholder, both directions" },
-      { id: "composer-card", text: "“+ Add card” opens the composer: Enter adds a note FILE in that column and stays, Esc closes, empty adds nothing" },
+      {
+        id: "composer-card",
+        text: "“+ Add card” opens the CENTRED composer modal: Enter adds a note FILE in that column and stays open, Esc closes, empty adds nothing",
+        hint: "The modal sits over the middle of the tab however far the board is scrolled; the Column picker starts on the column that was clicked.",
+      },
+      {
+        id: "composer-shortcut",
+        text: "⌘N (Ctrl+N off macOS) opens the same composer from anywhere on the Kanban tab — and inside a context board TAB",
+        hint: "With neither on screen (a terminal focused, or another hub tab) ⌘N must reach the terminal untouched. A second ⌘N over an open composer must not reset a half-typed card.",
+      },
+      {
+        id: "composer-column-pick",
+        text: "The composer's Column picker files the card into the column it names, not the one that opened it",
+      },
       { id: "composer-column", text: "“+ Add column” behaves the same way — no more literal “New column”" },
       {
         id: "save-failure",
@@ -99,7 +112,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "kind-compose-plan",
-        text: "Composer plan chip: body textarea + context picker; plan cards show n/m checklist progress",
+        text: "Composer plan chip: body textarea + Rail picker; plan cards show n/m checklist progress",
       },
       {
         id: "kind-nested-display",
@@ -214,7 +227,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Green ▶ agent pill pastes the prompt into the RUNNING main agent and jumps Home; disabled (with tooltip) when none runs",
         hint: "No binding/dot for main-agent sends — the card's status is the tracking.",
       },
-      { id: "run-now-composer", text: "Composer task chip + “Run now” creates the card and immediately runs it" },
+      { id: "run-now-composer", text: "Composer task chip + “Run now” creates the card and immediately runs it, and the modal closes behind it" },
       {
         id: "run-selected",
         text: "The selection bar's ▶ Run selected spawns one session per picked UNBOUND card, one after another, then clears the selection",

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { get } from "svelte/store";
 import type { Writable } from "svelte/store";
 import type { LayoutNode } from "./layout";
 
@@ -44,6 +45,7 @@ import {
 } from "./layoutState";
 import { copySelection, pasteClipboard } from "./clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "./keyboard";
+import { requestedCompose } from "./composeRequest";
 
 const state = layoutState as unknown as Writable<Record<string, unknown>>;
 
@@ -77,6 +79,7 @@ function setState(over: Record<string, unknown> = {}): void {
 beforeEach(() => {
   vi.clearAllMocks();
   (globalThis as Record<string, unknown>).__testIsMac = true;
+  requestedCompose.set(null);
   setState();
 });
 
@@ -285,5 +288,56 @@ describe("clipboard shortcuts", () => {
     const e = copy({ target: xtermTextarea() });
     expect(await handleShortcutKeydown(e)).toBe(true);
     expect(copySelection).toHaveBeenCalled();
+  });
+});
+
+describe("⌘N — new card", () => {
+  it("asks the hub board for a composer when the Kanban tab is active", async () => {
+    setState({ workspaces: [{ id: "ws-1", name: "ws-1", pages: [], activePageId: null, activeView: "kanban" }] });
+    expect(await handleShortcutKeydown(event({ key: "n" }))).toBe(true);
+    expect(get(requestedCompose)).toEqual({ kind: "hub", workspaceId: "ws-1" });
+  });
+
+  it("asks the focused board TAB when one is focused in the terminal view", async () => {
+    setState({ boardTabsById: { a: { workspaceId: "ws-1", contextFolder: "/r/.gavin" } } });
+    expect(await handleShortcutKeydown(event({ key: "n" }))).toBe(true);
+    expect(get(requestedCompose)).toEqual({ kind: "tab", workspaceId: "ws-1", tabId: "a" });
+  });
+
+  it("leaves ⌘N to the terminal when no board is on screen", async () => {
+    const e = event({ key: "n" });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(get(requestedCompose)).toBeNull();
+  });
+
+  it("is not ⇧⌘N or ⌥⌘N", async () => {
+    setState({ workspaces: [{ id: "ws-1", name: "ws-1", pages: [], activePageId: null, activeView: "kanban" }] });
+    expect(await handleShortcutKeydown(event({ key: "n", shiftKey: true }))).toBe(false);
+    expect(await handleShortcutKeydown(event({ key: "n", altKey: true }))).toBe(false);
+    expect(get(requestedCompose)).toBeNull();
+  });
+
+  it("consumes the key so the terminal never sees it", async () => {
+    setState({ workspaces: [{ id: "ws-1", name: "ws-1", pages: [], activePageId: null, activeView: "kanban" }] });
+    const e = event({ key: "n" });
+    await handleShortcutKeydown(e);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(e.stopPropagation).toHaveBeenCalled();
+  });
+
+  it("fires with no focused session at all -- a board needs no terminal", async () => {
+    setState({
+      workspaces: [{ id: "ws-1", name: "ws-1", pages: [], activePageId: null, activeView: "kanban" }],
+      focusedSessionId: null,
+    });
+    expect(await handleShortcutKeydown(event({ key: "n" }))).toBe(true);
+  });
+
+  it("on Windows/Linux it is Ctrl+N", async () => {
+    (globalThis as Record<string, unknown>).__testIsMac = false;
+    setState({ workspaces: [{ id: "ws-1", name: "ws-1", pages: [], activePageId: null, activeView: "kanban" }] });
+    expect(await handleShortcutKeydown(event({ key: "n", metaKey: false, ctrlKey: true }))).toBe(true);
+    expect(get(requestedCompose)).toEqual({ kind: "hub", workspaceId: "ws-1" });
   });
 });

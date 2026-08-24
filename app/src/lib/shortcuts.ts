@@ -24,13 +24,17 @@ export interface ChordEvent {
   altKey: boolean;
 }
 
-export type ShortcutId = "new-tab" | "close-tab" | "split-right" | "split-down";
+export type ShortcutId = "new-tab" | "close-tab" | "split-right" | "split-down" | "new-card";
 
 export const SHORTCUTS: Record<ShortcutId, Chord> = {
   "new-tab": { key: "t" },
   "close-tab": { key: "w" },
   "split-right": { key: "d" },
   "split-down": { key: "d", shift: true },
+  // The board's card composer. Unlike the four above it does not act on
+  // the focused terminal at all -- composeRequest.ts decides which board
+  // is on screen, and the key is left alone when none is.
+  "new-card": { key: "n" },
 };
 
 export function matchesChord(e: ChordEvent, chord: Chord, isMac: boolean): boolean {

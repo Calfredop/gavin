@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, saveErrors, dismissSaveError } from "./kanbanState";
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type CardView } from "./planBoard";
@@ -6,6 +7,7 @@
   import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
+  import CardComposeModal from "./CardComposeModal.svelte";
   import { planCommitFromMerged } from "./planDrop";
   import { runCard, resumeCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState } from "./layoutState";
@@ -23,13 +25,19 @@
   import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
   import { isSearching } from "./search";
   import type { DropTarget } from "./pointerDrag";
+  import { requestedCompose, takeComposeRequest, type ComposeTarget } from "./composeRequest";
+  import { defaultComposeStatus } from "./cardCompose";
 
   interface Props {
     workspaceId: string;
     contextFolder: string;
     visible: boolean;
+    /// The tab this pane occupies. ⌘N addresses a board TAB, not a
+    /// context: two panes can project the same folder, and only the
+    /// focused one may answer.
+    tabId?: string | null;
   }
-  let { workspaceId, contextFolder, visible }: Props = $props();
+  let { workspaceId, contextFolder, visible, tabId = null }: Props = $props();
 
   // Same contract FileViewerPane honors: Pane.svelte calls fit() on every
   // tab; a board has nothing to fit.
@@ -88,6 +96,35 @@
   const openPlan = $derived<CardView | null>(
     openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
   );
+
+  // --- the card composer (CardComposeModal) ----------------------------
+  // Same modal the hub board opens, with this pane's context pinned:
+  // every card typed here belongs to the folder the pane projects.
+  let composeStatus = $state<string | null>(null);
+  const composeSelf = $derived<ComposeTarget | null>(
+    tabId ? { kind: "tab", workspaceId, tabId } : null
+  );
+
+  function openComposer(preferred: string | null): void {
+    // Nothing to file a card into until the board has loaded; the
+    // error line below only renders once it has.
+    if (!board) return;
+    composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);
+    if (composeStatus === null) planWriteError = "Add a column first — a card needs a status to live in";
+  }
+
+  // ⌘N, routed here by composeRequest.ts. A second press while the
+  // composer is already open must NOT reset the column picker under a
+  // half-typed card, so the request is taken and dropped.
+  $effect(() => {
+    const self = composeSelf;
+    if (!self || !takeComposeRequest($requestedCompose, self)) return;
+    // untracked: the effect must depend on the REQUEST alone. Reading
+    // composeStatus here would re-arm it on every open and close.
+    untrack(() => {
+      if (composeStatus === null) openComposer(null);
+    });
+  });
 
   let pendingDelete = $state<CardView | null>(null);
   const pendingPlan = $derived<DeletionPlan | null>(
@@ -233,7 +270,6 @@
           labels={board.labels}
           planCards={dc.planCards}
           hiddenCount={view?.hiddenIn(dc.column.id) ?? 0}
-          composerContext={contextFolder}
           onOpenPlanCard={(path) => (openPlanPath = path)}
           onRunCard={handleRun}
           onResumeCard={handleResume}
@@ -241,6 +277,7 @@
           {agentAvailable}
           onDeleteCard={(card) => (pendingDelete = card)}
           onCardContextMenu={handleCardContextMenu}
+          onAddCard={openComposer}
           {allCards}
         />
       {/each}
@@ -250,6 +287,16 @@
     </div>
     <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
     <KanbanDragPreview {board} {merged} labels={board.labels} root={columnsEl} />
+  {/if}
+  {#if composeStatus !== null && board}
+    <CardComposeModal
+      {workspaceId}
+      columns={board.columns}
+      initialStatus={composeStatus}
+      pinnedContext={contextFolder}
+      onRunCard={handleRun}
+      onClose={() => (composeStatus = null)}
+    />
   {/if}
   {#if pendingDelete}
     <ConfirmPrompt

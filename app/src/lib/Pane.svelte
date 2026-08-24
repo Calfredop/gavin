@@ -471,6 +471,7 @@
           bind:this={paneRefs[sessionId]}
           workspaceId={boardTab(sessionId)?.workspaceId ?? ""}
           contextFolder={boardTab(sessionId)?.contextFolder ?? ""}
+          tabId={sessionId}
           visible={sessionId === active}
         />
       {:else if fileTabPath(sessionId)}

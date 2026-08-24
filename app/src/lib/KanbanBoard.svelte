@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addColumnAction, reorderColumnAction, saveErrors, dismissSaveError } from "./kanbanState";
   import KanbanColumn from "./KanbanColumn.svelte";
   import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
+  import CardComposeModal from "./CardComposeModal.svelte";
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type CardView } from "./planBoard";
@@ -16,6 +18,8 @@
   import { fetchOrchestration } from "./orchestrationState";
   import { cardSessionFor } from "./kanbanState";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
+  import { requestedCompose, takeComposeRequest, type ComposeTarget } from "./composeRequest";
+  import { defaultComposeStatus } from "./cardCompose";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import BoardSelectionBar from "./BoardSelectionBar.svelte";
   import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
@@ -86,6 +90,37 @@
   let showingArchive = $state(false);
   const archive = $derived(archiveView(merged?.archived ?? [], search));
   const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
+
+  // --- the card composer (CardComposeModal) ----------------------------
+  // One per board, wherever the request came from: a column's "+ Add
+  // card", its header menu, the board's own menu, or ⌘N. `composeStatus`
+  // is the column the card will carry, and null means closed.
+  let composeStatus = $state<string | null>(null);
+  const composeSelf = $derived<ComposeTarget>({ kind: "hub", workspaceId });
+
+  function openComposer(preferred: string | null): void {
+    // Nothing to file a card into until the board has loaded; the
+    // error line below only renders once it has.
+    if (!board) return;
+    // A card composed while the archive lens is up would be filed onto a
+    // board the human cannot see; the lens comes off with the composer.
+    showingArchive = false;
+    composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);
+    if (composeStatus === null) planWriteError = "Add a column first — a card needs a status to live in";
+  }
+
+  // ⌘N, routed here by composeRequest.ts. A second press while the
+  // composer is already open must NOT reset the column picker under a
+  // half-typed card, so the request is taken and dropped.
+  $effect(() => {
+    if (!takeComposeRequest($requestedCompose, composeSelf)) return;
+    // untracked: the effect must depend on the REQUEST alone. Reading
+    // composeStatus here would re-arm it on every open and close.
+    untrack(() => {
+      if (composeStatus === null) openComposer(null);
+    });
+  });
+
   // Every card view in the projection, nested children included -- the
   // detail modal must resolve a nested child's path too. The ARCHIVE is
   // in here as well: its cards are off the board but the grid opens,
@@ -147,6 +182,7 @@
 
   function handleBoardContextMenu(e: MouseEvent): void {
     openContextMenuFromEvent(e, [
+      { label: "Add card", onPick: () => openComposer(null) },
       { label: "Add column", onPick: () => (addingColumn = true) },
       { label: "Refresh board", onPick: () => void refreshBoard(workspaceId) },
     ]);
@@ -344,6 +380,7 @@
             {agentAvailable}
             onDeleteCard={(card) => (pendingDelete = card)}
             onCardContextMenu={handleCardContextMenu}
+            onAddCard={openComposer}
             {allCards}
           />
         {:else}
@@ -378,6 +415,15 @@
       lines={pendingDeleteLines}
       choices={[{ label: "Delete", danger: true, onPick: () => void confirmDelete() }]}
       onCancel={() => (pendingDelete = null)}
+    />
+  {/if}
+  {#if composeStatus !== null}
+    <CardComposeModal
+      {workspaceId}
+      columns={board.columns}
+      initialStatus={composeStatus}
+      onRunCard={handleRun}
+      onClose={() => (composeStatus = null)}
     />
   {/if}
   {#if openPlan}

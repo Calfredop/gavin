@@ -1,12 +1,10 @@
 <script lang="ts">
   import type { Column, Label } from "./kanban";
   import { isPermanentColumn, type CardView } from "./planBoard";
-  import type { PlanFileInfo } from "./gavin";
   import BoardCard from "./BoardCard.svelte";
   import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
   import { flip } from "svelte/animate";
   import { renameColumnAction, deleteColumnAction } from "./kanbanState";
-  import { gavinTrees, patchPlanCreated } from "./gavinState";
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
   import { layoutState } from "./layoutState";
@@ -21,15 +19,14 @@
   import { Play, RotateCcw, Archive } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
-  import { buildCreatePlanArgs } from "./cardCompose";
+  import { formatShortcut } from "./shortcuts";
+  import { isMacSync } from "./platform";
   import { columnDeletionPlan, executeDeletion, executeMoveCards } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
-  import { orchestrations, sendCardToRailAction } from "./orchestrationState";
   import { executeArchive, isDoneColumn } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
   import { daemonCompat } from "./layoutState";
-  import * as backend from "./backend";
 
   interface Props {
     workspaceId: string;
@@ -40,8 +37,6 @@
     mode?: "full" | "planOnly";
     labels?: Label[];
     planCards: CardView[];
-    // Pins the composer to one context (BoardPane) and hides the picker.
-    composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
     // The In Progress column's Resume: the same spawn with the prompt
@@ -52,6 +47,10 @@
     agentAvailable?: boolean;
     onDeleteCard?: ((card: CardView) => void) | null;
     onCardContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
+    // Opens the board's card composer on this column. The modal is the
+    // BOARD's (KanbanBoard/BoardPane): one composer per board, wherever
+    // the request came from -- a column's button, its menu, or ⌘N.
+    onAddCard?: ((status: string) => void) | null;
     // The full projection (nested included) -- the column-cascade plan
     // needs to find a deleted plan's free children in other columns.
     allCards?: CardView[];
@@ -67,7 +66,6 @@
     mode = "full",
     labels = [],
     planCards,
-    composerContext = null,
     onOpenPlanCard,
     onRunCard = null,
     onResumeCard = null,
@@ -75,6 +73,7 @@
     agentAvailable = false,
     onDeleteCard = null,
     onCardContextMenu = null,
+    onAddCard = null,
     allCards = [],
     hiddenCount = 0,
   }: Props = $props();
@@ -252,134 +251,21 @@
     }
   }
 
-  // --- two-speed composer (card-model spec §4) -------------------------
-  // Fast path: type a title, Enter -> a kind:note file in this column.
-  // The kind chips expand in place: task adds a prompt field, plan adds
-  // a body field; both add a context picker (root default) unless
-  // composerContext pins one (BoardPane).
-  let composing = $state(false);
-  let composeKind = $state<"note" | "task" | "plan">("note");
-  let composeTitle = $state("");
-  let composeBody = $state("");
-  let composeContext = $state<string | null>(null);
-  let composeError = $state<string | null>(null);
-  let composeRunNow = $state(false);
-  let composeTitleEl = $state<HTMLTextAreaElement | null>(null);
-  // A new card can land on a rail the moment it exists, which is the
-  // point: the arrangement is usually already on screen in the human's
-  // head. Kept across commits on purpose -- filling one rail with three
-  // cards is the flow this row is for.
-  let composeRailId = $state<string | null>(null);
-
-  const rails = $derived(
-    [...($orchestrations[workspaceId]?.rails ?? [])].sort((a, b) => a.position - b.position)
+  // The card composer lives in a modal the BOARD owns (CardComposeModal
+  // via KanbanBoard/BoardPane), not at the foot of this column: centred,
+  // it lands under the human's eyes wherever a wide board is scrolled to.
+  // The column contributes only the status it wants the card to carry.
+  const addCardTip = $derived(
+    onAddCard
+      ? `Add a card to ${column.name} — a markdown file in this column (${formatShortcut("new-card", isMacSync())})`
+      : ""
   );
-
-  const contexts = $derived($gavinTrees[workspaceId]?.contexts ?? []);
-  const defaultContext = $derived(
-    composerContext ?? (contexts.find((c) => c.kind === "root") ?? contexts[0])?.folderPath ?? null
-  );
-
-  $effect(() => {
-    if (composing && composeTitleEl) composeTitleEl.focus();
-  });
-
-  function resetComposer(): void {
-    composeTitle = "";
-    composeBody = "";
-    composeError = null;
-  }
-
-  async function commitComposer(keepOpen: boolean): Promise<void> {
-    const contextFolder = composeContext ?? defaultContext;
-    if (!contextFolder) {
-      composeError = "No gavin context to create in — bind a root first";
-      return;
-    }
-    const ctx = contexts.find((c) => c.folderPath === contextFolder);
-    const args = buildCreatePlanArgs(
-      { kind: composeKind, title: composeTitle, body: composeBody, status: column.name },
-      ctx?.plans.map((p) => p.fileName) ?? []
-    );
-    if ("error" in args) {
-      if (composeTitle.trim() !== "" || keepOpen) composeError = args.error;
-      if (composeTitle.trim() === "" && !keepOpen) composing = false;
-      return;
-    }
-    composeError = null;
-    try {
-      const path = await backend.createPlan(
-        contextFolder,
-        args.fileName,
-        args.title,
-        args.status,
-        undefined,
-        args.body,
-        args.kind
-      );
-      const created: PlanFileInfo = {
-        path,
-        fileName: args.fileName,
-        title: args.title,
-        status: args.status,
-        priority: null,
-        order: null,
-        kind: args.kind,
-        parent: null,
-        labels: [],
-        checklistDone: 0,
-        checklistTotal: 0,
-        parseWarning: false,
-      };
-      patchPlanCreated(workspaceId, contextFolder, created);
-      // Before Run now, so a failure to place the card is not buried
-      // under a spawning agent. The rail is re-checked against the list:
-      // one deleted since the picker rendered took its row off screen
-      // with it, and writing to it would be a placement nobody asked for.
-      const railError =
-        composeRailId && args.kind !== "note" && rails.some((r) => r.id === composeRailId)
-          ? await sendCardToRailAction(workspaceId, composeRailId, path)
-          : null;
-      if (composeRunNow && args.kind === "task" && onRunCard) {
-        const ctxName = ctx?.name ?? contextFolder.split("/").at(-1) ?? contextFolder;
-        onRunCard({
-          id: path,
-          title: args.title,
-          status: args.status,
-          priority: null,
-          order: null,
-          kind: "task",
-          parent: null,
-          parentTitle: null,
-          parentBroken: false,
-          labels: [],
-          checklistDone: 0,
-          checklistTotal: 0,
-          contextName: ctxName,
-          contextFolder,
-          fileName: args.fileName,
-          parseWarning: false,
-          nestedChildren: [],
-        });
-      }
-      resetComposer();
-      // The card IS created; the rail is what failed. Said after the
-      // reset so the next card starts from a clean field but the human
-      // still learns this one is sitting off the rails.
-      if (railError) composeError = `Card created, but it isn't on the rail: ${railError}`;
-      composeRunNow = false;
-      if (!keepOpen) composing = false;
-      else composeTitleEl?.focus();
-    } catch (e) {
-      composeError = String(e);
-    }
-  }
 
   function handleHeaderContextMenu(e: MouseEvent): void {
     const entries: ContextMenuEntry[] = [];
     if (mode === "full") {
       if (!permanent) entries.push({ label: "Rename column", onPick: startRename });
-      entries.push({ label: "Add card", onPick: () => (composing = true) });
+      if (onAddCard) entries.push({ label: "Add card", onPick: () => onAddCard?.(column.name) });
     }
     if (runAction && runnable.length > 0) {
       entries.push({
@@ -402,15 +288,6 @@
     openContextMenuFromEvent(e, entries);
   }
 
-  function handleComposerKeydown(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void commitComposer(true);
-    } else if (e.key === "Escape") {
-      resetComposer();
-      composing = false;
-    }
-  }
 </script>
 
 <div class="column" class:plan-only={mode === "planOnly"} data-kb-col={column.id}>
@@ -504,91 +381,10 @@
   {#if archiveError}
     <div class="delete-error">{archiveError}</div>
   {/if}
-  {#if composing}
-    <div class="composer">
-      <div class="kind-chips">
-        {#each ["note", "task", "plan"] as k (k)}
-          <button
-            type="button"
-            class="kind-chip"
-            class:active={composeKind === k}
-            use:tooltip={k === "note"
-              ? "Note — a quick reminder card"
-              : k === "task"
-                ? "Task — a runnable agent prompt"
-                : "Plan — multi-step work with a checklist"}
-            onclick={() => (composeKind = k as "note" | "task" | "plan")}
-          >
-            {k}
-          </button>
-        {/each}
-      </div>
-      <textarea
-        class="compose-title"
-        rows="2"
-        placeholder="Card title…"
-        bind:value={composeTitle}
-        bind:this={composeTitleEl}
-        onkeydown={handleComposerKeydown}
-      ></textarea>
-      {#if composeKind !== "note"}
-        <textarea
-          class="compose-body"
-          rows="4"
-          placeholder={composeKind === "task" ? "Agent prompt…" : "Plan body (use - [ ] for tasks)…"}
-          bind:value={composeBody}
-        ></textarea>
-      {/if}
-      {#if composeKind !== "note" && rails.length > 0}
-        <label class="compose-rail">
-          <span>Rail</span>
-          <select
-            bind:value={composeRailId}
-            onchange={() => {
-              // The rail runs it when the human arms that rail; running it
-              // now as well would put two agents on one card.
-              if (composeRailId) composeRunNow = false;
-            }}
-          >
-            <option value={null}>none</option>
-            {#each rails as rail (rail.id)}
-              <option value={rail.id}>{rail.name}</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
-      {#if composeKind === "task" && !composeRailId}
-        <label class="run-now">
-          <input type="checkbox" bind:checked={composeRunNow} />
-          Run now with the agent
-        </label>
-      {/if}
-      {#if composeKind !== "note" && !composerContext && contexts.length > 1}
-        <select class="compose-context" bind:value={composeContext}>
-          {#each contexts as ctx (ctx.folderPath)}
-            <option value={ctx.folderPath} selected={ctx.folderPath === defaultContext}>{ctx.name}</option>
-          {/each}
-        </select>
-      {/if}
-      {#if composeError}
-        <div class="compose-error">{composeError}</div>
-      {/if}
-      <div class="compose-actions">
-        <button type="button" class="compose-add" onclick={() => void commitComposer(false)}>Add</button>
-        <button
-          type="button"
-          class="compose-cancel"
-          onclick={() => {
-            resetComposer();
-            composing = false;
-          }}
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  {:else}
-    <button type="button" class="add-card" use:tooltip={"Add a card — a markdown file in this column"} onclick={() => (composing = true)}>+ Add card</button>
+  {#if onAddCard}
+    <button type="button" class="add-card" use:tooltip={addCardTip} onclick={() => onAddCard?.(column.name)}
+      >+ Add card</button
+    >
   {/if}
 </div>
 
@@ -735,101 +531,10 @@
     text-align: left;
     padding: 4px 0;
   }
-  .composer {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-top: 4px;
-    font-family: monospace;
-  }
-  .kind-chips {
-    display: flex;
-    gap: 4px;
-  }
-  .kind-chip {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-family: monospace;
-    font-size: 0.75em;
-    padding: 1px 8px;
-  }
-  .kind-chip.active {
-    background: var(--surface-overlay);
-    color: var(--text);
-    border-color: var(--border-strong);
-  }
-  .compose-title,
-  .compose-body {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-family: monospace;
-    font-size: 0.85em;
-    padding: 8px;
-    resize: none;
-    width: 100%;
-    box-sizing: border-box;
-  }
-  .compose-context,
-  .compose-rail select {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font-family: monospace;
-    font-size: 0.85em;
-    padding: 4px;
-  }
-  .compose-rail {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-muted);
-    font-size: 0.8em;
-  }
-  .compose-rail select {
-    flex: 1;
-    min-width: 0;
-  }
-  .compose-error {
-    color: var(--warning-text);
-    font-size: 0.75em;
-  }
   .delete-error {
     color: var(--warning-text);
     font-family: monospace;
     font-size: 0.75em;
     margin-top: 4px;
-  }
-  .run-now {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-muted);
-    font-size: 0.8em;
-  }
-  .run-now input {
-    accent-color: var(--accent);
-  }
-  .compose-actions {
-    display: flex;
-    gap: 6px;
-  }
-  .compose-actions button {
-    background: var(--surface-overlay);
-    border: none;
-    border-radius: 4px;
-    color: var(--text);
-    cursor: pointer;
-    font-family: monospace;
-    font-size: 0.8em;
-    padding: 4px 10px;
-  }
-  .compose-cancel {
-    opacity: 0.7;
   }
 </style>
