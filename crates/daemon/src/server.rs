@@ -830,11 +830,19 @@ impl SessionManager {
         rails: Vec<protocol::Rail>,
         conflict_notes: Vec<protocol::ConflictNote>,
     ) -> anyhow::Result<()> {
+        // Who is ACTUALLY running, for the running-step guard: a run row
+        // is only the app's claim, and one left behind by a session that
+        // has since ended must not refuse the write forever. Taken and
+        // released before the orchestration lock -- never both at once.
+        let live: HashSet<String> = self.sessions.lock().unwrap().keys().cloned().collect();
         // The `?` before the push is deliberate: a refused write (the
         // running-step guard) must not push a plan that was never stored.
         // The lock is released at the end of this statement, which
         // matters -- push_orchestration re-reads through the same mutex.
-        self.orchestration.lock().unwrap().replace_plan(workspace_id, &rails, &conflict_notes)?;
+        self.orchestration
+            .lock()
+            .unwrap()
+            .replace_plan(workspace_id, &rails, &conflict_notes, &live)?;
         self.push_orchestration(workspace_id);
         Ok(())
     }
@@ -1863,6 +1871,22 @@ mod tests {
         }
     }
 
+    /// A step run row that names a session this daemon actually hosts --
+    /// what the guard refuses to delete. The PTY is real: liveness is read
+    /// off the session table, not off the row.
+    fn running_step_with_a_live_session(manager: &Arc<SessionManager>, step_id: &str) {
+        let session_id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
+        handle_request(
+            manager,
+            Request::SetStepRun {
+                step_id: step_id.into(),
+                state: "running".into(),
+                session_id: Some(session_id),
+                reason: None,
+            },
+        );
+    }
+
     #[test]
     fn a_refused_set_orchestration_answers_with_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1875,15 +1899,7 @@ mod tests {
                 conflict_notes: vec![],
             },
         );
-        handle_request(
-            &manager,
-            Request::SetStepRun {
-                step_id: "t1".into(),
-                state: "running".into(),
-                session_id: None,
-                reason: None,
-            },
-        );
+        running_step_with_a_live_session(&manager, "t1");
         match handle_request(
             &manager,
             Request::SetOrchestration {
@@ -2000,8 +2016,12 @@ mod tests {
         }
     }
 
+    /// The reported bug: a rail that could never be deleted. Only the app
+    /// writes run state, so a row left at `running` by a session that has
+    /// since ended -- here, one the daemon never hosted at all -- must not
+    /// refuse the write, or the rail carrying it is wedged shut forever.
     #[test]
-    fn a_refused_write_through_the_root_path_still_reports_the_running_step() {
+    fn a_running_row_whose_session_is_gone_does_not_refuse_the_write() {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
         handle_request(
@@ -2017,10 +2037,38 @@ mod tests {
             Request::SetStepRun {
                 step_id: "t1".into(),
                 state: "running".into(),
-                session_id: None,
+                session_id: Some("a-session-that-ended".into()),
                 reason: None,
             },
         );
+        // Deleting the whole rail, which is what the human was doing.
+        match handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![],
+                conflict_notes: vec![],
+            },
+        ) {
+            Response::Ok => {}
+            other => panic!("expected Ok, got {other:?}"),
+        }
+        assert!(manager.get_orchestration("ws-1").unwrap().rails.is_empty());
+    }
+
+    #[test]
+    fn a_refused_write_through_the_root_path_still_reports_the_running_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        running_step_with_a_live_session(&manager, "t1");
         match handle_request(
             &manager,
             Request::SetOrchestration {
