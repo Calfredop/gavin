@@ -637,12 +637,12 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
 /// reconnect, the app keeps serving its previous `DaemonCompat` verdict
 /// until the next explicit `reconnect()` or restart.
 ///
-/// Takes `socket_path` as a parameter rather than resolving
-/// `protocol::socket_path()` itself so tests can point the reconnect at a
-/// throwaway tempdir socket -- otherwise a test whose fake daemon hangs up
-/// would reconnect straight into the developer's real running daemon.
-/// `send_command_reconnecting` below is the production wrapper that
-/// supplies the real path; call sites should use that one.
+/// Takes `socket_path` as a parameter rather than resolving one itself so
+/// this core logic stays directly testable against a throwaway tempdir
+/// socket. `send_command_reconnecting` below is the production wrapper
+/// call sites should use -- it derives `socket_path` from the connection's
+/// own peer address rather than from a fixed, globally-resolved one; see
+/// its doc comment for why.
 fn send_command_reconnecting_at(
     conn: &Mutex<UnixStream>,
     socket_path: &Path,
@@ -662,8 +662,37 @@ fn send_command_reconnecting_at(
 /// documented gap. `verify_daemon_protocol` deliberately does NOT go
 /// through this -- see its own doc comment for why a closed connection
 /// there must stay a hard failure rather than get retried away.
+///
+/// Reconnects to the peer THIS connection was already opened against,
+/// read back from the socket itself via `peer_addr()`, rather than
+/// resolving `protocol::socket_path()` (the real daemon) globally. Several
+/// of this function's callers -- `list_valid_session_ids`,
+/// `create_fresh_session`, `get_board_impl`, `set_board_impl`,
+/// `delete_board_impl` -- are themselves unit-tested against a bare
+/// `Mutex<UnixStream>` pointed at a tempdir fake socket, with no path
+/// threaded through for a reconnect to target. A global-path resolution
+/// here would have meant any of those tests reaching the retry branch --
+/// today only by accident, tomorrow by a one-off regression -- silently
+/// redirects the test process into issuing real requests against the
+/// developer's actual running daemon. Deriving the reconnect target from
+/// the connection's own peer address closes that off structurally instead
+/// of relying on every test's response queue never running short.
+///
+/// Falls back to a single, non-retried attempt if the peer address can't
+/// be determined (not a `SocketAddr::as_pathname` case, e.g. an unnamed
+/// or abstract socket) -- a missed retry is recoverable, a retry aimed at
+/// an unknown or wrong peer is not.
 fn send_command_reconnecting(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Response> {
-    send_command_reconnecting_at(conn, &socket_path(), req)
+    let peer = conn
+        .lock()
+        .unwrap()
+        .peer_addr()
+        .ok()
+        .and_then(|addr| addr.as_pathname().map(|p| p.to_path_buf()));
+    match peer {
+        Some(path) => send_command_reconnecting_at(conn, &path, req),
+        None => send_command(conn, req),
+    }
 }
 
 /// Walks the tree, replacing any session id not present in `valid_ids`
@@ -828,14 +857,20 @@ mod command_connection_tests {
     /// A closed command connection must not stay dead forever: the daemon
     /// may simply have restarted between calls. The first connection
     /// closes without answering (simulating exactly that), and
-    /// send_command_reconnecting_at must reconnect and retry once rather
+    /// send_command_reconnecting must reconnect and retry once rather
     /// than surfacing the failure to the caller.
     ///
-    /// Exercises `_at` directly, with a tempdir socket, rather than the
-    /// production `send_command_reconnecting` wrapper -- if the reconnect
-    /// resolved the real daemon socket path internally instead of taking
-    /// one as a parameter, this test's fake daemon hanging up would send
-    /// the reconnect to the developer's actual running daemon.
+    /// Goes through the production `send_command_reconnecting` wrapper,
+    /// not `_at` directly -- this is the empirical check for whether
+    /// `UnixStream::peer_addr()` still resolves to the original peer path
+    /// once that peer has already hung up (the state the retry branch
+    /// always runs in). If it didn't, the wrapper would silently fall back
+    /// to a single non-retried attempt and this test's second `accept()`
+    /// would never fire, hanging the test. Passing quickly is the proof:
+    /// peer_addr() survives the disconnect, and the retry lands back on
+    /// this exact tempdir socket rather than on `protocol::socket_path()`
+    /// (the real daemon), which reconnecting into would be the hazard this
+    /// whole design change exists to close off.
     #[test]
     fn a_command_retries_once_on_a_closed_connection() {
         // Serve two connections: the first closes immediately (simulating a
@@ -854,7 +889,7 @@ mod command_connection_tests {
         });
 
         let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
-        let resp = send_command_reconnecting_at(&conn, &sock, &Request::GetProtocolVersion).unwrap();
+        let resp = send_command_reconnecting(&conn, &Request::GetProtocolVersion).unwrap();
         assert!(matches!(resp, Response::ProtocolVersion { version: 12 }));
         server.join().unwrap();
     }
@@ -2452,6 +2487,7 @@ mod classify_tests {
 mod kanban_command_tests {
     use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with};
     use super::*;
+    use std::os::unix::net::UnixListener;
 
     #[test]
     fn get_board_impl_returns_the_boards_columns_and_labels() {
@@ -2467,6 +2503,50 @@ mod kanban_command_tests {
         assert_eq!(board.columns.len(), 1);
         assert_eq!(board.columns[0].name, "To Do");
         assert_eq!(board.labels.len(), 1);
+    }
+
+    /// Regression for the Critical finding in fix round 1: `get_board_impl`
+    /// -- one of the several functions here that are unit-tested against a
+    /// bare `Mutex<UnixStream>` pointed at a tempdir fake socket, with no
+    /// path threaded through for a reconnect -- must retry against THAT
+    /// SAME fake socket when its connection drops, never against
+    /// `protocol::socket_path()` (the real daemon). Built by hand rather
+    /// than via `fake_daemon_replying_with` because that helper serves only
+    /// one connection; this needs a second `accept()` on the identical
+    /// listener to prove the reconnect targets it. If the retry instead
+    /// resolved the real socket path, this test would either fail fast (no
+    /// real daemon in the test environment) or hang forever waiting on a
+    /// second local connection that would never arrive -- either way it
+    /// would not pass quickly and cleanly the way it does here.
+    #[test]
+    fn get_board_impl_retries_against_the_same_fake_socket_not_the_real_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("board-retry.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(second.try_clone().unwrap());
+            let _req: Request = read_message(&mut reader).unwrap().unwrap();
+            write_message(
+                &mut second,
+                &Response::Board {
+                    columns: vec![Column { id: "c1".to_string(), name: "To Do".to_string(), position: 0 }],
+                    labels: vec![],
+                    card_sessions: vec![],
+                },
+            )
+            .unwrap();
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let board = get_board_impl(&conn, "ws-1".to_string()).unwrap();
+
+        assert_eq!(board.columns.len(), 1);
+        assert_eq!(board.columns[0].name, "To Do");
+        server.join().unwrap();
     }
 
     #[test]
