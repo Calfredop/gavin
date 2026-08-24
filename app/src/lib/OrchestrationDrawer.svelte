@@ -9,27 +9,36 @@
     /// there is no rail to add to yet.
     targetRailId: string | null;
     onAdd: (cardPath: string) => void;
+    /// The tab's search box holds a query: the rows below are the
+    /// matches, not the whole pool, and dragging is off.
+    filtering?: boolean;
+    hiddenCount?: number;
   }
-  let { groups, targetRailId, onAdd }: Props = $props();
+  let { groups, targetRailId, onAdd, filtering = false, hiddenCount = 0 }: Props = $props();
 
   let collapsed = $state(false);
   const dragging = $derived($orchDragState !== null);
   const total = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
+  const label = $derived(filtering ? `Unplaced (${total} / ${total + hiddenCount})` : `Unplaced (${total})`);
 
   // Only DEVIATIONS from the default are stored, so a group the human has
   // not touched follows its own isDone rule even as groups come and go.
   let toggled = $state<Record<string, boolean>>({});
-  const isCollapsed = (g: UnplacedGroup): boolean => toggled[g.slug] ?? g.isDone;
+  // While filtering every group opens: a collapsed Done group would hide
+  // the very row the query just found.
+  const isCollapsed = (g: UnplacedGroup): boolean => (filtering ? false : (toggled[g.slug] ?? g.isDone));
 </script>
 
 <aside class="drawer" class:collapsed class:drop-lit={dragging} data-orch-drawer>
   <button type="button" class="toggle" onclick={() => (collapsed = !collapsed)}>
     {#if collapsed}<ChevronLeft size={14} />{:else}<ChevronRight size={14} />{/if}
-    {#if !collapsed}<span>Unplaced ({total})</span>{/if}
+    {#if !collapsed}<span class:filtered={filtering}>{label}</span>{/if}
   </button>
 
   {#if !collapsed}
-    {#if dragging && $orchDragState?.kind === "step"}
+    {#if filtering}
+      <p class="hint quiet">Filtered — clear the search to drag.</p>
+    {:else if dragging && $orchDragState?.kind === "step"}
       <p class="hint">Drop here to take a step off its rail.</p>
     {:else if !dragging}
       <p class="hint quiet">Drag a card onto a rail, or click to append it.</p>
@@ -38,6 +47,7 @@
       <button
         type="button"
         class="group-head"
+        disabled={filtering}
         onclick={() => (toggled = { ...toggled, [group.slug]: !isCollapsed(group) })}
       >
         {#if isCollapsed(group)}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
@@ -64,7 +74,7 @@
       {/if}
     {/each}
     {#if total === 0}
-      <p class="empty">Every runnable card is on a rail.</p>
+      <p class="empty">{filtering ? "No unplaced card matches." : "Every runnable card is on a rail."}</p>
     {/if}
   {/if}
 </aside>
@@ -85,6 +95,9 @@
   .drawer.drop-lit {
     outline: 2px dashed var(--border-focus);
     outline-offset: -2px;
+  }
+  .toggle .filtered {
+    color: var(--accent-text);
   }
   .toggle {
     display: flex;
@@ -162,8 +175,11 @@
     text-align: left;
     cursor: pointer;
   }
-  .group-head:hover {
+  .group-head:hover:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .group-head:disabled {
+    cursor: default;
   }
   .group-name {
     flex: 1;

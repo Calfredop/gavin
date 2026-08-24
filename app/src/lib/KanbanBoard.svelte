@@ -7,17 +7,21 @@
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { planCommitFromMerged } from "./planDrop";
-  import { runCard, sendToMainAgent } from "./cardRunActions";
+  import { runCard, resumeCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { cardSessionFor } from "./kanbanState";
+  import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import BoardSelectionBar from "./BoardSelectionBar.svelte";
   import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
+  import { isSearching } from "./search";
   import { flip } from "svelte/animate";
   import { tooltip } from "./tooltip";
   import type { DropTarget } from "./pointerDrag";
@@ -35,6 +39,13 @@
     void fetchBoard(workspaceId);
   });
 
+  // Deep link from a tab's card-link button: the tab set the request and
+  // switched here, so this may be the effect's very first run.
+  $effect(() => {
+    const path = takeCardDetailRequest($requestedCardDetail, workspaceId, "kanban");
+    if (path) openPlanPath = path;
+  });
+
   // Staleness (spec §3): the cached board refetches when the hub board
   // remounts and when the window regains focus. refreshBoard's in-flight
   // guard keeps it from clobbering optimistic state.
@@ -50,6 +61,13 @@
   const board = $derived($kanbanState[workspaceId]);
   const error = $derived(boardError(workspaceId));
   const merged = $derived(board ? mergePlanCards(board, $gavinTrees[workspaceId]) : null);
+
+  // The search lens. `merged` stays UNFILTERED -- the delete cascade, the
+  // detail modal and the drop path all commit against the whole board --
+  // and only the rendered columns come from `view`.
+  let search = $state("");
+  const searching = $derived(isSearching(search));
+  const view = $derived(merged ? filterBoard(merged, search) : null);
   // Every card view in the projection, nested children included -- the
   // detail modal must resolve a nested child's path too.
   const allCards = $derived<CardView[]>(
@@ -118,6 +136,15 @@
     if (err) planWriteError = err;
   }
 
+  // The In Progress column's Resume (columnRunAction.ts): same spawn,
+  // the prompt that tells the agent to pick the work up rather than
+  // start it.
+  async function handleResume(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await resumeCard(workspaceId, card);
+    if (err) planWriteError = err;
+  }
+
   const agentAvailable = $derived(
     ($layoutState.workspaces.find((w) => w.id === workspaceId)?.mainSessionId ?? null) !== null
   );
@@ -145,6 +172,10 @@
       root: boardEl,
       allowColumns: true,
       commit: handleDragCommit,
+      // Cards do not drag while the board is filtered: the DOM no longer
+      // holds every card, so the drop index would be measured against a
+      // subset and written as a real `order`. Columns still drag.
+      cardsLocked: () => searching,
       click: (kind, id, mods) => {
         if (kind !== "plan") return;
         // Shift picks cards for a batch run; a plain click still opens
@@ -206,6 +237,9 @@
     <p>Loading board…</p>
   </div>
 {:else}
+  <!-- One flex column so the search bar can sit above a board that still
+       fills the rest of the tab (the hub's .view host is a plain block). -->
+  <div class="kanban">
   {#if planWriteError}
     <div class="plan-error">
       <span>{planWriteError}</span>
@@ -218,6 +252,16 @@
       <button type="button" onclick={() => dismissSaveError(workspaceId)}>✕</button>
     </div>
   {/if}
+  <div class="board-bar">
+    <SearchInput
+      bind:value={search}
+      class="board-search"
+      label="Search cards"
+      placeholder="Search cards — title, file, status, label, context…"
+      matches={view ? { shown: view.shown, total: view.total } : null}
+      hint="filtered: clear to drag cards"
+    />
+  </div>
   <div class="board" bind:this={boardEl} oncontextmenu={handleBoardContextMenu} role="presentation">
     {#each buildColumnSlots(board.columns, (c) => c.id, $dragState) as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div class="column-slot" animate:flip={{ duration: 150 }}>
@@ -227,9 +271,11 @@
             {workspaceId}
             {column}
             labels={board.labels}
-            planCards={merged?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
+            planCards={view?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
+            hiddenCount={view?.hiddenIn(column.id) ?? 0}
             onOpenPlanCard={(path) => (openPlanPath = path)}
             onRunCard={handleRun}
+            onResumeCard={handleResume}
             onSendToAgent={handleSendToAgent}
             {agentAvailable}
             onDeleteCard={(card) => (pendingDelete = card)}
@@ -241,8 +287,8 @@
         {/if}
       </div>
     {/each}
-    {#each merged?.autoColumns ?? [] as auto (auto.status)}
-      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
+    {#each view?.autoColumns ?? [] as auto (auto.status)}
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} hiddenCount={view?.hiddenIn(AUTO_KEY_PREFIX + auto.status) ?? 0} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
     {/each}
     {#if addingColumn}
       <input
@@ -257,6 +303,7 @@
     {:else}
       <button type="button" class="add-column" use:tooltip={"Add a column — its name becomes a status"} onclick={() => (addingColumn = true)}>+ Add column</button>
     {/if}
+  </div>
   </div>
   <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
@@ -276,17 +323,34 @@
       labels={board.labels}
       {allCards}
       onClose={() => (openPlanPath = null)}
+      onPathChange={(path) => (openPlanPath = path)}
     />
   {/if}
 {/if}
 
 <style>
+  .board-bar {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px 0;
+    flex: 0 0 auto;
+  }
+  .board-bar :global(.board-search) {
+    max-width: 520px;
+  }
+  .kanban {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
   .board {
     display: flex;
     gap: 12px;
     padding: 16px;
     overflow-x: auto;
-    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
     box-sizing: border-box;
   }
   /* Wrapper the flip directive needs between the flex strip and the

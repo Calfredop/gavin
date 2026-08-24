@@ -221,8 +221,33 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Its count excludes notes and already-bound cards; pick only those and the button is disabled with a tooltip saying why.",
       },
       {
+        id: "run-column-verbs",
+        text: "Column run buttons speak their column: To Do “Start all”, In Progress “Resume” (↺ icon), Done has none; custom columns keep “Run all”",
+        hint: "Right-click the header too — the menu entry carries the same verb and the same count.",
+      },
+      {
+        id: "run-resume-stopped",
+        text: "Resume targets every In Progress card with no LIVE session — an exited binding counts — and spawns the gavin-resume prompt",
+        hint: "A card whose session is alive is skipped, not double-run; the spawned command starts “Use the gavin-resume skill…”.",
+      },
+      {
+        id: "run-names-its-tab",
+        text: "A launched agent renames its own tab within the first few seconds — short and about the card, not “gavin”",
+        hint: "Run two cards at once: both tabs should be tellable apart at a glance. Board Run, Resume and an orchestration launch all carry the instruction.",
+      },
+      {
+        id: "run-tab-card-link",
+        text: "A bound agent's tab shows the ↗ card link; it opens the Kanban tab with that card's detail modal already up",
+        hint: "Unbound terminals (and file/board tabs) show no link at all. Unlink the card and the link goes away.",
+      },
+      {
+        id: "run-tab-card-link-rail",
+        text: "For a card sitting on an orchestration rail the same ↗ opens the Orchestration tab instead — with the same detail modal",
+        hint: "Works on a cold start too: the plan is fetched by the tab, not only by the Orchestration tab having been visited.",
+      },
+      {
         id: "skill-updated",
-        text: "Re-run “Set up agent integration”: SKILL.md teaches kinds, nesting, promotion, tick-when-done",
+        text: "Re-run “Set up agent integration”: SKILL.md teaches name-your-tab-first, kinds, nesting, promotion, tick-when-done; gavin-orchestrate and gavin-resume land beside it",
       },
     ],
   },
@@ -309,6 +334,47 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "exp-split",
         text: "The split icon on a file row opens it beside a terminal (hidden with no terminal session)",
+      },
+    ],
+  },
+  {
+    title: "Archiving Done cards",
+    items: [
+      {
+        id: "arch-round-trip",
+        text: "Set a card to Done on the board → its file moves into plans/done/; set it back to To Do → it returns to plans/",
+        hint: "Watch the file in a terminal: ls .gavin-root/plans/done/. The board itself should look unchanged.",
+      },
+      {
+        id: "arch-modal-open",
+        text: "Open a card's modal, set Status → Done from inside it — the modal STAYS open and keeps editing the same card",
+        hint: "This is the regression the move creates: the host holds the card by path. A modal that vanishes here means onPathChange regressed.",
+      },
+      {
+        id: "arch-nested-children",
+        text: "A plan with nested task cards archived to Done takes its children with it; bringing it back brings them too",
+      },
+      {
+        id: "arch-run-archived",
+        text: "Run a Done card → it leaves done/ first and the agent's prompt names the plans/ path, not the done/ one",
+        hint: "Read the spawned terminal's first line: the path in it must not contain done/.",
+      },
+      {
+        id: "arch-explorer-fold",
+        text: "Plans tab: archived cards sit under one collapsed “Done” row with a count, not as loose siblings",
+      },
+      {
+        id: "arch-explorer-search",
+        text: "Searching for an archived card's title finds it and shows it as a normal row (not hidden behind the fold)",
+      },
+      {
+        id: "arch-rail-follows",
+        text: "A card placed on an orchestration rail keeps its place after being archived and un-archived",
+        hint: "The rail's step is re-keyed to the new path; a step that goes blank means rename_card_path regressed.",
+      },
+      {
+        id: "arch-agent-told",
+        text: "An agent calling gavin_set_plan_field(..., \"status\", \"Done\") is answered with the card's new path",
       },
     ],
   },
@@ -415,12 +481,17 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       { id: "mcp-setup", text: "Settings → “Set up / update” writes .mcp.json, the skill, and the CLAUDE.md block" },
       { id: "mcp-idempotent", text: "Re-running it preserves hand-written CLAUDE.md content outside the markers" },
-      { id: "mcp-listed", text: "claude in that folder: /mcp lists gavin with 8 tools" },
+      { id: "mcp-listed", text: "claude in that folder: /mcp lists gavin with 12 tools" },
       { id: "mcp-prd-plan", text: "Agent reads the PRD and creates a plan → card appears on the board" },
       { id: "mcp-status", text: "Agent sets a plan status → the card moves" },
       {
         id: "mcp-spawn",
         text: "gavin_spawn_session lands a live session on an “Agents” page without stealing focus",
+      },
+      {
+        id: "mcp-name-session",
+        text: "gavin_name_session renames the CALLING agent's own tab, and the new name survives an app restart",
+        hint: "It reads GAVIN_SESSION_ID from its PTY; run it from a terminal outside gavin and it says so instead of renaming something random.",
       },
       { id: "mcp-board", text: "gavin_get_board returns the columns and your free-form cards" },
     ],
@@ -548,6 +619,42 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "conf-crlf", text: "A CRLF file resolved in the editor is saved back with CRLF and its final newline state" },
       { id: "conf-mergetool", text: "With merge.tool set, Open in <tool> runs git mergetool in a terminal pane and the editor reloads after the tool saves" },
       { id: "conf-continue", text: "The banner counts conflicted files and Continue unlocks at zero" },
+    ],
+  },
+  {
+    title: "Search & filter",
+    items: [
+      {
+        id: "search-board",
+        text: "Kanban: typing in the board search leaves only matching cards; each column header reads “n / total”",
+        hint: "Title, filename, status, label, context and kind all match; every token must hit something.",
+      },
+      { id: "search-board-nested", text: "Searching a nested task's title keeps its parent plan, showing just that child" },
+      {
+        id: "search-board-locked",
+        text: "While filtered, a card click still opens it but a card drag does nothing; the bar says “filtered: clear to drag cards”",
+        hint: "Column drags and the composer keep working; the ✕ on a column is disabled with a tooltip saying why.",
+      },
+      { id: "search-board-esc", text: "Esc in the box clears it and the whole board comes back" },
+      {
+        id: "search-orch",
+        text: "Orchestration: a query keeps only the rails holding a hit, rings the matching chips and fades the rest",
+        hint: "A rail also matches on its own name and its bound worktree path.",
+      },
+      { id: "search-orch-drawer", text: "The Unplaced drawer filters to matches, opens every group, and reads “n / total”" },
+      { id: "search-orch-locked", text: "No step or card drags while the Orchestration search is set; clearing it restores dragging" },
+      {
+        id: "search-plans",
+        text: "Plans: the search filters plans, docs and specs; contexts with no match drop out of the tree",
+      },
+      {
+        id: "search-plans-facets",
+        text: "The Status and Rail dropdowns narrow plans only (docs/specs vanish), AND with the text, and Reset clears all three",
+        hint: "“On no rail” lists the plans no rail holds. Deleting the filtered rail resets the facet instead of blanking the tree.",
+      },
+      { id: "search-git-files", text: "Git: filtering Local Changes narrows both lists and the buttons become “Stage n shown”, staging only those" },
+      { id: "search-git-refs", text: "Git nav: the ref filter narrows branches/remotes/stashes and force-opens collapsed sections" },
+      { id: "search-git-commits", text: "The commit graph's search box behaves like the others (icon, ✕, Esc) and still filters subject/author/sha" },
     ],
   },
 ];

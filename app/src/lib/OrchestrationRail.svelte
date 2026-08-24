@@ -38,6 +38,11 @@
     onAddStep: () => void;
     onRetryStep: (stepId: string) => void;
     onRemoveStep: (stepId: string) => void;
+    /// The tab's search box holds a query. A rail keeps its whole shape
+    /// while filtered -- a pipeline with holes in it would read as a
+    /// different pipeline -- so the non-matching chips only dim.
+    filtering?: boolean;
+    stepLit?: (stepId: string) => boolean;
   }
   let {
     rail,
@@ -58,6 +63,8 @@
     onAddStep,
     onRetryStep,
     onRemoveStep,
+    filtering = false,
+    stepLit = () => false,
   }: Props = $props();
 
   const railState = $derived(railStateOf(orch, rail.id));
@@ -186,6 +193,8 @@
             severity={severityForStep(numbered, step.id)}
             onRetry={() => onRetryStep(step.id)}
             onRemove={() => onRemoveStep(step.id)}
+            dimmed={filtering && !stepLit(step.id)}
+            hit={filtering && stepLit(step.id)}
           />
         {/each}
       </div>

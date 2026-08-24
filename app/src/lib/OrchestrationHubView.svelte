@@ -5,11 +5,16 @@
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
   import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
   import RailBindDialog from "./RailBindDialog.svelte";
+  import CardDetailModal from "./CardDetailModal.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { searchOrchestration } from "./orchestrationSearch";
   import { attachOrchestrationDrag } from "./orchestrationDragGlue";
   import Modal from "./Modal.svelte";
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
+  import { mergePlanCards, type CardView } from "./planBoard";
+  import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
   import { layoutState, switchWorkspaceView } from "./layoutState";
   import {
     cardIndex,
@@ -62,6 +67,29 @@
   const worktrees = $derived($gitStore[workspaceId]?.refs?.worktrees ?? null);
   const numbered = $derived(orch ? numberConflicts(detectConflicts(orch, tree, worktrees)) : []);
 
+  // The card detail modal, opened from a tab's card-link button (and
+  // from a step chip's own menu once it has one): a step is a card, and
+  // the human should not have to cross to the board to read it. The
+  // projection is the board's own -- same modal, same columns, same
+  // nested children -- so nothing about a card reads differently here.
+  let openPlanPath = $state<string | null>(null);
+  const merged = $derived(board ? mergePlanCards(board, tree) : null);
+  const allCards = $derived<CardView[]>(
+    merged
+      ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
+          (c) => [c, ...c.nestedChildren]
+        )
+      : []
+  );
+  const openPlan = $derived<CardView | null>(
+    openPlanPath ? (allCards.find((c) => c.id === openPlanPath) ?? null) : null
+  );
+
+  $effect(() => {
+    const path = takeCardDetailRequest($requestedCardDetail, workspaceId, "orchestration");
+    if (path) openPlanPath = path;
+  });
+
   let picking = $state<string | null>(null);
   // The rail whose bindings are being edited, set by the rail header and
   // by the conflicts box's inline fix.
@@ -74,7 +102,21 @@
   const available = $derived(
     [...cards.values()].filter((e) => e.plan.kind !== "note" && !placed.has(e.plan.path))
   );
-  const unplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
+  const allUnplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
+
+  // The search lens (orchestrationSearch.ts): rails with no hit leave
+  // the grid, matching chips light up inside the rails that stay, and
+  // the drawer filters like any other list.
+  let search = $state("");
+  const lens = $derived(searchOrchestration(orch, cards, search));
+  const unplaced = $derived(lens.filterUnplaced(allUnplacedGroups));
+  const unplacedGroups = $derived(unplaced.groups);
+  const shownRails = $derived(rails.filter((r) => lens.railShown(r.id)));
+  // A plain boolean, not `lens.filtering`: `lens` is a fresh object on
+  // every keystroke, and the drag effect below would then tear down and
+  // re-attach the engine on each one. A derived primitive only notifies
+  // when it actually flips.
+  const filtering = $derived(lens.filtering);
 
   // Which rail's name is being edited. Owned here so a rail created by
   // the button below can open straight into rename mode.
@@ -115,8 +157,13 @@
   // the drag engine would simply never attach. KanbanBoard attaches the
   // same way for the same reason. The returned teardown runs when the
   // elements change or the tab unmounts.
+  // Drag is off while the grid is filtered: rails and drawer rows leave
+  // the DOM, and a new-stage index measured over what is left would drop
+  // the step at the wrong position. Re-attaches the moment the box is
+  // cleared. (Nothing else rides this engine here -- its click callback
+  // is a no-op -- so simply not attaching is the whole lock.)
   $effect(() => {
-    if (!bodyEl || !gridEl) return;
+    if (!bodyEl || !gridEl || filtering) return;
     return attachOrchestrationDrag({
       root: bodyEl,
       scrollEl: gridEl,
@@ -169,6 +216,20 @@
 <div class="view">
   <header class="bar">
     <h2>Orchestration</h2>
+    <SearchInput
+      bind:value={search}
+      class="bar-search"
+      label="Search rails and cards"
+      placeholder="Search rails, steps, unplaced cards…"
+    />
+    {#if lens.filtering}
+      <span class="summary">
+        {lens.railsShown} {lens.railsShown === 1 ? "rail" : "rails"} ·
+        {lens.stepsMatched} {lens.stepsMatched === 1 ? "step" : "steps"} ·
+        {unplaced.shown} unplaced
+      </span>
+    {/if}
+    <span class="spacer"></span>
     <button
       type="button"
       class="add-rail"
@@ -209,7 +270,10 @@
   {:else}
     <div class="body" bind:this={bodyEl}>
       <div class="grid" bind:this={gridEl}>
-      {#each rails as rail (rail.id)}
+      {#if lens.filtering && shownRails.length === 0}
+        <p class="empty">No rail matches this search.</p>
+      {/if}
+      {#each shownRails as rail (rail.id)}
         <OrchestrationRail
           {rail}
           {orch}
@@ -232,11 +296,15 @@
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
+          filtering={lens.filtering}
+          stepLit={lens.stepLit}
         />
       {/each}
       </div>
       <OrchestrationDrawer
         groups={unplacedGroups}
+        filtering={lens.filtering}
+        hiddenCount={unplaced.total - unplaced.shown}
         targetRailId={rails[0]?.id ?? null}
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
       />
@@ -245,6 +313,18 @@
 </div>
 
 <OrchestrationDragPreview {orch} {cards} dragRoot={bodyEl} />
+
+{#if openPlan && board}
+  <CardDetailModal
+    card={openPlan}
+    {workspaceId}
+    columns={board.columns}
+    labels={board.labels}
+    {allCards}
+    onClose={() => (openPlanPath = null)}
+    onPathChange={(path) => (openPlanPath = path)}
+  />
+{/if}
 
 {#if binding && orch}
   {@const bindingRail = orch.rails.find((r) => r.id === binding)}
@@ -299,10 +379,23 @@
     border-bottom: 1px solid var(--border);
   }
   h2 {
-    flex: 1;
+    flex: 0 0 auto;
     margin: 0;
     font-size: 14px;
     font-weight: 600;
+  }
+  .spacer {
+    flex: 1 1 auto;
+  }
+  .bar :global(.bar-search) {
+    flex: 1 1 auto;
+    max-width: 420px;
+  }
+  .summary {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
   }
   .add-rail {
     display: flex;

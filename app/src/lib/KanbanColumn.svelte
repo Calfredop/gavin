@@ -9,7 +9,16 @@
   import { gavinTrees, patchPlanCreated } from "./gavinState";
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
-  import { Play } from "@lucide/svelte";
+  import { layoutState } from "./layoutState";
+  import { findSessionLocation } from "./workspace";
+  import {
+    columnRunAction,
+    columnRunTargets,
+    columnRunTip,
+    columnRunMenuLabel,
+    type CardSessionState,
+  } from "./columnRunAction";
+  import { Play, RotateCcw } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
@@ -31,6 +40,10 @@
     composerContext?: string | null;
     onOpenPlanCard: (path: string) => void;
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
+    // The In Progress column's Resume: the same spawn with the prompt
+    // that says work on this card already happened. Absent, that column
+    // falls back to a plain run.
+    onResumeCard?: ((card: CardView) => void | Promise<void>) | null;
     onSendToAgent?: ((card: CardView) => void) | null;
     agentAvailable?: boolean;
     onDeleteCard?: ((card: CardView) => void) | null;
@@ -38,6 +51,11 @@
     // The full projection (nested included) -- the column-cascade plan
     // needs to find a deleted plan's free children in other columns.
     allCards?: CardView[];
+    // Cards this column holds but is not showing, because the board's
+    // search box is filtering (boardSearch.ts). Non-zero means
+    // `planCards` is a SUBSET: the header says so, and the destructive
+    // column actions refuse to run against a partial view.
+    hiddenCount?: number;
   }
   let {
     workspaceId,
@@ -48,12 +66,27 @@
     composerContext = null,
     onOpenPlanCard,
     onRunCard = null,
+    onResumeCard = null,
     onSendToAgent = null,
     agentAvailable = false,
     onDeleteCard = null,
     onCardContextMenu = null,
     allCards = [],
+    hiddenCount = 0,
   }: Props = $props();
+
+  // "3" normally, "3 / 11" while the board is filtered.
+  const filtered = $derived(hiddenCount > 0);
+  const totalCount = $derived(planCards.length + hiddenCount);
+  const countText = $derived(filtered ? `${planCards.length} / ${totalCount}` : String(planCards.length));
+  const countTip = $derived(
+    filtered
+      ? `${planCards.length} of ${totalCount} cards match the search`
+      : planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"
+  );
+  // Deleting or clearing while filtered would silently act on cards the
+  // human cannot see -- the search has to come off first.
+  const FILTERED_TIP = "Clear the board search first — this column is only showing its matches";
 
   let editingName = $state(false);
   // Filled by startRename when editing begins -- initializing from
@@ -94,6 +127,7 @@
   const cascade = $derived(columnDeletionPlan(planCards, allCards));
 
   function requestDeleteColumn(): void {
+    if (filtered) return;
     if (planCards.length === 0) {
       void deleteColumnAction(workspaceId, column.id);
     } else {
@@ -102,7 +136,7 @@
   }
 
   function requestClearColumn(): void {
-    if (planCards.length === 0) return;
+    if (filtered || planCards.length === 0) return;
     columnPrompt = "clear";
   }
 
@@ -148,25 +182,36 @@
     if (err) deleteError = err;
   }
 
-  // Run all (card-model spec §3): every plan/task in this column with no
-  // session binding, sequentially -- each spawn lands on the Agents page
+  // Run all (card-model spec §3), now speaking this column's language
+  // (columnRunAction.ts): Start all in To Do, Resume in In Progress,
+  // nothing at all in Done, Run all everywhere else. Whatever the verb,
+  // the cards run sequentially -- each spawn lands on the Agents page
   // and binds before the next starts, so a re-click never double-runs.
+  const runAction = $derived(onRunCard === null ? null : columnRunAction(column.name));
+
+  function sessionStateFor(path: string): CardSessionState {
+    const binding = cardSessionFor($kanbanState[workspaceId], path);
+    if (!binding) return "none";
+    return findSessionLocation($layoutState, binding.sessionId) ? "live" : "exited";
+  }
+
   const runnable = $derived(
-    onRunCard === null
-      ? []
-      : planCards.filter(
-          (c) => c.kind !== "note" && cardSessionFor($kanbanState[workspaceId], c.id) === null
-        )
+    runAction ? columnRunTargets(planCards, runAction.mode, sessionStateFor) : []
   );
   let runningAll = $state(false);
 
   async function runAll(): Promise<void> {
-    if (runningAll || !onRunCard) return;
+    const action = runAction;
+    if (runningAll || !action) return;
+    const run = action.mode === "resume" ? (onResumeCard ?? onRunCard) : onRunCard;
+    if (!run) return;
     runningAll = true;
     try {
+      // Snapshot first: every spawn binds its card, which shrinks
+      // `runnable` under the loop's feet.
       const targets = [...runnable];
       for (const card of targets) {
-        await onRunCard(card);
+        await run(card);
       }
     } finally {
       runningAll = false;
@@ -281,9 +326,9 @@
       if (!permanent) entries.push({ label: "Rename column", onPick: startRename });
       entries.push({ label: "Add card", onPick: () => (composing = true) });
     }
-    if (runnable.length > 0) {
+    if (runAction && runnable.length > 0) {
       entries.push({
-        label: `Run all (${runnable.length} unbound)`,
+        label: columnRunMenuLabel(runAction, runnable.length),
         onPick: () => void runAll(),
       });
     }
@@ -292,11 +337,11 @@
       entries.push({
         label: "Clear column…",
         danger: true,
-        disabled: planCards.length === 0,
+        disabled: filtered || planCards.length === 0,
         onPick: requestClearColumn,
       });
       if (!permanent) {
-        entries.push({ label: "Delete column…", danger: true, onPick: requestDeleteColumn });
+        entries.push({ label: "Delete column…", danger: true, disabled: filtered, onPick: requestDeleteColumn });
       }
     }
     openContextMenuFromEvent(e, entries);
@@ -317,7 +362,7 @@
   <div class="header" role="presentation" data-kb-colgrab={mode === "full" ? column.id : undefined} oncontextmenu={handleHeaderContextMenu}>
     {#if mode === "planOnly"}
       <span class="name readonly">{column.name}</span>
-      <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
+      <span class="count" class:filtered use:tooltip={countTip}>{countText}</span>
     {:else if editingName}
       <input
         type="text"
@@ -327,21 +372,21 @@
       />
     {:else if permanent}
       <span class="name readonly" use:tooltip={"Permanent column — one of the three canonical statuses. Reorder it freely; it can't be renamed or deleted."}>{column.name}</span>
-      <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
+      <span class="count" class:filtered use:tooltip={countTip}>{countText}</span>
     {:else}
       <button type="button" class="name" onclick={startRename} use:tooltip={"Rename column — its name is the status vocabulary"}>{column.name}</button>
-      <span class="count" use:tooltip={planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"}>{planCards.length}</span>
+      <span class="count" class:filtered use:tooltip={countTip}>{countText}</span>
     {/if}
-    {#if runnable.length > 0}
+    {#if runAction && runnable.length > 0}
       <IconButton
-        icon={Play}
-        label="Run all unbound cards"
+        icon={runAction.mode === "resume" ? RotateCcw : Play}
+        label={runAction.aria}
         tone="accent"
         variant="outlined"
         size={10}
         class="run-all"
         disabled={runningAll}
-        tip={"Run " + runnable.length + " unbound " + (runnable.length === 1 ? "card" : "cards") + " with the workspace agent"}
+        tip={columnRunTip(runAction, runnable.length)}
         onclick={() => void runAll()}
       >
         <span class="run-all-count">{runnable.length}</span>
@@ -353,17 +398,22 @@
         label={permanent ? "Clear column" : "Delete column"}
         tone="danger"
         size={13}
-        disabled={permanent && planCards.length === 0}
-        tip={permanent
-          ? planCards.length === 0
-            ? "Nothing to clear — this column is empty"
-            : `Clear column — deletes its ${planCards.length} ${planCards.length === 1 ? "card" : "cards"}; the column stays`
-          : "Delete column — its cards fall back to an auto column by status"}
+        disabled={filtered || (permanent && planCards.length === 0)}
+        tip={filtered
+          ? FILTERED_TIP
+          : permanent
+            ? planCards.length === 0
+              ? "Nothing to clear — this column is empty"
+              : `Clear column — deletes its ${planCards.length} ${planCards.length === 1 ? "card" : "cards"}; the column stays`
+            : "Delete column — its cards fall back to an auto column by status"}
         onclick={permanent ? requestClearColumn : requestDeleteColumn}
       />
     {/if}
   </div>
   <div class="cards" data-kb-cards>
+    {#if filtered && planCards.length === 0}
+      <div class="no-match">No match in this column</div>
+    {/if}
     {#each planSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
@@ -561,6 +611,15 @@
     font-size: 0.85em;
     margin-left: 6px;
     margin-right: auto;
+    font-variant-numeric: tabular-nums;
+  }
+  .count.filtered {
+    color: var(--accent-text);
+  }
+  .no-match {
+    color: var(--text-subtle);
+    font-size: 0.75em;
+    padding: 4px 2px;
   }
   :global(.run-all) {
     flex: 0 0 auto;
