@@ -45,10 +45,12 @@ import {
   effectiveStatus,
   planIndex,
   dropImpossibleSteps,
+  isStageRunning,
+  runningStageId,
 } from "./orchestration";
 import type { CardEntry, Conflict, ToolSummary, UnplacedGroup } from "./orchestration";
 import type { WorktreeInfo } from "./git";
-import type { Action, Orchestration, Rail, Step, StepState } from "./orchestration";
+import type { Action, Orchestration, Rail, RailState, Step, StepState } from "./orchestration";
 import type { Board } from "./kanban";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 
@@ -202,6 +204,41 @@ describe("firstUnfinishedStageId", () => {
 
   it("is null for a rail with no stages", () => {
     expect(firstUnfinishedStageId(rail("r1", []), emptyOrchestration())).toBeNull();
+  });
+});
+
+describe("isStageRunning", () => {
+  const r = rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"]]]);
+
+  function withRun(state: RailState, currentStageId: string | null): Orchestration {
+    return {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state, currentStageId }],
+      stepRuns: [],
+    };
+  }
+
+  it("is true only for the stage a running rail is actually on", () => {
+    const orch = withRun("running", "r1-s0");
+    expect(isStageRunning(orch, "r1-s0")).toBe(true);
+    expect(isStageRunning(orch, "r1-s1")).toBe(false);
+    expect(runningStageId(orch, "r1")).toBe("r1-s0");
+  });
+
+  // O1: nothing spawns on an unarmed rail, so a paused or idle rail has
+  // no running stage at all -- not even the one it is parked on.
+  it("is false for every stage of a rail that is not running", () => {
+    for (const state of ["paused", "idle"] as RailState[]) {
+      expect(isStageRunning(withRun(state, "r1-s0"), "r1-s0")).toBe(false);
+      expect(runningStageId(withRun(state, "r1-s0"), "r1")).toBeNull();
+    }
+    expect(isStageRunning({ ...withRun("running", "r1-s0"), railRuns: [] }, "r1-s0")).toBe(false);
+  });
+
+  it("is false for a stage no rail owns and for a rail parked on nothing", () => {
+    expect(isStageRunning(withRun("running", "r1-s0"), "nope")).toBe(false);
+    expect(isStageRunning(withRun("running", null), "r1-s0")).toBe(false);
   });
 });
 

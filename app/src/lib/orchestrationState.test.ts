@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { get } from "svelte/store";
+import { get, writable, type Writable } from "svelte/store";
 
 vi.mock("./backend", () => ({
   getOrchestration: vi.fn(),
@@ -18,18 +18,22 @@ vi.mock("./backend", () => ({
 // real store contract, not just its functions -- a bare object makes
 // get() throw and the failure reads as an unrelated crash.
 vi.mock("./layoutState", () => ({
-  layoutState: { subscribe: (fn: (v: unknown) => void) => (fn({ workspaces: [] }), () => {}) },
+  // A REAL store: tick() derives the set of LIVE session ids from it, so
+  // a test that needs a running step's session to still exist has to be
+  // able to put a page holding it in here.
+  layoutState: writable({ workspaces: [] as unknown[] }),
   resolvedAgentFor: vi.fn(() => ({ command: "claude", file: "CLAUDE.md", profile: "claude-code" })),
   createSessionOnPage: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   // tick() reads this through get(), so it has to be a real store.
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
 }));
-// kanbanState is an empty map on purpose: tick() bails early without a
+// A REAL store, left empty by default: tick() bails early without a
 // board, so the rail-control tests exercise arming without also running
-// the scheduler.
+// the scheduler. The drop-onto-a-running-stage tests set a board into it
+// precisely because they need the scheduler to run.
 vi.mock("./kanbanState", () => ({
-  kanbanState: { subscribe: (fn: (v: unknown) => void) => (fn({}), () => {}) },
+  kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
 }));
 vi.mock("./gavinState", () => ({
@@ -49,6 +53,20 @@ vi.mock("./gavinState", () => ({
                   path: "/x/a.md",
                   fileName: "a.md",
                   title: "Wire the API",
+                  status: "To Do",
+                  priority: null,
+                  order: null,
+                  kind: "task",
+                  parent: null,
+                  labels: [],
+                  checklistDone: 0,
+                  checklistTotal: 0,
+                  parseWarning: false,
+                },
+                {
+                  path: "/x/b.md",
+                  fileName: "b.md",
+                  title: "Ship the UI",
                   status: "To Do",
                   priority: null,
                   order: null,
@@ -87,6 +105,11 @@ import { toolRecords, __resetForTesting as toolsResetForTesting } from "./toolsS
 import {
   orchestrations,
   fetchOrchestration,
+  addStepToStageAction,
+  addToolToStageAction,
+  moveStepIntoStageAction,
+  addCardAsStageAction,
+  tick,
   startRail,
   pauseRail,
   resumeRail,
@@ -101,7 +124,7 @@ import {
   clearDoneStepsAction,
   __resetForTesting,
 } from "./orchestrationState";
-import { emptyOrchestration } from "./orchestration";
+import { emptyOrchestration, addStep } from "./orchestration";
 import type { Orchestration, Rail } from "./orchestration";
 
 function rail(id: string): Rail {
@@ -791,5 +814,193 @@ describe("launching a tool step before the library has loaded", () => {
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+  });
+});
+
+// ---- Dropping onto a stage that is already running --------------------------
+// A step that lands on the stage a rail is CURRENTLY on belongs to a beat
+// already in flight. It used to sit `pending` until some unrelated change
+// ticked the workspace, which made the drop look inert.
+
+/// The two stores tick() reads that the rest of this file leaves empty:
+/// without a board it bails before the scheduler, and without a live page
+/// the running sibling's session reads as dead and stalls the rail.
+const boardStore = kanbanStateModule.kanbanState as unknown as Writable<Record<string, unknown>>;
+const layoutStore = layoutStateModule.layoutState as unknown as Writable<{ workspaces: unknown[] }>;
+
+function armWorkspace(): void {
+  boardStore.set({
+    "ws-1": {
+      columns: [
+        { id: "c0", name: "To Do", position: 0 },
+        { id: "c1", name: "Done", position: 1 },
+      ],
+      labels: [],
+      cardSessions: [],
+    },
+  });
+  layoutStore.set({
+    // sess-9 is what createSessionOnPage is mocked to return: a step
+    // this tick launches has to read as LIVE on the next one, or rule 3
+    // would call its session dead and stall the rail.
+    workspaces: [{ pages: [{ layout: { type: "leaf", tabs: ["sess-1", "sess-9"] } }] }],
+  });
+}
+
+/// A rail mid-run: stage s1 is the stage it is ON, its one step is
+/// running, and stage s2 is still ahead. Exactly what the human is
+/// looking at when they drag a second card onto s1.
+function midRunRail(): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        pageId: "p1",
+        stages: [
+          { id: "s1", position: 0, steps: [{ id: "t1", position: 0, cardPath: "/x/a.md" }] },
+          { id: "s2", position: 1, steps: [{ id: "t2", position: 0, cardPath: "/x/b.md" }] },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+  };
+}
+
+describe("dropping onto a running stage", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Ship the UI\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(backend.getOrchestration).mockResolvedValue(midRunRail());
+    await fetchOrchestration("ws-1");
+  });
+
+  it("starts a card dropped onto the stage the rail is running", async () => {
+    expect(await addStepToStageAction("ws-1", "s1", "/x/b.md")).toBeNull();
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("claude ")
+    );
+    const dropped = get(orchestrations)["ws-1"].rails[0].stages[0].steps[1];
+    expect(get(orchestrations)["ws-1"].stepRuns).toContainEqual({
+      stepId: dropped.id,
+      state: "running",
+      sessionId: "sess-9",
+      reason: null,
+    });
+  });
+
+  // The sibling was already running when the drop landed; re-running the
+  // scheduler must not spawn a second session for it.
+  it("leaves the step already running on that stage alone", async () => {
+    await addStepToStageAction("ws-1", "s1", "/x/b.md");
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledTimes(1);
+    expect(backend.setStepRun).not.toHaveBeenCalledWith("t1", expect.anything(), expect.anything(), expect.anything());
+  });
+
+  it("starts a tool dropped onto that stage the same way", async () => {
+    toolRecords.set({ "ws-1": [] });
+    expect(await addToolToStageAction("ws-1", "s1", "builtin:push")).toBeNull();
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("git push -u origin HEAD")
+    );
+  });
+
+  // Same gesture, same rule: a queued step dragged onto the live stage is
+  // now part of the beat in flight.
+  it("starts a step moved onto that stage from a later one", async () => {
+    expect(await moveStepIntoStageAction("ws-1", "t2", "s1")).toBeNull();
+    expect(backend.setStepRun).toHaveBeenCalledWith("t2", "running", "sess-9", null);
+  });
+
+  // Every OTHER drop target stays queued -- a new stage is a later beat.
+  it("does not start a card dropped into a gap as its own stage", async () => {
+    expect(await addCardAsStageAction("ws-1", "r1", 1, "/x/b.md")).toBeNull();
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  it("does not start a card dropped onto a stage the rail has not reached", async () => {
+    await addStepToStageAction("ws-1", "s2", "/x/b.md");
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  // O1: nothing spawns on an unarmed rail, however live the stage looked
+  // when the rail was last running.
+  it("does not start a card dropped onto the stage a PAUSED rail is parked on", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    vi.mocked(layoutStateModule.createSessionOnPage).mockClear();
+    await addStepToStageAction("ws-1", "s1", "/x/b.md");
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  // A save that failed has rolled the plan back, so there is no step to
+  // start and the scheduler must not be handed the rolled-back plan.
+  it("starts nothing when the drop failed to save", async () => {
+    vi.mocked(backend.setOrchestration).mockRejectedValue(new Error("nope"));
+    expect(await addStepToStageAction("ws-1", "s1", "/x/b.md")).toContain("nope");
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+});
+
+describe("a tick requested while one is in flight", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    // The same rail, armed at s1 with NOTHING running yet, so one tick
+    // launches its step -- and a drop can land mid-launch.
+    vi.mocked(backend.getOrchestration).mockResolvedValue({ ...midRunRail(), stepRuns: [] });
+    await fetchOrchestration("ws-1");
+  });
+
+  // The pass in flight read the plan before the new step existed, so
+  // simply returning would leave it pending until some unrelated event
+  // ticked the workspace again -- the very stall this card is about,
+  // reached by a narrower door.
+  it("is replayed once the pass in flight drains", async () => {
+    vi.mocked(layoutStateModule.createSessionOnPage).mockImplementationOnce(async () => {
+      orchestrations.update((m) => ({ ...m, "ws-1": addStep(m["ws-1"], "s1", "late", "/x/b.md") }));
+      void tick("ws-1");
+      return "sess-9";
+    });
+
+    await tick("ws-1");
+
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledTimes(2);
+    expect(backend.setStepRun).toHaveBeenCalledWith("late", "running", "sess-9", null);
   });
 });

@@ -36,6 +36,7 @@ import {
   railCardsToMove,
   railDoneStepIds,
   removeSteps,
+  isStageRunning,
 } from "./orchestration";
 import type { Action, Orchestration, Rail, RailState, StepState, Step } from "./orchestration";
 import { findTool, resolveToolBody } from "./orchestrationTools";
@@ -425,32 +426,51 @@ export function doneColumnName(workspaceId: string): string | null {
 // state the next nextActions call reads, so overlapping ticks would
 // double-launch.
 const ticking = new Set<string>();
+// ...but a request that arrives DURING a tick must not be dropped. The
+// tick in flight read the plan before that caller's change existed, so
+// simply returning would leave the change unscheduled until some
+// unrelated event ticked again -- exactly the stall a card dropped onto
+// a running stage used to sit in. So the request is remembered and
+// replayed once the current pass drains.
+const tickAgain = new Set<string>();
 
 export async function tick(workspaceId: string): Promise<void> {
-  if (ticking.has(workspaceId)) return;
+  if (ticking.has(workspaceId)) {
+    tickAgain.add(workspaceId);
+    return;
+  }
   ticking.add(workspaceId);
   try {
-    const orch = get(orchestrations)[workspaceId];
-    const board = get(kanbanState)[workspaceId];
-    if (!orch || !board) return;
-    const tree = get(gavinTrees)[workspaceId];
-    // null, not [] -- an unloaded refs snapshot must not look like "every
-    // worktree is gone" and stall every bound rail on a cold start.
-    const worktrees = get(gitStore)[workspaceId]?.refs?.worktrees ?? null;
-    const live = new Set<string>();
-    for (const ws of get(layoutState).workspaces) {
-      for (const page of ws.pages) for (const id of allSessionIds(page.layout)) live.add(id);
-    }
-    // null, not [], for the same reason as worktrees above: an unloaded
-    // tool library must not read as "every tool was deleted".
-    const tools = libraryFor(get(toolRecords), workspaceId);
-    await executeActions(
-      workspaceId,
-      nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits))
-    );
+    await runTick(workspaceId);
   } finally {
     ticking.delete(workspaceId);
   }
+  // Outside the guard, so the replay is a full tick of its own. It
+  // terminates: the pass that just ran left every step it launched
+  // `running`, so a replay that finds nothing new emits no actions and
+  // asks for nothing further.
+  if (tickAgain.delete(workspaceId)) await tick(workspaceId);
+}
+
+async function runTick(workspaceId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const board = get(kanbanState)[workspaceId];
+  if (!orch || !board) return;
+  const tree = get(gavinTrees)[workspaceId];
+  // null, not [] -- an unloaded refs snapshot must not look like "every
+  // worktree is gone" and stall every bound rail on a cold start.
+  const worktrees = get(gitStore)[workspaceId]?.refs?.worktrees ?? null;
+  const live = new Set<string>();
+  for (const ws of get(layoutState).workspaces) {
+    for (const page of ws.pages) for (const id of allSessionIds(page.layout)) live.add(id);
+  }
+  // null, not [], for the same reason as worktrees above: an unloaded
+  // tool library must not read as "every tool was deleted".
+  const tools = libraryFor(get(toolRecords), workspaceId);
+  await executeActions(
+    workspaceId,
+    nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits))
+  );
 }
 
 /// Must be registered BEFORE the first watchGavinRoot call: Tauri events
@@ -492,6 +512,7 @@ export function __resetForTesting(): void {
   saveErrors.set({});
   pendingSaves.clear();
   ticking.clear();
+  tickAgain.clear();
   highlightedConflict.set(null);
 }
 
@@ -531,24 +552,53 @@ export function addStepAsStageAction(workspaceId: string, railId: string, cardPa
   });
 }
 
-export function addStepToStageAction(
+/// The PARALLEL drop: the card joins an existing stage. If that stage is
+/// the one its rail is running right now, the card starts immediately --
+/// see startIfStageRunning.
+export async function addStepToStageAction(
   workspaceId: string,
   stageId: string,
   cardPath: string
 ): Promise<string | null> {
-  return mutatePlan(workspaceId, (o) => addStep(o, stageId, crypto.randomUUID(), cardPath));
+  const error = await mutatePlan(workspaceId, (o) => addStep(o, stageId, crypto.randomUUID(), cardPath));
+  if (!error) await startIfStageRunning(workspaceId, stageId);
+  return error;
+}
+
+/// A step dropped onto the stage a rail is CURRENTLY running belongs to a
+/// beat already in flight, so it starts at once rather than sitting
+/// `pending` until some unrelated change happens to tick the workspace.
+/// That wait was the whole bug: the drop looked inert, and the human's
+/// only recourse was Pause/Resume.
+///
+/// The tick is what starts it -- nextActions already launches a pending
+/// step on the current stage -- so there is still exactly one launch
+/// path, with the same blockers, the same stall reasons and the same
+/// rule 1 that skips a card already sitting in the done column. Every
+/// other drop target stays queued: a new stage is a later beat, and an
+/// idle or paused rail spawns nothing at all (O1).
+async function startIfStageRunning(workspaceId: string, stageId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  if (orch && isStageRunning(orch, stageId)) await tick(workspaceId);
 }
 
 export function removeStepAction(workspaceId: string, stepId: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => removeStep(o, stepId));
 }
 
-export function moveStepIntoStageAction(
+/// Moving an existing step onto a running stage is the same gesture as
+/// dropping a card there, so it starts the same way. Reading the target
+/// AFTER the move is what keeps that safe: were the target the current
+/// stage, the step's old stage cannot also have been, so nothing this
+/// move emptied can have left the rail parked on a stage that is gone.
+export async function moveStepIntoStageAction(
   workspaceId: string,
   stepId: string,
   stageId: string
 ): Promise<string | null> {
-  return mutatePlan(workspaceId, (o) => moveStepIntoStage(o, stepId, stageId));
+  const error = await mutatePlan(workspaceId, (o) => moveStepIntoStage(o, stepId, stageId));
+  if (!error) await startIfStageRunning(workspaceId, stageId);
+  return error;
 }
 
 export function moveStepToNewStageAction(
@@ -702,12 +752,16 @@ export function addToolAsStageAction(
   );
 }
 
-export function addToolToStageAction(
+export async function addToolToStageAction(
   workspaceId: string,
   stageId: string,
   toolId: string
 ): Promise<string | null> {
-  return mutatePlan(workspaceId, (o) => addToolStep(o, stageId, crypto.randomUUID(), toolId));
+  const error = await mutatePlan(workspaceId, (o) =>
+    addToolStep(o, stageId, crypto.randomUUID(), toolId)
+  );
+  if (!error) await startIfStageRunning(workspaceId, stageId);
+  return error;
 }
 
 /// The overrides arrive already pruned of values equal to the tool's own

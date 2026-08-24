@@ -533,6 +533,18 @@ hit-testing, `KanbanDragPreview`). Drop targets and their meaning:
 This is the whole "sequential, parallel, or a mix" interaction: the
 difference between the two is which gap you drop into.
 
+**A drop onto the stage a rail is *currently running* starts at once.** That
+stage is a beat already in flight, so a step joining it is late rather than
+next, and leaving it `pending` until some unrelated change ticked the
+workspace made the drop look inert — the only way past it was Pause/Resume.
+The drop itself ticks (`isStageRunning` → `tick`), so the launch stays the
+scheduler's, with the same blockers, the same stall reasons, and rule 1 still
+skipping a card already in the done column. It covers a card, a tool, and a
+step dragged up from a later stage — the same three sources the band accepts.
+Every other target stays queued: a new stage is a later beat, and O1 holds, so
+an idle or paused rail spawns nothing however live the stage looked when it
+last ran.
+
 ---
 
 ## 7. Rail bindings

@@ -182,6 +182,27 @@ export function railStateOf(orch: Orchestration, railId: string): RailState {
   return orch.railRuns.find((r) => r.railId === railId)?.state ?? "idle";
 }
 
+/// The stage a RUNNING rail is on right now, or null. Distinct from
+/// `firstUnfinishedStageId`, which asks where a rail WOULD start: this
+/// asks where it already is, and only a rail actually advancing has an
+/// answer.
+export function runningStageId(orch: Orchestration, railId: string): string | null {
+  if (railStateOf(orch, railId) !== "running") return null;
+  return orch.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
+}
+
+/// True when this stage is the one its rail is currently running. A step
+/// that lands here is not queued behind anything -- the beat it belongs
+/// to is already in flight, so it is late rather than next, and the
+/// caller starts it at once rather than leaving it to whatever ticks
+/// next. Nothing here spawns on an unarmed rail (O1): a rail that is
+/// idle or paused has no running stage and this is false for every
+/// stage it owns.
+export function isStageRunning(orch: Orchestration, stageId: string): boolean {
+  const rail = orch.rails.find((r) => r.stages.some((s) => s.id === stageId));
+  return rail ? runningStageId(orch, rail.id) === stageId : false;
+}
+
 /// Where Start arms the rail: the first stage (by position) holding a
 /// step that is not already `done`. Cards that are ALREADY in the done
 /// column are not considered here -- nextActions marks and cascades past

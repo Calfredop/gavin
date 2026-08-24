@@ -249,6 +249,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Run two cards at once: both tabs should be tellable apart at a glance. Board Run, Resume and an orchestration launch all carry the instruction.",
       },
       {
+        id: "run-drop-on-running-stage",
+        text: "Dropping a card onto the stage a RUNNING rail is currently on spawns its agent at once; every other drop still just queues",
+        hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage turns parallel and the second agent appears without touching Pause/Resume. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",
+      },
+      {
         id: "run-tab-card-link",
         text: "A bound agent's tab shows the ↗ card link; it opens the Kanban tab with that card's detail modal already up",
         hint: "Unbound terminals (and file/board tabs) show no link at all. Unlink the card and the link goes away.",
