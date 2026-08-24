@@ -5,3 +5,85 @@ This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all
 development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`
 (plan before coding, keep plan statuses current, use the gavin_* MCP tools).
 <!-- gavin:end -->
+
+## What this repo is
+
+Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte app:
+
+- `crates/protocol` — wire types, `PROTOCOL_VERSION`, `MIN_COMPATIBLE_VERSION`,
+  `min_version_for`
+- `crates/daemon` — `gavin-daemon`: PTYs, SQLite, the `.gavin*` watcher,
+  orchestration state
+- `crates/gavin-mcp` — the `gavin_*` MCP server
+- `app/` — SvelteKit + Svelte 5 + xterm.js; `app/src-tauri` — the Tauri host
+  (git, file viewer, agent profiles)
+
+Design history lives in `docs/superpowers/{brainstorms,specs,plans}/`. Read the
+spec before re-deriving a decision — most of them record why the obvious option
+was rejected.
+
+## Checks
+
+```
+cargo test --workspace
+cd app && npm test && npm run check && npm run build
+```
+
+The daemon's `gavin::tests` are flaky under full-suite cargo parallelism
+(fs-watcher timing). Re-run that module alone before calling a failure a
+regression.
+
+## Traps that actually bite here
+
+**The working tree is shared.** Several agent sessions edit this checkout at
+once, and `main` usually carries a large dirty tree spanning all of them.
+
+- `git log` cannot answer "is this feature in?" — read the code.
+- Commit only the files you touched. Never `git add -A`.
+- Never `git stash`: the stash stack is shared with every worktree.
+- Suites run in the shared tree prove nothing about a branch — verify in a
+  detached worktree.
+- Commits and merges happen when the human asks for them.
+
+**The daemon is shared and long-lived.** Never `pkill gavin-daemon`. A protocol
+bump only takes effect after a rebuild and restart, which is the human's call.
+To verify daemon or MCP behaviour meanwhile, run an isolated daemon under a temp
+`$HOME` — it gets its own socket and databases.
+
+**`gavin-mcp` fails closed on version skew.** Once the daemon moves ahead, every
+`gavin_*` tool errors ("the gavin daemon is newer than this gavin-mcp"). That is
+the expected state after a bump, not a fault in your work — file cards by hand
+and carry on.
+
+**The compat gate is per request TYPE.** `min_version_for` gates request
+variants, not fields, so widening an existing request's payload is invisible to
+it: an older daemon drops the new fields silently and stores a broken row. A bump
+that widens a request needs a `FEATURE_MIN_VERSION` entry in
+`app/src/lib/daemonCompat.ts` **and** a `featureBlockedReason` consumer on every
+UI surface that can produce the payload. The entry alone is a dead gate.
+
+**A nested task has no status of its own.** `kind: task` + `parent:` + no
+`status:` means its status is the parent's. Never compare `plan.status` to a
+column directly in orchestration code — go through `orchestration.effectiveStatus`.
+Reading it raw is what made rails re-run finished work. `plans/done/` means Done
+and still on the board; `plans/archive/` means off the board, and is only ever an
+explicit action.
+
+**The app is WKWebView, not Chromium.** Pointer capture is unreliable and a
+detached `Window.setTimeout` throws, so code can be green in Node and broken in
+the app. Tauri's `dragDropEnabled` is `false` (otherwise no DOM `drop` ever
+fires); any `dragover` that accepts a drop must also set `dropEffect`.
+
+**Svelte 5 `$state` proxies objects**, so `stateVar !== rawObject` is always
+true. Never gate on identity; guard async supersession with a token counter.
+
+## How UI work is structured
+
+Logic goes in a plain `.ts` module with unit tests (`orchestration.ts`,
+`sidebarSummary.ts`, `planBoard.ts`, …); the `.svelte` file stays a thin template
+over it. Extend the pure module, not the template.
+
+Rendered UI is the one thing the suites cannot cover. The manual smoke passes in
+`app/src/lib/smokeChecklist.ts` are the owner's to run. A useful agent
+contribution there is a static pre-flight — grep each item's exact strings
+against the committed source — not a re-run of already-green suites.
