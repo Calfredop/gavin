@@ -492,7 +492,15 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Editing config.toml in a terminal updates the panel (~3s); a field you're typing in is NOT clobbered",
         hint: "Focus the Command field, type, then edit config.toml externally.",
       },
-      { id: "set-mcp-gated", text: "A non-Claude profile hides the agent-integration row and says MCP isn't available yet" },
+      {
+        id: "set-mcp-gated",
+        text: "Every stock profile offers the agent-integration row, naming its own config file (Codex → .codex/config.toml)",
+      },
+      {
+        id: "set-mcp-custom",
+        text: "Custom shows MCP config + format fields; naming a file makes the agent-integration row appear",
+        hint: "Then run it: the named file is written in the chosen dialect.",
+      },
       {
         id: "set-mcp-settings-only",
         text: "The “Agent integration” row shows ONLY on the Settings tab — no other hub tab carries it",
@@ -520,11 +528,20 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "wiz-prd-agent",
         text: "“Ask the agent” starts the main agent already writing the PRD; Launch then says “already running”",
       },
-      { id: "wiz-agent-gate", text: "With a non-Claude profile, “Ask the agent” is absent and the step says why" },
+      {
+        id: "wiz-agent-gate",
+        text: "With Cursor or opencode, “Ask the agent” is absent and the step says why; with Codex or Gemini it is offered",
+        hint: "Those two take a path, not a prompt, in their bare positional — the other three take a prompt.",
+      },
       {
         id: "wiz-integration-degrades",
-        text: "With Codex selected, Integration still writes AGENTS.md and lists the skill file and MCP config as skipped, with reasons",
-        hint: "This is the behaviour change: before, that profile got nothing at all.",
+        text: "With Codex selected, Integration writes AGENTS.md AND .codex/config.toml, and lists only the skill file as skipped",
+        hint: "Both halves are behaviour changes: that profile once got nothing, and until sub-project B got no MCP config.",
+      },
+      {
+        id: "wiz-integration-merges",
+        text: "Re-running over a hand-edited config leaves the other servers, settings and TOML comments alone",
+        hint: "Put a comment and a second server in .codex/config.toml first.",
       },
       { id: "wiz-complete", text: "Once all four are done the Home card disappears" },
       { id: "wiz-unfiled", text: "The Unfiled workspace never offers the wizard" },

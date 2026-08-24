@@ -926,7 +926,13 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
             let name = table.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
             let agent = table.get("agent").and_then(|v| v.as_table()).map(|t| {
                 let get = |k: &str| t.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
-                AgentConfig { profile: get("profile"), file: get("file"), command: get("command") }
+                AgentConfig {
+                    profile: get("profile"),
+                    file: get("file"),
+                    command: get("command"),
+                    mcp_file: get("mcp_file"),
+                    mcp_format: get("mcp_format"),
+                }
             });
             (name, agent, false)
         }
@@ -937,9 +943,11 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
 /// Writes one `[agent]` key of `.gavin-root/config.toml`. Uses toml_edit
 /// so comments, key order and formatting survive -- this file is
 /// hand-edited by users and read by their agents. Allow-listed exactly
-/// like set_plan_field: never an arbitrary-key writer.
+/// like set_plan_field: never an arbitrary-key writer. mcp_file and
+/// mcp_format carry the `custom` profile's MCP layout, which cannot come
+/// from the static profile table.
 pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
-    if !matches!(key, "profile" | "file" | "command") {
+    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format") {
         anyhow::bail!("not a settable agent key: {key}");
     }
     if value.trim().is_empty() || value.contains('\n') {
@@ -2178,6 +2186,8 @@ mod tests {
         assert_eq!(agent.profile.as_deref(), Some("claude-code"));
         assert_eq!(agent.file, None, "the file name follows the profile until overridden");
         assert_eq!(agent.command, None);
+        assert_eq!(agent.mcp_file, None, "and so does the MCP layout");
+        assert_eq!(agent.mcp_format, None);
     }
 
     #[test]
@@ -2188,12 +2198,17 @@ mod tests {
         set_root_config_field(dir.path(), "profile", "codex").unwrap();
         set_root_config_field(dir.path(), "file", "AGENTS.md").unwrap();
         set_root_config_field(dir.path(), "command", "codex --full-auto").unwrap();
+        // The custom profile's MCP layout, which no static table can hold.
+        set_root_config_field(dir.path(), "mcp_file", ".myagent/mcp.json").unwrap();
+        set_root_config_field(dir.path(), "mcp_format", "json-local").unwrap();
 
         let tree = scan_root(dir.path());
         let agent = tree.contexts[0].agent.as_ref().unwrap();
         assert_eq!(agent.profile.as_deref(), Some("codex"));
         assert_eq!(agent.file.as_deref(), Some("AGENTS.md"));
         assert_eq!(agent.command.as_deref(), Some("codex --full-auto"));
+        assert_eq!(agent.mcp_file.as_deref(), Some(".myagent/mcp.json"));
+        assert_eq!(agent.mcp_format.as_deref(), Some("json-local"));
 
         assert!(set_root_config_field(dir.path(), "version", "9").is_err(), "unknown key");
         assert!(set_root_config_field(dir.path(), "profile", "").is_err(), "empty value");

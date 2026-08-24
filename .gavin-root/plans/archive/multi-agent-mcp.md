@@ -28,20 +28,24 @@ Sub-project B of the split taken during the workspace-settings brainstorm
 
 ## Verified conventions
 
-Checked against upstream docs on 2026-08-20; re-verify before writing, as
-these drift between releases.
+Re-verified 2026-08-23: `.gemini/settings.json` and `.cursor/mcp.json`
+against upstream docs, `.codex/config.toml` against the config reference
+and `codex-rs/tui/src/cli.rs`, `opencode.json` against the opencode docs
+and the installed CLI's `--help`. Two corrections to the 2026-08-20 table
+are folded in below.
 
-| Profile | MCP config | Shape |
-| --- | --- | --- |
-| Gemini CLI | `.gemini/settings.json` | `mcpServers.<key>` — same shape as Claude's, different path |
-| Cursor | `.cursor/mcp.json` | `mcpServers.<key>` — same again |
-| Codex CLI | `.codex/config.toml` | TOML `[mcp_servers.<key>]` |
-| opencode | `opencode.json` | `mcp.<key>` with `type: "local"` and `command` as an array |
+| Profile | MCP config | Shape | Positional prompt |
+| --- | --- | --- | --- |
+| Claude Code | `.mcp.json` | `mcpServers.<key>` — `command` + `args` | yes |
+| Gemini CLI | `.gemini/settings.json` | `mcpServers.<key>` — same shape, different path | yes — `gemini [query..]` starts interactive on it |
+| Cursor | `.cursor/mcp.json` | `mcpServers.<key>` **plus `type: "stdio"`**, which its docs now require | no — `cursor` is the IDE launcher and takes paths; the agent CLI is a separate binary |
+| Codex CLI | `.codex/config.toml` | TOML `[mcp_servers.<key>]` — `command` + `args` | yes — a positional `PROMPT` starts the session |
+| opencode | `opencode.json` | `mcp.<key>` with `type: "local"`, `command` an array, `enabled` | no — the bare positional is a **project path**; prompts go through `opencode run` |
 
 Three of the four are a path change to the existing merge-aware JSON
-writer. Codex needs format-preserving TOML (`toml_edit`, already a
-dependency via the workspace-settings work). opencode needs a second JSON
-shape.
+writer, Cursor adding one key. Codex needs format-preserving TOML
+(`toml_edit`, already a dependency via the workspace-settings work).
+opencode needs a second JSON shape.
 
 ## Steps
 
@@ -50,7 +54,7 @@ shape.
 - [x] Codex writer: `.codex/config.toml` via toml_edit, merge-aware, comments preserved
 - [x] opencode writer: `opencode.json`, `mcp.<key>` with a command array
 - [x] Verify each CLI's positional-prompt convention and set `prompt_arg`
-- [x] Custom profile: user-specified MCP config path and shape
+- [x] [Custom profile: user-specified MCP config path and shape](./custom-profile-user-specified-mcp-config-path-and-shape.md)
 - [x] `skipped` shrinks accordingly; the wizard's Integration step needs no change
 - [x] Update the smoke checklist: `wiz-integration-degrades` and `wiz-agent-gate` describe fewer profiles
 

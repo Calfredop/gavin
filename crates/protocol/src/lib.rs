@@ -102,7 +102,7 @@ pub enum Request {
         value: String,
     },
     /// Writes one key of `.gavin-root/config.toml`'s `[agent]` table.
-    /// Allow-listed to profile/file/command -- like
+    /// Allow-listed to profile/file/command/mcp_file/mcp_format -- like
     /// SetPlanFrontmatterField this must never become an arbitrary-key
     /// writer into a file the user hand-edits.
     SetRootConfigField {
@@ -764,7 +764,7 @@ pub enum GavinContextKind {
 
 /// The root context's `[agent]` block from `.gavin-root/config.toml`.
 /// Every field optional: a config.toml predating workspace settings
-/// parses cleanly with all three `None`, and the profile defaults apply.
+/// parses cleanly with all of them `None`, and the profile defaults apply.
 /// Only ever populated for the root context -- `.gavin` sub-contexts have
 /// no agent block.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -773,6 +773,17 @@ pub struct AgentConfig {
     pub profile: Option<String>,
     pub file: Option<String>,
     pub command: Option<String>,
+    /// Where THIS workspace's agent reads MCP config, for the `custom`
+    /// profile -- the five stock profiles carry a verified path in the
+    /// table instead. Relative to the root. `default` keeps an older
+    /// daemon's tree parseable, exactly as `outside` does below.
+    #[serde(default)]
+    pub mcp_file: Option<String>,
+    /// Which dialect that file is written in; one of the `McpFormat`
+    /// names. Absent means the `mcpServers.<key>` JSON shape, which three
+    /// of the five CLIs use.
+    #[serde(default)]
+    pub mcp_format: Option<String>,
 }
 
 /// A folder that contains a `.gavin-root/` (kind Root, only ever directly
@@ -1362,6 +1373,8 @@ mod tests {
                 profile: Some("claude-code".to_string()),
                 file: None,
                 command: Some("claude --model opus".to_string()),
+                mcp_file: None,
+                mcp_format: None,
             }),
             outside: false,
         };
@@ -1371,7 +1384,9 @@ mod tests {
             serde_json::json!({
                 "profile": "claude-code",
                 "file": null,
-                "command": "claude --model opus"
+                "command": "claude --model opus",
+                "mcpFile": null,
+                "mcpFormat": null
             })
         );
     }

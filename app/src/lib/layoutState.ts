@@ -12,7 +12,12 @@ import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
 import { followRenamedContext } from "./planExplorer";
-import { normalizeColor, resolveAgentConfig, type AgentProfileInfo } from "./settings";
+import {
+  normalizeColor,
+  resolveAgentConfig,
+  type AgentProfileInfo,
+  type McpFormatInfo,
+} from "./settings";
 import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import type { DaemonCompat } from "./daemonCompat";
@@ -394,6 +399,11 @@ export async function bootstrap(): Promise<void> {
     .then((profiles) => agentProfilesStore.set(profiles))
     .catch(() => {});
 
+  void backend
+    .mcpFormats()
+    .then((formats) => mcpFormatsStore.set(formats))
+    .catch(() => {});
+
   // Like file tabs: frontend-owned, one-shot, best-effort.
   void backend
     .getBoardTabs()
@@ -518,6 +528,10 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
 /// window, so an early call is safe rather than wrong.
 export const agentProfilesStore = writable<AgentProfileInfo[]>([]);
 
+/// The MCP dialects a `custom` profile can be pointed at. Fetched with
+/// the profile table and, like it, empty until then.
+export const mcpFormatsStore = writable<McpFormatInfo[]>([]);
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
 export function resolvedAgentFor(workspaceId: string) {
@@ -604,7 +618,7 @@ export async function stopMainAgent(workspaceId: string): Promise<void> {
 /// watcher push -- no optimistic local copy to fall out of sync.
 export async function setAgentField(
   workspaceId: string,
-  key: "profile" | "file" | "command",
+  key: "profile" | "file" | "command" | "mcp_file" | "mcp_format",
   value: string
 ): Promise<void> {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);

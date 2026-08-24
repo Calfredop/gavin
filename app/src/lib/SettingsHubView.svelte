@@ -7,9 +7,16 @@
     setAgentField,
     agentProfilesStore,
     restartDaemonInPlace,
+    mcpFormatsStore,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
-  import { resolveAgentConfig, validateAgentFileName, renameDecision, DEFAULT_ACCENT } from "./settings";
+  import {
+    resolveAgentConfig,
+    validateAgentFileName,
+    validateMcpConfigPath,
+    renameDecision,
+    DEFAULT_ACCENT,
+  } from "./settings";
   import * as backend from "./backend";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
@@ -37,8 +44,10 @@
   let nameDraft = $state("");
   let commandDraft = $state("");
   let fileDraft = $state("");
+  let mcpFileDraft = $state("");
   let focused = $state<string | null>(null);
   let fileError = $state<string | null>(null);
+  let mcpFileError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
 
   // --- daemon ----------------------------------------------------------
@@ -74,6 +83,25 @@
     const file = agent.file;
     if (focused !== "file") fileDraft = file;
   });
+  $effect(() => {
+    const mcpFile = rootContext?.agent?.mcpFile ?? "";
+    if (focused !== "mcpFile") mcpFileDraft = mcpFile;
+  });
+
+  /// Only `custom` gets these: every other profile's layout is verified
+  /// in the Rust table, and a box that could override it would be a box
+  /// for writing gavin's config to the wrong place.
+  const isCustom = $derived(agent.profileId === "custom");
+  const mcpFormat = $derived(rootContext?.agent?.mcpFormat ?? $mcpFormatsStore[0]?.id ?? "");
+
+  function commitMcpFile(): void {
+    mcpFileError = null;
+    const trimmed = mcpFileDraft.trim();
+    if (!trimmed || trimmed === (rootContext?.agent?.mcpFile ?? "")) return;
+    mcpFileError = validateMcpConfigPath(trimmed);
+    if (mcpFileError) return;
+    void setAgentField(workspaceId, "mcp_file", trimmed);
+  }
 
   function commitName(): void {
     const trimmed = nameDraft.trim();
@@ -237,12 +265,47 @@
         {#if fileError}
           <p class="hint warn">{fileError}</p>
         {/if}
+        {#if isCustom}
+          <label class="row">
+            <span>MCP config</span>
+            <input
+              bind:value={mcpFileDraft}
+              spellcheck="false"
+              placeholder=".myagent/mcp.json"
+              onfocus={() => (focused = "mcpFile")}
+              onblur={() => {
+                focused = null;
+                commitMcpFile();
+              }}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </label>
+          {#if mcpFileError}
+            <p class="hint warn">{mcpFileError}</p>
+          {/if}
+          <label class="row">
+            <span>MCP format</span>
+            <select
+              value={mcpFormat}
+              onchange={(e) => void setAgentField(workspaceId, "mcp_format", e.currentTarget.value)}
+            >
+              {#each $mcpFormatsStore as format (format.id)}
+                <option value={format.id}>{format.label}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
         {#if agent.mcpSupported}
           <p class="hint">
-            MCP integration is available for this profile — set it up from the Root row above.
+            MCP integration writes <code>{agent.mcpConfigFile}</code> — set it up from the Root row
+            above.
           </p>
         {:else}
-          <p class="hint">MCP integration isn't available for {profileLabel} yet.</p>
+          <p class="hint">
+            Name the file {profileLabel} reads MCP config from, and gavin can write itself into it.
+          </p>
         {/if}
       {/if}
     </section>
