@@ -136,9 +136,9 @@ fn tool_definitions() -> Value {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
-        { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail, and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees, branches and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail, and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
-            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, pageId, stages: [{ id, position, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. A stage's steps run IN PARALLEL in that rail's checkout; stages run one after another.", "items": { "type": "object" } },
+            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, branch, pageId, stages: [{ id, position, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. A stage's steps run IN PARALLEL in that rail's checkout; stages run one after another. `worktreePath` says WHICH CHECKOUT (null = the workspace root), `branch` says WHICH BRANCH gavin puts that checkout on before launching a step (null = whatever is checked out) — so a branch with no worktree means the root checkout on that branch, no separate folder.", "items": { "type": "object" } },
             "conflict_notes": { "type": "array", "description": "Your judgements, shown to the human in the Conflicts box. Each: { id, stepIds: [...], note }.", "items": { "type": "object" } }
         }, "required": ["rails"] } },
         { "name": "gavin_spawn_session", "description": "Spawn a terminal session in the gavin app (visible to the human on the Agents page). Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
@@ -413,6 +413,7 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
                 "id": rail.id,
                 "name": rail.name,
                 "worktreePath": rail.worktree_path,
+                "branch": rail.branch,
                 "pageId": rail.page_id,
                 "state": rail_run_of.get(rail.id.as_str()).map(|r| r.state.clone())
                     .unwrap_or_else(|| "idle".to_string()),
@@ -607,6 +608,7 @@ mod tests {
                 name: "backend".into(),
                 position: 0,
                 worktree_path: Some("/x/wt-a".into()),
+                branch: Some("feature/api".into()),
                 page_id: None,
                 stages: vec![protocol::Stage {
                     id: "s1".into(),

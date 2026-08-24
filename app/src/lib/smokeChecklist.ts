@@ -327,7 +327,12 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "home-no-respawn", text: "With an agent stopped, relaunching the app does NOT start one" },
       { id: "home-command", text: "Editing the command (e.g. claude --model opus) persists and is used on the next Start" },
       { id: "home-summaries", text: "PRD excerpt and board columns/counts match reality; changing the board updates the counts" },
-      { id: "home-tiles", text: "Each of the four tiles navigates to its tab" },
+      {
+        id: "home-orchestration",
+        text: "The Orchestration panel lists every rail with its state and stage progress; starting a rail flips it to running there without leaving Home",
+        hint: "The conflict badge must show the same count the tab's conflicts box does — both read detectConflicts.",
+      },
+      { id: "home-tiles", text: "Each of the six tiles navigates to its tab" },
       { id: "home-resize", text: "Resizing the window keeps the agent terminal correctly sized, not clipped" },
     ],
   },

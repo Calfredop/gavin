@@ -374,6 +374,14 @@ pub struct Rail {
     pub name: String,
     pub position: i64,
     pub worktree_path: Option<String>,
+    /// WHICH BRANCH the rail's checkout sits on (spec O15). Orthogonal
+    /// to `worktree_path`, which says which checkout: a rail with a
+    /// branch and no worktree runs on that branch in the ROOT checkout,
+    /// which is the whole point -- branches without a folder each.
+    /// None means "whatever is checked out", the behaviour that predates
+    /// this field, so it is defaulted rather than required.
+    #[serde(default)]
+    pub branch: Option<String>,
     pub page_id: Option<String>,
     pub stages: Vec<Stage>,
 }
@@ -1323,6 +1331,7 @@ mod tests {
             name: "backend".into(),
             position: 0,
             worktree_path: Some("/x/gavin-backend".into()),
+            branch: Some("feature/api".into()),
             page_id: None,
             stages: vec![Stage {
                 id: "s1".into(),
@@ -1343,6 +1352,7 @@ mod tests {
                 "name": "backend",
                 "position": 0,
                 "worktreePath": "/x/gavin-backend",
+                "branch": "feature/api",
                 "pageId": null,
                 "stages": [{ "id": "s1", "position": 0,
                              "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md",
@@ -1360,6 +1370,19 @@ mod tests {
             serde_json::to_value(&run).unwrap(),
             serde_json::json!({ "stepId": "t1", "state": "running", "sessionId": "sess-1", "reason": null })
         );
+    }
+
+    /// The old shape must still parse: a rail authored before branch
+    /// binding -- or by an agent that omits the field -- means "whatever
+    /// is checked out", which is exactly None.
+    #[test]
+    fn a_rail_without_a_branch_parses_as_unbound_to_any_branch() {
+        let rail: Rail = serde_json::from_value(serde_json::json!({
+            "id": "r1", "name": "backend", "position": 0,
+            "worktreePath": null, "pageId": null, "stages": []
+        }))
+        .unwrap();
+        assert_eq!(rail.branch, None);
     }
 
     /// The old shape must still parse: an agent that has never heard of

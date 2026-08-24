@@ -826,6 +826,17 @@ describe("createPage", () => {
 
     expect(backend.createSession).not.toHaveBeenCalled();
   });
+
+  // A rail's own page opens where that rail works; the toolbar's pages
+  // pass nothing and keep the daemon's $HOME default.
+  it("opens the fresh shells in the given cwd", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("a");
+
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "backend", "/x/wt");
+
+    expect(backend.createSession).toHaveBeenCalledWith("/x/wt");
+  });
 });
 
 describe("createSessionForCard", () => {

@@ -1019,17 +1019,22 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
 /// Returns the new page's id, so a caller that must bind something to it
 /// (an orchestration rail) does not have to guess which page appeared.
 /// Null when the workspace is unknown or session creation failed.
+/// `cwd` is where the fresh shells open; omitted, the daemon's own
+/// default ($HOME) applies, which is what the toolbar's "new page"
+/// buttons want. A rail passes its checkout, so the page it spawns for
+/// itself opens where that rail actually works.
 export async function createPage(
   workspaceId: string,
   buildTree: (freshIds: string[]) => LayoutNode,
   sessionCount: number,
-  name: string
+  name: string,
+  cwd?: string
 ): Promise<string | null> {
   const state = get(layoutState);
   if (!state.workspaces.some((w) => w.id === workspaceId)) return null;
   let freshIds: string[];
   try {
-    freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession()));
+    freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession(cwd)));
   } catch (e) {
     setError(String(e));
     return null;

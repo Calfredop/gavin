@@ -54,7 +54,7 @@
             {#if conflict.kind === "declared"}<span class="tag">agent note</span>{/if}
             {#if railId}
               <button type="button" class="fix" onclick={() => onBindWorktree(railId)}>
-                Bind worktree…
+                {conflict.kind === "branch-missing" ? "Bind branch…" : "Bind worktree…"}
               </button>
             {:else if conflict.kind === "same-worktree" && conflict.stageId}
               <button

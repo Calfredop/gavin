@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Play, Pause, RotateCcw, Trash2, Plus } from "@lucide/svelte";
+  import { Play, Pause, RotateCcw, Trash2, Plus, Sparkles } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
@@ -51,6 +51,10 @@
     /// Resolved page name for the bindings row; null when unbound.
     pageName: string | null;
     onBind: () => void;
+    /// Hand THIS rail to the workspace agent (the header's wand). Scoped
+    /// on purpose: the tab header's Generate button is about the cards
+    /// nobody placed, this one is about the arrangement of one rail.
+    onReorganize: () => void;
     onAddStep: () => void;
     onRetryStep: (stepId: string) => void;
     onRemoveStep: (stepId: string) => void;
@@ -84,6 +88,7 @@
     onReset,
     onDelete,
     onBind,
+    onReorganize,
     onAddStep,
     onRetryStep,
     onRemoveStep,
@@ -184,12 +189,27 @@
           onclick={onStart}
         />
       {/if}
+      <IconButton
+        icon={Sparkles}
+        label="Reorganize with agent"
+        tip={agentAvailable
+          ? "Reorganize this rail with the workspace agent"
+          : "Start the workspace agent on Home first"}
+        disabled={!agentAvailable}
+        onclick={onReorganize}
+      />
       <IconButton icon={RotateCcw} label="Reset run state" onclick={onReset} />
       <IconButton icon={Trash2} label="Delete rail" tone="danger" onclick={onDelete} />
     </div>
     <button type="button" class="bindings" onclick={onBind}>
-      <span class="wt">{rail.worktreePath ?? "no worktree"}</span>
-      <span class="pg">{pageName ?? "Agents page"}</span>
+      <span class="wt">
+        {rail.worktreePath ?? "no worktree"}{#if rail.branch}<span class="br"
+          >{rail.branch}</span
+        >{/if}
+      </span>
+      <!-- Not "no page": an unbound rail is not page-less, it gets one
+           of its own the moment it is armed (spec O16). -->
+      <span class="pg">{pageName ?? "page at Start"}</span>
     </button>
     {#if !doneColumnName}
       <p class="warn">This board has no columns — nothing can complete.</p>
@@ -370,6 +390,16 @@
   }
   .bindings .pg {
     color: var(--text-subtle);
+    font-size: 10px;
+  }
+  /* The branch rides on the worktree line: the two are one binding read
+     together — WHICH checkout, on WHICH branch. */
+  .bindings .br {
+    margin-left: 5px;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: var(--surface-overlay);
+    color: var(--text);
     font-size: 10px;
   }
   .warn {

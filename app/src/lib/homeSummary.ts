@@ -1,5 +1,8 @@
 import type { Board } from "./kanban";
 import type { GavinTree } from "./gavin";
+import type { WorktreeInfo } from "./git";
+import { detectConflicts, railStateOf, stepStateOf } from "./orchestration";
+import type { Orchestration, RailState } from "./orchestration";
 import { mergePlanCards } from "./planBoard";
 
 export interface ColumnSummary {
@@ -63,4 +66,73 @@ export function prdExcerpt(content: string, maxLines: number): string[] {
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0)
     .slice(0, maxLines);
+}
+
+/// One rail, reduced to what a recap row can say: where it is and
+/// whether anything needs a human.
+export interface RailRecap {
+  id: string;
+  name: string;
+  state: RailState;
+  stagesTotal: number;
+  /// Stages whose every step is `done`. An empty stage counts as done
+  /// on the same rule the scheduler uses (firstUnfinishedStageId).
+  stagesDone: number;
+  /// 1-based index of the rail's current stage among its stages by
+  /// position, or null when the rail is not armed.
+  currentStage: number | null;
+  stepsStalled: number;
+}
+
+export interface OrchestrationSummary {
+  rails: RailRecap[];
+  railsRunning: number;
+  stepsRunning: number;
+  stepsStalled: number;
+  conflicts: number;
+  liveConflicts: number;
+}
+
+// Built on detectConflicts rather than a cheaper re-count, so the home's
+// badge can never disagree with the tab's conflicts box -- the same rule
+// boardSummary follows for the board.
+export function orchestrationSummary(
+  orch: Orchestration | undefined,
+  tree: GavinTree | undefined,
+  worktrees: WorktreeInfo[] | null,
+  branches: string[] | null
+): OrchestrationSummary {
+  if (!orch) {
+    return { rails: [], railsRunning: 0, stepsRunning: 0, stepsStalled: 0, conflicts: 0, liveConflicts: 0 };
+  }
+  const rails: RailRecap[] = [...orch.rails]
+    .sort((a, b) => a.position - b.position)
+    .map((rail) => {
+      const stages = [...rail.stages].sort((a, b) => a.position - b.position);
+      const run = orch.railRuns.find((r) => r.railId === rail.id) ?? null;
+      const at = run?.currentStageId ? stages.findIndex((s) => s.id === run.currentStageId) : -1;
+      return {
+        id: rail.id,
+        name: rail.name,
+        state: railStateOf(orch, rail.id),
+        stagesTotal: stages.length,
+        stagesDone: stages.filter((s) => s.steps.every((t) => stepStateOf(orch, t.id) === "done")).length,
+        currentStage: at < 0 ? null : at + 1,
+        stepsStalled: stages.reduce(
+          (n, s) => n + s.steps.filter((t) => stepStateOf(orch, t.id) === "stalled").length,
+          0
+        ),
+      };
+    });
+  const conflicts = detectConflicts(orch, tree, worktrees, branches);
+  return {
+    rails,
+    railsRunning: rails.filter((r) => r.state === "running").length,
+    // Counted off stepRuns, not the plan: a run row for a step the agent
+    // has since deleted is dropped by the push listener, so the two agree.
+    stepsRunning: orch.stepRuns.filter((r) => r.state === "running").length,
+    stepsStalled: orch.stepRuns.filter((r) => r.state === "stalled").length,
+    conflicts: conflicts.length,
+    liveConflicts: conflicts.filter((c) => c.severity === "live").length,
+  };
 }

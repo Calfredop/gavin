@@ -19,6 +19,7 @@ impl OrchestrationStore {
                 name TEXT NOT NULL,
                 position INTEGER NOT NULL,
                 worktree_path TEXT,
+                branch TEXT,
                 page_id TEXT
             );
             CREATE TABLE IF NOT EXISTS orch_stages (
@@ -75,6 +76,8 @@ impl OrchestrationStore {
         // shape. Add the columns idempotently instead.
         add_column_if_missing(&conn, "orch_steps", "tool_id", "TEXT")?;
         add_column_if_missing(&conn, "orch_steps", "tool_params", "TEXT")?;
+        // orch_rails predates branch binding for the same reason.
+        add_column_if_missing(&conn, "orch_rails", "branch", "TEXT")?;
         Ok(Self { conn })
     }
 
@@ -82,7 +85,7 @@ impl OrchestrationStore {
         let mut rails: Vec<Rail> = self
             .conn
             .prepare(
-                "SELECT id, name, position, worktree_path, page_id FROM orch_rails
+                "SELECT id, name, position, worktree_path, branch, page_id FROM orch_rails
                  WHERE workspace_id = ?1 ORDER BY position",
             )?
             .query_map(params![workspace_id], |row| {
@@ -91,7 +94,8 @@ impl OrchestrationStore {
                     name: row.get(1)?,
                     position: row.get(2)?,
                     worktree_path: row.get(3)?,
-                    page_id: row.get(4)?,
+                    branch: row.get(4)?,
+                    page_id: row.get(5)?,
                     stages: Vec::new(),
                 })
             })?
@@ -289,9 +293,17 @@ impl OrchestrationStore {
 
         for rail in rails {
             tx.execute(
-                "INSERT INTO orch_rails (id, workspace_id, name, position, worktree_path, page_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![rail.id, workspace_id, rail.name, rail.position, rail.worktree_path, rail.page_id],
+                "INSERT INTO orch_rails (id, workspace_id, name, position, worktree_path, branch, page_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    rail.id,
+                    workspace_id,
+                    rail.name,
+                    rail.position,
+                    rail.worktree_path,
+                    rail.branch,
+                    rail.page_id
+                ],
             )?;
             for stage in &rail.stages {
                 tx.execute(
@@ -484,6 +496,7 @@ mod tests {
             name: id.into(),
             position: 0,
             worktree_path: None,
+            branch: None,
             page_id: None,
             stages: vec![Stage {
                 id: format!("{id}-s1"),
@@ -634,6 +647,7 @@ mod tests {
             name: "rt".into(),
             position: 0,
             worktree_path: None,
+            branch: None,
             page_id: None,
             stages: vec![Stage {
                 id: "rt-s1".into(),
@@ -775,6 +789,50 @@ mod tests {
             .unwrap();
         assert_eq!(tool_id, None);
         assert_eq!(tool_params, None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A branch and a worktree are ORTHOGONAL bindings (spec O15), so
+    /// the store must carry a branch on a rail that has no worktree --
+    /// that pairing is the point of the feature, not an edge case.
+    #[test]
+    fn a_rails_branch_round_trips_without_a_worktree() {
+        let mut s = store();
+        let mut r = rail("r1", &[("t1", "/x/a.md")]);
+        r.branch = Some("feature/api".into());
+        s.replace_plan("ws-1", &[r], &[]).unwrap();
+        let back = s.get("ws-1").unwrap().rails[0].clone();
+        assert_eq!(back.branch.as_deref(), Some("feature/api"));
+        assert_eq!(back.worktree_path, None);
+    }
+
+    /// The real migration path: a database created BEFORE branch binding
+    /// must gain the column on the next open, keeping its rails intact.
+    #[test]
+    fn opening_a_pre_branch_database_adds_the_rail_column() {
+        let dir = std::env::temp_dir().join(format!("gavin-orch-branch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE orch_rails (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL,
+                    position INTEGER NOT NULL, worktree_path TEXT, page_id TEXT);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO orch_rails (id, workspace_id, name, position, worktree_path, page_id)
+                 VALUES ('r1','ws-1','backend',0,'/x/wt',NULL)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = OrchestrationStore::open(&path).unwrap();
+        let back = s.get("ws-1").unwrap().rails[0].clone();
+        assert_eq!(back.branch, None);
+        assert_eq!(back.worktree_path.as_deref(), Some("/x/wt"));
         let _ = std::fs::remove_file(&path);
     }
 
