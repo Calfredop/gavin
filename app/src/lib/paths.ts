@@ -18,3 +18,12 @@ export function sessionLabel(
   const cwd = cwdBySessionId[sessionId];
   return cwd ? folderName(cwd) : sessionId.slice(0, 8);
 }
+
+// A board tab's label, in the one place both the tab bar and the sidebar's
+// page expansion can read it: the context's name from the tree, falling
+// back to its folder's own basename when the tree has not loaded yet (or
+// no longer lists that context). Exact information either way, which is
+// why a board tab -- like a file tab -- is never renameable.
+export function boardTabLabel(contextName: string | null | undefined, contextFolder: string): string {
+  return `${contextName || folderName(contextFolder)} · board`;
+}

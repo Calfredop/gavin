@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -130,6 +131,7 @@ mod smoketest_tests {
             pages: vec![],
             active_page_id: None,
             active_view: None,
+            hub_view: None,
             root_path: Some("/tmp/scratch".to_string()),
             main_session_id: None,
             legacy_agent_command: None,
@@ -409,6 +411,18 @@ pub struct FrontendReady(pub std::sync::atomic::AtomicBool);
 /// that might not exist yet. Same eager-`manage` rationale as `FrontendReady`.
 pub struct BootstrapError(pub Mutex<Option<String>>);
 
+/// Bumped on every deliberate reconnect (`reconnect`). A relay thread
+/// captures the epoch it was spawned in and reports a disconnect only
+/// while that epoch is still current -- without it, the OLD thread's
+/// "daemon closed the connection" would throw the connection-error
+/// overlay over a restart the human just asked for.
+///
+/// An epoch rather than a "restarting" flag: the old thread can notice
+/// its socket close at any point, including after the new connection is
+/// already live and serving, and a flag lowered at the end of the
+/// restart would still race it. An epoch it can never win.
+pub struct ConnectionEpoch(pub std::sync::atomic::AtomicU64);
+
 #[tauri::command]
 pub fn signal_frontend_ready(state: State<FrontendReady>) {
     state.0.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -419,44 +433,146 @@ pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
     state.0.lock().unwrap().clone()
 }
 
-/// Recovery behind the connection-error overlay: kill whatever daemon is
-/// running (by name -- see kill_running_daemons), clear the stale
-/// bootstrap error, and try bootstrapping again.
+/// Restarts `gavin-daemon` and puts this app back on it.
 ///
-/// Returns whether the app is fully reconnected. `false` means the daemon
-/// was restarted but this app process had ALREADY bootstrapped
-/// successfully earlier: Tauri's `manage` keeps the first value for a
-/// given type, so a second bootstrap can't rewire the existing
-/// connections, and only a relaunch will. That case (a daemon dying
-/// mid-session) is rarer than the one this exists for -- a version
-/// mismatch or missing daemon at startup, where bootstrap failed before
-/// managing anything and a second run wires everything cleanly.
+/// Two paths, both ending fully connected. If the app never bootstrapped
+/// (a version mismatch or missing daemon at startup, behind the
+/// connection-error overlay) it kills whatever is running, clears the
+/// stale bootstrap error and bootstraps cleanly. If it HAS bootstrapped
+/// -- the Settings button, with a live app around it -- it reconnects in
+/// place; see `reconnect` for why that is not simply "bootstrap again".
+///
+/// Restarting is destructive to sessions and callers must say so first:
+/// `SessionManager::recover` does not reattach to the old PTYs (they die
+/// with the daemon), it spawns a FRESH shell per surviving registry
+/// record. Every running agent is stopped.
 #[tauri::command]
-pub fn restart_daemon(app_handle: AppHandle) -> Result<bool, String> {
-    let already_bootstrapped = app_handle.try_state::<DaemonConnection>().is_some();
+pub fn restart_daemon(app_handle: AppHandle) -> Result<(), String> {
+    if app_handle.try_state::<DaemonConnection>().is_some() {
+        return reconnect(&app_handle).map_err(|e| e.to_string());
+    }
     crate::daemon::kill_running_daemons().map_err(|e| e.to_string())?;
     // Let the old process actually exit before connect_or_spawn looks for
     // a listener, so it doesn't reach a half-dead one.
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(DAEMON_EXIT_GRACE);
     if let Some(state) = app_handle.try_state::<BootstrapError>() {
         *state.0.lock().unwrap() = None;
     }
-    if already_bootstrapped {
-        // Still respawn the daemon (sessions and the socket come back),
-        // but tell the caller a relaunch is needed to rewire this app.
-        crate::daemon::connect_or_spawn(
-            &socket_path(),
-            Duration::from_secs(3),
-            crate::daemon::spawn_real_daemon,
-        )
-        .map_err(|e| e.to_string())?;
-        return Ok(false);
-    }
-    bootstrap(app_handle).map_err(|e| e.to_string())?;
-    Ok(true)
+    bootstrap(app_handle).map_err(|e| e.to_string())
 }
 
-fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Result<()> {
+/// How long to let a killed daemon actually exit before looking for a
+/// listener again -- otherwise `connect_or_spawn` can reach the dying
+/// process's socket and believe it succeeded.
+const DAEMON_EXIT_GRACE: Duration = Duration::from_millis(300);
+
+/// Rewires a running app onto a freshly restarted daemon, with no
+/// relaunch.
+///
+/// The obvious implementation -- call `bootstrap` again -- cannot work:
+/// it publishes the connections with `app_handle.manage(...)`, and
+/// Tauri's `manage` keeps the first value for a given type, so the second
+/// call would leave the app writing to the dead socket. (That is exactly
+/// why this command used to return "restarted, now relaunch".)
+///
+/// But the state does not need replacing. Both connections are already
+/// mutexes around a `UnixStream`, so a reconnect just assigns fresh
+/// streams into the ones the app is holding, and every command that
+/// borrows them keeps working untouched.
+fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
+    // Bump BEFORE killing: the old relay thread notices its socket close
+    // almost immediately, and this is the only thing keeping it quiet.
+    app_handle.state::<ConnectionEpoch>().0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    crate::daemon::kill_running_daemons()?;
+    std::thread::sleep(DAEMON_EXIT_GRACE);
+    if let Some(state) = app_handle.try_state::<BootstrapError>() {
+        *state.0.lock().unwrap() = None;
+    }
+
+    let stream_conn = crate::daemon::connect_or_spawn(
+        &socket_path(),
+        Duration::from_secs(3),
+        crate::daemon::spawn_real_daemon,
+    )?;
+    let probe = Mutex::new(UnixStream::connect(socket_path())?);
+    // Verified before ANYTHING is swapped in: a daemon that fails the
+    // version probe must leave a named error and an app that is merely
+    // disconnected, never one wired half onto each daemon.
+    let compat = verify_daemon_protocol(&probe)?;
+
+    // A restart can hand the app a differently-versioned daemon than the
+    // one it started with -- refresh the stored verdict BEFORE either
+    // connection is repointed at the new daemon. A concurrent Tauri
+    // command reads this state via `current_compat` and gates its
+    // `send_request` against it; if the verdict still described the
+    // outgoing daemon while the writer below already pointed at the
+    // incoming one, that command could pass the gate and write a request
+    // the new (older) daemon can't parse -- closing the connection and
+    // taking every push riding on it down with it, the exact failure this
+    // compatibility window exists to prevent. `compat` was already
+    // computed above via `verify_daemon_protocol`, and `DaemonCompat` is
+    // `Copy`, so this is a pure reorder.
+    *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
+
+    let writer = Arc::clone(&app_handle.state::<DaemonConnection>().writer);
+    *writer.lock().unwrap() = stream_conn.try_clone()?;
+    *app_handle.state::<CommandConnection>().0.lock().unwrap() =
+        probe.into_inner().expect("protocol probe mutex poisoned");
+
+    let data = app_handle.state::<WorkspacesState>().0.lock().unwrap().clone();
+    let non_session_tab_ids = non_session_tab_ids(
+        &app_handle.state::<FileTabs>().0.lock().unwrap(),
+        &app_handle.state::<BoardTabs>().0.lock().unwrap(),
+    );
+    attach_and_relay(
+        app_handle,
+        &writer,
+        stream_conn,
+        attachable_session_ids(&data, &non_session_tab_ids),
+        compat,
+    )?;
+
+    // The daemon's gavin watchers were per-connection and died with it.
+    // Re-armed here rather than from the frontend because this is where
+    // the new connection exists: miss it and the Plans, Kanban and
+    // Orchestration tabs go quietly dead after a restart -- the exact
+    // failure the fs-sync work just removed.
+    for ws in &data.workspaces {
+        if let Some(root) = &ws.root_path {
+            send_request(
+                &writer,
+                &Request::WatchGavinRoot {
+                    workspace_id: ws.id.clone(),
+                    root_path: root.clone(),
+                },
+                &compat,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The wire guard. An older daemon cannot PARSE a request it predates,
+/// and a parse error there closes the whole connection (see
+/// handle_connection) -- taking every push with it. So the check has to
+/// happen here, before the bytes leave, not as error handling after.
+pub fn gate(req: &Request, compat: &DaemonCompat) -> Result<(), String> {
+    let needed = protocol::min_version_for(req);
+    if needed > compat.daemon_version {
+        return Err(format!(
+            "this needs daemon protocol v{needed}, but the running daemon is v{} — restart the daemon to use it",
+            compat.daemon_version
+        ));
+    }
+    Ok(())
+}
+
+fn send_request(
+    writer: &Arc<Mutex<UnixStream>>,
+    req: &Request,
+    compat: &DaemonCompat,
+) -> anyhow::Result<()> {
+    gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
     write_message(&mut *writer.lock().unwrap(), req)
 }
 
@@ -472,19 +588,77 @@ fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Resul
 /// request-id field.
 pub struct CommandConnection(pub Mutex<UnixStream>);
 
+/// What the app negotiated with the daemon it just connected to.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonCompat {
+    pub daemon_version: u32,
+    pub app_version: u32,
+    /// True when the daemon is older than us but still inside the
+    /// window: usable, with the newer requests gated off.
+    pub degraded: bool,
+}
+
+/// Holds the verdict from the most recent `verify_daemon_protocol` call, so
+/// commands issued later (and, eventually, the frontend) can see whether
+/// they're talking to a degraded daemon without re-probing it. `None`
+/// until the first successful probe.
+pub struct DaemonCompatState(pub Mutex<Option<DaemonCompat>>);
+
+/// The verdict for a `#[tauri::command]` to `gate` its own `send_request`
+/// calls against. `DaemonCompatState` is `.manage()`d at app setup (see
+/// lib.rs) and only ever turns `Some` -- both `bootstrap` and `reconnect`
+/// populate it before they publish (`bootstrap`, via `.manage()`) or
+/// repoint (`reconnect`, by overwriting the `Mutex`es in place) the
+/// connection state a command would need to even be reachable -- so
+/// `None` here means a command ran before bootstrap finished, which
+/// should not be possible, and a command that does run never sees a
+/// verdict for a daemon other than the one its connection currently
+/// points at.
+fn current_compat(state: &DaemonCompatState) -> DaemonCompat {
+    state.0.lock().unwrap().expect("DaemonCompatState populated before any command runs")
+}
+
+/// Sorts a daemon's advertised version into one of three bands relative to
+/// this app: too new (hard error -- this app has no idea how to speak an
+/// unreleased protocol newer than its own), too old (below `floor`, i.e.
+/// `MIN_COMPATIBLE_VERSION` -- the daemon predates the oldest request
+/// shape this app still knows how to send), or inside the window, which
+/// is usable either at parity or degraded.
+///
+/// Pure so the bands are testable without a daemon. Split out of
+/// `verify_daemon_protocol`, which owns the I/O.
+pub fn classify(daemon: u32, app: u32, floor: u32) -> Result<DaemonCompat, String> {
+    if daemon > app {
+        return Err(format!(
+            "the gavin daemon is newer than this app (v{daemon} vs v{app}) — update the app"
+        ));
+    }
+    if daemon < floor {
+        return Err(format!(
+            "the gavin daemon is too old to use (v{daemon}, minimum v{floor}) — restart it"
+        ));
+    }
+    Ok(DaemonCompat { daemon_version: daemon, app_version: app, degraded: daemon < app })
+}
+
 /// Spec §4: probe the daemon's protocol version before anything else.
 /// Interprets FAILURE SHAPE -- a daemon older than the probe itself can't
 /// parse the request and closes the connection, which must map to the
 /// same actionable message as an explicit lower version (this turned the
 /// 2026-08-07 stale-daemon incident's mystery close into a named state).
-fn verify_daemon_protocol(command_conn: &Mutex<UnixStream>) -> anyhow::Result<()> {
-    const OLDER: &str = "the gavin daemon is older than this app — restart it (pkill gavin-daemon, then relaunch the gavin app)";
+fn verify_daemon_protocol(command_conn: &Mutex<UnixStream>) -> anyhow::Result<DaemonCompat> {
+    const UNREACHABLE: &str = "the gavin daemon is too old to talk to this app — restart it (quit gavin, then relaunch)";
     match send_command(command_conn, &Request::GetProtocolVersion) {
-        Ok(Response::ProtocolVersion { version }) if version == protocol::PROTOCOL_VERSION => Ok(()),
-        Ok(Response::ProtocolVersion { version }) if version > protocol::PROTOCOL_VERSION => {
-            anyhow::bail!("the gavin daemon is newer than this app — rebuild and restart the app")
+        Ok(Response::ProtocolVersion { version }) => {
+            classify(version, protocol::PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION)
+                .map_err(|e| anyhow::anyhow!(e))
         }
-        Ok(_) | Err(_) => anyhow::bail!(OLDER),
+        // A daemon too old to parse the probe closes the connection.
+        // Preserved from the 2026-08-07 stale-daemon incident: this
+        // failure SHAPE has to map to the same named state as an
+        // explicit too-low version, not to a mystery.
+        Ok(_) | Err(_) => anyhow::bail!(UNREACHABLE),
     }
 }
 
@@ -494,6 +668,105 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
     let mut reader = BufReader::new(&mut *stream);
     read_message(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("daemon closed the command connection"))
+}
+
+/// One reconnect per call, mirroring gavin-mcp's `SocketTransport`
+/// (`crates/gavin-mcp/src/main.rs`), which has done this since it was
+/// written. Without it, any single command failure -- daemon restart, or
+/// a request an older/newer daemon can't parse -- leaves `conn` closed
+/// with nothing to ever reopen it, turning one bad request into a
+/// permanently dead app.
+///
+/// Known gap, deliberately not fixed here: reconnecting re-opens the
+/// socket but does NOT re-run the version probe. If the daemon was
+/// replaced by a different version between the original failure and this
+/// reconnect, the app keeps serving its previous `DaemonCompat` verdict
+/// until the next explicit `reconnect()` or restart.
+///
+/// Also known, also deliberately not fixed here: the retry gives the app
+/// at-least-once request semantics it did not previously have. If the
+/// first `send_command` fails because the reply never arrived rather than
+/// because the request never went out -- e.g. the daemon processed
+/// `CreateSession` and then died before the response crossed the wire --
+/// the retry resends the same request to the (now different) connection,
+/// which creates a second session and orphans the first one's PTY. This
+/// is inherited from gavin-mcp's transport shape (see the mirror note
+/// above), and the alternative -- no retry -- was demonstrably worse: one
+/// failed request left `conn` permanently closed and the app permanently
+/// dead, which is the whole reason this function exists.
+///
+/// Takes `socket_path` as a parameter rather than resolving one itself so
+/// this core logic stays directly testable against a throwaway tempdir
+/// socket. `send_command_reconnecting` below is the production wrapper
+/// call sites should use -- it derives `socket_path` from the connection's
+/// own peer address rather than from a fixed, globally-resolved one; see
+/// its doc comment for why.
+fn send_command_reconnecting_at(
+    conn: &Mutex<UnixStream>,
+    socket_path: &Path,
+    req: &Request,
+) -> anyhow::Result<Response> {
+    match send_command(conn, req) {
+        Ok(resp) => Ok(resp),
+        Err(_) => {
+            *conn.lock().unwrap() = UnixStream::connect(socket_path)?;
+            send_command(conn, req)
+        }
+    }
+}
+
+/// Production entry point for every command site: see
+/// `send_command_reconnecting_at` for the reconnect logic and its
+/// documented gap. `verify_daemon_protocol` deliberately does NOT go
+/// through this -- see its own doc comment for why a closed connection
+/// there must stay a hard failure rather than get retried away.
+///
+/// Reconnects to the peer THIS connection was already opened against,
+/// read back from the socket itself via `peer_addr()`, rather than
+/// resolving `protocol::socket_path()` (the real daemon) globally. Several
+/// of this function's callers -- `list_valid_session_ids`,
+/// `create_fresh_session`, `get_board_impl`, `set_board_impl`,
+/// `delete_board_impl` -- are themselves unit-tested against a bare
+/// `Mutex<UnixStream>` pointed at a tempdir fake socket, with no path
+/// threaded through for a reconnect to target. A global-path resolution
+/// here would have meant any of those tests reaching the retry branch --
+/// today only by accident, tomorrow by a one-off regression -- silently
+/// redirects the test process into issuing real requests against the
+/// developer's actual running daemon. Deriving the reconnect target from
+/// the connection's own peer address closes that off structurally instead
+/// of relying on every test's response queue never running short.
+///
+/// Falls back to a single, non-retried attempt if the peer address can't
+/// be determined (not a `SocketAddr::as_pathname` case, e.g. an unnamed
+/// or abstract socket) -- a missed retry is recoverable, a retry aimed at
+/// an unknown or wrong peer is not.
+///
+/// Gated here rather than in `send_command_reconnecting_at`: this function
+/// has TWO branches that can put bytes on the wire -- the peer-derived
+/// retry path through `_at`, and the `peer_addr()`-failed fallback that
+/// calls `send_command` directly. Gating only inside `_at` would leave
+/// that fallback branch unprotected, and a gated request reaching the
+/// socket by that one uncommon path is exactly the failure this exists to
+/// rule out. Checked before the bytes leave, not as error handling after:
+/// an older daemon cannot PARSE a request it predates, and read_message
+/// propagates that parse error with `?`, dropping the connection and
+/// every push riding on it.
+fn send_command_reconnecting(
+    conn: &Mutex<UnixStream>,
+    compat: &DaemonCompat,
+    req: &Request,
+) -> anyhow::Result<Response> {
+    gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
+    let peer = conn
+        .lock()
+        .unwrap()
+        .peer_addr()
+        .ok()
+        .and_then(|addr| addr.as_pathname().map(|p| p.to_path_buf()));
+    match peer {
+        Some(path) => send_command_reconnecting_at(conn, &path, req),
+        None => send_command(conn, req),
+    }
 }
 
 /// Walks the tree, replacing any session id not present in `valid_ids`
@@ -510,6 +783,7 @@ fn resolve_sessions(
     command_conn: &Mutex<UnixStream>,
     all_sessions: &HashMap<String, protocol::SessionSummary>,
     non_session_tab_ids: &HashSet<String>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     match node {
         LayoutNode::Leaf { tabs, pinned, .. } => {
@@ -520,7 +794,7 @@ fn resolve_sessions(
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
                 if !is_valid {
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
-                    let fresh = create_fresh_session(command_conn, last_known_cwd, None)?;
+                    let fresh = create_fresh_session(command_conn, last_known_cwd, None, compat)?;
                     // A pin belongs to the tab slot, not the dead process:
                     // carry it over so a daemon restart doesn't unpin it.
                     if let Some(pin) = pinned.iter_mut().find(|p| **p == *id) {
@@ -533,7 +807,7 @@ fn resolve_sessions(
         }
         LayoutNode::Split { children, .. } => {
             for child in children.iter_mut() {
-                resolve_sessions(child, command_conn, all_sessions, non_session_tab_ids)?;
+                resolve_sessions(child, command_conn, all_sessions, non_session_tab_ids, compat)?;
             }
             Ok(())
         }
@@ -548,8 +822,9 @@ fn resolve_sessions(
 /// than falling back to `$HOME`.
 fn list_valid_session_ids(
     command_conn: &Mutex<UnixStream>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<HashMap<String, protocol::SessionSummary>> {
-    let resp = send_command(command_conn, &Request::ListSessions)?;
+    let resp = send_command_reconnecting(command_conn, compat, &Request::ListSessions)?;
     match resp {
         Response::SessionList { sessions } => {
             Ok(sessions.into_iter().map(|s| (s.id.clone(), s)).collect())
@@ -567,6 +842,7 @@ fn resolve_workspaces(
     workspaces: &mut [Workspace],
     command_conn: &Mutex<UnixStream>,
     non_session_tab_ids: &HashSet<String>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     if workspaces.is_empty() {
         return Ok(());
@@ -582,10 +858,10 @@ fn resolve_workspaces(
     if !has_any_session_tab {
         return Ok(());
     }
-    let all_sessions = list_valid_session_ids(command_conn)?;
+    let all_sessions = list_valid_session_ids(command_conn, compat)?;
     for workspace in workspaces.iter_mut() {
         for page in workspace.pages.iter_mut() {
-            resolve_sessions(&mut page.layout, command_conn, &all_sessions, non_session_tab_ids)?;
+            resolve_sessions(&mut page.layout, command_conn, &all_sessions, non_session_tab_ids, compat)?;
         }
     }
     Ok(())
@@ -595,6 +871,20 @@ fn resolve_workspaces(
 mod test_support {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    /// A daemon at exact parity with this app -- gates nothing, so the
+    /// tests below that aren't specifically exercising the gate itself
+    /// don't have to think about it. `gate_tests` and
+    /// `command_connection_tests`'s two gating tests build their own
+    /// `DaemonCompat` deliberately instead, since an intentionally-old
+    /// `daemon_version` is the whole point there.
+    pub fn parity_compat() -> DaemonCompat {
+        DaemonCompat {
+            daemon_version: protocol::PROTOCOL_VERSION,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: false,
+        }
+    }
 
     /// Spins up a minimal fake daemon: accepts one connection, then for
     /// each response given, reads exactly one Request and replies with
@@ -651,8 +941,100 @@ mod test_support {
 
 #[cfg(test)]
 mod command_connection_tests {
-    use super::test_support::fake_daemon_replying_with;
+    use super::test_support::{fake_daemon_replying_with, parity_compat};
     use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A closed command connection must not stay dead forever: the daemon
+    /// may simply have restarted between calls. The first connection
+    /// closes without answering (simulating exactly that), and
+    /// send_command_reconnecting must reconnect and retry once rather
+    /// than surfacing the failure to the caller.
+    ///
+    /// Goes through the production `send_command_reconnecting` wrapper,
+    /// not `_at` directly -- this is the empirical check for whether
+    /// `UnixStream::peer_addr()` still resolves to the original peer path
+    /// once that peer has already hung up (the state the retry branch
+    /// always runs in). If it didn't, the wrapper would silently fall back
+    /// to a single non-retried attempt and this test's second `accept()`
+    /// would never fire, hanging the test. Passing quickly is the proof:
+    /// peer_addr() survives the disconnect, and the retry lands back on
+    /// this exact tempdir socket rather than on `protocol::socket_path()`
+    /// (the real daemon), which reconnecting into would be the hazard this
+    /// whole design change exists to close off.
+    #[test]
+    fn a_command_retries_once_on_a_closed_connection() {
+        // Serve two connections: the first closes immediately (simulating a
+        // daemon that hung up), the second answers properly.
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("retry.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(second.try_clone().unwrap());
+            let _req: Option<Request> = read_message(&mut reader).unwrap();
+            write_message(&mut second, &Response::ProtocolVersion { version: 12 }).unwrap();
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let resp = send_command_reconnecting(&conn, &parity_compat(), &Request::GetProtocolVersion).unwrap();
+        assert!(matches!(resp, Response::ProtocolVersion { version: 12 }));
+        server.join().unwrap();
+    }
+
+    /// The property that actually matters for the compat window: the
+    /// daemon must receive NOTHING -- not a request it answers with an
+    /// error, but no bytes at all. An older daemon can't parse a variant
+    /// it predates, and that parse error closes the whole connection.
+    #[test]
+    fn a_command_the_daemon_predates_never_reaches_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("gated.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            // Returns None if the client correctly sent nothing and hung up.
+            read_message::<_, Request>(&mut reader).unwrap()
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+
+        let err = send_command_reconnecting(&conn, &compat, &too_new).unwrap_err().to_string();
+        assert!(err.contains("v10"), "should name the version needed: {err}");
+        assert!(err.contains("v9"), "should name the version running: {err}");
+
+        drop(conn);
+        assert!(server.join().unwrap().is_none(), "a gated request must not reach the daemon");
+    }
+
+    #[test]
+    fn a_command_the_daemon_understands_still_reaches_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("allowed.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            let _req: Option<Request> = read_message(&mut reader).unwrap();
+            write_message(&mut conn, &Response::SessionList { sessions: vec![] }).unwrap();
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+
+        // ListSessions is v1, so a v9 daemon serves it fine.
+        let resp = send_command_reconnecting(&conn, &compat, &Request::ListSessions).unwrap();
+        assert!(matches!(resp, Response::SessionList { .. }));
+        server.join().unwrap();
+    }
 
     #[test]
     fn send_command_round_trips_a_request_and_response() {
@@ -726,6 +1108,7 @@ mod command_connection_tests {
 mod resolve_workspaces_tests {
     use super::test_support::fake_daemon_capturing_requests;
     use super::test_support::fake_daemon_replying_with;
+    use super::test_support::parity_compat;
     use super::*;
     use crate::config::Page;
 
@@ -744,6 +1127,7 @@ mod resolve_workspaces_tests {
             pages,
             active_page_id: None,
             active_view: None,
+            hub_view: None,
             root_path: None,
             main_session_id: None,
             legacy_agent_command: None,
@@ -769,7 +1153,7 @@ mod resolve_workspaces_tests {
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1"]))])];
         let non_session_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
 
-        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids, &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1"]));
         assert!(captured.lock().unwrap().is_empty(), "no daemon calls at all for a file-tab-only workspace");
@@ -786,7 +1170,7 @@ mod resolve_workspaces_tests {
             vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1", "stale-session"]))])];
         let non_session_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
 
-        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids, &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1", "fresh-a"]));
     }
@@ -806,7 +1190,7 @@ mod resolve_workspaces_tests {
         };
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", pinned_leaf)])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(
             workspaces[0].pages[0].layout,
@@ -848,7 +1232,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces: Vec<Workspace> = vec![];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces, vec![]);
     }
@@ -869,7 +1253,7 @@ mod resolve_workspaces_tests {
             workspace("ws-2", vec![page("page-2", leaf(&["valid-2"]))]),
         ];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1"]));
         assert_eq!(workspaces[1].pages[0].layout, leaf(&["valid-2"]));
@@ -888,7 +1272,7 @@ mod resolve_workspaces_tests {
             workspace("ws-2", vec![page("page-2", leaf(&["stale-2"]))]),
         ];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1", "fresh-a"]));
         assert_eq!(workspaces[1].pages[0].layout, leaf(&["fresh-b"]));
@@ -905,7 +1289,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-1"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-a"]));
         let requests = captured.lock().unwrap();
@@ -927,7 +1311,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["unknown-id"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-b"]));
         let requests = captured.lock().unwrap();
@@ -956,7 +1340,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-2"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-c"]));
         let requests = captured.lock().unwrap();
@@ -978,7 +1362,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), None).unwrap();
+        create_fresh_session(&conn, Some("/tmp"), None, &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -993,7 +1377,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), Some("npm test")).unwrap();
+        create_fresh_session(&conn, Some("/tmp"), Some("npm test"), &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -1025,6 +1409,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 pages: vec![],
                 active_page_id: None,
                 active_view: None,
+                hub_view: None,
                 root_path: None,
                 main_session_id: None,
                 legacy_agent_command: None,
@@ -1052,11 +1437,12 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
 fn reconcile_main_sessions(
     workspaces: &mut [Workspace],
     command_conn: &Mutex<UnixStream>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     if !workspaces.iter().any(|w| w.main_session_id.is_some()) {
         return Ok(());
     }
-    let sessions = list_valid_session_ids(command_conn)?;
+    let sessions = list_valid_session_ids(command_conn, compat)?;
     for workspace in workspaces.iter_mut() {
         let Some(id) = workspace.main_session_id.clone() else { continue };
         let alive = sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
@@ -1066,6 +1452,164 @@ fn reconcile_main_sessions(
     }
     Ok(())
 }
+
+/// Tab ids that are NOT sessions. File and board tabs live in the same id
+/// space as sessions in the layout tree, but the daemon has never heard
+/// of them -- attaching one would fail for an id that was never a
+/// session.
+fn non_session_tab_ids(
+    file_tabs: &HashMap<String, String>,
+    board_tabs: &HashMap<String, crate::config::BoardTabRecord>,
+) -> HashSet<String> {
+    file_tabs.keys().chain(board_tabs.keys()).cloned().collect()
+}
+
+/// Every session id this app expects the daemon to stream for it.
+///
+/// Main agent sessions live outside every page tree by design (D12), so
+/// the page-tree walk cannot see them -- without the second half they
+/// reattach to nothing and render blank forever (Milestone C's bug).
+fn attachable_session_ids(
+    data: &WorkspacesData,
+    non_session_tab_ids: &HashSet<String>,
+) -> Vec<String> {
+    data.workspaces
+        .iter()
+        .flat_map(|w| w.pages.iter())
+        .flat_map(|p| p.layout.all_session_ids())
+        .filter(|id| !non_session_tab_ids.contains(id))
+        .chain(data.workspaces.iter().filter_map(|w| w.main_session_id.clone()))
+        .collect()
+}
+
+/// A relay thread's stream ended. Silent when a newer connection has
+/// already taken over (see `ConnectionEpoch`) -- that disconnect WAS the
+/// restart, and surfacing it would flash the connection-error overlay
+/// over a reconnect that is going fine.
+fn report_disconnect(app_handle: &AppHandle, epoch: u64, message: String) {
+    if app_handle.state::<ConnectionEpoch>().0.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+        return;
+    }
+    let _ = app_handle.emit("daemon-error", message);
+}
+
+/// Attaches every session on the streaming connection and starts the
+/// thread that relays the daemon's pushes to the frontend as Tauri
+/// events. Shared by the cold path (`bootstrap`) and the reconnect path
+/// (`reconnect`) so the two can never drift on what gets attached or
+/// which pushes are forwarded.
+fn attach_and_relay(
+    app_handle: &AppHandle,
+    writer: &Arc<Mutex<UnixStream>>,
+    reader_stream: UnixStream,
+    session_ids: Vec<String>,
+    // By value, not `&`: `DaemonCompat` is `Copy`, and the relay thread
+    // spawned below needs its own owned copy to move into the `'static`
+    // closure -- there is no `AppHandle`-free way to borrow it instead.
+    compat: DaemonCompat,
+) -> anyhow::Result<()> {
+    for id in session_ids {
+        send_request(writer, &Request::Attach { id }, &compat)?;
+    }
+
+    let epoch = app_handle.state::<ConnectionEpoch>().0.load(std::sync::atomic::Ordering::SeqCst);
+    let mut reader = BufReader::new(reader_stream);
+    let reader_app_handle = app_handle.clone();
+    let relay_writer = Arc::clone(writer);
+    std::thread::spawn(move || {
+        // Wait for the frontend to confirm its listeners are registered
+        // before reading -- and therefore emitting -- anything from the
+        // daemon (see FrontendReady's doc comment). Bounded: an unbounded
+        // wait here would leave the daemon's connection-handling thread
+        // blocked mid-write on a full scrollback replay, backing up
+        // through the session's writer mutex into the PTY pump -- worse
+        // than the small chance of an early emit being missed if the
+        // frontend is simply slow rather than broken. On a reconnect the
+        // flag is long since set, so this falls straight through.
+        let gate_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if reader_app_handle
+                .state::<FrontendReady>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            if Instant::now() >= gate_deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        loop {
+            let resp: Option<Response> = match read_message(&mut reader) {
+                Ok(r) => r,
+                Err(e) => {
+                    report_disconnect(&reader_app_handle, epoch, e.to_string());
+                    break;
+                }
+            };
+            let Some(resp) = resp else {
+                report_disconnect(
+                    &reader_app_handle,
+                    epoch,
+                    "daemon closed the connection".to_string(),
+                );
+                break;
+            };
+            match resp {
+                Response::Output { id, data } => {
+                    let _ = reader_app_handle.emit("pty-output", (id, data));
+                }
+                Response::SessionExited { id, exit_code } => {
+                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
+                }
+                Response::CwdChanged { id, cwd } => {
+                    let _ = reader_app_handle.emit("cwd-changed", (id, cwd));
+                }
+                Response::StatusChanged { id, status } => {
+                    let _ = reader_app_handle.emit("session-status-changed", (id, status));
+                }
+                Response::GitStatusChanged { id, status } => {
+                    let _ = reader_app_handle.emit("git-status-changed", (id, status));
+                }
+                Response::SessionRestored { id } => {
+                    let _ = reader_app_handle.emit("session-restored", id);
+                }
+                Response::OrchestrationChanged { workspace_id, orchestration } => {
+                    let _ = reader_app_handle
+                        .emit("orchestration-changed", (workspace_id, orchestration));
+                }
+                Response::GavinTreeChanged { workspace_id, tree } => {
+                    let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
+                }
+                Response::SessionNamed { session_id, name } => {
+                    // The frontend applies it through setSessionName, the
+                    // very path the tab's own rename UI takes -- so an
+                    // agent rename and a human rename persist identically.
+                    let _ = reader_app_handle.emit("session-named", (session_id, name));
+                }
+                Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
+                    // Attach BEFORE emitting: a session nobody attaches
+                    // renders blank forever (the Milestone-C lesson).
+                    let _ = send_request(
+                        &relay_writer,
+                        &Request::Attach { id: session_id.clone() },
+                        &compat,
+                    );
+                    let _ = reader_app_handle
+                        .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
+                }
+                Response::Error { message } => {
+                    let _ = reader_app_handle.emit("daemon-error", message);
+                }
+                _ => {}
+            }
+        }
+    });
+    Ok(())
+}
+
 
 /// One-time carry-over of D34's `agentCommand` from config.json into
 /// config.toml (D41). Writes only when config.toml has no
@@ -1099,7 +1643,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     // immediately, no retry/backoff needed.
     let command_stream = UnixStream::connect(socket_path())?;
     let command_conn = Mutex::new(command_stream);
-    verify_daemon_protocol(&command_conn)?;
+    let compat = verify_daemon_protocol(&command_conn)?;
+    *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
 
     let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));
     let reader_stream = stream_conn;
@@ -1127,6 +1672,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 pages: vec![],
                 active_page_id: None,
                 active_view: None,
+                hub_view: None,
                 root_path: None,
                 main_session_id: None,
                 legacy_agent_command: None,
@@ -1147,10 +1693,9 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             }
         }
     }
-    reconcile_main_sessions(&mut workspaces, &command_conn)?;
-    let non_session_tab_ids: HashSet<String> =
-        file_tabs.keys().chain(board_tabs.keys()).cloned().collect();
-    resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids)?;
+    reconcile_main_sessions(&mut workspaces, &command_conn, &compat)?;
+    let non_session_tab_ids = non_session_tab_ids(&file_tabs, &board_tabs);
+    resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids, &compat)?;
     let active_workspace_id = if had_no_workspaces {
         Some(crate::config::UNFILED_WORKSPACE_ID.to_string())
     } else {
@@ -1166,24 +1711,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.theme.clone(),
     )?;
 
-    let all_session_ids: Vec<String> = workspaces_data
-        .workspaces
-        .iter()
-        .flat_map(|w| w.pages.iter())
-        .flat_map(|p| p.layout.all_session_ids())
-        // A file or board tab id is not a session -- the daemon has never
-        // heard of it, so Attaching would fail for an id that was never a
-        // session.
-        .filter(|id| !non_session_tab_ids.contains(id))
-        .collect();
-    // Main agent sessions live outside every page tree by design (D12),
-    // so the page-tree walk above cannot see them -- without this they
-    // reattach to nothing and render blank forever (Milestone C's bug).
-    let main_session_ids: Vec<String> =
-        workspaces_data.workspaces.iter().filter_map(|w| w.main_session_id.clone()).collect();
-    for id in all_session_ids.into_iter().chain(main_session_ids) {
-        send_request(&writer, &Request::Attach { id })?;
-    }
+    let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
 
     app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
     app_handle.manage(CommandConnection(command_conn));
@@ -1194,86 +1722,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
-    let mut reader = BufReader::new(reader_stream);
-    let reader_app_handle = app_handle.clone();
-    let relay_writer = Arc::clone(&writer);
-    std::thread::spawn(move || {
-        // Wait for the frontend to confirm its listeners are registered
-        // before reading — and therefore emitting — anything from the
-        // daemon (see FrontendReady's doc comment). Bounded: an unbounded
-        // wait here would leave the daemon's connection-handling thread
-        // blocked mid-write on a full scrollback replay, backing up
-        // through the session's writer mutex into the PTY pump — worse
-        // than the small chance of an early emit being missed if the
-        // frontend is simply slow rather than broken.
-        let gate_deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if reader_app_handle
-                .state::<FrontendReady>()
-                .0
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
-                break;
-            }
-            if Instant::now() >= gate_deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        loop {
-            let resp: Option<Response> = match read_message(&mut reader) {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = reader_app_handle.emit("daemon-error", e.to_string());
-                    break;
-                }
-            };
-            let Some(resp) = resp else {
-                let _ = reader_app_handle.emit("daemon-error", "daemon closed the connection");
-                break;
-            };
-            match resp {
-                Response::Output { id, data } => {
-                    let _ = reader_app_handle.emit("pty-output", (id, data));
-                }
-                Response::SessionExited { id, exit_code } => {
-                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
-                }
-                Response::CwdChanged { id, cwd } => {
-                    let _ = reader_app_handle.emit("cwd-changed", (id, cwd));
-                }
-                Response::StatusChanged { id, status } => {
-                    let _ = reader_app_handle.emit("session-status-changed", (id, status));
-                }
-                Response::GitStatusChanged { id, status } => {
-                    let _ = reader_app_handle.emit("git-status-changed", (id, status));
-                }
-                Response::SessionRestored { id } => {
-                    let _ = reader_app_handle.emit("session-restored", id);
-                }
-                Response::OrchestrationChanged { workspace_id, orchestration } => {
-                    let _ = reader_app_handle
-                        .emit("orchestration-changed", (workspace_id, orchestration));
-                }
-                Response::GavinTreeChanged { workspace_id, tree } => {
-                    let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
-                }
-                Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
-                    // Attach BEFORE emitting: a session nobody attaches
-                    // renders blank forever (the Milestone-C lesson).
-                    let _ = send_request(&relay_writer, &Request::Attach { id: session_id.clone() });
-                    let _ = reader_app_handle
-                        .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
-                }
-                Response::Error { message } => {
-                    let _ = reader_app_handle.emit("daemon-error", message);
-                }
-                _ => {}
-            }
-        }
-    });
-
+    attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
     Ok(())
 }
 
@@ -1282,9 +1731,14 @@ pub fn write_input(
     session_id: String,
     data: String,
     state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(&state.writer, &Request::WriteInput { id: session_id, data })
-        .map_err(|e| e.to_string())
+    send_request(
+        &state.writer,
+        &Request::WriteInput { id: session_id, data },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1293,9 +1747,14 @@ pub fn resize_session(
     cols: u16,
     rows: u16,
     state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(&state.writer, &Request::ResizeSession { id: session_id, cols, rows })
-        .map_err(|e| e.to_string())
+    send_request(
+        &state.writer,
+        &Request::ResizeSession { id: session_id, cols, rows },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Shared by the create_session command below and resolve_sessions's
@@ -1317,13 +1776,15 @@ fn create_fresh_session(
     command_conn: &Mutex<UnixStream>,
     cwd: Option<&str>,
     command: Option<&str>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let command = command.map(str::to_string);
 
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         command_conn,
+        compat,
         &Request::CreateSession { workspace_path: target.clone(), cwd: target.clone(), command: command.clone() },
     )?;
     match resp {
@@ -1334,8 +1795,9 @@ fn create_fresh_session(
         other => anyhow::bail!("expected SessionCreated, got {other:?}"),
     }
 
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         command_conn,
+        compat,
         &Request::CreateSession { workspace_path: home.clone(), cwd: home.clone(), command },
     )?;
     match resp {
@@ -1350,17 +1812,23 @@ pub fn create_session(
     command: Option<String>,
     command_state: State<CommandConnection>,
     daemon_state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let id = create_fresh_session(&command_state.0, cwd.as_deref(), command.as_deref())
+    let compat = current_compat(&compat);
+    let id = create_fresh_session(&command_state.0, cwd.as_deref(), command.as_deref(), &compat)
         .map_err(|e| e.to_string())?;
-    send_request(&daemon_state.writer, &Request::Attach { id: id.clone() })
+    send_request(&daemon_state.writer, &Request::Attach { id: id.clone() }, &compat)
         .map_err(|e| e.to_string())?;
     Ok(id)
 }
 
 #[tauri::command]
-pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::KillSession { id: session_id })
+pub fn kill_session(
+    session_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::KillSession { id: session_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1369,8 +1837,12 @@ pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Resu
     }
 }
 
-fn get_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<Board> {
-    let resp = send_command(command_conn, &Request::GetBoard { workspace_id })?;
+fn get_board_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+    compat: &DaemonCompat,
+) -> anyhow::Result<Board> {
+    let resp = send_command_reconnecting(command_conn, compat, &Request::GetBoard { workspace_id })?;
     match resp {
         Response::Board { columns, labels, card_sessions } => Ok(Board { columns, labels, card_sessions }),
         other => anyhow::bail!("expected Board, got {other:?}"),
@@ -1378,8 +1850,12 @@ fn get_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> any
 }
 
 #[tauri::command]
-pub fn get_board(workspace_id: String, state: State<CommandConnection>) -> Result<Board, String> {
-    get_board_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+pub fn get_board(
+    workspace_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Board, String> {
+    get_board_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 fn set_board_impl(
@@ -1387,8 +1863,10 @@ fn set_board_impl(
     workspace_id: String,
     columns: Vec<Column>,
     labels: Vec<Label>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
-    let resp = send_command(command_conn, &Request::SetBoard { workspace_id, columns, labels })?;
+    let resp =
+        send_command_reconnecting(command_conn, compat, &Request::SetBoard { workspace_id, columns, labels })?;
     match resp {
         Response::Ok => Ok(()),
         other => anyhow::bail!("expected Ok, got {other:?}"),
@@ -1401,8 +1879,9 @@ pub fn set_board(
     columns: Vec<Column>,
     labels: Vec<Label>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    set_board_impl(&state.0, workspace_id, columns, labels).map_err(|e| e.to_string())
+    set_board_impl(&state.0, workspace_id, columns, labels, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 // --- Orchestration (SP1) ----------------------------------------------------
@@ -1413,8 +1892,9 @@ pub fn set_board(
 fn get_orchestration_impl(
     command_conn: &Mutex<UnixStream>,
     workspace_id: String,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<Orchestration> {
-    let resp = send_command(command_conn, &Request::GetOrchestration { workspace_id })?;
+    let resp = send_command_reconnecting(command_conn, compat, &Request::GetOrchestration { workspace_id })?;
     match resp {
         Response::Orchestration { rails, conflict_notes, rail_runs, step_runs } => {
             Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs })
@@ -1427,8 +1907,9 @@ fn get_orchestration_impl(
 pub fn get_orchestration(
     workspace_id: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<Orchestration, String> {
-    get_orchestration_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+    get_orchestration_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 /// A refused write (the running-step guard) comes back as
@@ -1448,9 +1929,11 @@ pub fn set_orchestration(
     rails: Vec<Rail>,
     conflict_notes: Vec<ConflictNote>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetOrchestration { workspace_id, rails, conflict_notes },
     )
     .map_err(|e| e.to_string())?;
@@ -1463,9 +1946,11 @@ pub fn set_rail_run(
     state_value: String,
     current_stage_id: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetRailRun { rail_id, state: state_value, current_stage_id },
     )
     .map_err(|e| e.to_string())?;
@@ -1479,9 +1964,11 @@ pub fn set_step_run(
     session_id: Option<String>,
     reason: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetStepRun { step_id, state: state_value, session_id, reason },
     )
     .map_err(|e| e.to_string())?;
@@ -1489,11 +1976,24 @@ pub fn set_step_run(
 }
 
 // --- The tool library -------------------------------------------------------
+//
+// These three arrived with the orchestration merge, which predates the
+// compatibility window. They go through the gated path like every other
+// command: their requests are v11, so against a v10 daemon they must fail
+// locally rather than putting bytes on a socket that cannot parse them.
 
 #[tauri::command]
-pub fn get_tools(workspace_id: String, state: State<CommandConnection>) -> Result<Vec<ToolDef>, String> {
-    let resp =
-        send_command(&state.0, &Request::GetTools { workspace_id }).map_err(|e| e.to_string())?;
+pub fn get_tools(
+    workspace_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Vec<ToolDef>, String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::GetTools { workspace_id },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Tools { tools } => Ok(tools),
         Response::Error { message } => Err(message),
@@ -1504,19 +2004,35 @@ pub fn get_tools(workspace_id: String, state: State<CommandConnection>) -> Resul
 /// The daemon's validation (unknown kind, a built-in id, an empty name)
 /// comes back as Response::Error and reaches the dialog verbatim.
 #[tauri::command]
-pub fn save_tool(tool: ToolDef, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::SaveTool { tool }).map_err(|e| e.to_string())?;
+pub fn save_tool(
+    tool: ToolDef,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp =
+        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::SaveTool { tool })
+            .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
 
 #[tauri::command]
-pub fn delete_tool(id: String, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::DeleteTool { id }).map_err(|e| e.to_string())?;
+pub fn delete_tool(
+    id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp =
+        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteTool { id })
+            .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
 
-fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<()> {
-    let resp = send_command(command_conn, &Request::DeleteBoard { workspace_id })?;
+fn delete_board_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+    compat: &DaemonCompat,
+) -> anyhow::Result<()> {
+    let resp = send_command_reconnecting(command_conn, compat, &Request::DeleteBoard { workspace_id })?;
     match resp {
         Response::Ok => Ok(()),
         other => anyhow::bail!("expected Ok, got {other:?}"),
@@ -1524,8 +2040,12 @@ fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> 
 }
 
 #[tauri::command]
-pub fn delete_board(workspace_id: String, state: State<CommandConnection>) -> Result<(), String> {
-    delete_board_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+pub fn delete_board(
+    workspace_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    delete_board_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 /// Rides the STREAMING connection (fire-and-forget, mirroring
@@ -1537,17 +2057,23 @@ pub fn watch_gavin_root(
     workspace_id: String,
     root_path: String,
     conn: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(&conn.writer, &Request::WatchGavinRoot { workspace_id, root_path })
-        .map_err(|e| e.to_string())
+    send_request(
+        &conn.writer,
+        &Request::WatchGavinRoot { workspace_id, root_path },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn unwatch_gavin_root(
     workspace_id: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::UnwatchGavinRoot { workspace_id })
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::UnwatchGavinRoot { workspace_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1560,8 +2086,9 @@ pub fn unwatch_gavin_root(
 pub fn get_gavin_tree(
     workspace_id: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<protocol::GavinTree, String> {
-    let resp = send_command(&state.0, &Request::GetGavinTree { workspace_id })
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::GetGavinTree { workspace_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::GavinTreeSnapshot { tree, .. } => Ok(tree),
@@ -1575,9 +2102,14 @@ pub fn init_gavin_root(
     root_path: String,
     workspace_name: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::InitGavinRoot { root_path, workspace_name })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::InitGavinRoot { root_path, workspace_name },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -1589,8 +2121,9 @@ pub fn init_gavin_root(
 pub fn create_gavin_context(
     parent_folder: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::CreateGavinContext { parent_folder })
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::CreateGavinContext { parent_folder })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1604,9 +2137,14 @@ pub fn add_external_gavin_context(
     root_path: String,
     folder: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::AddExternalGavinContext { root_path, folder })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::AddExternalGavinContext { root_path, folder },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -1619,9 +2157,14 @@ pub fn remove_external_gavin_context(
     root_path: String,
     folder: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::RemoveExternalGavinContext { root_path, folder })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::RemoveExternalGavinContext { root_path, folder },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -1876,8 +2419,13 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
 /// never-overwrite guarantee are identical no matter who creates a plan.
 /// Returns the created path.
 #[tauri::command]
-pub fn delete_card_file(path: String, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::DeleteCardFile { path }).map_err(|e| e.to_string())?;
+pub fn delete_card_file(
+    path: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteCardFile { path })
+        .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -1893,9 +2441,11 @@ pub fn link_card_session(
     cwd: String,
     command: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::LinkCardSession { workspace_id, path, session_id, cwd, command },
     )
     .map_err(|e| e.to_string())?;
@@ -1911,9 +2461,14 @@ pub fn unlink_card_session(
     workspace_id: String,
     path: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::UnlinkCardSession { workspace_id, path })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::UnlinkCardSession { workspace_id, path },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -1928,9 +2483,11 @@ pub fn set_checklist_item(
     expected_text: String,
     checked: bool,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetChecklistItem { path, line_index, expected_text, checked },
     )
     .map_err(|e| e.to_string())?;
@@ -1947,9 +2504,14 @@ pub fn promote_checklist_item(
     plan_path: String,
     item: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command(&state.0, &Request::PromoteChecklistItem { plan_path, item })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::PromoteChecklistItem { plan_path, item },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::TaskPromoted { path } => Ok(path),
         Response::Error { message } => Err(message),
@@ -1968,9 +2530,11 @@ pub fn create_plan(
     kind: Option<String>,
     parent: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent },
     )
     .map_err(|e| e.to_string())?;
@@ -1982,16 +2546,63 @@ pub fn create_plan(
 }
 
 #[tauri::command]
+/// Returns the card's path AFTER the write: a status write can archive
+/// the file into `plans/done/`, and the UI holds that path as identity.
 pub fn set_plan_frontmatter_field(
     path: String,
     key: String,
     value: String,
     state: State<CommandConnection>,
-) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::SetPlanFrontmatterField { path, key, value })
-        .map_err(|e| e.to_string())?;
+    compat: State<DaemonCompatState>,
+) -> Result<String, String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetPlanFrontmatterField { path, key, value },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
-        Response::Ok => Ok(()),
+        Response::PlanFieldSet { path } => Ok(path),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// Moves a card into its context's `plans/archive/`, taking its nested
+/// children with it, and returns the path it landed on. The card leaves
+/// the kanban board until `unarchive_card` brings it back.
+#[tauri::command]
+pub fn archive_card(
+    path: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<String, String> {
+    let resp =
+        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::ArchiveCard { path })
+            .map_err(|e| e.to_string())?;
+    match resp {
+        Response::CardMoved { path } => Ok(path),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// The inverse of `archive_card`: files the card back where its status
+/// says it belongs and returns its new path.
+#[tauri::command]
+pub fn unarchive_card(
+    path: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<String, String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::UnarchiveCard { path },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::CardMoved { path } => Ok(path),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -2003,9 +2614,14 @@ pub fn set_root_config_field(
     key: String,
     value: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::SetRootConfigField { root_path, key, value })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetRootConfigField { root_path, key, value },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -2055,7 +2671,7 @@ mod migration_tests {
 
 #[cfg(test)]
 mod main_session_tests {
-    use super::test_support::fake_daemon_replying_with;
+    use super::test_support::{fake_daemon_replying_with, parity_compat};
     use super::*;
 
     fn ws_with_main(id: &str, main: Option<&str>) -> Workspace {
@@ -2065,6 +2681,7 @@ mod main_session_tests {
             pages: vec![],
             active_page_id: None,
             active_view: None,
+            hub_view: None,
             root_path: Some("/tmp/ws".to_string()),
             main_session_id: main.map(|m| m.to_string()),
             legacy_agent_command: None,
@@ -2091,7 +2708,7 @@ mod main_session_tests {
             sessions: vec![summary("agent-1", "idle")],
         }]);
         let mut workspaces = vec![ws_with_main("ws-1", Some("agent-1"))];
-        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client), &parity_compat()).unwrap();
         assert_eq!(workspaces[0].main_session_id.as_deref(), Some("agent-1"));
     }
 
@@ -2102,7 +2719,7 @@ mod main_session_tests {
         }]);
         let mut workspaces =
             vec![ws_with_main("ws-1", Some("agent-1")), ws_with_main("ws-2", Some("never-existed"))];
-        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client), &parity_compat()).unwrap();
         assert_eq!(workspaces[0].main_session_id, None);
         assert_eq!(workspaces[1].main_session_id, None);
     }
@@ -2113,7 +2730,7 @@ mod main_session_tests {
         // no ListSessions was sent at all.
         let (client, _dir) = fake_daemon_replying_with(vec![]);
         let mut workspaces = vec![ws_with_main("ws-1", None)];
-        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client), &parity_compat()).unwrap();
         assert_eq!(workspaces[0].main_session_id, None);
     }
 }
@@ -2128,7 +2745,22 @@ mod version_probe_tests {
         let (client, _dir) = fake_daemon_replying_with(vec![Response::ProtocolVersion {
             version: protocol::PROTOCOL_VERSION,
         }]);
-        assert!(verify_daemon_protocol(&Mutex::new(client)).is_ok());
+        let compat = verify_daemon_protocol(&Mutex::new(client)).unwrap();
+        assert_eq!(compat.daemon_version, protocol::PROTOCOL_VERSION);
+        assert!(!compat.degraded);
+    }
+
+    #[test]
+    fn an_older_in_window_daemon_connects_degraded_instead_of_erroring() {
+        // This is the behaviour the whole feature exists for: an older
+        // daemon inside the window used to be a hard error that forced a
+        // daemon-killing restart. It must now come back Ok, just flagged.
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::ProtocolVersion {
+            version: protocol::MIN_COMPATIBLE_VERSION,
+        }]);
+        let compat = verify_daemon_protocol(&Mutex::new(client)).unwrap();
+        assert_eq!(compat.daemon_version, protocol::MIN_COMPATIBLE_VERSION);
+        assert!(compat.degraded);
     }
 
     #[test]
@@ -2141,24 +2773,223 @@ mod version_probe_tests {
     }
 
     #[test]
-    fn unparsed_probe_or_error_reply_names_the_daemon_as_stale() {
+    fn unparsed_probe_or_error_reply_names_the_daemon_as_unreachable() {
         // An old daemon can't parse the probe at all: closed connection.
+        // This is a distinct band from an explicit too-low version -- the
+        // daemon never got far enough to report one -- but per the
+        // 2026-08-07 incident it must still land on a named, actionable
+        // error rather than a bare connection-closed mystery.
         let (client, _dir) = fake_daemon_replying_with(vec![]);
         let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
-        assert!(err.contains("older than this app"));
+        assert!(err.contains("too old to talk to this app"));
         // A daemon that replies Error (unknown request) maps the same way.
         let (client, _dir) = fake_daemon_replying_with(vec![Response::Error {
             message: "unknown".to_string(),
         }]);
         let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
-        assert!(err.contains("older than this app"));
+        assert!(err.contains("too old to talk to this app"));
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    #[test]
+    fn an_exactly_matching_daemon_is_not_degraded() {
+        let c = classify(12, 12, 5).unwrap();
+        assert_eq!(c.daemon_version, 12);
+        assert!(!c.degraded);
+    }
+
+    #[test]
+    fn an_older_daemon_inside_the_window_is_usable_but_degraded() {
+        let c = classify(9, 12, 5).unwrap();
+        assert!(c.degraded);
+        assert_eq!(c.daemon_version, 9);
+    }
+
+    #[test]
+    fn the_floor_itself_is_inside_the_window() {
+        assert!(classify(5, 12, 5).is_ok());
+    }
+
+    #[test]
+    fn a_daemon_below_the_floor_is_rejected() {
+        let err = classify(4, 12, 5).unwrap_err();
+        assert!(err.contains("too old"), "message should say what to do: {err}");
+    }
+
+    #[test]
+    fn a_daemon_newer_than_the_app_is_rejected() {
+        let err = classify(13, 12, 5).unwrap_err();
+        assert!(err.contains("newer"));
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn a_request_the_daemon_predates_is_refused_before_it_is_sent() {
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+        let err = gate(&too_new, &compat).unwrap_err();
+        assert!(err.contains("v10"), "should name the version needed: {err}");
+        assert!(err.contains("v9"), "should name the version running: {err}");
+    }
+
+    #[test]
+    fn a_request_the_daemon_understands_passes() {
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+        assert!(gate(&Request::ListSessions, &compat).is_ok());
+    }
+
+    #[test]
+    fn an_exact_match_gates_nothing() {
+        let compat = DaemonCompat { daemon_version: 12, app_version: 12, degraded: false };
+        let newest = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+        assert!(gate(&newest, &compat).is_ok());
+    }
+
+    /// One sample of every `Request` variant, `Unknown` included. Field
+    /// values are placeholders -- `gate` and `min_version_for` only look at
+    /// which variant a request is, never its payload -- so the only thing
+    /// that has to be right here is that every variant in
+    /// `crates/protocol/src/lib.rs` has exactly one entry below. A variant
+    /// added there without a matching entry here would silently narrow the
+    /// sweep below rather than fail loudly, which is a real gap: nothing
+    /// else forces this list to stay exhaustive the way `min_version_for`'s
+    /// own match does. Reviewed by hand against the enum each time it
+    /// changes.
+    fn one_of_every_request_variant() -> Vec<Request> {
+        vec![
+            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None },
+            Request::ListSessions,
+            Request::WriteInput { id: "s".into(), data: "d".into() },
+            Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
+            Request::KillSession { id: "s".into() },
+            Request::Attach { id: "s".into() },
+            Request::GetBoard { workspace_id: "w".into() },
+            Request::SetBoard { workspace_id: "w".into(), columns: vec![], labels: vec![] },
+            Request::DeleteBoard { workspace_id: "w".into() },
+            Request::WatchGavinRoot { workspace_id: "w".into(), root_path: "r".into() },
+            Request::UnwatchGavinRoot { workspace_id: "w".into() },
+            Request::GetGavinTree { workspace_id: "w".into() },
+            Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
+            Request::CreateGavinContext { parent_folder: "p".into() },
+            Request::AddExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::RemoveExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::SetPlanFrontmatterField { path: "p".into(), key: "k".into(), value: "v".into() },
+            Request::SetRootConfigField { root_path: "r".into(), key: "k".into(), value: "v".into() },
+            Request::ScanGavinRoot { root_path: "r".into() },
+            Request::ReadPrd { root_path: "r".into() },
+            Request::CreatePlan {
+                context_folder: "c".into(),
+                file_name: "f".into(),
+                title: "t".into(),
+                status: None,
+                priority: None,
+                body: None,
+                kind: None,
+                parent: None,
+            },
+            Request::GetBoardByRoot { root_path: "r".into() },
+            Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },
+            Request::DeleteCardFile { path: "p".into() },
+            Request::SetChecklistItem {
+                path: "p".into(),
+                line_index: 0,
+                expected_text: "x".into(),
+                checked: true,
+            },
+            Request::PromoteChecklistItem { plan_path: "p".into(), item: "i".into() },
+            Request::LinkCardSession {
+                workspace_id: "w".into(),
+                path: "p".into(),
+                session_id: "s".into(),
+                cwd: "c".into(),
+                command: None,
+            },
+            Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
+            Request::GetOrchestration { workspace_id: "w".into() },
+            Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
+            Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
+            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None },
+            Request::GetOrchestrationByRoot { root_path: "r".into() },
+            Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
+            Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
+            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::GetProtocolVersion,
+            Request::Shutdown,
+            // Deserialize-only in production, but nothing stops Rust code
+            // from constructing it -- and the sweep needs to, to prove it
+            // is refused everywhere rather than just trusting the comment
+            // on `min_version_for`'s `u32::MAX` arm.
+            Request::Unknown,
+        ]
+    }
+
+    /// The sweep: across EVERY daemon version in the compat window (not
+    /// just a representative slice of it), `gate`'s verdict must agree
+    /// with what `min_version_for` reports for EVERY request variant, not
+    /// just the couple of variants the tests above exercise.
+    ///
+    /// This used to sample only three daemon versions (the floor, v9, and
+    /// parity). Because the version table jumps v8 -> v10, no variant
+    /// needs exactly v9, so that sample put only 3 of the request variants
+    /// on their own `needed == daemon_version` boundary -- the case below
+    /// that actually catches comparison-operator drift. Iterating the
+    /// whole window instead costs nothing (39 variants * 8 versions = 312
+    /// trivial assertions) and puts roughly a third of the variants on
+    /// their boundary.
+    ///
+    /// Honest limit: `gate` computes `needed = min_version_for(req)` and
+    /// this test's own `should_pass` comes from that same call, so this
+    /// cannot catch a version number in the table that is simply wrong in
+    /// an absolute sense (e.g. a variant attributed to v9 when it should
+    /// truly be v10) -- only the humans maintaining the table can catch
+    /// that. What it DOES catch, at every variant and (crucially) right at
+    /// the `needed == daemon_version` boundary rather than only away from
+    /// it: `gate`'s comparison drifting from "permitted exactly when
+    /// `needed <= daemon_version`" -- an accidental `>=` in place of `>`,
+    /// say. Verified empirically while writing this test: that exact
+    /// one-character change made this sweep fail (LinkCardSession, needed
+    /// v5, refused by a v5 daemon) while the narrower tests earlier in
+    /// this module and `a_command_the_daemon_predates_never_reaches_the_wire`
+    /// (each pinned to one variant away from any boundary) stayed green.
+    #[test]
+    fn gate_agrees_with_min_version_for_across_every_variant_at_every_version_in_the_window() {
+        let daemon_versions =
+            (protocol::MIN_COMPATIBLE_VERSION..=protocol::PROTOCOL_VERSION).collect::<Vec<_>>();
+
+        for &daemon_version in &daemon_versions {
+            let compat = DaemonCompat {
+                daemon_version,
+                app_version: protocol::PROTOCOL_VERSION,
+                degraded: daemon_version < protocol::PROTOCOL_VERSION,
+            };
+            for req in one_of_every_request_variant() {
+                let needed = protocol::min_version_for(&req);
+                let should_pass = needed <= daemon_version;
+                let verdict = gate(&req, &compat);
+                assert_eq!(
+                    verdict.is_ok(),
+                    should_pass,
+                    "{req:?} needs v{needed}; a v{daemon_version} daemon should {} it, but gate returned {verdict:?}",
+                    if should_pass { "permit" } else { "refuse" },
+                );
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod kanban_command_tests {
-    use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with};
+    use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with, parity_compat};
     use super::*;
+    use std::os::unix::net::UnixListener;
 
     #[test]
     fn get_board_impl_returns_the_boards_columns_and_labels() {
@@ -2169,11 +3000,55 @@ mod kanban_command_tests {
         }]);
         let conn = Mutex::new(client);
 
-        let board = get_board_impl(&conn, "ws-1".to_string()).unwrap();
+        let board = get_board_impl(&conn, "ws-1".to_string(), &parity_compat()).unwrap();
 
         assert_eq!(board.columns.len(), 1);
         assert_eq!(board.columns[0].name, "To Do");
         assert_eq!(board.labels.len(), 1);
+    }
+
+    /// Regression for the Critical finding in fix round 1: `get_board_impl`
+    /// -- one of the several functions here that are unit-tested against a
+    /// bare `Mutex<UnixStream>` pointed at a tempdir fake socket, with no
+    /// path threaded through for a reconnect -- must retry against THAT
+    /// SAME fake socket when its connection drops, never against
+    /// `protocol::socket_path()` (the real daemon). Built by hand rather
+    /// than via `fake_daemon_replying_with` because that helper serves only
+    /// one connection; this needs a second `accept()` on the identical
+    /// listener to prove the reconnect targets it. If the retry instead
+    /// resolved the real socket path, this test would either fail fast (no
+    /// real daemon in the test environment) or hang forever waiting on a
+    /// second local connection that would never arrive -- either way it
+    /// would not pass quickly and cleanly the way it does here.
+    #[test]
+    fn get_board_impl_retries_against_the_same_fake_socket_not_the_real_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("board-retry.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(second.try_clone().unwrap());
+            let _req: Request = read_message(&mut reader).unwrap().unwrap();
+            write_message(
+                &mut second,
+                &Response::Board {
+                    columns: vec![Column { id: "c1".to_string(), name: "To Do".to_string(), position: 0 }],
+                    labels: vec![],
+                    card_sessions: vec![],
+                },
+            )
+            .unwrap();
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let board = get_board_impl(&conn, "ws-1".to_string(), &parity_compat()).unwrap();
+
+        assert_eq!(board.columns.len(), 1);
+        assert_eq!(board.columns[0].name, "To Do");
+        server.join().unwrap();
     }
 
     #[test]
@@ -2182,7 +3057,7 @@ mod kanban_command_tests {
             fake_daemon_capturing_requests(vec![Response::Board { columns: vec![], labels: vec![], card_sessions: vec![] }]);
         let conn = Mutex::new(client);
 
-        get_board_impl(&conn, "ws-42".to_string()).unwrap();
+        get_board_impl(&conn, "ws-42".to_string(), &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -2197,7 +3072,7 @@ mod kanban_command_tests {
             fake_daemon_replying_with(vec![Response::Error { message: "board fetch failed".to_string() }]);
         let conn = Mutex::new(client);
 
-        let result = get_board_impl(&conn, "ws-1".to_string());
+        let result = get_board_impl(&conn, "ws-1".to_string(), &parity_compat());
 
         assert!(result.is_err());
     }
@@ -2208,7 +3083,7 @@ mod kanban_command_tests {
         let conn = Mutex::new(client);
         let columns = vec![Column { id: "c1".to_string(), name: "Only".to_string(), position: 0,  }];
 
-        set_board_impl(&conn, "ws-1".to_string(), columns.clone(), vec![]).unwrap();
+        set_board_impl(&conn, "ws-1".to_string(), columns.clone(), vec![], &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -2227,7 +3102,7 @@ mod kanban_command_tests {
             fake_daemon_replying_with(vec![Response::Error { message: "board save failed".to_string() }]);
         let conn = Mutex::new(client);
 
-        let result = set_board_impl(&conn, "ws-1".to_string(), vec![], vec![]);
+        let result = set_board_impl(&conn, "ws-1".to_string(), vec![], vec![], &parity_compat());
 
         assert!(result.is_err());
     }
@@ -2237,12 +3112,106 @@ mod kanban_command_tests {
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::Ok]);
         let conn = Mutex::new(client);
 
-        delete_board_impl(&conn, "ws-1".to_string()).unwrap();
+        delete_board_impl(&conn, "ws-1".to_string(), &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
             Request::DeleteBoard { workspace_id } => assert_eq!(workspace_id, "ws-1"),
             other => panic!("expected DeleteBoard, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod attach_target_tests {
+    use super::*;
+    use crate::config::Page;
+
+    fn leaf(tabs: &[&str]) -> LayoutNode {
+        LayoutNode::Leaf {
+            tabs: tabs.iter().map(|s| s.to_string()).collect(),
+            active_tab_index: 0,
+            pinned: Vec::new(),
+        }
+    }
+
+    fn ws(id: &str, tabs: &[&str], main: Option<&str>) -> Workspace {
+        Workspace {
+            id: id.to_string(),
+            name: id.to_string(),
+            pages: vec![Page {
+                id: format!("{id}-p1"),
+                name: "p1".to_string(),
+                layout: leaf(tabs),
+                focused_session_id: None,
+            }],
+            active_page_id: None,
+            active_view: None,
+            hub_view: None,
+            root_path: None,
+            main_session_id: main.map(|m| m.to_string()),
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
+            git_view: None,
+        }
+    }
+
+    fn data(workspaces: Vec<Workspace>) -> WorkspacesData {
+        WorkspacesData { workspaces, active_workspace_id: None }
+    }
+
+    #[test]
+    fn non_session_tab_ids_covers_both_file_and_board_tabs() {
+        let mut files = HashMap::new();
+        files.insert("f1".to_string(), "/tmp/a.md".to_string());
+        let mut boards = HashMap::new();
+        boards.insert(
+            "b1".to_string(),
+            crate::config::BoardTabRecord {
+                workspace_id: "w1".to_string(),
+                context_folder: "/tmp/ws".to_string(),
+            },
+        );
+
+        let ids = non_session_tab_ids(&files, &boards);
+
+        assert_eq!(ids, HashSet::from(["f1".to_string(), "b1".to_string()]));
+    }
+
+    #[test]
+    fn attachable_ids_include_main_agents_that_live_outside_every_page_tree() {
+        // D12: a main agent session is remembered on the workspace, not
+        // placed in a page. Walking page trees alone misses it, and a
+        // session nobody attaches renders blank forever.
+        let d = data(vec![ws("w1", &["s1", "s2"], Some("main-1"))]);
+
+        let ids = attachable_session_ids(&d, &HashSet::new());
+
+        assert_eq!(ids, vec!["s1".to_string(), "s2".to_string(), "main-1".to_string()]);
+    }
+
+    #[test]
+    fn attachable_ids_skip_file_and_board_tabs() {
+        // These share the layout tree's id space but were never sessions
+        // -- the daemon would reject an Attach for them.
+        let d = data(vec![ws("w1", &["s1", "f1", "b1"], None)]);
+
+        let ids = attachable_session_ids(
+            &d,
+            &HashSet::from(["f1".to_string(), "b1".to_string()]),
+        );
+
+        assert_eq!(ids, vec!["s1".to_string()]);
+    }
+
+    #[test]
+    fn attachable_ids_span_every_workspace() {
+        let d = data(vec![ws("w1", &["s1"], Some("m1")), ws("w2", &["s2"], None)]);
+
+        let ids = attachable_session_ids(&d, &HashSet::new());
+
+        assert_eq!(ids, vec!["s1".to_string(), "s2".to_string(), "m1".to_string()]);
     }
 }

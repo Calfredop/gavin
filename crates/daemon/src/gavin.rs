@@ -2,6 +2,7 @@ use protocol::{
     AgentConfig,
     CardKind, GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
 };
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -154,6 +155,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: path.to_string_lossy().to_string(),
+        modified_at: file_modified_at(path),
         file_name,
         title: get("title").unwrap_or(stem),
         status: get("status"),
@@ -166,6 +168,17 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         checklist_total,
         parse_warning: warning,
     }
+}
+
+/// The file's mtime as whole seconds since the unix epoch. None for a
+/// path that can't be stat'd (a fabricated path in a test, a file
+/// deleted between the listing and the read) and for the pre-1970 clocks
+/// that would make the duration negative -- neither is worth failing a
+/// scan over, and the archive grid treats None as "sorts last".
+fn file_modified_at(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let secs = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    i64::try_from(secs).ok()
 }
 
 /// Counts `- [ ]` / `- [x]` lines (any indentation, requiring the
@@ -332,10 +345,27 @@ pub fn create_plan_file(
 
     let plans = gavin_dir.join("plans");
     std::fs::create_dir_all(&plans)?;
-    let path = plans.join(file_name);
-    if path.exists() {
-        anyhow::bail!("plan file already exists: {}", path.display());
+    // File names are unique per context (that is what `parent:` resolves
+    // on), so the check spans the whole tree -- a flat `x.md` and an
+    // archived `done/x.md` would be one ambiguous card, not two.
+    if let Some(existing) = find_in_plans_tree(&plans, file_name) {
+        anyhow::bail!("plan file already exists: {}", existing.display());
     }
+    // Born in the folder it belongs in, rather than created flat and
+    // immediately moved: a nested child beside its parent, a Done card in
+    // done/, everything else in plans/.
+    let dir = if kind == "task" && status.is_none() {
+        parent
+            .and_then(|p| find_in_plans_tree(&plans, p))
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| plans.clone())
+    } else if status.is_some_and(is_done_status) {
+        plans.join(DONE_DIR)
+    } else {
+        plans.clone()
+    };
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(file_name);
 
     let mut content = String::from("---\n");
     if kind != "plan" {
@@ -363,15 +393,298 @@ pub fn create_plan_file(
     Ok(path)
 }
 
+/// The archive folder inside a `plans/` directory. Finished cards live
+/// here so an agent listing or grepping `plans/` sees only live work --
+/// this repo had 30 Done cards among 44 when the rule was written.
+pub const DONE_DIR: &str = "done";
+
+/// The explicit archive inside a `plans/` directory. Unlike `done/`,
+/// nothing files a card here automatically: a human archives it, and it
+/// leaves the kanban board until they take it back out. `done/` still
+/// means "Done and still on the board" -- the two folders answer
+/// different questions and neither replaces the other.
+pub const ARCHIVE_DIR: &str = "archive";
+
+/// A status archives iff it slugs to "done" -- the same match the board
+/// makes between a card's status and a column name, so "Done", "done" and
+/// " DONE " are one status and "Shipped" is not.
+fn is_done_status(status: &str) -> bool {
+    slug_title(status).as_deref() == Some(DONE_DIR)
+}
+
+/// True for a `plans` directory that really is a context's plans folder
+/// (its parent is a `.gavin*` marker directory).
+fn is_plans_dir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|n| n == "plans")
+        && dir
+            .parent()
+            .is_some_and(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
+}
+
+/// The `plans/` root governing this file, but ONLY for the three
+/// locations the filing rules own: directly in `plans/`, in
+/// `plans/done/`, or in `plans/archive/`. A file filed under a hand-made
+/// `plans/roadmap/` yields None and is therefore never moved -- a status
+/// write must not flatten somebody else's hierarchy.
+fn governed_plans_root(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if is_plans_dir(parent) {
+        return Some(parent.to_path_buf());
+    }
+    if parent.file_name().is_some_and(|n| n == DONE_DIR || n == ARCHIVE_DIR) {
+        let plans = parent.parent()?;
+        if is_plans_dir(plans) {
+            return Some(plans.to_path_buf());
+        }
+    }
+    None
+}
+
+/// True for a card sitting directly in this plans root's `archive/`.
+fn in_archive(path: &Path, plans_root: &Path) -> bool {
+    path.parent() == Some(plans_root.join(ARCHIVE_DIR).as_path())
+}
+
+/// Every md file under a `plans/` root, in walk order.
+fn plans_tree_files(plans_root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(plans_root, &mut out);
+    out.sort();
+    out
+}
+
+/// The one file of this name anywhere under `plans/`. Card file names are
+/// unique per context by construction -- `parent:` resolves on
+/// (context, file_name) -- so a tree-wide lookup is the right one.
+fn find_in_plans_tree(plans_root: &Path, file_name: &str) -> Option<PathBuf> {
+    plans_tree_files(plans_root)
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file_name))
+}
+
+/// The `plans/` directory this card file belongs to: the nearest ancestor
+/// named `plans` whose own parent is a `.gavin*` marker. Unlike
+/// `governed_plans_root` it does not care WHICH subfolder the card sits
+/// in -- a card under a hand-made `plans/roadmap/` still belongs to that
+/// root, it is only the filing rules that leave it alone.
+fn owning_plans_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors().skip(1).find(|d| is_plans_dir(d)).map(Path::to_path_buf)
+}
+
+/// Re-points card paths whose file has moved out from under them, as
+/// `(old, new)` pairs. The daemon re-keys a card it moved ITSELF at the
+/// move; a card moved any other way -- an agent running `mv`, a one-time
+/// migration, a hand edit -- would otherwise leave a rail step aimed at
+/// nothing, and a rail stalls on such a step instead of skipping a card
+/// that is merely finished.
+///
+/// The match is by file name within the card's own `plans/` root, which
+/// is exactly the identity `parent:` already resolves on. Ambiguity is
+/// left alone: a name that no longer answers to exactly one file is a
+/// broken path, not a guess worth making. Paths whose file is right
+/// where they say yield nothing, so a scan that changed nothing costs
+/// one lookup per path and writes nothing.
+///
+/// Comparison is on the path spelling, not the inode: both sides come
+/// out of the same canonicalized scan (the watcher canonicalizes its
+/// root, and every path the app or an MCP agent holds was read back from
+/// a tree), so there is only ever one spelling in play.
+pub fn recover_moved_card_paths(tree: &GavinTree, paths: &[String]) -> Vec<(String, String)> {
+    let live: HashSet<&str> = tree
+        .contexts
+        .iter()
+        .flat_map(|c| c.plans.iter().map(|p| p.path.as_str()))
+        .collect();
+    // (plans root, file name) -> the files answering to it. More than one
+    // is a workspace that already broke `parent:` resolution; we decline
+    // to pick between them.
+    let mut by_name: HashMap<(PathBuf, String), Vec<&str>> = HashMap::new();
+    for path in live.iter().copied() {
+        let p = Path::new(path);
+        let (Some(root), Some(name)) = (owning_plans_root(p), p.file_name()) else { continue };
+        by_name.entry((root, name.to_string_lossy().to_string())).or_default().push(path);
+    }
+
+    let mut pairs: BTreeMap<String, String> = BTreeMap::new();
+    for stale in paths {
+        if live.contains(stale.as_str()) || pairs.contains_key(stale) {
+            continue;
+        }
+        let p = Path::new(stale);
+        let (Some(root), Some(name)) = (owning_plans_root(p), p.file_name()) else { continue };
+        match by_name.get(&(root, name.to_string_lossy().to_string())).map(Vec::as_slice) {
+            Some([found]) => {
+                pairs.insert(stale.clone(), (*found).to_string());
+            }
+            _ => continue,
+        }
+    }
+    pairs.into_iter().collect()
+}
+
+/// The directory a card belongs in, given its own frontmatter. A nested
+/// child (task + parent + no status) lives wherever its parent lives --
+/// the same "children travel with their parent" rule deletion already
+/// applies. Everything else is `plans/done/` when Done, `plans/`
+/// otherwise. None when the answer is "leave it exactly where it is".
+fn home_dir_for(plans_root: &Path, info: &PlanFileInfo) -> Option<PathBuf> {
+    if info.kind == CardKind::Task && info.status.is_none() {
+        if let Some(parent) = info.parent.as_deref() {
+            // An unresolvable parent is a broken link, not a licence to
+            // move the card: leave it and let the board flag it.
+            return find_in_plans_tree(plans_root, parent).and_then(|p| p.parent().map(Path::to_path_buf));
+        }
+    }
+    Some(match info.status.as_deref() {
+        Some(s) if is_done_status(s) => plans_root.join(DONE_DIR),
+        _ => plans_root.to_path_buf(),
+    })
+}
+
+/// Moves one card file to `dest_dir`, creating it if needed. A taken
+/// destination leaves the file where it is: two cards sharing a file name
+/// in one context already break `parent:` resolution, and inventing a
+/// suffix here would only make the name wrong again when the card comes
+/// back out of `done/`.
+fn move_card(path: &Path, dest_dir: &Path) -> anyhow::Result<PathBuf> {
+    let Some(file_name) = path.file_name() else { return Ok(path.to_path_buf()) };
+    let dest = dest_dir.join(file_name);
+    if dest == path {
+        return Ok(path.to_path_buf());
+    }
+    if dest.exists() {
+        eprintln!(
+            "not moving {} to {}: a file of that name is already there",
+            path.display(),
+            dest.display()
+        );
+        return Ok(path.to_path_buf());
+    }
+    std::fs::create_dir_all(dest_dir)?;
+    std::fs::rename(path, &dest)?;
+    Ok(dest)
+}
+
+/// Moves one card to `dest_dir` and drags its nested children after it.
+/// Returns the card's path afterwards -- unchanged when it was already
+/// there or the destination name was taken (in which case the children
+/// stay put too, since their home is wherever the parent actually is).
+fn move_card_with_children(
+    path: &Path,
+    plans_root: &Path,
+    dest_dir: &Path,
+    info: &PlanFileInfo,
+) -> anyhow::Result<PathBuf> {
+    let moved = move_card(path, dest_dir)?;
+    if moved == path {
+        return Ok(moved);
+    }
+    // The children follow. Their own home is "wherever the parent is",
+    // so this is the same rule applied one level down rather than a
+    // special case -- and it is the rule for BOTH kinds of move, the
+    // status one into done/ and the explicit one into archive/.
+    if info.kind == CardKind::Plan {
+        for child in plans_tree_files(plans_root) {
+            if child == moved || governed_plans_root(&child).is_none() {
+                continue;
+            }
+            let Ok(child_content) = std::fs::read_to_string(&child) else { continue };
+            let child_info = plan_file_info(&child, &child_content);
+            let follows = child_info.kind == CardKind::Task
+                && child_info.status.is_none()
+                && child_info.parent.as_deref() == Some(info.file_name.as_str());
+            if follows {
+                if let Some(dest) = moved.parent() {
+                    move_card(&child, dest)?;
+                }
+            }
+        }
+    }
+    Ok(moved)
+}
+
+/// Files a card where its status says it belongs, and takes its nested
+/// children with it. Returns the card's path afterwards -- unchanged when
+/// no move was called for, when the card lives outside the governed
+/// locations, or when the destination name was taken.
+pub fn relocate_for_status(path: &Path) -> anyhow::Result<PathBuf> {
+    let Some(plans_root) = governed_plans_root(path) else { return Ok(path.to_path_buf()) };
+    // An archived card stays archived. Archiving is a filing decision a
+    // human made explicitly, and a later status edit -- theirs or an
+    // agent's -- must not quietly undo it by dragging the file back onto
+    // the board. `unarchive_card` is the only way out.
+    if in_archive(path, &plans_root) {
+        return Ok(path.to_path_buf());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let info = plan_file_info(path, &content);
+    let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
+    move_card_with_children(path, &plans_root, &home, &info)
+}
+
+/// Moves a card into its context's `plans/archive/`, children included.
+/// Already-archived cards are a no-op rather than an error: the end state
+/// the caller asked for already holds.
+pub fn archive_card(path: &Path) -> anyhow::Result<PathBuf> {
+    let plans_root = governed_plans_root(path)
+        .ok_or_else(|| anyhow::anyhow!("not an archivable plans/ card: {}", path.display()))?;
+    if in_archive(path, &plans_root) {
+        return Ok(path.to_path_buf());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let info = plan_file_info(path, &content);
+    move_card_with_children(path, &plans_root, &plans_root.join(ARCHIVE_DIR), &info)
+}
+
+/// Takes a card back out of `plans/archive/` and files it where its
+/// status says it belongs -- `plans/done/` for a Done card, `plans/`
+/// otherwise. A card that is not archived is a no-op, for the same
+/// reason `archive_card` treats a re-archive as one.
+///
+/// Un-archiving a lone NESTED child lands it back beside its parent,
+/// which for a still-archived parent means it does not move at all.
+/// That is the "children live where their parent lives" rule holding,
+/// not a failure: the way to bring the child back is to bring the plan
+/// back, and it comes with it.
+pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
+    let plans_root = governed_plans_root(path)
+        .ok_or_else(|| anyhow::anyhow!("not a plans/ card: {}", path.display()))?;
+    if !in_archive(path, &plans_root) {
+        return Ok(path.to_path_buf());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let info = plan_file_info(path, &content);
+    let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
+    move_card_with_children(path, &plans_root, &home, &info)
+}
+
 /// The public, validated entry point (and the future MCP tool body). The
 /// allow-list is enforced HERE, not trusted to callers -- this must never
 /// become an arbitrary-line writer.
-pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+///
+/// Returns the file's path AFTER the write: a status write can move the
+/// card between `plans/` and `plans/done/` (see `relocate_for_status`),
+/// and every caller that holds the path as an identity needs the new one.
+pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<PathBuf> {
     // Empty value removes the line -- permitted only where the card model
     // needs it (status: nesting, parent: un-parenting, labels: clearing).
     if value.is_empty() {
         match key {
-            "status" | "parent" | "labels" => return write_plan_field(path, key, value),
+            "status" | "parent" | "labels" => {
+                write_plan_field(path, key, value)?;
+                return relocate_for_status(path);
+            }
             other => anyhow::bail!("empty value not allowed for: {other}"),
         }
     }
@@ -412,7 +725,10 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()>
         }
         other => anyhow::bail!("field not allowed: {other}"),
     }
-    write_plan_field(path, key, value)
+    write_plan_field(path, key, value)?;
+    // Run on every field, not just status: it costs one read, and it
+    // heals a card someone dragged into the wrong folder in Finder.
+    relocate_for_status(path)
 }
 
 /// Splits a checkbox line into (prefix "  - [", mark ' '|'x', rest after
@@ -519,11 +835,10 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
     }
     let line_index = matches[0];
 
-    // The plan's folder must be a `.gavin*/plans/`; the context folder is
-    // its grandparent's parent.
-    let plans_dir = plan_path
-        .parent()
-        .filter(|d| d.file_name().is_some_and(|n| n == "plans"))
+    // The plan must sit in a `.gavin*/plans/` -- or in its `done/`, since
+    // an archived plan is still a plan someone can promote a step out of.
+    // The context folder is the marker directory's parent.
+    let plans_dir = governed_plans_root(plan_path)
         .ok_or_else(|| anyhow::anyhow!("not a plans/ file: {}", plan_path.display()))?;
     let gavin_dir = plans_dir
         .parent()
@@ -537,7 +852,7 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
         .ok_or_else(|| anyhow::anyhow!("item text has no usable characters for a file name: {item}"))?;
     let mut file_name = format!("{slug}.md");
     let mut n = 2;
-    while plans_dir.join(&file_name).exists() {
+    while find_in_plans_tree(&plans_dir, &file_name).is_some() {
         file_name = format!("{slug}-{n}.md");
         n += 1;
     }
@@ -907,16 +1222,185 @@ pub fn scan_root(root: &Path) -> GavinTree {
     GavinTree { root_path: root_str, root_missing: false, contexts }
 }
 
-const RESCAN_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Floor between two full rescans, sleeping out the remainder rather than
-/// skipping -- the RepoPoller lesson: without a floor, sustained
-/// working-tree churn (a build, an install) can drive the debouncer to
-/// flush every 500ms indefinitely.
+/// The directories worth watching, and how deeply. Mirrors `scan_root`'s
+/// own walk exactly, because watching what the scanner reads -- and
+/// nothing else -- is the whole performance story: this repo holds 3587
+/// directories under the root and 44 the scanner walks, and the 3543 it
+/// skips (`target/`, `node_modules/`, `.git/`) are precisely the ones a
+/// build churns. Under the old single recursive watch every one of those
+/// events crossed into the daemon just to be thrown away.
+///
+/// A scanned directory is watched NON-recursively, and that is what
+/// catches a context folder being created, deleted, renamed or moved:
+/// those events are reported against the folder's own path, so only its
+/// PARENT's watch can see them. A `.gavin*` marker directory is watched
+/// recursively instead, since `plans/`, `docs/` and `specs/` all churn
+/// below it and every one of those changes is the tree.
+pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
+    use notify::RecursiveMode::{NonRecursive, Recursive};
+    // The root's own watch is permanent, and listed even while the root
+    // is missing. It is what reports the root being renamed away (that
+    // event's path IS the root, which is why `tree_relevant` has an arm
+    // for it), and dropping it the moment the root vanished would mean
+    // nothing was left to see the root come back.
+    let mut targets = vec![(root.to_path_buf(), NonRecursive)];
+    if !root.is_dir() {
+        // Nothing to walk. Deliberately NOT falling back to a watch on
+        // the parent folder: a workspace root's parent is routinely
+        // something like ~/Code with every other project under it, and
+        // subscribing to that to catch one folder reappearing is the
+        // firehose this watch set exists to avoid. A root that is
+        // missing when the watcher starts degrades to scan-on-demand;
+        // one that goes missing later keeps the watch registered above
+        // and heals the moment it is back.
+        return targets;
+    }
+
+    fn walk(dir: &Path, depth: usize, targets: &mut Vec<(PathBuf, notify::RecursiveMode)>) {
+        if depth > MAX_SCAN_DEPTH {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == GAVIN_DIR || name == GAVIN_ROOT_DIR {
+                targets.push((path, Recursive));
+                continue;
+            }
+            if EXCLUDED_DIRS.contains(&name.as_str()) || name.starts_with('.') {
+                continue;
+            }
+            targets.push((path.clone(), NonRecursive));
+            walk(&path, depth + 1, targets);
+        }
+    }
+    walk(root, 1, &mut targets);
+    targets
+}
+
+/// Whether a filesystem event can possibly have changed the scanned tree.
+///
+/// The old rule was "some path component is `.gavin*`", which silently
+/// dropped the case this card exists for. Renaming or moving a folder
+/// that HOLDS a context reports only the folder's own two paths --
+/// verified against the live backend, `mv packages/foo packages/bar` with
+/// `packages/foo/.gavin` present emits exactly `…/packages/foo` and
+/// `…/packages/bar` -- and neither carries a `.gavin` segment, so the
+/// rescan never fired and every tab kept the stale context until the app
+/// restarted. Two rules close it, neither costing more than one `stat`:
+///
+/// - the path is a directory NOW: a folder appeared or moved in, and it
+///   may have brought a `.gavin` with it (only the scan can settle what
+///   it really holds);
+/// - the path is gone, and a context we already know about lived at or
+///   under it: that context's folder was deleted or moved away.
+///
+/// Anything the scanner would never descend into is rejected first. Those
+/// directories are outside the watch set now, so in practice their events
+/// never arrive at all -- this stays as the second line of defence, and
+/// as the rule the unit tests pin.
+pub fn tree_relevant(root: &Path, last_tree: Option<&GavinTree>, path: &Path) -> bool {
+    if path == root {
+        return true; // the root itself renamed away, or back
+    }
+    let Ok(rel) = path.strip_prefix(root) else {
+        // Outside the root -- and yet it reached us, which it can only do
+        // through a watch we registered, and every watch we register is
+        // under the root. So a subtree that WAS ours has just been moved
+        // out, and this event is its arrival at the far end (`mv
+        // packages/api ~/elsewhere` is reported against the destination
+        // as readily as the source). Conservatively relevant, matching
+        // the git watcher's rule for the same situation; the rescan that
+        // follows drops the stale watches.
+        return true;
+    };
+    for component in rel.components() {
+        let name = component.as_os_str().to_string_lossy();
+        if name == GAVIN_DIR || name == GAVIN_ROOT_DIR {
+            return true; // everything under a marker directory IS the tree
+        }
+        // Mirrors the scanner's own skips. A dot-named leaf is covered by
+        // the same rule on purpose: a dot directory is never descended
+        // into, and a dot FILE outside a marker directory (`.DS_Store`,
+        // `.gitignore`) is not the tree either.
+        if EXCLUDED_DIRS.contains(&name.as_ref()) || name.starts_with('.') {
+            return false;
+        }
+    }
+    // No depth cutoff here even though `scan_root` has one: an extra
+    // rescan costs a 44-directory walk, a missed one is the bug above.
+    if path.is_dir() {
+        return true;
+    }
+    last_tree.is_some_and(|tree| {
+        tree.contexts.iter().any(|ctx| Path::new(&ctx.folder_path).starts_with(path))
+    })
+}
+
+/// How long events accumulate before a flush. Short, because the flush
+/// itself is cheap (a component walk per path) and MIN_RESCAN_INTERVAL is
+/// what actually protects against churn -- there is nothing to buy by
+/// waiting longer, and this sits directly in the latency the human sees
+/// after deleting a file.
+const RESCAN_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Floor between two rescans under SUSTAINED churn -- the RepoPoller
+/// lesson: without one, a burst of writes can drive the debouncer to
+/// flush indefinitely.
 const MIN_RESCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// Idle time that ends a burst. Longer than MIN_RESCAN_INTERVAL so a
+/// steady stream of floored rescans can never keep re-earning the free
+/// one and defeat the floor entirely.
+const QUIET_PERIOD: Duration = Duration::from_secs(3);
+/// Rescans a burst gets before the floor starts applying. One: a single
+/// delete, rename or move is the common case and has to land
+/// immediately, and one rescan can never be the churn the floor guards
+/// against.
+const BURST_FREE_SCANS: u32 = 1;
+
+/// How many scans deep into the current burst a rescan starting now
+/// would be. Zero means the burst is over (or never started) and the next
+/// scan is free. Split out from `floor_wait` so `rescan_and_push` can
+/// record it without recomputing.
+fn burst_position(since_last: Option<Duration>, previous: u32) -> u32 {
+    match since_last {
+        // A gap long enough that this cannot be churn -- and the very
+        // first scan of all, which must never count as a burst member or
+        // the human's first action after opening the app would be floored.
+        None => 0,
+        Some(elapsed) if elapsed >= QUIET_PERIOD => 0,
+        Some(_) => previous + 1,
+    }
+}
+
+/// How long a rescan at `position` in the burst must sleep before
+/// scanning. Pure, so the burst policy is testable without a real clock.
+fn floor_wait(since_last: Option<Duration>, position: u32) -> Duration {
+    let Some(elapsed) = since_last else { return Duration::ZERO };
+    if position <= BURST_FREE_SCANS {
+        return Duration::ZERO;
+    }
+    MIN_RESCAN_INTERVAL.saturating_sub(elapsed)
+}
+
+/// Called with every fresh scan, before the tree goes out, and given a
+/// chance to answer with something the app must be told FIRST. gavin.rs
+/// owns no databases, so the daemon hands that work in as a closure
+/// rather than the scanner growing a dependency on the stores.
+pub type ScanHook = Box<dyn Fn(&str, &GavinTree) -> Option<Response> + Send + Sync>;
 
 struct WatcherInner {
     last_tree: Option<GavinTree>,
     last_scan: Option<Instant>,
+    /// How deep into the current burst the last rescan was; see
+    /// `burst_position`.
+    burst: u32,
+    /// The watch set currently registered, so re-arming after a rescan
+    /// can diff instead of tearing every watch down and rebuilding it.
+    watched: HashMap<PathBuf, notify::RecursiveMode>,
 }
 
 /// One per watched workspace root. Owns the debouncer; dropping the
@@ -931,6 +1415,7 @@ pub struct GavinWatcher {
     writer: Arc<Mutex<UnixStream>>,
     inner: Mutex<WatcherInner>,
     debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+    on_scan: Option<ScanHook>,
 }
 
 impl GavinWatcher {
@@ -942,6 +1427,7 @@ impl GavinWatcher {
         workspace_id: String,
         root_path: PathBuf,
         writer: Arc<Mutex<UnixStream>>,
+        on_scan: Option<ScanHook>,
     ) -> Arc<Self> {
         // Canonicalize before watching: FSEvents resolves symlinks, and a
         // watch registered on a symlinked spelling (macOS's /tmp and
@@ -953,8 +1439,14 @@ impl GavinWatcher {
             workspace_id,
             root_path,
             writer,
-            inner: Mutex::new(WatcherInner { last_tree: None, last_scan: None }),
+            inner: Mutex::new(WatcherInner {
+                last_tree: None,
+                last_scan: None,
+                burst: 0,
+                watched: HashMap::new(),
+            }),
             debouncer: Mutex::new(None),
+            on_scan,
         });
 
         // Arm the watch BEFORE the initial scan+push -- the daemon-side
@@ -973,34 +1465,69 @@ impl GavinWatcher {
                 // returns None and this is a silent no-op.
                 let Some(watcher) = weak.upgrade() else { return };
                 let Ok(events) = res else { return };
-                // Only events touching a `.gavin*` path segment (which
-                // includes creating/removing the marker dirs themselves)
-                // schedule a rescan -- everything else in the tree churns
-                // freely without cost. An event AT the root itself (the
-                // root renamed away or back) must also count: the spec's
-                // root_missing push depends on it, and the segment check
-                // alone can never match the root's own path (found live by
-                // the wire-level smoke test, not by any unit test).
-                let relevant = events.iter().any(|e| {
-                    e.path == watcher.root_path
-                        || e.path.components().any(|c| {
-                            let s = c.as_os_str().to_string_lossy();
-                            s == GAVIN_DIR || s == GAVIN_ROOT_DIR
-                        })
-                });
+                // The guard is released before rescan_and_push, which
+                // takes the same lock (and may sleep out the floor under
+                // it). The debouncer calls this handler serially, so no
+                // second flush is ever waiting on that sleep.
+                let relevant = {
+                    let inner = watcher.inner.lock().unwrap();
+                    events.iter().any(|e| {
+                        tree_relevant(&watcher.root_path, inner.last_tree.as_ref(), &e.path)
+                    })
+                };
                 if relevant {
                     watcher.rescan_and_push();
                 }
             },
         );
-        if let Ok(mut d) = debounce_result {
-            if d.watcher().watch(&watcher.root_path, notify::RecursiveMode::Recursive).is_ok() {
-                *watcher.debouncer.lock().unwrap() = Some(d);
-            }
+        if let Ok(d) = debounce_result {
+            *watcher.debouncer.lock().unwrap() = Some(d);
+            let mut inner = watcher.inner.lock().unwrap();
+            watcher.sync_watches(&mut inner);
         }
 
         watcher.rescan_and_push();
         watcher
+    }
+
+    /// Registers the current watch set and drops what is no longer in it,
+    /// touching only the difference. Called after every scan because the
+    /// set is derived from the tree's shape: a folder that just appeared
+    /// needs its own watch before anything inside it can be seen, and a
+    /// folder that just left has a watch worth releasing.
+    ///
+    /// A watch that fails to register is simply left out, matching the
+    /// old whole-watch behaviour: that subtree stops updating live rather
+    /// than the whole watcher failing, and GetGavinTree still works.
+    ///
+    /// Takes the caller's `inner` guard rather than locking itself, so
+    /// the lock order is always inner -> debouncer.
+    fn sync_watches(&self, inner: &mut WatcherInner) {
+        let mut guard = self.debouncer.lock().unwrap();
+        let Some(debouncer) = guard.as_mut() else { return };
+        let fs_watcher = debouncer.watcher();
+
+        let desired: HashMap<PathBuf, notify::RecursiveMode> =
+            watch_targets(&self.root_path).into_iter().collect();
+
+        // Unwatch first: a path whose recursion mode changed has to lose
+        // the old watch before the new one can take.
+        for (path, mode) in inner.watched.iter() {
+            if desired.get(path) != Some(mode) {
+                let _ = fs_watcher.unwatch(path);
+            }
+        }
+        let mut registered = HashMap::with_capacity(desired.len());
+        for (path, mode) in desired {
+            if inner.watched.get(&path) == Some(&mode) {
+                registered.insert(path, mode); // already armed, leave it alone
+                continue;
+            }
+            if fs_watcher.watch(&path, mode).is_ok() {
+                registered.insert(path, mode);
+            }
+        }
+        inner.watched = registered;
     }
 
     /// The entire floor-check + scan + compare + emit sequence runs under
@@ -1009,14 +1536,28 @@ impl GavinWatcher {
     /// out-of-order emission.
     pub fn rescan_and_push(&self) {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(last) = inner.last_scan {
-            let elapsed = last.elapsed();
-            if elapsed < MIN_RESCAN_INTERVAL {
-                std::thread::sleep(MIN_RESCAN_INTERVAL - elapsed);
-            }
+        let since_last = inner.last_scan.map(|t| t.elapsed());
+        let position = burst_position(since_last, inner.burst);
+        inner.burst = position;
+        let wait = floor_wait(since_last, position);
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
         }
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
+        // Re-arm against the tree we just scanned, whether or not it
+        // changed shape -- an unchanged tree diffs to zero watch calls.
+        self.sync_watches(&mut inner);
+        // Ahead of the change gate, because what the hook answers about
+        // depends on the STORES as much as on the tree -- a scan that
+        // found the same tree can still be the one that re-keys a step
+        // an arrangement wrote a moment ago. And ahead of the tree push,
+        // because the tree is what re-runs the app's scheduler: it must
+        // not tick on a re-keyed path the app has not been told about.
+        if let Some(resp) = self.on_scan.as_ref().and_then(|hook| hook(&self.workspace_id, &tree)) {
+            let mut writer = self.writer.lock().unwrap();
+            let _ = protocol::write_message(&mut *writer, &resp);
+        }
         if inner.last_tree.as_ref() == Some(&tree) {
             return; // change-gated: identical trees never re-emit
         }
@@ -1027,6 +1568,15 @@ impl GavinWatcher {
         // WatchGavinRoot from the fresh connection replaces this watcher.
         let mut writer = self.writer.lock().unwrap();
         let _ = protocol::write_message(&mut *writer, &response);
+    }
+
+    /// The paths currently registered with the OS, for tests that need to
+    /// assert the watch set itself rather than race a filesystem event.
+    #[cfg(test)]
+    pub fn watched_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.inner.lock().unwrap().watched.keys().cloned().collect();
+        paths.sort();
+        paths
     }
 
     /// Best-effort push on the watching app connection -- same
@@ -1050,6 +1600,7 @@ impl GavinWatcher {
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
         inner.last_tree = Some(tree.clone());
+        self.sync_watches(&mut inner);
         tree
     }
 }
@@ -1794,7 +2345,7 @@ mod tests {
         let writer = Arc::new(Mutex::new(theirs));
 
         let watcher =
-            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::clone(&writer));
+            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::clone(&writer), None);
 
         let mut reader = BufReader::new(ours);
         // Initial scan pushed exactly once.
@@ -1802,8 +2353,8 @@ mod tests {
         assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
 
         // A manual rescan with NO underlying change must not emit again:
-        // the next read times out instead of yielding a message. (The 2s
-        // floor makes this rescan sleep -- that is the floor working.)
+        // the next read times out instead of yielding a message. (This
+        // one is the burst's free rescan, so it does not sleep.)
         watcher.rescan_and_push();
         let timed_out: Result<Option<Response>, _> = protocol::read_message(&mut reader);
         assert!(timed_out.is_err(), "change-gating failed: an unchanged rescan emitted");
@@ -1817,5 +2368,775 @@ mod tests {
         .unwrap();
         let after_drop: Result<Option<Response>, _> = protocol::read_message(&mut reader);
         assert!(after_drop.is_err(), "a dropped watcher still emitted");
+    }
+
+    // --- watch set + relevance (fs-sync) ---------------------------------
+
+    fn names(root: &Path) -> Vec<(String, bool)> {
+        let mut v: Vec<(String, bool)> = watch_targets(root)
+            .into_iter()
+            .map(|(p, mode)| {
+                let rel = p.strip_prefix(root).unwrap().to_string_lossy().to_string();
+                (if rel.is_empty() { ".".to_string() } else { rel }, mode == notify::RecursiveMode::Recursive)
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn watch_targets_covers_the_scanned_dirs_and_skips_the_churny_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
+        std::fs::create_dir_all(root.join("packages").join("api").join(GAVIN_DIR)).unwrap();
+        // Everything the scanner refuses to descend into.
+        for skipped in ["node_modules/deep/deeper", "target/debug/build", ".git/refs", ".cache"] {
+            std::fs::create_dir_all(root.join(skipped)).unwrap();
+        }
+
+        let targets = names(&root);
+
+        assert!(targets.contains(&(".".to_string(), false)), "{targets:?}");
+        assert!(targets.contains(&("packages".to_string(), false)), "{targets:?}");
+        assert!(targets.contains(&("packages/api".to_string(), false)), "{targets:?}");
+        // Marker directories get the recursive watch -- plans/ churns.
+        assert!(targets.contains(&(GAVIN_ROOT_DIR.to_string(), true)), "{targets:?}");
+        assert!(targets.contains(&("packages/api/.gavin".to_string(), true)), "{targets:?}");
+        // ...and the scanner's own skips are never watched at all.
+        for skipped in ["node_modules", "target", ".git", ".cache"] {
+            assert!(
+                !targets.iter().any(|(p, _)| p == skipped || p.starts_with(&format!("{skipped}/"))),
+                "{skipped} should not be watched: {targets:?}"
+            );
+        }
+        // A marker directory is watched recursively, so its children are
+        // covered without their own entries.
+        assert!(!targets.iter().any(|(p, _)| p == ".gavin-root/plans"), "{targets:?}");
+    }
+
+    #[test]
+    fn a_missing_root_watches_only_itself_never_its_parent() {
+        // Its own entry is how a root renamed away is noticed coming
+        // back; its parent is never watched, because a workspace root's
+        // parent is routinely a folder full of unrelated projects.
+        let targets = watch_targets(Path::new("/definitely/not/real"));
+        let paths: Vec<&Path> = targets.iter().map(|(p, _)| p.as_path()).collect();
+        assert_eq!(paths, vec![Path::new("/definitely/not/real")]);
+    }
+
+    #[test]
+    fn the_roots_own_watch_is_never_dropped_while_the_root_is_gone() {
+        // The regression guard for renaming the root away and back: if
+        // the root left `watch_targets` when it vanished, `sync_watches`
+        // would unwatch it and nothing would ever see it return.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        assert!(watch_targets(&root).iter().any(|(p, _)| *p == root));
+        std::fs::remove_dir(&root).unwrap();
+        assert!(watch_targets(&root).iter().any(|(p, _)| *p == root));
+    }
+
+    fn tree_with_context(folder: &str) -> GavinTree {
+        GavinTree {
+            root_path: "/r".to_string(),
+            root_missing: false,
+            contexts: vec![GavinContext {
+                name: "api".to_string(),
+                folder_path: folder.to_string(),
+                kind: GavinContextKind::Context,
+                outside: false,
+                has_prd: false,
+                config_warning: false,
+                agent: None,
+                plans: vec![],
+                docs: vec![],
+                specs: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_folder_that_moved_in_is_relevant_even_though_no_path_says_gavin() {
+        // The regression this card exists for: `mv ~/elsewhere/api
+        // packages/api` reports only `<root>/packages/api`, and the old
+        // ".gavin somewhere in the path" rule dropped it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let moved_in = root.join("packages").join("api");
+        std::fs::create_dir_all(moved_in.join(GAVIN_DIR)).unwrap();
+
+        assert!(tree_relevant(&root, None, &moved_in));
+    }
+
+    #[test]
+    fn a_folder_that_moved_away_is_relevant_because_a_known_context_lived_there() {
+        let root = Path::new("/r");
+        let gone = Path::new("/r/packages/api");
+        let tree = tree_with_context("/r/packages/api");
+
+        // The context's own folder, and any ancestor of it, both count --
+        // `mv packages elsewhere` reports only `/r/packages`.
+        assert!(tree_relevant(root, Some(&tree), gone));
+        assert!(tree_relevant(root, Some(&tree), Path::new("/r/packages")));
+        // A sibling that never held a context does not.
+        assert!(!tree_relevant(root, Some(&tree), Path::new("/r/packages/web")));
+        // Neither does a near-miss prefix: the match is by path component,
+        // not by string.
+        assert!(!tree_relevant(root, Some(&tree), Path::new("/r/packages/ap")));
+        // With no tree yet there is nothing to have vanished.
+        assert!(!tree_relevant(root, None, gone));
+    }
+
+    #[test]
+    fn ordinary_file_churn_outside_a_marker_directory_is_irrelevant() {
+        let root = Path::new("/r");
+        let tree = tree_with_context("/r/packages/api");
+        for quiet in [
+            "/r/src/lib/Foo.svelte",
+            "/r/README.md",
+            "/r/packages/api/src/main.rs",
+            "/r/.DS_Store",
+            "/r/.gitignore",
+        ] {
+            assert!(!tree_relevant(root, Some(&tree), Path::new(quiet)), "{quiet}");
+        }
+    }
+
+    #[test]
+    fn the_scanners_skipped_directories_are_never_relevant() {
+        let root = Path::new("/r");
+        for churn in [
+            "/r/target/debug/build/foo-123/out",
+            "/r/node_modules/.bin/tsc",
+            "/r/.git/refs/heads/main",
+            "/r/app/node_modules/pkg/dist/index.js",
+            "/r/.venv/lib/python3.12",
+        ] {
+            assert!(!tree_relevant(root, None, Path::new(churn)), "{churn}");
+        }
+    }
+
+    #[test]
+    fn marker_paths_and_the_root_itself_stay_relevant() {
+        let root = Path::new("/r");
+        assert!(tree_relevant(root, None, root));
+        assert!(tree_relevant(root, None, Path::new("/r/.gavin-root/plans/auth.md")));
+        assert!(tree_relevant(root, None, Path::new("/r/packages/api/.gavin/config.toml")));
+        // Outside the root: only reachable through a watch of ours, so
+        // it means a watched subtree was moved away -- relevant.
+        assert!(tree_relevant(root, None, Path::new("/elsewhere/api/.gavin/plans/a.md")));
+    }
+
+    #[test]
+    fn the_first_rescan_after_a_quiet_period_never_waits() {
+        // Position 0 is the very first scan of all; position 1 is the
+        // first flush after a quiet gap. Both go straight through.
+        assert_eq!(burst_position(None, 7), 0);
+        assert_eq!(floor_wait(None, 0), Duration::ZERO);
+        assert_eq!(burst_position(Some(QUIET_PERIOD), 7), 0);
+        assert_eq!(floor_wait(Some(Duration::from_millis(20)), 1), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_sustained_burst_is_floored_to_one_rescan_per_interval() {
+        // Second flush inside the same burst, 300ms after the last scan:
+        // sleeps out the rest of the 2s floor.
+        assert_eq!(burst_position(Some(Duration::from_millis(300)), 1), 2);
+        assert_eq!(
+            floor_wait(Some(Duration::from_millis(300)), 2),
+            MIN_RESCAN_INTERVAL - Duration::from_millis(300)
+        );
+        // A flush that already waited past the floor does not wait again.
+        assert_eq!(floor_wait(Some(MIN_RESCAN_INTERVAL), 9), Duration::ZERO);
+        // The burst keeps deepening while the gaps stay short, so the
+        // floor keeps applying...
+        assert_eq!(burst_position(Some(Duration::from_millis(10)), 2), 3);
+        // ...until one quiet gap ends it.
+        assert_eq!(burst_position(Some(QUIET_PERIOD + Duration::from_millis(1)), 3), 0);
+    }
+
+    #[test]
+    fn renaming_a_context_folder_pushes_a_tree_with_the_new_name() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir_all(root.join("packages").join("api").join(GAVIN_DIR)).unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let _watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
+
+        let mut reader = BufReader::new(ours);
+        let first: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        match first {
+            Some(Response::GavinTreeChanged { tree, .. }) => {
+                assert!(tree.contexts.iter().any(|c| c.name == "api"), "{:?}", tree.contexts);
+            }
+            other => panic!("expected the initial push, got {other:?}"),
+        }
+
+        // The regression: neither reported path carries a `.gavin`
+        // segment, so the old filter dropped this rename entirely.
+        std::fs::rename(root.join("packages").join("api"), root.join("packages").join("core"))
+            .unwrap();
+
+        let second: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        match second {
+            Some(Response::GavinTreeChanged { tree, .. }) => {
+                assert!(
+                    tree.contexts.iter().any(|c| c.name == "core"),
+                    "renamed context missing: {:?}",
+                    tree.contexts
+                );
+                assert!(
+                    !tree.contexts.iter().any(|c| c.name == "api"),
+                    "stale context survived: {:?}",
+                    tree.contexts
+                );
+            }
+            other => panic!("expected a push for the folder rename, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deleting_a_context_folder_pushes_a_tree_without_it() {
+        use std::io::BufReader;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir_all(root.join("lib").join(GAVIN_DIR)).unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let _watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
+
+        let mut reader = BufReader::new(ours);
+        let _first: Option<Response> = protocol::read_message(&mut reader).unwrap();
+
+        // Moving the folder OUT of the root is the harder half of a
+        // delete: nothing under it is ever reported, only the folder.
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::rename(root.join("lib"), elsewhere.path().join("lib")).unwrap();
+
+        let second: Option<Response> = protocol::read_message(&mut reader).unwrap();
+        match second {
+            Some(Response::GavinTreeChanged { tree, .. }) => {
+                assert_eq!(tree.contexts.len(), 1, "{:?}", tree.contexts);
+                assert!(matches!(tree.contexts[0].kind, GavinContextKind::Root));
+            }
+            other => panic!("expected a push for the folder move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_folder_picks_up_its_own_watch_on_the_next_rescan() {
+        // The watch set is non-recursive per directory, so a folder that
+        // appears after the watcher started must be armed by the very
+        // rescan its own creation triggers -- otherwise a `.gavin`
+        // created inside it a moment later lands in a blind spot.
+        //
+        // Asserted against the registered set rather than a second
+        // filesystem event: the mechanism is what this pins, and racing
+        // FSEvents twice in one test is how you get a suite that fails
+        // only under load.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+
+        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
+        assert!(watcher.watched_paths().contains(&root), "the root is always watched");
+        assert!(!watcher.watched_paths().contains(&root.join("services")));
+
+        std::fs::create_dir(root.join("services")).unwrap();
+        watcher.rescan_and_push();
+
+        assert!(
+            watcher.watched_paths().contains(&root.join("services")),
+            "a new folder was left unwatched: {:?}",
+            watcher.watched_paths()
+        );
+    }
+
+    #[test]
+    fn a_folder_that_left_gives_its_watch_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        std::fs::create_dir(root.join("services")).unwrap();
+
+        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
+        assert!(watcher.watched_paths().contains(&root.join("services")));
+
+        std::fs::remove_dir(root.join("services")).unwrap();
+        watcher.rescan_and_push();
+
+        assert!(!watcher.watched_paths().contains(&root.join("services")));
+        // ...but never the root's own, which is what sees it come back.
+        assert!(watcher.watched_paths().contains(&root));
+    }
+
+    // --- archive-on-Done (plans/done/) ------------------------------------
+
+    /// Writes a plan file and returns its path.
+    fn write_card(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn done_status_moves_the_file_into_done_and_back_out() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "ship.md", "---\ntitle: Ship\nstatus: To Do\n---\nbody\n");
+
+        let moved = set_plan_field(&card, "status", "Done").unwrap();
+        assert_eq!(moved, plans.join("done").join("ship.md"));
+        assert!(!card.exists());
+        assert_eq!(
+            std::fs::read_to_string(&moved).unwrap(),
+            "---\ntitle: Ship\nstatus: Done\n---\nbody\n"
+        );
+
+        // ...and back out again.
+        let back = set_plan_field(&moved, "status", "In Progress").unwrap();
+        assert_eq!(back, plans.join("ship.md"));
+        assert!(!moved.exists());
+    }
+
+    /// Contexts are not special-cased: `is_plans_dir` keys on a `.gavin*`
+    /// marker, so a nested `.gavin/plans/` archives exactly like the
+    /// root's. Pinned because every other test here uses GAVIN_ROOT_DIR,
+    /// and a rule that quietly only worked at the root would leave every
+    /// sub-context's plans folder as cluttered as before.
+    #[test]
+    fn a_nested_gavin_context_archives_the_same_way_the_root_does() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join("app").join(GAVIN_DIR).join("plans");
+        let card = write_card(&plans, "tokens.md", "---\ntitle: Tokens\nstatus: To Do\n---\nb\n");
+        let child = write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: tokens.md\n---\nb\n");
+
+        let moved = set_plan_field(&card, "status", "Done").unwrap();
+        assert_eq!(moved, plans.join("done").join("tokens.md"));
+        // The nested child travels with it here too.
+        assert!(plans.join("done").join("step.md").exists());
+        assert!(!child.exists());
+
+        let back = set_plan_field(&moved, "status", "To Do").unwrap();
+        assert_eq!(back, plans.join("tokens.md"));
+        assert!(plans.join("step.md").exists());
+    }
+
+    #[test]
+    fn done_matching_is_by_slug_and_only_done_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+
+        let lower = write_card(&plans, "a.md", "---\ntitle: A\n---\n");
+        assert_eq!(set_plan_field(&lower, "status", "done").unwrap(), plans.join("done").join("a.md"));
+        let spaced = write_card(&plans, "b.md", "---\ntitle: B\n---\n");
+        assert_eq!(set_plan_field(&spaced, "status", " DONE ").unwrap(), plans.join("done").join("b.md"));
+
+        // Every other terminal-sounding column stays flat.
+        let shipped = write_card(&plans, "c.md", "---\ntitle: C\n---\n");
+        assert_eq!(set_plan_field(&shipped, "status", "Shipped").unwrap(), shipped);
+        let cancelled = write_card(&plans, "d.md", "---\ntitle: D\n---\n");
+        assert_eq!(set_plan_field(&cancelled, "status", "Cancelled").unwrap(), cancelled);
+        assert!(shipped.exists() && cancelled.exists());
+    }
+
+    #[test]
+    fn nested_children_travel_with_their_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: To Do\n---\n");
+        let nested = write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        // A child with its own status is a free-standing card: it stays.
+        let standing =
+            write_card(&plans, "own.md", "---\nkind: task\ntitle: Own\nparent: big.md\nstatus: To Do\n---\n");
+        // A task parented elsewhere is untouched.
+        let other = write_card(&plans, "other.md", "---\nkind: task\ntitle: O\nparent: small.md\n---\n");
+
+        set_plan_field(&plan, "status", "Done").unwrap();
+        assert!(plans.join("done").join("step.md").is_file());
+        assert!(!nested.exists());
+        assert!(standing.exists());
+        assert!(other.exists());
+
+        // Back out: the child follows again.
+        set_plan_field(&plans.join("done").join("big.md"), "status", "To Do").unwrap();
+        assert!(nested.is_file());
+        assert!(!plans.join("done").join("step.md").exists());
+    }
+
+    #[test]
+    fn a_nested_child_stays_with_its_archived_parent_on_its_own_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: To Do\n---\n");
+        write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        set_plan_field(&plan, "status", "Done").unwrap();
+
+        // The child has no status of its own -- writing any other field must
+        // not tear it back out of done/ (its home is wherever its parent is).
+        let child = plans.join("done").join("step.md");
+        assert_eq!(set_plan_field(&child, "labels", "bug").unwrap(), child);
+        assert!(child.is_file());
+
+        // Giving it a status makes it free-standing: it leaves done/.
+        assert_eq!(set_plan_field(&child, "status", "To Do").unwrap(), plans.join("step.md"));
+    }
+
+    #[test]
+    fn a_name_collision_leaves_the_file_in_place_and_still_writes_status() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans.join("done"), "dup.md", "---\ntitle: Old\nstatus: Done\n---\n");
+        let card = write_card(&plans, "dup.md", "---\ntitle: New\nstatus: To Do\n---\n");
+
+        assert_eq!(set_plan_field(&card, "status", "Done").unwrap(), card);
+        assert_eq!(
+            std::fs::read_to_string(&card).unwrap(),
+            "---\ntitle: New\nstatus: Done\n---\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(plans.join("done").join("dup.md")).unwrap(),
+            "---\ntitle: Old\nstatus: Done\n---\n"
+        );
+    }
+
+    #[test]
+    fn hand_made_subfolders_are_never_flattened() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let filed = write_card(&plans.join("roadmap"), "q3.md", "---\ntitle: Q3\n---\n");
+        assert_eq!(set_plan_field(&filed, "status", "Done").unwrap(), filed);
+        assert_eq!(set_plan_field(&filed, "status", "To Do").unwrap(), filed);
+        assert!(filed.is_file());
+    }
+
+    #[test]
+    fn plan_files_outside_a_plans_folder_are_never_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let loose = write_card(dir.path(), "p.md", "---\ntitle: P\n---\n");
+        assert_eq!(set_plan_field(&loose, "status", "Done").unwrap(), loose);
+        assert!(loose.is_file());
+    }
+
+    #[test]
+    fn create_plan_file_places_done_cards_and_children_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+
+        let done =
+            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None)
+                .unwrap();
+        assert_eq!(done, plans.join("done").join("shipped.md"));
+
+        // A nested child of an archived plan is created beside its parent.
+        let child = create_plan_file(
+            dir.path(),
+            "sub.md",
+            "Sub",
+            None,
+            None,
+            None,
+            Some("task"),
+            Some("shipped.md"),
+        )
+        .unwrap();
+        assert_eq!(child, plans.join("done").join("sub.md"));
+
+        // A file name already used anywhere in the tree is refused.
+        assert!(
+            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None).is_err()
+        );
+    }
+
+    #[test]
+    fn promote_checklist_item_works_from_an_archived_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(
+            &plans.join("done"),
+            "big.md",
+            "---\ntitle: Big\nstatus: Done\n---\n- [ ] Ship the API\n",
+        );
+
+        let child = promote_checklist_item(&plan, "Ship the API").unwrap();
+        assert_eq!(child, plans.join("done").join("ship-the-api.md"));
+        assert!(
+            std::fs::read_to_string(&plan).unwrap().contains("- [ ] [Ship the API](./ship-the-api.md)")
+        );
+
+        // The suffix check spans the whole tree, not one folder: a flat
+        // file of that name must still push the new card to -2.
+        write_card(&plans, "second.md", "x");
+        std::fs::write(plans.join("done").join("big.md"), "---\ntitle: Big\nstatus: Done\n---\n- [ ] Second\n")
+            .unwrap();
+        let child2 = promote_checklist_item(&plan, "Second").unwrap();
+        assert_eq!(child2, plans.join("done").join("second-2.md"));
+    }
+
+    #[test]
+    fn delete_card_file_accepts_an_archived_card() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans.join("done"), "gone.md", "---\ntitle: G\n---\n");
+        delete_card_file(&card).unwrap();
+        assert!(!card.exists());
+    }
+
+    // --- the explicit archive (plans/archive/) ----------------------------
+
+    #[test]
+    fn archive_moves_a_card_into_archive_and_unarchive_files_it_by_status() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans.join("done"), "ship.md", "---\ntitle: Ship\nstatus: Done\n---\nb\n");
+
+        let archived = archive_card(&card).unwrap();
+        assert_eq!(archived, plans.join("archive").join("ship.md"));
+        assert!(!card.exists());
+        // The frontmatter is untouched: archiving is a filing decision,
+        // not a status change.
+        assert_eq!(
+            std::fs::read_to_string(&archived).unwrap(),
+            "---\ntitle: Ship\nstatus: Done\n---\nb\n"
+        );
+
+        // Back out, to where its status says it belongs.
+        let back = unarchive_card(&archived).unwrap();
+        assert_eq!(back, plans.join("done").join("ship.md"));
+        assert!(!archived.exists());
+    }
+
+    #[test]
+    fn unarchiving_a_to_do_card_lands_it_in_plans_not_done() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "later.md", "---\ntitle: Later\nstatus: To Do\n---\n");
+
+        let archived = archive_card(&card).unwrap();
+        assert_eq!(archived, plans.join("archive").join("later.md"));
+        assert_eq!(unarchive_card(&archived).unwrap(), plans.join("later.md"));
+    }
+
+    #[test]
+    fn a_status_write_never_pulls_a_card_out_of_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "ship.md", "---\ntitle: Ship\nstatus: Done\n---\n");
+        let archived = archive_card(&card).unwrap();
+
+        // Both directions: the status that would file it into done/, and
+        // the one that would file it back into plans/.
+        assert_eq!(set_plan_field(&archived, "status", "To Do").unwrap(), archived);
+        assert_eq!(set_plan_field(&archived, "status", "Done").unwrap(), archived);
+        assert!(archived.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&archived).unwrap(),
+            "---\ntitle: Ship\nstatus: Done\n---\n"
+        );
+    }
+
+    #[test]
+    fn archiving_a_plan_takes_its_nested_children_with_it_and_brings_them_back() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: Done\n---\n");
+        write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        // A free-standing task wearing the same parent does NOT follow:
+        // it has a status, so it is a card in its own column.
+        write_card(
+            &plans,
+            "free.md",
+            "---\nkind: task\ntitle: Free\nstatus: To Do\nparent: big.md\n---\n",
+        );
+
+        let archived = archive_card(&plan).unwrap();
+        assert_eq!(archived, plans.join("archive").join("big.md"));
+        assert!(plans.join("archive").join("step.md").is_file());
+        assert!(plans.join("free.md").is_file());
+
+        unarchive_card(&archived).unwrap();
+        // Done, so parent and child land in done/ together.
+        assert!(plans.join("done").join("big.md").is_file());
+        assert!(plans.join("done").join("step.md").is_file());
+        assert!(!plans.join("archive").join("step.md").exists());
+    }
+
+    #[test]
+    fn archiving_is_idempotent_and_unarchiving_an_unarchived_card_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "a.md", "---\ntitle: A\n---\n");
+
+        assert_eq!(unarchive_card(&card).unwrap(), card);
+        let archived = archive_card(&card).unwrap();
+        assert_eq!(archive_card(&archived).unwrap(), archived);
+    }
+
+    #[test]
+    fn archiving_refuses_cards_outside_the_governed_plans_locations() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        // A hand-made subfolder is somebody else's hierarchy, exactly as
+        // the status rule treats it.
+        let filed = write_card(&plans.join("roadmap"), "q3.md", "---\ntitle: Q3\n---\n");
+        assert!(archive_card(&filed).is_err());
+        assert!(filed.is_file());
+
+        let loose = write_card(dir.path(), "p.md", "---\ntitle: P\n---\n");
+        assert!(archive_card(&loose).is_err());
+    }
+
+    #[test]
+    fn an_archived_card_is_still_scanned_deleted_and_promoted_like_any_other() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\n---\n- [ ] step one\n");
+        let archived = archive_card(&plan).unwrap();
+
+        // The scan lists it: `plans/archive/` is inside plans/, and
+        // hiding it from the tree is the FRONTEND's job, not the
+        // scanner's.
+        let tree = scan_root(dir.path());
+        assert!(tree.contexts[0].plans.iter().any(|p| p.path == archived.to_string_lossy()));
+
+        let promoted = promote_checklist_item(&archived, "step one").unwrap();
+        assert_eq!(promoted, plans.join("archive").join("step-one.md"));
+
+        delete_card_file(&archived).unwrap();
+        assert!(!archived.exists());
+    }
+
+    #[test]
+    fn plan_file_info_carries_the_files_mtime_and_tolerates_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = write_card(dir.path(), "a.md", "---\ntitle: A\n---\n");
+        let info = plan_file_info(&card, "---\ntitle: A\n---\n");
+        assert!(info.modified_at.is_some_and(|t| t > 1_600_000_000));
+
+        let missing = dir.path().join("nope.md");
+        assert_eq!(plan_file_info(&missing, "").modified_at, None);
+    }
+
+    // --- recovering a card path the daemon did not move -------------------
+
+    fn card_paths(root: &Path, names: &[&str]) -> Vec<String> {
+        names
+            .iter()
+            .map(|n| root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_step_path_is_recovered_when_its_card_moved_into_done() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
+        write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\nstatus: Done\n---\n");
+
+        let stale = card_paths(dir.path(), &["fs-sync.md"]);
+        let moved = plans.join(DONE_DIR).join("fs-sync.md").to_string_lossy().to_string();
+
+        assert_eq!(
+            recover_moved_card_paths(&scan_root(dir.path()), &stale),
+            vec![(stale[0].clone(), moved)]
+        );
+    }
+
+    #[test]
+    fn a_step_path_that_still_has_its_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans, "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        let live = card_paths(dir.path(), &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &live).is_empty());
+    }
+
+    #[test]
+    fn a_deleted_card_is_not_recovered_onto_some_other_file() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans, "other.md", "---\ntitle: Other\n---\n");
+
+        let gone = card_paths(dir.path(), &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &gone).is_empty());
+    }
+
+    #[test]
+    fn recovery_never_crosses_from_one_context_into_another() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let sub = dir.path().join("app");
+        std::fs::create_dir_all(&sub).unwrap();
+        create_gavin_context(&sub).unwrap();
+        // Same file name, but it only ever existed in the sub-context.
+        write_card(&sub.join(GAVIN_DIR).join("plans"), "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        let stale = card_paths(dir.path(), &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &stale).is_empty());
+    }
+
+    #[test]
+    fn an_ambiguous_file_name_is_left_alone_rather_than_guessed() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
+        write_card(&plans, "fs-sync.md", "---\ntitle: FS sync\n---\n");
+        write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        // The step points into archive/, where nothing is: two candidates
+        // answer to the name, so neither is the answer.
+        let stale = vec![plans.join(ARCHIVE_DIR).join("fs-sync.md").to_string_lossy().to_string()];
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &stale).is_empty());
+    }
+
+    #[test]
+    fn two_steps_sharing_one_moved_card_yield_a_single_re_key() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
+        write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        let stale = card_paths(dir.path(), &["fs-sync.md", "fs-sync.md"]);
+        assert_eq!(recover_moved_card_paths(&scan_root(dir.path()), &stale).len(), 1);
     }
 }

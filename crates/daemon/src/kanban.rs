@@ -217,6 +217,20 @@ impl KanbanStore {
         Ok(())
     }
 
+    /// Re-keys a card's bindings in EVERY workspace after its file moved
+    /// (archived into `plans/done/`, or back out). The binding belongs to
+    /// the card, not to the path it happened to have when the agent
+    /// started; losing it would orphan a live session on the Agents page.
+    /// A destination row that somehow already exists wins -- the same
+    /// last-write-wins the upsert in `link_card_session` has.
+    pub fn rename_card_path(&mut self, old_path: &str, new_path: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE OR REPLACE card_sessions SET path = ?2 WHERE path = ?1",
+            params![old_path, new_path],
+        )?;
+        Ok(())
+    }
+
     /// Removes a binding; absent is a no-op.
     pub fn unlink_card_session(&mut self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
         self.conn.execute(
@@ -360,6 +374,24 @@ mod tests {
         store.unlink_card_session("ws-1", "/p/absent.md").unwrap(); // no-op
         assert!(store.get_board("ws-1").unwrap().card_sessions.is_empty());
         assert_eq!(store.get_board("ws-2").unwrap().card_sessions.len(), 1);
+    }
+
+    #[test]
+    fn rename_card_path_follows_a_moved_card_across_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        store.link_card_session("ws-1", "/p/plans/t.md", "s-1", "/p", None).unwrap();
+        store.link_card_session("ws-2", "/p/plans/t.md", "s-2", "/p", None).unwrap();
+        store.link_card_session("ws-1", "/p/plans/other.md", "s-3", "/p", None).unwrap();
+
+        store.rename_card_path("/p/plans/t.md", "/p/plans/done/t.md").unwrap();
+
+        let ws1 = store.get_board("ws-1").unwrap().card_sessions;
+        let moved = ws1.iter().find(|cs| cs.session_id == "s-1").unwrap();
+        assert_eq!(moved.path, "/p/plans/done/t.md");
+        let untouched = ws1.iter().find(|cs| cs.session_id == "s-3").unwrap();
+        assert_eq!(untouched.path, "/p/plans/other.md");
+        assert_eq!(store.get_board("ws-2").unwrap().card_sessions[0].path, "/p/plans/done/t.md");
     }
 
     #[test]

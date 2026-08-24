@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore } from "@lucide/svelte";
+  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore, Bot, Check, Eye } from "@lucide/svelte";
   import {
     gitStore,
     refresh,
+    commitViaAgent,
+    revealAgentCommit,
+    agentCommitPhase,
+    agentCommitBlocker,
     fetch,
     pull,
     push,
@@ -15,6 +19,9 @@
     currentBranch,
   } from "./gitState";
   import { branchLabel } from "./git";
+  import { gavinTrees } from "./gavinState";
+  import { agentProfilesStore } from "./layoutState";
+  import { resolveAgentConfig } from "./settings";
   import { tooltip } from "./tooltip";
   import IconButton from "./ui/IconButton.svelte";
   import GitPromptDialog from "./GitPromptDialog.svelte";
@@ -35,6 +42,19 @@
   const remote = $derived(view ? effectiveRemote(view) : null);
   const pushText = $derived(view ? pushLabel(view) : "Push");
   const stashCount = $derived(view?.refs?.stashes.length ?? 0);
+
+  // Read reactively rather than through resolvedAgentFor(): that helper
+  // is a one-shot get(), so the button would keep whatever the agent
+  // config was when this toolbar first rendered.
+  const agent = $derived(
+    resolveAgentConfig(
+      $gavinTrees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $agentProfilesStore
+    )
+  );
+  const agentPhase = $derived(agentCommitPhase(view));
+  const agentBusy = $derived(agentPhase === "starting" || agentPhase === "running");
+  const agentBlocker = $derived(agentCommitBlocker(view, agent.headlessArgs));
 
   let stashDialog = $state(false);
 
@@ -131,6 +151,39 @@
   </span>
 
   <span class="spacer"></span>
+  {#if agentBusy}
+    <span class="agent-state" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      Committing…
+    </span>
+    {#if agentPhase === "running"}
+      <IconButton
+        icon={Eye}
+        label="Show the agent"
+        text="Show"
+        tip="Open the agent's session on the Agents page — it keeps running either way"
+        variant="outlined"
+        size={13}
+        onclick={() => void revealAgentCommit(workspaceId)}
+      />
+    {/if}
+  {:else if agentPhase === "done"}
+    <span class="agent-state done" role="status" aria-live="polite">
+      <Check size={13} />
+      Committed
+    </span>
+  {:else}
+    <IconButton
+      icon={Bot}
+      label="Commit via agent"
+      text="Commit via agent"
+      tip={agentBlocker ?? "Hand the working tree to the agent: it commits in logical chunks, and never pushes"}
+      variant="outlined"
+      size={13}
+      disabled={agentBlocker !== null}
+      onclick={() => void commitViaAgent(workspaceId)}
+    />
+  {/if}
   <IconButton icon={RefreshCw} label="Refresh" variant="outlined" size={13} disabled={locked} onclick={() => refresh(workspaceId)} />
 </div>
 
@@ -199,5 +252,32 @@
   }
   .spacer {
     flex: 1 1 auto;
+  }
+  /* Occupies the same slot as the button it replaces, so the toolbar's
+     right end does not shift as the run changes phase. */
+  .agent-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 5px;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+  .agent-state.done {
+    color: var(--success-text);
+  }
+  .spinner {
+    width: 9px;
+    height: 9px;
+    border: 2px solid var(--border-accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>

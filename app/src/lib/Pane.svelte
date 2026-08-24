@@ -14,19 +14,22 @@
     openBoardInSplit,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
+  import { kanbanState, fetchBoard } from "./kanbanState";
+  import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  import { linkedCardFor, openLinkedCard, type LinkedCard } from "./cardTabLink";
   import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
   import { dirtyPaths } from "./fileEditing";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
-  import { X, Plus, RotateCw, Kanban, Pin } from "@lucide/svelte";
+  import { X, Plus, RotateCw, Kanban, Pin, SquareArrowOutUpRight } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import Tooltip from "./Tooltip.svelte";
-  import { sessionLabel, folderName } from "./paths";
+  import { sessionLabel, folderName, boardTabLabel } from "./paths";
   import {
     setDragPayload,
     getDragKind,
@@ -78,20 +81,19 @@
     return $layoutState.boardTabsById[tabId] ?? null;
   }
 
-  // A board tab's label names its context, live from the tree (folder
-  // basename fallback) -- exact information like a file tab's filename,
-  // and equally not renameable.
-  function boardTabLabel(tabId: string): string {
+  // A board tab's label names its context, live from the tree -- exact
+  // information like a file tab's filename, and equally not renameable.
+  // The format itself lives in paths.ts, shared with the sidebar's page
+  // expansion, so one tab never goes by two names.
+  function boardLabel(tabId: string): string {
     const tab = boardTab(tabId);
     if (!tab) return tabId;
-    const name =
-      $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name ??
-      (tab.contextFolder.split("/").at(-1) || tab.contextFolder);
-    return `${name} · board`;
+    const name = $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name;
+    return boardTabLabel(name, tab.contextFolder);
   }
 
   function tabLabel(sessionId: string): string {
-    if (boardTab(sessionId)) return boardTabLabel(sessionId);
+    if (boardTab(sessionId)) return boardLabel(sessionId);
     const path = fileTabPath(sessionId);
     // A file tab's label is always its filename -- exact, known
     // information, unlike a terminal's cwd-derived guess, which is why it
@@ -117,6 +119,32 @@
     if (!ws) return null;
     const ctx = nearestContext($gavinTrees[ws.id], $layoutState.cwdBySessionId[active]);
     return ctx ? { workspaceId: ws.id, folderPath: ctx.folderPath, name: ctx.name } : null;
+  });
+
+  // The card this tab's agent is running, if any: the board's Run and an
+  // orchestration launch both write a card_sessions binding, so one
+  // reverse lookup covers both. Null for every ordinary terminal.
+  function linkedCard(sessionId: string): LinkedCard | null {
+    if (fileTabPath(sessionId) || boardTab(sessionId)) return null;
+    const ws = getActiveWorkspace($layoutState);
+    if (!ws) return null;
+    return linkedCardFor($kanbanState[ws.id], $orchestrations[ws.id], $gavinTrees[ws.id], sessionId);
+  }
+
+  // The card link reads two things a terminal page never loads on its
+  // own: the board (which holds the card bindings) and the orchestration
+  // plan (which decides where the link goes). Without the first there is
+  // no link at all until the human visits the Kanban tab; without the
+  // second every railed card would be sent to the board instead of to
+  // its rail. Both fetches no-op once loaded, so the repeat across panes
+  // costs nothing after the first.
+  $effect(() => {
+    const ws = getActiveWorkspace($layoutState);
+    if (!ws) return;
+    void fetchBoard(ws.id);
+    // Orchestration is a rooted-workspace feature; an unrooted one has
+    // no plan to fetch.
+    if (ws.rootPath) void fetchOrchestration(ws.id);
   });
 
   // idle intentionally returns null here -- no dot at all is the idle
@@ -372,6 +400,21 @@
             title={gitDot?.dirty ? "Uncommitted changes" : "Clean"}
           ></span>
         {/if}
+        {#if linkedCard(sessionId)}
+          {@const link = linkedCard(sessionId)}
+          <Tooltip text={`Open card · ${link?.title}`}>
+            <span
+              class="card-link"
+              aria-label="Open the card this agent is running"
+              onclick={(e) => {
+                e.stopPropagation();
+                if (link) void openLinkedCard(getActiveWorkspace($layoutState)?.id ?? "", link);
+              }}
+            >
+              <SquareArrowOutUpRight size={11} />
+            </span>
+          </Tooltip>
+        {/if}
         {#if $layoutState.restoredSessionIds.has(sessionId)}
           <span
             class="restored-badge"
@@ -563,6 +606,18 @@
     opacity: 0.6;
   }
   .close:hover {
+    opacity: 1;
+  }
+  /* Quieter than the close control until hovered: it is an offer, not a
+     thing every tab wants you to press. */
+  .card-link {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    opacity: 0.55;
+    color: var(--accent-text);
+  }
+  .card-link:hover {
     opacity: 1;
   }
   .content {

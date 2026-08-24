@@ -1,25 +1,32 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
+  import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
   import { gavinTrees, refreshGavinTree } from "./gavinState";
+  import type { GavinTree } from "./gavin";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import {
     buildExplorerTree,
+    followRenamedPath,
     isUnderRoot,
     newFilePath,
     requestedExplorerPath,
     slugFileName,
     type ExplorerContextNode,
     type ExplorerFile,
-    type ExplorerGroup,
+    type CreatableGroup,
   } from "./planExplorer";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { executeUnarchive } from "./archiveActions";
+  import { featureBlockedReason } from "./daemonCompat";
   import PlanTree from "./PlanTree.svelte";
   import FileEditor from "./FileEditor.svelte";
   import PlanMetadataPanel from "./PlanMetadataPanel.svelte";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import FormatHelpModal from "./FormatHelpModal.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  import { ANY, NO_RAIL, filterExplorer, railIndex, statusFacets } from "./planFilter";
   import * as backend from "./backend";
 
   interface Props {
@@ -41,16 +48,60 @@
   let editor = $state<{ flush: () => Promise<void> } | null>(null);
 
   const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
-  const contexts = $derived(buildExplorerTree($gavinTrees[workspaceId]));
+  const allContexts = $derived(buildExplorerTree($gavinTrees[workspaceId]));
+
   const allPaths = $derived(
-    new Set(contexts.flatMap((c) => c.groups.flatMap((g) => g.files.map((f) => f.path))))
+    new Set(
+      allContexts.flatMap((c) =>
+        c.groups.flatMap((g) => [...g.files, ...g.archived].map((f) => f.path))
+      )
+    )
   );
   // Selection is held by PATH because the tree rebuilds on every watcher
   // push; a file deleted in a terminal must say so rather than leave a
   // stale buffer on screen.
   const selectionVanished = $derived(selectedPath !== null && !allPaths.has(selectedPath));
 
+  // ...but a file RENAMED or moved in a terminal isn't gone, and saying
+  // so would make the human find it again by hand. Plain `let`, not
+  // $state: this is read inside the effect that writes it, and a
+  // reactive read there would re-trigger the effect forever.
+  let previousTree: GavinTree | undefined = undefined;
+  let previousWorkspaceId: string | null = null;
+  $effect(() => {
+    const tree = $gavinTrees[workspaceId];
+    const previous = previousWorkspaceId === workspaceId ? previousTree : undefined;
+    previousTree = tree;
+    previousWorkspaceId = workspaceId;
+    if (selectedPath === null || previous === undefined || previous === tree) return;
+    const moved = followRenamedPath(previous, tree, selectedPath);
+    if (moved !== null) selectedPath = moved;
+  });
+
   const columnNames = $derived(($kanbanState[workspaceId]?.columns ?? []).map((c) => c.name));
+
+  // Search + two facets only a plan can answer: its status, and the
+  // orchestration rail it sits on (planFilter.ts).
+  let query = $state("");
+  let statusFacet = $state(ANY);
+  let railFacet = $state(ANY);
+  const rails = $derived(railIndex($orchestrations[workspaceId] ?? null));
+  const statuses = $derived(statusFacets(columnNames, allContexts));
+  const filtered = $derived(
+    filterExplorer(allContexts, { query, status: statusFacet, rail: railFacet }, rails)
+  );
+  const contexts = $derived(filtered.contexts);
+
+  // A facet whose option disappeared (the rail was deleted, the column
+  // renamed) would silently filter everything away -- reset it instead.
+  $effect(() => {
+    if (statusFacet !== ANY && !statuses.includes(statusFacet)) statusFacet = ANY;
+  });
+  $effect(() => {
+    if (railFacet !== ANY && railFacet !== NO_RAIL && !rails.rails.some((r) => r.id === railFacet)) {
+      railFacet = ANY;
+    }
+  });
   // The selected file's PlanFileInfo, when it is a plan -- docs and specs
   // have no frontmatter contract, so they get no panel.
   const selectedPlan = $derived.by(() => {
@@ -68,6 +119,9 @@
   // renders an empty list.
   $effect(() => {
     void fetchBoard(workspaceId);
+    // The rail facet needs the orchestration plan; idempotent, so the
+    // dropdown is never empty just because this tab was opened first.
+    void fetchOrchestration(workspaceId);
   });
 
   // A split needs a terminal session to anchor to; file and board tabs
@@ -81,7 +135,7 @@
 
   async function createFile(
     context: ExplorerContextNode,
-    group: ExplorerGroup,
+    group: CreatableGroup,
     title: string
   ): Promise<void> {
     error = null;
@@ -134,13 +188,19 @@
 
   let pendingDelete = $state<ExplorerFile | null>(null);
 
+  // The board's own reading of these files. Held once because two row
+  // actions need different slices of it: delete needs the cascade over
+  // the cards ON the board, restore needs the ones that have left it.
+  const merged = $derived.by(() => {
+    const board = $kanbanState[workspaceId];
+    return board ? mergePlanCards(board, $gavinTrees[workspaceId]) : null;
+  });
+
   // The board projection, for the plan-deletion cascade: nested children
   // die with their plan, free-standing children get un-parented -- same
   // rules as the kanban's delete.
   const allCards = $derived.by<CardView[]>(() => {
-    const board = $kanbanState[workspaceId];
-    if (!board) return [];
-    const merged = mergePlanCards(board, $gavinTrees[workspaceId]);
+    if (!merged) return [];
     return [
       ...merged.columns.flatMap((c) => c.planCards),
       ...merged.autoColumns.flatMap((a) => a.planCards),
@@ -190,6 +250,37 @@
     void refreshGavinTree(workspaceId);
   }
 
+  // ---- restore from the archive ---------------------------------------
+
+  // Archived cards are NOT in `allCards`: mergePlanCards routes them out
+  // of the columns into their own bucket, which is exactly what takes
+  // them off the board. Restoring reads that bucket rather than widening
+  // the deletion cascade's view, which must stay the board's.
+  const archivedCards = $derived<CardView[]>(merged?.archived ?? []);
+  const restoreBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
+
+  async function restoreFile(file: ExplorerFile): Promise<void> {
+    error = null;
+    const card = archivedCards.find((c) => c.id === file.path);
+    if (!card) {
+      // The tree lists it but the board projection does not -- a stale
+      // tree, or a card whose file vanished. Say so instead of moving
+      // nothing and looking like a no-op.
+      error = `Couldn't restore ${file.path.split("/").at(-1)}: it isn't on the board's archive.`;
+      void refreshGavinTree(workspaceId);
+      return;
+    }
+    const err = await executeUnarchive(workspaceId, [card]);
+    if (err) error = err;
+    // The selection is NOT reset here: executeUnarchive patches the new
+    // path into the tree store, and the followRenamedPath effect above
+    // moves the selection with it. A plan whose nested children moved
+    // too is more than one rename, so that inference declines and the
+    // pane falls back to "this file no longer exists" -- the same honest
+    // answer it gives for any move it can't attribute.
+    void refreshGavinTree(workspaceId);
+  }
+
   // ---- outside contexts ----------------------------------------------
 
   let pendingRemoveOutside = $state<ExplorerContextNode | null>(null);
@@ -233,8 +324,45 @@
           </button>
         </div>
       </div>
-      {#if contexts.length === 0}
+      <div class="filters">
+        <SearchInput
+          bind:value={query}
+          label="Search plans, docs and specs"
+          placeholder="Search files…"
+          matches={filtered.filtering ? { shown: filtered.shown, total: filtered.total } : null}
+        />
+        <div class="facets">
+          <select bind:value={statusFacet} aria-label="Filter by status" title="Filter plans by status">
+            <option value={ANY}>Any status</option>
+            {#each statuses as name (name)}
+              <option value={name}>{name}</option>
+            {/each}
+          </select>
+          <select bind:value={railFacet} aria-label="Filter by rail" title="Filter plans by orchestration rail">
+            <option value={ANY}>Any rail</option>
+            <option value={NO_RAIL}>On no rail</option>
+            {#each rails.rails as rail (rail.id)}
+              <option value={rail.id}>{rail.name}</option>
+            {/each}
+          </select>
+          {#if filtered.filtering}
+            <button
+              type="button"
+              class="reset"
+              title="Clear the search and both facets"
+              onclick={() => {
+                query = "";
+                statusFacet = ANY;
+                railFacet = ANY;
+              }}
+            >Reset</button>
+          {/if}
+        </div>
+      </div>
+      {#if allContexts.length === 0}
         <div class="empty small">No .gavin folders yet — create one to start planning.</div>
+      {:else if contexts.length === 0}
+        <div class="empty small">Nothing matches this filter.</div>
       {:else}
         <PlanTree
           {contexts}
@@ -243,6 +371,8 @@
           onCreateFile={createFile}
           onOpenInSplit={anchorSessionId ? openInSplit : null}
           onDeleteFile={(f) => (pendingDelete = f)}
+          onRestoreFile={(f) => void restoreFile(f)}
+          {restoreBlocked}
           onRemoveOutside={(c) => (pendingRemoveOutside = c)}
         />
       {/if}
@@ -332,6 +462,44 @@
   .head-actions {
     display: flex;
     gap: 4px;
+  }
+  .filters {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 6px;
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+  }
+  .facets {
+    display: flex;
+    gap: 4px;
+  }
+  .facets select {
+    flex: 1 1 0;
+    min-width: 0;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 0.72em;
+    padding: 2px 4px;
+  }
+  .reset {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: monospace;
+    font-size: 0.72em;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  .reset:hover {
+    color: var(--text);
+    border-color: var(--border-strong);
   }
   .sidebar-head button {
     background: transparent;

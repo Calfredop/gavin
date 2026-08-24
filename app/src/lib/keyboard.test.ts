@@ -42,6 +42,7 @@ import {
   switchWorkspace,
   addTab,
 } from "./layoutState";
+import { copySelection, pasteClipboard } from "./clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "./keyboard";
 
 const state = layoutState as unknown as Writable<Record<string, unknown>>;
@@ -91,6 +92,27 @@ function event(over: Partial<ShortcutKeyEvent> = {}): ShortcutKeyEvent {
     stopPropagation: vi.fn(),
     ...over,
   };
+}
+
+/// A stand-in for the element a key landed on. These tests run with no
+/// DOM, and the shortcut layer duck-types its target for exactly that
+/// reason, so a plain object is enough.
+function domTarget(props: {
+  tagName: string;
+  isContentEditable?: boolean;
+  inTerminal?: boolean;
+}): EventTarget {
+  return {
+    tagName: props.tagName,
+    isContentEditable: props.isContentEditable ?? false,
+    closest: (selector: string) => (props.inTerminal && selector === ".xterm" ? {} : null),
+  } as unknown as EventTarget;
+}
+
+/// The node xterm focuses for keyboard input: a <textarea> living inside
+/// the terminal's own container.
+function xtermTextarea(): EventTarget {
+  return domTarget({ tagName: "TEXTAREA", inTerminal: true });
 }
 
 /// Presses a digit with ⌘ held and returns whether it was handled.
@@ -205,5 +227,63 @@ describe("letter shortcuts", () => {
   it("⌘T adds a tab when one is focused", async () => {
     expect(await handleShortcutKeydown(event({ key: "t", code: "KeyT" }))).toBe(true);
     expect(addTab).toHaveBeenCalledWith("a");
+  });
+});
+
+describe("clipboard shortcuts", () => {
+  const paste = (over: Partial<ShortcutKeyEvent> = {}) =>
+    event({ key: "v", code: "KeyV", ...over });
+  const copy = (over: Partial<ShortcutKeyEvent> = {}) =>
+    event({ key: "c", code: "KeyC", ...over });
+
+  it("⌘V still reaches the focused terminal", async () => {
+    const e = paste();
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(pasteClipboard).toHaveBeenCalled();
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  it("⌘V in xterm's hidden textarea is the terminal's, not the field's", async () => {
+    const e = paste({ target: xtermTextarea() });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(pasteClipboard).toHaveBeenCalled();
+  });
+
+  it("leaves ⌘V alone in an <input> so the field pastes natively", async () => {
+    const e = paste({ target: domTarget({ tagName: "INPUT" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(pasteClipboard).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(e.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it("leaves ⌘V alone in a <textarea>", async () => {
+    const e = paste({ target: domTarget({ tagName: "TEXTAREA" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(pasteClipboard).not.toHaveBeenCalled();
+  });
+
+  it("leaves ⌘V alone in a contenteditable (the plan editor)", async () => {
+    const e = paste({ target: domTarget({ tagName: "DIV", isContentEditable: true }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(pasteClipboard).not.toHaveBeenCalled();
+  });
+
+  it("⌘V over ordinary chrome still goes to the terminal", async () => {
+    const e = paste({ target: domTarget({ tagName: "DIV" }) });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(pasteClipboard).toHaveBeenCalled();
+  });
+
+  it("leaves ⌘C alone in a text field so the field copies its own selection", async () => {
+    const e = copy({ target: domTarget({ tagName: "INPUT" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
+  });
+
+  it("⌘C in the terminal still copies the terminal selection", async () => {
+    const e = copy({ target: xtermTextarea() });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(copySelection).toHaveBeenCalled();
   });
 });

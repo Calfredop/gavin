@@ -7,7 +7,7 @@
   import KanbanDragPreview from "./KanbanDragPreview.svelte";
   import CardDetailModal from "./CardDetailModal.svelte";
   import { planCommitFromMerged } from "./planDrop";
-  import { runCard, sendToMainAgent } from "./cardRunActions";
+  import { runCard, resumeCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -19,6 +19,9 @@
   import BoardSelectionBar from "./BoardSelectionBar.svelte";
   import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import type { ActiveDrag } from "./kanbanDrag";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
+  import { isSearching } from "./search";
   import type { DropTarget } from "./pointerDrag";
 
   interface Props {
@@ -69,6 +72,12 @@
       (contextFolder.split("/").at(-1) || contextFolder)
   );
   const merged = $derived(board ? mergePlanCards(board, tree, { contextFolder }) : null);
+
+  // Search lens -- see KanbanBoard: `merged` stays whole so the drop and
+  // delete paths keep committing against the real board.
+  let search = $state("");
+  const searching = $derived(isSearching(search));
+  const view = $derived(merged ? filterBoard(merged, search) : null);
   const allCards = $derived<CardView[]>(
     merged
       ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
@@ -128,6 +137,15 @@
     if (err) planWriteError = err;
   }
 
+  // The In Progress column's Resume (columnRunAction.ts): same spawn,
+  // the prompt that tells the agent to pick the work up rather than
+  // start it.
+  async function handleResume(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await resumeCard(workspaceId, card);
+    if (err) planWriteError = err;
+  }
+
   const agentAvailable = $derived(
     ($layoutState.workspaces.find((w) => w.id === workspaceId)?.mainSessionId ?? null) !== null
   );
@@ -152,6 +170,7 @@
       root: columnsEl,
       allowColumns: false,
       commit: handleDragCommit,
+      cardsLocked: () => searching,
       click: (kind, id, mods) => {
         if (kind !== "plan") return;
         // Shift picks cards for a batch run; a plain click still opens
@@ -196,17 +215,28 @@
         <button type="button" onclick={() => dismissSaveError(workspaceId)}>✕</button>
       </div>
     {/if}
+    <div class="board-bar">
+      <SearchInput
+        bind:value={search}
+        label="Search cards"
+        placeholder="Search cards…"
+        matches={view ? { shown: view.shown, total: view.total } : null}
+        hint="filtered: clear to drag"
+      />
+    </div>
     <div class="columns" bind:this={columnsEl}>
-      {#each merged?.columns ?? [] as dc (dc.column.id)}
+      {#each view?.columns ?? [] as dc (dc.column.id)}
         <KanbanColumn
           {workspaceId}
           column={dc.column}
           mode="planOnly"
           labels={board.labels}
           planCards={dc.planCards}
+          hiddenCount={view?.hiddenIn(dc.column.id) ?? 0}
           composerContext={contextFolder}
           onOpenPlanCard={(path) => (openPlanPath = path)}
           onRunCard={handleRun}
+          onResumeCard={handleResume}
           onSendToAgent={handleSendToAgent}
           {agentAvailable}
           onDeleteCard={(card) => (pendingDelete = card)}
@@ -214,8 +244,8 @@
           {allCards}
         />
       {/each}
-      {#each merged?.autoColumns ?? [] as auto (auto.status)}
-        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
+      {#each view?.autoColumns ?? [] as auto (auto.status)}
+        <AutoKanbanColumn status={auto.status} planCards={auto.planCards} hiddenCount={view?.hiddenIn(AUTO_KEY_PREFIX + auto.status) ?? 0} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
       {/each}
     </div>
     <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
@@ -237,6 +267,7 @@
       labels={board.labels}
       {allCards}
       onClose={() => (openPlanPath = null)}
+      onPathChange={(path) => (openPlanPath = path)}
     />
   {/if}
 </div>
@@ -254,6 +285,12 @@
     font-family: monospace;
     font-size: 0.8em;
     padding: 8px 12px 0;
+    flex: 0 0 auto;
+  }
+  .board-bar {
+    display: flex;
+    align-items: center;
+    padding: 6px 12px 0;
     flex: 0 0 auto;
   }
   .columns {

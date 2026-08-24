@@ -11,9 +11,11 @@ import { buildRunCommand } from "./cardRun";
 import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
+import { followRenamedContext } from "./planExplorer";
 import { normalizeColor, resolveAgentConfig, type AgentProfileInfo } from "./settings";
-import type { BoardTab } from "./gavin";
+import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
+import type { DaemonCompat } from "./daemonCompat";
 
 export type { SessionStatus };
 
@@ -56,6 +58,29 @@ const initialState: LayoutState = {
 
 export const layoutState = writable<LayoutState>(initialState);
 
+// The compat verdict Rust negotiated with the daemon at connect time.
+// null until the first successful probe -- DaemonCompatBanner
+// stays silent on null the same way compatMessage does. Refreshed
+// wherever this module re-syncs against a (re)connected daemon; see
+// refreshDaemonCompat.
+export const daemonCompat = writable<DaemonCompat | null>(null);
+
+// Pulls the current compat verdict from the Rust side. Called at every
+// point this module already re-syncs against a (re)connected daemon --
+// the workspaces-ready event, pollForStartupState's success path, and
+// restartDaemonInPlace -- so the banner and featureBlockedReason never
+// keep serving a verdict from a connection that no longer exists.
+// Best-effort: a failed fetch (including, in tests, backend.daemonCompat
+// simply not being mocked) leaves the previous value in place rather than
+// blanking the banner over a transient IPC hiccup.
+async function refreshDaemonCompat(): Promise<void> {
+  try {
+    daemonCompat.set(await backend.daemonCompat());
+  } catch {
+    // leave the previous verdict in place
+  }
+}
+
 function setError(message: string): void {
   layoutState.update((s) => ({ ...s, status: "error", errorMessage: message }));
 }
@@ -71,13 +96,47 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
   }
 }
 
+// The directory a blank terminal opened inside a workspace should start
+// in: that workspace's bound root. Undefined for a rootless workspace
+// (Unfiled, or one whose root has never been picked), which is how the
+// Rust side is told "no target" and falls back to $HOME. Every
+// spawn-a-blank-terminal path -- new page, split, new tab -- goes
+// through this, so they all land in the same place instead of dumping
+// the user in their home directory.
+function freshSessionCwd(workspaceId: string): string | undefined {
+  return get(layoutState).workspaces.find((w) => w.id === workspaceId)?.rootPath || undefined;
+}
+
+// Every terminal/agent session id currently live anywhere in the app --
+// every page of every workspace, main agent sessions included -- with
+// file and board tabs excluded (they share the tab-id space, but the
+// daemon has never heard of them, so they cost a restart nothing). This
+// is exactly the set a daemon restart would end -- DaemonCompatBanner
+// uses its size for compatMessage's "restarting will end N running
+// agents" warning. Recomputed on demand rather than tracked
+// incrementally: handleSessionExited already keeps every tree pruned to
+// only sessions that are still alive, so there is nothing stale here to
+// filter by status.
+export function runningSessionCount(state: LayoutState): number {
+  const ids = new Set<string>();
+  for (const ws of state.workspaces) {
+    if (ws.mainSessionId) ids.add(ws.mainSessionId);
+    for (const page of ws.pages) {
+      for (const id of layout.allSessionIds(page.layout)) {
+        if (!state.fileTabsById[id] && !state.boardTabsById[id]) ids.add(id);
+      }
+    }
+  }
+  return ids.size;
+}
+
 // Shared by every action that creates exactly one fresh session before
 // mutating a tree (splitPane, addTab). Returns null -- having already
 // called setError -- on failure, so callers just check for null rather
 // than duplicating their own try/catch.
-async function createFreshSession(): Promise<string | null> {
+async function createFreshSession(workspaceId: string): Promise<string | null> {
   try {
-    return await backend.createSession();
+    return await backend.createSession(freshSessionCwd(workspaceId));
   } catch (e) {
     setError(String(e));
     return null;
@@ -169,6 +228,36 @@ function activePageLocation(
   return { workspaceId: ws.id, pageId: page.id, tree: page.layout };
 }
 
+// Board tabs are pinned to a context by FOLDER PATH, so renaming or
+// moving that folder on disk would otherwise strand every tab on it
+// behind "this context no longer exists" -- a dead tab for what was only
+// a rename. Follows it instead, on the same narrow inference the Plans
+// tab uses for a renamed file, and re-persists so the repair survives a
+// restart. A move the inference can't call leaves the tab alone, and the
+// pane's own missing-context notice stands.
+function repairBoardTabs(
+  workspaceId: string,
+  before: GavinTree | undefined,
+  after: GavinTree | undefined
+): void {
+  const current = get(layoutState).boardTabsById;
+  const boardTabsById: Record<string, BoardTab> = {};
+  let moved = false;
+  for (const [id, tab] of Object.entries(current)) {
+    const to =
+      tab.workspaceId === workspaceId
+        ? followRenamedContext(before, after, tab.contextFolder)
+        : null;
+    boardTabsById[id] = to === null ? tab : { ...tab, contextFolder: to };
+    moved ||= to !== null;
+  }
+  if (!moved) return;
+  layoutState.update((s) => ({ ...s, boardTabsById }));
+  // Best-effort, matching how this map is loaded and pruned: a failed
+  // write costs the repair on the next restart, never a broken tab now.
+  void backend.setBoardTabs(boardTabsById).catch(() => {});
+}
+
 const unlisteners: UnlistenFn[] = [];
 
 export async function bootstrap(): Promise<void> {
@@ -189,6 +278,7 @@ export async function bootstrap(): Promise<void> {
         };
       });
       watchRootedWorkspaces(event.payload.workspaces);
+      void refreshDaemonCompat();
     })
   );
   unlisteners.push(
@@ -226,10 +316,33 @@ export async function bootstrap(): Promise<void> {
       handleSessionRestored(event.payload);
     })
   );
+  // An agent naming its own tab (gavin_name_session). Straight into
+  // setSessionName: an agent rename and a human rename are the same
+  // rename, and must persist the same way.
+  unlisteners.push(
+    await listen<[string, string]>("session-named", (event) => {
+      void setSessionName(event.payload[0], event.payload[1]);
+    })
+  );
   // Registered before any watchGavinRoot can fire (the two ready paths
   // below) -- gavin-tree-changed pushes with no listener would be lost,
   // not buffered.
   unlisteners.push(await initGavinListeners());
+  // Rides the tree store rather than the raw event so it sees every
+  // update, pushes and on-demand refreshes alike. The first call carries
+  // no previous tree, so nothing is ever "repaired" on startup.
+  const previousTrees: Record<string, GavinTree> = {};
+  unlisteners.push(
+    gavinTrees.subscribe((trees) => {
+      for (const [workspaceId, tree] of Object.entries(trees)) {
+        const previous = previousTrees[workspaceId];
+        previousTrees[workspaceId] = tree;
+        if (previous !== undefined && previous !== tree) {
+          repairBoardTabs(workspaceId, previous, tree);
+        }
+      }
+    })
+  );
   // Imported dynamically on purpose: orchestrationState imports THIS
   // module (for resolvedAgentFor and createSessionOnPage), so a static
   // import here would close a cycle. By the time bootstrap runs, this
@@ -244,9 +357,11 @@ export async function bootstrap(): Promise<void> {
 
   backend.setOnWriteInputHook((sessionId) => clearRestoredMarker(sessionId));
 
-  // Session names are frontend-set, never externally/daemon-driven, so
-  // there's no live event for them (unlike cwd) -- a one-shot fetch is
-  // sufficient. Best-effort: a failure here just means renamed tabs show
+  // Session names are only ever WRITTEN from this side (a human rename,
+  // or an agent's gavin_name_session arriving on "session-named" above,
+  // which lands in the same setSessionName), so the stored map cannot
+  // drift behind our back -- a one-shot fetch at startup is sufficient,
+  // unlike cwd. Best-effort: a failure here just means renamed tabs show
   // their fallback label until the next successful rename, not a reason
   // to block startup.
   void backend
@@ -303,16 +418,40 @@ export function teardown(): void {
 export async function retryConnect(): Promise<void> {
   layoutState.update((s) => ({ ...s, status: "connecting", errorMessage: "" }));
   try {
-    const reconnected = await backend.restartDaemon();
-    if (!reconnected) {
-      setError("Daemon restarted — quit and relaunch gavin to reconnect.");
-      return;
-    }
+    await backend.restartDaemon();
   } catch (e) {
     setError(String(e));
     return;
   }
   void pollForStartupState();
+}
+
+// The Settings button, as opposed to retryConnect's error-overlay one:
+// the app here is healthy and stays up, so this neither touches `status`
+// nor re-runs startup. The Rust side rewires the live connections in
+// place and re-arms the gavin root watches, so all that is left is to
+// refresh what a fresh daemon can no longer be asked about mid-flight.
+//
+// Throws on failure so the caller can render it beside the button --
+// silently swallowing it would leave the human with a dead daemon and no
+// sign of it.
+export async function restartDaemonInPlace(): Promise<void> {
+  await backend.restartDaemon();
+  // The workspaces payload is re-derived by the daemon on reconnect
+  // (recover() spawns fresh shells and re-resolves ids), so pull the
+  // authoritative copy rather than trusting the pre-restart one.
+  const data = await backend.getWorkspacesState();
+  const resolved = workspace.resolveActiveFocus(data);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: resolved.state.workspaces,
+    activeWorkspaceId: resolved.state.activeWorkspaceId,
+    focusedSessionId: resolved.focusedSessionId,
+  }));
+  // A restart can hand the app a differently-versioned daemon than the
+  // one it started with (session::reconnect's own doc comment) -- refresh
+  // the stored verdict so the banner/gating never keep serving a stale one.
+  void refreshDaemonCompat();
 }
 
 async function pollForStartupState(): Promise<void> {
@@ -348,6 +487,7 @@ async function pollForStartupState(): Promise<void> {
         };
       });
       watchRootedWorkspaces(data.workspaces);
+      void refreshDaemonCompat();
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -529,7 +669,7 @@ export async function splitPane(targetSessionId: string, direction: "row" | "col
   const state = get(layoutState);
   const location = activePageLocation(state);
   if (!location) return;
-  const newId = await createFreshSession();
+  const newId = await createFreshSession(location.workspaceId);
   if (!newId) return;
   const newTree = layout.splitLeaf(location.tree, targetSessionId, direction, newId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
@@ -598,7 +738,7 @@ export async function addTab(targetSessionId: string): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
   if (!location) return;
-  const newId = await createFreshSession();
+  const newId = await createFreshSession(location.workspaceId);
   if (!newId) return;
   const newTree = layout.addTab(location.tree, targetSessionId, newId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
@@ -1019,10 +1159,11 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
 /// Returns the new page's id, so a caller that must bind something to it
 /// (an orchestration rail) does not have to guess which page appeared.
 /// Null when the workspace is unknown or session creation failed.
-/// `cwd` is where the fresh shells open; omitted, the daemon's own
-/// default ($HOME) applies, which is what the toolbar's "new page"
-/// buttons want. A rail passes its checkout, so the page it spawns for
-/// itself opens where that rail actually works.
+/// `cwd` is where the fresh shells open; omitted, the workspace's own
+/// root applies (freshSessionCwd), which is what the toolbar's "new
+/// page" buttons want. A rail passes its checkout, so the page it spawns
+/// for itself opens where that rail actually works rather than at the
+/// workspace root.
 export async function createPage(
   workspaceId: string,
   buildTree: (freshIds: string[]) => LayoutNode,
@@ -1034,7 +1175,8 @@ export async function createPage(
   if (!state.workspaces.some((w) => w.id === workspaceId)) return null;
   let freshIds: string[];
   try {
-    freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession(cwd)));
+    const sessionCwd = cwd || freshSessionCwd(workspaceId);
+    freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession(sessionCwd)));
   } catch (e) {
     setError(String(e));
     return null;

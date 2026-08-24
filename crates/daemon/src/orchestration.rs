@@ -196,6 +196,9 @@ impl OrchestrationStore {
         workspace_id: &str,
         rails: &[Rail],
         notes: &[ConflictNote],
+        // The sessions the daemon still hosts, for guard 3 below. Only
+        // the caller knows this -- the store holds no PTYs.
+        live_sessions: &HashSet<String>,
     ) -> anyhow::Result<()> {
         let incoming: HashSet<&str> = rails
             .iter()
@@ -243,20 +246,33 @@ impl OrchestrationStore {
         }
 
         // Guard 3: a running step must survive the replace, or its live
-        // session is orphaned.
-        let running: Vec<(String, String)> = self
+        // session is orphaned. LIVE is the whole point, so the row alone
+        // does not decide it: only the app writes run state, and a row it
+        // left at `running` for a session that has since ended -- the app
+        // quit mid-run, the rail was never re-ticked -- has nothing left
+        // to orphan. Refusing on such a row would wedge the plan shut
+        // forever, since the rail carrying it could then never be edited
+        // or deleted. A row with no session id at all cannot be alive
+        // either.
+        let running: Vec<(String, String, Option<String>)> = self
             .conn
             .prepare(
-                "SELECT sr.step_id, st.card_path FROM orch_step_runs sr
+                "SELECT sr.step_id, st.card_path, sr.session_id FROM orch_step_runs sr
                  JOIN orch_steps st ON st.id = sr.step_id
                  JOIN orch_stages sg ON sg.id = st.stage_id
                  JOIN orch_rails r ON r.id = sg.rail_id
                  WHERE r.workspace_id = ?1 AND sr.state = 'running'",
             )?
-            .query_map(params![workspace_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map(params![workspace_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .collect::<Result<_, _>>()?;
-        for (step_id, card_path) in &running {
-            if !incoming.contains(step_id.as_str()) {
+        for (step_id, card_path, session_id) in &running {
+            if incoming.contains(step_id.as_str()) {
+                continue;
+            }
+            let alive = session_id.as_deref().is_some_and(|id| live_sessions.contains(id));
+            if alive {
                 anyhow::bail!(
                     "step {step_id} ({card_path}) is running — pause or let it finish before removing it"
                 );
@@ -344,6 +360,50 @@ impl OrchestrationStore {
         tx.execute("DELETE FROM orch_step_runs WHERE step_id NOT IN (SELECT id FROM orch_steps)", [])?;
         tx.execute("DELETE FROM orch_rail_runs WHERE rail_id NOT IN (SELECT id FROM orch_rails)", [])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Every distinct card path this workspace's steps point at. Tool
+    /// steps carry no card and are left out.
+    pub fn step_card_paths(&self, workspace_id: &str) -> anyhow::Result<Vec<String>> {
+        let paths = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT t.card_path FROM orch_steps t
+                 JOIN orch_stages s ON t.stage_id = s.id
+                 JOIN orch_rails r ON s.rail_id = r.id
+                 WHERE r.workspace_id = ?1 AND t.card_path <> ''",
+            )?
+            .query_map(params![workspace_id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(paths)
+    }
+
+    /// Every workspace with a step aimed at this card. The re-key below
+    /// is deliberately global -- one card can sit on rails in more than
+    /// one workspace -- so this answers who has to be told about it.
+    pub fn workspaces_with_card(&self, card_path: &str) -> anyhow::Result<Vec<String>> {
+        let ids = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT r.workspace_id FROM orch_steps t
+                 JOIN orch_stages s ON t.stage_id = s.id
+                 JOIN orch_rails r ON s.rail_id = r.id
+                 WHERE t.card_path = ?1",
+            )?
+            .query_map(params![card_path], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
+    /// Re-keys every step pointing at a card whose file moved. Steps are
+    /// authored against a card, not a folder, so an archived card must
+    /// not read as a broken step on the rail that runs it.
+    pub fn rename_card_path(&mut self, old_path: &str, new_path: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE orch_steps SET card_path = ?2 WHERE card_path = ?1",
+            params![old_path, new_path],
+        )?;
         Ok(())
     }
 
@@ -486,6 +546,16 @@ fn add_column_if_missing(
 mod tests {
     use super::*;
 
+    /// The sessions the daemon still hosts. Empty is the common case
+    /// here: these tests store run rows without a live PTY behind them.
+    fn none() -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn live(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| (*s).to_string()).collect()
+    }
+
     fn store() -> OrchestrationStore {
         OrchestrationStore::open(std::path::Path::new(":memory:")).unwrap()
     }
@@ -526,18 +596,32 @@ mod tests {
     #[test]
     fn replace_plan_round_trips_rails_stages_and_steps() {
         let mut s = store();
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.rails.len(), 1);
         assert_eq!(o.rails[0].stages[0].steps[0].card_path, "/x/a.md");
     }
 
     #[test]
+    fn rename_card_path_follows_a_moved_card_on_every_rail() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md"), ("t2", "/x/b.md")])], &[], &none()).unwrap();
+        s.replace_plan("ws-2", &[rail("r2", &[("t3", "/x/a.md")])], &[], &none()).unwrap();
+
+        s.rename_card_path("/x/a.md", "/x/done/a.md").unwrap();
+
+        let steps = &s.get("ws-1").unwrap().rails[0].stages[0].steps;
+        assert_eq!(steps[0].card_path, "/x/done/a.md");
+        assert_eq!(steps[1].card_path, "/x/b.md");
+        assert_eq!(s.get("ws-2").unwrap().rails[0].stages[0].steps[0].card_path, "/x/done/a.md");
+    }
+
+    #[test]
     fn replace_plan_replaces_rather_than_appends_and_is_workspace_scoped() {
         let mut s = store();
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[]).unwrap();
-        s.replace_plan("ws-2", &[rail("r2", &[("t2", "/x/b.md")])], &[]).unwrap();
-        s.replace_plan("ws-1", &[rail("r3", &[("t3", "/x/c.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        s.replace_plan("ws-2", &[rail("r2", &[("t2", "/x/b.md")])], &[], &none()).unwrap();
+        s.replace_plan("ws-1", &[rail("r3", &[("t3", "/x/c.md")])], &[], &none()).unwrap();
         assert_eq!(s.get("ws-1").unwrap().rails.len(), 1);
         assert_eq!(s.get("ws-1").unwrap().rails[0].id, "r3");
         assert_eq!(s.get("ws-2").unwrap().rails[0].id, "r2");
@@ -546,12 +630,12 @@ mod tests {
     #[test]
     fn run_state_survives_a_replace_that_keeps_the_step_id() {
         let mut s = store();
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
         s.set_step_run("t1", "done", Some("sess-1"), None).unwrap();
         // Same step id, moved into a differently-named rail.
         let mut moved = rail("r9", &[("t1", "/x/a.md")]);
         moved.name = "renamed".into();
-        s.replace_plan("ws-1", &[moved], &[]).unwrap();
+        s.replace_plan("ws-1", &[moved], &[], &none()).unwrap();
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.step_runs.len(), 1);
         assert_eq!(o.step_runs[0].state, "done");
@@ -561,19 +645,19 @@ mod tests {
     #[test]
     fn run_state_for_a_vanished_step_is_dropped() {
         let mut s = store();
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
         s.set_step_run("t1", "done", None, None).unwrap();
-        s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &none()).unwrap();
         assert!(s.get("ws-1").unwrap().step_runs.is_empty());
     }
 
     #[test]
     fn deleting_a_running_step_is_refused_and_changes_nothing() {
         let mut s = store();
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
         s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
         let err = s
-            .replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[])
+            .replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-1"]))
             .unwrap_err()
             .to_string();
         assert!(err.contains("t1"), "message names the step: {err}");
@@ -582,12 +666,39 @@ mod tests {
         assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].steps[0].id, "t1");
     }
 
+    /// The guard exists to keep a LIVE agent from being orphaned. A row
+    /// left at `running` by a session the daemon no longer hosts has
+    /// nothing left to orphan, and refusing on it would wedge the plan
+    /// forever: the human could never delete the rail carrying it.
+    #[test]
+    fn deleting_a_running_step_whose_session_is_gone_is_allowed() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-9"]))
+            .unwrap();
+        let o = s.get("ws-1").unwrap();
+        assert_eq!(o.rails[0].stages[0].steps[0].id, "t2");
+        assert!(o.step_runs.is_empty(), "the stale row is swept with its step");
+    }
+
+    /// `running` with no session id at all cannot be alive either.
+    #[test]
+    fn deleting_a_running_step_with_no_session_is_allowed() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        s.set_step_run("t1", "running", None, None).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-1"]))
+            .unwrap();
+        assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].steps[0].id, "t2");
+    }
+
     #[test]
     fn moving_a_running_step_between_rails_is_allowed() {
         let mut s = store();
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
         s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
-        s.replace_plan("ws-1", &[rail("r2", &[("t1", "/x/a.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r2", &[("t1", "/x/a.md")])], &[], &live(&["sess-1"])).unwrap();
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.rails[0].id, "r2");
         assert_eq!(o.step_runs[0].state, "running");
@@ -597,7 +708,7 @@ mod tests {
     fn duplicate_ids_are_refused() {
         let mut s = store();
         let err = s
-            .replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md"), ("t1", "/x/b.md")])], &[])
+            .replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md"), ("t1", "/x/b.md")])], &[], &none())
             .unwrap_err()
             .to_string();
         assert!(err.contains("duplicate"), "{err}");
@@ -608,7 +719,7 @@ mod tests {
         let mut s = store();
         let note = ConflictNote { id: "n1".into(), step_ids: vec!["nope".into()], note: "x".into() };
         let err = s
-            .replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[note])
+            .replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[note], &none())
             .unwrap_err()
             .to_string();
         assert!(err.contains("nope"), "{err}");
@@ -618,7 +729,7 @@ mod tests {
     fn conflict_notes_round_trip() {
         let mut s = store();
         let note = ConflictNote { id: "n1".into(), step_ids: vec!["t1".into()], note: "careful".into() };
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[note]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[note], &none()).unwrap();
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.conflict_notes[0].note, "careful");
         assert_eq!(o.conflict_notes[0].step_ids, vec!["t1".to_string()]);
@@ -666,7 +777,7 @@ mod tests {
     #[test]
     fn a_tool_step_round_trips_with_its_overrides() {
         let mut s = store();
-        s.replace_plan("ws-1", &[tool_step("t1", "u1")], &[]).unwrap();
+        s.replace_plan("ws-1", &[tool_step("t1", "u1")], &[], &none()).unwrap();
         let step = s.get("ws-1").unwrap().rails[0].stages[0].steps[0].clone();
         assert_eq!(step.tool_id.as_deref(), Some("u1"));
         assert_eq!(step.card_path, "");
@@ -676,7 +787,7 @@ mod tests {
     #[test]
     fn a_step_that_is_neither_a_card_nor_a_tool_is_refused() {
         let mut s = store();
-        let err = s.replace_plan("ws-1", &[rail("r1", &[("t1", "")])], &[]).unwrap_err().to_string();
+        let err = s.replace_plan("ws-1", &[rail("r1", &[("t1", "")])], &[], &none()).unwrap_err().to_string();
         assert!(err.contains("neither"), "{err}");
     }
 
@@ -685,7 +796,7 @@ mod tests {
         let mut s = store();
         let mut both = tool_step("t1", "u1");
         both.stages[0].steps[0].card_path = "/x/a.md".into();
-        let err = s.replace_plan("ws-1", &[both], &[]).unwrap_err().to_string();
+        let err = s.replace_plan("ws-1", &[both], &[], &none()).unwrap_err().to_string();
         assert!(err.contains("both"), "{err}");
     }
 
@@ -744,7 +855,7 @@ mod tests {
     fn deleting_a_tool_a_step_still_uses_is_allowed_and_leaves_the_step() {
         let mut s = store();
         s.save_tool(&tool("u1", Some("ws-1"))).unwrap();
-        s.replace_plan("ws-1", &[tool_step("t1", "u1")], &[]).unwrap();
+        s.replace_plan("ws-1", &[tool_step("t1", "u1")], &[], &none()).unwrap();
         s.delete_tool("u1").unwrap();
         assert!(s.tools("ws-1").unwrap().is_empty());
         assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].steps[0].tool_id.as_deref(), Some("u1"));
@@ -800,7 +911,7 @@ mod tests {
         let mut s = store();
         let mut r = rail("r1", &[("t1", "/x/a.md")]);
         r.branch = Some("feature/api".into());
-        s.replace_plan("ws-1", &[r], &[]).unwrap();
+        s.replace_plan("ws-1", &[r], &[], &none()).unwrap();
         let back = s.get("ws-1").unwrap().rails[0].clone();
         assert_eq!(back.branch.as_deref(), Some("feature/api"));
         assert_eq!(back.worktree_path, None);
@@ -839,7 +950,7 @@ mod tests {
     #[test]
     fn rail_run_upserts() {
         let mut s = store();
-        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[]).unwrap();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
         s.set_rail_run("r1", "running", Some("r1-s1")).unwrap();
         s.set_rail_run("r1", "paused", Some("r1-s1")).unwrap();
         let o = s.get("ws-1").unwrap();

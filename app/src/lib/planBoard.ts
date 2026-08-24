@@ -4,6 +4,15 @@ import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 export interface CardView {
   id: string; // the card file's absolute path — stable identity
   title: string;
+  // The card file's mtime in unix seconds; null (or absent) when the
+  // daemon didn't send one -- a pre-v13 daemon, or a file that vanished
+  // between the scan and the stat. The archive grid orders by it.
+  //
+  // Optional for the same reason `GavinContext.outside` is: a card view
+  // is built in a dozen test fixtures with no opinion about dates, and
+  // making every one of them state a null would be noise. The projection
+  // itself always sets it.
+  modifiedAt?: number | null;
   status: string | null;
   priority: PlanFileInfo["priority"];
   order: number | null;
@@ -35,6 +44,28 @@ export interface AutoColumn {
   planCards: CardView[];
 }
 
+/// What one merge yields: the board's columns, the auto columns a
+/// non-matching status conjures, and the archive -- which is NOT a
+/// column. Archived cards are deliberately off the board; the kanban
+/// tab's archive toggle is the only surface that renders them.
+export interface MergedProjection {
+  columns: DisplayColumn[];
+  autoColumns: AutoColumn[];
+  archived: CardView[];
+}
+
+/// A card the human archived: it lives in its context's
+/// `plans/archive/`, which is the daemon's `ARCHIVE_DIR`. Derived from
+/// the PATH rather than re-derived from frontmatter, because the folder
+/// is the archive -- there is no `archived:` field to disagree with it.
+///
+/// Deliberately narrow, exactly like `isArchivedPlan`'s `done/` check: a
+/// hand-made `plans/roadmap/archive/` is somebody else's hierarchy and
+/// the daemon refuses to file cards into it, so this must not claim it.
+export function isArchivedCard(path: string): boolean {
+  return path.includes("/plans/archive/");
+}
+
 // "In Progress", "in-progress", "in_progress", " IN  PROGRESS " all meet.
 export function slugStatus(s: string): string {
   return s
@@ -58,6 +89,7 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
   return {
     id: plan.path,
     title: plan.title,
+    modifiedAt: plan.modifiedAt ?? null,
     status: plan.status,
     priority: plan.priority,
     order: plan.order,
@@ -81,7 +113,14 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
 // board shows the columns for structure only). Statuses whose slug is
 // empty count as no status; no status lands in the first real column, or
 // in a "(no status)" auto column when the board has none.
-/// Plan cards are indexed by (contextFolder, fileName) joined with a NUL:
+/// The key a nested child resolves its parent on: (contextFolder,
+/// fileName) joined with a NUL -- the one character neither a folder nor
+/// a file name can hold, so no two distinct pairs can collide by
+/// spelling. Exported because the scheduler resolves the same link for
+/// the same reason (orchestration.effectiveStatus): one spelling of
+/// "which plan is this card's parent", not two that can drift.
+///
+/// Plan cards are indexed by this key:
 /// the one character neither a folder nor a file name can hold, so no two
 /// distinct pairs can collide by spelling.
 ///
@@ -89,7 +128,7 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
 /// A raw one makes git classify this whole file as BINARY -- no diffs, no
 /// merge resolution, and grep skips it -- which is how two of them sat here
 /// unnoticed. The runtime string is identical either way.
-function planKey(contextFolder: string, fileName: string): string {
+export function planKey(contextFolder: string, fileName: string): string {
   return `${contextFolder}\u0000${fileName}`;
 }
 
@@ -97,7 +136,7 @@ export function mergePlanCards(
   board: Board,
   tree: GavinTree | undefined,
   filter?: { contextFolder: string }
-): { columns: DisplayColumn[]; autoColumns: AutoColumn[] } {
+): MergedProjection {
   const columns: DisplayColumn[] = board.columns.map((column) => ({
     column,
     planCards: [],
@@ -166,9 +205,22 @@ export function mergePlanCards(
     }
   }
 
+  // Pass 3: distribute. An archived card is pulled out BEFORE any column
+  // sees it -- the archive is off the board by definition, and its cards
+  // still wear the status they were archived with, so leaving them in
+  // would put them straight back in the Done column.
+  //
+  // Deliberately after nesting: an archived plan's children travel with
+  // it on disk, so they have already attached to their parent and ride
+  // into the archive inside it rather than as loose cards.
   const NO_STATUS = "(no status)";
+  const archived: CardView[] = [];
   const autoByKey = new Map<string, AutoColumn>();
   for (const view of distributable) {
+    if (isArchivedCard(view.id)) {
+      archived.push(view);
+      continue;
+    }
     const slug = view.status ? slugStatus(view.status) : "";
     if (!slug) {
       if (columns.length > 0) {
@@ -193,7 +245,7 @@ export function mergePlanCards(
   }
 
   const autoColumns = [...autoByKey.values()].sort((a, b) => a.status.localeCompare(b.status));
-  return { columns, autoColumns };
+  return { columns, autoColumns, archived };
 }
 
 // The deepest context whose folderPath is an ancestor of (or equal to)
@@ -229,6 +281,7 @@ export interface PlacedCardView {
 export function indexCardViews(merged: {
   columns: DisplayColumn[];
   autoColumns: AutoColumn[];
+  archived?: CardView[];
 }): Map<string, PlacedCardView> {
   const index = new Map<string, PlacedCardView>();
   const add = (view: CardView, columnName: string | null): void => {
@@ -241,5 +294,9 @@ export function indexCardViews(merged: {
   for (const auto of merged.autoColumns) {
     for (const view of auto.planCards) add(view, auto.status);
   }
+  // Archived cards resolve too, with no column: a rail step whose card
+  // has been archived must still render as itself rather than vanishing
+  // into "missing card".
+  for (const view of merged.archived ?? []) add(view, null);
   return index;
 }

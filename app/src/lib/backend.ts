@@ -5,6 +5,7 @@ import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { ToolRecord } from "./orchestrationTools";
+import type { DaemonCompat } from "./daemonCompat";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -105,8 +106,14 @@ export function getBootstrapError(): Promise<string | null> {
 
 // Resolves true when the app is fully reconnected, false when the daemon
 // was restarted but this app process needs a relaunch to rewire.
-export function restartDaemon(): Promise<boolean> {
+export function restartDaemon(): Promise<void> {
   return invoke("restart_daemon");
+}
+
+// The compat verdict from the most recent connect/reconnect. null before
+// the first successful probe -- see DaemonCompatState on the Rust side.
+export function daemonCompat(): Promise<DaemonCompat | null> {
+  return invoke("daemon_compat");
 }
 
 // Fire-and-forget: rides the streaming connection, so there is no reply --
@@ -183,11 +190,14 @@ export function createPlan(
   return invoke("create_plan", { contextFolder, fileName, title, status, priority, body, kind, parent });
 }
 
+/// Resolves to the card's path AFTER the write: a status write can archive
+/// the file into `plans/done/`, and callers holding a path as identity have
+/// to follow it.
 export function setPlanFrontmatterField(
   path: string,
   key: "status" | "priority" | "order" | "title" | "kind" | "parent" | "labels",
   value: string
-): Promise<void> {
+): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });
 }
 
@@ -217,6 +227,19 @@ export function deleteCardFile(path: string): Promise<void> {
   return invoke("delete_card_file", { path });
 }
 
+/// Moves a card into its context's `plans/archive/` (children included)
+/// and resolves with the path it landed on -- the card's identity moves
+/// with it, exactly as it does for a status write.
+export function archiveCard(path: string): Promise<string> {
+  return invoke("archive_card", { path });
+}
+
+/// Takes a card back out of the archive, filed by its status. Resolves
+/// with its new path.
+export function unarchiveCard(path: string): Promise<string> {
+  return invoke("unarchive_card", { path });
+}
+
 export function linkCardSession(
   workspaceId: string,
   path: string,
@@ -243,6 +266,7 @@ export function agentProfiles(): Promise<
     command: string;
     mcpSupported: boolean;
     promptArg: boolean;
+    headlessArgs: string;
   }>
 > {
   return invoke("agent_profiles");

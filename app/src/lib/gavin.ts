@@ -14,6 +14,10 @@ export interface PlanFileInfo {
   checklistDone: number;
   checklistTotal: number;
   parseWarning: boolean;
+  // The card file's mtime, in whole seconds since the unix epoch. The
+  // archive grid orders by it. Optional so fixtures and older daemons
+  // (which never send it) stay valid -- absent sorts last.
+  modifiedAt?: number | null;
 }
 
 export interface MdFileInfo {

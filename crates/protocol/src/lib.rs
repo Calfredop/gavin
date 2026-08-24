@@ -12,7 +12,16 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 13;
+
+/// The oldest daemon this client can still talk to. Bumped ONLY when a
+/// change breaks the wire for an older peer -- adding a Request variant
+/// does not, because clients gate on `min_version_for`.
+///
+/// 5 is derived, not chosen: v4 -> v5 added `card_sessions` to
+/// Response::Board with no serde default, so a v4 daemon's reply cannot
+/// be parsed by a v5+ client. See the design doc's audit.
+pub const MIN_COMPATIBLE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -140,6 +149,18 @@ pub enum Request {
     DeleteCardFile {
         path: String,
     },
+    /// Moves a card file into its context's `plans/archive/`, taking its
+    /// nested children with it. Deliberately separate from a status
+    /// write: archiving is a filing decision the human makes, not
+    /// something a status can trigger behind their back.
+    ArchiveCard {
+        path: String,
+    },
+    /// The inverse: takes a card back out of `plans/archive/` and files
+    /// it where its status says it belongs (`plans/` or `plans/done/`).
+    UnarchiveCard {
+        path: String,
+    },
     /// Rewrites exactly one checklist line's checkbox; expected_text
     /// must still match or the daemon refuses (concurrent agent edit).
     SetChecklistItem {
@@ -227,7 +248,109 @@ pub enum Request {
         cwd: String,
         limit: u32,
     },
+    /// An agent naming its own tab (gavin-mcp's `gavin_name_session`).
+    /// Routed by SESSION, not by root: an orchestration agent runs in a
+    /// rail's worktree, which matches no watcher, and the app displaying
+    /// a tab is by definition the connection attached to it. The daemon
+    /// holds no session names of its own -- they live in the app's
+    /// config -- so this only pushes `SessionNamed` on that connection.
+    NameSession {
+        session_id: String,
+        name: String,
+    },
     GetProtocolVersion,
+    /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
+    /// a daemon it owns without `pkill`, which cannot distinguish this
+    /// install's daemon from another's.
+    Shutdown,
+    /// Catch-all for a request from a NEWER client. Deserialize-only:
+    /// never constructed or sent by us. Exists so an unrecognised
+    /// `type` tag is a value rather than a parse error -- read_message
+    /// propagates parse errors with `?`, which drops the whole
+    /// connection and every push riding on it.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The protocol version that introduced `req`'s variant.
+///
+/// Deliberately an exhaustive match with no `_` arm: adding a Request
+/// variant must not compile until its version is recorded here, because
+/// a missing entry would let the app send it to a daemon too old to
+/// parse it -- which closes the connection outright.
+pub fn min_version_for(req: &Request) -> u32 {
+    match req {
+        Request::Attach { .. }
+        | Request::CreateGavinContext { .. }
+        | Request::CreatePlan { .. }
+        | Request::CreateSession { .. }
+        | Request::DeleteBoard { .. }
+        | Request::GetBoard { .. }
+        | Request::GetBoardByRoot { .. }
+        | Request::GetGavinTree { .. }
+        | Request::GetProtocolVersion
+        | Request::InitGavinRoot { .. }
+        | Request::KillSession { .. }
+        | Request::ListSessions
+        | Request::ReadPrd { .. }
+        | Request::ResizeSession { .. }
+        | Request::ScanGavinRoot { .. }
+        | Request::SetBoard { .. }
+        | Request::SetPlanFrontmatterField { .. }
+        | Request::SpawnAgentSession { .. }
+        | Request::UnwatchGavinRoot { .. }
+        | Request::WatchGavinRoot { .. }
+        | Request::WriteInput { .. } => 1,
+
+        Request::PromoteChecklistItem { .. } | Request::SetChecklistItem { .. } => 4,
+
+        Request::LinkCardSession { .. } | Request::UnlinkCardSession { .. } => 5,
+
+        Request::DeleteCardFile { .. } => 6,
+
+        Request::SetRootConfigField { .. } => 7,
+
+        Request::AddExternalGavinContext { .. } | Request::RemoveExternalGavinContext { .. } => 8,
+
+        // 374eb7d bumped v9 and v10 together; attributed to 10, the
+        // conservative direction (never sent to a v9 daemon).
+        Request::GetOrchestration { .. }
+        | Request::GetOrchestrationByRoot { .. }
+        | Request::GitDirtyPaths { .. }
+        | Request::NameSession { .. }
+        | Request::SetOrchestration { .. }
+        | Request::SetOrchestrationByRoot { .. }
+        | Request::SetRailRun { .. }
+        | Request::SetStepRun { .. } => 10,
+
+        // The tool library, from the orchestration merge. This arm was
+        // added when that work landed: v11 had been reserved for it while
+        // it was still an uncommitted merge, and this match refused to
+        // compile until the four variants were recorded here -- which is
+        // exactly what the reservation was for.
+        //
+        // The frontend keeps a mirror of this table in
+        // app/src/lib/daemonCompat.ts (FEATURE_MIN_VERSION, `tools: 11`).
+        // Nothing forces that one to stay in sync the way this match is
+        // forced to, so a new gated feature owes an entry there by hand.
+        Request::DeleteTool { .. }
+        | Request::GetTools { .. }
+        | Request::GetToolsByRoot { .. }
+        | Request::SaveTool { .. } => 11,
+
+        Request::Shutdown => 12,
+
+        // The archive (`plans/archive/`). v13 also widened PlanFileInfo
+        // with `modified_at`, which the archive grid orders by -- that
+        // one is `serde(default)`, so it costs an older DAEMON nothing;
+        // these two variants are what a v12 daemon genuinely cannot
+        // serve, and daemonCompat.ts gates the UI on `archive: 13`.
+        Request::ArchiveCard { .. } | Request::UnarchiveCard { .. } => 13,
+
+        // Never sent -- it only exists to absorb a newer peer's request.
+        // u32::MAX keeps it un-sendable if it ever reaches a send path.
+        Request::Unknown => u32::MAX,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,10 +384,26 @@ pub enum Response {
     PrdContent { content: String },
     PlanCreated { path: String },
     AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
+    /// Push: an agent renamed its own tab. The app applies it through the
+    /// very same path a human rename takes.
+    SessionNamed { session_id: String, name: String },
     ProtocolVersion { version: u32 },
     TaskPromoted { path: String },
+    /// A frontmatter write, answered with the card's path AFTERWARDS: a
+    /// status write can archive the file into `plans/done/` (or bring it
+    /// back), and callers hold that path as the card's identity.
+    PlanFieldSet { path: String },
+    /// An archive or un-archive, answered with the card's path
+    /// AFTERWARDS -- same contract as PlanFieldSet, for the same reason:
+    /// the path is the card's identity everywhere that holds one.
+    CardMoved { path: String },
     Ok,
     Error { message: String },
+    /// Sent instead of dropping the connection when a request's `type`
+    /// is unrecognised. `min_version` is advisory: this daemon cannot
+    /// know which version introduced a variant it has never heard of,
+    /// so it reports its own version as the ceiling it can serve.
+    Unsupported { request_type: String, min_version: u32 },
 }
 
 /// A session's git status, deduped daemon-side by repo root (many sessions
@@ -530,6 +669,15 @@ pub struct PlanFileInfo {
     pub checklist_done: u32,
     pub checklist_total: u32,
     pub parse_warning: bool,
+    /// The card file's mtime, as whole seconds since the unix epoch, or
+    /// None when the file could not be stat'd. The archive grid is
+    /// ordered by it -- for an archived card it is effectively "when it
+    /// was archived", since the move rewrites the mtime.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses: the field
+    /// simply reads None and the grid falls back to path order.
+    #[serde(default)]
+    pub modified_at: Option<i64>,
 }
 
 /// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
@@ -972,6 +1120,7 @@ mod tests {
                     checklist_done: 0,
                     checklist_total: 0,
                     parse_warning: false,
+                    modified_at: None,
                 }],
                 docs: vec![MdFileInfo {
                     path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
@@ -1010,7 +1159,8 @@ mod tests {
                         "labels": [],
                         "checklistDone": 0,
                         "checklistTotal": 0,
-                        "parseWarning": false
+                        "parseWarning": false,
+                        "modifiedAt": null
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
@@ -1133,14 +1283,227 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_nine_until_a_breaking_change_bumps_it() {
-        // v9: the tool library -- ToolDef, Step.tool_id/tool_params, and
-        // Get/Save/DeleteTool + GetToolsByRoot. A v8 daemon answers none
-        // of those, so the probe has to see the mismatch rather than let
-        // every tool fetch fail in its own way.
+    fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v12: Request::Unknown (tolerant parsing of a future request
+        // type) + Request::Shutdown.
+        // v11: the tool library -- ToolDef, Step.tool_id/tool_params,
+        // and Get/Save/DeleteTool + GetToolsByRoot. A v10 daemon answers
+        // none of those. This branch reserved v11 for that work while it
+        // was still an uncommitted merge, and took 12 for itself; both
+        // have now landed, so the reservation did its job.
+        // v10: PlanFieldSet carries the path a frontmatter write landed
+        // on, because a status write can archive the card into
+        // `plans/done/`.
+        // v9: NameSession + the SessionNamed push (an agent naming its
+        // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 13);
+    }
+
+    #[test]
+    fn an_unrecognised_request_type_parses_as_unknown_instead_of_erroring() {
+        // The whole point: a future request must not be a parse error, because
+        // handle_connection turns a parse error into a closed connection.
+        let line = r#"{"type":"SomeFutureRequest","field":1}"#;
+        let parsed: Request = serde_json::from_str(line).unwrap();
+        assert!(matches!(parsed, Request::Unknown));
+    }
+
+    #[test]
+    fn malformed_json_is_still_an_error() {
+        assert!(serde_json::from_str::<Request>("{not json").is_err());
+    }
+
+    #[test]
+    fn shutdown_is_a_v12_request() {
+        assert_eq!(min_version_for(&Request::Shutdown), 12);
+    }
+
+    #[test]
+    fn the_window_floor_is_never_above_the_current_version() {
+        assert!(MIN_COMPATIBLE_VERSION <= PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn v1_requests_are_available_to_the_oldest_supported_daemon() {
+        // ListSessions has existed since v1, so any daemon in the window serves it.
+        assert_eq!(min_version_for(&Request::ListSessions), 1);
+        assert_eq!(min_version_for(&Request::GetProtocolVersion), 1);
+    }
+
+    #[test]
+    fn later_variants_report_the_version_that_introduced_them() {
+        assert_eq!(min_version_for(&Request::SetChecklistItem {
+            path: "/p.md".into(),
+            line_index: 0,
+            expected_text: "x".into(),
+            checked: true,
+        }), 4);
+        assert_eq!(min_version_for(&Request::DeleteCardFile { path: "/p.md".into() }), 6);
+        assert_eq!(min_version_for(&Request::NameSession {
+            session_id: "s-1".into(), name: "login flow".into(),
+        }), 10);
+    }
+
+    #[test]
+    fn no_variant_claims_a_version_beyond_the_current_one() {
+        // Guards the table against a typo that would make a request unsendable.
+        assert!(min_version_for(&Request::NameSession {
+            session_id: "s-1".into(),
+            name: "login flow".into(),
+        }) <= PROTOCOL_VERSION);
+    }
+
+    /// One sample of every `Request` variant, `Unknown` included --
+    /// `min_version_for` only looks at which variant a request is, never
+    /// its payload, so placeholder field values are fine. Kept exhaustive
+    /// by hand against the enum, the same way session.rs's own
+    /// `one_of_every_request_variant` is; a variant added to the enum
+    /// without a matching entry here silently drops out of the count
+    /// below instead of failing loudly.
+    fn one_of_every_request_variant() -> Vec<Request> {
+        vec![
+            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None },
+            Request::ListSessions,
+            Request::WriteInput { id: "s".into(), data: "d".into() },
+            Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
+            Request::KillSession { id: "s".into() },
+            Request::Attach { id: "s".into() },
+            Request::GetBoard { workspace_id: "w".into() },
+            Request::SetBoard { workspace_id: "w".into(), columns: vec![], labels: vec![] },
+            Request::DeleteBoard { workspace_id: "w".into() },
+            Request::WatchGavinRoot { workspace_id: "w".into(), root_path: "r".into() },
+            Request::UnwatchGavinRoot { workspace_id: "w".into() },
+            Request::GetGavinTree { workspace_id: "w".into() },
+            Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
+            Request::CreateGavinContext { parent_folder: "p".into() },
+            Request::AddExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::RemoveExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::SetPlanFrontmatterField { path: "p".into(), key: "k".into(), value: "v".into() },
+            Request::SetRootConfigField { root_path: "r".into(), key: "k".into(), value: "v".into() },
+            Request::ScanGavinRoot { root_path: "r".into() },
+            Request::ReadPrd { root_path: "r".into() },
+            Request::CreatePlan {
+                context_folder: "c".into(),
+                file_name: "f".into(),
+                title: "t".into(),
+                status: None,
+                priority: None,
+                body: None,
+                kind: None,
+                parent: None,
+            },
+            Request::GetBoardByRoot { root_path: "r".into() },
+            Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },
+            Request::DeleteCardFile { path: "p".into() },
+            Request::SetChecklistItem {
+                path: "p".into(),
+                line_index: 0,
+                expected_text: "x".into(),
+                checked: true,
+            },
+            Request::PromoteChecklistItem { plan_path: "p".into(), item: "i".into() },
+            Request::LinkCardSession {
+                workspace_id: "w".into(),
+                path: "p".into(),
+                session_id: "s".into(),
+                cwd: "c".into(),
+                command: None,
+            },
+            Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
+            Request::GetOrchestration { workspace_id: "w".into() },
+            Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
+            Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
+            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None },
+            Request::GetOrchestrationByRoot { root_path: "r".into() },
+            Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
+            Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
+            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::GetProtocolVersion,
+            // v11's tool requests, added when the orchestration merge
+            // landed. Note what happened at that merge: min_version_for's
+            // match refused to compile until these four were recorded
+            // there, but THIS list is a plain Vec -- so the band-count
+            // test below went green while all four were missing from it.
+            // A false green. If you add a Request variant, the compiler
+            // will catch the match; nothing but this comment will catch
+            // this list.
+            Request::GetTools { workspace_id: "w".into() },
+            Request::GetToolsByRoot { root_path: "r".into() },
+            Request::SaveTool {
+                tool: ToolDef {
+                    id: "t".into(),
+                    workspace_id: None,
+                    name: "n".into(),
+                    description: "d".into(),
+                    kind: "prompt".into(),
+                    body: "b".into(),
+                    params: vec![],
+                    position: 0,
+                },
+            },
+            Request::DeleteTool { id: "t".into() },
+            Request::ArchiveCard { path: "/p/t.md".into() },
+            Request::UnarchiveCard { path: "/p/t.md".into() },
+            Request::Shutdown,
+            Request::Unknown,
+        ]
+    }
+
+    /// A forcing function for `PROTOCOL_VERSION` bump discipline, which has
+    /// already failed three times: seven of the eight variants this table
+    /// attributes to v10 (GetOrchestration, GetOrchestrationByRoot,
+    /// GitDirtyPaths, SetOrchestration, SetOrchestrationByRoot, SetRailRun,
+    /// SetStepRun) were added to the wire across commits 6821fc8, c7ecfce
+    /// and 35b26dd while `PROTOCOL_VERSION` still read 8 -- three days and
+    /// three commits with no bump. Only NameSession genuinely arrived with
+    /// the v9/v10 jump (374eb7d).
+    ///
+    /// The exhaustive match in `min_version_for` forces an author touching
+    /// the enum to type *a* version number, but the value that's easiest
+    /// to type is whatever `PROTOCOL_VERSION` currently says -- which is
+    /// only correct if they also remembered to bump it. That is exactly
+    /// the mistake made three times above, and the compiler cannot catch
+    /// it because a wrong-but-present number still compiles.
+    ///
+    /// This test can't know the *true* version for a new variant either,
+    /// but it pins how many variants currently live in each band. Adding a
+    /// variant to an existing band (the easy, wrong move -- attribute it to
+    /// the current `PROTOCOL_VERSION` without bumping) changes that band's
+    /// count and trips this test, forcing whoever did it to stop and
+    /// consider whether they owe a version bump instead. Counts below were
+    /// derived by hand from `min_version_for`'s match arms on this branch,
+    /// not copied from a plan: v1=21, v4=2, v5=2, v6=1, v7=1, v8=2, v10=8,
+    /// v11=4, v12=1 (Shutdown), v13=2 (the archive), plus Unknown.
+    #[test]
+    fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
+        use std::collections::HashMap;
+
+        let mut counts: HashMap<u32, usize> = HashMap::new();
+        for req in one_of_every_request_variant() {
+            *counts.entry(min_version_for(&req)).or_default() += 1;
+        }
+
+        let mut expected: HashMap<u32, usize> = HashMap::new();
+        expected.insert(1, 21);
+        expected.insert(4, 2);
+        expected.insert(5, 2);
+        expected.insert(6, 1);
+        expected.insert(7, 1);
+        expected.insert(8, 2);
+        expected.insert(10, 8);
+        expected.insert(11, 4);
+        expected.insert(12, 1);
+        expected.insert(13, 2);
+        expected.insert(u32::MAX, 1); // Request::Unknown
+
+        assert_eq!(
+            counts, expected,
+            "a version band's variant count changed -- if you just added a \
+             Request variant, make sure you also considered whether \
+             PROTOCOL_VERSION needs bumping (see this test's doc comment)"
+        );
     }
 
     #[test]
@@ -1261,6 +1624,45 @@ mod tests {
                 assert_eq!(root_path, "/ws");
                 assert_eq!(cwd, "/ws/auth");
                 assert_eq!(command, "claude");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn name_session_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(
+            &mut buf,
+            &Request::NameSession {
+                session_id: "s-1".to_string(),
+                name: "login flow".to_string(),
+            },
+        )
+        .unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::NameSession { session_id, name } => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(name, "login flow");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_named_push_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(
+            &mut buf,
+            &Response::SessionNamed { session_id: "s-1".to_string(), name: "login flow".to_string() },
+        )
+        .unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Response>(&mut cursor).unwrap().unwrap() {
+            Response::SessionNamed { session_id, name } => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(name, "login flow");
             }
             other => panic!("wrong variant: {other:?}"),
         }

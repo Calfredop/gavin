@@ -5,6 +5,8 @@
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
   import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
   import RailBindDialog from "./RailBindDialog.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { searchOrchestration } from "./orchestrationSearch";
   import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
   import StepParamsDialog from "./StepParamsDialog.svelte";
   import { attachOrchestrationDrag } from "./orchestrationDragGlue";
@@ -19,18 +21,24 @@
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
-  import { layoutState, switchWorkspaceView } from "./layoutState";
+  import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
+  import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
+  import { featureBlockedReason } from "./daemonCompat";
   import {
     cardIndex,
     doneColumn,
+    railCardsToMove,
     detectConflicts,
     numberConflicts,
     describeConflict,
     groupUnplacedByStatus,
     conflictsForRail,
+    availableCards,
     stepParams,
     findStep,
   } from "./orchestration";
+  import type { Rail } from "./orchestration";
+  import { railDeleteConfirm, railClearDoneConfirm } from "./railConfirm";
   import { findTool, toolKindLabel } from "./orchestrationTools";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
@@ -61,6 +69,8 @@
     addToolAsStageAction,
     addToolToStageAction,
     setStepParamsAction,
+    moveRailCardsAction,
+    clearDoneStepsAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -98,6 +108,21 @@
   // SCHEDULER uses libraryFor, which can tell loading from empty.
   const tools = $derived(renderLibraryFor($toolRecords, workspaceId));
 
+  // The card detail modal, opened from a tab's card-link button (and
+  // from a step chip's own menu once it has one): a step is a card, and
+  // the human should not have to cross to the board to read it. The
+  // projection is the board's own -- same modal, same columns, same
+  // nested children -- so nothing about a card reads differently here.
+  let openPlanPath = $state<string | null>(null);
+  const openPlan = $derived<CardView | null>(
+    openPlanPath ? (allCards.find((c) => c.id === openPlanPath) ?? null) : null
+  );
+
+  $effect(() => {
+    const path = takeCardDetailRequest($requestedCardDetail, workspaceId, "orchestration");
+    if (path) openPlanPath = path;
+  });
+
   let picking = $state<string | null>(null);
   let managingTools = $state(false);
   /// The tool step whose parameters are being edited, by step id.
@@ -105,6 +130,33 @@
   // The rail whose bindings are being edited, set by the rail header and
   // by the conflicts box's inline fix.
   let binding = $state<string | null>(null);
+
+  // A rail's two destructive header buttons ask first, in the app's own
+  // ConfirmPrompt: both take steps off the plan for good, and neither is
+  // undoable. Held as {kind, railId} rather than a rail object so a plan
+  // that reloads under the open prompt re-derives fresh counts (or
+  // closes, if the rail went).
+  let railPrompt = $state<{ kind: "delete" | "clear"; railId: string } | null>(null);
+  const promptRail = $derived.by<Rail | null>(() => {
+    const p = railPrompt;
+    return p ? (orch?.rails.find((r) => r.id === p.railId) ?? null) : null;
+  });
+  const railPromptContent = $derived.by(() => {
+    const p = railPrompt;
+    if (!p || !promptRail || !orch) return null;
+    return p.kind === "delete"
+      ? railDeleteConfirm(promptRail, orch)
+      : railClearDoneConfirm(promptRail, orch, cards, doneName);
+  });
+
+  // Closes the prompt BEFORE the write: a failed write is reported by
+  // the save-error strip these actions already feed, and a prompt left
+  // standing over it would be asking a second time.
+  function confirmRailPrompt(pending: { kind: "delete" | "clear"; railId: string }): void {
+    railPrompt = null;
+    if (pending.kind === "delete") void deleteRailAction(workspaceId, pending.railId);
+    else void clearDoneStepsAction(workspaceId, pending.railId);
+  }
 
   // --- the card surface -------------------------------------------------
   // A card step IS a kanban card here, so this tab owns the same three
@@ -149,6 +201,35 @@
     );
   }
 
+  // The rail's own "move all": one entry per board column, each saying
+  // how many of the rail's cards that pick would actually rewrite. A
+  // column every card already sits in is marked and dead, exactly as a
+  // card's own current column is in its menu.
+  function handleMoveAll(rail: Rail, e: MouseEvent): void {
+    if (!board) return;
+    const columns = [...board.columns].sort((a, b) => a.position - b.position);
+    openContextMenuFromEvent(
+      e,
+      columns.map((col) => {
+        const paths = railCardsToMove(rail, cards, col.name);
+        const n = paths.length;
+        return {
+          label:
+            n === 0
+              ? `All cards are in ${col.name}`
+              : `Move ${n} ${n === 1 ? "card" : "cards"} to ${col.name}`,
+          active: n === 0,
+          disabled: n === 0,
+          onPick: () => {
+            void moveRailCardsAction(workspaceId, rail.id, col.name).then((err) => {
+              if (err) cardWriteError = err;
+            });
+          },
+        };
+      })
+    );
+  }
+
   // Deleting a card FILE from a rail is the board's own cascade, prompt
   // and all -- the step referencing it disappears with the card, because
   // a step is only ever a reference (spec O2).
@@ -179,16 +260,17 @@
     if (err) cardWriteError = err;
   }
 
-  // The cards a rail can take on: every runnable card not already on one.
+  // The cards a rail can take on -- see availableCards for what is left
+  // out and why. Shared by the drawer and the "+ Add step" picker below.
   const placed = $derived(
     new Set((orch?.rails ?? []).flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))))
   );
-  const available = $derived(
-    [...cards.values()].filter((e) => e.plan.kind !== "note" && !placed.has(e.plan.path))
-  );
-  const unplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
+  const available = $derived(availableCards(cards, placed));
   // Two ways Generate can be pointless, and the button says which: no
   // agent to hand the request to, or nothing left for it to place.
+  // Measured over every unplaced card, never the search lens's view:
+  // Generate hands the agent the real set, so a filter that happens to
+  // hide them all must not claim there is nothing left to place.
   const generateTip = $derived(
     !agentAvailable
       ? "Start the workspace agent on Home first"
@@ -196,6 +278,21 @@
         ? "Every runnable card is already on a rail"
         : "Hand the unplaced cards to the workspace agent"
   );
+  const allUnplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
+
+  // The search lens (orchestrationSearch.ts): rails with no hit leave
+  // the grid, matching chips light up inside the rails that stay, and
+  // the drawer filters like any other list.
+  let search = $state("");
+  const lens = $derived(searchOrchestration(orch, cards, search));
+  const unplaced = $derived(lens.filterUnplaced(allUnplacedGroups));
+  const unplacedGroups = $derived(unplaced.groups);
+  const shownRails = $derived(rails.filter((r) => lens.railShown(r.id)));
+  // A plain boolean, not `lens.filtering`: `lens` is a fresh object on
+  // every keystroke, and the drag effect below would then tear down and
+  // re-attach the engine on each one. A derived primitive only notifies
+  // when it actually flips.
+  const filtering = $derived(lens.filtering);
 
   // Which rail's name is being edited. Owned here so a rail created by
   // the button below can open straight into rename mode.
@@ -213,6 +310,11 @@
     // cards. Same refresh the kanban tab does on reveal.
     void refreshBoard(workspaceId);
     void refreshOrchestration(workspaceId);
+    // Re-read on a compat change too: against a pre-v11 daemon every
+    // GetTools is refused, so the library stays unfetched. Restarting
+    // the daemon from the banner is exactly the moment it becomes
+    // readable, and nothing else in this effect would notice.
+    void $daemonCompat;
     void fetchTools(workspaceId);
     void refreshTools(workspaceId);
     if (root) {
@@ -246,8 +348,13 @@
   // the drag engine would simply never attach. KanbanBoard attaches the
   // same way for the same reason. The returned teardown runs when the
   // elements change or the tab unmounts.
+  // Drag is off while the grid is filtered: rails and drawer rows leave
+  // the DOM, and a new-stage index measured over what is left would drop
+  // the step at the wrong position. Re-attaches the moment the box is
+  // cleared. (Nothing else rides this engine here -- its click callback
+  // is a no-op -- so simply not attaching is the whole lock.)
   $effect(() => {
-    if (!bodyEl || !gridEl) return;
+    if (!bodyEl || !gridEl || filtering) return;
     return attachOrchestrationDrag({
       root: bodyEl,
       scrollEl: gridEl,
@@ -296,6 +403,22 @@
     });
   });
 
+  // Every orchestration write (SetOrchestration/SetRailRun/SetStepRun) is
+  // gated at protocol v10 (see protocol::min_version_for) -- against an
+  // older daemon these buttons would otherwise dispatch requests the wire
+  // guard in session.rs's `gate` silently refuses, with no explanation.
+  // Reusing the same featureBlockedReason the banner is built from keeps
+  // the wording (and the version numbers) identical wherever the app
+  // names this.
+  const orchestrationBlocked = $derived(featureBlockedReason($daemonCompat, "orchestration"));
+  // Tools are gated a version ABOVE orchestration, so there is a real
+  // daemon -- v10 -- that runs rails happily and knows nothing of tools.
+  // Handed one, it stores a step with neither a card nor a tool: an
+  // untitled chip, and a plan the current daemon then refuses to save.
+  // Gating every surface that can place a tool is what stops that step
+  // being written in the first place (dropImpossibleSteps clears up the
+  // ones already stored).
+  const toolsBlocked = $derived(featureBlockedReason($daemonCompat, "tools"));
   const conflictSummary = $derived(
     orch
       ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
@@ -339,16 +462,36 @@
 <div class="view">
   <header class="bar">
     <h2>Orchestration</h2>
+    <SearchInput
+      bind:value={search}
+      class="bar-search"
+      label="Search rails and cards"
+      placeholder="Search rails, steps, unplaced cards…"
+    />
+    {#if lens.filtering}
+      <span class="summary">
+        {lens.railsShown} {lens.railsShown === 1 ? "rail" : "rails"} ·
+        {lens.stepsMatched} {lens.stepsMatched === 1 ? "step" : "steps"} ·
+        {unplaced.shown} unplaced
+      </span>
+    {/if}
+    <span class="spacer"></span>
     <button
       type="button"
       class="add-rail"
-      disabled={!agentAvailable || available.length === 0}
-      title={generateTip}
+      disabled={!agentAvailable || available.length === 0 || Boolean(orchestrationBlocked)}
+      title={orchestrationBlocked || generateTip}
       onclick={() => void generate()}
     >
       Generate with agent…
     </button>
-    <button type="button" class="add-rail" onclick={() => void newRail()}>
+    <button
+      type="button"
+      class="add-rail"
+      disabled={Boolean(orchestrationBlocked)}
+      title={orchestrationBlocked ?? ""}
+      onclick={() => void newRail()}
+    >
       <Plus size={14} /> Rail
     </button>
   </header>
@@ -381,7 +524,11 @@
   {/if}
 
   {#if !orch}
-    <p class="empty">Loading…</p>
+    {#if orchestrationBlocked}
+      <p class="empty">{orchestrationBlocked}</p>
+    {:else}
+      <p class="empty">Loading…</p>
+    {/if}
   {:else if rails.length === 0}
     <p class="empty">
       No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
@@ -389,7 +536,10 @@
   {:else}
     <div class="body" bind:this={bodyEl}>
       <div class="grid" bind:this={gridEl}>
-      {#each rails as rail (rail.id)}
+      {#if lens.filtering && shownRails.length === 0}
+        <p class="empty">No rail matches this search.</p>
+      {/if}
+      {#each shownRails as rail (rail.id)}
         <OrchestrationRail
           {rail}
           {orch}
@@ -403,7 +553,9 @@
           onStart={() => onStart(rail.id)}
           onPause={() => void pauseRail(workspaceId, rail.id)}
           onReset={() => void resetRail(workspaceId, rail.id)}
-          onDelete={() => void deleteRailAction(workspaceId, rail.id)}
+          onDelete={() => (railPrompt = { kind: "delete", railId: rail.id })}
+          onMoveAll={(e) => handleMoveAll(rail, e)}
+          onClearDone={() => (railPrompt = { kind: "clear", railId: rail.id })}
           pageName={ws?.pages.find((p) => p.id === rail.pageId)?.name ?? null}
           editing={editingRailId === rail.id}
           onStartEdit={() => (editingRailId = rail.id)}
@@ -417,6 +569,8 @@
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
+          filtering={lens.filtering}
+          stepLit={lens.stepLit}
           onEditStepParams={(stepId) => (editingParamsFor = stepId)}
           onOpenCard={(path) => (openCardPath = path)}
           onRunCard={(card) => void handleRun(card)}
@@ -428,11 +582,14 @@
       </div>
       <OrchestrationDrawer
         groups={unplacedGroups}
+        filtering={lens.filtering}
+        hiddenCount={unplaced.total - unplaced.shown}
         {tools}
         targetRailId={rails[0]?.id ?? null}
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
         onAddTool={(toolId) => void addToolAsStepAction(workspaceId, rails[0].id, toolId)}
         onManageTools={() => (managingTools = true)}
+        {toolsBlocked}
       />
     </div>
   {/if}
@@ -466,11 +623,39 @@
   {/if}
 {/if}
 
+{#if openPlan && board}
+  <CardDetailModal
+    card={openPlan}
+    {workspaceId}
+    columns={board.columns}
+    labels={board.labels}
+    {allCards}
+    onClose={() => (openPlanPath = null)}
+    onPathChange={(path) => (openPlanPath = path)}
+  />
+{/if}
+
 {#if binding && orch}
   {@const bindingRail = orch.rails.find((r) => r.id === binding)}
   {#if bindingRail}
     <RailBindDialog {workspaceId} rail={bindingRail} onClose={() => (binding = null)} />
   {/if}
+{/if}
+
+{#if railPrompt && railPromptContent}
+  {@const pending = railPrompt}
+  <ConfirmPrompt
+    title={railPromptContent.title}
+    lines={railPromptContent.lines}
+    choices={[
+      {
+        label: railPromptContent.confirmLabel,
+        danger: true,
+        onPick: () => void confirmRailPrompt(pending),
+      },
+    ]}
+    onCancel={() => (railPrompt = null)}
+  />
 {/if}
 
 {#if pendingDelete}
@@ -528,6 +713,8 @@
           <li>
             <button
               type="button"
+              disabled={Boolean(toolsBlocked)}
+              title={toolsBlocked ?? ""}
               onclick={() => {
                 void addToolAsStepAction(workspaceId, railId, tool.id);
                 picking = null;
@@ -560,10 +747,23 @@
     border-bottom: 1px solid var(--border);
   }
   h2 {
-    flex: 1;
+    flex: 0 0 auto;
     margin: 0;
     font-size: 14px;
     font-weight: 600;
+  }
+  .spacer {
+    flex: 1 1 auto;
+  }
+  .bar :global(.bar-search) {
+    flex: 1 1 auto;
+    max-width: 420px;
+  }
+  .summary {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
   }
   .add-rail {
     display: flex;
@@ -663,8 +863,12 @@
     text-align: left;
     cursor: pointer;
   }
-  .picker button:hover {
+  .picker button:hover:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .picker button:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
   .pick-title {
     flex: 1;

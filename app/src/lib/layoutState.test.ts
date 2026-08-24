@@ -73,6 +73,7 @@ import {
   handleSessionStatusChanged,
   handleGitStatusChanged,
   handleSessionRestored,
+  restartDaemonInPlace,
   clearRestoredMarker,
   closePane,
   setSessionName,
@@ -104,6 +105,9 @@ import {
   setAgentField,
   setGitViewPrefs,
   startMainAgentWithPrompt,
+  runningSessionCount,
+  daemonCompat,
+  type LayoutState,
 } from "./layoutState";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
@@ -114,8 +118,13 @@ function page(id: string, layout: LayoutNode): Page {
   return { id, name: id, layout, focusedSessionId: null };
 }
 
-function ws(id: string, pages: Page[], activePageId: string | null = pages[0]?.id ?? null): Workspace {
-  return { id, name: id, pages, activePageId };
+function ws(
+  id: string,
+  pages: Page[],
+  activePageId: string | null = pages[0]?.id ?? null,
+  rootPath?: string
+): Workspace {
+  return { id, name: id, pages, activePageId, rootPath };
 }
 
 function setState(workspaces: Workspace[], activeWorkspaceId: string | null, focusedSessionId: string | null): void {
@@ -140,6 +149,9 @@ beforeEach(() => {
   // Module-level store: without this, one test's seeded agent config
   // resolves in the next one.
   gavinTrees.set({});
+  // Module-level store, same reason: without this, a compat verdict set
+  // by one test would leak into the next one's assertions.
+  daemonCompat.set(null);
   layoutState.set({
     status: "connecting",
     errorMessage: "",
@@ -205,7 +217,7 @@ describe("retryConnect", () => {
   it("restarts the daemon and comes back ready", async () => {
     setState([], null, null);
     layoutState.update((s) => ({ ...s, status: "error", errorMessage: "older than this app" }));
-    vi.mocked(backend.restartDaemon).mockResolvedValue(true);
+    vi.mocked(backend.restartDaemon).mockResolvedValue(undefined);
     vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
     vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
 
@@ -215,17 +227,6 @@ describe("retryConnect", () => {
     await vi.waitFor(() => {
       expect(get(layoutState).status).toBe("ready");
     });
-  });
-
-  it("asks for a relaunch when the daemon restarted but this app can't rewire", async () => {
-    layoutState.update((s) => ({ ...s, status: "error", errorMessage: "boom" }));
-    vi.mocked(backend.restartDaemon).mockResolvedValue(false);
-
-    await retryConnect();
-
-    const state = get(layoutState);
-    expect(state.status).toBe("error");
-    expect(state.errorMessage).toContain("relaunch");
   });
 
   it("surfaces a failed restart", async () => {
@@ -328,6 +329,15 @@ describe("splitPane", () => {
     expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
   });
 
+  it("starts the new session in the workspace's root directory", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))], "page-1", "/repos/gavin")], "ws-1", "a");
+    vi.mocked(backend.createSession).mockResolvedValue("b");
+
+    await splitPane("a", "row");
+
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin");
+  });
+
   it("is a no-op when there is no active page", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
 
@@ -359,6 +369,15 @@ describe("addTab", () => {
     const state = get(layoutState);
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a", "b"], 1));
     expect(state.focusedSessionId).toBe("b");
+  });
+
+  it("starts the new session in the workspace's root directory", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))], "page-1", "/repos/gavin")], "ws-1", "a");
+    vi.mocked(backend.createSession).mockResolvedValue("b");
+
+    await addTab("a");
+
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin");
   });
 });
 
@@ -817,6 +836,25 @@ describe("createPage", () => {
     expect(state.workspaces[0].activePageId).toBe(state.workspaces[0].pages[0].id);
     expect(state.activeWorkspaceId).toBe("ws-1");
     expect(state.focusedSessionId).toBe("a");
+  });
+
+  it("starts every session in the workspace's root directory", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValueOnce("a").mockResolvedValueOnce("b");
+
+    await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1");
+
+    expect(backend.createSession).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([["/repos/gavin"], ["/repos/gavin"]]);
+  });
+
+  it("leaves the cwd unset for a workspace with no root, so the daemon picks $HOME", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("a");
+
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "Page 1");
+
+    expect(backend.createSession).toHaveBeenCalledWith(undefined);
   });
 
   it("is a no-op for an unknown workspace id", async () => {
@@ -1557,5 +1595,118 @@ describe("main agent session", () => {
     const after = get(layoutState).workspaces;
     expect(after[0].mainSessionId).toBeUndefined();
     expect(after[1].mainSessionId).toBe("agent-2");
+  });
+});
+
+describe("restartDaemonInPlace", () => {
+  it("reloads workspaces from the daemon and leaves the app up", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    layoutState.update((s) => ({ ...s, status: "ready" }));
+    vi.mocked(backend.restartDaemon).mockResolvedValue(undefined);
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({
+      workspaces: [ws("ws-1", [])],
+      activeWorkspaceId: "ws-1",
+    });
+
+    await restartDaemonInPlace();
+
+    expect(backend.restartDaemon).toHaveBeenCalled();
+    expect(backend.getWorkspacesState).toHaveBeenCalled();
+    // Unlike retryConnect, this never drops the app into "connecting" --
+    // the window stays live through the restart.
+    expect(get(layoutState).status).toBe("ready");
+  });
+
+  it("throws so the caller can show the failure, and leaves the app ready", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    layoutState.update((s) => ({ ...s, status: "ready" }));
+    vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
+
+    await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
+    expect(get(layoutState).status).toBe("ready");
+  });
+
+  // The regression this guards: DaemonCompatBanner's "Restart daemon"
+  // button calls this function (not retryConnect, which unconditionally
+  // flips status to "connecting" and, on failure, "error" -- blanking the
+  // working app behind an overlay the moment the user acts on the very
+  // banner explaining the app still works). A caller catching the thrown
+  // error is only a safe pattern if `status` truly never moves on this
+  // path; this test is what would fail if that guarantee broke.
+  it("does not touch status or the daemonCompat verdict when the restart fails", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    layoutState.update((s) => ({ ...s, status: "ready" }));
+    const previousCompat = { daemonVersion: 9, appVersion: 12, degraded: true };
+    daemonCompat.set(previousCompat);
+    vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
+
+    await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
+
+    expect(get(layoutState).status).toBe("ready");
+    // The verdict the banner is still showing must survive a failed
+    // restart untouched -- the user is exactly where they were, with an
+    // explanation, not looking at a blanked-out or stale-cleared banner.
+    expect(get(daemonCompat)).toEqual(previousCompat);
+  });
+});
+
+// The set of sessions a daemon restart would end -- what DaemonCompatBanner
+// sizes its "restarting will end N running agents" warning from. Tested
+// directly against a hand-built LayoutState rather than through the store,
+// since the point is the derivation itself, not any store plumbing.
+describe("runningSessionCount", () => {
+  function state(overrides: Partial<LayoutState>): LayoutState {
+    return {
+      status: "ready",
+      errorMessage: "",
+      workspaces: [],
+      activeWorkspaceId: null,
+      focusedSessionId: null,
+      cwdBySessionId: {},
+      sessionNames: {},
+      sessionStatusById: {},
+      gitStatusById: {},
+      restoredSessionIds: new Set(),
+      fileTabsById: {},
+      boardTabsById: {},
+      ...overrides,
+    };
+  }
+
+  it("counts every session tab across every page and workspace", () => {
+    const s = state({
+      workspaces: [
+        ws("w1", [page("p1", leaf(["a", "b"])), page("p2", leaf(["c"]))]),
+        ws("w2", [page("p3", leaf(["d"]))]),
+      ],
+    });
+    expect(runningSessionCount(s)).toBe(4);
+  });
+
+  it("counts a main agent session, which lives outside every page tree", () => {
+    const s = state({
+      workspaces: [{ ...ws("w1", [page("p1", leaf(["a"]))]), mainSessionId: "main-1" }],
+    });
+    expect(runningSessionCount(s)).toBe(2);
+  });
+
+  it("excludes file and board tabs -- the daemon has never heard of them", () => {
+    const s = state({
+      workspaces: [ws("w1", [page("p1", leaf(["a", "file-1", "board-1"]))])],
+      fileTabsById: { "file-1": { path: "/tmp/x" } },
+      boardTabsById: { "board-1": { workspaceId: "w1", contextFolder: "." } },
+    });
+    expect(runningSessionCount(s)).toBe(1);
+  });
+
+  it("dedupes an id that happens to appear on more than one page", () => {
+    const s = state({
+      workspaces: [ws("w1", [page("p1", leaf(["a"])), page("p2", leaf(["a"]))])],
+    });
+    expect(runningSessionCount(s)).toBe(1);
+  });
+
+  it("is zero with no workspaces", () => {
+    expect(runningSessionCount(state({}))).toBe(0);
   });
 });

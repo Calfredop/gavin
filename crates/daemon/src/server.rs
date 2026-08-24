@@ -633,20 +633,63 @@ impl SessionManager {
         }
     }
 
+    /// Takes the Arc rather than `&self` because the watcher it starts
+    /// holds a hook back into the manager. Weak, not Arc: the manager
+    /// owns the watcher, and a strong handle here would be the same
+    /// reference cycle the debouncer callback already avoids.
     pub fn watch_gavin_root(
-        &self,
+        manager: &Arc<Self>,
         workspace_id: &str,
         root_path: &str,
         writer: Arc<Mutex<UnixStream>>,
     ) {
+        let weak = Arc::downgrade(manager);
+        let hook: crate::gavin::ScanHook = Box::new(move |workspace_id, tree| {
+            weak.upgrade()?.recover_moved_card_paths(workspace_id, tree)
+        });
         let watcher = crate::gavin::GavinWatcher::start(
             workspace_id.to_string(),
             std::path::PathBuf::from(root_path),
             writer,
+            Some(hook),
         );
         // Insert AFTER start: the old watcher (if any) drops here, tearing
         // down its debouncer thread.
-        self.gavin_watchers.lock().unwrap().insert(workspace_id.to_string(), watcher);
+        manager.gavin_watchers.lock().unwrap().insert(workspace_id.to_string(), watcher);
+    }
+
+    /// Re-keys everything holding the path of a card whose file moved
+    /// without the daemon moving it -- an agent running `mv`, a one-time
+    /// migration, a hand edit. `follow_card_move` covers the moves the
+    /// daemon makes itself; this covers the rest, on the scan that first
+    /// sees the file somewhere else. Without it a rail STALLS on a step
+    /// whose card is merely finished, because the step reads as "card
+    /// file is missing".
+    ///
+    /// Returns the orchestration to push when something moved: the app
+    /// holds its own copy of every step, and a re-key it never hears
+    /// about leaves it scheduling against the old path.
+    fn recover_moved_card_paths(
+        &self,
+        workspace_id: &str,
+        tree: &protocol::GavinTree,
+    ) -> Option<Response> {
+        let tracked = self.orchestration.lock().unwrap().step_card_paths(workspace_id).ok()?;
+        let moved = crate::gavin::recover_moved_card_paths(tree, &tracked);
+        if moved.is_empty() {
+            return None;
+        }
+        // The plain re-key, not follow_card_move: this runs ON the watch
+        // thread, and the response below rides the watcher's own writer
+        // rather than looking the watcher back up through the map that
+        // owns it.
+        for (from, to) in &moved {
+            self.rename_card_everywhere(from, to);
+        }
+        Some(Response::OrchestrationChanged {
+            workspace_id: workspace_id.to_string(),
+            orchestration: self.get_orchestration(workspace_id).ok()?,
+        })
     }
 
     pub fn unwatch_gavin_root(&self, workspace_id: &str) {
@@ -703,6 +746,32 @@ impl SessionManager {
         Ok(id)
     }
 
+    /// An agent naming its own tab. Routed by the session's ATTACHED
+    /// connection rather than by a watched root, unlike every other
+    /// agent-facing request here: an orchestration agent runs in its
+    /// rail's worktree, which is not the workspace root and matches no
+    /// watcher -- and the app showing a tab is, by definition, the
+    /// connection attached to it. A session this daemon has never heard
+    /// of, or one nothing is attached to, is refused: a stale
+    /// GAVIN_SESSION_ID must be told, not silently swallowed.
+    pub fn name_session(&self, session_id: &str, name: &str) -> anyhow::Result<()> {
+        if self.registry.lock().unwrap().get(session_id)?.is_none() {
+            anyhow::bail!("no such session: {session_id}");
+        }
+        // Cloned out of the map first: this file never holds a lock
+        // across the blocking write below.
+        let target = self.attached_writers.lock().unwrap().get(session_id).cloned();
+        let writer = target.ok_or_else(|| anyhow::anyhow!("that session is not open in gavin"))?;
+        write_message(
+            &mut *writer.lock().unwrap(),
+            &Response::SessionNamed {
+                session_id: session_id.to_string(),
+                name: name.to_string(),
+            },
+        )?;
+        Ok(())
+    }
+
     pub fn create_session(
         &self,
         workspace_path: &str,
@@ -714,7 +783,7 @@ impl SessionManager {
         }
 
         let id = Uuid::new_v4().to_string();
-        let pty = PtySession::spawn(cwd, command)?;
+        let pty = PtySession::spawn(cwd, command, &id)?;
 
         self.registry.lock().unwrap().insert(&SessionRecord {
             id: id.clone(),
@@ -761,11 +830,19 @@ impl SessionManager {
         rails: Vec<protocol::Rail>,
         conflict_notes: Vec<protocol::ConflictNote>,
     ) -> anyhow::Result<()> {
+        // Who is ACTUALLY running, for the running-step guard: a run row
+        // is only the app's claim, and one left behind by a session that
+        // has since ended must not refuse the write forever. Taken and
+        // released before the orchestration lock -- never both at once.
+        let live: HashSet<String> = self.sessions.lock().unwrap().keys().cloned().collect();
         // The `?` before the push is deliberate: a refused write (the
         // running-step guard) must not push a plan that was never stored.
         // The lock is released at the end of this statement, which
         // matters -- push_orchestration re-reads through the same mutex.
-        self.orchestration.lock().unwrap().replace_plan(workspace_id, &rails, &conflict_notes)?;
+        self.orchestration
+            .lock()
+            .unwrap()
+            .replace_plan(workspace_id, &rails, &conflict_notes, &live)?;
         self.push_orchestration(workspace_id);
         Ok(())
     }
@@ -870,6 +947,67 @@ impl SessionManager {
         self.kanban.lock().unwrap().unlink_card_session_all(path)
     }
 
+    /// Writes one frontmatter field and returns the card's path
+    /// afterwards. A status write can file the card into `plans/done/`
+    /// (or bring it back), and two databases key on that path -- so the
+    /// re-keying happens here, beside the write, exactly as
+    /// `delete_card_file` keeps its unlinking beside the delete.
+    pub fn set_plan_field(&self, path: &str, key: &str, value: &str) -> anyhow::Result<String> {
+        let moved = crate::gavin::set_plan_field(std::path::Path::new(path), key, value)?;
+        Ok(self.follow_card_move(path, moved))
+    }
+
+    /// Moves a card into `plans/archive/` and re-keys everything that
+    /// holds its path. Same shape as `set_plan_field`'s re-keying, and
+    /// for the same reason: a card's path IS its identity in both the
+    /// kanban and the orchestration databases, so a move that skipped
+    /// this would silently orphan a bound session or a rail step.
+    pub fn archive_card(&self, path: &str) -> anyhow::Result<String> {
+        let moved = crate::gavin::archive_card(std::path::Path::new(path))?;
+        Ok(self.follow_card_move(path, moved))
+    }
+
+    /// The inverse; see `archive_card`.
+    pub fn unarchive_card(&self, path: &str) -> anyhow::Result<String> {
+        let moved = crate::gavin::unarchive_card(std::path::Path::new(path))?;
+        Ok(self.follow_card_move(path, moved))
+    }
+
+    /// Re-keys a card's session binding and rail steps onto the path it
+    /// landed on, and answers which workspaces had a step aimed at it.
+    /// Neither failure is worth losing the move over -- the file is
+    /// already where it belongs on disk, so a failure is reported and
+    /// the move stands.
+    fn rename_card_everywhere(&self, from: &str, to: &str) -> Vec<String> {
+        if let Err(e) = self.kanban.lock().unwrap().rename_card_path(from, to) {
+            eprintln!("card moved to {to} but its session binding didn't follow: {e}");
+        }
+        let mut orchestration = self.orchestration.lock().unwrap();
+        // Read while the steps still spell the old path.
+        let affected = orchestration.workspaces_with_card(from).unwrap_or_default();
+        if let Err(e) = orchestration.rename_card_path(from, to) {
+            eprintln!("card moved to {to} but its rail steps didn't follow: {e}");
+        }
+        affected
+    }
+
+    /// The same re-key, plus telling the app about it, and returning the
+    /// path the card landed on.
+    ///
+    /// The app holds its OWN copy of every step and only ever re-reads
+    /// it on mount, so a re-key it never hears about leaves it
+    /// scheduling against a path with no file behind it -- the very
+    /// stall this re-keying exists to prevent.
+    fn follow_card_move(&self, from: &str, to: std::path::PathBuf) -> String {
+        let to = to.to_string_lossy().to_string();
+        if to != from {
+            for workspace_id in self.rename_card_everywhere(from, &to) {
+                self.push_orchestration(&workspace_id);
+            }
+        }
+        to
+    }
+
     pub fn delete_board(&self, workspace_id: &str) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().delete_board(workspace_id)
     }
@@ -944,7 +1082,7 @@ impl SessionManager {
             // is no longer enterable) must not abort recovery of every
             // session after it in the list. Log and move on instead of
             // propagating with `?`.
-            match PtySession::spawn(&record.workspace_path, record.command.as_deref()) {
+            match PtySession::spawn(&record.workspace_path, record.command.as_deref(), &record.id) {
                 Ok(pty) => {
                     sessions.insert(record.id.clone(), pty);
                     if let Err(e) = self.registry.lock().unwrap().mark_restored(&record.id) {
@@ -1387,8 +1525,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok)
         }
         Request::SetPlanFrontmatterField { path, key, value } => {
-            crate::gavin::set_plan_field(std::path::Path::new(&path), &key, &value)
-                .map(|_| Response::Ok)
+            manager.set_plan_field(&path, &key, &value).map(|path| Response::PlanFieldSet { path })
         }
         Request::SetRootConfigField { root_path, key, value } => {
             crate::gavin::set_root_config_field(std::path::Path::new(&root_path), &key, &value)
@@ -1421,6 +1558,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::DeleteCardFile { path } => {
             manager.delete_card_file(&path).map(|_| Response::Ok)
         }
+        Request::ArchiveCard { path } => {
+            manager.archive_card(&path).map(|path| Response::CardMoved { path })
+        }
+        Request::UnarchiveCard { path } => {
+            manager.unarchive_card(&path).map(|path| Response::CardMoved { path })
+        }
         Request::SetChecklistItem { path, line_index, expected_text, checked } => {
             crate::gavin::set_checklist_item(
                 std::path::Path::new(&path),
@@ -1443,6 +1586,21 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SpawnAgentSession { root_path, cwd, command } => manager
             .spawn_agent_session(&root_path, &cwd, &command)
             .map(|id| Response::SessionCreated { id }),
+        Request::NameSession { session_id, name } => {
+            manager.name_session(&session_id, &name).map(|_| Response::Ok)
+        }
+        // handle_connection intercepts Shutdown first (mirroring
+        // Attach/WatchGavinRoot) so it can reply and then exit the process.
+        // This arm only exists so the match stays exhaustive; it is never
+        // expected to fire.
+        Request::Shutdown => Ok(Response::Ok),
+        // A client newer than this daemon sent a request type we don't
+        // know. Answer instead of the parse error that used to close the
+        // whole connection (and every push riding on it).
+        Request::Unknown => Ok(Response::Unsupported {
+            request_type: "unknown".to_string(),
+            min_version: protocol::PROTOCOL_VERSION,
+        }),
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
@@ -1499,8 +1657,24 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
         // so it can't go through handle_request. No reply -- the initial
         // scan arrives as the first GavinTreeChanged push.
         if let Request::WatchGavinRoot { workspace_id, root_path } = req {
-            manager.watch_gavin_root(&workspace_id, &root_path, Arc::clone(&writer));
+            SessionManager::watch_gavin_root(
+                &manager,
+                &workspace_id,
+                &root_path,
+                Arc::clone(&writer),
+            );
             continue;
+        }
+
+        // Also intercepted rather than routed through handle_request: this
+        // is the one request that ends the whole process, not just this
+        // connection, so it can't be expressed as an `Ok(Response)` return
+        // value. Reply first so the caller (the app, asking the daemon to
+        // stop politely instead of pkill-ing every daemon on the machine)
+        // sees an acknowledgement rather than a connection that just closed.
+        if matches!(req, Request::Shutdown) {
+            let _ = write_message(&mut *writer.lock().unwrap(), &Response::Ok);
+            std::process::exit(0);
         }
 
         let response = handle_request(&manager, req);
@@ -1524,6 +1698,11 @@ mod tests {
     }
 
     fn orch_rail(rail_id: &str, step_id: &str) -> protocol::Rail {
+        orch_rail_at(rail_id, step_id, "/x/a.md")
+    }
+
+    /// The same one-stage, one-step rail, aimed at a given card.
+    fn orch_rail_at(rail_id: &str, step_id: &str, card_path: &str) -> protocol::Rail {
         protocol::Rail {
             id: rail_id.into(),
             name: "backend".into(),
@@ -1537,7 +1716,7 @@ mod tests {
                 steps: vec![protocol::Step {
                     id: step_id.into(),
                     position: 0,
-                    card_path: "/x/a.md".into(),
+                    card_path: card_path.into(),
                     tool_id: None,
                     tool_params: Default::default(),
                 }],
@@ -1693,6 +1872,22 @@ mod tests {
         }
     }
 
+    /// A step run row that names a session this daemon actually hosts --
+    /// what the guard refuses to delete. The PTY is real: liveness is read
+    /// off the session table, not off the row.
+    fn running_step_with_a_live_session(manager: &Arc<SessionManager>, step_id: &str) {
+        let session_id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
+        handle_request(
+            manager,
+            Request::SetStepRun {
+                step_id: step_id.into(),
+                state: "running".into(),
+                session_id: Some(session_id),
+                reason: None,
+            },
+        );
+    }
+
     #[test]
     fn a_refused_set_orchestration_answers_with_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1705,15 +1900,7 @@ mod tests {
                 conflict_notes: vec![],
             },
         );
-        handle_request(
-            &manager,
-            Request::SetStepRun {
-                step_id: "t1".into(),
-                state: "running".into(),
-                session_id: None,
-                reason: None,
-            },
-        );
+        running_step_with_a_live_session(&manager, "t1");
         match handle_request(
             &manager,
             Request::SetOrchestration {
@@ -1725,6 +1912,20 @@ mod tests {
             Response::Error { message } => assert!(message.contains("t1"), "{message}"),
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_unknown_request_gets_a_reply_and_leaves_the_connection_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        // The regression this guards: before v12, an unparseable line closed
+        // the socket, so the *next* request never got an answer at all.
+        let unsupported = handle_request(&manager, Request::Unknown);
+        assert!(matches!(unsupported, Response::Unsupported { .. }));
+
+        let after = handle_request(&manager, Request::GetProtocolVersion);
+        assert!(matches!(after, Response::ProtocolVersion { version } if version == protocol::PROTOCOL_VERSION));
     }
 
     use super::*;
@@ -1816,8 +2017,12 @@ mod tests {
         }
     }
 
+    /// The reported bug: a rail that could never be deleted. Only the app
+    /// writes run state, so a row left at `running` by a session that has
+    /// since ended -- here, one the daemon never hosted at all -- must not
+    /// refuse the write, or the rail carrying it is wedged shut forever.
     #[test]
-    fn a_refused_write_through_the_root_path_still_reports_the_running_step() {
+    fn a_running_row_whose_session_is_gone_does_not_refuse_the_write() {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
         handle_request(
@@ -1833,10 +2038,38 @@ mod tests {
             Request::SetStepRun {
                 step_id: "t1".into(),
                 state: "running".into(),
-                session_id: None,
+                session_id: Some("a-session-that-ended".into()),
                 reason: None,
             },
         );
+        // Deleting the whole rail, which is what the human was doing.
+        match handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![],
+                conflict_notes: vec![],
+            },
+        ) {
+            Response::Ok => {}
+            other => panic!("expected Ok, got {other:?}"),
+        }
+        assert!(manager.get_orchestration("ws-1").unwrap().rails.is_empty());
+    }
+
+    #[test]
+    fn a_refused_write_through_the_root_path_still_reports_the_running_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        handle_request(
+            &manager,
+            Request::SetOrchestration {
+                workspace_id: "ws-1".into(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        running_step_with_a_live_session(&manager, "t1");
         match handle_request(
             &manager,
             Request::SetOrchestration {
@@ -2012,6 +2245,81 @@ mod tests {
     }
 
     #[test]
+    fn naming_a_session_pushes_on_the_connection_attached_to_it() {
+        let (socket_path, _dir) = start_test_server();
+
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        // A session id this daemon never issued is refused rather than
+        // pushed anywhere: an agent outliving its tab must hear about it.
+        let resp = request(
+            &mut cmd,
+            &Request::NameSession { session_id: "ghost".to_string(), name: "x".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+
+        let resp = request(
+            &mut cmd,
+            &Request::CreateSession {
+                workspace_path: "/tmp".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        );
+        let session_id = match resp {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+
+        // Nothing attached yet: there is no app showing this tab, so
+        // there is nowhere for a name to land.
+        let resp = request(
+            &mut cmd,
+            &Request::NameSession { session_id: session_id.clone(), name: "x".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+
+        // The "app": attaches on a streaming connection. Note it never
+        // watches a root -- naming is deliberately independent of that,
+        // so an agent in a rail's worktree can still name its tab.
+        let mut app = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
+        let mut app_reader = BufReader::new(app.try_clone().unwrap());
+
+        // Attach is handled on its own connection thread, so the writer
+        // may not be registered the instant the request is written --
+        // retry to a deadline rather than racing it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let resp = request(
+                &mut cmd,
+                &Request::NameSession {
+                    session_id: session_id.clone(),
+                    name: "login flow".to_string(),
+                },
+            );
+            if matches!(resp, Response::Ok) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "attach never registered: {resp:?}");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        // Attach replays baselines (cwd, status, buffered output) first;
+        // the name is somewhere after them.
+        let named = std::iter::from_fn(|| read_message::<_, Response>(&mut app_reader).unwrap())
+            .take(20)
+            .find_map(|r| match r {
+                Response::SessionNamed { session_id, name } => Some((session_id, name)),
+                _ => None,
+            })
+            .expect("no SessionNamed push arrived");
+        assert_eq!(named, (session_id.clone(), "login flow".to_string()));
+
+        let resp = request(&mut cmd, &Request::KillSession { id: session_id });
+        assert!(matches!(resp, Response::Ok));
+    }
+
+    #[test]
     fn renaming_the_root_away_pushes_root_missing_and_renaming_back_heals() {
         let (socket_path, _dir) = start_test_server();
         let holder = tempfile::tempdir().unwrap();
@@ -2117,7 +2425,12 @@ mod tests {
                 value: "Done".to_string(),
             },
         );
-        assert!(matches!(resp, Response::Ok));
+        // Loose file, outside any plans/ folder: Done archives nothing, and
+        // the reply carries the path it still has.
+        match resp {
+            Response::PlanFieldSet { path } => assert_eq!(path, plan.to_string_lossy()),
+            other => panic!("expected PlanFieldSet, got {other:?}"),
+        }
         assert_eq!(std::fs::read_to_string(&plan).unwrap(), "---\nstatus: Done\n---\n# P\n");
 
         let resp = request(
@@ -2401,6 +2714,199 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn archiving_a_card_re_keys_its_session_binding_and_rail_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let plans = ws.path().join(".gavin-root").join("plans");
+        let card = plans.join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\nstatus: In Progress\n---\n").unwrap();
+        let before = card.to_string_lossy().to_string();
+        let after = plans.join("done").join("ship.md").to_string_lossy().to_string();
+
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None).unwrap();
+        // The rail's one step points at the card about to move.
+        manager
+            .set_orchestration(
+                "ws-1",
+                vec![protocol::Rail {
+                    id: "r1".into(),
+                    name: "R1".into(),
+                    position: 0,
+                    worktree_path: None,
+                    branch: None,
+                    page_id: None,
+                    stages: vec![protocol::Stage {
+                        id: "st1".into(),
+                        position: 0,
+                        steps: vec![protocol::Step {
+                            id: "t1".into(),
+                            position: 0,
+                            card_path: before.clone(),
+                            tool_id: None,
+                            tool_params: Default::default(),
+                        }],
+                    }],
+                }],
+                vec![],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &manager,
+            Request::SetPlanFrontmatterField {
+                path: before.clone(),
+                key: "status".to_string(),
+                value: "Done".to_string(),
+            },
+        );
+
+        match resp {
+            Response::PlanFieldSet { path } => assert_eq!(path, after),
+            other => panic!("expected PlanFieldSet, got {other:?}"),
+        }
+        let board = manager.get_board("ws-1").unwrap();
+        assert_eq!(board.card_sessions[0].path, after);
+        let orch = manager.get_orchestration("ws-1").unwrap();
+        assert_eq!(orch.rails[0].stages[0].steps[0].card_path, after);
+    }
+
+    #[test]
+    fn a_card_moved_behind_the_daemons_back_re_keys_its_rail_step_on_the_next_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        // Canonical, because that is the only spelling anything ever
+        // learns a card path in: the watcher canonicalizes its root, and
+        // every path the app and the MCP hand back came out of that scan.
+        let root = ws.path().canonicalize().unwrap();
+        let plans = root.join(".gavin-root").join("plans");
+        let card = plans.join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\nstatus: Done\n---\n").unwrap();
+        let before = card.to_string_lossy().to_string();
+
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None).unwrap();
+        manager
+            .set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &before)], vec![])
+            .unwrap();
+
+        // The move the daemon knows nothing about: an agent's `mv`, or the
+        // one-time migration that introduced plans/done/.
+        std::fs::create_dir_all(plans.join("done")).unwrap();
+        let after = plans.join("done").join("ship.md");
+        std::fs::rename(&card, &after).unwrap();
+        let after = after.to_string_lossy().to_string();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &ws.path().to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+
+        let orch = manager.get_orchestration("ws-1").unwrap();
+        assert_eq!(orch.rails[0].stages[0].steps[0].card_path, after);
+        assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].path, after);
+
+        // The app is holding the old path, so the re-key has to reach it --
+        // and BEFORE the tree, which is what re-runs its scheduler.
+        let mut reader = BufReader::new(ours);
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::OrchestrationChanged { orchestration, .. } => {
+                assert_eq!(orchestration.rails[0].stages[0].steps[0].card_path, after);
+            }
+            other => panic!("expected OrchestrationChanged first, got {other:?}"),
+        }
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+    }
+
+    #[test]
+    fn a_card_the_daemon_archives_pushes_its_re_keyed_step_to_the_watching_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let plans = root.join(".gavin-root").join("plans");
+        let card = plans.join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\nstatus: In Progress\n---\n").unwrap();
+        let before = card.to_string_lossy().to_string();
+        let after = plans.join("done").join("ship.md").to_string_lossy().to_string();
+
+        manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &before)], vec![]).unwrap();
+
+        // Watched only now, so the arrangement's own push is not in the
+        // stream and the initial scan is the only thing to drain.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        let mut reader = BufReader::new(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+
+        // The daemon's OWN move: the DB follows the card by itself, but
+        // the app holds a copy of every step and must be told too.
+        manager.set_plan_field(&before, "status", "Done").unwrap();
+
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::OrchestrationChanged { orchestration, .. } => {
+                assert_eq!(orchestration.rails[0].stages[0].steps[0].card_path, after);
+            }
+            other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scan_that_moved_nothing_pushes_only_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let card = ws.path().join(".gavin-root").join("plans").join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\n---\n").unwrap();
+        let path = card.to_string_lossy().to_string();
+        manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &path)], vec![]).unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &ws.path().to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+
+        let mut reader = BufReader::new(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+        // And nothing after it: a scan that re-keyed nothing must not
+        // hand the app a whole orchestration it already has.
+        assert!(read_message::<_, Response>(&mut reader).is_err(), "a no-op scan still pushed");
     }
 
     #[test]

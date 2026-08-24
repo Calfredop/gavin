@@ -11,9 +11,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, promptArg: true },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: false, promptArg: false },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, promptArg: false },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: false, promptArg: false, headlessArgs: "" },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, promptArg: false, headlessArgs: "" },
 ];
 
 describe("normalizeColor", () => {
@@ -77,7 +77,7 @@ describe("renameDecision", () => {
 describe("resolveAgentConfig", () => {
   it("prefers explicit config over the profile default", () => {
     const r = resolveAgentConfig({ profile: "codex", file: "NOTES.md", command: "codex --x" }, PROFILES);
-    expect(r).toEqual({ profileId: "codex", file: "NOTES.md", command: "codex --x", mcpSupported: false });
+    expect(r).toEqual({ profileId: "codex", file: "NOTES.md", command: "codex --x", mcpSupported: false, headlessArgs: "" });
   });
 
   it("falls back to the profile's defaults for absent keys", () => {
@@ -89,6 +89,7 @@ describe("resolveAgentConfig", () => {
   it("falls back to claude-code for a missing or unknown profile", () => {
     expect(resolveAgentConfig(null, PROFILES)).toEqual({
       profileId: "claude-code", file: "CLAUDE.md", command: "claude", mcpSupported: true,
+      headlessArgs: '-p --allowedTools "Bash(git *)" --',
     });
     expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES).profileId).toBe(
       "claude-code"
@@ -97,11 +98,23 @@ describe("resolveAgentConfig", () => {
 
   it("keeps custom usable only through its explicit values", () => {
     const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES);
-    expect(r).toEqual({ profileId: "custom", file: "RULES.md", command: "my-agent", mcpSupported: false });
+    expect(r).toEqual({ profileId: "custom", file: "RULES.md", command: "my-agent", mcpSupported: false, headlessArgs: "" });
     // Custom with nothing filled in still resolves to something safe.
     const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES);
     expect(bare.file).toBe("CLAUDE.md");
     expect(bare.command).toBe("claude");
+  });
+
+  // The headless argv describes the BINARY, so it never falls back the
+  // way file/command do: a bare `custom` borrows claude's command but
+  // must NOT borrow claude's flags, and an unfilled one offers no
+  // headless run at all.
+  it("takes the headless argv from the effective profile only, with no fallback", () => {
+    expect(resolveAgentConfig(null, PROFILES).headlessArgs).toBe('-p --allowedTools "Bash(git *)" --');
+    expect(resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES).headlessArgs).toBe("");
+    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES);
+    expect(bare.command).toBe("claude");
+    expect(bare.headlessArgs).toBe("");
   });
 
   it("is empty-string safe — a cleared field is not an override", () => {

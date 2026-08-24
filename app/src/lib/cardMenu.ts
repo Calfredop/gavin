@@ -6,7 +6,7 @@ import { get } from "svelte/store";
 import { openPath } from "@tauri-apps/plugin-opener";
 import * as backend from "./backend";
 import { kanbanState, cardSessionFor } from "./kanbanState";
-import { layoutState, switchWorkspaceView } from "./layoutState";
+import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { patchPlanField } from "./gavinState";
 import { requestedExplorerPath } from "./planExplorer";
@@ -17,7 +17,9 @@ import {
   sendCardToRailAction,
   removeCardFromRailAction,
 } from "./orchestrationState";
-import { slugStatus, type CardView } from "./planBoard";
+import { executeArchive, executeUnarchive } from "./archiveActions";
+import { featureBlockedReason } from "./daemonCompat";
+import { isArchivedCard, slugStatus, type CardView } from "./planBoard";
 import type { Column } from "./kanban";
 import type { ContextMenuEntry } from "./contextMenu";
 
@@ -119,6 +121,26 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       }
     }
   }
+
+  entries.push({ separator: true });
+  // Archiving and restoring, before the column list: they are the two
+  // moves that take a card OFF the board or put it back, and reading
+  // them beside "Move to Done" is what makes the difference legible.
+  const archived = isArchivedCard(card.id);
+  const archiveBlocked = featureBlockedReason(get(daemonCompat), "archive");
+  const archiveLabel = archived ? "Restore from archive" : "Archive";
+  entries.push({
+    // The menu has no tooltip layer, so a disabled row has to say why in
+    // its own label or read as an unexplained dead entry.
+    label: archiveBlocked ? `${archiveLabel} — restart the daemon` : archiveLabel,
+    disabled: archiveBlocked !== null,
+    onPick: () => {
+      const run = archived ? executeUnarchive : executeArchive;
+      void run(workspaceId, [card]).then((err) => {
+        if (err) hooks.reportError(err);
+      });
+    },
+  });
 
   entries.push({ separator: true });
   const currentSlug = slugStatus(card.status ?? "");

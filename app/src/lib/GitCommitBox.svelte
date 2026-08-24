@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { gitStore, setCommitDraft, commit, canCommit } from "./gitState";
+  import { gitStore, setCommitDraft, commit, canCommit, agentCommitPhase } from "./gitState";
   import { tooltip } from "./tooltip";
 
   interface Props {
@@ -12,7 +12,12 @@
   const author = $derived(view?.repo?.author ?? null);
   const unborn = $derived(view?.repo?.unborn ?? false);
   const draft = $derived(view?.commit ?? { summary: "", description: "", amend: false });
-  const enabled = $derived(view ? canCommit(view) : false);
+  // The agent's own controls live in the toolbar; what this box owes the
+  // run is staying out of its way -- a hand-written commit mid-run would
+  // race it for the index.
+  const agentPhase = $derived(agentCommitPhase(view ?? null));
+  const agentBusy = $derived(agentPhase === "starting" || agentPhase === "running");
+  const enabled = $derived(view ? canCommit(view) && !agentBusy : false);
 
   function onKeydown(e: KeyboardEvent): void {
     if (e.metaKey && e.key === "Enter" && enabled) {
@@ -47,7 +52,7 @@
       </label>
     {/if}
     <span class="spacer"></span>
-    <button type="button" class="commit" disabled={!enabled} use:tooltip={"⌘Enter"} onclick={() => commit(workspaceId)}>
+    <button type="button" class="commit" disabled={!enabled} use:tooltip={agentBusy ? "The agent is committing — wait for it to finish" : "⌘Enter"} onclick={() => commit(workspaceId)}>
       {draft.amend ? "Amend" : `Commit (${stagedCount})`}
     </button>
   </div>

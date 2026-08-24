@@ -50,20 +50,52 @@ vi.mock("./backend", () => ({
   gitRestoreConflict: vi.fn().mockResolvedValue(undefined),
   gitMergeToolName: vi.fn().mockResolvedValue(null),
   writeFileForEditor: vi.fn().mockResolvedValue(undefined),
+  createSession: vi.fn().mockResolvedValue("agent-1"),
+  setSessionName: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
+// pty-output listeners are collected so a test can push a hidden run's
+// output at them; every other event keeps the inert default.
+const ptyListeners: Array<(e: { payload: [string, string] }) => void> = [];
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn((name: string, handler: (e: { payload: [string, string] }) => void) => {
+    if (name === "pty-output") ptyListeners.push(handler);
+    return Promise.resolve(() => {
+      const i = ptyListeners.indexOf(handler);
+      if (i >= 0) ptyListeners.splice(i, 1);
+    });
+  }),
+}));
 vi.mock("./layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
     setGitViewPrefs: vi.fn().mockResolvedValue(undefined),
     layoutState: writable({ workspaces: [] }),
     createSessionForCard: vi.fn().mockResolvedValue("sess-1"),
+    resolvedAgentFor: vi.fn(() => ({
+      profileId: "claude-code",
+      file: "CLAUDE.md",
+      command: "claude",
+      mcpSupported: true,
+      headlessArgs: '-p --allowedTools "Bash(git *)" --',
+    })),
+    sessionExits: writable(new Map<string, number>()),
+    handleAgentSessionSpawned: vi.fn(),
+    switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
+    switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   };
 });
 
 import * as backend from "./backend";
 import { listen } from "@tauri-apps/api/event";
-import { setGitViewPrefs, createSessionForCard } from "./layoutState";
+import {
+  setGitViewPrefs,
+  createSessionForCard,
+  layoutState,
+  resolvedAgentFor,
+  sessionExits,
+  handleAgentSessionSpawned,
+  switchToSessionInPage,
+} from "./layoutState";
 import {
   gitStore, initialState, applyStatus, followSelection, splitMessage, joinMessage, canCommit,
   ensureGitView, refresh, select, run, stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
@@ -71,6 +103,7 @@ import {
   switchWorktree, mergeBack, rootPathOf, removeWorktree,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
   markResolved, saveConflict, openMergeTool,
+  commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
 } from "./gitState";
 import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
@@ -94,6 +127,8 @@ const status: StatusResult = {
 beforeEach(() => {
   vi.clearAllMocks();
   gitStore.set({});
+  sessionExits.set(new Map());
+  ptyListeners.length = 0;
   vi.mocked(backend.gitRepoInfo).mockResolvedValue(repo);
   vi.mocked(backend.gitStatus).mockResolvedValue(status);
   vi.mocked(backend.gitDiff).mockResolvedValue({ path: "a.ts", binary: false, tooLarge: false, hunks: [] });
@@ -446,5 +481,170 @@ describe("conflicts", () => {
     expect(backend.writeFileForEditor).toHaveBeenCalledWith("/r/a.ts", "resolved\n");
     await openMergeTool("ws");
     expect(createSessionForCard).toHaveBeenCalledWith("ws", "/r", "git mergetool --no-prompt -- 'a.ts'");
+  });
+});
+
+
+describe("commit via agent", () => {
+  // The action's promise only settles when the hidden session exits, so
+  // every test here holds it and drives the exit itself. Microtask
+  // flushes, not timers: the launch path is all awaited promises.
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+
+  // Boxed: `await` unwraps a promise that resolves to a promise, so
+  // returning the in-flight run bare would wait for the very exit these
+  // tests are here to drive.
+  async function launch(): Promise<{ done: Promise<boolean> }> {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    const done = commitViaAgent("ws");
+    await flush();
+    return { done };
+  }
+
+  function exitWith(code: number): void {
+    sessionExits.set(new Map([["agent-1", code]]));
+  }
+
+  function emit(data: string, sessionId = "agent-1"): void {
+    for (const l of ptyListeners) l({ payload: [sessionId, data] });
+  }
+
+  it("runs the canned prompt headlessly, in the view's cwd, with no tab", async () => {
+    const { done } = await launch();
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/r",
+      'claude -p --allowedTools "Bash(git *)" -- \'Commit pending and unversioned changes, in logical chunks. Do not push.\''
+    );
+    // Hidden: nothing lands on the Agents page unless the human asks.
+    expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
+    // Named anyway, for the moment they do ask.
+    expect(backend.setSessionName).toHaveBeenCalledWith("agent-1", "commit");
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("running");
+    exitWith(0);
+    await done;
+  });
+
+  it("flashes done on a clean exit that emptied the tree, then goes back to idle", async () => {
+    vi.useFakeTimers();
+    try {
+      const { done } = await launch();
+      vi.mocked(backend.gitStatus).mockClear();
+      vi.mocked(backend.gitStatus).mockResolvedValue({ unstaged: [], staged: [] });
+      exitWith(0);
+      expect(await done).toBe(true);
+      expect(agentCommitPhase(get(gitStore)["ws"])).toBe("done");
+      expect(get(gitStore)["ws"].error).toBeNull();
+      // The commits the agent just made are only visible after a refresh.
+      expect(backend.gitStatus).toHaveBeenCalled();
+      vi.advanceTimersByTime(AGENT_COMMIT_FLASH_MS);
+      expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A failure never flashes: it goes to the banner, which stays until
+  // dismissed, because a message you missed is a run you cannot account for.
+  it("puts a non-zero exit in the error banner, quoting what the run said", async () => {
+    const { done } = await launch();
+    emit("I could not run git here.\n");
+    exitWith(2);
+    expect(await done).toBe(false);
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+    expect(get(gitStore)["ws"].error).toBe(
+      "Commit via agent failed (exit 2) — I could not run git here."
+    );
+  });
+
+  // Exit 0 is not the verdict: a headless agent that decides it cannot
+  // do the job says so in prose and exits cleanly.
+  it("refuses to call a still-dirty tree committed, even on a clean exit", async () => {
+    const { done } = await launch();
+    emit("Nothing to do: the repo has no user.email set.");
+    exitWith(0);
+    expect(await done).toBe(false);
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+    expect(get(gitStore)["ws"].error).toBe(
+      "Commit via agent left 4 changes uncommitted — Nothing to do: the repo has no user.email set."
+    );
+  });
+
+  it("refuses a second run while one is in flight", async () => {
+    const { done } = await launch();
+    expect(await commitViaAgent("ws")).toBe(false);
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    exitWith(0);
+    await done;
+  });
+
+  it("surfaces a failed spawn and returns to idle", async () => {
+    vi.mocked(backend.createSession).mockRejectedValueOnce(new Error("no pty"));
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    expect(await commitViaAgent("ws")).toBe(false);
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+    expect(get(gitStore)["ws"].error).toBe("Commit via agent failed: no pty");
+  });
+
+  it("refuses an agent with no headless mode, saying so", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValueOnce({
+      profileId: "codex", file: "AGENTS.md", command: "codex", mcpSupported: false, headlessArgs: "",
+    });
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    expect(await commitViaAgent("ws")).toBe(false);
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(get(gitStore)["ws"].error).toMatch(/needs a headless agent/);
+  });
+
+  // A worktree switch replaces the view; the run it started must not
+  // write its verdict into the state that replaced it.
+  it("drops the verdict when the view has been replaced under it", async () => {
+    const { done } = await launch();
+    ensureGitView("ws", "/other");
+    exitWith(3);
+    expect(await done).toBe(false);
+    expect(get(gitStore)["ws"].error).toBeNull();
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+  });
+
+  it("reveals the hidden session on the Agents page and jumps to it", async () => {
+    const { done } = await launch();
+    layoutState.set({
+      workspaces: [{ id: "ws", pages: [{ id: "p1", layout: { type: "leaf", tabs: ["agent-1"], activeTabIndex: 0 } }] }],
+    } as never);
+    await revealAgentCommit("ws");
+    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws", "agent-1");
+    expect(switchToSessionInPage).toHaveBeenCalledWith("ws", "p1", "agent-1");
+    exitWith(0);
+    await done;
+  });
+
+  it("has nothing to reveal before the daemon hands back a session", async () => {
+    await revealAgentCommit("ws");
+    expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
+  });
+});
+
+describe("agentCommitBlocker", () => {
+  const HEADLESS = '-p --allowedTools "Bash(git *)" --';
+
+  it("passes a dirty tree with a headless agent and nothing else running", async () => {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    expect(agentCommitBlocker(get(gitStore)["ws"], HEADLESS)).toBeNull();
+  });
+
+  it("names the reason it cannot run", async () => {
+    expect(agentCommitBlocker(null, HEADLESS)).toBe("No repository");
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    const view = get(gitStore)["ws"];
+    expect(agentCommitBlocker(view, "")).toMatch(/no verified headless mode/);
+    expect(agentCommitBlocker({ ...view, busy: "Stage" }, HEADLESS)).toBe("Another git operation is running");
+    expect(agentCommitBlocker({ ...view, status: { unstaged: [], staged: [] } }, HEADLESS)).toBe("Nothing to commit");
   });
 });

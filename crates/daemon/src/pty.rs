@@ -9,7 +9,11 @@ pub struct PtySession {
 }
 
 impl PtySession {
-    pub fn spawn(cwd: &str, command: Option<&str>) -> anyhow::Result<Self> {
+    /// `session_id` is the daemon's own id for this session. It rides into
+    /// the PTY as `GAVIN_SESSION_ID` so anything running inside can name
+    /// itself back to the app (gavin-mcp's `gavin_name_session` reads it,
+    /// inheriting it through the agent that spawned it).
+    pub fn spawn(cwd: &str, command: Option<&str>, session_id: &str) -> anyhow::Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows: 24,
@@ -71,6 +75,10 @@ impl PtySession {
         //     value rather than a new untested identity.
         // Revisit if a hosted tool starts sending sequences xterm.js
         // cannot render (the kitty graphics protocol being the main risk).
+        // Identity, not decoration: an agent running in here has no other
+        // way to know which tab it occupies, and `gavin_name_session`
+        // renames exactly the session this id names.
+        cmd.env("GAVIN_SESSION_ID", session_id);
         cmd.env("TERM_PROGRAM", "ghostty");
         // An inherited version string from some *other* terminal would
         // contradict the pin above; drop it rather than invent one.
@@ -194,7 +202,7 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
         std::env::set_var("TERM_PROGRAM", "some-other-terminal");
 
-        let mut session = PtySession::spawn("/tmp", Some("/bin/sh")).unwrap();
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session").unwrap();
         let mut reader = session.reader().unwrap();
         // The marker is assembled by printf at runtime, so the literal
         // needle below cannot appear in the shell's own echo of this
@@ -220,7 +228,7 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
         std::env::set_var("TERM_PROGRAM_VERSION", "9.9.9-inherited");
 
-        let mut session = PtySession::spawn("/tmp", Some("/bin/sh")).unwrap();
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session").unwrap();
         let mut reader = session.reader().unwrap();
         session
             .write_input(b"printf 'TPV%s=[%s]\\n' MARK \"$TERM_PROGRAM_VERSION\"\n")
@@ -233,8 +241,24 @@ mod tests {
     }
 
     #[test]
+    fn spawn_exports_the_session_id_into_the_pty() {
+        // The only way anything running inside a session can name the tab
+        // it occupies: gavin-mcp reads GAVIN_SESSION_ID (inherited through
+        // the agent that spawned it) and hands it to gavin_name_session.
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "sid-42").unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'SID%s=[%s]\\n' MARK \"$GAVIN_SESSION_ID\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "SIDMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains("SIDMARK=[sid-42]"), "got: {output}");
+    }
+
+    #[test]
     fn spawns_shell_and_captures_output() {
-        let mut session = PtySession::spawn("/tmp", Some("/bin/sh")).unwrap();
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session").unwrap();
         let mut reader = session.reader().unwrap();
 
         session.write_input(b"echo hello_pty_test\n").unwrap();
@@ -254,7 +278,7 @@ mod tests {
         // CommandBuilder::new treats it as one argv[0] and fails with
         // "doesn't exist on the filesystem and was not found in PATH" --
         // the error the app surfaced as "Couldn't start the agent".
-        let mut session = PtySession::spawn("/tmp", Some("/bin/echo 'ARGMARK=[one two]'")).unwrap();
+        let mut session = PtySession::spawn("/tmp", Some("/bin/echo 'ARGMARK=[one two]'"), "test-session").unwrap();
         let mut reader = session.reader().unwrap();
 
         let output = read_until_contains(&mut *reader, "ARGMARK=[", Duration::from_secs(3));
@@ -270,7 +294,7 @@ mod tests {
         // parser on this side has to be POSIX for that to survive, which
         // is why the command goes to /bin/sh rather than to $SHELL.
         const CMD: &str = r"/bin/echo 'QMARK=[the plan'\''s]'";
-        let mut session = PtySession::spawn("/tmp", Some(CMD)).unwrap();
+        let mut session = PtySession::spawn("/tmp", Some(CMD), "test-session").unwrap();
         let mut reader = session.reader().unwrap();
 
         let output = read_until_contains(&mut *reader, "QMARK=[", Duration::from_secs(3));
@@ -280,13 +304,13 @@ mod tests {
 
     #[test]
     fn resize_does_not_error() {
-        let session = PtySession::spawn("/tmp", Some("/bin/sh")).unwrap();
+        let session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session").unwrap();
         session.resize(100, 40).unwrap();
     }
 
     #[test]
     fn kill_causes_exit() {
-        let mut session = PtySession::spawn("/tmp", Some("/bin/sh")).unwrap();
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session").unwrap();
         session.kill().unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(2);

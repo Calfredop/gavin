@@ -4,6 +4,7 @@ import {
   modesFor,
   defaultMode,
   canEdit,
+  classifyExternalRead,
   resolveExternalChange,
   dirtyPaths,
   setPathDirty,
@@ -82,5 +83,23 @@ describe("dirtyPaths", () => {
     const first = get(dirtyPaths);
     setPathDirty("/tmp/a.md", true);
     expect(get(dirtyPaths)).toBe(first);
+  });
+});
+
+describe("classifyExternalRead", () => {
+  it("is present whenever the file is on disk", () => {
+    expect(classifyExternalRead({ existsNow: true, existedBefore: false })).toBe("present");
+    expect(classifyExternalRead({ existsNow: true, existedBefore: true })).toBe("present");
+  });
+
+  it("calls a file that was there and is gone deleted", () => {
+    expect(classifyExternalRead({ existsNow: false, existedBefore: true })).toBe("deleted");
+  });
+
+  it("calls a file that was never there absent, not deleted", () => {
+    // The PRD and agent-file hub tabs open on a path that only the first
+    // save creates -- an event on that directory must not read as "your
+    // file was deleted".
+    expect(classifyExternalRead({ existsNow: false, existedBefore: false })).toBe("absent");
   });
 });

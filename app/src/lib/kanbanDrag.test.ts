@@ -56,8 +56,13 @@ beforeEach(() => {
 
 // A card drag candidate for card "A" grabbed at (10, 10) inside its
 // rect at (0, 0, 240, 50), source col1 index 0, free-standing.
-function grabA(cbs: DragCallbacks, sourceNest: string | null = null, shift = false): void {
-  beginCandidate("plan", "A", "col1", 0, sourceNest, { x: 10, y: 10 }, r(0, 0, 240, 50), cbs, shift);
+function grabA(
+  cbs: DragCallbacks,
+  sourceNest: string | null = null,
+  shift = false,
+  locked = false
+): void {
+  beginCandidate("plan", "A", "col1", 0, sourceNest, { x: 10, y: 10 }, r(0, 0, 240, 50), cbs, shift, locked);
 }
 
 describe("click vs drag", () => {
@@ -96,6 +101,19 @@ describe("click vs drag", () => {
     endPointer();
     expect(cbs.commits).toEqual([]);
     expect(cbs.clicks).toEqual([["plan", "A", true]]);
+  });
+
+  // A filtered board no longer holds every card in the DOM, so a drop
+  // index measured over it would write the wrong order (planDrop.ts).
+  // The gesture degrades to a click, exactly like shift.
+  it("a locked grab never activates a drag but still clicks through", () => {
+    const cbs = makeCallbacks();
+    grabA(cbs, null, false, true);
+    movePointer({ x: 300, y: 300 });
+    expect(get(dragState)).toBeNull();
+    endPointer();
+    expect(cbs.commits).toEqual([]);
+    expect(cbs.clicks).toEqual([["plan", "A", false]]);
   });
 
   it("reports the shift modifier with the click so the board can select instead of open", () => {

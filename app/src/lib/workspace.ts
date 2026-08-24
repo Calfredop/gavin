@@ -27,6 +27,11 @@ export interface Workspace {
   pages: Page[];
   activePageId: string | null;
   activeView?: string;
+  /// The hub tab this workspace was last showing. Kept apart from
+  /// activeView, which the terminal overwrites -- this is what the
+  /// sidebar's Hub button reopens, so leaving for a terminal and coming
+  /// back lands where you left off instead of on Home.
+  hubView?: string;
   /// The workspace's bound root directory (agent-orchestration phase).
   /// Optional; never auto-cleared when the directory goes missing on disk.
   rootPath?: string;
@@ -252,10 +257,16 @@ export function getActiveView(ws: Workspace): string {
   return ws.activeView ?? (ws.rootPath ? "home" : "terminal");
 }
 
+// Switching to a hub tab also records it as the workspace's hubView --
+// the tab its Hub button reopens. Switching to the terminal leaves that
+// memory alone, which is the whole point: the terminal is a detour, not
+// a new destination.
 export function switchWorkspaceView(state: WorkspacesData, workspaceId: string, view: string): WorkspacesData {
   return {
     ...state,
-    workspaces: state.workspaces.map((w) => (w.id === workspaceId ? { ...w, activeView: view } : w)),
+    workspaces: state.workspaces.map((w) =>
+      w.id === workspaceId ? { ...w, activeView: view, hubView: view === "terminal" ? w.hubView : view } : w
+    ),
   };
 }
 
@@ -362,39 +373,6 @@ export interface GitStatus {
   ahead: number;
   behind: number;
   hasUpstream: boolean;
-}
-
-// The sidebar's own three-way branching rule for a page's git status, per
-// the design spec: zero distinct repos among the page's sessions means no
-// indicator at all; exactly one means that repo's status is shown
-// directly on the page row; two or more means an expand toggle instead of
-// picking one arbitrary repo to show. Sidebar.svelte renders one row per
-// SESSION when expanded (not one row per repo), so this type only needs
-// to carry the repo count for that branch, not a full per-repo breakdown.
-export type PageGitSummary =
-  | { kind: "none" }
-  | { kind: "single"; status: GitStatus }
-  | { kind: "multiple"; repoCount: number };
-
-// Groups a page's sessions' git statuses by repoRoot. Sessions with no
-// git repo (a null or entirely missing gitStatusById entry) are ignored,
-// not counted as a distinct "no repo" group of their own. Real business
-// logic, not template rendering -- extracted here so it's independently
-// testable rather than living inline in Sidebar.svelte, per this
-// milestone's own testing note (unlike the previous milestone's UI-only
-// tasks, which had no branching logic of their own to test).
-export function summarizePageGitStatus(
-  page: Page,
-  gitStatusById: Record<string, GitStatus | null>
-): PageGitSummary {
-  const byRepoRoot = new Map<string, GitStatus>();
-  for (const id of allSessionIds(page.layout)) {
-    const status = gitStatusById[id];
-    if (status) byRepoRoot.set(status.repoRoot, status);
-  }
-  if (byRepoRoot.size === 0) return { kind: "none" };
-  if (byRepoRoot.size === 1) return { kind: "single", status: [...byRepoRoot.values()][0] };
-  return { kind: "multiple", repoCount: byRepoRoot.size };
 }
 
 /// A hub tab's label. Static for every view except the agent-file one,

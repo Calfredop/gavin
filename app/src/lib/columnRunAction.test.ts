@@ -1,0 +1,95 @@
+import { describe, it, expect } from "vitest";
+import {
+  columnRunAction,
+  columnRunTargets,
+  columnRunTip,
+  columnRunMenuLabel,
+  type CardSessionState,
+} from "./columnRunAction";
+import type { CardView } from "./planBoard";
+
+function card(id: string, kind: "note" | "task" | "plan" = "task"): CardView {
+  return {
+    id,
+    title: id,
+    status: null,
+    priority: null,
+    order: null,
+    kind,
+    parent: null,
+    parentTitle: null,
+    parentBroken: false,
+    labels: [],
+    checklistDone: 0,
+    checklistTotal: 0,
+    contextName: "root",
+    contextFolder: "/repo",
+    fileName: `${id}.md`,
+    parseWarning: false,
+    nestedChildren: [],
+  };
+}
+
+describe("columnRunAction", () => {
+  it("gives each permanent column its own verb, matched by slug", () => {
+    for (const name of ["To Do", "to-do", " TO  DO "]) {
+      expect(columnRunAction(name), name).toMatchObject({ mode: "start", label: "Start all" });
+    }
+    for (const name of ["In Progress", "in_progress", "in-progress"]) {
+      expect(columnRunAction(name), name).toMatchObject({ mode: "resume", label: "Resume" });
+    }
+  });
+
+  it("gives Done no run button at all", () => {
+    for (const name of ["Done", "done", "DONE"]) {
+      expect(columnRunAction(name), name).toBeNull();
+    }
+  });
+
+  it("leaves custom columns the neutral Run all", () => {
+    for (const name of ["Blocked", "Review", "Ideas", ""]) {
+      expect(columnRunAction(name), name).toMatchObject({ mode: "run", label: "Run all" });
+    }
+  });
+});
+
+describe("columnRunTargets", () => {
+  const cards = [card("note", "note"), card("free"), card("live"), card("exited"), card("plan", "plan")];
+  const state = (id: string): CardSessionState =>
+    id === "live" ? "live" : id === "exited" ? "exited" : "none";
+
+  it("start and run skip notes and every bound card, live or exited", () => {
+    for (const mode of ["start", "run"] as const) {
+      expect(columnRunTargets(cards, mode, state).map((c) => c.id)).toEqual(["free", "plan"]);
+    }
+  });
+
+  it("resume adds the cards whose session exited — that is what it is for", () => {
+    expect(columnRunTargets(cards, "resume", state).map((c) => c.id)).toEqual([
+      "free",
+      "exited",
+      "plan",
+    ]);
+  });
+
+  it("never targets a live session in any mode", () => {
+    for (const mode of ["start", "resume", "run"] as const) {
+      expect(columnRunTargets(cards, mode, state).some((c) => c.id === "live")).toBe(false);
+    }
+  });
+});
+
+describe("copy", () => {
+  it("names the verb and pluralizes the count", () => {
+    expect(columnRunTip(columnRunAction("To Do")!, 1)).toContain("Start 1 unbound card ");
+    expect(columnRunTip(columnRunAction("To Do")!, 2)).toContain("Start 2 unbound cards ");
+    expect(columnRunTip(columnRunAction("In Progress")!, 1)).toContain("Resume 1 stopped card ");
+    expect(columnRunTip(columnRunAction("Blocked")!, 3)).toContain("Run 3 unbound cards ");
+  });
+
+  it("counts stopped cards for Resume and unbound ones everywhere else", () => {
+    expect(columnRunMenuLabel(columnRunAction("In Progress")!, 2)).toBe("Resume (2 stopped)");
+    expect(columnRunMenuLabel(columnRunAction("To Do")!, 2)).toBe("Start all (2 unbound)");
+    expect(columnRunMenuLabel(columnRunAction("Blocked")!, 2)).toBe("Run all (2 unbound)");
+  });
+});

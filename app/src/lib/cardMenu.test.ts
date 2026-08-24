@@ -17,6 +17,10 @@ vi.mock("./backend", () => ({
 }));
 vi.mock("./layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {}, sessionNames: {}, cwdBySessionId: {} }),
+  // null = "not connected yet", which featureBlockedReason reads as "do
+  // not pre-emptively grey anything out" -- so the archive entry is live
+  // in these tests without pinning a daemon version.
+  daemonCompat: writable(null),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
@@ -175,6 +179,14 @@ describe("buildCardMenuEntries", () => {
     const [wsId, saved] = vi.mocked(backend.setOrchestration).mock.calls[0];
     expect(wsId).toBe("ws-1");
     expect(saved.find((r) => r.id === "r2")?.stages[0].steps[0].cardPath).toBe("/p/t.md");
+  });
+
+  it("a board card offers Archive; an archived one offers the way back", () => {
+    expect(labels(buildCardMenuEntries(card("plan", "Done"), hooks()))).toContain("Archive");
+    const archived = card("task", "Done", { id: "/p/.gavin-root/plans/archive/t.md" });
+    const l = labels(buildCardMenuEntries(archived, hooks()));
+    expect(l).toContain("Restore from archive");
+    expect(l).not.toContain("Archive");
   });
 
   it("Un-parent appears only for parented tasks", () => {

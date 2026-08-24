@@ -21,8 +21,10 @@ import {
   addStep,
   addToolStep,
   removeStep,
+  railStateOf,
   addCardAsStage,
   addToolAsStage,
+  dropImpossibleSteps,
   setStepParams,
   moveStepIntoStage,
   moveStepToNewStage,
@@ -33,6 +35,9 @@ import {
   findCardPlacement,
   sendCardToRail,
   pageToSpawnForRail,
+  railCardsToMove,
+  railDoneStepIds,
+  removeSteps,
 } from "./orchestration";
 import type {
   Action,
@@ -56,12 +61,14 @@ import {
   createSessionOnPage,
   createPage,
   sessionExits,
+  setSessionName,
 } from "./layoutState";
 import { allSessionIds, presetSingle } from "./layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
   buildRunCommand,
+  provisionalSessionName,
   buildToolCommand,
   runStatusNeeded,
 } from "./cardRun";
@@ -90,7 +97,7 @@ const pendingSaves = new Map<string, number>();
 export async function fetchOrchestration(workspaceId: string): Promise<void> {
   if (workspaceId in get(orchestrations)) return;
   try {
-    const orch = await backend.getOrchestration(workspaceId);
+    const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
     // Leave it unset; the tab renders its loading state and the next
@@ -103,7 +110,7 @@ export async function fetchOrchestration(workspaceId: string): Promise<void> {
 export async function refreshOrchestration(workspaceId: string): Promise<void> {
   if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
   try {
-    const orch = await backend.getOrchestration(workspaceId);
+    const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
     if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
@@ -274,6 +281,14 @@ export async function pauseRail(workspaceId: string, railId: string): Promise<vo
   await setRailRunAction(workspaceId, railId, "paused", current);
 }
 
+/// Resume picks up where the pause left off -- but only if that stage is
+/// still there. A stage swept out from under a PAUSED rail (an edit, a
+/// reorganize, a "Clear done" that landed while it was paused) leaves
+/// `currentStageId` naming nothing, and nextActions, finding no stage to
+/// point at, would call the rail COMPLETE and idle it. So a stale id is
+/// dropped and the rail re-arms at the first unfinished stage, exactly
+/// as Start would. `clearDoneStepsAction` does the same repair for the
+/// running case, where it can do it at the moment of the write.
 export async function resumeRail(workspaceId: string, railId: string): Promise<void> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
@@ -282,7 +297,11 @@ export async function resumeRail(workspaceId: string, railId: string): Promise<v
   // Resume arms the rail too, and its page may well have been closed
   // while it sat paused.
   await ensureRailPage(workspaceId, railId);
-  await setRailRunAction(workspaceId, railId, "running", current ?? firstUnfinishedStageId(rail, orch));
+  const stageId =
+    current && rail.stages.some((s) => s.id === current)
+      ? current
+      : firstUnfinishedStageId(rail, orch);
+  await setRailRunAction(workspaceId, railId, "running", stageId);
   await tick(workspaceId);
 }
 
@@ -361,7 +380,10 @@ async function executeToolLaunch(
   // effort: a nameless tab is cosmetic, not a reason to stall a step
   // whose session is already running.
   try {
-    await backend.setSessionName(sessionId, tool.name);
+    // The store, not backend.setSessionName: the backend command only
+    // persists the name to config and pushes nothing back, so a tab named
+    // that way keeps its cwd label until the app restarts.
+    await setSessionName(sessionId, tool.name);
   } catch {
     // Cosmetic only.
   }
@@ -407,6 +429,19 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
     return;
   }
 
+  // Named before the agent has drawn a frame, same as a board Run and the
+  // tool step above: the agent's own gavin_name_session refines this, but
+  // it is the first call it makes and the first to break when the gavin
+  // tools are unreachable. Best effort -- the agent is already running,
+  // so a failed rename is not worth stalling a live step over.
+  const provisional = provisionalSessionName(entry.plan.title);
+  if (provisional) {
+    try {
+      await setSessionName(sessionId, provisional);
+    } catch {
+      // Cosmetic only.
+    }
+  }
   await linkCardSessionAction(workspaceId, { path: step.cardPath, sessionId, cwd, command });
   await setStepRunAction(workspaceId, stepId, "running", sessionId, null);
   if (runStatusNeeded(entry.plan.status)) {
@@ -503,7 +538,11 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
     } else if (action.kind === "stall") {
       await setStepRunAction(workspaceId, action.stepId, "stalled", null, action.reason);
       const rail = railOwning(orch, action.stepId);
-      if (rail) {
+      // Rule 5 stops a rail that is ADVANCING. A rail that is idle or
+      // paused has nothing to stop, and the reconciling stalls nextActions
+      // now issues for a dead session on such a rail must not relabel a
+      // rail nobody started as "paused".
+      if (rail && railStateOf(orch, rail.id) === "running") {
         const current = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
         await setRailRunAction(workspaceId, rail.id, "paused", current);
       }
@@ -715,6 +754,75 @@ export async function removeCardFromRailAction(
   const placement = orch ? findCardPlacement(orch, cardPath) : null;
   if (!placement) return null;
   return mutatePlan(workspaceId, (o) => removeStep(o, placement.stepId));
+}
+
+/// Move every card a rail carries into ONE kanban column -- a card's own
+/// "Move to …" one rung up, for the human who just watched a rail finish
+/// and wants its whole pipeline filed at once. Tool steps have no card
+/// and sit it out; a card already in that column is not rewritten.
+///
+/// Writes are sequential and stop at the first failure, exactly as a
+/// plan drop does (planDrop.ts): the watcher push reconciles whatever
+/// landed, and the message names the file that refused. Null on success,
+/// and on a rail with nothing to move.
+export async function moveRailCardsAction(
+  workspaceId: string,
+  railId: string,
+  columnName: string
+): Promise<string | null> {
+  const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
+  if (!rail) return null;
+  const paths = railCardsToMove(rail, cardIndex(get(gavinTrees)[workspaceId]), columnName);
+  let current = "";
+  try {
+    for (const path of paths) {
+      current = path;
+      await backend.setPlanFrontmatterField(path, "status", columnName);
+      patchPlanField(workspaceId, path, "status", columnName);
+    }
+    return null;
+  } catch (e) {
+    const fileName = current.split("/").at(-1) ?? current;
+    return `Couldn't move ${fileName} to ${columnName}: ${e instanceof Error ? e.message : e}`;
+  }
+}
+
+/// Take a rail's finished steps OFF it in one plan write -- the header's
+/// "Clear done", for the human who wants the rail to show only what is
+/// still ahead. What counts as done is railDoneStepIds' business (run
+/// state, or the card's own column); the cards themselves are never
+/// touched, only the steps that pointed at them.
+///
+/// A RUNNING rail whose current stage was cleared away would look
+/// finished on the next tick -- nextActions has no stage to point at and
+/// calls the rail complete -- so the run is repointed at the first
+/// unfinished stage that survived, and ticked from there. Null on
+/// success, and on a rail with nothing to clear.
+export async function clearDoneStepsAction(
+  workspaceId: string,
+  railId: string
+): Promise<string | null> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch?.rails.find((r) => r.id === railId);
+  if (!rail) return null;
+  const ids = railDoneStepIds(
+    rail,
+    orch,
+    cardIndex(get(gavinTrees)[workspaceId]),
+    doneColumnName(workspaceId)
+  );
+  if (ids.length === 0) return null;
+  const err = await mutatePlan(workspaceId, (o) => removeSteps(o, ids));
+  if (err) return err;
+
+  const after = get(orchestrations)[workspaceId];
+  const railAfter = after?.rails.find((r) => r.id === railId);
+  const run = after?.railRuns.find((r) => r.railId === railId);
+  if (!railAfter || !run?.currentStageId) return null;
+  if (railAfter.stages.some((s) => s.id === run.currentStageId)) return null;
+  await setRailRunAction(workspaceId, railId, run.state, firstUnfinishedStageId(railAfter, after));
+  await tick(workspaceId);
+  return null;
 }
 
 // ---- Tool step actions -----------------------------------------------------

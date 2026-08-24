@@ -2,7 +2,7 @@
 // workspaceViews.ts binds these ids to Svelte components, so anything
 // that only needs the POLICY (the keyboard router, its tests) can import
 // this without pulling in the whole component graph.
-import { hubViewIsVisible } from "./workspace";
+import { hubViewIsVisible, type Workspace } from "./workspace";
 
 export interface HubViewMeta {
   id: string;
@@ -30,4 +30,13 @@ export const HUB_VIEW_META: HubViewMeta[] = [
 /// The hub tab ids a given workspace offers, in the order they render.
 export function visibleHubViewIds(workspaceId: string, isDev: boolean, hasRoot: boolean): string[] {
   return HUB_VIEW_META.filter((v) => hubViewIsVisible(v, workspaceId, isDev, hasRoot)).map((v) => v.id);
+}
+
+/// The hub tab to land on when a workspace's Hub button is clicked: the
+/// one it was last showing, or -- when nothing is remembered, or the
+/// remembered tab is no longer offered (its root was unbound, a dev-only
+/// tab in a release build) -- the first tab it does offer.
+export function resolveHubView(ws: Workspace, isDev: boolean): string {
+  const ids = visibleHubViewIds(ws.id, isDev, Boolean(ws.rootPath));
+  return ws.hubView && ids.includes(ws.hubView) ? ws.hubView : ids[0];
 }

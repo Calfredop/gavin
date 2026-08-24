@@ -23,6 +23,9 @@
   import { tooltip } from "./tooltip";
   import GitPromptDialog from "./GitPromptDialog.svelte";
   import GitDiscardDialog from "./GitDiscardDialog.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { filterBranches, filterRemotes, filterStashes } from "./gitSearch";
+  import { isSearching } from "./search";
 
   interface Props {
     workspaceId: string;
@@ -34,6 +37,22 @@
   const locked = $derived(view == null || view.busy != null || view.op != null);
   const nav = $derived(view?.navSelection ?? "changes");
   const collapsed = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.gitView?.navCollapsed ?? {});
+
+  // Ref search (gitSearch.ts). A repo with a hundred branches makes this
+  // column unusable without it. While searching, sections OPEN whatever
+  // their collapsed pref says -- a collapsed section would hide the very
+  // ref the query just found.
+  let query = $state("");
+  const searching = $derived(isSearching(query));
+  const branches = $derived(filterBranches(refs?.branches ?? [], query));
+  const remotes = $derived(filterRemotes(refs?.remotes ?? [], query));
+  const stashes = $derived(filterStashes(refs?.stashes ?? [], query));
+  const hits = $derived(
+    branches.length + remotes.reduce((n, r) => n + r.branches.length, 0) + stashes.length
+  );
+  function shut(section: string): boolean {
+    return searching ? false : (collapsed[section] ?? false);
+  }
 
   function toggle(section: string): void {
     void setGitViewPrefs(workspaceId, { navCollapsed: { ...collapsed, [section]: !collapsed[section] } });
@@ -104,21 +123,35 @@
     <span class="label">All Commits</span>
   </button>
 
+  <div class="filter-bar">
+    <SearchInput
+      bind:value={query}
+      label="Search branches, remotes and stashes"
+      placeholder="Filter refs…"
+    />
+    {#if searching}
+      <span class="hits" class:none={hits === 0}>{hits} {hits === 1 ? "match" : "matches"}</span>
+    {/if}
+  </div>
+
   <!-- Branches -->
   <div class="section">
     <div class="head">
-      <button type="button" class="toggle" onclick={() => toggle("branches")} aria-expanded={!collapsed.branches}>
-        {#if collapsed.branches}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+      <button type="button" class="toggle" disabled={searching} title={searching ? "Sections stay open while the filter is set" : ""} onclick={() => toggle("branches")} aria-expanded={!shut("branches")}>
+        {#if shut("branches")}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
         <GitBranch size={12} />
         <span>Branches</span>
       </button>
       <IconButton icon={Plus} label="New branch from HEAD" size={12} disabled={locked || !refs} onclick={() => (prompt = "branch")} />
     </div>
-    {#if !collapsed.branches}
+    {#if !shut("branches")}
       {#if view?.repo?.unborn}
         <div class="none">(no commits yet)</div>
       {:else if refs}
-        {#each refs.branches as b (b.name)}
+        {#if branches.length === 0}
+          <div class="none">No match</div>
+        {/if}
+        {#each branches as b (b.name)}
           <div class="row" class:current={b.current} role="group" ondblclick={() => !b.current && !locked && checkout(workspaceId, b.name, null)}>
             <span class="dot">{b.current ? "●" : ""}</span>
             <span class="name" title={b.subject}>{b.name}</span>
@@ -141,18 +174,18 @@
   <!-- Remotes -->
   <div class="section">
     <div class="head">
-      <button type="button" class="toggle" onclick={() => toggle("remotes")} aria-expanded={!collapsed.remotes}>
-        {#if collapsed.remotes}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+      <button type="button" class="toggle" disabled={searching} title={searching ? "Sections stay open while the filter is set" : ""} onclick={() => toggle("remotes")} aria-expanded={!shut("remotes")}>
+        {#if shut("remotes")}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
         <Cloud size={12} />
         <span>Remotes</span>
       </button>
       <IconButton icon={Plus} label="Add remote" size={12} disabled={locked || !refs} onclick={() => (prompt = "remote")} />
     </div>
-    {#if !collapsed.remotes && refs}
-      {#if refs.remotes.length === 0}
-        <div class="none">No remotes</div>
+    {#if !shut("remotes") && refs}
+      {#if remotes.length === 0}
+        <div class="none">{searching ? "No match" : "No remotes"}</div>
       {/if}
-      {#each refs.remotes as r (r.name)}
+      {#each remotes as r (r.name)}
         <div class="row remote" role="group" use:tooltip={r.url}>
           <span class="dot"></span>
           <span class="name">{r.name}</span>
@@ -176,18 +209,18 @@
   <!-- Stashes -->
   <div class="section">
     <div class="head">
-      <button type="button" class="toggle" onclick={() => toggle("stashes")} aria-expanded={!collapsed.stashes}>
-        {#if collapsed.stashes}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+      <button type="button" class="toggle" disabled={searching} title={searching ? "Sections stay open while the filter is set" : ""} onclick={() => toggle("stashes")} aria-expanded={!shut("stashes")}>
+        {#if shut("stashes")}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
         <Archive size={12} />
         <span>Stashes</span>
-        {#if refs && refs.stashes.length > 0}<span class="count">{refs.stashes.length}</span>{/if}
+        {#if refs && stashes.length > 0}<span class="count">{stashes.length}</span>{/if}
       </button>
     </div>
-    {#if !collapsed.stashes && refs}
-      {#if refs.stashes.length === 0}
-        <div class="none">No stashes</div>
+    {#if !shut("stashes") && refs}
+      {#if stashes.length === 0}
+        <div class="none">{searching ? "No match" : "No stashes"}</div>
       {/if}
-      {#each refs.stashes as s (s.index)}
+      {#each stashes as s (s.index)}
         {@const active = typeof nav === "object" && nav.stash === s.index}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div class="row stash" class:active role="option" aria-selected={active} tabindex="-1" onclick={() => selectStash(workspaceId, s.index)}>
@@ -300,8 +333,11 @@
     cursor: pointer;
     text-align: left;
   }
-  .toggle:hover {
+  .toggle:hover:not(:disabled) {
     color: var(--text);
+  }
+  .toggle:disabled {
+    cursor: default;
   }
   .row {
     display: flex;
@@ -378,5 +414,22 @@
   .none {
     padding: 2px 10px;
     color: var(--text-subtle);
+  }
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hits {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 0.7em;
+    font-variant-numeric: tabular-nums;
+  }
+  .hits.none {
+    padding: 0;
+    color: var(--warning-text);
   }
 </style>

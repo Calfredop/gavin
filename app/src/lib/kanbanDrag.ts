@@ -82,6 +82,10 @@ interface Candidate {
   // Shift was down at pointerdown: this gesture can only ever be a
   // multi-select click, never a drag.
   shift: boolean;
+  // The surface is filtered (search.ts): the DOM no longer holds every
+  // card, so a drop index measured over it would write the wrong order.
+  // Same treatment as shift -- the gesture stays a click.
+  locked: boolean;
 }
 
 let candidate: Candidate | null = null;
@@ -96,7 +100,8 @@ export function beginCandidate(
   start: Point,
   itemRect: Rect,
   cbs: DragCallbacks,
-  shift = false
+  shift = false,
+  locked = false
 ): void {
   candidate = {
     kind,
@@ -108,6 +113,7 @@ export function beginCandidate(
     grabOffset: { x: start.x - itemRect.left, y: start.y - itemRect.top },
     size: { width: itemRect.width, height: itemRect.height },
     shift,
+    locked,
   };
   callbacks = cbs;
 }
@@ -136,8 +142,9 @@ export function movePointer(p: Point, buttons?: number): void {
     return;
   }
   // A shift gesture is a selection click and nothing else -- promoting
-  // it to a drag would fling the card the human was only picking.
-  if (!candidate || candidate.shift || !exceedsThreshold(candidate.start, p)) return;
+  // it to a drag would fling the card the human was only picking. A
+  // locked (filtered) surface is the same: clicks still open cards.
+  if (!candidate || candidate.shift || candidate.locked || !exceedsThreshold(candidate.start, p)) return;
   dragState.set({
     kind: candidate.kind,
     id: candidate.id,

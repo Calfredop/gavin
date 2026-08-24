@@ -14,7 +14,14 @@ vi.mock("./backend", () => ({
 
 import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
-import { gavinTrees, initGavinListeners, watchRootedWorkspaces, patchPlanField, __resetForTesting } from "./gavinState";
+import {
+  gavinTrees,
+  initGavinListeners,
+  watchRootedWorkspaces,
+  patchPlanField,
+  patchPlanPath,
+  __resetForTesting,
+} from "./gavinState";
 import type { GavinTree } from "./gavin";
 import type { Workspace } from "./workspace";
 
@@ -140,5 +147,59 @@ describe("gavinState", () => {
     expect(get(gavinTrees)["ws-1"].contexts[0].plans[0].order).toBe(2048);
     patchPlanField("ws-1", "/ws/a.md", "order", "soon");
     expect(get(gavinTrees)["ws-1"].contexts[0].plans[0].order).toBe(2048);
+  });
+  it("patchPlanPath re-identifies a plan the daemon archived under its new path", async () => {
+    await initGavinListeners();
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: { payload: [string, GavinTree] }) => void;
+    const t: GavinTree = {
+      rootPath: "/ws",
+      rootMissing: false,
+      contexts: [
+        {
+          folderPath: "/ws",
+          kind: "root",
+          name: "root",
+          plans: [
+            { path: "/ws/a.md", fileName: "a.md", title: "a", status: "To Do", priority: null, order: null, kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0, parseWarning: false },
+            { path: "/ws/b.md", fileName: "b.md", title: "b", status: "To Do", priority: null, order: null, kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0, parseWarning: false },
+          ],
+          docs: [],
+          specs: [],
+          hasPrd: true,
+          configWarning: false,
+        },
+      ],
+    };
+    handler({ payload: ["ws-1", t] });
+    patchPlanPath("ws-1", "/ws/a.md", "/ws/done/a.md");
+    const after = get(gavinTrees)["ws-1"].contexts[0].plans;
+    expect(after[0].path).toBe("/ws/done/a.md");
+    expect(after[0].title).toBe("a");
+    expect(after[1].path).toBe("/ws/b.md");
+  });
+
+  it("patchPlanPath leaves the tree alone for a path it doesn't hold", async () => {
+    await initGavinListeners();
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: { payload: [string, GavinTree] }) => void;
+    const t: GavinTree = {
+      rootPath: "/ws",
+      rootMissing: false,
+      contexts: [
+        {
+          folderPath: "/ws",
+          kind: "root",
+          name: "root",
+          plans: [{ path: "/ws/a.md", fileName: "a.md", title: "a", status: "To Do", priority: null, order: null, kind: "plan" as const, parent: null, labels: [], checklistDone: 0, checklistTotal: 0, parseWarning: false }],
+          docs: [],
+          specs: [],
+          hasPrd: true,
+          configWarning: false,
+        },
+      ],
+    };
+    handler({ payload: ["ws-1", t] });
+    const before = get(gavinTrees)["ws-1"];
+    patchPlanPath("ws-1", "/ws/nope.md", "/ws/done/nope.md");
+    expect(get(gavinTrees)["ws-1"]).toEqual(before);
   });
 });

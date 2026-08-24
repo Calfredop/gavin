@@ -24,6 +24,23 @@ export function canEdit(state: { truncated: boolean; error: string | null }): bo
   return !state.truncated && state.error === null;
 }
 
+// What a re-read means when the file is no longer on disk. "absent" and
+// "deleted" look identical to the backend -- both are just `exists:
+// false` -- but they are opposite situations: a hub tab for the PRD or
+// CLAUDE.md opens on a file that only gets created by the first save, so
+// "not there" is its normal starting state, while a file that WAS there
+// and is now gone means someone deleted or moved it and the buffer on
+// screen is the only copy left.
+export type ExternalReadVerdict = "present" | "deleted" | "absent";
+
+export function classifyExternalRead(input: {
+  existsNow: boolean;
+  existedBefore: boolean;
+}): ExternalReadVerdict {
+  if (input.existsNow) return "present";
+  return input.existedBefore ? "deleted" : "absent";
+}
+
 export type ExternalChangeVerdict = "ignore" | "reload" | "conflict";
 
 // Content-based, never time-based (D26): our own save trips the watcher,

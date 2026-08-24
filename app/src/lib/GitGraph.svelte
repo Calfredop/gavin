@@ -20,6 +20,7 @@
   import GitPromptDialog from "./GitPromptDialog.svelte";
   import GitDiscardDialog from "./GitDiscardDialog.svelte";
   import GitResetDialog from "./GitResetDialog.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
 
   interface Props {
     workspaceId: string;
@@ -73,7 +74,13 @@
       <button type="button" class:on={log?.all !== false} role="radio" aria-checked={log?.all !== false} onclick={() => setGraphAll(workspaceId, true)}>All branches</button>
       <button type="button" class:on={log?.all === false} role="radio" aria-checked={log?.all === false} onclick={() => setGraphAll(workspaceId, false)}>Current</button>
     </span>
-    <input class="filter" type="search" placeholder="Filter subject, author, sha" value={filter} oninput={(e) => setLogFilter(workspaceId, e.currentTarget.value)} />
+    <SearchInput
+      class="filter"
+      value={filter}
+      onValue={(next) => setLogFilter(workspaceId, next)}
+      label="Search commits"
+      placeholder="Search subject, author, sha…"
+    />
     <span class="count">{filter ? `${visible.length} of ${commits.length}` : commits.length}{log?.hasMore ? "+" : ""}</span>
   </header>
   <div class="rows">
@@ -177,20 +184,9 @@
     background: var(--surface-accent);
     color: var(--text);
   }
-  .filter {
+  header :global(.filter) {
     flex: 1 1 auto;
     min-width: 0;
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-family: monospace;
-    font-size: 1em;
-    padding: 3px 8px;
-  }
-  .filter:focus {
-    outline: none;
-    border-color: var(--border-accent);
   }
   .count {
     color: var(--text-subtle);

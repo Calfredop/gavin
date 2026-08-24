@@ -16,8 +16,28 @@
     closePage,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
+  import type { SessionStatus } from "./layoutState";
   import { presetSingle, allSessionIds } from "./layout";
-  import { ChevronRight, ChevronDown, Plus, X, House, Sun, Moon, Monitor, Settings } from "@lucide/svelte";
+  import {
+    ChevronRight,
+    ChevronDown,
+    Plus,
+    X,
+    House,
+    Sun,
+    Moon,
+    Monitor,
+    Settings,
+    GitBranch,
+    Kanban,
+    Play,
+    Check,
+    CircleDashed,
+    CircleDot,
+    FileText,
+    PanelsTopLeft,
+    SquareArrowOutUpRight,
+  } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import type { ThemePref } from "./ui/theme";
@@ -29,8 +49,8 @@
     { pref: "light", label: "Light", icon: Sun },
     { pref: "dark", label: "Dark", icon: Moon },
   ];
-  import { sessionLabel } from "./paths";
-  import { HUB_VIEWS } from "./workspaceViews";
+  import { sessionLabel, folderName, boardTabLabel } from "./paths";
+  import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
   import {
     setDragPayload,
     getDragKind,
@@ -41,7 +61,25 @@
     type ReorderPosition,
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
-  import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, getActiveView, sidebarWorkspaceOrder, type Workspace, type Page, type GitStatus } from "./workspace";
+  import { UNFILED_WORKSPACE_ID, getActiveView, sidebarWorkspaceOrder, type Workspace, type Page, type GitStatus } from "./workspace";
+  import {
+    workspaceGitSummary,
+    kanbanSummary,
+    railsSummary,
+    pageAgentsSummary,
+    pageTabRows,
+    hasRecap,
+    type WorkspaceGitSummary,
+    type KanbanSummary,
+    type RailsSummary,
+    type PageAgentsSummary,
+    type PageTabRow,
+  } from "./sidebarSummary";
+  import { rowLinkedCard, openLinkedCard, type LinkedCard } from "./cardTabLink";
+  import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  import { kanbanState, fetchBoard } from "./kanbanState";
+  import { gavinTrees } from "./gavinState";
+  import { tooltip } from "./tooltip";
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
@@ -56,26 +94,25 @@
 
   let expanded: Set<string> = $state(new Set());
 
-  // Tracks which pages currently have their multi-repo git detail
-  // expanded -- unrelated to `expanded` above (that Set tracks which
-  // WORKSPACES show their page list; this one tracks which PAGES show
-  // their per-session git detail). Kept separate rather than reusing one
-  // Set, since workspace ids and page ids are different concepts that
-  // happen to both be strings.
-  let expandedPagesGit: Set<string> = $state(new Set());
+  // Tracks which pages currently show their tab list -- unrelated to
+  // `expanded` above (that Set tracks which WORKSPACES show their page
+  // list; this one tracks which PAGES show their tabs). Kept separate
+  // rather than reusing one Set, since workspace ids and page ids are
+  // different concepts that happen to both be strings.
+  let expandedPages: Set<string> = $state(new Set());
 
-  function isPageGitExpanded(pageId: string): boolean {
-    return expandedPagesGit.has(pageId);
+  function isPageExpanded(pageId: string): boolean {
+    return expandedPages.has(pageId);
   }
 
-  function togglePageGitExpand(pageId: string): void {
-    const next = new Set(expandedPagesGit);
+  function togglePageExpand(pageId: string): void {
+    const next = new Set(expandedPages);
     if (next.has(pageId)) {
       next.delete(pageId);
     } else {
       next.add(pageId);
     }
-    expandedPagesGit = next;
+    expandedPages = next;
   }
 
   let creatingWorkspace = $state(false);
@@ -149,8 +186,161 @@
     return ws.pages.reduce((sum, page) => sum + waitingForInputCount(page), 0);
   }
 
-  function pageGitSummary(page: Page) {
-    return summarizePageGitStatus(page, $layoutState.gitStatusById);
+  // The two halves of a workspace's recap row. Both are pure tallies
+  // (sidebarSummary.ts); everything below only decides how they read.
+  function gitRecap(ws: Workspace): WorkspaceGitSummary {
+    return workspaceGitSummary(ws, $layoutState.gitStatusById);
+  }
+
+  function cardRecap(ws: Workspace): KanbanSummary {
+    return kanbanSummary($kanbanState[ws.id], $gavinTrees[ws.id]);
+  }
+
+  function railRecap(ws: Workspace): RailsSummary {
+    return railsSummary($orchestrations[ws.id]);
+  }
+
+  // A page's own half of the recap: what it holds, rather than what the
+  // workspace adds up to. Same pure-tally shape as the three above.
+  function tabsRecap(page: Page): PageAgentsSummary {
+    return pageAgentsSummary(page, $layoutState);
+  }
+
+  // What a page expands into: one row per tab, in layout order. Same
+  // projection the recap counts, so the rows revealed here always add up
+  // to the numbers on the row above them.
+  function tabRows(page: Page): PageTabRow[] {
+    return pageTabRows(page, $layoutState);
+  }
+
+  // The card this row's agent is running, if any -- the reverse lookup
+  // over card_sessions that already puts a link on the terminal tab
+  // itself (cardTabLink.ts), asked here per WORKSPACE rather than for
+  // the active one: the sidebar shows every workspace's pages at once,
+  // and a row's link belongs to the workspace it is drawn under. Both
+  // stores it reads are already fetched for every rooted workspace by
+  // the recap effect below, so this costs no extra traffic.
+  function cardLink(ws: Workspace, row: PageTabRow): LinkedCard | null {
+    return rowLinkedCard($kanbanState[ws.id], $orchestrations[ws.id], $gavinTrees[ws.id], row);
+  }
+
+  // A tab's name in the expansion, by the same rules the tab bar itself
+  // uses: a board tab names its context, a file tab its filename, a
+  // terminal its custom name or cwd. The two exact ones share paths.ts
+  // helpers with Pane.svelte so one tab never goes by two names.
+  function tabRowLabel(row: PageTabRow): string {
+    if (row.kind === "board") {
+      const tab = $layoutState.boardTabsById[row.id];
+      if (!tab) return row.id;
+      const name = $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name;
+      return boardTabLabel(name, tab.contextFolder);
+    }
+    if (row.kind === "file") return folderName($layoutState.fileTabsById[row.id]?.path ?? row.id);
+    return sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, row.id);
+  }
+
+  // "waiting_for_input" is the data-model name; "Request attention" is
+  // what the UI has always called it (Pane.svelte's tab dots say the
+  // same), so the two surfaces agree.
+  const STATUS_WORD: Record<SessionStatus, string> = {
+    working: "Working",
+    waiting_for_input: "Request attention",
+    idle: "Idle",
+  };
+
+  // The checkout a session sits in, named by its folder: for a linked
+  // worktree that IS the worktree's own directory name, since git reports
+  // a worktree's toplevel as its repo root. The full path is in the
+  // tooltip -- two sibling worktrees can share a basename.
+  function worktreeName(status: GitStatus): string {
+    return folderName(status.repoRoot);
+  }
+
+  // One bubble for the whole row: what it is, where it lives, and -- for
+  // a session in a repo -- the checkout in full, spelled out where the
+  // row itself can only afford glyphs. Deliberately NOT a second tooltip
+  // on the git line: mouseenter does not bubble, so a nested one would
+  // take over the row's and never hand it back.
+  function tabRowTip(row: PageTabRow, status: GitStatus | null): string {
+    const lines = [row.status ? STATUS_WORD[row.status] : row.kind === "file" ? "File" : "Board"];
+    const where =
+      row.kind === "board"
+        ? ($layoutState.boardTabsById[row.id]?.contextFolder ?? "")
+        : row.kind === "file"
+          ? ($layoutState.fileTabsById[row.id]?.path ?? "")
+          : ($layoutState.cwdBySessionId[row.id] ?? "");
+    if (where) lines.push(where);
+    if (status) {
+      const sync = formatAheadBehind(status).replace("\u2191", "ahead ").replace("\u2193", "behind ");
+      const parts = [status.repoRoot, `on ${status.branch}`, status.dirty ? "uncommitted changes" : "clean"];
+      if (sync) parts.push(sync);
+      lines.push(parts.join(" -- "));
+    }
+    return lines.join("\n");
+  }
+
+  function plural(n: number, one: string, many: string): string {
+    return `${n} ${n === 1 ? one : many}`;
+  }
+
+  // Spelled out in the tooltip, because the row itself is deliberately
+  // just icons and numbers -- there is no room for labels at 200px.
+  function gitRecapTip(git: WorkspaceGitSummary): string {
+    const parts = [plural(git.repoCount, "repo", "repos")];
+    if (git.dirtyCount > 0) parts.push(`${git.dirtyCount} with uncommitted changes`);
+    if (git.ahead > 0) parts.push(`${git.ahead} ahead`);
+    if (git.behind > 0) parts.push(`${git.behind} behind`);
+    return `${parts.join(", ")} -- open Git`;
+  }
+
+  // Names every column, so the three-slot tally never hides which custom
+  // column a card is actually sitting in.
+  function cardRecapTip(cards: KanbanSummary): string {
+    const detail = cards.columns
+      .filter((c) => c.count > 0)
+      .map((c) => `${c.name} ${c.count}`)
+      .join(", ");
+    return `${plural(cards.total, "card", "cards")}: ${detail} -- open Kanban`;
+  }
+
+  // Names every bucket the row itself renders as bare numbers, including
+  // the two it does not: waiting agents (they are the amber badge further
+  // along the row, not part of the recap) and the file/board tabs that
+  // make up the gap between the tab count and the agent count.
+  function tabsRecapTip(tabs: PageAgentsSummary): string {
+    const buckets: string[] = [];
+    if (tabs.running > 0) buckets.push(`${tabs.running} running`);
+    if (tabs.waiting > 0) buckets.push(`${tabs.waiting} waiting for input`);
+    if (tabs.idle > 0) buckets.push(`${tabs.idle} idle`);
+    const agents = tabs.agents === 0 ? "no agents" : `${plural(tabs.agents, "agent", "agents")}: ${buckets.join(", ")}`;
+    const others = tabs.tabs - tabs.agents;
+    const rest = others > 0 ? `, ${plural(others, "file or board tab", "file or board tabs")}` : "";
+    return `${plural(tabs.tabs, "tab", "tabs")} -- ${agents}${rest}`;
+  }
+
+  function railRecapTip(rails: RailsSummary): string {
+    const parts: string[] = [];
+    if (rails.running > 0) parts.push(`${rails.running} running`);
+    if (rails.done > 0) parts.push(`${rails.done} done`);
+    if (rails.idle > 0) parts.push(`${rails.idle} idle`);
+    return `${plural(rails.total, "rail", "rails")}: ${parts.join(", ")} -- open Orchestration`;
+  }
+
+  /// The workspace row's Hub button: switch to that workspace and land on
+  /// the hub tab it was last showing -- never on a tab it no longer
+  /// offers. Where the home row under the workspace name used to go.
+  function openHub(ws: Workspace): void {
+    switchWorkspace(ws.id);
+    switchWorkspaceView(ws.id, resolveHubView(ws, import.meta.env.DEV));
+  }
+
+  /// A recap chip's click: straight to the tab that chip summarises,
+  /// falling back to the workspace's usual hub landing when that tab is
+  /// not on offer (both Git and Orchestration require a bound root).
+  function openHubView(ws: Workspace, view: string): void {
+    switchWorkspace(ws.id);
+    const offered = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
+    switchWorkspaceView(ws.id, offered.includes(view) ? view : resolveHubView(ws, import.meta.env.DEV));
   }
 
   // ahead/behind are only meaningful (and only shown) when hasUpstream is
@@ -399,6 +589,23 @@
     }
   });
 
+  // The recap needs EVERY rooted workspace's board and orchestration, not
+  // just the active one's (the hub views only fetch the one they show).
+  // The gavin tree needs no fetch of its own: bootstrap already watches
+  // every rooted workspace. Requested once each -- the Set is what keeps
+  // a FAILED fetch from being retried on every layout change, which the
+  // stores' own already-loaded guards would not catch.
+  const recapRequested = new Set<string>();
+  $effect(() => {
+    for (const ws of $layoutState.workspaces) {
+      if (ws.rootPath && !recapRequested.has(ws.id)) {
+        recapRequested.add(ws.id);
+        void fetchBoard(ws.id);
+        void fetchOrchestration(ws.id);
+      }
+    }
+  });
+
   $effect(() => {
     if (creatingWorkspace && newWorkspaceInput) {
       newWorkspaceInput.focus();
@@ -420,25 +627,69 @@
   });
 </script>
 
-{#snippet pageList(ws: Workspace, showHomeRow: boolean)}
+{#snippet pageList(ws: Workspace)}
+  {@const git = gitRecap(ws)}
+  {@const cards = cardRecap(ws)}
+  {@const rails = railRecap(ws)}
   <div class="page-list">
-    {#if showHomeRow}
-      <div
-        class="page-row home"
-        class:active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
-        onclick={() => {
-          switchWorkspace(ws.id);
-          switchWorkspaceView(ws.id, HUB_VIEWS[0].id);
-        }}
-        role="button"
-        tabindex="0"
-        title="Hub"
-      >
-        <House size={14} />
+    <!-- The workspace's first row: what its checkouts, its board and its
+         rails add up to, as icons and counters. Rendered only when there
+         is something to count -- an all-zero strip is noise, not a
+         recap. -->
+    {#if hasRecap(git, cards, rails)}
+      <div class="recap-row">
+        {#if git.repoCount > 0}
+          <button
+            class="recap-chip git"
+            aria-label={gitRecapTip(git)}
+            use:tooltip={gitRecapTip(git)}
+            onclick={() => openHubView(ws, "git")}
+          >
+            <GitBranch size={11} />
+            <span class="recap-count">{git.repoCount}</span>
+            {#if git.dirtyCount > 0}
+              <span class="git-dot dirty"></span>
+              <span class="recap-count">{git.dirtyCount}</span>
+            {/if}
+            {#if git.ahead > 0}<span class="recap-delta">&uarr;{git.ahead}</span>{/if}
+            {#if git.behind > 0}<span class="recap-delta">&darr;{git.behind}</span>{/if}
+          </button>
+        {/if}
+        {#if cards.total > 0}
+          <button
+            class="recap-chip cards"
+            aria-label={cardRecapTip(cards)}
+            use:tooltip={cardRecapTip(cards)}
+            onclick={() => openHubView(ws, "kanban")}
+          >
+            <Kanban size={11} />
+            <span class="card-stat todo">{cards.todo}</span>
+            <span class="card-stat progress">{cards.inProgress}</span>
+            <span class="card-stat done">{cards.done}</span>
+          </button>
+        {/if}
+        {#if rails.total > 0}
+          <button
+            class="recap-chip rails"
+            aria-label={railRecapTip(rails)}
+            use:tooltip={railRecapTip(rails)}
+            onclick={() => openHubView(ws, "orchestration")}
+          >
+            {#if rails.running > 0}
+              <span class="rail-stat running"><Play size={10} /><span class="recap-count">{rails.running}</span></span>
+            {/if}
+            {#if rails.done > 0}
+              <span class="rail-stat done"><Check size={10} /><span class="recap-count">{rails.done}</span></span>
+            {/if}
+            {#if rails.idle > 0}
+              <span class="rail-stat idle"><CircleDashed size={10} /><span class="recap-count">{rails.idle}</span></span>
+            {/if}
+          </button>
+        {/if}
       </div>
     {/if}
     {#each ws.pages as page, pageIndex (page.id)}
-      {@const gitSummary = pageGitSummary(page)}
+      {@const tabs = tabsRecap(page)}
       <div class="page-row-group">
         <div
           class="page-row"
@@ -462,13 +713,20 @@
           ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
           oncontextmenu={(e) => openPageMenu(e, ws, page)}
         >
-          {#if gitSummary.kind === "multiple"}
+          <!-- Pages expand the way workspaces do, and for the same reason:
+               the row is a summary, the expansion is the contents. Offered
+               whenever there is a tab to show; an empty page gets a spacer
+               instead, so a dead chevron never sits there and the names of
+               its neighbours stay on one column. -->
+          {#if tabs.tabs > 0}
             <IconButton
-              icon={isPageGitExpanded(page.id) ? ChevronDown : ChevronRight}
-              label={isPageGitExpanded(page.id) ? "Collapse git detail" : "Expand git detail"}
+              icon={isPageExpanded(page.id) ? ChevronDown : ChevronRight}
+              label={isPageExpanded(page.id) ? "Collapse tabs" : "Expand tabs"}
               size={10}
-              onclick={() => togglePageGitExpand(page.id)}
+              onclick={() => togglePageExpand(page.id)}
             />
+          {:else}
+            <span class="page-expand-spacer"></span>
           {/if}
           {#if $hintMode === "cmd-shift"}
             {@const hint = pageHint(ws, pageIndex)}
@@ -501,20 +759,22 @@
               }}
             >{page.name}</span>
           {/if}
-          {#if gitSummary.kind === "single"}
-            <span class="git-branch">{gitSummary.status.branch}</span>
-            <span
-              class="git-dot"
-              class:dirty={gitSummary.status.dirty}
-              class:clean={!gitSummary.status.dirty}
-            ></span>
-            {#if formatAheadBehind(gitSummary.status)}
-              <span class="git-ahead-behind">{formatAheadBehind(gitSummary.status)}</span>
-            {/if}
-          {:else if gitSummary.kind === "multiple"}
-            <!-- Always plural: summarizePageGitStatus only returns "multiple"
-                 when the distinct repo count is 2 or more. -->
-            <span class="git-repo-count">{gitSummary.repoCount} repos</span>
+          <!-- What this page holds: its tab count, then the agents behind
+               those tabs, running first. Suppressed while the row is being
+               renamed -- the rename input wants the whole row, and this is
+               the width being added to it. Waiting agents are deliberately
+               absent: they are the badge a few elements along, and showing
+               the same number twice on a 200px row buys nothing. -->
+          {#if editingPageId !== page.id && tabs.tabs > 0}
+            <span class="page-recap" role="group" aria-label={tabsRecapTip(tabs)} use:tooltip={tabsRecapTip(tabs)}>
+              <span class="tab-stat total"><PanelsTopLeft size={10} /><span class="recap-count">{tabs.tabs}</span></span>
+              {#if tabs.running > 0}
+                <span class="tab-stat running"><Play size={9} /><span class="recap-count">{tabs.running}</span></span>
+              {/if}
+              {#if tabs.idle > 0}
+                <span class="tab-stat idle"><CircleDashed size={9} /><span class="recap-count">{tabs.idle}</span></span>
+              {/if}
+            </span>
           {/if}
           {#if waitingForInputCount(page) > 0}
             <span class="waiting-badge">{waitingForInputCount(page)}</span>
@@ -532,31 +792,75 @@
             <X size={10} />
           </button>
         </div>
-        {#if gitSummary.kind === "multiple" && isPageGitExpanded(page.id)}
-          <div class="page-git-detail">
-            {#each allSessionIds(page.layout) as sessionId (sessionId)}
-              {@const sessionStatus = $layoutState.gitStatusById[sessionId]}
+        <!-- The page's contents. One row per tab in layout order, each
+             saying what it is (an agent and its state, or a file / board
+             tab) and, underneath, which checkout it sits in: worktree,
+             branch, whether it is dirty, how far it has drifted. That
+             detail used to crowd the page row itself; it belongs here,
+             where there is room for all of it and it is opt-in. -->
+        {#if isPageExpanded(page.id)}
+          <div class="page-tabs">
+            {#each tabRows(page) as row (row.id)}
+              {@const gitStatus = row.kind === "session" ? $layoutState.gitStatusById[row.id] : null}
               <div
-                class="git-session-row"
+                class="tab-row"
+                class:active={row.id === $layoutState.focusedSessionId}
+                use:tooltip={tabRowTip(row, gitStatus)}
                 onclick={() => {
                   switchWorkspaceView(ws.id, "terminal");
-                  switchToSessionInPage(ws.id, page.id, sessionId);
+                  switchToSessionInPage(ws.id, page.id, row.id);
                 }}
-                oncontextmenu={(e) => openSessionRowMenu(e, ws, page, sessionId)}
+                oncontextmenu={(e) => openSessionRowMenu(e, ws, page, row.id)}
               >
-                <span class="git-session-label">
-                  {sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId)}
-                </span>
-                {#if sessionStatus}
-                  <span class="git-branch">{sessionStatus.branch}</span>
-                  <span
-                    class="git-dot"
-                    class:dirty={sessionStatus.dirty}
-                    class:clean={!sessionStatus.dirty}
-                  ></span>
-                  {#if formatAheadBehind(sessionStatus)}
-                    <span class="git-ahead-behind">{formatAheadBehind(sessionStatus)}</span>
+                <span class="tab-kind {row.status ?? row.kind}">
+                  {#if row.kind === "board"}
+                    <Kanban size={10} />
+                  {:else if row.kind === "file"}
+                    <FileText size={10} />
+                  {:else if row.status === "working"}
+                    <Play size={10} />
+                  {:else if row.status === "waiting_for_input"}
+                    <CircleDot size={10} />
+                  {:else}
+                    <CircleDashed size={10} />
                   {/if}
+                </span>
+                <span class="tab-body">
+                  <span class="tab-label">{tabRowLabel(row)}</span>
+                  {#if gitStatus}
+                    <span class="tab-git">
+                      <span class="worktree">{worktreeName(gitStatus)}</span>
+                      <GitBranch size={9} />
+                      <span class="git-branch">{gitStatus.branch}</span>
+                      <span class="git-dot" class:dirty={gitStatus.dirty} class:clean={!gitStatus.dirty}></span>
+                      {#if formatAheadBehind(gitStatus)}
+                        <span class="git-ahead-behind">{formatAheadBehind(gitStatus)}</span>
+                      {/if}
+                    </span>
+                  {/if}
+                </span>
+                <!-- The same jump the terminal tab's own link makes, on
+                     the same glyph, so one habit covers both surfaces.
+                     Its own bubble even though the row already has one:
+                     an unlabelled control has to say what it does, and
+                     naming the card is the whole point of the link. The
+                     row's bubble does not come back until the pointer
+                     re-enters the row (mouseenter does not repeat within
+                     it) -- accepted here, unlike on the git line, which
+                     is detail rather than a control. -->
+                {#if cardLink(ws, row)}
+                  {@const link = cardLink(ws, row)}
+                  <span
+                    class="card-link"
+                    aria-label="Open the card this agent is running"
+                    use:tooltip={`Open card · ${link?.title}`}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      if (link) void openLinkedCard(ws.id, link);
+                    }}
+                  >
+                    <SquareArrowOutUpRight size={10} />
+                  </span>
                 {/if}
               </div>
             {/each}
@@ -592,10 +896,12 @@
   <div class="workspace-list">
     {#if unfiledWorkspace}
       {@const ws = unfiledWorkspace}
-      <div class="workspace-row-group">
+      <div
+        class="workspace-row-group"
+        style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
+      >
         <div
           class="workspace-row pinned"
-          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
           ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
@@ -604,6 +910,10 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
+          <!-- Unfiled is a drawer for loose pages, not a project: it has
+               no hub worth landing on. The spacer keeps its chevron in
+               line with every other workspace's. -->
+          <span class="hub-spacer" aria-hidden="true"></span>
           <IconButton
             icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
             label={isExpanded(ws.id) ? "Collapse" : "Expand"}
@@ -621,15 +931,17 @@
           <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
         </div>
         {#if isExpanded(ws.id)}
-          {@render pageList(ws, false)}
+          {@render pageList(ws)}
         {/if}
       </div>
     {/if}
     {#each regularWorkspaces as ws (ws.id)}
-      <div class="workspace-row-group">
+      <div
+        class="workspace-row-group"
+        style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
+      >
         <div
           class="workspace-row"
-          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-before={hoverState?.targetId === ws.id &&
             hoverState.kind === "reorder" &&
@@ -646,6 +958,13 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
+          <IconButton
+            icon={House}
+            label="Hub"
+            size={12}
+            active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
+            onclick={() => openHub(ws)}
+          />
           <IconButton
             icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
             label={isExpanded(ws.id) ? "Collapse" : "Expand"}
@@ -698,7 +1017,7 @@
           </button>
         </div>
         {#if isExpanded(ws.id)}
-          {@render pageList(ws, true)}
+          {@render pageList(ws)}
         {/if}
       </div>
     {/each}
@@ -791,19 +1110,32 @@
     width: calc(100% - 16px);
     box-sizing: border-box;
   }
+  .workspace-row-group {
+    /* The workspace's colour, as ONE stripe running the full height of
+       the group -- the header row, the recap row, the pages and their
+       git detail -- rather than a mark on the header alone. Its own
+       variable, always set: --ws-accent is inherited from the active
+       workspace's container, which would paint every group. */
+    border-left: 3px solid var(--row-accent, transparent);
+  }
   .workspace-row {
     /* Anchors the hold-⌘ hint badge. */
     position: relative;
     display: flex;
     align-items: center;
     gap: 4px;
-    /* padding-left drops by the stripe's width so the row's contents do
-       not shift when a colour is set. */
+    /* Every padding-left below drops by the stripe's width, so contents
+       sit exactly where they did before the group carried a stripe. */
     padding: 4px 8px 4px 5px;
-    /* Its own variable, always set: --ws-accent is inherited from the
-       active workspace's container, which would paint every row. */
-    border-left: 3px solid var(--row-accent, transparent);
     cursor: pointer;
+  }
+  /* An IconButton at size 12 measures 24px across (12px icon + 5px of
+     padding and 1px of transparent border a side), and this stands in
+     for one -- so Unfiled's chevron lines up with the chevrons that sit
+     beside a Hub button. */
+  .hub-spacer {
+    flex: 0 0 auto;
+    width: 24px;
   }
   .workspace-row.active {
     background: var(--surface-raised);
@@ -863,13 +1195,6 @@
     color: var(--text-muted);
     font-size: 0.9em;
   }
-  .git-repo-count {
-    flex: 0 1 auto;
-    overflow: hidden;
-    white-space: nowrap;
-    color: var(--text-muted);
-    font-size: 0.9em;
-  }
   .close-workspace,
   .close-page {
     background: transparent;
@@ -895,19 +1220,130 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 3px 8px 3px 28px;
+    padding: 3px 8px 3px 25px;
     cursor: pointer;
   }
   .page-row.active {
     background: var(--surface-base);
     color: var(--text);
   }
-  .page-row.home {
-    justify-content: center;
+  .recap-row {
+    display: flex;
+    align-items: center;
+    /* Wraps rather than overflows: three chips at their widest do not fit
+       a 200px sidebar, and a recap that clips is worse than one on two
+       lines. */
+    flex-wrap: wrap;
+    gap: 2px 6px;
+    /* 22, not the page rows' 25: the chips carry 3px of padding of their
+       own, so their icons land on the same column as the page names. */
+    padding: 2px 8px 2px 22px;
     color: var(--text-muted);
   }
-  .page-row.home.active {
+  .recap-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 4px;
+    background: transparent;
+    /* A hairline in the chip's own hue, so the three read as three
+       things rather than one run of numbers. */
+    border: 1px solid var(--chip-border, var(--border));
+    border-radius: 4px;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+  }
+  .recap-chip:hover {
+    background: var(--surface-hover);
+    border-color: var(--chip-border-hover, var(--border-strong));
     color: var(--text);
+  }
+  /* CATEGORICAL, not semantic: these three name a context -- git, board,
+     rails -- and carry no judgement about it. The --border-* ramp is the
+     dimmest tinted hairline the theme offers (and is tuned per theme, a
+     lighter step on light surfaces), which is what keeps an identity
+     colour from reading as a status. The full-strength hue is held back
+     for hover, so a chip only speaks up once you point at it. */
+  .recap-chip.git {
+    --chip-border: var(--border-warning);
+    --chip-border-hover: var(--warning);
+  }
+  .recap-chip.cards {
+    --chip-border: var(--border-accent);
+    --chip-border-hover: var(--accent);
+  }
+  .recap-chip.rails {
+    --chip-border: var(--border-success);
+    --chip-border-hover: var(--success);
+  }
+  .recap-chip:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: -1px;
+  }
+  .recap-count {
+    font-variant-numeric: tabular-nums;
+  }
+  .recap-delta {
+    font-size: 0.9em;
+    white-space: nowrap;
+  }
+  /* A fixed three-slot tally: to do, in progress, done, always in that
+     order and always all three, zeros included -- the positions are what
+     make three bare numbers readable, so hiding a zero would only make
+     the rest ambiguous. Hairline dividers keep them from reading as one
+     number; the tooltip names each column outright. */
+  .card-stat {
+    font-variant-numeric: tabular-nums;
+  }
+  .card-stat + .card-stat {
+    margin-left: 1px;
+    padding-left: 4px;
+    border-left: 1px solid var(--border);
+  }
+  .card-stat.progress {
+    color: var(--accent-text);
+  }
+  .card-stat.done {
+    color: var(--success-text);
+  }
+  /* One tally per rail phase, coloured the way the Orchestration tab
+     colours a rail's own state. */
+  .rail-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .rail-stat.running {
+    color: var(--accent-text);
+  }
+  .rail-stat.done {
+    color: var(--success-text);
+  }
+  /* The page row's own recap: how many tabs the page holds, and how many
+     agents are running / idle behind them. Same icon vocabulary as the
+     rails chip above -- Play for running, an unfilled ring for idle, and
+     idle left muted rather than coloured -- so the two rows read as one
+     system. Borderless, unlike the workspace chips: those are buttons,
+     this is a readout, and a 200px page row has no width to spend on a
+     hairline that carries no meaning of its own.
+     `flex: 0 0 auto`, so the page name and the branch shrink around it:
+     they say the same thing truncated, three tiny numbers do not. */
+  .page-recap {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+    color: var(--text-muted);
+  }
+  .tab-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .tab-stat.running {
+    color: var(--accent-text);
   }
   .workspace-row.drop-before,
   .page-row.drop-before {
@@ -935,33 +1371,115 @@
   .page-row.drop-zone-center {
     background: var(--surface-selected);
   }
+  .page-expand-spacer {
+    width: 22px;
+    flex: 0 0 auto;
+  }
   .page-name {
     flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .page-git-detail {
+  /* A page's expanded contents. Indented past the page names the way the
+     page names are indented past the workspace names, so the three levels
+     read as one outline. */
+  .page-tabs {
     display: flex;
     flex-direction: column;
   }
-  .git-session-row {
+  .tab-row {
     display: flex;
-    align-items: center;
+    /* Top, not center: a row with a git line under it is two lines tall,
+       and its icon belongs beside the NAME, not floating between them. */
+    align-items: flex-start;
     gap: 4px;
-    padding: 2px 8px 2px 44px;
+    padding: 2px 8px 2px 41px;
     cursor: pointer;
     font-size: 0.9em;
   }
-  .git-session-row:hover {
+  .tab-row:hover {
     background: var(--surface-base);
   }
-  .git-session-label {
+  .tab-row.active {
+    background: var(--surface-base);
+    color: var(--text);
+  }
+  /* Same three-state vocabulary as the recap above and the terminal tab
+     dots: working speaks up in the accent, an unfilled ring is idle, and
+     waiting is the one that asks for you -- the warning hue the page
+     row's badge already uses for exactly that. File and board tabs stay
+     muted; nothing is running behind them to have a state. */
+  .tab-kind {
+    display: inline-flex;
+    /* Aligns the icon to the label's cap height rather than the row's
+       top edge, at this row's own (0.9em) size. */
+    padding-top: 2px;
+    flex: 0 0 auto;
+    color: var(--text-muted);
+  }
+  .tab-kind.working {
+    color: var(--accent-text);
+  }
+  .tab-kind.waiting_for_input {
+    color: var(--warning);
+  }
+  /* Beside the NAME, like .tab-kind on the other side -- a row with a
+     git line under it is two lines tall and the link belongs on the
+     first. Same muted-until-hovered accent the tab bar's own card link
+     uses. */
+  .card-link {
+    display: inline-flex;
+    padding-top: 2px;
+    flex: 0 0 auto;
+    opacity: 0.55;
+    color: var(--accent-text);
+  }
+  .card-link:hover {
+    opacity: 1;
+  }
+  .tab-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    /* Without this a flex child refuses to shrink below its content, and
+       a long branch name would push the row's own width out. */
+    min-width: 0;
     flex: 1 1 auto;
+  }
+  .tab-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-muted);
+  }
+  .tab-row.active .tab-label {
+    color: var(--text);
+  }
+  /* The second line: which checkout this session is in, and where that
+     checkout stands. Its own line rather than trailing the name, because
+     four pieces of git detail and a name do not share 200px -- which is
+     what pushed this off the page row in the first place. */
+  .tab-git {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 0.9em;
+  }
+  /* The worktree is the identity; the branch is the state. Shrink the
+     worktree first -- a truncated folder name is still recognisable, a
+     truncated branch name is a different branch. */
+  .tab-git .worktree {
+    /* Shrink factor 3 against .git-branch's 1: when the line is too long
+       it is the worktree that gives way first. */
+    flex: 0 3 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.75;
   }
   .sidebar-footer {
     flex: 0 0 auto;

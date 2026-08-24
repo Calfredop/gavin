@@ -1,16 +1,17 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
-  import { marked } from "marked";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
+  import { renderMarkdown } from "./markdown";
   import { openPath } from "@tauri-apps/plugin-opener";
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
-  import { slugStatus } from "./planBoard";
+  import { isArchivedCard, slugStatus } from "./planBoard";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "./planChecklist";
   import { requestedExplorerPath, slugFileName } from "./planExplorer";
-  import { patchPlanField, patchPlanCreated } from "./gavinState";
+  import { patchPlanField, patchPlanCreated, patchPlanPath } from "./gavinState";
   import type { PlanFileInfo } from "./gavin";
-  import { switchWorkspaceView, layoutState } from "./layoutState";
+  import { switchWorkspaceView, layoutState, daemonCompat } from "./layoutState";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, relaunchCard } from "./cardRunActions";
   import { findCardPlacement, stepStateOf } from "./orchestration";
@@ -20,6 +21,8 @@
     removeCardFromRailAction,
   } from "./orchestrationState";
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
+  import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
+  import { featureBlockedReason } from "./daemonCompat";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { findSessionLocation } from "./workspace";
   import * as backend from "./backend";
@@ -33,22 +36,44 @@
     // plan's free-standing children.
     allCards: CardView[];
     onClose: () => void;
+    // Fires when a field write moved the card's file -- setting it Done
+    // archives it into `plans/done/`. The host holds the open card's path
+    // as identity, so it has to follow, or the modal vanishes mid-edit.
+    onPathChange?: (path: string) => void;
   }
-  let { card, workspaceId, columns, labels, allCards, onClose }: Props = $props();
+  let { card, workspaceId, columns, labels, allCards, onClose, onPathChange }: Props = $props();
 
   const PRIORITIES: Priority[] = ["none", "low", "medium", "high", "urgent"];
   let errorMessage = $state<string | null>(null);
 
   // --- file content (body preview + checklist) -------------------------
   let content = $state<string | null>(null);
+  // Read once, then kept live: the card's file changes under this modal
+  // whenever an agent ticks a checklist item or the human edits the plan
+  // in another editor, and a stale body preview is worse than no modal.
+  // The Rust-side watch is refcounted, so watching a file an editor tab
+  // already holds open leaves that tab's watch intact when this closes.
   $effect(() => {
     const path = card.id;
-    void backend.readFileForViewer(path).then((r) => {
-      if (path === card.id) content = r.exists ? r.content : null;
-    });
+    let unlisten: UnlistenFn | null = null;
+    let closed = false;
+    const read = () =>
+      void backend.readFileForViewer(path).then((r) => {
+        if (!closed) content = r.exists ? r.content : null;
+      });
+    read();
+    void backend.watchFileForViewer(path).catch(() => {});
+    void listen<string>("file-changed", (event) => {
+      if (event.payload === path) read();
+    }).then((fn) => (closed ? fn() : (unlisten = fn)));
+    return () => {
+      closed = true;
+      unlisten?.();
+      void backend.unwatchFileForViewer(path).catch(() => {});
+    };
   });
   const bodyHtml = $derived(
-    content !== null ? DOMPurify.sanitize(marked.parse(stripFrontmatter(content), { async: false }) as string) : null
+    content !== null ? DOMPurify.sanitize(renderMarkdown(content)) : null
   );
   const checklist = $derived<ChecklistItem[]>(
     card.kind === "plan" && content !== null ? parseChecklist(content) : []
@@ -114,8 +139,12 @@
   async function writeField(key: "title" | "status" | "priority" | "labels", value: string): Promise<boolean> {
     errorMessage = null;
     try {
-      await backend.setPlanFrontmatterField(card.id, key, value);
+      const moved = await backend.setPlanFrontmatterField(card.id, key, value);
       patchPlanField(workspaceId, card.id, key, value);
+      if (moved && moved !== card.id) {
+        patchPlanPath(workspaceId, card.id, moved);
+        onPathChange?.(moved);
+      }
       return true;
     } catch (e) {
       errorMessage = String(e);
@@ -236,6 +265,31 @@
     const err = await executeDeletion(workspaceId, delPlan);
     if (err) errorMessage = err;
     else onClose();
+  }
+
+  // --- archive / restore ------------------------------------------------
+  // The same pair the card menu carries, on the surface the human is
+  // most likely to be looking at when they want it: opening an archived
+  // card is how you read it, and reading it is when you decide it comes
+  // back.
+  const archived = $derived(isArchivedCard(card.id));
+  const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
+
+  async function toggleArchive(): Promise<void> {
+    errorMessage = null;
+    const run = archived ? executeUnarchive : executeArchive;
+    const err = await run(workspaceId, [card]);
+    // Backed out of the "this will close N agents" prompt: the card is
+    // exactly where it was, so this modal must be too.
+    if (err === ARCHIVE_CANCELLED) return;
+    if (err) {
+      errorMessage = err;
+      return;
+    }
+    // Closed, not followed: the move rewrote the card's path and the
+    // host holds the OLD one as this modal's identity, so staying open
+    // would leave the modal resolving nothing. Delete ends the same way.
+    onClose();
   }
 
   function openInPlansTab(): void {
@@ -425,6 +479,17 @@
   {/if}
   <div class="actions">
     <button type="button" class="danger" onclick={() => (confirmingDelete = true)}>Delete</button>
+    <button
+      type="button"
+      disabled={archiveBlocked !== null}
+      title={archiveBlocked ??
+        (archived
+          ? "Files the card back on the board by its status"
+          : "Takes the card off the board — its agents and file tabs close with it")}
+      onclick={() => void toggleArchive()}
+    >
+      {archived ? "Restore from archive" : "Archive"}
+    </button>
     <button type="button" onclick={openInPlansTab}>Open in Plans tab</button>
     <button type="button" onclick={() => void openExternally()}>Open externally</button>
     <button type="button" onclick={onClose}>Close</button>
@@ -687,5 +752,11 @@
     background: var(--surface-danger);
     color: var(--danger-text);
     margin-right: auto;
+  }
+  /* Blocked by daemon skew: the title says why, so the row must read as
+     unavailable rather than as an unresponsive button. */
+  .actions button:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
 </style>

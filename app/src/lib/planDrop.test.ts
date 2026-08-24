@@ -56,7 +56,7 @@ beforeEach(() => {
 
 describe("applyPlanDrop", () => {
   it("cross-column: writes status first, then order writes, patching each on success", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     seed([planInfo("/p/a.md", "To Do", 1024), planInfo("/p/d.md", "To Do", null)]);
     const err = await applyPlanDrop({
       workspaceId: "ws",
@@ -75,7 +75,7 @@ describe("applyPlanDrop", () => {
   });
 
   it("same-column: no status write", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     seed([planInfo("/p/d.md", "To Do", null)]);
     const err = await applyPlanDrop({
       workspaceId: "ws",
@@ -90,7 +90,7 @@ describe("applyPlanDrop", () => {
 
   it("failure mid-batch stops, names the failing file, and skips its patch", async () => {
     vi.mocked(backend.setPlanFrontmatterField)
-      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async (p) => p)
       .mockRejectedValueOnce(new Error("disk full"));
     seed([
       planInfo("/p/a.md", "To Do", null),
@@ -117,7 +117,7 @@ describe("applyPlanDrop", () => {
   });
 
   it("planCommitFromMerged: drop on an auto column restatuses to the raw status", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     seed([planInfo("/p/d.md", "To Do", null)]);
     const view = (path: string, order: number | null): CardView => ({
       id: path,
@@ -157,7 +157,7 @@ describe("applyPlanDrop", () => {
   });
 
   it("planCommitFromMerged: same-column drop skips the status write and excludes the dragged card", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     seed([planInfo("/p/d.md", "To Do", 1024)]);
     const view = (path: string, order: number | null): CardView => ({
       id: path,
@@ -200,7 +200,7 @@ describe("applyPlanDrop", () => {
   it("planCommitFromMerged holds the drop visuals while writes are in flight, then releases", async () => {
     let resolveWrite!: () => void;
     vi.mocked(backend.setPlanFrontmatterField).mockImplementationOnce(
-      () => new Promise<void>((resolve) => (resolveWrite = resolve))
+      (path) => new Promise<string>((resolve) => (resolveWrite = () => resolve(path)))
     );
     seed([planInfo("/p/d.md", "To Do", null)]);
     const pending = planCommitFromMerged(
@@ -330,7 +330,7 @@ describe("nest drops", () => {
   }
 
   it("nest: writes parent, removes status, then orders among the children", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     seed([planInfo("/p/t.md", "To Do", null)]);
     const child = view("/p/c1.md", "task", null, 1024, { parent: "plan.md" });
     const plan = view("/p/plan.md", "plan", "To Do", null, { nestedChildren: [child] });
@@ -350,7 +350,7 @@ describe("nest drops", () => {
   });
 
   it("nest: an unchanged parent skips the parent write", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     seed([planInfo("/p/t.md", null, null)]);
     const child = view("/p/t.md", "task", null, 1024, { parent: "plan.md" });
     const other = view("/p/c2.md", "task", null, 2048, { parent: "plan.md" });
@@ -367,7 +367,7 @@ describe("nest drops", () => {
   });
 
   it("freeing a nested child into its parent's own column writes the status", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     seed([planInfo("/p/t.md", null, null)]);
     const child = view("/p/t.md", "task", null, null, { parent: "plan.md" });
     const plan = view("/p/plan.md", "plan", "To Do", 1024, { nestedChildren: [child] });
@@ -385,7 +385,7 @@ describe("nest drops", () => {
   });
 
   it("guards: only tasks nest, only into same-context plans, with no writes", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     const note = view("/p/n.md", "note", "To Do", null);
     const plan = view("/p/plan.md", "plan", "To Do", null);
     const otherCtx = view("/q/plan.md", "plan", "To Do", null, { contextFolder: "/q" });

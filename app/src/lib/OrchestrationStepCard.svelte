@@ -36,6 +36,11 @@
     onSendToAgent: (card: CardView) => void;
     agentAvailable: boolean;
     onContextMenu: (card: CardView, e: MouseEvent) => void;
+    /// Search state (orchestrationSearch.ts), same contract as the chip:
+    /// `hit` rings the card the query found, `dimmed` fades the ones it
+    /// did not. A rail keeps its whole shape while filtered.
+    hit?: boolean;
+    dimmed?: boolean;
   }
   let {
     stepId,
@@ -53,6 +58,8 @@
     onSendToAgent,
     agentAvailable,
     onContextMenu,
+    hit = false,
+    dimmed = false,
   }: Props = $props();
 </script>
 
@@ -61,6 +68,8 @@
   class="step {state}"
   class:sev-live={severity === "live"}
   class:sev-potential={severity === "potential"}
+  class:hit
+  class:dimmed
 >
   <BoardCard
     card={placed.view}
@@ -72,6 +81,7 @@
     {agentAvailable}
     {onContextMenu}
     columnName={placed.columnName}
+    showRailBadge={false}
   >
     {#snippet adornment()}
       <div class="rail-strip">
@@ -180,5 +190,14 @@
   .badge.lit {
     opacity: 1;
     background: var(--surface-overlay);
+  }
+  .step.hit {
+    border-radius: 6px;
+    box-shadow: 0 0 0 1px var(--border-accent);
+  }
+  /* Faded, never hidden: the rail it sits in is the context that makes
+     the match worth finding. */
+  .step.dimmed {
+    opacity: 0.32;
   }
 </style>

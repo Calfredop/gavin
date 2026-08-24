@@ -5,6 +5,9 @@
   import GitFileRow from "./GitFileRow.svelte";
   import GitCommitBox from "./GitCommitBox.svelte";
   import GitDiscardDialog from "./GitDiscardDialog.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { filterFiles } from "./gitSearch";
+  import { isSearching } from "./search";
 
   interface Props {
     workspaceId: string;
@@ -12,14 +15,38 @@
   let { workspaceId }: Props = $props();
 
   const view = $derived($gitStore[workspaceId]);
-  const unstaged = $derived(view?.status?.unstaged ?? []);
-  const staged = $derived(view?.status?.staged ?? []);
+  const allUnstaged = $derived(view?.status?.unstaged ?? []);
+  const allStaged = $derived(view?.status?.staged ?? []);
   const selected = $derived(view?.selected ?? null);
   const busy = $derived(view?.busy != null);
+
+  // The path filter. Keyboard navigation and the Stage/Unstage-all
+  // buttons all run over the FILTERED lists, so what a key or a button
+  // does is always what the pane is showing.
+  let query = $state("");
+  const filtering = $derived(isSearching(query));
+  const unstaged = $derived(filterFiles(allUnstaged, query));
+  const staged = $derived(filterFiles(allStaged, query));
+  const shown = $derived(unstaged.length + staged.length);
+  const totalFiles = $derived(allUnstaged.length + allStaged.length);
   const sections = $derived([
     { area: "unstaged" as Area, items: unstaged },
     { area: "staged" as Area, items: staged },
   ]);
+
+  // Stage/unstage all means all of WHAT IS LISTED. Unfiltered that is
+  // the whole area (the cheap bulk command); filtered it is exactly the
+  // matches, never the files the human cannot see.
+  function bulk(area: Area): void {
+    if (busy) return;
+    if (!filtering) {
+      void (area === "unstaged" ? stageAll(workspaceId) : unstageAll(workspaceId));
+      return;
+    }
+    const paths = list(area).map((e) => e.path);
+    if (paths.length === 0) return;
+    void (area === "unstaged" ? stageFiles(workspaceId, paths) : unstageFiles(workspaceId, paths));
+  }
   // SP2: a selected stash swaps this column for its read-only file list.
   const stashSel = $derived(view && typeof view.navSelection === "object" ? view.navSelection.stash : null);
   const stashInfo = $derived(stashSel === null ? null : (view?.refs?.stashes.find((s) => s.index === stashSel) ?? null));
@@ -49,6 +76,12 @@
 
   // ↑/↓ within a list, Tab between lists, Space stages/unstages (spec §4).
   function onKeydown(e: KeyboardEvent): void {
+    // Typing inside this listbox must not also drive the selection: the
+    // search box and the commit box both live in it, and Space here
+    // stages a file. (The commit box was always in range; the guard
+    // covers it now too.)
+    const tag = (e.target as HTMLElement | null)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
     if (!selected) {
       if (e.key === "ArrowDown" && unstaged.length > 0) {
         e.preventDefault();
@@ -86,13 +119,16 @@
         <button type="button" class="all" onclick={() => selectChanges(workspaceId)}>← Local Changes</button>
       </header>
       <div class="stash-msg">{stashInfo?.message ?? ""}{#if stashInfo} · {stashInfo.date}{/if}</div>
+      <div class="filter-bar">
+        <SearchInput bind:value={query} label="Search stashed files" placeholder="Filter by path…" />
+      </div>
       <div class="rows">
         {#if view?.stashFiles === null || view?.stashFiles === undefined}
           <div class="none">Loading…</div>
         {:else if view.stashFiles.length === 0}
           <div class="none">Empty stash</div>
         {:else}
-          {#each view.stashFiles as entry (entry.path)}
+          {#each filterFiles(view.stashFiles, query) as entry (entry.path)}
             <GitFileRow {entry} area="unstaged" selected={false} disabled={true} readonly={true} onSelect={() => {}} onToggle={() => {}} />
           {/each}
         {/if}
@@ -105,20 +141,32 @@
   </div>
 {:else}
 <div class="changes" tabindex="0" role="listbox" aria-label="Changed files" onkeydown={onKeydown}>
+  <div class="filter-bar">
+    <SearchInput
+      bind:value={query}
+      label="Search changed files"
+      placeholder="Filter by path…"
+      matches={filtering ? { shown, total: totalFiles } : null}
+    />
+  </div>
   {#each sections as { area, items } (area)}
     <section class="list">
       <header>
         <span class="title">{area === "unstaged" ? "Unstaged" : "Staged"}</span>
-        <span class="count">{items.length}</span>
+        <span class="count" class:filtered={filtering}>
+          {items.length}{filtering ? ` / ${(area === "unstaged" ? allUnstaged : allStaged).length}` : ""}
+        </span>
         <span class="spacer"></span>
         {#if items.length > 0}
           <button
             type="button"
             class="all"
             disabled={busy}
-            onclick={() => (area === "unstaged" ? stageAll(workspaceId) : unstageAll(workspaceId))}
+            title={filtering ? `Applies to the ${items.length} shown` : ""}
+            onclick={() => bulk(area)}
           >
-            {area === "unstaged" ? "Stage all" : "Unstage all"}
+            {area === "unstaged" ? "Stage" : "Unstage"}
+            {filtering ? `${items.length} shown` : "all"}
           </button>
         {/if}
       </header>
@@ -138,7 +186,9 @@
           <div class="more">… and {items.length - LIST_DISPLAY_CAP} more</div>
         {/if}
         {#if items.length === 0}
-          <div class="none">{area === "unstaged" ? "No unstaged changes" : "Nothing staged"}</div>
+          <div class="none">
+            {#if filtering}No match{:else}{area === "unstaged" ? "No unstaged changes" : "Nothing staged"}{/if}
+          </div>
         {/if}
       </div>
     </section>
@@ -182,6 +232,15 @@
   }
   .count {
     color: var(--success-text);
+    font-variant-numeric: tabular-nums;
+  }
+  .count.filtered {
+    color: var(--accent-text);
+  }
+  .filter-bar {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
   }
   .spacer {
     flex: 1 1 auto;

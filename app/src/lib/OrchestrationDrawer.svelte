@@ -13,6 +13,7 @@
   import { orchDragState } from "./orchestrationDrag";
   import { toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
+  import { unplacedCount } from "./orchestration";
   import type { UnplacedGroup } from "./orchestration";
 
   interface Props {
@@ -23,19 +24,49 @@
     /// there is no rail to add to yet.
     targetRailId: string | null;
     onAdd: (cardPath: string) => void;
+    /// The tab's search box holds a query: the rows below are the
+    /// matches, not the whole pool, and dragging is off.
+    filtering?: boolean;
+    hiddenCount?: number;
     onAddTool: (toolId: string) => void;
     onManageTools: () => void;
+    /// Why the running daemon cannot carry tools, or null. A daemon
+    /// older than v11 has no `tool_id` column: it would accept a tool
+    /// step and store a step with neither a card nor a tool, which comes
+    /// back as an untitled chip. So the rows stay visible -- the human
+    /// should still see what tools ARE -- but inert, with the reason on
+    /// hover and no drag handle at all.
+    toolsBlocked?: string | null;
   }
-  let { groups, tools, targetRailId, onAdd, onAddTool, onManageTools }: Props = $props();
+  let {
+    groups,
+    tools,
+    targetRailId,
+    onAdd,
+    onAddTool,
+    onManageTools,
+    filtering = false,
+    hiddenCount = 0,
+    toolsBlocked = null,
+  }: Props = $props();
 
   let collapsed = $state(false);
   const dragging = $derived($orchDragState !== null);
-  const total = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
+  // Two different questions, deliberately answered by two numbers. The
+  // HEADER answers "how much is left to place", so it skips the done
+  // group (unplacedCount). `rows` is just "is this panel empty", which
+  // the done group does fill -- otherwise a drawer showing twelve
+  // finished cards would also claim every runnable card is on a rail.
+  const total = $derived(unplacedCount(groups));
+  const rows = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
+  const label = $derived(filtering ? `Unplaced (${total} / ${total + hiddenCount})` : `Unplaced (${total})`);
 
   // Only DEVIATIONS from the default are stored, so a group the human has
   // not touched follows its own isDone rule even as groups come and go.
   let toggled = $state<Record<string, boolean>>({});
-  const isCollapsed = (g: UnplacedGroup): boolean => toggled[g.slug] ?? g.isDone;
+  // While filtering every group opens: a collapsed Done group would hide
+  // the very row the query just found.
+  const isCollapsed = (g: UnplacedGroup): boolean => (filtering ? false : (toggled[g.slug] ?? g.isDone));
 
   // Tools sit ABOVE the cards and start open: they are the same handful
   // every time, so they are the part of this panel a human learns to
@@ -57,11 +88,13 @@
 <aside class="drawer" class:collapsed class:drop-lit={dragging} data-orch-drawer>
   <button type="button" class="toggle" onclick={() => (collapsed = !collapsed)}>
     {#if collapsed}<ChevronLeft size={14} />{:else}<ChevronRight size={14} />{/if}
-    {#if !collapsed}<span>Unplaced ({total})</span>{/if}
+    {#if !collapsed}<span class:filtered={filtering}>{label}</span>{/if}
   </button>
 
   {#if !collapsed}
-    {#if dragging && $orchDragState?.kind === "step"}
+    {#if filtering}
+      <p class="hint quiet">Filtered — clear the search to drag.</p>
+    {:else if dragging && $orchDragState?.kind === "step"}
       <p class="hint">Drop here to take a step off its rail.</p>
     {:else if !dragging}
       <p class="hint quiet">Drag a card or a tool onto a rail, or click to append it.</p>
@@ -83,10 +116,11 @@
           <li>
             <button
               type="button"
-              data-orch-tool={tool.id}
+              data-orch-tool={toolsBlocked ? undefined : tool.id}
               class:dragging={$orchDragState?.id === tool.id}
-              disabled={!targetRailId}
-              title="{toolKindLabel(tool.kind)}{tool.description ? ` — ${tool.description}` : ''}"
+              disabled={Boolean(toolsBlocked) || !targetRailId}
+              title={toolsBlocked ??
+                `${toolKindLabel(tool.kind)}${tool.description ? ` — ${tool.description}` : ""}`}
               onclick={() => onAddTool(tool.id)}
             >
               <Icon size={12} />
@@ -98,7 +132,13 @@
           </li>
         {/each}
       </ul>
-      <button type="button" class="manage" onclick={onManageTools}>
+      <button
+        type="button"
+        class="manage"
+        disabled={Boolean(toolsBlocked)}
+        title={toolsBlocked ?? ""}
+        onclick={onManageTools}
+      >
         <Settings2 size={12} /> Manage tools…
       </button>
     {/if}
@@ -106,6 +146,7 @@
       <button
         type="button"
         class="group-head"
+        disabled={filtering}
         onclick={() => (toggled = { ...toggled, [group.slug]: !isCollapsed(group) })}
       >
         {#if isCollapsed(group)}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
@@ -131,8 +172,8 @@
         </ul>
       {/if}
     {/each}
-    {#if total === 0}
-      <p class="empty">Every runnable card is on a rail.</p>
+    {#if rows === 0}
+      <p class="empty">{filtering ? "No unplaced card matches." : "Every runnable card is on a rail."}</p>
     {/if}
   {/if}
 </aside>
@@ -153,6 +194,9 @@
   .drawer.drop-lit {
     outline: 2px dashed var(--border-focus);
     outline-offset: -2px;
+  }
+  .toggle .filtered {
+    color: var(--accent-text);
   }
   .toggle {
     display: flex;
@@ -230,8 +274,11 @@
     text-align: left;
     cursor: pointer;
   }
-  .group-head:hover {
+  .group-head:hover:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .group-head:disabled {
+    cursor: default;
   }
   .group-name {
     flex: 1;
@@ -270,8 +317,12 @@
     font-size: 11px;
     cursor: pointer;
   }
-  .manage:hover {
+  .manage:hover:not(:disabled) {
     background: var(--surface-hover);
     color: var(--text);
+  }
+  .manage:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
 </style>

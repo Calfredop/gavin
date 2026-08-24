@@ -18,6 +18,8 @@
     agentAvailable?: boolean;
     onDeleteCard?: ((card: CardView) => void) | null;
     onCardContextMenu?: ((card: CardView, e: MouseEvent) => void) | null;
+    // Cards hidden by the board's search box (boardSearch.ts).
+    hiddenCount?: number;
   }
   let {
     status,
@@ -30,7 +32,13 @@
     agentAvailable = false,
     onDeleteCard = null,
     onCardContextMenu = null,
+    hiddenCount = 0,
   }: Props = $props();
+
+  const filtered = $derived(hiddenCount > 0);
+  const countText = $derived(
+    filtered ? `${planCards.length} / ${planCards.length + hiddenCount}` : String(planCards.length)
+  );
 
   const key = $derived(AUTO_COLUMN_PREFIX + status);
   const slotDrag = $derived($dragState ?? $dropHold);
@@ -41,9 +49,12 @@
      only so no plan with an unmatched status can ever be invisible. -->
 <div class="auto-column" data-kb-col={key} data-kb-auto>
   <div class="auto-header" use:tooltip={"Auto column — cards whose status matches no real column"}>
-    {status}<span class="count">{planCards.length}</span>
+    {status}<span class="count" class:filtered>{countText}</span>
   </div>
   <div class="cards" data-kb-cards>
+    {#if filtered && planCards.length === 0}
+      <div class="no-match">No match in this column</div>
+    {/if}
     {#each slots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
         {#if slot.type === "item"}
@@ -83,6 +94,15 @@
     color: var(--text-subtle);
     font-size: 0.9em;
     margin-left: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .count.filtered {
+    color: var(--accent-text);
+  }
+  .no-match {
+    color: var(--text-subtle);
+    font-size: 0.8em;
+    padding: 4px 2px;
   }
   .cards {
     overflow-y: auto;

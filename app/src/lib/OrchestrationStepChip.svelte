@@ -40,6 +40,11 @@
     severity: "live" | "potential" | null;
     onRetry: () => void;
     onRemove: () => void;
+    /// Search state (orchestrationSearch.ts). `hit` rings the chip the
+    /// query found; `dimmed` fades the ones it did not, so a rail keeps
+    /// its shape while the eye goes straight to the match.
+    hit?: boolean;
+    dimmed?: boolean;
     /// Opens the params popover. Offered only for a tool that actually
     /// declares parameters.
     onEditParams: () => void;
@@ -57,6 +62,8 @@
     severity,
     onRetry,
     onRemove,
+    hit = false,
+    dimmed = false,
     onEditParams,
   }: Props = $props();
 
@@ -92,6 +99,8 @@
   class:tool={Boolean(toolId)}
   class:sev-live={severity === "live"}
   class:sev-potential={severity === "potential"}
+  class:hit
+  class:dimmed
   use:tooltip={state === "stalled" && reason ? reason : iconTip}>
   <Icon size={13} />
   <span class="title">{title}</span>
@@ -122,6 +131,15 @@
 </div>
 
 <style>
+  .chip.hit {
+    border-color: var(--border-accent);
+    box-shadow: 0 0 0 1px var(--border-accent);
+  }
+  /* Faded, never hidden: the stage it sits in is the context that makes
+     the match worth finding. */
+  .chip.dimmed {
+    opacity: 0.32;
+  }
   .chip {
     display: flex;
     align-items: center;

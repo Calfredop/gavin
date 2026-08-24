@@ -66,6 +66,11 @@ pub struct Workspace {
     pub pages: Vec<Page>,
     pub active_page_id: Option<String>,
     pub active_view: Option<String>,
+    /// The hub tab this workspace was last showing, so returning to the
+    /// hub from a terminal reopens it instead of Home. Absent until a
+    /// hub tab is opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_view: Option<String>,
     /// The workspace's bound root directory (agent-orchestration phase).
     /// Optional and never auto-cleared: a missing-on-disk root keeps its
     /// stale value so a remounted volume heals without user action.
@@ -204,6 +209,7 @@ mod tests {
             pages: vec![sample_page()],
             active_page_id: Some("page-1".to_string()),
             active_view: None,
+            hub_view: None,
             root_path: None,
             main_session_id: None,
             legacy_agent_command: None,
@@ -387,6 +393,33 @@ mod tests {
                 "gitView": null
             })
         );
+    }
+
+    #[test]
+    fn hub_view_roundtrips_and_defaults_to_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        // The workspace is parked in a terminal, but still remembers the
+        // hub tab its Hub button should reopen -- across a restart.
+        ws.active_view = Some("terminal".to_string());
+        ws.hub_view = Some("kanban".to_string());
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+            theme: None,
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().workspaces[0].hub_view, None);
     }
 
     #[test]

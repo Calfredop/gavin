@@ -1,18 +1,25 @@
 import { describe, it, expect } from "vitest";
 import {
+  NAME_TAB_FIRST,
   composeTaskPrompt,
   composePlanPrompt,
+  composeResumeTaskPrompt,
+  composeResumePlanPrompt,
   shellQuote,
   buildRunCommand,
+  buildHeadlessCommand,
+  COMMIT_PROMPT,
   buildToolCommand,
   runStatusNeeded,
+  provisionalSessionName,
 } from "./cardRun";
 
 describe("composeTaskPrompt", () => {
   it("wraps the body with the card pointer and the status contract", () => {
     const p = composeTaskPrompt("/p/t.md", "Fix login", "Do the thing.\nCarefully.");
     expect(p).toBe(
-      'You are executing the task card at /p/t.md ("Fix login").\n\n' +
+      `${NAME_TAB_FIRST}\n\n` +
+        'You are executing the task card at /p/t.md ("Fix login").\n\n' +
         "Do the thing.\nCarefully.\n\n" +
         "While you work, keep this card's status current with gavin_set_plan_field on /p/t.md; " +
         "set it to the board's done column when finished."
@@ -24,10 +31,69 @@ describe("composePlanPrompt", () => {
   it("points at the file instead of inlining it", () => {
     const p = composePlanPrompt("/p/plan.md");
     expect(p).toBe(
-      "Read /p/plan.md and execute that plan. Work its checklist top to bottom: " +
+      `${NAME_TAB_FIRST}\n\n` +
+        "Read /p/plan.md and execute that plan. Work its checklist top to bottom: " +
         "tick items (- [x]) as you complete them, promote items that need their own agent " +
         "with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field."
     );
+  });
+});
+
+describe("resume prompts", () => {
+  it("send the task's agent to the skill, keep the body, keep the status contract", () => {
+    const p = composeResumeTaskPrompt("/p/t.md", "Fix login", "Do the thing.");
+    expect(p).toBe(
+      `${NAME_TAB_FIRST}\n\n` +
+        'Use the gavin-resume skill to resume the task card at /p/t.md ("Fix login"). ' +
+        "Work on it already started and stopped.\n\n" +
+        "Do the thing.\n\n" +
+        "Find what is already done before you write anything, then carry on from there. " +
+        "Keep this card's status current with gavin_set_plan_field on /p/t.md; " +
+        "set it to the board's done column when finished."
+    );
+  });
+
+  it("point the plan's agent at the file and at the ticks already there", () => {
+    const p = composeResumePlanPrompt("/p/plan.md");
+    expect(p).toContain("Use the gavin-resume skill to resume the plan at /p/plan.md.");
+    expect(p).toContain("find what is already done before you write anything");
+    expect(p).toContain("gavin_promote_task");
+    expect(p).toContain("gavin_set_plan_field");
+    // Never inlines the body -- the plan file is the agent's to read.
+    expect(p).not.toContain("You are executing");
+  });
+});
+
+describe("every launched prompt", () => {
+  it("opens by ordering the agent to name its tab", () => {
+    // Board Run, board Resume and an orchestration launch all compose
+    // through these four -- naming the tab is not optional for any of them.
+    for (const p of [
+      composeTaskPrompt("/p/t.md", "T", "b"),
+      composePlanPrompt("/p/plan.md"),
+      composeResumeTaskPrompt("/p/t.md", "T", "b"),
+      composeResumePlanPrompt("/p/plan.md"),
+    ]) {
+      expect(p.startsWith(NAME_TAB_FIRST)).toBe(true);
+      expect(p).toContain("gavin_name_session");
+    }
+  });
+});
+
+describe("provisionalSessionName", () => {
+  it("collapses whitespace so a wrapped title cannot widen the tab bar", () => {
+    expect(provisionalSessionName("  Fix   the\n login  flow ")).toBe("Fix the login flow");
+  });
+
+  it("caps at the same 40 characters gavin-mcp's clean_session_name does", () => {
+    const long = "a".repeat(60);
+    expect(provisionalSessionName(long)).toBe("a".repeat(40) + "\u2026");
+    expect(provisionalSessionName("b".repeat(40))).toBe("b".repeat(40));
+  });
+
+  it("returns null for a title with nothing in it, rather than naming a tab \"\"", () => {
+    expect(provisionalSessionName("   ")).toBeNull();
+    expect(provisionalSessionName("")).toBeNull();
   });
 });
 
@@ -43,6 +109,37 @@ describe("buildRunCommand", () => {
   it("appends the quoted prompt to the agent command", () => {
     expect(buildRunCommand("claude", "do it")).toBe("claude 'do it'");
     expect(buildRunCommand("claude --model x", "a'b")).toBe("claude --model x 'a'\\''b'");
+  });
+});
+
+describe("buildHeadlessCommand", () => {
+  it("puts the profile's headless argv between the command and the quoted prompt", () => {
+    expect(buildHeadlessCommand("claude", '-p --allowedTools "Bash(git *)" --', "do it")).toBe(
+      'claude -p --allowedTools "Bash(git *)" -- \'do it\''
+    );
+  });
+
+  it("quotes the prompt the same way an interactive run does", () => {
+    expect(buildHeadlessCommand("claude", "-p", "a'b")).toBe("claude -p 'a'\\''b'");
+  });
+
+  // A profile with no verified headless argv would launch a TUI that
+  // never exits -- invisibly, since the whole point is a hidden session.
+  // Refused, so the caller has to disable the action instead.
+  it("refuses a profile that has no headless argv", () => {
+    expect(buildHeadlessCommand("codex", "", "do it")).toBeNull();
+    expect(buildHeadlessCommand("codex", "   ", "do it")).toBeNull();
+  });
+});
+
+describe("COMMIT_PROMPT", () => {
+  // The human wrote this line on the card; it is the whole instruction
+  // the hidden agent gets, so it is asserted verbatim rather than
+  // spot-checked.
+  it("is the card's text, and forbids pushing", () => {
+    expect(COMMIT_PROMPT).toBe(
+      "Commit pending and unversioned changes, in logical chunks. Do not push."
+    );
   });
 });
 

@@ -4,9 +4,26 @@ import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 // Deep link into the Plans tab: set a path here before switching the
 // hub view and PlanExplorerHubView selects it (then clears the store).
 export const requestedExplorerPath = writable<string | null>(null);
-import { slugStatus } from "./planBoard";
+import { isArchivedCard, slugStatus } from "./planBoard";
 
-export type ExplorerGroup = "plans" | "docs" | "specs";
+/// The folders the navigator shows under a context. `archive` is the
+/// odd one out: it is the only group nothing can be CREATED in -- a card
+/// gets there by being archived, never by being authored there -- which
+/// is why the creation paths take `CreatableGroup` instead.
+export type ExplorerGroup = "plans" | "docs" | "specs" | "archive";
+
+/// The three groups the composer can write into.
+export type CreatableGroup = Exclude<ExplorerGroup, "archive">;
+
+export const CREATABLE_GROUPS = ["plans", "docs", "specs"] as const;
+
+/// True for the groups whose files are CARDS, and therefore the only
+/// ones that can answer a status or rail question. Docs and specs have
+/// no frontmatter contract; the archive holds ordinary plan files that
+/// happen to be filed away.
+export function isCardGroup(group: ExplorerGroup): boolean {
+  return group === "plans" || group === "archive";
+}
 
 export interface ExplorerFile {
   path: string;
@@ -25,6 +42,11 @@ export interface ExplorerGroupNode {
   group: ExplorerGroup;
   label: string;
   files: ExplorerFile[];
+  // Plans filed under `plans/done/`. Split out of `files` so the group
+  // shows the work still in flight and folds the archive away behind one
+  // collapsed row -- a repo with 30 shipped cards is otherwise 30 rows of
+  // noise above the four that matter. Always empty for docs and specs.
+  archived: ExplorerFile[];
 }
 
 export interface ExplorerContextNode {
@@ -50,14 +72,35 @@ const GROUP_LABELS: Record<ExplorerGroup, string> = {
   plans: "Plans",
   docs: "Docs",
   specs: "Specs",
+  archive: "Archive",
 };
+
+// The daemon archives a Done card by moving it into a `done/` folder
+// directly under the context's `plans/` -- the folder is derived from
+// status, never the reverse, so this reads the path the daemon wrote
+// rather than re-deriving "is this Done?" from frontmatter.
+//
+// Every context, not just the root: `.gavin/plans/done/` and
+// `.gavin-root/plans/done/` both match, mirroring the daemon's
+// `is_plans_dir`. A hand-made `plans/roadmap/done/` does NOT -- the
+// daemon never moves those, so the explorer must not fold them either.
+export function isArchivedPlan(path: string): boolean {
+  return path.includes("/plans/done/");
+}
 
 export function gavinDirFor(context: { folderPath: string; kind: GavinContext["kind"] }): string {
   return `${context.folderPath}/${context.kind === "root" ? ".gavin-root" : ".gavin"}`;
 }
 
-export function newFilePath(gavinDir: string, group: ExplorerGroup, fileName: string): string {
+export function newFilePath(gavinDir: string, group: CreatableGroup, fileName: string): string {
   return `${gavinDir}/${group}/${fileName}`;
+}
+
+/// The folder a group's rows live in, for "Show in Finder". The archive
+/// is a subfolder of plans/ rather than a sibling of it, which is the
+/// one place the group name is not the folder name.
+export function groupFolder(gavinDir: string, group: ExplorerGroup): string {
+  return group === "archive" ? `${gavinDir}/plans/archive` : `${gavinDir}/${group}`;
 }
 
 // The tree the explorer renders. A pure projection: the daemon already
@@ -92,18 +135,39 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
 
     const groups: ExplorerGroupNode[] = [];
 
-    if (ctx.plans.length > 0) {
+    // Three buckets out of one `plans` listing, split by the FOLDER each
+    // file sits in:
+    //   plans/          -> the Plans group's flat rows
+    //   plans/done/     -> the Done fold inside the Plans group
+    //   plans/archive/  -> its own top-level Archive group
+    // The first two are the same board (Done cards still stand in the
+    // Done column); the third has left the board, which is why it gets a
+    // folder of its own here rather than a second fold.
+    const planFile = (group: ExplorerGroup) => (p: PlanFileInfo): ExplorerFile => ({
+      path: p.path,
+      label: p.title,
+      group,
+      status: p.status,
+      priority: p.priority,
+      parseWarning: p.parseWarning,
+    });
+    const archiveCards = ctx.plans.filter((p) => isArchivedCard(p.path));
+    const boardCards = ctx.plans.filter((p) => !isArchivedCard(p.path));
+
+    if (boardCards.length > 0) {
       groups.push({
         group: "plans",
         label: GROUP_LABELS.plans,
-        files: ctx.plans.map((p) => ({
-          path: p.path,
-          label: p.title,
-          group: "plans" as const,
-          status: p.status,
-          priority: p.priority,
-          parseWarning: p.parseWarning,
-        })),
+        files: boardCards.filter((p) => !isArchivedPlan(p.path)).map(planFile("plans")),
+        archived: boardCards.filter((p) => isArchivedPlan(p.path)).map(planFile("plans")),
+      });
+    }
+    if (archiveCards.length > 0) {
+      groups.push({
+        group: "archive",
+        label: GROUP_LABELS.archive,
+        files: archiveCards.map(planFile("archive")),
+        archived: [],
       });
     }
     for (const group of ["docs", "specs"] as const) {
@@ -120,6 +184,7 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
           priority: null,
           parseWarning: false,
         })),
+        archived: [],
       });
     }
 
@@ -163,4 +228,63 @@ export function statusOptions(columnNames: string[], current: string | null): st
   if (!current) return [...columnNames];
   const matched = columnNames.some((name) => slugStatus(name) === slugStatus(current));
   return matched ? [...columnNames] : [...columnNames, current];
+}
+
+// Every file the explorer can select, across contexts and groups.
+function allFilePaths(tree: GavinTree | undefined): Set<string> {
+  const paths = new Set<string>();
+  if (!tree || tree.rootMissing) return paths;
+  for (const ctx of tree.contexts) {
+    for (const plan of ctx.plans) paths.add(plan.path);
+    for (const doc of ctx.docs) paths.add(doc.path);
+    for (const spec of ctx.specs) paths.add(spec.path);
+  }
+  return paths;
+}
+
+// Where the selected file went when it was renamed or moved on disk,
+// or null if this wasn't a rename (or is too ambiguous to call one).
+//
+// Two consecutive watcher pushes are the only evidence available: the
+// daemon rescans the tree wholesale and nothing on the wire carries file
+// identity, so a rename is inferred rather than reported. The inference
+// is deliberately the narrowest one that works -- exactly one file gone,
+// exactly one file new, and the one that went was the selection. A push
+// that coalesced a rename with any other create or delete fails that
+// test and falls through to the "this file is gone" notice, which is the
+// honest answer when we genuinely can't tell.
+export function followRenamedPath(
+  before: GavinTree | undefined,
+  after: GavinTree | undefined,
+  selectedPath: string
+): string | null {
+  const previous = allFilePaths(before);
+  const current = allFilePaths(after);
+  if (current.has(selectedPath) || !previous.has(selectedPath)) return null;
+
+  const vanished = [...previous].filter((p) => !current.has(p));
+  const appeared = [...current].filter((p) => !previous.has(p));
+  if (vanished.length !== 1 || appeared.length !== 1) return null;
+  return vanished[0] === selectedPath ? appeared[0] : null;
+}
+
+// The twin of followRenamedPath for context FOLDERS. A board tab is
+// pinned to its context by folder path, so renaming or moving that
+// folder on disk would otherwise leave the tab stuck on "this context no
+// longer exists" -- a dead tab for what was only a rename. Same narrow
+// inference, same fallback when it can't be called.
+export function followRenamedContext(
+  before: GavinTree | undefined,
+  after: GavinTree | undefined,
+  contextFolder: string
+): string | null {
+  const previous = new Set((before?.contexts ?? []).map((c) => c.folderPath));
+  const current = new Set((after?.contexts ?? []).map((c) => c.folderPath));
+  if (after?.rootMissing) return null;
+  if (current.has(contextFolder) || !previous.has(contextFolder)) return null;
+
+  const vanished = [...previous].filter((p) => !current.has(p));
+  const appeared = [...current].filter((p) => !previous.has(p));
+  if (vanished.length !== 1 || appeared.length !== 1) return null;
+  return vanished[0] === contextFolder ? appeared[0] : null;
 }

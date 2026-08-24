@@ -9,6 +9,15 @@ This repo is managed by gavin. Every card on the human's kanban board is a
 markdown file in a `.gavin*/plans/` folder; your spawned sessions appear on an
 Agents page. Follow this workflow:
 
+## 0. Name your tab, first thing
+
+You are running in a tab the human is watching, next to every other
+agent's tab. Before you read anything else, call
+`gavin_name_session(name)` with **two to four words for the work**, not
+for yourself: "login flow", "git tab conflicts", "kanban drag bug".
+Un-named tabs all show the same folder name, and a page of them is
+unreadable. Re-name yourself if the work turns into something else.
+
 ## 1. Read the PRD first
 
 `gavin_read_prd` (or read `.gavin-root/PRD.md`). It is the lead document —
@@ -59,6 +68,11 @@ task returns to nesting). Do this when you start, finish, or get blocked. If
 a human ran your card, the app already set it In Progress — you set the done
 column when finished. Labels: `gavin_set_plan_field(path, "labels", "bug,
 ui")` referencing the board's label names.
+
+A card set to **Done** is filed under `plans/done/` — that keeps the plans
+folder to the work still in flight — and taking it off Done brings it back.
+The reply names the card's path after the write, so when it moved, use the
+new path from then on. Nested children travel with their parent.
 
 ## 5. New feature or library? New context
 

@@ -329,6 +329,20 @@ export function allSessionIds(node: LayoutNode): string[] {
   return node.children.flatMap(allSessionIds);
 }
 
+// Neither a file tab nor a board tab is a terminal session: closing one
+// ends no process, and no agent runs behind one. The two id maps are the
+// only thing that distinguishes them -- a tab absent from both IS a
+// terminal session. Lives here, with allSessionIds, because both the
+// close-page prompt ("N terminal sessions will end") and the sidebar's
+// per-page recap have to mean the same thing by "session".
+export function sessionTabsOnly(
+  ids: string[],
+  fileTabsById: Record<string, unknown>,
+  boardTabsById: Record<string, unknown>
+): string[] {
+  return ids.filter((id) => !fileTabsById[id] && !boardTabsById[id]);
+}
+
 export function activeSessionId(leaf: Extract<LayoutNode, { type: "leaf" }>): string {
   return leaf.tabs[leaf.activeTabIndex];
 }

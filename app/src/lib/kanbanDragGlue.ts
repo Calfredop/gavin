@@ -43,6 +43,12 @@ export const activeDragRoot = writable<HTMLElement | null>(null);
 export interface BoardDragOptions {
   root: HTMLElement; // also the horizontal scroll container of the column strip
   allowColumns: boolean; // column dragging (hub only)
+  // Read at pointerdown, not at attach: while the surface is filtered
+  // (a search box holds a query) CARD drags are suppressed, because the
+  // DOM no longer holds every card and a drop index measured over it
+  // would write the wrong order. Clicks are unaffected. Column drags
+  // stay live -- the strip is never filtered.
+  cardsLocked?: () => boolean;
   commit: (drag: ActiveDrag & { target: DropTarget }) => void;
   click: (kind: DragKind, id: string, mods: ClickModifiers) => void;
 }
@@ -135,6 +141,7 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
     // Shift is multi-select, and only cards are selectable -- a shifted
     // column-header grab is still an ordinary column drag.
     const shift = planEl !== null && e.shiftKey;
+    const locked = planEl !== null && (opts.cardsLocked?.() ?? false);
 
     if (planEl) {
       kind = "plan";
@@ -184,7 +191,7 @@ export function attachBoardDrag(opts: BoardDragOptions): () => void {
       click: opts.click,
     };
     activeDragRoot.set(root);
-    beginCandidate(kind, id, sourceColumnId, sourceIndex, sourceNest, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs, shift);
+    beginCandidate(kind, id, sourceColumnId, sourceIndex, sourceNest, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs, shift, locked);
     // The gesture is tracked on WINDOW listeners, not on root: the
     // dragged card's wrapper leaves the DOM at activation, and WKWebView
     // then drops the pointerup instead of retargeting it (Chromium

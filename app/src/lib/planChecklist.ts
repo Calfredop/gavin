@@ -20,7 +20,7 @@ const LINK_RE = /^\[(.*)\]\((?:\.\/)?([A-Za-z0-9._-]+\.md)\)$/;
 
 // The index of the first body line: 0 for no frontmatter, the line
 // after the closing --- otherwise. An unterminated block has no body.
-function bodyStart(lines: string[]): number | null {
+export function bodyStart(lines: string[]): number | null {
   if (lines[0] !== "---") return 0;
   for (let i = 1; i < lines.length; i += 1) {
     if (lines[i] === "---") return i + 1;

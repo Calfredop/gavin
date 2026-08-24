@@ -7,18 +7,28 @@
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { planCommitFromMerged } from "./planDrop";
-  import { runCard, sendToMainAgent } from "./cardRunActions";
-  import { layoutState } from "./layoutState";
+  import { runCard, resumeCard, sendToMainAgent } from "./cardRunActions";
+  import { layoutState, daemonCompat } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { fetchOrchestration } from "./orchestrationState";
   import { cardSessionFor } from "./kanbanState";
+  import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import BoardSelectionBar from "./BoardSelectionBar.svelte";
   import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import IconButton from "./ui/IconButton.svelte";
+  import { Archive } from "@lucide/svelte";
+  import ArchiveGrid from "./ArchiveGrid.svelte";
+  import { archiveView } from "./archive";
+  import { executeUnarchive } from "./archiveActions";
+  import { featureBlockedReason } from "./daemonCompat";
+  import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
+  import { isSearching } from "./search";
   import { flip } from "svelte/animate";
   import { tooltip } from "./tooltip";
   import type { DropTarget } from "./pointerDrag";
@@ -40,6 +50,13 @@
     void fetchOrchestration(workspaceId);
   });
 
+  // Deep link from a tab's card-link button: the tab set the request and
+  // switched here, so this may be the effect's very first run.
+  $effect(() => {
+    const path = takeCardDetailRequest($requestedCardDetail, workspaceId, "kanban");
+    if (path) openPlanPath = path;
+  });
+
   // Staleness (spec §3): the cached board refetches when the hub board
   // remounts and when the window regains focus. refreshBoard's in-flight
   // guard keeps it from clobbering optimistic state.
@@ -55,13 +72,31 @@
   const board = $derived($kanbanState[workspaceId]);
   const error = $derived(boardError(workspaceId));
   const merged = $derived(board ? mergePlanCards(board, $gavinTrees[workspaceId]) : null);
+
+  // The search lens. `merged` stays UNFILTERED -- the delete cascade, the
+  // detail modal and the drop path all commit against the whole board --
+  // and only the rendered columns come from `view`.
+  let search = $state("");
+  const searching = $derived(isSearching(search));
+  const view = $derived(merged ? filterBoard(merged, search) : null);
+
+  // The archive lens. A toggle rather than a tab: it is the same board's
+  // cards under the same search box, so switching must not cost the
+  // human their query or their place in the workspace.
+  let showingArchive = $state(false);
+  const archive = $derived(archiveView(merged?.archived ?? [], search));
+  const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
   // Every card view in the projection, nested children included -- the
-  // detail modal must resolve a nested child's path too.
+  // detail modal must resolve a nested child's path too. The ARCHIVE is
+  // in here as well: its cards are off the board but the grid opens,
+  // deletes and selects them through exactly these paths.
   const allCards = $derived<CardView[]>(
     merged
-      ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
-          (c) => [c, ...c.nestedChildren]
-        )
+      ? [
+          ...merged.columns.flatMap((c) => c.planCards),
+          ...merged.autoColumns.flatMap((a) => a.planCards),
+          ...merged.archived,
+        ].flatMap((c) => [c, ...c.nestedChildren])
       : []
   );
   const openPlan = $derived<CardView | null>(
@@ -123,6 +158,21 @@
     if (err) planWriteError = err;
   }
 
+  // The In Progress column's Resume (columnRunAction.ts): same spawn,
+  // the prompt that tells the agent to pick the work up rather than
+  // start it.
+  async function handleResume(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await resumeCard(workspaceId, card);
+    if (err) planWriteError = err;
+  }
+
+  async function handleRestore(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await executeUnarchive(workspaceId, [card]);
+    if (err) planWriteError = err;
+  }
+
   const agentAvailable = $derived(
     ($layoutState.workspaces.find((w) => w.id === workspaceId)?.mainSessionId ?? null) !== null
   );
@@ -150,6 +200,10 @@
       root: boardEl,
       allowColumns: true,
       commit: handleDragCommit,
+      // Cards do not drag while the board is filtered: the DOM no longer
+      // holds every card, so the drop index would be measured against a
+      // subset and written as a real `order`. Columns still drag.
+      cardsLocked: () => searching,
       click: (kind, id, mods) => {
         if (kind !== "plan") return;
         // Shift picks cards for a batch run; a plain click still opens
@@ -211,6 +265,9 @@
     <p>Loading board…</p>
   </div>
 {:else}
+  <!-- One flex column so the search bar can sit above a board that still
+       fills the rest of the tab (the hub's .view host is a plain block). -->
+  <div class="kanban">
   {#if planWriteError}
     <div class="plan-error">
       <span>{planWriteError}</span>
@@ -223,6 +280,52 @@
       <button type="button" onclick={() => dismissSaveError(workspaceId)}>✕</button>
     </div>
   {/if}
+  <div class="board-bar">
+    <SearchInput
+      bind:value={search}
+      class="board-search"
+      label={showingArchive ? "Search the archive" : "Search cards"}
+      placeholder={showingArchive
+        ? "Search the archive — title, file, status, label, context…"
+        : "Search cards — title, file, status, label, context…"}
+      matches={showingArchive
+        ? { shown: archive.shown, total: archive.total }
+        : view
+          ? { shown: view.shown, total: view.total }
+          : null}
+      hint={showingArchive ? null : "filtered: clear to drag cards"}
+    />
+    <IconButton
+      icon={Archive}
+      label={showingArchive ? "Back to the board" : "Open the archive"}
+      variant="outlined"
+      tone={showingArchive ? "accent" : "default"}
+      size={12}
+      active={showingArchive}
+      class="archive-toggle"
+      disabled={archiveBlocked !== null}
+      tip={archiveBlocked ??
+        (showingArchive
+          ? "Back to the board"
+          : `Archive — ${archive.total} ${archive.total === 1 ? "card" : "cards"} filed away, newest first`)}
+      onclick={() => (showingArchive = !showingArchive)}
+    >
+      {#if archive.total > 0}<span class="archive-count">{archive.total}</span>{/if}
+    </IconButton>
+  </div>
+  {#if showingArchive}
+    <ArchiveGrid
+      {workspaceId}
+      cards={archive.cards}
+      labels={board.labels}
+      hiddenCount={archive.total - archive.shown}
+      onOpenCard={(path) => (openPlanPath = path)}
+      onRestore={(card) => void handleRestore(card)}
+      onDeleteCard={(card) => (pendingDelete = card)}
+      onCardContextMenu={handleCardContextMenu}
+      restoreBlocked={archiveBlocked}
+    />
+  {:else}
   <div class="board" bind:this={boardEl} oncontextmenu={handleBoardContextMenu} role="presentation">
     {#each buildColumnSlots(board.columns, (c) => c.id, $dragState) as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div class="column-slot" animate:flip={{ duration: 150 }}>
@@ -232,9 +335,11 @@
             {workspaceId}
             {column}
             labels={board.labels}
-            planCards={merged?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
+            planCards={view?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
+            hiddenCount={view?.hiddenIn(column.id) ?? 0}
             onOpenPlanCard={(path) => (openPlanPath = path)}
             onRunCard={handleRun}
+            onResumeCard={handleResume}
             onSendToAgent={handleSendToAgent}
             {agentAvailable}
             onDeleteCard={(card) => (pendingDelete = card)}
@@ -246,8 +351,8 @@
         {/if}
       </div>
     {/each}
-    {#each merged?.autoColumns ?? [] as auto (auto.status)}
-      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
+    {#each view?.autoColumns ?? [] as auto (auto.status)}
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} hiddenCount={view?.hiddenIn(AUTO_KEY_PREFIX + auto.status) ?? 0} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
     {/each}
     {#if addingColumn}
       <input
@@ -262,6 +367,8 @@
     {:else}
       <button type="button" class="add-column" use:tooltip={"Add a column — its name becomes a status"} onclick={() => (addingColumn = true)}>+ Add column</button>
     {/if}
+  </div>
+  {/if}
   </div>
   <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
@@ -281,17 +388,43 @@
       labels={board.labels}
       {allCards}
       onClose={() => (openPlanPath = null)}
+      onPathChange={(path) => (openPlanPath = path)}
     />
   {/if}
 {/if}
 
 <style>
+  .board-bar {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px 0;
+    flex: 0 0 auto;
+  }
+  .board-bar :global(.board-search) {
+    max-width: 520px;
+  }
+  .board-bar :global(.archive-toggle) {
+    margin-left: 10px;
+    flex: 0 0 auto;
+  }
+  .archive-count {
+    font-family: monospace;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .kanban {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
   .board {
     display: flex;
     gap: 12px;
     padding: 16px;
     overflow-x: auto;
-    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
     box-sizing: border-box;
   }
   /* Wrapper the flip directive needs between the flex strip and the

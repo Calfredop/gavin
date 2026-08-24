@@ -34,7 +34,7 @@ because of a detected conflict.
 | O8 | Rails are **vertical columns**; time runs top→bottom. Rails sit in one CSS grid so stage index aligns across rails. |
 | O9 | Conflict rendering uses **two independent axes**: severity is the colour (`--surface-danger` / `--surface-warning`), group identity is a **number badge**. |
 | O10 | The scheduler is a **pure function** over (plan, run state, board, tree, worktrees) returning actions; the reactive layer only executes them. |
-| O11 | Plan is replaced **wholesale** (like `replace_board`); run state is keyed by step id and survives. Deleting a **running** step is refused. |
+| O11 | Plan is replaced **wholesale** (like `replace_board`); run state is keyed by step id and survives. Deleting a step whose session is still **live** is refused (§2.2). |
 | O12 | Per-worktree **dirty file paths** are evidence for the agent only. The app's own conflict detection never needs them. |
 | O13 | **Separate worktrees are never a conflict**, same rail or different rails — sharing a checkout is the whole criterion. There is no step-level worktree, so a parallel stage always shares its rail's checkout; the box flags it and offers **Make sequential**. |
 | O15 | A rail binds to a **checkout and a branch, orthogonally**: `worktreePath` says *which* checkout, `branch` says which branch gavin puts it on before launching. A branch with no worktree is the root checkout on that branch — **branches are a first-class alternative to a folder each**. Gavin switches only when no step of that rail is running, refuses on a dirty checkout, and never switches back. |
@@ -166,12 +166,19 @@ untouched — that is what lets the agent reorganize around live work (O11).
 Rejected wholesale with a message naming the offender, leaving the stored
 plan untouched:
 
-1. **A step whose `StepRun.state` is `running` is missing from the new
-   plan.** Moving it between stages or rails is fine — the id survives, so
-   its live session stays reachable. Deleting it would orphan a running
-   agent. Message: `step <id> (<card path>) is running — pause or let it
-   finish before removing it`. The path, not the title: the daemon stores
-   `card_path` and never parses the card's frontmatter.
+1. **A step whose `StepRun.state` is `running` *and whose `sessionId` the
+   daemon still hosts* is missing from the new plan.** Moving it between
+   stages or rails is fine — the id survives, so its live session stays
+   reachable. Deleting it would orphan a running agent. Message: `step <id>
+   (<card path>) is running — pause or let it finish before removing it`.
+   The path, not the title: the daemon stores `card_path` and never parses
+   the card's frontmatter. **Liveness is checked against the daemon's own
+   PTY table, not taken from the row**: only the app writes run state, so a
+   row it left at `running` for a session that has since ended (or one with
+   no `sessionId` at all) has nothing left to orphan, and refusing on it
+   would wedge the plan shut — the rail carrying it could never be edited
+   or deleted again. §4.4's reconciliation is what normally clears such a
+   row; this guard is what stops one from being fatal when it does not.
 2. Duplicate `id` anywhere in rails/stages/steps.
 3. A `ConflictNote.stepIds` entry that names no step in the same payload.
 4. A `Rail.pageId` is *not* validated — pages are app-side config; a stale
@@ -254,8 +261,13 @@ idle ──Start──▶ running ──all stages complete──▶ idle (rende
   non-`done` step.
 - **Pause** stops advancing. Running sessions are never killed — pausing is
   about gavin's behaviour, not the agents'.
-- **Resume** re-evaluates the current stage: it launches `pending` steps but
-  will not advance past a `stalled` one.
+- **Resume** re-evaluates the current stage: it launches `pending` steps and
+  **retries `stalled` ones** (rule 2), so a failed step is re-attempted when
+  the run reaches it rather than blocking the rail until someone presses its
+  own Retry. It re-arms at the first unfinished stage when the stage it was
+  paused on no longer exists — swept out by an edit, a reorganize or a Clear
+  done — since a `currentStageId` naming nothing would otherwise read as
+  "nothing left to point at" and complete the rail.
 - **Reset** clears every `StepRun` and `RailRun` for the rail. It never
   touches card statuses — the board is the human's record, not the
   scheduler's scratch space.
@@ -302,17 +314,30 @@ the branch list, to warn *before* the human presses Start.
 
 For each rail in `running`, over its `currentStageId`:
 
-1. Each step whose card's status slug (`slugStatus`, as the board
-   matches) equals that of the **done column** — the board column with the
+1. Each not-yet-`done` step whose card's status slug (`slugStatus`, as the
+   board matches) equals that of the **done column** — the board column with the
    highest `position` — → `markDone`. This runs before launching, so a stage of
    already-finished cards completes without spawning anything, and re-arming
-   a rail is idempotent.
-2. Each `pending` step → `launch`, unless a precondition fails, in which
-   case `stall` with the reason:
+   a rail is idempotent; it covers a `stalled` step too, so a card finished by
+   hand is done rather than something rule 2 then retries.
+
+   The status compared is the one the **board shows the card in**, not always
+   the card's own: a nested task (`parent:` set, no `status:`) is drawn inside
+   its parent's card, so it inherits the parent's status
+   (`orchestration.effectiveStatus`, resolved on the same `planKey` the board
+   nests on). Reading `plan.status` directly made a rail re-run every finished
+   nested task.
+2. Each `pending` or `stalled` step → `launch`, unless a precondition fails,
+   in which case `stall` with the reason:
    - card path not in the gavin tree → `card file is missing`
    - rail has a `worktreePath` not present in `worktrees` → `worktree
      <path> is gone`
    - the card is a `note` → `notes are not runnable`
+
+   Retrying a `stalled` step re-derives the blocker rather than replaying the
+   old command, so it either goes this time or stalls again on its own merits
+   — and a fresh stall re-pauses the rail (rule 5), which keeps this to one
+   attempt per press of Play rather than a spin.
 3. Each `running` step whose `sessionId` is not in `liveSessionIds` and
    whose card is not done → `stall` with `agent exited before the card
    reached <done column>` (O6).
@@ -394,6 +419,17 @@ Sessions are daemon-hosted and survive the app, so on mount the tab
 reconciles rather than assumes: every `running` step whose `sessionId` is
 absent from `liveSessionIds` becomes `stalled`. Rule 3 covers this — the
 mount tick is just the first tick.
+
+**Every rail, not only the running ones.** Reconciliation is about what the
+sessions say, not about whether the rail is advancing, so a tick also sweeps
+rails that are `idle` or `paused`: each of their `running` steps whose
+session is gone takes the same verdict as rule 3 (a card already in the done
+column counts as `done`, everything else `stalled`). Nothing is launched and
+no stage advances there — the rail is not running, and a stall on it does
+not re-label it `paused` (rule 5 stops a rail that is *advancing*). Without
+this sweep such a step has no tick that would ever correct it, and §2.2's
+guard then refuses every plan write that drops it: the rail becomes
+impossible to edit or delete.
 
 ---
 
@@ -547,7 +583,9 @@ dashed chip is what says so.
 
 **Retry** returns a `stalled` step to `pending` and clears its reason; the next
 tick launches it under the rules of §4.2, so a retry re-reads the card and
-re-checks the worktree rather than replaying the old command.
+re-checks the worktree rather than replaying the old command. It stays the way
+to re-attempt ONE step out of turn — running the rail retries the failed steps
+it reaches anyway (rule 2).
 
 **Unplaced drawer**: a collapsible right-edge panel listing every task/plan
 card not on any rail, draggable into the grid — the affordance that makes

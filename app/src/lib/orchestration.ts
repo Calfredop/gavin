@@ -6,7 +6,7 @@
 import type { Board, Column } from "./kanban";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 import type { WorktreeInfo } from "./git";
-import { slugStatus } from "./planBoard";
+import { isArchivedCard, planKey, slugStatus } from "./planBoard";
 
 export interface Step {
   id: string;
@@ -140,6 +140,42 @@ export function cardIndex(tree: GavinTree | undefined): Map<string, CardEntry> {
   return index;
 }
 
+/// The PLAN cards of a card index, keyed the way a nested task's
+/// `parent:` resolves: (contextFolder, fileName). Only plans, because
+/// only a plan card can be a parent -- exactly the index
+/// `mergePlanCards` builds for the board.
+export function planIndex(cards: Map<string, CardEntry>): Map<string, CardEntry> {
+  const index = new Map<string, CardEntry>();
+  for (const entry of cards.values()) {
+    if (entry.plan.kind === "plan") index.set(planKey(entry.contextFolder, entry.plan.fileName), entry);
+  }
+  return index;
+}
+
+/// THE STATUS THE BOARD SHOWS THIS CARD IN, which is not always the
+/// card's own. A task with a `parent:` and no `status:` of its own is
+/// NESTED: it is drawn inside its parent's card, so the column the human
+/// sees it in is the parent's, and on disk it travels into `plans/done/`
+/// with the parent rather than by any status of its own.
+///
+/// The scheduler used to read `plan.status` directly, so every nested
+/// task under a Done plan looked unfinished: pressing Start re-ran
+/// finished work, and the launch then wrote `In Progress` onto the card,
+/// which un-nested it and moved it back out of `done/`.
+///
+/// One hop, deliberately: a card that nests is a task, and a parent is
+/// always a plan, so no chain can form. The same conditions
+/// `mergePlanCards` nests on, resolved on the same `planKey` -- one
+/// spelling of the link, not two that can drift.
+export function effectiveStatus(entry: CardEntry, plans: Map<string, CardEntry>): string | null {
+  const { plan, contextFolder } = entry;
+  const own = plan.status ?? null;
+  if (own !== null || plan.kind !== "task" || !plan.parent || plan.parent === plan.fileName) {
+    return own;
+  }
+  return plans.get(planKey(contextFolder, plan.parent))?.plan.status ?? null;
+}
+
 /// WHERE AN AGENT'S SHELL STARTS. Not the isolation question: SP2 adds
 /// `conflictCheckout` for that, because a card's contextFolder is a
 /// subdirectory of the root checkout rather than a checkout of its own
@@ -266,6 +302,36 @@ function toolStepOutcome(
   return { kind: "stall", reason: `${label} exited with code ${exitCode}` };
 }
 
+/// The verdict on a step whose session is over. One spelling, because
+/// two paths need it: rule 3 inside a running rail, and the
+/// reconciliation pass over a rail that is not running.
+///
+/// A card that reached the done column outranks the exit -- an agent
+/// that finished the card and then quit counts as done, not stalled.
+function deadSessionAction(
+  step: Step,
+  cardStatus: string | null,
+  doneSlug: string | null,
+  doneName: string,
+  toolLabel: string,
+  exitCode: number | undefined
+): Action {
+  if (isToolStep(step)) {
+    const outcome = toolStepOutcome(exitCode, toolLabel);
+    return outcome.kind === "markDone"
+      ? { kind: "markDone", stepId: step.id }
+      : { kind: "stall", stepId: step.id, reason: outcome.reason };
+  }
+  if (doneSlug && cardStatus !== null && slugStatus(cardStatus) === doneSlug) {
+    return { kind: "markDone", stepId: step.id };
+  }
+  return {
+    kind: "stall",
+    stepId: step.id,
+    reason: `agent exited before the card reached ${doneName}`,
+  };
+}
+
 /// The scheduler (spec §4.2). Pure and total: same inputs, same list.
 /// Rules run in order per stage -- mark done, launch or stall pending,
 /// stall a running step whose session died -- and a fully-done stage
@@ -287,6 +353,12 @@ export function nextActions(
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
+  const plans = planIndex(cards);
+  /// What the BOARD says about this step's card -- a nested task reads
+  /// its parent's status (see effectiveStatus). Null for a step whose
+  /// card the tree has no entry for, which is never done.
+  const statusOf = (entry: CardEntry | undefined): string | null =>
+    entry ? effectiveStatus(entry, plans) : null;
   const done = doneColumn(board);
   const doneSlug = done ? slugStatus(done.name) : null;
   const knownWorktrees = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
@@ -295,7 +367,35 @@ export function nextActions(
   const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
 
   for (const rail of orch.rails) {
-    if (railStateOf(orch, rail.id) !== "running") continue;
+    if (railStateOf(orch, rail.id) !== "running") {
+      // Reconciliation is about what the SESSIONS say, not about whether
+      // the rail is advancing (spec §4.4). A step left `running` on an
+      // idle or paused rail -- the app quit mid-run, or a stall paused
+      // the rail around it -- gets no tick that would ever correct it,
+      // and the daemon refuses every plan write that drops a `running`
+      // step: the stale row wedges the rail shut, uneditable and
+      // undeletable. So write the truth about dead sessions here. Only
+      // that: nothing is launched and no stage advances, because the
+      // rail is not running.
+      for (const stage of rail.stages) {
+        for (const step of stage.steps) {
+          if (stepStateOf(orch, step.id) !== "running") continue;
+          const sessionId = runByStep.get(step.id)?.sessionId ?? null;
+          if (sessionId && liveSessionIds.has(sessionId)) continue;
+          actions.push(
+            deadSessionAction(
+              step,
+              statusOf(cards.get(step.cardPath)),
+              doneSlug,
+              done?.name ?? "the done column",
+              toolName.get(step.toolId as string) ?? "the tool",
+              sessionId ? exitCodes.get(sessionId) : undefined
+            )
+          );
+        }
+      }
+      continue;
+    }
 
     // Rail precondition -- the branch (spec O15). Before any step rule,
     // because the checkout is shared by every step of the rail. The rail
@@ -335,12 +435,20 @@ export function nextActions(
         //
         // Skipped entirely for a TOOL step: it has no card, so there is
         // no status to compare and rule 3 owns its completion.
+        //
+        // The status is the one the BOARD shows the card in, so a nested
+        // task under a Done plan is skipped here rather than re-run.
+        //
+        // `!== "done"` covers a STALLED step too: a card someone finished
+        // by hand while its step sat failed is done, not something rule 2
+        // should then retry.
+        const cardStatus = statusOf(entry);
         if (
           !isToolStep(step) &&
-          (state === "pending" || state === "running") &&
+          state !== "done" &&
           doneSlug &&
-          entry &&
-          slugStatus(entry.plan.status ?? "") === doneSlug
+          cardStatus !== null &&
+          slugStatus(cardStatus) === doneSlug
         ) {
           actions.push({ kind: "markDone", stepId: step.id });
           simulated.set(step.id, "done");
@@ -348,7 +456,16 @@ export function nextActions(
         }
 
         // Rule 2 -- launch a pending step, or stall it with a reason.
-        if (state === "pending") {
+        //
+        // A STALLED step is retried here, when the run REACHES it: a
+        // failed step used to be invisible to every rule, so a rail armed
+        // on its stage produced no actions at all and sat there looking
+        // busy, with the per-step Retry button the only way past it.
+        // Nothing is replayed -- the blocker is re-derived, so the step
+        // either goes this time or stalls again on its own merits, and a
+        // fresh stall re-pauses the rail (rule 5). That is what keeps
+        // this one attempt per press of Play rather than a spin.
+        if (state === "pending" || state === "stalled") {
           const reason = launchBlocker(rail, step, entry, knownWorktrees, knownTools);
           if (reason) {
             actions.push({ kind: "stall", stepId: step.id, reason });
@@ -368,21 +485,18 @@ export function nextActions(
         if (state === "running") {
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
           if (sessionId && !liveSessionIds.has(sessionId)) {
-            if (isToolStep(step)) {
-              const label = toolName.get(step.toolId as string) ?? "the tool";
-              const outcome = toolStepOutcome(exitCodes.get(sessionId), label);
-              if (outcome.kind === "markDone") {
-                actions.push({ kind: "markDone", stepId: step.id });
-                simulated.set(step.id, "done");
-                continue;
-              }
-              actions.push({ kind: "stall", stepId: step.id, reason: outcome.reason });
-            } else {
-              actions.push({
-                kind: "stall",
-                stepId: step.id,
-                reason: `agent exited before the card reached ${done?.name ?? "the done column"}`,
-              });
+            const action = deadSessionAction(
+              step,
+              cardStatus,
+              doneSlug,
+              done?.name ?? "the done column",
+              toolName.get(step.toolId as string) ?? "the tool",
+              exitCodes.get(sessionId)
+            );
+            actions.push(action);
+            if (action.kind === "markDone") {
+              simulated.set(step.id, "done");
+              continue;
             }
             simulated.set(step.id, "stalled");
             stalled = true;
@@ -573,11 +687,43 @@ export function setStepParams(
 /// A stage left with no steps is removed: an empty stage is invisible in
 /// the grid and would otherwise be a silent gap the scheduler steps over.
 export function removeStep(orch: Orchestration, stepId: string): Orchestration {
+  return removeSteps(orch, [stepId]);
+}
+
+/// Remove a whole SET of steps in one write -- what "Clear done" needs,
+/// and what removeStep is the one-element case of. One pass, so a stage
+/// emptied by the last of its steps is dropped exactly as it is when a
+/// single step leaves it empty.
+export function removeSteps(orch: Orchestration, stepIds: string[]): Orchestration {
+  if (stepIds.length === 0) return orch;
+  const drop = new Set(stepIds);
   const rails = orch.rails.map((r) => ({
     ...r,
     stages: renumber(
       r.stages
-        .map((s) => ({ ...s, steps: renumber(s.steps.filter((t) => t.id !== stepId)) }))
+        .map((s) => ({ ...s, steps: renumber(s.steps.filter((t) => !drop.has(t.id))) }))
+        .filter((s) => s.steps.length > 0)
+    ),
+  }));
+  return sweepOrphans({ ...orch, rails });
+}
+
+/// A step is a card OR a tool, never neither (spec T1) -- and the daemon
+/// refuses to store one that is neither. A pre-v11 daemon had no
+/// `tool_id` column, so every tool step handed to it came back as
+/// exactly that: an untitled chip, and a plan the current daemon will
+/// reject wholesale until it is gone, which would wedge every later
+/// save. Dropped on the way in from the wire, so neither the eye nor the
+/// next save ever meets one.
+export function dropImpossibleSteps(orch: Orchestration): Orchestration {
+  const rails = orch.rails.map((r) => ({
+    ...r,
+    stages: renumber(
+      r.stages
+        .map((s) => ({
+          ...s,
+          steps: renumber(s.steps.filter((t) => isToolStep(t) || t.cardPath !== "")),
+        }))
         .filter((s) => s.steps.length > 0)
     ),
   }));
@@ -764,6 +910,39 @@ export function findCardPlacement(orch: Orchestration, cardPath: string): CardPl
   return null;
 }
 
+/// The rail a card is on, as a board card wears it: the rail's NAME and
+/// where in its run order the card falls -- everything a glyph and its
+/// tooltip need, without the surface walking the rails itself.
+///
+/// Null when the card is on no rail, and null for an orchestration that
+/// is not loaded yet: a board renders long before the Orchestration tab
+/// is ever opened, and an unloaded plan has to read as "no rail".
+export interface CardRailBadge {
+  railId: string;
+  railName: string;
+  /// 1-based, paired with `stageCount`, exactly as `CardPlacement` gives
+  /// them -- "stage 2 of 4".
+  stageNumber: number;
+  stageCount: number;
+}
+
+export function cardRailBadge(
+  orch: Orchestration | null | undefined,
+  cardPath: string
+): CardRailBadge | null {
+  if (!orch) return null;
+  const placement = findCardPlacement(orch, cardPath);
+  if (!placement) return null;
+  const rail = orch.rails.find((r) => r.id === placement.railId);
+  if (!rail) return null;
+  return {
+    railId: rail.id,
+    railName: rail.name,
+    stageNumber: placement.stageNumber,
+    stageCount: placement.stageCount,
+  };
+}
+
 /// Put a card on a rail from OUTSIDE the tab -- the board's composer, a
 /// card's context menu, its detail modal. The card lands as the rail's
 /// own trailing stage, the sequential default the drawer's click already
@@ -785,6 +964,90 @@ export function sendCardToRail(
   if (placement?.railId === railId) return orch;
   if (placement) return moveStepToNewStage(orch, placement.stepId, railId, rail.stages.length);
   return addCardAsStage(orch, railId, rail.stages.length, stepId, cardPath);
+}
+
+/// Every distinct card a rail carries, in run order (stage by position,
+/// then step by position). Tool steps have no card and drop out; a card
+/// written onto two steps counts ONCE, because what a caller does with
+/// this list it does to the card FILE.
+export function railCardPaths(rail: Rail): string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const stage of [...rail.stages].sort((a, b) => a.position - b.position)) {
+    for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
+      if (isToolStep(step) || !step.cardPath || seen.has(step.cardPath)) continue;
+      seen.add(step.cardPath);
+      paths.push(step.cardPath);
+    }
+  }
+  return paths;
+}
+
+/// The cards a "move all to <column>" would actually WRITE: the rail's
+/// cards, minus the ones already in that column (a no-op write still
+/// churns the file and re-pushes the tree) and minus the ones the tree
+/// has no card for -- a card deleted out from under the plan has no file
+/// to write, and its chip already says so.
+///
+/// Empty means the action has nothing to do, which is how the surfaces
+/// decide to disable it.
+export function railCardsToMove(
+  rail: Rail,
+  cards: Map<string, CardEntry>,
+  columnName: string
+): string[] {
+  const target = slugStatus(columnName);
+  return railCardPaths(rail).filter((path) => {
+    const entry = cards.get(path);
+    if (!entry) return false;
+    // A card with NO status is never "already there": the board shows it
+    // in the first column, but the file does not say so, and this is the
+    // write that makes it say so. Same rule as a card's own menu.
+    if (entry.plan.status === null) return true;
+    return slugStatus(entry.plan.status) !== target;
+  });
+}
+
+/// The steps a "Clear done" would take OFF the rail, in run order.
+///
+/// Two facts make a step done, the same two rule 1 of the scheduler
+/// joins (§4.2): the scheduler marked it `done`, or -- for a card step
+/// on a rail that was never run, and so has no run state at all -- its
+/// card already sits in the board's done column. A TOOL step has no card
+/// and can only be finished by its run state.
+///
+/// A `running` step is never listed, whatever its card says: the daemon
+/// refuses a plan write that drops one (replace_plan guard 3), and one
+/// refusal would lose the whole clear rather than that single step.
+///
+/// Empty means the action has nothing to do, which is how the surfaces
+/// decide to disable it.
+export function railDoneStepIds(
+  rail: Rail,
+  orch: Orchestration,
+  cards: Map<string, CardEntry>,
+  doneColumnName: string | null
+): string[] {
+  const target = doneColumnName ? slugStatus(doneColumnName) : null;
+  const plans = planIndex(cards);
+  const ids: string[] = [];
+  for (const stage of [...rail.stages].sort((a, b) => a.position - b.position)) {
+    for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
+      const state = stepStateOf(orch, step.id);
+      if (state === "running") continue;
+      if (state === "done") {
+        ids.push(step.id);
+        continue;
+      }
+      if (isToolStep(step) || !target) continue;
+      const entry = cards.get(step.cardPath);
+      // The status the BOARD shows the card in, so a nested task clears
+      // with its Done parent exactly as the scheduler skips it.
+      const status = entry ? effectiveStatus(entry, plans) : null;
+      if (status !== null && slugStatus(status) === target) ids.push(step.id);
+    }
+  }
+  return ids;
 }
 
 /// Split one stage of N steps into N consecutive single-step stages, in
@@ -878,6 +1141,37 @@ export function groupUnplacedByStatus(cards: CardEntry[], board: Board): Unplace
   }
 
   return [...known.values(), ...extra.values()].filter((g) => g.cards.length > 0);
+}
+
+/// The cards a rail can take on: every runnable card not already on one.
+/// Feeds both the unplaced drawer and a stage's "+ Add step" picker, so
+/// the two can never disagree about what is on offer.
+///
+/// Two kinds never appear. A NOTE is not runnable (launchBlocker says so
+/// too, one tick too late to be useful here). An ARCHIVED card is not on
+/// the board at all -- mergePlanCards pulls it out before any column sees
+/// it -- and offering filed-away work back as a candidate would undo the
+/// human's filing decision in the one place they came to see what is
+/// left to do.
+export function availableCards(
+  cards: Map<string, CardEntry>,
+  placed: Set<string>
+): CardEntry[] {
+  return [...cards.values()].filter(
+    (e) => e.plan.kind !== "note" && !isArchivedCard(e.plan.path) && !placed.has(e.plan.path)
+  );
+}
+
+/// How many unplaced cards the tab REPORTS -- the drawer's header, and
+/// the search summary in the bar.
+///
+/// The done group is listed but never counted: its cards are still
+/// placeable (a rail may want one for its shape), yet nothing about them
+/// is waiting, and the scheduler marks such a step done and cascades past
+/// it without ever launching. A headline "Unplaced (40)" that is mostly
+/// finished work answers a question nobody asked.
+export function unplacedCount(groups: UnplacedGroup[]): number {
+  return groups.reduce((n, g) => (g.isDone ? n : n + g.cards.length), 0);
 }
 
 // ---- Conflicts -------------------------------------------------------------
