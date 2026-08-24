@@ -19,6 +19,19 @@ export interface GitViewPrefs {
   worktree?: string;
   /// History graph scope: all branches (default) or the current branch.
   graphAll?: boolean;
+  /// A "Commit via agent" run still in flight. The run is a HIDDEN daemon
+  /// session that no page references, so this is the only record of it --
+  /// see gitState's adoptAgentCommits.
+  agentCommit?: AgentCommitRecord;
+}
+
+/// An in-flight hidden commit run: its session id, and the checkout it
+/// was launched against. The cwd is recorded rather than re-derived from
+/// `worktree` -- switching worktrees mid-run abandons the run, and by
+/// then `worktree` points somewhere else.
+export interface AgentCommitRecord {
+  sessionId: string;
+  cwd: string;
 }
 
 export interface Workspace {

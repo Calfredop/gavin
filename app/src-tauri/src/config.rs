@@ -56,6 +56,24 @@ pub struct GitViewPrefs {
     /// History graph scope (SP4): all branches when absent/true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_all: Option<bool>,
+    /// A "Commit via agent" run that was still going when this config was
+    /// written. The run is a HIDDEN daemon session, so nothing else in
+    /// this file references its id -- without this the app comes back
+    /// from a restart with no way to tell that a second agent would be
+    /// committing on top of a first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_commit: Option<AgentCommitRecord>,
+}
+
+/// The id of an in-flight hidden commit run, and the checkout it was
+/// launched against. The cwd is stored rather than re-derived from
+/// `worktree`: switching worktrees mid-run already abandons the run, and
+/// by then `worktree` names somewhere else entirely.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCommitRecord {
+    pub session_id: String,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -441,6 +459,10 @@ mod tests {
             nav_collapsed: None,
             worktree: Some("/r/repo-feature".to_string()),
             graph_all: Some(false),
+            agent_commit: Some(AgentCommitRecord {
+                session_id: "commit-1".to_string(),
+                cwd: "/r/repo-feature".to_string(),
+            }),
         });
         let config = AppConfig {
             workspaces: vec![ws],
