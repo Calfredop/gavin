@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -623,6 +624,48 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
         .ok_or_else(|| anyhow::anyhow!("daemon closed the command connection"))
 }
 
+/// One reconnect per call, mirroring gavin-mcp's `SocketTransport`
+/// (`crates/gavin-mcp/src/main.rs`), which has done this since it was
+/// written. Without it, any single command failure -- daemon restart, or
+/// a request an older/newer daemon can't parse -- leaves `conn` closed
+/// with nothing to ever reopen it, turning one bad request into a
+/// permanently dead app.
+///
+/// Known gap, deliberately not fixed here: reconnecting re-opens the
+/// socket but does NOT re-run the version probe. If the daemon was
+/// replaced by a different version between the original failure and this
+/// reconnect, the app keeps serving its previous `DaemonCompat` verdict
+/// until the next explicit `reconnect()` or restart.
+///
+/// Takes `socket_path` as a parameter rather than resolving
+/// `protocol::socket_path()` itself so tests can point the reconnect at a
+/// throwaway tempdir socket -- otherwise a test whose fake daemon hangs up
+/// would reconnect straight into the developer's real running daemon.
+/// `send_command_reconnecting` below is the production wrapper that
+/// supplies the real path; call sites should use that one.
+fn send_command_reconnecting_at(
+    conn: &Mutex<UnixStream>,
+    socket_path: &Path,
+    req: &Request,
+) -> anyhow::Result<Response> {
+    match send_command(conn, req) {
+        Ok(resp) => Ok(resp),
+        Err(_) => {
+            *conn.lock().unwrap() = UnixStream::connect(socket_path)?;
+            send_command(conn, req)
+        }
+    }
+}
+
+/// Production entry point for every command site: see
+/// `send_command_reconnecting_at` for the reconnect logic and its
+/// documented gap. `verify_daemon_protocol` deliberately does NOT go
+/// through this -- see its own doc comment for why a closed connection
+/// there must stay a hard failure rather than get retried away.
+fn send_command_reconnecting(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Response> {
+    send_command_reconnecting_at(conn, &socket_path(), req)
+}
+
 /// Walks the tree, replacing any session id not present in `valid_ids`
 /// (stale, exited, or never existed) with a freshly created session — the
 /// same silent, normal fallback Milestone B established for its one
@@ -676,7 +719,7 @@ fn resolve_sessions(
 fn list_valid_session_ids(
     command_conn: &Mutex<UnixStream>,
 ) -> anyhow::Result<HashMap<String, protocol::SessionSummary>> {
-    let resp = send_command(command_conn, &Request::ListSessions)?;
+    let resp = send_command_reconnecting(command_conn, &Request::ListSessions)?;
     match resp {
         Response::SessionList { sessions } => {
             Ok(sessions.into_iter().map(|s| (s.id.clone(), s)).collect())
@@ -780,6 +823,41 @@ mod test_support {
 mod command_connection_tests {
     use super::test_support::fake_daemon_replying_with;
     use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A closed command connection must not stay dead forever: the daemon
+    /// may simply have restarted between calls. The first connection
+    /// closes without answering (simulating exactly that), and
+    /// send_command_reconnecting_at must reconnect and retry once rather
+    /// than surfacing the failure to the caller.
+    ///
+    /// Exercises `_at` directly, with a tempdir socket, rather than the
+    /// production `send_command_reconnecting` wrapper -- if the reconnect
+    /// resolved the real daemon socket path internally instead of taking
+    /// one as a parameter, this test's fake daemon hanging up would send
+    /// the reconnect to the developer's actual running daemon.
+    #[test]
+    fn a_command_retries_once_on_a_closed_connection() {
+        // Serve two connections: the first closes immediately (simulating a
+        // daemon that hung up), the second answers properly.
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("retry.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(second.try_clone().unwrap());
+            let _req: Option<Request> = read_message(&mut reader).unwrap();
+            write_message(&mut second, &Response::ProtocolVersion { version: 12 }).unwrap();
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let resp = send_command_reconnecting_at(&conn, &sock, &Request::GetProtocolVersion).unwrap();
+        assert!(matches!(resp, Response::ProtocolVersion { version: 12 }));
+        server.join().unwrap();
+    }
 
     #[test]
     fn send_command_round_trips_a_request_and_response() {
@@ -1506,7 +1584,7 @@ fn create_fresh_session(
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let command = command.map(str::to_string);
 
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         command_conn,
         &Request::CreateSession { workspace_path: target.clone(), cwd: target.clone(), command: command.clone() },
     )?;
@@ -1518,7 +1596,7 @@ fn create_fresh_session(
         other => anyhow::bail!("expected SessionCreated, got {other:?}"),
     }
 
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         command_conn,
         &Request::CreateSession { workspace_path: home.clone(), cwd: home.clone(), command },
     )?;
@@ -1544,7 +1622,7 @@ pub fn create_session(
 
 #[tauri::command]
 pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::KillSession { id: session_id })
+    let resp = send_command_reconnecting(&state.0, &Request::KillSession { id: session_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1554,7 +1632,7 @@ pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Resu
 }
 
 fn get_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<Board> {
-    let resp = send_command(command_conn, &Request::GetBoard { workspace_id })?;
+    let resp = send_command_reconnecting(command_conn, &Request::GetBoard { workspace_id })?;
     match resp {
         Response::Board { columns, labels, card_sessions } => Ok(Board { columns, labels, card_sessions }),
         other => anyhow::bail!("expected Board, got {other:?}"),
@@ -1572,7 +1650,7 @@ fn set_board_impl(
     columns: Vec<Column>,
     labels: Vec<Label>,
 ) -> anyhow::Result<()> {
-    let resp = send_command(command_conn, &Request::SetBoard { workspace_id, columns, labels })?;
+    let resp = send_command_reconnecting(command_conn, &Request::SetBoard { workspace_id, columns, labels })?;
     match resp {
         Response::Ok => Ok(()),
         other => anyhow::bail!("expected Ok, got {other:?}"),
@@ -1598,7 +1676,7 @@ fn get_orchestration_impl(
     command_conn: &Mutex<UnixStream>,
     workspace_id: String,
 ) -> anyhow::Result<Orchestration> {
-    let resp = send_command(command_conn, &Request::GetOrchestration { workspace_id })?;
+    let resp = send_command_reconnecting(command_conn, &Request::GetOrchestration { workspace_id })?;
     match resp {
         Response::Orchestration { rails, conflict_notes, rail_runs, step_runs } => {
             Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs })
@@ -1633,7 +1711,7 @@ pub fn set_orchestration(
     conflict_notes: Vec<ConflictNote>,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
         &Request::SetOrchestration { workspace_id, rails, conflict_notes },
     )
@@ -1648,7 +1726,7 @@ pub fn set_rail_run(
     current_stage_id: Option<String>,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
         &Request::SetRailRun { rail_id, state: state_value, current_stage_id },
     )
@@ -1664,7 +1742,7 @@ pub fn set_step_run(
     reason: Option<String>,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
         &Request::SetStepRun { step_id, state: state_value, session_id, reason },
     )
@@ -1673,7 +1751,7 @@ pub fn set_step_run(
 }
 
 fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<()> {
-    let resp = send_command(command_conn, &Request::DeleteBoard { workspace_id })?;
+    let resp = send_command_reconnecting(command_conn, &Request::DeleteBoard { workspace_id })?;
     match resp {
         Response::Ok => Ok(()),
         other => anyhow::bail!("expected Ok, got {other:?}"),
@@ -1704,7 +1782,7 @@ pub fn unwatch_gavin_root(
     workspace_id: String,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::UnwatchGavinRoot { workspace_id })
+    let resp = send_command_reconnecting(&state.0, &Request::UnwatchGavinRoot { workspace_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1718,7 +1796,7 @@ pub fn get_gavin_tree(
     workspace_id: String,
     state: State<CommandConnection>,
 ) -> Result<protocol::GavinTree, String> {
-    let resp = send_command(&state.0, &Request::GetGavinTree { workspace_id })
+    let resp = send_command_reconnecting(&state.0, &Request::GetGavinTree { workspace_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::GavinTreeSnapshot { tree, .. } => Ok(tree),
@@ -1733,7 +1811,7 @@ pub fn init_gavin_root(
     workspace_name: String,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::InitGavinRoot { root_path, workspace_name })
+    let resp = send_command_reconnecting(&state.0, &Request::InitGavinRoot { root_path, workspace_name })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1747,7 +1825,7 @@ pub fn create_gavin_context(
     parent_folder: String,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::CreateGavinContext { parent_folder })
+    let resp = send_command_reconnecting(&state.0, &Request::CreateGavinContext { parent_folder })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1762,7 +1840,7 @@ pub fn add_external_gavin_context(
     folder: String,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::AddExternalGavinContext { root_path, folder })
+    let resp = send_command_reconnecting(&state.0, &Request::AddExternalGavinContext { root_path, folder })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1777,7 +1855,7 @@ pub fn remove_external_gavin_context(
     folder: String,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::RemoveExternalGavinContext { root_path, folder })
+    let resp = send_command_reconnecting(&state.0, &Request::RemoveExternalGavinContext { root_path, folder })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -2034,7 +2112,7 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
 /// Returns the created path.
 #[tauri::command]
 pub fn delete_card_file(path: String, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::DeleteCardFile { path }).map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(&state.0, &Request::DeleteCardFile { path }).map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -2051,7 +2129,7 @@ pub fn link_card_session(
     command: Option<String>,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
         &Request::LinkCardSession { workspace_id, path, session_id, cwd, command },
     )
@@ -2069,7 +2147,7 @@ pub fn unlink_card_session(
     path: String,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::UnlinkCardSession { workspace_id, path })
+    let resp = send_command_reconnecting(&state.0, &Request::UnlinkCardSession { workspace_id, path })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -2086,7 +2164,7 @@ pub fn set_checklist_item(
     checked: bool,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
         &Request::SetChecklistItem { path, line_index, expected_text, checked },
     )
@@ -2105,7 +2183,7 @@ pub fn promote_checklist_item(
     item: String,
     state: State<CommandConnection>,
 ) -> Result<String, String> {
-    let resp = send_command(&state.0, &Request::PromoteChecklistItem { plan_path, item })
+    let resp = send_command_reconnecting(&state.0, &Request::PromoteChecklistItem { plan_path, item })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::TaskPromoted { path } => Ok(path),
@@ -2126,7 +2204,7 @@ pub fn create_plan(
     parent: Option<String>,
     state: State<CommandConnection>,
 ) -> Result<String, String> {
-    let resp = send_command(
+    let resp = send_command_reconnecting(
         &state.0,
         &Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent },
     )
@@ -2147,7 +2225,7 @@ pub fn set_plan_frontmatter_field(
     value: String,
     state: State<CommandConnection>,
 ) -> Result<String, String> {
-    let resp = send_command(&state.0, &Request::SetPlanFrontmatterField { path, key, value })
+    let resp = send_command_reconnecting(&state.0, &Request::SetPlanFrontmatterField { path, key, value })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::PlanFieldSet { path } => Ok(path),
@@ -2163,7 +2241,7 @@ pub fn set_root_config_field(
     value: String,
     state: State<CommandConnection>,
 ) -> Result<(), String> {
-    let resp = send_command(&state.0, &Request::SetRootConfigField { root_path, key, value })
+    let resp = send_command_reconnecting(&state.0, &Request::SetRootConfigField { root_path, key, value })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
