@@ -489,11 +489,18 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
         })
         .collect();
 
+    // What a rail can still take on. Notes are not runnable, and an
+    // ARCHIVED card is not on the board at all -- the human filed it
+    // away, so offering it back here would have the agent place work
+    // they deliberately put down. Same rule as the tab's own drawer
+    // (availableCards in orchestration.ts), matched the same way it is:
+    // by the folder, since the folder IS the archive.
     let unplaced: Vec<Value> = tree
         .contexts
         .iter()
         .flat_map(|ctx| ctx.plans.iter())
         .filter(|p| !matches!(p.kind, protocol::CardKind::Note))
+        .filter(|p| !p.path.contains("/plans/archive/"))
         .filter(|p| !placed.contains(p.path.as_str()))
         .map(|p| {
             json!({
@@ -647,6 +654,7 @@ mod tests {
             checklist_done: 0,
             checklist_total: 0,
             parse_warning: false,
+            modified_at: None,
         };
         protocol::GavinTree {
             root_path: "/ws".into(),
@@ -655,7 +663,14 @@ mod tests {
                 folder_path: "/ws/.gavin-root".into(),
                 kind: protocol::GavinContextKind::Root,
                 name: "ws".into(),
-                plans: vec![card("a.md", "Card A"), card("b.md", "Card B")],
+                plans: vec![
+                    card("a.md", "Card A"),
+                    card("b.md", "Card B"),
+                    protocol::PlanFileInfo {
+                        path: "/ws/.gavin-root/plans/archive/filed.md".into(),
+                        ..card("filed.md", "Filed away")
+                    },
+                ],
                 docs: vec![],
                 specs: vec![],
                 has_prd: true,
@@ -778,7 +793,8 @@ mod tests {
         assert_eq!(text["rails"][0]["stages"][0]["steps"][0]["title"], "Card A");
         assert_eq!(text["rails"][0]["stages"][0]["steps"][0]["kind"], "task");
         assert_eq!(text["rails"][0]["stages"][0]["steps"][0]["run"], "running");
-        // b.md is not on a rail, so it is offered as unplaced; a.md is not.
+        // b.md is not on a rail, so it is offered as unplaced. a.md is on
+        // one, and filed.md is archived -- neither is on offer.
         let unplaced: Vec<&str> = text["unplacedCards"]
             .as_array()
             .unwrap()

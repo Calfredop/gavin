@@ -335,6 +335,23 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// Every workspace with a step aimed at this card. The re-key below
+    /// is deliberately global -- one card can sit on rails in more than
+    /// one workspace -- so this answers who has to be told about it.
+    pub fn workspaces_with_card(&self, card_path: &str) -> anyhow::Result<Vec<String>> {
+        let ids = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT r.workspace_id FROM orch_steps t
+                 JOIN orch_stages s ON t.stage_id = s.id
+                 JOIN orch_rails r ON s.rail_id = r.id
+                 WHERE t.card_path = ?1",
+            )?
+            .query_map(params![card_path], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(ids)
+    }
+
     /// Re-keys every step pointing at a card whose file moved. Steps are
     /// authored against a card, not a folder, so an archived card must
     /// not read as a broken step on the rail that runs it.

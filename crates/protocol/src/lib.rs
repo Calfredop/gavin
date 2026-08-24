@@ -12,7 +12,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -147,6 +147,18 @@ pub enum Request {
     /// live agent session is NOT killed -- it stays visible on the
     /// Agents page.
     DeleteCardFile {
+        path: String,
+    },
+    /// Moves a card file into its context's `plans/archive/`, taking its
+    /// nested children with it. Deliberately separate from a status
+    /// write: archiving is a filing decision the human makes, not
+    /// something a status can trigger behind their back.
+    ArchiveCard {
+        path: String,
+    },
+    /// The inverse: takes a card back out of `plans/archive/` and files
+    /// it where its status says it belongs (`plans/` or `plans/done/`).
+    UnarchiveCard {
         path: String,
     },
     /// Rewrites exactly one checklist line's checkbox; expected_text
@@ -328,6 +340,13 @@ pub fn min_version_for(req: &Request) -> u32 {
 
         Request::Shutdown => 12,
 
+        // The archive (`plans/archive/`). v13 also widened PlanFileInfo
+        // with `modified_at`, which the archive grid orders by -- that
+        // one is `serde(default)`, so it costs an older DAEMON nothing;
+        // these two variants are what a v12 daemon genuinely cannot
+        // serve, and daemonCompat.ts gates the UI on `archive: 13`.
+        Request::ArchiveCard { .. } | Request::UnarchiveCard { .. } => 13,
+
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
         Request::Unknown => u32::MAX,
@@ -374,6 +393,10 @@ pub enum Response {
     /// status write can archive the file into `plans/done/` (or bring it
     /// back), and callers hold that path as the card's identity.
     PlanFieldSet { path: String },
+    /// An archive or un-archive, answered with the card's path
+    /// AFTERWARDS -- same contract as PlanFieldSet, for the same reason:
+    /// the path is the card's identity everywhere that holds one.
+    CardMoved { path: String },
     Ok,
     Error { message: String },
     /// Sent instead of dropping the connection when a request's `type`
@@ -638,6 +661,15 @@ pub struct PlanFileInfo {
     pub checklist_done: u32,
     pub checklist_total: u32,
     pub parse_warning: bool,
+    /// The card file's mtime, as whole seconds since the unix epoch, or
+    /// None when the file could not be stat'd. The archive grid is
+    /// ordered by it -- for an archived card it is effectively "when it
+    /// was archived", since the move rewrites the mtime.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses: the field
+    /// simply reads None and the grid falls back to path order.
+    #[serde(default)]
+    pub modified_at: Option<i64>,
 }
 
 /// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
@@ -1080,6 +1112,7 @@ mod tests {
                     checklist_done: 0,
                     checklist_total: 0,
                     parse_warning: false,
+                    modified_at: None,
                 }],
                 docs: vec![MdFileInfo {
                     path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
@@ -1118,7 +1151,8 @@ mod tests {
                         "labels": [],
                         "checklistDone": 0,
                         "checklistTotal": 0,
-                        "parseWarning": false
+                        "parseWarning": false,
+                        "modifiedAt": null
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
@@ -1256,7 +1290,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(PROTOCOL_VERSION, 13);
     }
 
     #[test]
@@ -1402,6 +1436,8 @@ mod tests {
                 },
             },
             Request::DeleteTool { id: "t".into() },
+            Request::ArchiveCard { path: "/p/t.md".into() },
+            Request::UnarchiveCard { path: "/p/t.md".into() },
             Request::Shutdown,
             Request::Unknown,
         ]
@@ -1431,7 +1467,7 @@ mod tests {
     /// consider whether they owe a version bump instead. Counts below were
     /// derived by hand from `min_version_for`'s match arms on this branch,
     /// not copied from a plan: v1=21, v4=2, v5=2, v6=1, v7=1, v8=2, v10=8,
-    /// v12=1 (Shutdown), plus Unknown.
+    /// v11=4, v12=1 (Shutdown), v13=2 (the archive), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -1451,6 +1487,7 @@ mod tests {
         expected.insert(10, 8);
         expected.insert(11, 4);
         expected.insert(12, 1);
+        expected.insert(13, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

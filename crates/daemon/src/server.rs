@@ -897,25 +897,64 @@ impl SessionManager {
     }
 
     /// Writes one frontmatter field and returns the card's path
-    /// afterwards. A status write can archive the file into
-    /// `plans/done/` (or bring it back), and two databases key on that
-    /// path -- so the re-keying lives here, beside the write, exactly as
-    /// `delete_card_file` keeps its unlinking beside the delete. Neither
-    /// re-key failing is worth losing the write over: the field is
-    /// already on disk, so a failure is reported and the file's new path
-    /// still returned.
+    /// afterwards. A status write can file the card into `plans/done/`
+    /// (or bring it back), and two databases key on that path -- so the
+    /// re-keying happens here, beside the write, exactly as
+    /// `delete_card_file` keeps its unlinking beside the delete.
     pub fn set_plan_field(&self, path: &str, key: &str, value: &str) -> anyhow::Result<String> {
         let moved = crate::gavin::set_plan_field(std::path::Path::new(path), key, value)?;
-        let moved = moved.to_string_lossy().to_string();
-        if moved != path {
-            if let Err(e) = self.kanban.lock().unwrap().rename_card_path(path, &moved) {
-                eprintln!("card moved to {moved} but its session binding didn't follow: {e}");
-            }
-            if let Err(e) = self.orchestration.lock().unwrap().rename_card_path(path, &moved) {
-                eprintln!("card moved to {moved} but its rail steps didn't follow: {e}");
+        Ok(self.follow_card_move(path, moved))
+    }
+
+    /// Moves a card into `plans/archive/` and re-keys everything that
+    /// holds its path. Same shape as `set_plan_field`'s re-keying, and
+    /// for the same reason: a card's path IS its identity in both the
+    /// kanban and the orchestration databases, so a move that skipped
+    /// this would silently orphan a bound session or a rail step.
+    pub fn archive_card(&self, path: &str) -> anyhow::Result<String> {
+        let moved = crate::gavin::archive_card(std::path::Path::new(path))?;
+        Ok(self.follow_card_move(path, moved))
+    }
+
+    /// The inverse; see `archive_card`.
+    pub fn unarchive_card(&self, path: &str) -> anyhow::Result<String> {
+        let moved = crate::gavin::unarchive_card(std::path::Path::new(path))?;
+        Ok(self.follow_card_move(path, moved))
+    }
+
+    /// Re-keys a card's session binding and rail steps onto the path it
+    /// landed on, and answers which workspaces had a step aimed at it.
+    /// Neither failure is worth losing the move over -- the file is
+    /// already where it belongs on disk, so a failure is reported and
+    /// the move stands.
+    fn rename_card_everywhere(&self, from: &str, to: &str) -> Vec<String> {
+        if let Err(e) = self.kanban.lock().unwrap().rename_card_path(from, to) {
+            eprintln!("card moved to {to} but its session binding didn't follow: {e}");
+        }
+        let mut orchestration = self.orchestration.lock().unwrap();
+        // Read while the steps still spell the old path.
+        let affected = orchestration.workspaces_with_card(from).unwrap_or_default();
+        if let Err(e) = orchestration.rename_card_path(from, to) {
+            eprintln!("card moved to {to} but its rail steps didn't follow: {e}");
+        }
+        affected
+    }
+
+    /// The same re-key, plus telling the app about it, and returning the
+    /// path the card landed on.
+    ///
+    /// The app holds its OWN copy of every step and only ever re-reads
+    /// it on mount, so a re-key it never hears about leaves it
+    /// scheduling against a path with no file behind it -- the very
+    /// stall this re-keying exists to prevent.
+    fn follow_card_move(&self, from: &str, to: std::path::PathBuf) -> String {
+        let to = to.to_string_lossy().to_string();
+        if to != from {
+            for workspace_id in self.rename_card_everywhere(from, &to) {
+                self.push_orchestration(&workspace_id);
             }
         }
-        Ok(moved)
+        to
     }
 
     pub fn delete_board(&self, workspace_id: &str) -> anyhow::Result<()> {
@@ -1467,6 +1506,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok),
         Request::DeleteCardFile { path } => {
             manager.delete_card_file(&path).map(|_| Response::Ok)
+        }
+        Request::ArchiveCard { path } => {
+            manager.archive_card(&path).map(|path| Response::CardMoved { path })
+        }
+        Request::UnarchiveCard { path } => {
+            manager.unarchive_card(&path).map(|path| Response::CardMoved { path })
         }
         Request::SetChecklistItem { path, line_index, expected_text, checked } => {
             crate::gavin::set_checklist_item(

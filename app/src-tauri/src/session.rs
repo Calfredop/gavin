@@ -2568,6 +2568,46 @@ pub fn set_plan_frontmatter_field(
     }
 }
 
+/// Moves a card into its context's `plans/archive/`, taking its nested
+/// children with it, and returns the path it landed on. The card leaves
+/// the kanban board until `unarchive_card` brings it back.
+#[tauri::command]
+pub fn archive_card(
+    path: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<String, String> {
+    let resp =
+        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::ArchiveCard { path })
+            .map_err(|e| e.to_string())?;
+    match resp {
+        Response::CardMoved { path } => Ok(path),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+/// The inverse of `archive_card`: files the card back where its status
+/// says it belongs and returns its new path.
+#[tauri::command]
+pub fn unarchive_card(
+    path: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<String, String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::UnarchiveCard { path },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::CardMoved { path } => Ok(path),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
 #[tauri::command]
 pub fn set_root_config_field(
     root_path: String,

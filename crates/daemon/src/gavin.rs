@@ -155,6 +155,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: path.to_string_lossy().to_string(),
+        modified_at: file_modified_at(path),
         file_name,
         title: get("title").unwrap_or(stem),
         status: get("status"),
@@ -167,6 +168,17 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         checklist_total,
         parse_warning: warning,
     }
+}
+
+/// The file's mtime as whole seconds since the unix epoch. None for a
+/// path that can't be stat'd (a fabricated path in a test, a file
+/// deleted between the listing and the read) and for the pre-1970 clocks
+/// that would make the duration negative -- neither is worth failing a
+/// scan over, and the archive grid treats None as "sorts last".
+fn file_modified_at(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let secs = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    i64::try_from(secs).ok()
 }
 
 /// Counts `- [ ]` / `- [x]` lines (any indentation, requiring the
@@ -386,6 +398,13 @@ pub fn create_plan_file(
 /// this repo had 30 Done cards among 44 when the rule was written.
 pub const DONE_DIR: &str = "done";
 
+/// The explicit archive inside a `plans/` directory. Unlike `done/`,
+/// nothing files a card here automatically: a human archives it, and it
+/// leaves the kanban board until they take it back out. `done/` still
+/// means "Done and still on the board" -- the two folders answer
+/// different questions and neither replaces the other.
+pub const ARCHIVE_DIR: &str = "archive";
+
 /// A status archives iff it slugs to "done" -- the same match the board
 /// makes between a card's status and a column name, so "Done", "done" and
 /// " DONE " are one status and "Shipped" is not.
@@ -402,23 +421,28 @@ fn is_plans_dir(dir: &Path) -> bool {
             .is_some_and(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
 }
 
-/// The `plans/` root governing this file, but ONLY for the two locations
-/// the archive rule owns: directly in `plans/`, or directly in
-/// `plans/done/`. A file filed under a hand-made `plans/roadmap/` yields
-/// None and is therefore never moved -- a status write must not flatten
-/// somebody else's hierarchy.
+/// The `plans/` root governing this file, but ONLY for the three
+/// locations the filing rules own: directly in `plans/`, in
+/// `plans/done/`, or in `plans/archive/`. A file filed under a hand-made
+/// `plans/roadmap/` yields None and is therefore never moved -- a status
+/// write must not flatten somebody else's hierarchy.
 fn governed_plans_root(path: &Path) -> Option<PathBuf> {
     let parent = path.parent()?;
     if is_plans_dir(parent) {
         return Some(parent.to_path_buf());
     }
-    if parent.file_name().is_some_and(|n| n == DONE_DIR) {
+    if parent.file_name().is_some_and(|n| n == DONE_DIR || n == ARCHIVE_DIR) {
         let plans = parent.parent()?;
         if is_plans_dir(plans) {
             return Some(plans.to_path_buf());
         }
     }
     None
+}
+
+/// True for a card sitting directly in this plans root's `archive/`.
+fn in_archive(path: &Path, plans_root: &Path) -> bool {
+    path.parent() == Some(plans_root.join(ARCHIVE_DIR).as_path())
 }
 
 /// Every md file under a `plans/` root, in walk order.
@@ -492,24 +516,26 @@ fn move_card(path: &Path, dest_dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(dest)
 }
 
-/// Files a card where its status says it belongs, and takes its nested
-/// children with it. Returns the card's path afterwards -- unchanged when
-/// no move was called for, when the card lives outside the two governed
-/// locations, or when the destination name was taken.
-pub fn relocate_for_status(path: &Path) -> anyhow::Result<PathBuf> {
-    let Some(plans_root) = governed_plans_root(path) else { return Ok(path.to_path_buf()) };
-    let content = std::fs::read_to_string(path)?;
-    let info = plan_file_info(path, &content);
-    let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
-    let moved = move_card(path, &home)?;
+/// Moves one card to `dest_dir` and drags its nested children after it.
+/// Returns the card's path afterwards -- unchanged when it was already
+/// there or the destination name was taken (in which case the children
+/// stay put too, since their home is wherever the parent actually is).
+fn move_card_with_children(
+    path: &Path,
+    plans_root: &Path,
+    dest_dir: &Path,
+    info: &PlanFileInfo,
+) -> anyhow::Result<PathBuf> {
+    let moved = move_card(path, dest_dir)?;
     if moved == path {
         return Ok(moved);
     }
-    // The children follow. Their own home_dir_for now resolves to the
-    // parent's new folder, so this is the same rule applied one level
-    // down rather than a special case.
+    // The children follow. Their own home is "wherever the parent is",
+    // so this is the same rule applied one level down rather than a
+    // special case -- and it is the rule for BOTH kinds of move, the
+    // status one into done/ and the explicit one into archive/.
     if info.kind == CardKind::Plan {
-        for child in plans_tree_files(&plans_root) {
+        for child in plans_tree_files(plans_root) {
             if child == moved || governed_plans_root(&child).is_none() {
                 continue;
             }
@@ -526,6 +552,61 @@ pub fn relocate_for_status(path: &Path) -> anyhow::Result<PathBuf> {
         }
     }
     Ok(moved)
+}
+
+/// Files a card where its status says it belongs, and takes its nested
+/// children with it. Returns the card's path afterwards -- unchanged when
+/// no move was called for, when the card lives outside the governed
+/// locations, or when the destination name was taken.
+pub fn relocate_for_status(path: &Path) -> anyhow::Result<PathBuf> {
+    let Some(plans_root) = governed_plans_root(path) else { return Ok(path.to_path_buf()) };
+    // An archived card stays archived. Archiving is a filing decision a
+    // human made explicitly, and a later status edit -- theirs or an
+    // agent's -- must not quietly undo it by dragging the file back onto
+    // the board. `unarchive_card` is the only way out.
+    if in_archive(path, &plans_root) {
+        return Ok(path.to_path_buf());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let info = plan_file_info(path, &content);
+    let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
+    move_card_with_children(path, &plans_root, &home, &info)
+}
+
+/// Moves a card into its context's `plans/archive/`, children included.
+/// Already-archived cards are a no-op rather than an error: the end state
+/// the caller asked for already holds.
+pub fn archive_card(path: &Path) -> anyhow::Result<PathBuf> {
+    let plans_root = governed_plans_root(path)
+        .ok_or_else(|| anyhow::anyhow!("not an archivable plans/ card: {}", path.display()))?;
+    if in_archive(path, &plans_root) {
+        return Ok(path.to_path_buf());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let info = plan_file_info(path, &content);
+    move_card_with_children(path, &plans_root, &plans_root.join(ARCHIVE_DIR), &info)
+}
+
+/// Takes a card back out of `plans/archive/` and files it where its
+/// status says it belongs -- `plans/done/` for a Done card, `plans/`
+/// otherwise. A card that is not archived is a no-op, for the same
+/// reason `archive_card` treats a re-archive as one.
+///
+/// Un-archiving a lone NESTED child lands it back beside its parent,
+/// which for a still-archived parent means it does not move at all.
+/// That is the "children live where their parent lives" rule holding,
+/// not a failure: the way to bring the child back is to bring the plan
+/// back, and it comes with it.
+pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
+    let plans_root = governed_plans_root(path)
+        .ok_or_else(|| anyhow::anyhow!("not a plans/ card: {}", path.display()))?;
+    if !in_archive(path, &plans_root) {
+        return Ok(path.to_path_buf());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let info = plan_file_info(path, &content);
+    let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
+    move_card_with_children(path, &plans_root, &home, &info)
 }
 
 /// The public, validated entry point (and the future MCP tool body). The
@@ -2747,5 +2828,147 @@ mod tests {
         let card = write_card(&plans.join("done"), "gone.md", "---\ntitle: G\n---\n");
         delete_card_file(&card).unwrap();
         assert!(!card.exists());
+    }
+
+    // --- the explicit archive (plans/archive/) ----------------------------
+
+    #[test]
+    fn archive_moves_a_card_into_archive_and_unarchive_files_it_by_status() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans.join("done"), "ship.md", "---\ntitle: Ship\nstatus: Done\n---\nb\n");
+
+        let archived = archive_card(&card).unwrap();
+        assert_eq!(archived, plans.join("archive").join("ship.md"));
+        assert!(!card.exists());
+        // The frontmatter is untouched: archiving is a filing decision,
+        // not a status change.
+        assert_eq!(
+            std::fs::read_to_string(&archived).unwrap(),
+            "---\ntitle: Ship\nstatus: Done\n---\nb\n"
+        );
+
+        // Back out, to where its status says it belongs.
+        let back = unarchive_card(&archived).unwrap();
+        assert_eq!(back, plans.join("done").join("ship.md"));
+        assert!(!archived.exists());
+    }
+
+    #[test]
+    fn unarchiving_a_to_do_card_lands_it_in_plans_not_done() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "later.md", "---\ntitle: Later\nstatus: To Do\n---\n");
+
+        let archived = archive_card(&card).unwrap();
+        assert_eq!(archived, plans.join("archive").join("later.md"));
+        assert_eq!(unarchive_card(&archived).unwrap(), plans.join("later.md"));
+    }
+
+    #[test]
+    fn a_status_write_never_pulls_a_card_out_of_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "ship.md", "---\ntitle: Ship\nstatus: Done\n---\n");
+        let archived = archive_card(&card).unwrap();
+
+        // Both directions: the status that would file it into done/, and
+        // the one that would file it back into plans/.
+        assert_eq!(set_plan_field(&archived, "status", "To Do").unwrap(), archived);
+        assert_eq!(set_plan_field(&archived, "status", "Done").unwrap(), archived);
+        assert!(archived.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&archived).unwrap(),
+            "---\ntitle: Ship\nstatus: Done\n---\n"
+        );
+    }
+
+    #[test]
+    fn archiving_a_plan_takes_its_nested_children_with_it_and_brings_them_back() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: Done\n---\n");
+        write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        // A free-standing task wearing the same parent does NOT follow:
+        // it has a status, so it is a card in its own column.
+        write_card(
+            &plans,
+            "free.md",
+            "---\nkind: task\ntitle: Free\nstatus: To Do\nparent: big.md\n---\n",
+        );
+
+        let archived = archive_card(&plan).unwrap();
+        assert_eq!(archived, plans.join("archive").join("big.md"));
+        assert!(plans.join("archive").join("step.md").is_file());
+        assert!(plans.join("free.md").is_file());
+
+        unarchive_card(&archived).unwrap();
+        // Done, so parent and child land in done/ together.
+        assert!(plans.join("done").join("big.md").is_file());
+        assert!(plans.join("done").join("step.md").is_file());
+        assert!(!plans.join("archive").join("step.md").exists());
+    }
+
+    #[test]
+    fn archiving_is_idempotent_and_unarchiving_an_unarchived_card_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "a.md", "---\ntitle: A\n---\n");
+
+        assert_eq!(unarchive_card(&card).unwrap(), card);
+        let archived = archive_card(&card).unwrap();
+        assert_eq!(archive_card(&archived).unwrap(), archived);
+    }
+
+    #[test]
+    fn archiving_refuses_cards_outside_the_governed_plans_locations() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        // A hand-made subfolder is somebody else's hierarchy, exactly as
+        // the status rule treats it.
+        let filed = write_card(&plans.join("roadmap"), "q3.md", "---\ntitle: Q3\n---\n");
+        assert!(archive_card(&filed).is_err());
+        assert!(filed.is_file());
+
+        let loose = write_card(dir.path(), "p.md", "---\ntitle: P\n---\n");
+        assert!(archive_card(&loose).is_err());
+    }
+
+    #[test]
+    fn an_archived_card_is_still_scanned_deleted_and_promoted_like_any_other() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\n---\n- [ ] step one\n");
+        let archived = archive_card(&plan).unwrap();
+
+        // The scan lists it: `plans/archive/` is inside plans/, and
+        // hiding it from the tree is the FRONTEND's job, not the
+        // scanner's.
+        let tree = scan_root(dir.path());
+        assert!(tree.contexts[0].plans.iter().any(|p| p.path == archived.to_string_lossy()));
+
+        let promoted = promote_checklist_item(&archived, "step one").unwrap();
+        assert_eq!(promoted, plans.join("archive").join("step-one.md"));
+
+        delete_card_file(&archived).unwrap();
+        assert!(!archived.exists());
+    }
+
+    #[test]
+    fn plan_file_info_carries_the_files_mtime_and_tolerates_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = write_card(dir.path(), "a.md", "---\ntitle: A\n---\n");
+        let info = plan_file_info(&card, "---\ntitle: A\n---\n");
+        assert!(info.modified_at.is_some_and(|t| t > 1_600_000_000));
+
+        let missing = dir.path().join("nope.md");
+        assert_eq!(plan_file_info(&missing, "").modified_at, None);
     }
 }

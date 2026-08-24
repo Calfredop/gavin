@@ -102,6 +102,8 @@ pub fn run() {
             session::create_plan,
             session::set_checklist_item,
             session::delete_card_file,
+            session::archive_card,
+            session::unarchive_card,
             session::link_card_session,
             session::unlink_card_session,
             session::promote_checklist_item,
