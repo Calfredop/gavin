@@ -2734,6 +2734,128 @@ mod gate_tests {
         let newest = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
         assert!(gate(&newest, &compat).is_ok());
     }
+
+    /// One sample of every `Request` variant, `Unknown` included. Field
+    /// values are placeholders -- `gate` and `min_version_for` only look at
+    /// which variant a request is, never its payload -- so the only thing
+    /// that has to be right here is that every variant in
+    /// `crates/protocol/src/lib.rs` has exactly one entry below. A variant
+    /// added there without a matching entry here would silently narrow the
+    /// sweep below rather than fail loudly, which is a real gap: nothing
+    /// else forces this list to stay exhaustive the way `min_version_for`'s
+    /// own match does. Reviewed by hand against the enum each time it
+    /// changes.
+    fn one_of_every_request_variant() -> Vec<Request> {
+        vec![
+            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None },
+            Request::ListSessions,
+            Request::WriteInput { id: "s".into(), data: "d".into() },
+            Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
+            Request::KillSession { id: "s".into() },
+            Request::Attach { id: "s".into() },
+            Request::GetBoard { workspace_id: "w".into() },
+            Request::SetBoard { workspace_id: "w".into(), columns: vec![], labels: vec![] },
+            Request::DeleteBoard { workspace_id: "w".into() },
+            Request::WatchGavinRoot { workspace_id: "w".into(), root_path: "r".into() },
+            Request::UnwatchGavinRoot { workspace_id: "w".into() },
+            Request::GetGavinTree { workspace_id: "w".into() },
+            Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
+            Request::CreateGavinContext { parent_folder: "p".into() },
+            Request::AddExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::RemoveExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::SetPlanFrontmatterField { path: "p".into(), key: "k".into(), value: "v".into() },
+            Request::SetRootConfigField { root_path: "r".into(), key: "k".into(), value: "v".into() },
+            Request::ScanGavinRoot { root_path: "r".into() },
+            Request::ReadPrd { root_path: "r".into() },
+            Request::CreatePlan {
+                context_folder: "c".into(),
+                file_name: "f".into(),
+                title: "t".into(),
+                status: None,
+                priority: None,
+                body: None,
+                kind: None,
+                parent: None,
+            },
+            Request::GetBoardByRoot { root_path: "r".into() },
+            Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },
+            Request::DeleteCardFile { path: "p".into() },
+            Request::SetChecklistItem {
+                path: "p".into(),
+                line_index: 0,
+                expected_text: "x".into(),
+                checked: true,
+            },
+            Request::PromoteChecklistItem { plan_path: "p".into(), item: "i".into() },
+            Request::LinkCardSession {
+                workspace_id: "w".into(),
+                path: "p".into(),
+                session_id: "s".into(),
+                cwd: "c".into(),
+                command: None,
+            },
+            Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
+            Request::GetOrchestration { workspace_id: "w".into() },
+            Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
+            Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
+            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None },
+            Request::GetOrchestrationByRoot { root_path: "r".into() },
+            Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
+            Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
+            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::GetProtocolVersion,
+            Request::Shutdown,
+            // Deserialize-only in production, but nothing stops Rust code
+            // from constructing it -- and the sweep needs to, to prove it
+            // is refused everywhere rather than just trusting the comment
+            // on `min_version_for`'s `u32::MAX` arm.
+            Request::Unknown,
+        ]
+    }
+
+    /// The sweep Task 8 asks for: across a representative slice of the
+    /// compat window (the floor, a mid-window value, and parity), `gate`'s
+    /// verdict must agree with what `min_version_for` reports for EVERY
+    /// request variant, not just the couple of variants the tests above
+    /// exercise.
+    ///
+    /// Honest limit: `gate` computes `needed = min_version_for(req)` and
+    /// this test's own `should_pass` comes from that same call, so this
+    /// cannot catch a version number in the table that is simply wrong in
+    /// an absolute sense (e.g. a variant attributed to v9 when it should
+    /// truly be v10) -- only the humans maintaining the table can catch
+    /// that. What it DOES catch, at every variant and (crucially) right at
+    /// the `needed == daemon_version` boundary rather than only away from
+    /// it: `gate`'s comparison drifting from "permitted exactly when
+    /// `needed <= daemon_version`" -- an accidental `>=` in place of `>`,
+    /// say. Verified empirically while writing this test: that exact
+    /// one-character change made this sweep fail (LinkCardSession, needed
+    /// v5, refused by a v5 daemon) while Task 6's narrower `gate_tests`
+    /// above and Task 6b's `a_command_the_daemon_predates_never_reaches_the_wire`
+    /// (each pinned to one variant away from any boundary) stayed green.
+    #[test]
+    fn gate_agrees_with_min_version_for_across_every_variant_at_every_version_in_the_window() {
+        let daemon_versions = [protocol::MIN_COMPATIBLE_VERSION, 9, protocol::PROTOCOL_VERSION];
+
+        for &daemon_version in &daemon_versions {
+            let compat = DaemonCompat {
+                daemon_version,
+                app_version: protocol::PROTOCOL_VERSION,
+                degraded: daemon_version < protocol::PROTOCOL_VERSION,
+            };
+            for req in one_of_every_request_variant() {
+                let needed = protocol::min_version_for(&req);
+                let should_pass = needed <= daemon_version;
+                let verdict = gate(&req, &compat);
+                assert_eq!(
+                    verdict.is_ok(),
+                    should_pass,
+                    "{req:?} needs v{needed}; a v{daemon_version} daemon should {} it, but gate returned {verdict:?}",
+                    if should_pass { "permit" } else { "refuse" },
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
