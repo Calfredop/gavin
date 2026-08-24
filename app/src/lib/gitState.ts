@@ -16,6 +16,7 @@ import {
   switchToSessionInPage,
 } from "./layoutState";
 import { findSessionLocation } from "./workspace";
+import type { AgentCommitRecord, Workspace } from "./workspace";
 import { buildHeadlessCommand, COMMIT_PROMPT } from "./cardRun";
 import type {
   ApplyMode,
@@ -508,14 +509,35 @@ export async function commitViaAgent(workspaceId: string): Promise<boolean> {
   // every other agent running in the same repo.
   await backend.setSessionName(sessionId, "commit").catch(() => {});
   update(workspaceId, (st) => (st.agentCommit?.sessionId === null ? { ...st, agentCommit: { sessionId } } : st));
+  // Written down BEFORE the wait, because the window may not survive it.
+  await rememberAgentCommit(workspaceId, { sessionId, cwd: s.cwd });
 
+  return watchAgentCommit(workspaceId, sessionId, tail);
+}
+
+/// The half of a run that happens after it is launched: wait, then judge.
+/// Split out because `adoptAgentCommits` re-enters here for a run this
+/// window did not start -- one verdict, reached the same way, whether the
+/// click that began it happened five seconds or two restarts ago.
+async function watchAgentCommit(
+  workspaceId: string,
+  sessionId: string,
+  tail: { text: () => string; stop: () => void }
+): Promise<boolean> {
   const code = await awaitExit(sessionId);
   tail.stop();
   // A worktree switch replaces this view wholesale (ensureGitView), and
   // the run it started is then no longer this view's business -- it must
   // not write its verdict into the state that replaced it.
-  if (current(workspaceId)?.agentCommit?.sessionId !== sessionId) return false;
+  if (current(workspaceId)?.agentCommit?.sessionId !== sessionId) {
+    // Forgotten too, not just unwatched: the run carries on committing in
+    // a checkout this tab has left, and a record pointing there would
+    // only make the next window adopt a run it cannot show.
+    await forgetAgentCommit(workspaceId, sessionId);
+    return false;
+  }
   update(workspaceId, (st) => ({ ...st, agentCommit: null }));
+  await forgetAgentCommit(workspaceId, sessionId);
   await refresh(workspaceId);
 
   // Exit 0 is NOT the verdict on its own: a headless agent that decides
@@ -540,6 +562,71 @@ export async function commitViaAgent(workspaceId: string): Promise<boolean> {
     update(workspaceId, (st) => (st.agentCommitDone ? { ...st, agentCommitDone: false } : st));
   }, AGENT_COMMIT_FLASH_MS);
   return true;
+}
+
+/// Writes the in-flight run into the workspace's persisted Git prefs, or
+/// clears it. The whole recovery story rests on this one line of config:
+/// a hidden session is referenced by no page, so nothing else in the app
+/// would remember it across a restart.
+async function rememberAgentCommit(workspaceId: string, record: AgentCommitRecord): Promise<void> {
+  await setGitViewPrefs(workspaceId, { agentCommit: record });
+}
+
+/// Drops the record, but only while it still names `sessionId`. An
+/// abandoned run resolves long after the worktree switch that abandoned
+/// it, by which point the human may well have started a second run in
+/// the new checkout -- and an unconditional clear there would erase the
+/// record of the run that is still going.
+async function forgetAgentCommit(workspaceId: string, sessionId: string): Promise<void> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (ws?.gitView?.agentCommit?.sessionId !== sessionId) return;
+  await setGitViewPrefs(workspaceId, { agentCommit: undefined });
+}
+
+/// Re-attaches to commit runs that outlived the window that started them.
+/// Called once after bootstrap -- NOT on Git-tab mount -- because the
+/// sidebar's git chip has to show a run for a workspace whose Git tab
+/// nobody has opened yet, and it reads this store.
+///
+/// A run whose session is gone is dropped without a verdict: its exit
+/// code and its output died with the last window, so "Committed" would
+/// be a guess and "failed" would be a lie. The refresh that follows
+/// shows whatever commits it did make.
+export async function adoptAgentCommits(): Promise<void> {
+  await Promise.all(get(layoutState).workspaces.map((ws) => adoptAgentCommit(ws)));
+}
+
+async function adoptAgentCommit(ws: Workspace): Promise<void> {
+  const record = ws.gitView?.agentCommit;
+  if (!record) return;
+  // Only into the checkout it was launched against. A worktree switch
+  // abandons a run (see the verdict guard above), so a record naming
+  // anywhere but the tab's own cwd is one that switch left behind.
+  const target = ws.gitView?.worktree ?? ws.rootPath ?? null;
+  if (target !== record.cwd) {
+    await forgetAgentCommit(ws.id, record.sessionId);
+    return;
+  }
+  // A daemon restart respawns a session's command, so an adopted run may
+  // literally be a second `claude -p 'Commit ...'` rather than the first
+  // one still going. Same thing to this tab either way: a commit agent
+  // working on this tree, whose exit is worth waiting for.
+  let alive = false;
+  try {
+    alive = await backend.adoptSession(record.sessionId);
+  } catch {
+    alive = false;
+  }
+  if (!alive) {
+    await forgetAgentCommit(ws.id, record.sessionId);
+    return;
+  }
+  ensureGitView(ws.id, record.cwd);
+  update(ws.id, (st) => ({ ...st, agentCommit: { sessionId: record.sessionId }, agentCommitDone: false }));
+  const tail = await captureTail(record.sessionId);
+  // Not awaited: the sweep must not hold bootstrap open for a run that
+  // may have hours left in it.
+  void watchAgentCommit(ws.id, record.sessionId, tail);
 }
 
 /// Pulls the hidden session onto the Agents page and jumps to it. The

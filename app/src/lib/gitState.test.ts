@@ -52,6 +52,7 @@ vi.mock("./backend", () => ({
   writeFileForEditor: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn().mockResolvedValue("agent-1"),
   setSessionName: vi.fn().mockResolvedValue(undefined),
+  adoptSession: vi.fn().mockResolvedValue(true),
 }));
 // pty-output listeners are collected so a test can push a hidden run's
 // output at them; every other event keeps the inert default.
@@ -105,6 +106,7 @@ import {
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
   markResolved, saveConflict, openMergeTool,
   commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
+  adoptAgentCommits,
 } from "./gitState";
 import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
@@ -628,6 +630,102 @@ describe("commit via agent", () => {
   it("has nothing to reveal before the daemon hands back a session", async () => {
     await revealAgentCommit("ws");
     expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
+  });
+});
+
+describe("adoptAgentCommits", () => {
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+
+  function workspaceWith(gitView: Record<string, unknown>): void {
+    layoutState.set({ workspaces: [{ id: "ws", rootPath: "/r", pages: [], gitView }] } as never);
+  }
+
+  // Written down before the wait, cleared by the verdict: the record has
+  // to be on disk for the whole window in which the app could die.
+  it("records the run at launch and drops it when the run resolves", async () => {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    const done = commitViaAgent("ws");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", {
+      agentCommit: { sessionId: "agent-1", cwd: "/r" },
+    });
+    // What that write persists, which the clear below checks itself
+    // against before erasing anything.
+    workspaceWith({ agentCommit: { sessionId: "agent-1", cwd: "/r" } });
+    vi.mocked(backend.gitStatus).mockResolvedValue({ unstaged: [], staged: [] });
+    sessionExits.set(new Map([["agent-1", 0]]));
+    expect(await done).toBe(true);
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { agentCommit: undefined });
+  });
+
+  it("re-attaches to a run that outlived the window, and judges it the same way", async () => {
+    workspaceWith({ agentCommit: { sessionId: "agent-1", cwd: "/r" } });
+    await adoptAgentCommits();
+    await flush();
+
+    expect(backend.adoptSession).toHaveBeenCalledWith("agent-1");
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("running");
+    // No second agent: the button is gone while this is showing.
+    expect(await commitViaAgent("ws")).toBe(false);
+    expect(backend.createSession).not.toHaveBeenCalled();
+
+    for (const l of ptyListeners) l({ payload: ["agent-1", "I stopped: no user.email."] });
+    sessionExits.set(new Map([["agent-1", 0]]));
+    await flush();
+    expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+    expect(get(gitStore)["ws"].error).toBe(
+      "Commit via agent left 4 changes uncommitted — I stopped: no user.email."
+    );
+  });
+
+  // Its exit code and its output died with the last window. "Committed"
+  // would be a guess and "failed" would be a lie, so it says neither.
+  it("drops a record whose session is gone, with no verdict either way", async () => {
+    vi.mocked(backend.adoptSession).mockResolvedValueOnce(false);
+    workspaceWith({ agentCommit: { sessionId: "agent-1", cwd: "/r" } });
+    await adoptAgentCommits();
+    await flush();
+
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { agentCommit: undefined });
+    expect(agentCommitPhase(get(gitStore)["ws"] ?? null)).toBe("idle");
+    expect(get(gitStore)["ws"]?.error ?? null).toBeNull();
+  });
+
+  it("does not ask about a run the tab has switched away from", async () => {
+    workspaceWith({ worktree: "/r/feature", agentCommit: { sessionId: "agent-1", cwd: "/r" } });
+    await adoptAgentCommits();
+    await flush();
+
+    expect(backend.adoptSession).not.toHaveBeenCalled();
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { agentCommit: undefined });
+  });
+
+  // The narrow window that makes the clear conditional: an abandoned run
+  // resolves long after the switch that abandoned it, by which point a
+  // second run may be the one on record.
+  it("leaves a newer run's record alone when an abandoned one finally exits", async () => {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    const abandoned = commitViaAgent("ws");
+    await flush();
+    // The worktree switch that abandons it, and the run started after.
+    ensureGitView("ws", "/r/feature");
+    workspaceWith({ worktree: "/r/feature", agentCommit: { sessionId: "agent-2", cwd: "/r/feature" } });
+    vi.mocked(setGitViewPrefs).mockClear();
+
+    sessionExits.set(new Map([["agent-1", 0]]));
+    expect(await abandoned).toBe(false);
+    expect(setGitViewPrefs).not.toHaveBeenCalled();
+  });
+
+  it("has nothing to do for a workspace with no run recorded", async () => {
+    workspaceWith({});
+    await adoptAgentCommits();
+    expect(backend.adoptSession).not.toHaveBeenCalled();
+    expect(setGitViewPrefs).not.toHaveBeenCalled();
   });
 });
 
