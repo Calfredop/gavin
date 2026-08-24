@@ -70,6 +70,14 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
                     file: "SKILL.md",
                     contents: include_str!("gavin_orchestrate_skill.md"),
                 },
+                // Loaded by the In Progress column's Resume: the card
+                // it names was worked on before, and picking that up is
+                // a different job from starting it.
+                SkillFile {
+                    dir: ".claude/skills/gavin-resume",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_resume_skill.md"),
+                },
             ],
         }),
     },
@@ -724,7 +732,7 @@ mod tests {
     fn every_skill_is_written_and_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let paths = write_skills(dir.path(), claude_layout()).unwrap();
-        assert_eq!(paths.len(), 2, "workflow skill plus the orchestrate one");
+        assert_eq!(paths.len(), 3, "workflow skill plus the orchestrate and resume ones");
 
         let workflow = std::fs::read_to_string(&paths[0]).unwrap();
         assert!(workflow.contains("gavin_create_plan"), "{workflow}");
@@ -734,6 +742,8 @@ mod tests {
             orchestrate.contains("When unsure, serialize"),
             "the parallelism rule must survive into the installed file"
         );
+        let resume = std::fs::read_to_string(&paths[2]).unwrap();
+        assert!(resume.contains("Finished work stays finished"), "{resume}");
 
         // Gavin-managed: a hand-edited skill is replaced, not merged.
         for p in &paths {
@@ -742,13 +752,15 @@ mod tests {
         write_skills(dir.path(), claude_layout()).unwrap();
         assert!(std::fs::read_to_string(&paths[0]).unwrap().contains("gavin_create_plan"));
         assert!(std::fs::read_to_string(&paths[1]).unwrap().contains("gavin_get_orchestration"));
+        assert!(std::fs::read_to_string(&paths[2]).unwrap().contains("Finished work stays finished"));
     }
 
     #[test]
-    fn the_two_skills_land_in_different_directories() {
+    fn every_skill_lands_in_its_own_directory() {
         let dir = tempfile::tempdir().unwrap();
         let paths = write_skills(dir.path(), claude_layout()).unwrap();
         assert!(paths[0].ends_with(".claude/skills/gavin/SKILL.md"), "{:?}", paths[0]);
         assert!(paths[1].ends_with(".claude/skills/gavin-orchestrate/SKILL.md"), "{:?}", paths[1]);
+        assert!(paths[2].ends_with(".claude/skills/gavin-resume/SKILL.md"), "{:?}", paths[2]);
     }
 }
