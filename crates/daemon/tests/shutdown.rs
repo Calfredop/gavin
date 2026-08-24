@@ -64,6 +64,12 @@ fn shutdown_replies_over_the_socket_then_the_daemon_process_exits() {
     // interception depends on (write_message flushes explicitly) -- if a
     // future change reordered exit before the write, this would see EOF
     // (`None`) instead of `Response::Ok`.
+    // Without this, a regression where the daemon accepts the connection
+    // but neither replies nor exits blocks this read forever -- `cargo
+    // test` has no per-test timeout, so that would hang the whole job
+    // instead of failing this one test. The exit assertion below is
+    // already properly deadlined; this read needs the same guarantee.
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let reply: Option<Response> = read_message(&mut reader).unwrap();
     assert!(matches!(reply, Some(Response::Ok)), "expected Response::Ok, got {reply:?}");
