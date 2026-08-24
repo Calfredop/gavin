@@ -633,20 +633,63 @@ impl SessionManager {
         }
     }
 
+    /// Takes the Arc rather than `&self` because the watcher it starts
+    /// holds a hook back into the manager. Weak, not Arc: the manager
+    /// owns the watcher, and a strong handle here would be the same
+    /// reference cycle the debouncer callback already avoids.
     pub fn watch_gavin_root(
-        &self,
+        manager: &Arc<Self>,
         workspace_id: &str,
         root_path: &str,
         writer: Arc<Mutex<UnixStream>>,
     ) {
+        let weak = Arc::downgrade(manager);
+        let hook: crate::gavin::ScanHook = Box::new(move |workspace_id, tree| {
+            weak.upgrade()?.recover_moved_card_paths(workspace_id, tree)
+        });
         let watcher = crate::gavin::GavinWatcher::start(
             workspace_id.to_string(),
             std::path::PathBuf::from(root_path),
             writer,
+            Some(hook),
         );
         // Insert AFTER start: the old watcher (if any) drops here, tearing
         // down its debouncer thread.
-        self.gavin_watchers.lock().unwrap().insert(workspace_id.to_string(), watcher);
+        manager.gavin_watchers.lock().unwrap().insert(workspace_id.to_string(), watcher);
+    }
+
+    /// Re-keys everything holding the path of a card whose file moved
+    /// without the daemon moving it -- an agent running `mv`, a one-time
+    /// migration, a hand edit. `follow_card_move` covers the moves the
+    /// daemon makes itself; this covers the rest, on the scan that first
+    /// sees the file somewhere else. Without it a rail STALLS on a step
+    /// whose card is merely finished, because the step reads as "card
+    /// file is missing".
+    ///
+    /// Returns the orchestration to push when something moved: the app
+    /// holds its own copy of every step, and a re-key it never hears
+    /// about leaves it scheduling against the old path.
+    fn recover_moved_card_paths(
+        &self,
+        workspace_id: &str,
+        tree: &protocol::GavinTree,
+    ) -> Option<Response> {
+        let tracked = self.orchestration.lock().unwrap().step_card_paths(workspace_id).ok()?;
+        let moved = crate::gavin::recover_moved_card_paths(tree, &tracked);
+        if moved.is_empty() {
+            return None;
+        }
+        // The plain re-key, not follow_card_move: this runs ON the watch
+        // thread, and the response below rides the watcher's own writer
+        // rather than looking the watcher back up through the map that
+        // owns it.
+        for (from, to) in &moved {
+            self.rename_card_everywhere(from, to);
+        }
+        Some(Response::OrchestrationChanged {
+            workspace_id: workspace_id.to_string(),
+            orchestration: self.get_orchestration(workspace_id).ok()?,
+        })
     }
 
     pub fn unwatch_gavin_root(&self, workspace_id: &str) {
@@ -1606,7 +1649,12 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
         // so it can't go through handle_request. No reply -- the initial
         // scan arrives as the first GavinTreeChanged push.
         if let Request::WatchGavinRoot { workspace_id, root_path } = req {
-            manager.watch_gavin_root(&workspace_id, &root_path, Arc::clone(&writer));
+            SessionManager::watch_gavin_root(
+                &manager,
+                &workspace_id,
+                &root_path,
+                Arc::clone(&writer),
+            );
             continue;
         }
 
@@ -1642,6 +1690,11 @@ mod tests {
     }
 
     fn orch_rail(rail_id: &str, step_id: &str) -> protocol::Rail {
+        orch_rail_at(rail_id, step_id, "/x/a.md")
+    }
+
+    /// The same one-stage, one-step rail, aimed at a given card.
+    fn orch_rail_at(rail_id: &str, step_id: &str, card_path: &str) -> protocol::Rail {
         protocol::Rail {
             id: rail_id.into(),
             name: "backend".into(),
@@ -1654,7 +1707,7 @@ mod tests {
                 steps: vec![protocol::Step {
                     id: step_id.into(),
                     position: 0,
-                    card_path: "/x/a.md".into(),
+                    card_path: card_path.into(),
                     tool_id: None,
                     tool_params: Default::default(),
                 }],
@@ -2673,6 +2726,137 @@ mod tests {
         assert_eq!(board.card_sessions[0].path, after);
         let orch = manager.get_orchestration("ws-1").unwrap();
         assert_eq!(orch.rails[0].stages[0].steps[0].card_path, after);
+    }
+
+    #[test]
+    fn a_card_moved_behind_the_daemons_back_re_keys_its_rail_step_on_the_next_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        // Canonical, because that is the only spelling anything ever
+        // learns a card path in: the watcher canonicalizes its root, and
+        // every path the app and the MCP hand back came out of that scan.
+        let root = ws.path().canonicalize().unwrap();
+        let plans = root.join(".gavin-root").join("plans");
+        let card = plans.join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\nstatus: Done\n---\n").unwrap();
+        let before = card.to_string_lossy().to_string();
+
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None).unwrap();
+        manager
+            .set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &before)], vec![])
+            .unwrap();
+
+        // The move the daemon knows nothing about: an agent's `mv`, or the
+        // one-time migration that introduced plans/done/.
+        std::fs::create_dir_all(plans.join("done")).unwrap();
+        let after = plans.join("done").join("ship.md");
+        std::fs::rename(&card, &after).unwrap();
+        let after = after.to_string_lossy().to_string();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &ws.path().to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+
+        let orch = manager.get_orchestration("ws-1").unwrap();
+        assert_eq!(orch.rails[0].stages[0].steps[0].card_path, after);
+        assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].path, after);
+
+        // The app is holding the old path, so the re-key has to reach it --
+        // and BEFORE the tree, which is what re-runs its scheduler.
+        let mut reader = BufReader::new(ours);
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::OrchestrationChanged { orchestration, .. } => {
+                assert_eq!(orchestration.rails[0].stages[0].steps[0].card_path, after);
+            }
+            other => panic!("expected OrchestrationChanged first, got {other:?}"),
+        }
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+    }
+
+    #[test]
+    fn a_card_the_daemon_archives_pushes_its_re_keyed_step_to_the_watching_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let plans = root.join(".gavin-root").join("plans");
+        let card = plans.join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\nstatus: In Progress\n---\n").unwrap();
+        let before = card.to_string_lossy().to_string();
+        let after = plans.join("done").join("ship.md").to_string_lossy().to_string();
+
+        manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &before)], vec![]).unwrap();
+
+        // Watched only now, so the arrangement's own push is not in the
+        // stream and the initial scan is the only thing to drain.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        let mut reader = BufReader::new(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+
+        // The daemon's OWN move: the DB follows the card by itself, but
+        // the app holds a copy of every step and must be told too.
+        manager.set_plan_field(&before, "status", "Done").unwrap();
+
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::OrchestrationChanged { orchestration, .. } => {
+                assert_eq!(orchestration.rails[0].stages[0].steps[0].card_path, after);
+            }
+            other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scan_that_moved_nothing_pushes_only_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let card = ws.path().join(".gavin-root").join("plans").join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\n---\n").unwrap();
+        let path = card.to_string_lossy().to_string();
+        manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &path)], vec![]).unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &ws.path().to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+
+        let mut reader = BufReader::new(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+        // And nothing after it: a scan that re-keyed nothing must not
+        // hand the app a whole orchestration it already has.
+        assert!(read_message::<_, Response>(&mut reader).is_err(), "a no-op scan still pushed");
     }
 
     #[test]

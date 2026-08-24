@@ -335,6 +335,22 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// Every distinct card path this workspace's steps point at. Tool
+    /// steps carry no card and are left out.
+    pub fn step_card_paths(&self, workspace_id: &str) -> anyhow::Result<Vec<String>> {
+        let paths = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT t.card_path FROM orch_steps t
+                 JOIN orch_stages s ON t.stage_id = s.id
+                 JOIN orch_rails r ON s.rail_id = r.id
+                 WHERE r.workspace_id = ?1 AND t.card_path <> ''",
+            )?
+            .query_map(params![workspace_id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(paths)
+    }
+
     /// Every workspace with a step aimed at this card. The re-key below
     /// is deliberately global -- one card can sit on rails in more than
     /// one workspace -- so this answers who has to be told about it.

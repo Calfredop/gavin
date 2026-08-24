@@ -2,7 +2,7 @@ use protocol::{
     AgentConfig,
     CardKind, GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -471,6 +471,66 @@ fn find_in_plans_tree(plans_root: &Path, file_name: &str) -> Option<PathBuf> {
     plans_tree_files(plans_root)
         .into_iter()
         .find(|p| p.file_name().is_some_and(|n| n == file_name))
+}
+
+/// The `plans/` directory this card file belongs to: the nearest ancestor
+/// named `plans` whose own parent is a `.gavin*` marker. Unlike
+/// `governed_plans_root` it does not care WHICH subfolder the card sits
+/// in -- a card under a hand-made `plans/roadmap/` still belongs to that
+/// root, it is only the filing rules that leave it alone.
+fn owning_plans_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors().skip(1).find(|d| is_plans_dir(d)).map(Path::to_path_buf)
+}
+
+/// Re-points card paths whose file has moved out from under them, as
+/// `(old, new)` pairs. The daemon re-keys a card it moved ITSELF at the
+/// move; a card moved any other way -- an agent running `mv`, a one-time
+/// migration, a hand edit -- would otherwise leave a rail step aimed at
+/// nothing, and a rail stalls on such a step instead of skipping a card
+/// that is merely finished.
+///
+/// The match is by file name within the card's own `plans/` root, which
+/// is exactly the identity `parent:` already resolves on. Ambiguity is
+/// left alone: a name that no longer answers to exactly one file is a
+/// broken path, not a guess worth making. Paths whose file is right
+/// where they say yield nothing, so a scan that changed nothing costs
+/// one lookup per path and writes nothing.
+///
+/// Comparison is on the path spelling, not the inode: both sides come
+/// out of the same canonicalized scan (the watcher canonicalizes its
+/// root, and every path the app or an MCP agent holds was read back from
+/// a tree), so there is only ever one spelling in play.
+pub fn recover_moved_card_paths(tree: &GavinTree, paths: &[String]) -> Vec<(String, String)> {
+    let live: HashSet<&str> = tree
+        .contexts
+        .iter()
+        .flat_map(|c| c.plans.iter().map(|p| p.path.as_str()))
+        .collect();
+    // (plans root, file name) -> the files answering to it. More than one
+    // is a workspace that already broke `parent:` resolution; we decline
+    // to pick between them.
+    let mut by_name: HashMap<(PathBuf, String), Vec<&str>> = HashMap::new();
+    for path in live.iter().copied() {
+        let p = Path::new(path);
+        let (Some(root), Some(name)) = (owning_plans_root(p), p.file_name()) else { continue };
+        by_name.entry((root, name.to_string_lossy().to_string())).or_default().push(path);
+    }
+
+    let mut pairs: BTreeMap<String, String> = BTreeMap::new();
+    for stale in paths {
+        if live.contains(stale.as_str()) || pairs.contains_key(stale) {
+            continue;
+        }
+        let p = Path::new(stale);
+        let (Some(root), Some(name)) = (owning_plans_root(p), p.file_name()) else { continue };
+        match by_name.get(&(root, name.to_string_lossy().to_string())).map(Vec::as_slice) {
+            Some([found]) => {
+                pairs.insert(stale.clone(), (*found).to_string());
+            }
+            _ => continue,
+        }
+    }
+    pairs.into_iter().collect()
 }
 
 /// The directory a card belongs in, given its own frontmatter. A nested
@@ -1326,6 +1386,12 @@ fn floor_wait(since_last: Option<Duration>, position: u32) -> Duration {
     MIN_RESCAN_INTERVAL.saturating_sub(elapsed)
 }
 
+/// Called with every fresh scan, before the tree goes out, and given a
+/// chance to answer with something the app must be told FIRST. gavin.rs
+/// owns no databases, so the daemon hands that work in as a closure
+/// rather than the scanner growing a dependency on the stores.
+pub type ScanHook = Box<dyn Fn(&str, &GavinTree) -> Option<Response> + Send + Sync>;
+
 struct WatcherInner {
     last_tree: Option<GavinTree>,
     last_scan: Option<Instant>,
@@ -1349,6 +1415,7 @@ pub struct GavinWatcher {
     writer: Arc<Mutex<UnixStream>>,
     inner: Mutex<WatcherInner>,
     debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
+    on_scan: Option<ScanHook>,
 }
 
 impl GavinWatcher {
@@ -1360,6 +1427,7 @@ impl GavinWatcher {
         workspace_id: String,
         root_path: PathBuf,
         writer: Arc<Mutex<UnixStream>>,
+        on_scan: Option<ScanHook>,
     ) -> Arc<Self> {
         // Canonicalize before watching: FSEvents resolves symlinks, and a
         // watch registered on a symlinked spelling (macOS's /tmp and
@@ -1378,6 +1446,7 @@ impl GavinWatcher {
                 watched: HashMap::new(),
             }),
             debouncer: Mutex::new(None),
+            on_scan,
         });
 
         // Arm the watch BEFORE the initial scan+push -- the daemon-side
@@ -1479,6 +1548,16 @@ impl GavinWatcher {
         // Re-arm against the tree we just scanned, whether or not it
         // changed shape -- an unchanged tree diffs to zero watch calls.
         self.sync_watches(&mut inner);
+        // Ahead of the change gate, because what the hook answers about
+        // depends on the STORES as much as on the tree -- a scan that
+        // found the same tree can still be the one that re-keys a step
+        // an arrangement wrote a moment ago. And ahead of the tree push,
+        // because the tree is what re-runs the app's scheduler: it must
+        // not tick on a re-keyed path the app has not been told about.
+        if let Some(resp) = self.on_scan.as_ref().and_then(|hook| hook(&self.workspace_id, &tree)) {
+            let mut writer = self.writer.lock().unwrap();
+            let _ = protocol::write_message(&mut *writer, &resp);
+        }
         if inner.last_tree.as_ref() == Some(&tree) {
             return; // change-gated: identical trees never re-emit
         }
@@ -2266,7 +2345,7 @@ mod tests {
         let writer = Arc::new(Mutex::new(theirs));
 
         let watcher =
-            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::clone(&writer));
+            GavinWatcher::start("ws-1".to_string(), dir.path().to_path_buf(), Arc::clone(&writer), None);
 
         let mut reader = BufReader::new(ours);
         // Initial scan pushed exactly once.
@@ -2490,7 +2569,7 @@ mod tests {
         let (ours, theirs) = UnixStream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let _watcher =
-            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
 
         let mut reader = BufReader::new(ours);
         let first: Option<Response> = protocol::read_message(&mut reader).unwrap();
@@ -2536,7 +2615,7 @@ mod tests {
         let (ours, theirs) = UnixStream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let _watcher =
-            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
 
         let mut reader = BufReader::new(ours);
         let _first: Option<Response> = protocol::read_message(&mut reader).unwrap();
@@ -2573,7 +2652,7 @@ mod tests {
 
         let (_ours, theirs) = UnixStream::pair().unwrap();
         let watcher =
-            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
         assert!(watcher.watched_paths().contains(&root), "the root is always watched");
         assert!(!watcher.watched_paths().contains(&root.join("services")));
 
@@ -2596,7 +2675,7 @@ mod tests {
 
         let (_ours, theirs) = UnixStream::pair().unwrap();
         let watcher =
-            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)));
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
         assert!(watcher.watched_paths().contains(&root.join("services")));
 
         std::fs::remove_dir(root.join("services")).unwrap();
@@ -2970,5 +3049,94 @@ mod tests {
 
         let missing = dir.path().join("nope.md");
         assert_eq!(plan_file_info(&missing, "").modified_at, None);
+    }
+
+    // --- recovering a card path the daemon did not move -------------------
+
+    fn card_paths(root: &Path, names: &[&str]) -> Vec<String> {
+        names
+            .iter()
+            .map(|n| root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_step_path_is_recovered_when_its_card_moved_into_done() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
+        write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\nstatus: Done\n---\n");
+
+        let stale = card_paths(dir.path(), &["fs-sync.md"]);
+        let moved = plans.join(DONE_DIR).join("fs-sync.md").to_string_lossy().to_string();
+
+        assert_eq!(
+            recover_moved_card_paths(&scan_root(dir.path()), &stale),
+            vec![(stale[0].clone(), moved)]
+        );
+    }
+
+    #[test]
+    fn a_step_path_that_still_has_its_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans, "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        let live = card_paths(dir.path(), &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &live).is_empty());
+    }
+
+    #[test]
+    fn a_deleted_card_is_not_recovered_onto_some_other_file() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans, "other.md", "---\ntitle: Other\n---\n");
+
+        let gone = card_paths(dir.path(), &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &gone).is_empty());
+    }
+
+    #[test]
+    fn recovery_never_crosses_from_one_context_into_another() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let sub = dir.path().join("app");
+        std::fs::create_dir_all(&sub).unwrap();
+        create_gavin_context(&sub).unwrap();
+        // Same file name, but it only ever existed in the sub-context.
+        write_card(&sub.join(GAVIN_DIR).join("plans"), "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        let stale = card_paths(dir.path(), &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &stale).is_empty());
+    }
+
+    #[test]
+    fn an_ambiguous_file_name_is_left_alone_rather_than_guessed() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
+        write_card(&plans, "fs-sync.md", "---\ntitle: FS sync\n---\n");
+        write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        // The step points into archive/, where nothing is: two candidates
+        // answer to the name, so neither is the answer.
+        let stale = vec![plans.join(ARCHIVE_DIR).join("fs-sync.md").to_string_lossy().to_string()];
+        assert!(recover_moved_card_paths(&scan_root(dir.path()), &stale).is_empty());
+    }
+
+    #[test]
+    fn two_steps_sharing_one_moved_card_yield_a_single_re_key() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
+        write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\n---\n");
+
+        let stale = card_paths(dir.path(), &["fs-sync.md", "fs-sync.md"]);
+        assert_eq!(recover_moved_card_paths(&scan_root(dir.path()), &stale).len(), 1);
     }
 }
