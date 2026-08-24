@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Surfaces Tasks 1-6b's compat verdict (session::DaemonCompat): a
+  // Surfaces the compat verdict (session::DaemonCompat): a
   // daemon inside the compat window but older than this app is a
   // working app with a caveat, not an error -- see +page.svelte, which
   // renders this in the working-app branch, never the connection-error

@@ -107,7 +107,7 @@
       <button onclick={retryConnect}>Restart daemon &amp; retry</button>
     </div>
   {:else}
-    <!-- A degraded-but-usable daemon connection (Tasks 1-6b) is a caveat
+    <!-- A degraded-but-usable daemon connection is a caveat
          on a working app, not an error -- rendered here in the working
          branch, spanning above the sidebar so it stays visible regardless
          of which workspace or tab is active. -->

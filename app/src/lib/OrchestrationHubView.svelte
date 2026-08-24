@@ -197,10 +197,11 @@
   const mainAgentRunning = $derived(Boolean(ws?.mainSessionId));
   // Every orchestration write (SetOrchestration/SetRailRun/SetStepRun) is
   // gated at protocol v10 (see protocol::min_version_for) -- against an
-  // older daemon these buttons would otherwise dispatch requests Task 6's
-  // wire guard silently swallows, with no explanation. Reusing the same
-  // featureBlockedReason the banner is built from keeps the wording (and
-  // the version numbers) identical wherever the app names this.
+  // older daemon these buttons would otherwise dispatch requests the wire
+  // guard in session.rs's `gate` silently refuses, with no explanation.
+  // Reusing the same featureBlockedReason the banner is built from keeps
+  // the wording (and the version numbers) identical wherever the app
+  // names this.
   const orchestrationBlocked = $derived(featureBlockedReason($daemonCompat, "orchestration"));
   const conflictSummary = $derived(
     orch ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch)}`) : []

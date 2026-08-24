@@ -620,8 +620,8 @@ fn current_compat(state: &DaemonCompatState) -> DaemonCompat {
 }
 
 /// Sorts a daemon's advertised version into one of three bands relative to
-/// this app: too new (hard error -- Task 4 does not teach the app to
-/// speak an unreleased protocol), too old (below `floor`, i.e.
+/// this app: too new (hard error -- this app has no idea how to speak an
+/// unreleased protocol newer than its own), too old (below `floor`, i.e.
 /// `MIN_COMPATIBLE_VERSION` -- the daemon predates the oldest request
 /// shape this app still knows how to send), or inside the window, which
 /// is usable either at parity or degraded.
@@ -2864,8 +2864,8 @@ mod gate_tests {
     /// `needed <= daemon_version`" -- an accidental `>=` in place of `>`,
     /// say. Verified empirically while writing this test: that exact
     /// one-character change made this sweep fail (LinkCardSession, needed
-    /// v5, refused by a v5 daemon) while Task 6's narrower `gate_tests`
-    /// above and Task 6b's `a_command_the_daemon_predates_never_reaches_the_wire`
+    /// v5, refused by a v5 daemon) while the narrower tests earlier in
+    /// this module and `a_command_the_daemon_predates_never_reaches_the_wire`
     /// (each pinned to one variant away from any boundary) stayed green.
     #[test]
     fn gate_agrees_with_min_version_for_across_every_variant_at_every_version_in_the_window() {

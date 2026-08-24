@@ -58,8 +58,8 @@ const initialState: LayoutState = {
 
 export const layoutState = writable<LayoutState>(initialState);
 
-// The compat verdict Rust negotiated with the daemon at connect time
-// (Tasks 1-6b). null until the first successful probe -- DaemonCompatBanner
+// The compat verdict Rust negotiated with the daemon at connect time.
+// null until the first successful probe -- DaemonCompatBanner
 // stays silent on null the same way compatMessage does. Refreshed
 // wherever this module re-syncs against a (re)connected daemon; see
 // refreshDaemonCompat.

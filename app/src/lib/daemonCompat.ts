@@ -1,7 +1,7 @@
 // The frontend's view of the compatibility verdict Rust negotiated with
-// the daemon at connect time (session::DaemonCompat, Tasks 1-6b). Purely
-// derived/pure functions here -- the store that holds the live value
-// lives in layoutState.ts, which is what actually talks to Tauri.
+// the daemon at connect time (session::DaemonCompat). Purely derived/pure
+// functions here -- the store that holds the live value lives in
+// layoutState.ts, which is what actually talks to Tauri.
 export type DaemonCompat = {
   daemonVersion: number;
   appVersion: number;
