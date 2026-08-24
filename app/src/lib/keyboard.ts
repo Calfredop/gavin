@@ -28,8 +28,32 @@ export interface ShortcutKeyEvent {
   ctrlKey: boolean;
   shiftKey: boolean;
   altKey: boolean;
+  /// Where the key landed, used only to keep ⌘C/⌘V out of text fields.
+  /// Optional so a hand-built test event can leave it off.
+  target?: EventTarget | null;
   preventDefault(): void;
   stopPropagation(): void;
+}
+
+/// True when the keystroke landed in something the browser edits itself:
+/// an <input>, a <textarea>, or a contenteditable (the plan editor). ⌘C
+/// and ⌘V there belong to that field, and consuming them here is what
+/// sent every paste to the last-focused terminal instead.
+///
+/// Duck-typed rather than `instanceof HTMLElement`: this layer is tested
+/// with no DOM at all, and a plain object has to be able to stand in.
+function isTextFieldTarget(target: EventTarget | null | undefined): boolean {
+  const el = target as
+    | { tagName?: string; isContentEditable?: boolean; closest?: (s: string) => unknown }
+    | null
+    | undefined;
+  if (!el || typeof el !== "object") return false;
+  // xterm focuses a hidden <textarea>, but a terminal is not a text
+  // field: its clipboard has to travel to the pty, so ⌘C/⌘V inside the
+  // terminal container stay ours.
+  if (el.closest?.(".xterm")) return false;
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return true;
+  return el.isContentEditable === true;
 }
 
 // ⌘1-8 select that position, ⌘9 the last, ⌘0 the first. Which LIST is
@@ -149,12 +173,20 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
   }
   // Copy/paste stay macOS-only on metaKey: on Linux/Windows Ctrl+C in a
   // terminal must remain SIGINT, not a copy.
+  //
+  // A text field keeps its own ⌘C/⌘V. Letting the event through is the
+  // whole fix: WebKit hands ⌘V to the page first, so preventing it here
+  // stopped macOS from ever reaching the Edit menu's Paste, and the
+  // field got nothing while the terminal got the clipboard.
+  const editing = isTextFieldTarget(event.target);
   if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "c") {
+    if (editing) return false;
     consume();
     await copySelection();
     return true;
   }
   if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "v") {
+    if (editing) return false;
     consume();
     await pasteClipboard();
     return true;
