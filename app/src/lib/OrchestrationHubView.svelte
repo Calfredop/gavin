@@ -276,7 +276,11 @@
   {/if}
 
   {#if !orch}
-    <p class="empty">Loading…</p>
+    {#if orchestrationBlocked}
+      <p class="empty">{orchestrationBlocked}</p>
+    {:else}
+      <p class="empty">Loading…</p>
+    {/if}
   {:else if rails.length === 0}
     <p class="empty">
       No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
