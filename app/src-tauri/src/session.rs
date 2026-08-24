@@ -714,7 +714,23 @@ fn send_command_reconnecting_at(
 /// be determined (not a `SocketAddr::as_pathname` case, e.g. an unnamed
 /// or abstract socket) -- a missed retry is recoverable, a retry aimed at
 /// an unknown or wrong peer is not.
-fn send_command_reconnecting(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Response> {
+///
+/// Gated here rather than in `send_command_reconnecting_at`: this function
+/// has TWO branches that can put bytes on the wire -- the peer-derived
+/// retry path through `_at`, and the `peer_addr()`-failed fallback that
+/// calls `send_command` directly. Gating only inside `_at` would leave
+/// that fallback branch unprotected, and a gated request reaching the
+/// socket by that one uncommon path is exactly the failure this exists to
+/// rule out. Checked before the bytes leave, not as error handling after:
+/// an older daemon cannot PARSE a request it predates, and read_message
+/// propagates that parse error with `?`, dropping the connection and
+/// every push riding on it.
+fn send_command_reconnecting(
+    conn: &Mutex<UnixStream>,
+    compat: &DaemonCompat,
+    req: &Request,
+) -> anyhow::Result<Response> {
+    gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
     let peer = conn
         .lock()
         .unwrap()
@@ -741,6 +757,7 @@ fn resolve_sessions(
     command_conn: &Mutex<UnixStream>,
     all_sessions: &HashMap<String, protocol::SessionSummary>,
     non_session_tab_ids: &HashSet<String>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     match node {
         LayoutNode::Leaf { tabs, pinned, .. } => {
@@ -751,7 +768,7 @@ fn resolve_sessions(
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
                 if !is_valid {
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
-                    let fresh = create_fresh_session(command_conn, last_known_cwd, None)?;
+                    let fresh = create_fresh_session(command_conn, last_known_cwd, None, compat)?;
                     // A pin belongs to the tab slot, not the dead process:
                     // carry it over so a daemon restart doesn't unpin it.
                     if let Some(pin) = pinned.iter_mut().find(|p| **p == *id) {
@@ -764,7 +781,7 @@ fn resolve_sessions(
         }
         LayoutNode::Split { children, .. } => {
             for child in children.iter_mut() {
-                resolve_sessions(child, command_conn, all_sessions, non_session_tab_ids)?;
+                resolve_sessions(child, command_conn, all_sessions, non_session_tab_ids, compat)?;
             }
             Ok(())
         }
@@ -779,8 +796,9 @@ fn resolve_sessions(
 /// than falling back to `$HOME`.
 fn list_valid_session_ids(
     command_conn: &Mutex<UnixStream>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<HashMap<String, protocol::SessionSummary>> {
-    let resp = send_command_reconnecting(command_conn, &Request::ListSessions)?;
+    let resp = send_command_reconnecting(command_conn, compat, &Request::ListSessions)?;
     match resp {
         Response::SessionList { sessions } => {
             Ok(sessions.into_iter().map(|s| (s.id.clone(), s)).collect())
@@ -798,6 +816,7 @@ fn resolve_workspaces(
     workspaces: &mut [Workspace],
     command_conn: &Mutex<UnixStream>,
     non_session_tab_ids: &HashSet<String>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     if workspaces.is_empty() {
         return Ok(());
@@ -813,10 +832,10 @@ fn resolve_workspaces(
     if !has_any_session_tab {
         return Ok(());
     }
-    let all_sessions = list_valid_session_ids(command_conn)?;
+    let all_sessions = list_valid_session_ids(command_conn, compat)?;
     for workspace in workspaces.iter_mut() {
         for page in workspace.pages.iter_mut() {
-            resolve_sessions(&mut page.layout, command_conn, &all_sessions, non_session_tab_ids)?;
+            resolve_sessions(&mut page.layout, command_conn, &all_sessions, non_session_tab_ids, compat)?;
         }
     }
     Ok(())
@@ -826,6 +845,20 @@ fn resolve_workspaces(
 mod test_support {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    /// A daemon at exact parity with this app -- gates nothing, so the
+    /// tests below that aren't specifically exercising the gate itself
+    /// don't have to think about it. `gate_tests` and
+    /// `command_connection_tests`'s two gating tests build their own
+    /// `DaemonCompat` deliberately instead, since an intentionally-old
+    /// `daemon_version` is the whole point there.
+    pub fn parity_compat() -> DaemonCompat {
+        DaemonCompat {
+            daemon_version: protocol::PROTOCOL_VERSION,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: false,
+        }
+    }
 
     /// Spins up a minimal fake daemon: accepts one connection, then for
     /// each response given, reads exactly one Request and replies with
@@ -882,7 +915,7 @@ mod test_support {
 
 #[cfg(test)]
 mod command_connection_tests {
-    use super::test_support::fake_daemon_replying_with;
+    use super::test_support::{fake_daemon_replying_with, parity_compat};
     use super::*;
     use std::os::unix::net::UnixListener;
 
@@ -921,8 +954,59 @@ mod command_connection_tests {
         });
 
         let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
-        let resp = send_command_reconnecting(&conn, &Request::GetProtocolVersion).unwrap();
+        let resp = send_command_reconnecting(&conn, &parity_compat(), &Request::GetProtocolVersion).unwrap();
         assert!(matches!(resp, Response::ProtocolVersion { version: 12 }));
+        server.join().unwrap();
+    }
+
+    /// The property that actually matters for the compat window: the
+    /// daemon must receive NOTHING -- not a request it answers with an
+    /// error, but no bytes at all. An older daemon can't parse a variant
+    /// it predates, and that parse error closes the whole connection.
+    #[test]
+    fn a_command_the_daemon_predates_never_reaches_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("gated.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            // Returns None if the client correctly sent nothing and hung up.
+            read_message::<_, Request>(&mut reader).unwrap()
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+
+        let err = send_command_reconnecting(&conn, &compat, &too_new).unwrap_err().to_string();
+        assert!(err.contains("v10"), "should name the version needed: {err}");
+        assert!(err.contains("v9"), "should name the version running: {err}");
+
+        drop(conn);
+        assert!(server.join().unwrap().is_none(), "a gated request must not reach the daemon");
+    }
+
+    #[test]
+    fn a_command_the_daemon_understands_still_reaches_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("allowed.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            let _req: Option<Request> = read_message(&mut reader).unwrap();
+            write_message(&mut conn, &Response::SessionList { sessions: vec![] }).unwrap();
+        });
+
+        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+
+        // ListSessions is v1, so a v9 daemon serves it fine.
+        let resp = send_command_reconnecting(&conn, &compat, &Request::ListSessions).unwrap();
+        assert!(matches!(resp, Response::SessionList { .. }));
         server.join().unwrap();
     }
 
@@ -998,6 +1082,7 @@ mod command_connection_tests {
 mod resolve_workspaces_tests {
     use super::test_support::fake_daemon_capturing_requests;
     use super::test_support::fake_daemon_replying_with;
+    use super::test_support::parity_compat;
     use super::*;
     use crate::config::Page;
 
@@ -1042,7 +1127,7 @@ mod resolve_workspaces_tests {
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1"]))])];
         let non_session_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
 
-        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids, &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1"]));
         assert!(captured.lock().unwrap().is_empty(), "no daemon calls at all for a file-tab-only workspace");
@@ -1059,7 +1144,7 @@ mod resolve_workspaces_tests {
             vec![workspace("ws-1", vec![page("page-1", leaf(&["file-tab-1", "stale-session"]))])];
         let non_session_tab_ids: HashSet<String> = ["file-tab-1".to_string()].into_iter().collect();
 
-        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &non_session_tab_ids, &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["file-tab-1", "fresh-a"]));
     }
@@ -1079,7 +1164,7 @@ mod resolve_workspaces_tests {
         };
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", pinned_leaf)])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(
             workspaces[0].pages[0].layout,
@@ -1121,7 +1206,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces: Vec<Workspace> = vec![];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces, vec![]);
     }
@@ -1142,7 +1227,7 @@ mod resolve_workspaces_tests {
             workspace("ws-2", vec![page("page-2", leaf(&["valid-2"]))]),
         ];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1"]));
         assert_eq!(workspaces[1].pages[0].layout, leaf(&["valid-2"]));
@@ -1161,7 +1246,7 @@ mod resolve_workspaces_tests {
             workspace("ws-2", vec![page("page-2", leaf(&["stale-2"]))]),
         ];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["valid-1", "fresh-a"]));
         assert_eq!(workspaces[1].pages[0].layout, leaf(&["fresh-b"]));
@@ -1178,7 +1263,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-1"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-a"]));
         let requests = captured.lock().unwrap();
@@ -1200,7 +1285,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["unknown-id"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-b"]));
         let requests = captured.lock().unwrap();
@@ -1229,7 +1314,7 @@ mod resolve_workspaces_tests {
         let conn = Mutex::new(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-2"]))])];
 
-        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs()).unwrap();
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
 
         assert_eq!(workspaces[0].pages[0].layout, leaf(&["fresh-c"]));
         let requests = captured.lock().unwrap();
@@ -1251,7 +1336,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), None).unwrap();
+        create_fresh_session(&conn, Some("/tmp"), None, &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -1266,7 +1351,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), Some("npm test")).unwrap();
+        create_fresh_session(&conn, Some("/tmp"), Some("npm test"), &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -1326,11 +1411,12 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
 fn reconcile_main_sessions(
     workspaces: &mut [Workspace],
     command_conn: &Mutex<UnixStream>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     if !workspaces.iter().any(|w| w.main_session_id.is_some()) {
         return Ok(());
     }
-    let sessions = list_valid_session_ids(command_conn)?;
+    let sessions = list_valid_session_ids(command_conn, compat)?;
     for workspace in workspaces.iter_mut() {
         let Some(id) = workspace.main_session_id.clone() else { continue };
         let alive = sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
@@ -1581,9 +1667,9 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             }
         }
     }
-    reconcile_main_sessions(&mut workspaces, &command_conn)?;
+    reconcile_main_sessions(&mut workspaces, &command_conn, &compat)?;
     let non_session_tab_ids = non_session_tab_ids(&file_tabs, &board_tabs);
-    resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids)?;
+    resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids, &compat)?;
     let active_workspace_id = if had_no_workspaces {
         Some(crate::config::UNFILED_WORKSPACE_ID.to_string())
     } else {
@@ -1664,6 +1750,7 @@ fn create_fresh_session(
     command_conn: &Mutex<UnixStream>,
     cwd: Option<&str>,
     command: Option<&str>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
@@ -1671,6 +1758,7 @@ fn create_fresh_session(
 
     let resp = send_command_reconnecting(
         command_conn,
+        compat,
         &Request::CreateSession { workspace_path: target.clone(), cwd: target.clone(), command: command.clone() },
     )?;
     match resp {
@@ -1683,6 +1771,7 @@ fn create_fresh_session(
 
     let resp = send_command_reconnecting(
         command_conn,
+        compat,
         &Request::CreateSession { workspace_path: home.clone(), cwd: home.clone(), command },
     )?;
     match resp {
@@ -1699,20 +1788,21 @@ pub fn create_session(
     daemon_state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let id = create_fresh_session(&command_state.0, cwd.as_deref(), command.as_deref())
+    let compat = current_compat(&compat);
+    let id = create_fresh_session(&command_state.0, cwd.as_deref(), command.as_deref(), &compat)
         .map_err(|e| e.to_string())?;
-    send_request(
-        &daemon_state.writer,
-        &Request::Attach { id: id.clone() },
-        &current_compat(&compat),
-    )
-    .map_err(|e| e.to_string())?;
+    send_request(&daemon_state.writer, &Request::Attach { id: id.clone() }, &compat)
+        .map_err(|e| e.to_string())?;
     Ok(id)
 }
 
 #[tauri::command]
-pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::KillSession { id: session_id })
+pub fn kill_session(
+    session_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::KillSession { id: session_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1721,8 +1811,12 @@ pub fn kill_session(session_id: String, state: State<CommandConnection>) -> Resu
     }
 }
 
-fn get_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<Board> {
-    let resp = send_command_reconnecting(command_conn, &Request::GetBoard { workspace_id })?;
+fn get_board_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+    compat: &DaemonCompat,
+) -> anyhow::Result<Board> {
+    let resp = send_command_reconnecting(command_conn, compat, &Request::GetBoard { workspace_id })?;
     match resp {
         Response::Board { columns, labels, card_sessions } => Ok(Board { columns, labels, card_sessions }),
         other => anyhow::bail!("expected Board, got {other:?}"),
@@ -1730,8 +1824,12 @@ fn get_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> any
 }
 
 #[tauri::command]
-pub fn get_board(workspace_id: String, state: State<CommandConnection>) -> Result<Board, String> {
-    get_board_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+pub fn get_board(
+    workspace_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Board, String> {
+    get_board_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 fn set_board_impl(
@@ -1739,8 +1837,10 @@ fn set_board_impl(
     workspace_id: String,
     columns: Vec<Column>,
     labels: Vec<Label>,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
-    let resp = send_command_reconnecting(command_conn, &Request::SetBoard { workspace_id, columns, labels })?;
+    let resp =
+        send_command_reconnecting(command_conn, compat, &Request::SetBoard { workspace_id, columns, labels })?;
     match resp {
         Response::Ok => Ok(()),
         other => anyhow::bail!("expected Ok, got {other:?}"),
@@ -1753,8 +1853,9 @@ pub fn set_board(
     columns: Vec<Column>,
     labels: Vec<Label>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    set_board_impl(&state.0, workspace_id, columns, labels).map_err(|e| e.to_string())
+    set_board_impl(&state.0, workspace_id, columns, labels, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 // --- Orchestration (SP1) ----------------------------------------------------
@@ -1765,8 +1866,9 @@ pub fn set_board(
 fn get_orchestration_impl(
     command_conn: &Mutex<UnixStream>,
     workspace_id: String,
+    compat: &DaemonCompat,
 ) -> anyhow::Result<Orchestration> {
-    let resp = send_command_reconnecting(command_conn, &Request::GetOrchestration { workspace_id })?;
+    let resp = send_command_reconnecting(command_conn, compat, &Request::GetOrchestration { workspace_id })?;
     match resp {
         Response::Orchestration { rails, conflict_notes, rail_runs, step_runs } => {
             Ok(Orchestration { rails, conflict_notes, rail_runs, step_runs })
@@ -1779,8 +1881,9 @@ fn get_orchestration_impl(
 pub fn get_orchestration(
     workspace_id: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<Orchestration, String> {
-    get_orchestration_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+    get_orchestration_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 /// A refused write (the running-step guard) comes back as
@@ -1800,9 +1903,11 @@ pub fn set_orchestration(
     rails: Vec<Rail>,
     conflict_notes: Vec<ConflictNote>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetOrchestration { workspace_id, rails, conflict_notes },
     )
     .map_err(|e| e.to_string())?;
@@ -1815,9 +1920,11 @@ pub fn set_rail_run(
     state_value: String,
     current_stage_id: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetRailRun { rail_id, state: state_value, current_stage_id },
     )
     .map_err(|e| e.to_string())?;
@@ -1831,17 +1938,23 @@ pub fn set_step_run(
     session_id: Option<String>,
     reason: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetStepRun { step_id, state: state_value, session_id, reason },
     )
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
 
-fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> anyhow::Result<()> {
-    let resp = send_command_reconnecting(command_conn, &Request::DeleteBoard { workspace_id })?;
+fn delete_board_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+    compat: &DaemonCompat,
+) -> anyhow::Result<()> {
+    let resp = send_command_reconnecting(command_conn, compat, &Request::DeleteBoard { workspace_id })?;
     match resp {
         Response::Ok => Ok(()),
         other => anyhow::bail!("expected Ok, got {other:?}"),
@@ -1849,8 +1962,12 @@ fn delete_board_impl(command_conn: &Mutex<UnixStream>, workspace_id: String) -> 
 }
 
 #[tauri::command]
-pub fn delete_board(workspace_id: String, state: State<CommandConnection>) -> Result<(), String> {
-    delete_board_impl(&state.0, workspace_id).map_err(|e| e.to_string())
+pub fn delete_board(
+    workspace_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    delete_board_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 /// Rides the STREAMING connection (fire-and-forget, mirroring
@@ -1876,8 +1993,9 @@ pub fn watch_gavin_root(
 pub fn unwatch_gavin_root(
     workspace_id: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::UnwatchGavinRoot { workspace_id })
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::UnwatchGavinRoot { workspace_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1890,8 +2008,9 @@ pub fn unwatch_gavin_root(
 pub fn get_gavin_tree(
     workspace_id: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<protocol::GavinTree, String> {
-    let resp = send_command_reconnecting(&state.0, &Request::GetGavinTree { workspace_id })
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::GetGavinTree { workspace_id })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::GavinTreeSnapshot { tree, .. } => Ok(tree),
@@ -1905,9 +2024,14 @@ pub fn init_gavin_root(
     root_path: String,
     workspace_name: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::InitGavinRoot { root_path, workspace_name })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::InitGavinRoot { root_path, workspace_name },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -1919,8 +2043,9 @@ pub fn init_gavin_root(
 pub fn create_gavin_context(
     parent_folder: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::CreateGavinContext { parent_folder })
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::CreateGavinContext { parent_folder })
         .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -1934,9 +2059,14 @@ pub fn add_external_gavin_context(
     root_path: String,
     folder: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::AddExternalGavinContext { root_path, folder })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::AddExternalGavinContext { root_path, folder },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -1949,9 +2079,14 @@ pub fn remove_external_gavin_context(
     root_path: String,
     folder: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::RemoveExternalGavinContext { root_path, folder })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::RemoveExternalGavinContext { root_path, folder },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -2206,8 +2341,13 @@ pub fn seed_smoke_test_data(root_path: String) -> Result<(), String> {
 /// never-overwrite guarantee are identical no matter who creates a plan.
 /// Returns the created path.
 #[tauri::command]
-pub fn delete_card_file(path: String, state: State<CommandConnection>) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::DeleteCardFile { path }).map_err(|e| e.to_string())?;
+pub fn delete_card_file(
+    path: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteCardFile { path })
+        .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -2223,9 +2363,11 @@ pub fn link_card_session(
     cwd: String,
     command: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::LinkCardSession { workspace_id, path, session_id, cwd, command },
     )
     .map_err(|e| e.to_string())?;
@@ -2241,9 +2383,14 @@ pub fn unlink_card_session(
     workspace_id: String,
     path: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::UnlinkCardSession { workspace_id, path })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::UnlinkCardSession { workspace_id, path },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -2258,9 +2405,11 @@ pub fn set_checklist_item(
     expected_text: String,
     checked: bool,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::SetChecklistItem { path, line_index, expected_text, checked },
     )
     .map_err(|e| e.to_string())?;
@@ -2277,9 +2426,14 @@ pub fn promote_checklist_item(
     plan_path: String,
     item: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command_reconnecting(&state.0, &Request::PromoteChecklistItem { plan_path, item })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::PromoteChecklistItem { plan_path, item },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::TaskPromoted { path } => Ok(path),
         Response::Error { message } => Err(message),
@@ -2298,9 +2452,11 @@ pub fn create_plan(
     kind: Option<String>,
     parent: Option<String>,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
     let resp = send_command_reconnecting(
         &state.0,
+        &current_compat(&compat),
         &Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent },
     )
     .map_err(|e| e.to_string())?;
@@ -2319,9 +2475,14 @@ pub fn set_plan_frontmatter_field(
     key: String,
     value: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command_reconnecting(&state.0, &Request::SetPlanFrontmatterField { path, key, value })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetPlanFrontmatterField { path, key, value },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::PlanFieldSet { path } => Ok(path),
         Response::Error { message } => Err(message),
@@ -2335,9 +2496,14 @@ pub fn set_root_config_field(
     key: String,
     value: String,
     state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &Request::SetRootConfigField { root_path, key, value })
-        .map_err(|e| e.to_string())?;
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetRootConfigField { root_path, key, value },
+    )
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -2387,7 +2553,7 @@ mod migration_tests {
 
 #[cfg(test)]
 mod main_session_tests {
-    use super::test_support::fake_daemon_replying_with;
+    use super::test_support::{fake_daemon_replying_with, parity_compat};
     use super::*;
 
     fn ws_with_main(id: &str, main: Option<&str>) -> Workspace {
@@ -2424,7 +2590,7 @@ mod main_session_tests {
             sessions: vec![summary("agent-1", "idle")],
         }]);
         let mut workspaces = vec![ws_with_main("ws-1", Some("agent-1"))];
-        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client), &parity_compat()).unwrap();
         assert_eq!(workspaces[0].main_session_id.as_deref(), Some("agent-1"));
     }
 
@@ -2435,7 +2601,7 @@ mod main_session_tests {
         }]);
         let mut workspaces =
             vec![ws_with_main("ws-1", Some("agent-1")), ws_with_main("ws-2", Some("never-existed"))];
-        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client), &parity_compat()).unwrap();
         assert_eq!(workspaces[0].main_session_id, None);
         assert_eq!(workspaces[1].main_session_id, None);
     }
@@ -2446,7 +2612,7 @@ mod main_session_tests {
         // no ListSessions was sent at all.
         let (client, _dir) = fake_daemon_replying_with(vec![]);
         let mut workspaces = vec![ws_with_main("ws-1", None)];
-        reconcile_main_sessions(&mut workspaces, &Mutex::new(client)).unwrap();
+        reconcile_main_sessions(&mut workspaces, &Mutex::new(client), &parity_compat()).unwrap();
         assert_eq!(workspaces[0].main_session_id, None);
     }
 }
@@ -2572,7 +2738,7 @@ mod gate_tests {
 
 #[cfg(test)]
 mod kanban_command_tests {
-    use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with};
+    use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with, parity_compat};
     use super::*;
     use std::os::unix::net::UnixListener;
 
@@ -2585,7 +2751,7 @@ mod kanban_command_tests {
         }]);
         let conn = Mutex::new(client);
 
-        let board = get_board_impl(&conn, "ws-1".to_string()).unwrap();
+        let board = get_board_impl(&conn, "ws-1".to_string(), &parity_compat()).unwrap();
 
         assert_eq!(board.columns.len(), 1);
         assert_eq!(board.columns[0].name, "To Do");
@@ -2629,7 +2795,7 @@ mod kanban_command_tests {
         });
 
         let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
-        let board = get_board_impl(&conn, "ws-1".to_string()).unwrap();
+        let board = get_board_impl(&conn, "ws-1".to_string(), &parity_compat()).unwrap();
 
         assert_eq!(board.columns.len(), 1);
         assert_eq!(board.columns[0].name, "To Do");
@@ -2642,7 +2808,7 @@ mod kanban_command_tests {
             fake_daemon_capturing_requests(vec![Response::Board { columns: vec![], labels: vec![], card_sessions: vec![] }]);
         let conn = Mutex::new(client);
 
-        get_board_impl(&conn, "ws-42".to_string()).unwrap();
+        get_board_impl(&conn, "ws-42".to_string(), &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -2657,7 +2823,7 @@ mod kanban_command_tests {
             fake_daemon_replying_with(vec![Response::Error { message: "board fetch failed".to_string() }]);
         let conn = Mutex::new(client);
 
-        let result = get_board_impl(&conn, "ws-1".to_string());
+        let result = get_board_impl(&conn, "ws-1".to_string(), &parity_compat());
 
         assert!(result.is_err());
     }
@@ -2668,7 +2834,7 @@ mod kanban_command_tests {
         let conn = Mutex::new(client);
         let columns = vec![Column { id: "c1".to_string(), name: "Only".to_string(), position: 0,  }];
 
-        set_board_impl(&conn, "ws-1".to_string(), columns.clone(), vec![]).unwrap();
+        set_board_impl(&conn, "ws-1".to_string(), columns.clone(), vec![], &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -2687,7 +2853,7 @@ mod kanban_command_tests {
             fake_daemon_replying_with(vec![Response::Error { message: "board save failed".to_string() }]);
         let conn = Mutex::new(client);
 
-        let result = set_board_impl(&conn, "ws-1".to_string(), vec![], vec![]);
+        let result = set_board_impl(&conn, "ws-1".to_string(), vec![], vec![], &parity_compat());
 
         assert!(result.is_err());
     }
@@ -2697,7 +2863,7 @@ mod kanban_command_tests {
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::Ok]);
         let conn = Mutex::new(client);
 
-        delete_board_impl(&conn, "ws-1".to_string()).unwrap();
+        delete_board_impl(&conn, "ws-1".to_string(), &parity_compat()).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
