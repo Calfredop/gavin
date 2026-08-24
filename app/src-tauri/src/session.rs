@@ -519,6 +519,7 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
         &writer,
         stream_conn,
         attachable_session_ids(&data, &non_session_tab_ids),
+        compat,
     )?;
 
     // The daemon's gavin watchers were per-connection and died with it.
@@ -534,13 +535,34 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
                     workspace_id: ws.id.clone(),
                     root_path: root.clone(),
                 },
+                &compat,
             )?;
         }
     }
     Ok(())
 }
 
-fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Result<()> {
+/// The wire guard. An older daemon cannot PARSE a request it predates,
+/// and a parse error there closes the whole connection (see
+/// handle_connection) -- taking every push with it. So the check has to
+/// happen here, before the bytes leave, not as error handling after.
+pub fn gate(req: &Request, compat: &DaemonCompat) -> Result<(), String> {
+    let needed = protocol::min_version_for(req);
+    if needed > compat.daemon_version {
+        return Err(format!(
+            "this needs daemon protocol v{needed}, but the running daemon is v{} — restart the daemon to use it",
+            compat.daemon_version
+        ));
+    }
+    Ok(())
+}
+
+fn send_request(
+    writer: &Arc<Mutex<UnixStream>>,
+    req: &Request,
+    compat: &DaemonCompat,
+) -> anyhow::Result<()> {
+    gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
     write_message(&mut *writer.lock().unwrap(), req)
 }
 
@@ -572,6 +594,16 @@ pub struct DaemonCompat {
 /// they're talking to a degraded daemon without re-probing it. `None`
 /// until the first successful probe.
 pub struct DaemonCompatState(pub Mutex<Option<DaemonCompat>>);
+
+/// The verdict for a `#[tauri::command]` to `gate` its own `send_request`
+/// calls against. `DaemonCompatState` is `.manage()`d at app setup (see
+/// lib.rs) and only ever turns `Some` -- both `bootstrap` and `reconnect`
+/// populate it before they `.manage()`/mutate the connection state a
+/// command would need to even be reachable -- so `None` here means a
+/// command ran before bootstrap finished, which should not be possible.
+fn current_compat(state: &DaemonCompatState) -> DaemonCompat {
+    state.0.lock().unwrap().expect("DaemonCompatState populated before any command runs")
+}
 
 /// Sorts a daemon's advertised version into one of three bands relative to
 /// this app: too new (hard error -- Task 4 does not teach the app to
@@ -1359,9 +1391,13 @@ fn attach_and_relay(
     writer: &Arc<Mutex<UnixStream>>,
     reader_stream: UnixStream,
     session_ids: Vec<String>,
+    // By value, not `&`: `DaemonCompat` is `Copy`, and the relay thread
+    // spawned below needs its own owned copy to move into the `'static`
+    // closure -- there is no `AppHandle`-free way to borrow it instead.
+    compat: DaemonCompat,
 ) -> anyhow::Result<()> {
     for id in session_ids {
-        send_request(writer, &Request::Attach { id })?;
+        send_request(writer, &Request::Attach { id }, &compat)?;
     }
 
     let epoch = app_handle.state::<ConnectionEpoch>().0.load(std::sync::atomic::Ordering::SeqCst);
@@ -1444,7 +1480,11 @@ fn attach_and_relay(
                 Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
                     // Attach BEFORE emitting: a session nobody attaches
                     // renders blank forever (the Milestone-C lesson).
-                    let _ = send_request(&relay_writer, &Request::Attach { id: session_id.clone() });
+                    let _ = send_request(
+                        &relay_writer,
+                        &Request::Attach { id: session_id.clone() },
+                        &compat,
+                    );
                     let _ = reader_app_handle
                         .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
                 }
@@ -1570,7 +1610,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
-    attach_and_relay(&app_handle, &writer, reader_stream, session_ids)?;
+    attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
     Ok(())
 }
 
@@ -1579,9 +1619,14 @@ pub fn write_input(
     session_id: String,
     data: String,
     state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(&state.writer, &Request::WriteInput { id: session_id, data })
-        .map_err(|e| e.to_string())
+    send_request(
+        &state.writer,
+        &Request::WriteInput { id: session_id, data },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1590,9 +1635,14 @@ pub fn resize_session(
     cols: u16,
     rows: u16,
     state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(&state.writer, &Request::ResizeSession { id: session_id, cols, rows })
-        .map_err(|e| e.to_string())
+    send_request(
+        &state.writer,
+        &Request::ResizeSession { id: session_id, cols, rows },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Shared by the create_session command below and resolve_sessions's
@@ -1647,11 +1697,16 @@ pub fn create_session(
     command: Option<String>,
     command_state: State<CommandConnection>,
     daemon_state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
     let id = create_fresh_session(&command_state.0, cwd.as_deref(), command.as_deref())
         .map_err(|e| e.to_string())?;
-    send_request(&daemon_state.writer, &Request::Attach { id: id.clone() })
-        .map_err(|e| e.to_string())?;
+    send_request(
+        &daemon_state.writer,
+        &Request::Attach { id: id.clone() },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(id)
 }
 
@@ -1807,9 +1862,14 @@ pub fn watch_gavin_root(
     workspace_id: String,
     root_path: String,
     conn: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(&conn.writer, &Request::WatchGavinRoot { workspace_id, root_path })
-        .map_err(|e| e.to_string())
+    send_request(
+        &conn.writer,
+        &Request::WatchGavinRoot { workspace_id, root_path },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2480,6 +2540,33 @@ mod classify_tests {
     fn a_daemon_newer_than_the_app_is_rejected() {
         let err = classify(13, 12, 5).unwrap_err();
         assert!(err.contains("newer"));
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn a_request_the_daemon_predates_is_refused_before_it_is_sent() {
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+        let err = gate(&too_new, &compat).unwrap_err();
+        assert!(err.contains("v10"), "should name the version needed: {err}");
+        assert!(err.contains("v9"), "should name the version running: {err}");
+    }
+
+    #[test]
+    fn a_request_the_daemon_understands_passes() {
+        let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
+        assert!(gate(&Request::ListSessions, &compat).is_ok());
+    }
+
+    #[test]
+    fn an_exact_match_gates_nothing() {
+        let compat = DaemonCompat { daemon_version: 12, app_version: 12, degraded: false };
+        let newest = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+        assert!(gate(&newest, &compat).is_ok());
     }
 }
 
