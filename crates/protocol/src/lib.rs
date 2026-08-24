@@ -1231,6 +1231,130 @@ mod tests {
         }) <= PROTOCOL_VERSION);
     }
 
+    /// One sample of every `Request` variant, `Unknown` included --
+    /// `min_version_for` only looks at which variant a request is, never
+    /// its payload, so placeholder field values are fine. Kept exhaustive
+    /// by hand against the enum, the same way session.rs's own
+    /// `one_of_every_request_variant` is; a variant added to the enum
+    /// without a matching entry here silently drops out of the count
+    /// below instead of failing loudly.
+    fn one_of_every_request_variant() -> Vec<Request> {
+        vec![
+            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None },
+            Request::ListSessions,
+            Request::WriteInput { id: "s".into(), data: "d".into() },
+            Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
+            Request::KillSession { id: "s".into() },
+            Request::Attach { id: "s".into() },
+            Request::GetBoard { workspace_id: "w".into() },
+            Request::SetBoard { workspace_id: "w".into(), columns: vec![], labels: vec![] },
+            Request::DeleteBoard { workspace_id: "w".into() },
+            Request::WatchGavinRoot { workspace_id: "w".into(), root_path: "r".into() },
+            Request::UnwatchGavinRoot { workspace_id: "w".into() },
+            Request::GetGavinTree { workspace_id: "w".into() },
+            Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
+            Request::CreateGavinContext { parent_folder: "p".into() },
+            Request::AddExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::RemoveExternalGavinContext { root_path: "r".into(), folder: "f".into() },
+            Request::SetPlanFrontmatterField { path: "p".into(), key: "k".into(), value: "v".into() },
+            Request::SetRootConfigField { root_path: "r".into(), key: "k".into(), value: "v".into() },
+            Request::ScanGavinRoot { root_path: "r".into() },
+            Request::ReadPrd { root_path: "r".into() },
+            Request::CreatePlan {
+                context_folder: "c".into(),
+                file_name: "f".into(),
+                title: "t".into(),
+                status: None,
+                priority: None,
+                body: None,
+                kind: None,
+                parent: None,
+            },
+            Request::GetBoardByRoot { root_path: "r".into() },
+            Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },
+            Request::DeleteCardFile { path: "p".into() },
+            Request::SetChecklistItem {
+                path: "p".into(),
+                line_index: 0,
+                expected_text: "x".into(),
+                checked: true,
+            },
+            Request::PromoteChecklistItem { plan_path: "p".into(), item: "i".into() },
+            Request::LinkCardSession {
+                workspace_id: "w".into(),
+                path: "p".into(),
+                session_id: "s".into(),
+                cwd: "c".into(),
+                command: None,
+            },
+            Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
+            Request::GetOrchestration { workspace_id: "w".into() },
+            Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
+            Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
+            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None },
+            Request::GetOrchestrationByRoot { root_path: "r".into() },
+            Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
+            Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
+            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::GetProtocolVersion,
+            Request::Shutdown,
+            Request::Unknown,
+        ]
+    }
+
+    /// A forcing function for `PROTOCOL_VERSION` bump discipline, which has
+    /// already failed three times: seven of the eight variants this table
+    /// attributes to v10 (GetOrchestration, GetOrchestrationByRoot,
+    /// GitDirtyPaths, SetOrchestration, SetOrchestrationByRoot, SetRailRun,
+    /// SetStepRun) were added to the wire across commits 6821fc8, c7ecfce
+    /// and 35b26dd while `PROTOCOL_VERSION` still read 8 -- three days and
+    /// three commits with no bump. Only NameSession genuinely arrived with
+    /// the v9/v10 jump (374eb7d).
+    ///
+    /// The exhaustive match in `min_version_for` forces an author touching
+    /// the enum to type *a* version number, but the value that's easiest
+    /// to type is whatever `PROTOCOL_VERSION` currently says -- which is
+    /// only correct if they also remembered to bump it. That is exactly
+    /// the mistake made three times above, and the compiler cannot catch
+    /// it because a wrong-but-present number still compiles.
+    ///
+    /// This test can't know the *true* version for a new variant either,
+    /// but it pins how many variants currently live in each band. Adding a
+    /// variant to an existing band (the easy, wrong move -- attribute it to
+    /// the current `PROTOCOL_VERSION` without bumping) changes that band's
+    /// count and trips this test, forcing whoever did it to stop and
+    /// consider whether they owe a version bump instead. Counts below were
+    /// derived by hand from `min_version_for`'s match arms on this branch,
+    /// not copied from a plan: v1=21, v4=2, v5=2, v6=1, v7=1, v8=2, v10=8,
+    /// v12=1 (Shutdown), plus Unknown.
+    #[test]
+    fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
+        use std::collections::HashMap;
+
+        let mut counts: HashMap<u32, usize> = HashMap::new();
+        for req in one_of_every_request_variant() {
+            *counts.entry(min_version_for(&req)).or_default() += 1;
+        }
+
+        let mut expected: HashMap<u32, usize> = HashMap::new();
+        expected.insert(1, 21);
+        expected.insert(4, 2);
+        expected.insert(5, 2);
+        expected.insert(6, 1);
+        expected.insert(7, 1);
+        expected.insert(8, 2);
+        expected.insert(10, 8);
+        expected.insert(12, 1);
+        expected.insert(u32::MAX, 1); // Request::Unknown
+
+        assert_eq!(
+            counts, expected,
+            "a version band's variant count changed -- if you just added a \
+             Request variant, make sure you also considered whether \
+             PROTOCOL_VERSION needs bumping (see this test's doc comment)"
+        );
+    }
+
     #[test]
     fn card_session_serializes_to_the_camel_case_shape_the_frontend_expects() {
         let cs = CardSession {
