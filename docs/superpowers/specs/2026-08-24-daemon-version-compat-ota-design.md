@@ -83,7 +83,7 @@ catch-all on `Request` (below).
 
 A client at version `P` accepts a daemon at version `D` when
 `MIN_COMPATIBLE <= D <= P`. This three-way gate replaces the equality
-check in both clients:
+check -- but Phase 1 (this branch) wires it into the **app only**:
 
 | Band | Behaviour |
 |---|---|
@@ -91,6 +91,23 @@ check in both clients:
 | `MIN_COMPATIBLE <= D < P` | connect; gate features; show a banner |
 | `D < MIN_COMPATIBLE` | today's hard error, unchanged |
 | `D > P` | hard error (app), re-exec (`gavin-mcp`, see §3) |
+
+> **Phase 1 is app-only.** `gavin-mcp` (`crates/gavin-mcp/src/main.rs:33`)
+> still demands strict equality (`version == PROTOCOL_VERSION`) and bails
+> otherwise -- it was not brought into this window. The consequence is
+> concrete, not theoretical: against a v9 daemon the app connects
+> degraded and gates its own requests, while `gavin-mcp` refuses to
+> connect at all, so every one of its 14 request types fails, including
+> the 9 that are plain v1 requests (`CreateGavinContext`, `CreatePlan`,
+> `GetBoardByRoot`, `GetProtocolVersion`, `InitGavinRoot`, `ReadPrd`,
+> `ScanGavinRoot`, `SetPlanFrontmatterField`, `SpawnAgentSession`) and
+> would work fine against that daemon unmodified. Its refusal message
+> also tells the user to `pkill gavin-daemon` and relaunch -- the
+> destructive restart, killing every running agent, that this whole
+> feature exists to stop recommending. Tracked as a follow-up card,
+> `.gavin-root/plans/gavin-mcp-compat-window.md`; gating `gavin-mcp` the
+> same way is a separate decision, deliberately left to a human rather
+> than implemented alongside this branch.
 
 #### Client-side capability gating is the load-bearing mechanism
 
@@ -137,10 +154,29 @@ consecutive sets.
 was purely additive on the request side, which is what makes client-side
 gating viable at all.
 
-> The v9/v10 boundary is sampled at a single commit that bumped twice
-> (`374eb7d`, "agent tab naming (v9) and archive-aware plan writes
-> (v10)"), so its eight variants are attributed to v10. That is the
-> conservative direction: the app simply won't send them to a v9 daemon.
+> The v10 band is not a simple single-commit ambiguity. Seven of its
+> eight variants (`GetOrchestration`, `GetOrchestrationByRoot`,
+> `GitDirtyPaths`, `SetOrchestration`, `SetOrchestrationByRoot`,
+> `SetRailRun`, `SetStepRun`) landed on the wire across three commits over
+> three days -- `6821fc8`, `c7ecfce`, `35b26dd` (2026-08-21) -- while
+> `PROTOCOL_VERSION` stood still at 8 through all of them: real wire
+> changes shipped with no bump. Only `NameSession` genuinely arrived with
+> the commit that finally moved the constant, `374eb7d` (2026-08-24,
+> "agent tab naming (v9) and archive-aware plan writes (v10)"), which
+> jumped it straight 8 → 10 -- which is why the table has no v9 entry at
+> all.
+>
+> That gap is exactly what makes the table's derivation method
+> trustworthy rather than merely lucky: it diffs the `Request` enum's
+> variant set at each *version-bumping* commit, so a variant always lands
+> in the bucket keyed by whatever `PROTOCOL_VERSION` had reached by the
+> next bump after it shipped -- never in an earlier one. **The derivation
+> always attributes a variant to a version greater than or equal to its
+> true introduction, never less — it errs conservatively by
+> construction.** A client gating on this table can refuse a variant to a
+> daemon slightly newer than strictly necessary; it will never send a
+> variant to a daemon too old to parse it, even when the commit history
+> that introduced it forgot to bump the version that says so.
 
 #### Where the floor comes from
 
