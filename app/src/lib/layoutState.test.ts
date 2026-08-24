@@ -106,6 +106,7 @@ import {
   setGitViewPrefs,
   startMainAgentWithPrompt,
   runningSessionCount,
+  daemonCompat,
   type LayoutState,
 } from "./layoutState";
 
@@ -148,6 +149,9 @@ beforeEach(() => {
   // Module-level store: without this, one test's seeded agent config
   // resolves in the next one.
   gavinTrees.set({});
+  // Module-level store, same reason: without this, a compat verdict set
+  // by one test would leak into the next one's assertions.
+  daemonCompat.set(null);
   layoutState.set({
     status: "connecting",
     errorMessage: "",
@@ -1609,6 +1613,29 @@ describe("restartDaemonInPlace", () => {
 
     await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
     expect(get(layoutState).status).toBe("ready");
+  });
+
+  // The regression this guards: DaemonCompatBanner's "Restart daemon"
+  // button calls this function (not retryConnect, which unconditionally
+  // flips status to "connecting" and, on failure, "error" -- blanking the
+  // working app behind an overlay the moment the user acts on the very
+  // banner explaining the app still works). A caller catching the thrown
+  // error is only a safe pattern if `status` truly never moves on this
+  // path; this test is what would fail if that guarantee broke.
+  it("does not touch status or the daemonCompat verdict when the restart fails", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    layoutState.update((s) => ({ ...s, status: "ready" }));
+    const previousCompat = { daemonVersion: 9, appVersion: 12, degraded: true };
+    daemonCompat.set(previousCompat);
+    vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
+
+    await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
+
+    expect(get(layoutState).status).toBe("ready");
+    // The verdict the banner is still showing must survive a failed
+    // restart untouched -- the user is exactly where they were, with an
+    // explanation, not looking at a blanked-out or stale-cleared banner.
+    expect(get(daemonCompat)).toEqual(previousCompat);
   });
 });
 
