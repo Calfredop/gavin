@@ -1,7 +1,7 @@
 ---
 kind: task
 title: [bug] page’s kanban board
-status: To Do
+status: In Progress
 ---
 # [bug] page’s kanban board
 
