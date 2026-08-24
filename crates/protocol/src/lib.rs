@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -228,6 +228,17 @@ pub enum Request {
         name: String,
     },
     GetProtocolVersion,
+    /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
+    /// a daemon it owns without `pkill`, which cannot distinguish this
+    /// install's daemon from another's.
+    Shutdown,
+    /// Catch-all for a request from a NEWER client. Deserialize-only:
+    /// never constructed or sent by us. Exists so an unrecognised
+    /// `type` tag is a value rather than a parse error -- read_message
+    /// propagates parse errors with `?`, which drops the whole
+    /// connection and every push riding on it.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The protocol version that introduced `req`'s variant.
@@ -285,6 +296,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // (SaveTool, GetTools, GetToolsByRoot, DeleteTool). They do not
         // exist on this branch. When that work lands, this match stops
         // compiling until its `=> 11` arm is added -- by design.
+
+        Request::Shutdown => 12,
+
+        // Never sent -- it only exists to absorb a newer peer's request.
+        // u32::MAX keeps it un-sendable if it ever reaches a send path.
+        Request::Unknown => u32::MAX,
     }
 }
 
@@ -329,6 +346,11 @@ pub enum Response {
     PlanFieldSet { path: String },
     Ok,
     Error { message: String },
+    /// Sent instead of dropping the connection when a request's `type`
+    /// is unrecognised. `min_version` is advisory: this daemon cannot
+    /// know which version introduced a variant it has never heard of,
+    /// so it reports its own version as the ceiling it can serve.
+    Unsupported { request_type: String, min_version: u32 },
 }
 
 /// A session's git status, deduped daemon-side by repo root (many sessions
@@ -1142,12 +1164,31 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_nine_until_a_breaking_change_bumps_it() {
-        // v9: NameSession + the SessionNamed push (an agent naming its
-        // own tab). A pre-v9 daemon cannot parse the request at all.
-        // v8: GavinContext.outside + Add/RemoveExternalGavinContext
-        // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 10);
+    fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v12: Request::Unknown (tolerant parsing of a future request
+        // type) + Request::Shutdown. v11 is reserved for a separate,
+        // still-uncommitted orchestration merge -- see min_version_for's
+        // comment -- so this jumps 10 -> 12, not 10 -> 11.
+        assert_eq!(PROTOCOL_VERSION, 12);
+    }
+
+    #[test]
+    fn an_unrecognised_request_type_parses_as_unknown_instead_of_erroring() {
+        // The whole point: a future request must not be a parse error, because
+        // handle_connection turns a parse error into a closed connection.
+        let line = r#"{"type":"SomeFutureRequest","field":1}"#;
+        let parsed: Request = serde_json::from_str(line).unwrap();
+        assert!(matches!(parsed, Request::Unknown));
+    }
+
+    #[test]
+    fn malformed_json_is_still_an_error() {
+        assert!(serde_json::from_str::<Request>("{not json").is_err());
+    }
+
+    #[test]
+    fn shutdown_is_a_v12_request() {
+        assert_eq!(min_version_for(&Request::Shutdown), 12);
     }
 
     #[test]

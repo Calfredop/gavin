@@ -1460,6 +1460,18 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::NameSession { session_id, name } => {
             manager.name_session(&session_id, &name).map(|_| Response::Ok)
         }
+        // Real interception (mirroring Attach/WatchGavinRoot) belongs in
+        // handle_connection and is Task 3's -- this arm only exists so the
+        // match stays exhaustive in the meantime and is never expected to
+        // fire.
+        Request::Shutdown => Ok(Response::Ok),
+        // A client newer than this daemon sent a request type we don't
+        // know. Answer instead of the parse error that used to close the
+        // whole connection (and every push riding on it).
+        Request::Unknown => Ok(Response::Unsupported {
+            request_type: "unknown".to_string(),
+            min_version: protocol::PROTOCOL_VERSION,
+        }),
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
