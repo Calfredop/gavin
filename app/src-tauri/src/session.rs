@@ -683,6 +683,18 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
 /// reconnect, the app keeps serving its previous `DaemonCompat` verdict
 /// until the next explicit `reconnect()` or restart.
 ///
+/// Also known, also deliberately not fixed here: the retry gives the app
+/// at-least-once request semantics it did not previously have. If the
+/// first `send_command` fails because the reply never arrived rather than
+/// because the request never went out -- e.g. the daemon processed
+/// `CreateSession` and then died before the response crossed the wire --
+/// the retry resends the same request to the (now different) connection,
+/// which creates a second session and orphans the first one's PTY. This
+/// is inherited from gavin-mcp's transport shape (see the mirror note
+/// above), and the alternative -- no retry -- was demonstrably worse: one
+/// failed request left `conn` permanently closed and the app permanently
+/// dead, which is the whole reason this function exists.
+///
 /// Takes `socket_path` as a parameter rather than resolving one itself so
 /// this core logic stays directly testable against a throwaway tempdir
 /// socket. `send_command_reconnecting` below is the production wrapper
