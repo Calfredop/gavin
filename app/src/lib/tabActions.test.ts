@@ -1,32 +1,35 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("./confirmClose", () => ({ confirmTabClose: vi.fn() }));
+vi.mock("./confirmClose", () => ({ confirmTabsClose: vi.fn() }));
 vi.mock("./layoutState", () => ({ closeSession: vi.fn().mockResolvedValue(undefined) }));
 
-import { confirmTabClose } from "./confirmClose";
+import { confirmTabsClose } from "./confirmClose";
 import { closeSession } from "./layoutState";
 import { closeTabs } from "./tabActions";
 
 beforeEach(() => {
-  vi.mocked(confirmTabClose).mockReset();
+  vi.mocked(confirmTabsClose).mockReset();
   vi.mocked(closeSession).mockClear();
 });
 
 describe("closeTabs", () => {
-  it("confirms then closes each tab in order", async () => {
-    vi.mocked(confirmTabClose).mockResolvedValue(true);
+  it("confirms once for the batch, then closes each tab in order", async () => {
+    vi.mocked(confirmTabsClose).mockResolvedValue(true);
     await closeTabs(["a", "b"]);
+    expect(confirmTabsClose).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(confirmTabsClose).mock.calls[0][0]).toEqual(["a", "b"]);
     expect(vi.mocked(closeSession).mock.calls.map((c) => c[0])).toEqual(["a", "b"]);
   });
 
-  it("stops at the first declined confirm", async () => {
-    vi.mocked(confirmTabClose).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  it("closes nothing when the batch confirm is declined", async () => {
+    vi.mocked(confirmTabsClose).mockResolvedValue(false);
     await closeTabs(["a", "b", "c"]);
-    expect(vi.mocked(closeSession).mock.calls.map((c) => c[0])).toEqual(["a"]);
+    expect(closeSession).not.toHaveBeenCalled();
   });
 
   it("does nothing for an empty list", async () => {
+    vi.mocked(confirmTabsClose).mockResolvedValue(true);
     await closeTabs([]);
-    expect(confirmTabClose).not.toHaveBeenCalled();
+    expect(closeSession).not.toHaveBeenCalled();
   });
 });

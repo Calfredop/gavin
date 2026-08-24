@@ -103,7 +103,7 @@ import {
   startMainAgent,
   stopMainAgent,
   setWorkspaceColor,
-  setNotifyFlag,
+  setWorkspaceFlag,
   setAgentField,
   setGitViewPrefs,
   startMainAgentWithPrompt,
@@ -1556,9 +1556,9 @@ describe("workspace settings", () => {
     expect(get(layoutState).workspaces[0].color).toBe("#4a9eff");
   });
 
-  it("setNotifyFlag flips one toggle without touching the other", async () => {
+  it("setWorkspaceFlag flips one toggle without touching the other", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
-    await setNotifyFlag("ws-1", "notifyFinished", false);
+    await setWorkspaceFlag("ws-1", "notifyFinished", false);
     const w = get(layoutState).workspaces[0];
     expect(w.notifyFinished).toBe(false);
     expect(w.notifyNeedsInput).not.toBe(false);

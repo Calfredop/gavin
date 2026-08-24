@@ -43,6 +43,9 @@ export interface Workspace {
   /// Per-workspace notification toggles (D38); absent means on.
   notifyNeedsInput?: boolean;
   notifyFinished?: boolean;
+  /// Whether closing a tab asks first; absent means on. Machine-local,
+  /// like the notification toggles -- a habit, not a project setting.
+  confirmTabClose?: boolean;
   /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
   gitView?: GitViewPrefs;
 }

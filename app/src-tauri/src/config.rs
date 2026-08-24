@@ -98,6 +98,11 @@ pub struct Workspace {
     pub notify_needs_input: bool,
     #[serde(default = "default_true")]
     pub notify_finished: bool,
+    /// Whether closing a tab asks first. Default true so a close is never
+    /// silently destructive; turning it off is the deliberate opt-out for
+    /// someone who closes tabs constantly.
+    #[serde(default = "default_true")]
+    pub confirm_tab_close: bool,
     /// Git tab preferences; None until the user changes something.
     #[serde(default)]
     pub git_view: Option<GitViewPrefs>,
@@ -216,6 +221,7 @@ mod tests {
             color: None,
             notify_needs_input: true,
             notify_finished: true,
+            confirm_tab_close: true,
             git_view: None,
         }
     }
@@ -390,6 +396,7 @@ mod tests {
                 "color": null,
                 "notifyNeedsInput": true,
                 "notifyFinished": true,
+                "confirmTabClose": true,
                 "gitView": null
             })
         );
@@ -599,6 +606,7 @@ mod tests {
         assert_eq!(ws.color, None, "absent colour means the default accent");
         assert!(ws.notify_needs_input, "notifications default on");
         assert!(ws.notify_finished, "notifications default on");
+        assert!(ws.confirm_tab_close, "close confirm defaults on");
     }
 
     #[test]
@@ -607,6 +615,7 @@ mod tests {
         let mut ws = sample_workspace();
         ws.color = Some("#a78bfa".to_string());
         ws.notify_finished = false;
+        ws.confirm_tab_close = false;
         let config = AppConfig {
             workspaces: vec![ws],
             active_workspace_id: Some("workspace-1".to_string()),

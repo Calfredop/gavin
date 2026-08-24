@@ -138,6 +138,7 @@ mod smoketest_tests {
             color: None,
             notify_needs_input: true,
             notify_finished: true,
+            confirm_tab_close: true,
             git_view: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
@@ -1133,6 +1134,7 @@ mod resolve_workspaces_tests {
             color: None,
             notify_needs_input: true,
             notify_finished: true,
+            confirm_tab_close: true,
             git_view: None,
         }
     }
@@ -1415,6 +1417,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 color: None,
                 notify_needs_input: true,
                 notify_finished: true,
+                confirm_tab_close: true,
                 git_view: None,
             });
         }
@@ -1678,6 +1681,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 color: None,
                 notify_needs_input: true,
                 notify_finished: true,
+                confirm_tab_close: true,
                 git_view: None,
             },
         );
@@ -2687,6 +2691,7 @@ mod main_session_tests {
             color: None,
             notify_needs_input: true,
             notify_finished: true,
+            confirm_tab_close: true,
             git_view: None,
         }
     }
@@ -3153,6 +3158,7 @@ mod attach_target_tests {
             color: None,
             notify_needs_input: true,
             notify_finished: true,
+            confirm_tab_close: true,
             git_view: None,
         }
     }

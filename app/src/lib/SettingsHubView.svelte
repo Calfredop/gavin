@@ -3,7 +3,7 @@
     layoutState,
     renameWorkspace,
     setWorkspaceColor,
-    setNotifyFlag,
+    setWorkspaceFlag,
     setAgentField,
     agentProfilesStore,
     restartDaemonInPlace,
@@ -197,7 +197,7 @@
         <input
           type="checkbox"
           checked={ws.notifyNeedsInput ?? true}
-          onchange={(e) => void setNotifyFlag(workspaceId, "notifyNeedsInput", e.currentTarget.checked)}
+          onchange={(e) => void setWorkspaceFlag(workspaceId, "notifyNeedsInput", e.currentTarget.checked)}
         />
         When a session needs my input
       </label>
@@ -205,11 +205,27 @@
         <input
           type="checkbox"
           checked={ws.notifyFinished ?? true}
-          onchange={(e) => void setNotifyFlag(workspaceId, "notifyFinished", e.currentTarget.checked)}
+          onchange={(e) => void setWorkspaceFlag(workspaceId, "notifyFinished", e.currentTarget.checked)}
         />
         When a session finishes working
       </label>
       <p class="hint">Never shown while the gavin window is focused.</p>
+    </section>
+
+    <section>
+      <h3>Confirmations</h3>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={ws.confirmTabClose ?? true}
+          onchange={(e) => void setWorkspaceFlag(workspaceId, "confirmTabClose", e.currentTarget.checked)}
+        />
+        Close confirm
+      </label>
+      <p class="hint">
+        Ask before closing a tab. Off closes tabs straight away — including the last tab in a pane,
+        which takes the pane with it.
+      </p>
     </section>
 
     <section>

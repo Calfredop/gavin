@@ -661,9 +661,13 @@ export async function setWorkspaceColor(workspaceId: string, color: string): Pro
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
-export async function setNotifyFlag(
+/// One writer for every boolean workspace preference that lives in
+/// config.json -- the notification toggles and the close confirm. Keyed
+/// rather than one function each so a new toggle costs a union member,
+/// and so no two of them can disagree about how they persist.
+export async function setWorkspaceFlag(
   workspaceId: string,
-  key: "notifyNeedsInput" | "notifyFinished",
+  key: "notifyNeedsInput" | "notifyFinished" | "confirmTabClose",
   value: boolean
 ): Promise<void> {
   const state = get(layoutState);

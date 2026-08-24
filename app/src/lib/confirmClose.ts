@@ -1,29 +1,79 @@
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { get } from "svelte/store";
 import { layoutState } from "./layoutState";
+import type { LayoutNode } from "./layout";
 import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds, sessionTabsOnly } from "./layout";
+import type { Workspace, WorkspacesData } from "./workspace";
 import { getActiveTree, allSessionIdsInWorkspace, findSessionLocation } from "./workspace";
 
-// Prompts before closing a single tab, but only when doing so would empty
-// its pane -- closing a tab that leaves siblings behind needs no prompt,
-// exactly as it behaves today. Looks the tab up wherever it lives: the
-// sidebar's session rows can close a session on any page of any
-// workspace, not just the one on screen. Returns whether the caller
-// should proceed with closeSession(sessionId).
+// The workspace that owns a tab, falling back to the active one when the
+// tab is nowhere in a page tree (a main-agent session, or an id already
+// removed). Which workspace matters because "Close confirm" is a
+// per-workspace setting and the sidebar's rows can close a tab belonging
+// to any workspace, not just the one on screen.
+function owningWorkspace(state: WorkspacesData, sessionId: string): Workspace | null {
+  const location = findSessionLocation(state, sessionId);
+  const id = location?.workspaceId ?? state.activeWorkspaceId;
+  return state.workspaces.find((w) => w.id === id) ?? null;
+}
+
+// Whether this workspace asks before closing a tab. Absent means on, so
+// an existing config.json (and the Unfiled workspace, which nobody has
+// visited settings for) gets the safe behaviour.
+function tabCloseConfirmEnabled(state: WorkspacesData, sessionId: string): boolean {
+  return owningWorkspace(state, sessionId)?.confirmTabClose ?? true;
+}
+
+// The tree the tab actually lives in -- its own page's, not the visible
+// page's, for the same cross-workspace reason as owningWorkspace.
+function treeHolding(state: WorkspacesData, sessionId: string): LayoutNode | null {
+  const location = findSessionLocation(state, sessionId);
+  if (!location) return getActiveTree(state);
+  return (
+    state.workspaces
+      .find((w) => w.id === location.workspaceId)
+      ?.pages.find((p) => p.id === location.pageId)?.layout ?? null
+  );
+}
+
+// Prompts before closing a single tab, gated on the workspace's "Close
+// confirm" setting (on by default). The wording escalates when the close
+// would also take the pane with it, since that is the outcome people
+// actually get wrong. Returns whether the caller should proceed with
+// closeSession(sessionId).
+//
+// With the setting off there is no prompt at all, not even the
+// pane-emptying one: the toggle means "stop asking me about tab
+// closes", and a lone survivor prompt would make it read as broken.
 export async function confirmTabClose(sessionId: string): Promise<boolean> {
   const state = get(layoutState);
-  // Closing a file or board tab ends no process -- nothing to warn about.
-  if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId]) return true;
-  const location = findSessionLocation(state, sessionId);
-  const tree = location
-    ? (state.workspaces
-        .find((w) => w.id === location.workspaceId)
-        ?.pages.find((p) => p.id === location.pageId)?.layout ?? null)
-    : getActiveTree(state);
-  if (!tree || !isLastTabInPane(tree, sessionId)) return true;
-  return confirm("Close this tab? It's the last one in this pane, so the pane will close too.", {
+  if (!tabCloseConfirmEnabled(state, sessionId)) return true;
+  const tree = treeHolding(state, sessionId);
+  if (tree && isLastTabInPane(tree, sessionId)) {
+    return confirm("Close this tab? It's the last one in this pane, so the pane will close too.", {
+      title: "gavin",
+    });
+  }
+  // A file or board tab ends no process; a terminal tab does, and saying
+  // so is the whole point of the prompt.
+  const ends = !state.fileTabsById[sessionId] && !state.boardTabsById[sessionId];
+  return confirm(ends ? "Close this tab? The session will end." : "Close this tab?", {
     title: "gavin",
   });
+}
+
+// Prompts once for a whole batch (the tab menu's Close Others / to the
+// Right / to the Left). One prompt, not one per tab: N modals in a row
+// for a single menu pick is not a confirmation, it is a wall, and the
+// answer to the second one is never considered.
+export async function confirmTabsClose(sessionIds: string[]): Promise<boolean> {
+  if (sessionIds.length === 0) return true;
+  if (sessionIds.length === 1) return confirmTabClose(sessionIds[0]);
+  const state = get(layoutState);
+  if (!tabCloseConfirmEnabled(state, sessionIds[0])) return true;
+  const sessions = sessionTabsOnly(sessionIds, state.fileTabsById, state.boardTabsById).length;
+  const tail = sessions === 0 ? "" : ` ${sessions} terminal session${sessions === 1 ? "" : "s"} will end.`;
+  return confirm(`Close ${sessionIds.length} tabs?${tail}`, { title: "gavin" });
 }
 
 // Prompts before closing an entire pane -- always, since the toolbar's

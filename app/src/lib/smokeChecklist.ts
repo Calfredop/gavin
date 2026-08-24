@@ -519,6 +519,20 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "The “Agent integration” row shows ONLY on the Settings tab — no other hub tab carries it",
       },
       { id: "set-unparseable", text: "Corrupting config.toml makes the agent fields read-only rather than overwriting it" },
+      {
+        id: "set-close-confirm-on",
+        text: "“Close confirm” is ticked on a fresh workspace, and closing any tab asks first — ✕, ⌘W, and the tab menu's Close alike",
+        hint: "The last tab in a pane gets the stronger “the pane will close too” wording.",
+      },
+      {
+        id: "set-close-confirm-batch",
+        text: "“Close Others” asks ONCE for the whole batch, counting the sessions it ends — not once per tab",
+      },
+      {
+        id: "set-close-confirm-off",
+        text: "Unticking it closes tabs straight away, including the last tab in a pane; the setting survives a restart",
+        hint: "Per workspace: another workspace's tabs still ask.",
+      },
     ],
   },
   {

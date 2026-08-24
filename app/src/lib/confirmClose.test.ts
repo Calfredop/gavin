@@ -8,7 +8,13 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { layoutState } from "./layoutState";
-import { confirmTabClose, confirmPaneClose, confirmPageClose, confirmWorkspaceClose } from "./confirmClose";
+import {
+  confirmTabClose,
+  confirmTabsClose,
+  confirmPaneClose,
+  confirmPageClose,
+  confirmWorkspaceClose,
+} from "./confirmClose";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -24,6 +30,11 @@ function page(id: string, layout: LayoutNode): Page {
 
 function ws(id: string, pages: Page[], activePageId: string | null = pages[0]?.id ?? null): Workspace {
   return { id, name: id, pages, activePageId };
+}
+
+// A workspace with "Close confirm" switched off in its settings.
+function quietWs(id: string, pages: Page[]): Workspace {
+  return { ...ws(id, pages), confirmTabClose: false };
 }
 
 function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null): void {
@@ -44,11 +55,12 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
 }
 
 describe("confirmTabClose", () => {
-  it("skips the prompt and resolves true when the tab isn't the last one in its pane", async () => {
+  it("prompts even when the tab has siblings, naming the session it ends", async () => {
     setActivePage([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1");
+    vi.mocked(confirm).mockResolvedValue(true);
     const result = await confirmTabClose("a");
     expect(result).toBe(true);
-    expect(confirm).not.toHaveBeenCalled();
+    expect(confirm).toHaveBeenCalledWith("Close this tab? The session will end.", { title: "gavin" });
   });
 
   it("prompts and returns the dialog's answer when the tab is the last one in its pane", async () => {
@@ -139,14 +151,15 @@ describe("confirmWorkspaceClose", () => {
 });
 
 describe("file tabs are not counted as terminal sessions", () => {
-  it("confirmTabClose does not prompt when closing a file tab that is alone in its pane", async () => {
-    setActivePage([ws("ws-1", [page("page-1", leaf(["file-1"]))])], "ws-1");
+  it("confirmTabClose prompts for a file tab without claiming a session ends", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1");
     layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(confirm).mockResolvedValue(true);
 
     const proceed = await confirmTabClose("file-1");
 
     expect(proceed).toBe(true);
-    expect(confirm).not.toHaveBeenCalled();
+    expect(confirm).toHaveBeenCalledWith("Close this tab?", { title: "gavin" });
   });
 
   it("confirmPaneClose counts only real sessions", async () => {
@@ -177,17 +190,18 @@ describe("file tabs are not counted as terminal sessions", () => {
     });
   });
 
-  it("confirmTabClose does not prompt for a board tab alone in its pane", async () => {
+  it("confirmTabClose still warns about the pane for a board tab alone in it", async () => {
     setActivePage([ws("ws-1", [page("page-1", leaf(["board-1"]))])], "ws-1");
     layoutState.update((s) => ({
       ...s,
       boardTabsById: { "board-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" } },
     }));
+    vi.mocked(confirm).mockResolvedValue(true);
 
     const proceed = await confirmTabClose("board-1");
 
     expect(proceed).toBe(true);
-    expect(confirm).not.toHaveBeenCalled();
+    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("last one in this pane");
   });
 
   it("confirmPageClose counts only real sessions", async () => {
@@ -212,5 +226,83 @@ describe("file tabs are not counted as terminal sessions", () => {
     expect(confirm).toHaveBeenCalledWith("Close this workspace? 1 terminal session will end.", {
       title: "gavin",
     });
+  });
+});
+
+describe("the Close confirm setting", () => {
+  it("is on when the workspace has never set it", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1");
+    vi.mocked(confirm).mockResolvedValue(true);
+    await confirmTabClose("a");
+    expect(confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses the prompt entirely when off -- including the pane-emptying case", async () => {
+    setActivePage([quietWs("ws-1", [page("page-1", leaf(["a"]))])], "ws-1");
+    expect(await confirmTabClose("a")).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("reads the setting off the workspace that owns the tab, not the visible one", async () => {
+    // The sidebar can close a tab in a workspace that isn't on screen;
+    // taking the active workspace's setting would apply the wrong one.
+    setActivePage(
+      [ws("ws-1", [page("page-1", leaf(["a"]))]), quietWs("ws-2", [page("page-9", leaf(["solo"]))])],
+      "ws-1"
+    );
+    expect(await confirmTabClose("solo")).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the active workspace for a tab in no page tree (the main agent)", async () => {
+    setActivePage([quietWs("ws-1", [page("page-1", leaf(["a"]))])], "ws-1");
+    expect(await confirmTabClose("main-agent")).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe("confirmTabsClose", () => {
+  it("asks once for the whole batch and counts the sessions it ends", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "b", "file-1"]))])], "ws-1");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
+    vi.mocked(confirm).mockResolvedValue(true);
+
+    expect(await confirmTabsClose(["a", "b", "file-1"])).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith("Close 3 tabs? 2 terminal sessions will end.", {
+      title: "gavin",
+    });
+  });
+
+  it("omits the session sentence when the batch is all file and board tabs", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "file-1", "file-2"]))])], "ws-1");
+    layoutState.update((s) => ({
+      ...s,
+      fileTabsById: { "file-1": { path: "/tmp/a.md" }, "file-2": { path: "/tmp/b.md" } },
+    }));
+    vi.mocked(confirm).mockResolvedValue(true);
+
+    await confirmTabsClose(["file-1", "file-2"]);
+    expect(confirm).toHaveBeenCalledWith("Close 2 tabs?", { title: "gavin" });
+  });
+
+  it("delegates a single tab to the single-tab wording", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1");
+    vi.mocked(confirm).mockResolvedValue(true);
+    await confirmTabsClose(["a"]);
+    expect(confirm).toHaveBeenCalledWith("Close this tab? The session will end.", { title: "gavin" });
+  });
+
+  it("propagates a decline for the batch", async () => {
+    setActivePage([ws("ws-1", [page("page-1", leaf(["a", "b", "c"]))])], "ws-1");
+    vi.mocked(confirm).mockResolvedValue(false);
+    expect(await confirmTabsClose(["a", "b"])).toBe(false);
+  });
+
+  it("stays silent for an empty batch and when the setting is off", async () => {
+    setActivePage([quietWs("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1");
+    expect(await confirmTabsClose([])).toBe(true);
+    expect(await confirmTabsClose(["a", "b"])).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
   });
 });
