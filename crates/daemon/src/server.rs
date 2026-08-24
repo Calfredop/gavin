@@ -703,6 +703,32 @@ impl SessionManager {
         Ok(id)
     }
 
+    /// An agent naming its own tab. Routed by the session's ATTACHED
+    /// connection rather than by a watched root, unlike every other
+    /// agent-facing request here: an orchestration agent runs in its
+    /// rail's worktree, which is not the workspace root and matches no
+    /// watcher -- and the app showing a tab is, by definition, the
+    /// connection attached to it. A session this daemon has never heard
+    /// of, or one nothing is attached to, is refused: a stale
+    /// GAVIN_SESSION_ID must be told, not silently swallowed.
+    pub fn name_session(&self, session_id: &str, name: &str) -> anyhow::Result<()> {
+        if self.registry.lock().unwrap().get(session_id)?.is_none() {
+            anyhow::bail!("no such session: {session_id}");
+        }
+        // Cloned out of the map first: this file never holds a lock
+        // across the blocking write below.
+        let target = self.attached_writers.lock().unwrap().get(session_id).cloned();
+        let writer = target.ok_or_else(|| anyhow::anyhow!("that session is not open in gavin"))?;
+        write_message(
+            &mut *writer.lock().unwrap(),
+            &Response::SessionNamed {
+                session_id: session_id.to_string(),
+                name: name.to_string(),
+            },
+        )?;
+        Ok(())
+    }
+
     pub fn create_session(
         &self,
         workspace_path: &str,
@@ -714,7 +740,7 @@ impl SessionManager {
         }
 
         let id = Uuid::new_v4().to_string();
-        let pty = PtySession::spawn(cwd, command)?;
+        let pty = PtySession::spawn(cwd, command, &id)?;
 
         self.registry.lock().unwrap().insert(&SessionRecord {
             id: id.clone(),
@@ -845,6 +871,28 @@ impl SessionManager {
         self.kanban.lock().unwrap().unlink_card_session_all(path)
     }
 
+    /// Writes one frontmatter field and returns the card's path
+    /// afterwards. A status write can archive the file into
+    /// `plans/done/` (or bring it back), and two databases key on that
+    /// path -- so the re-keying lives here, beside the write, exactly as
+    /// `delete_card_file` keeps its unlinking beside the delete. Neither
+    /// re-key failing is worth losing the write over: the field is
+    /// already on disk, so a failure is reported and the file's new path
+    /// still returned.
+    pub fn set_plan_field(&self, path: &str, key: &str, value: &str) -> anyhow::Result<String> {
+        let moved = crate::gavin::set_plan_field(std::path::Path::new(path), key, value)?;
+        let moved = moved.to_string_lossy().to_string();
+        if moved != path {
+            if let Err(e) = self.kanban.lock().unwrap().rename_card_path(path, &moved) {
+                eprintln!("card moved to {moved} but its session binding didn't follow: {e}");
+            }
+            if let Err(e) = self.orchestration.lock().unwrap().rename_card_path(path, &moved) {
+                eprintln!("card moved to {moved} but its rail steps didn't follow: {e}");
+            }
+        }
+        Ok(moved)
+    }
+
     pub fn delete_board(&self, workspace_id: &str) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().delete_board(workspace_id)
     }
@@ -919,7 +967,7 @@ impl SessionManager {
             // is no longer enterable) must not abort recovery of every
             // session after it in the list. Log and move on instead of
             // propagating with `?`.
-            match PtySession::spawn(&record.workspace_path, record.command.as_deref()) {
+            match PtySession::spawn(&record.workspace_path, record.command.as_deref(), &record.id) {
                 Ok(pty) => {
                     sessions.insert(record.id.clone(), pty);
                     if let Err(e) = self.registry.lock().unwrap().mark_restored(&record.id) {
@@ -1354,8 +1402,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok)
         }
         Request::SetPlanFrontmatterField { path, key, value } => {
-            crate::gavin::set_plan_field(std::path::Path::new(&path), &key, &value)
-                .map(|_| Response::Ok)
+            manager.set_plan_field(&path, &key, &value).map(|path| Response::PlanFieldSet { path })
         }
         Request::SetRootConfigField { root_path, key, value } => {
             crate::gavin::set_root_config_field(std::path::Path::new(&root_path), &key, &value)
@@ -1410,6 +1457,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SpawnAgentSession { root_path, cwd, command } => manager
             .spawn_agent_session(&root_path, &cwd, &command)
             .map(|id| Response::SessionCreated { id }),
+        Request::NameSession { session_id, name } => {
+            manager.name_session(&session_id, &name).map(|_| Response::Ok)
+        }
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
@@ -1888,6 +1938,81 @@ mod tests {
     }
 
     #[test]
+    fn naming_a_session_pushes_on_the_connection_attached_to_it() {
+        let (socket_path, _dir) = start_test_server();
+
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        // A session id this daemon never issued is refused rather than
+        // pushed anywhere: an agent outliving its tab must hear about it.
+        let resp = request(
+            &mut cmd,
+            &Request::NameSession { session_id: "ghost".to_string(), name: "x".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+
+        let resp = request(
+            &mut cmd,
+            &Request::CreateSession {
+                workspace_path: "/tmp".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        );
+        let session_id = match resp {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+
+        // Nothing attached yet: there is no app showing this tab, so
+        // there is nowhere for a name to land.
+        let resp = request(
+            &mut cmd,
+            &Request::NameSession { session_id: session_id.clone(), name: "x".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+
+        // The "app": attaches on a streaming connection. Note it never
+        // watches a root -- naming is deliberately independent of that,
+        // so an agent in a rail's worktree can still name its tab.
+        let mut app = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
+        let mut app_reader = BufReader::new(app.try_clone().unwrap());
+
+        // Attach is handled on its own connection thread, so the writer
+        // may not be registered the instant the request is written --
+        // retry to a deadline rather than racing it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let resp = request(
+                &mut cmd,
+                &Request::NameSession {
+                    session_id: session_id.clone(),
+                    name: "login flow".to_string(),
+                },
+            );
+            if matches!(resp, Response::Ok) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "attach never registered: {resp:?}");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        // Attach replays baselines (cwd, status, buffered output) first;
+        // the name is somewhere after them.
+        let named = std::iter::from_fn(|| read_message::<_, Response>(&mut app_reader).unwrap())
+            .take(20)
+            .find_map(|r| match r {
+                Response::SessionNamed { session_id, name } => Some((session_id, name)),
+                _ => None,
+            })
+            .expect("no SessionNamed push arrived");
+        assert_eq!(named, (session_id.clone(), "login flow".to_string()));
+
+        let resp = request(&mut cmd, &Request::KillSession { id: session_id });
+        assert!(matches!(resp, Response::Ok));
+    }
+
+    #[test]
     fn renaming_the_root_away_pushes_root_missing_and_renaming_back_heals() {
         let (socket_path, _dir) = start_test_server();
         let holder = tempfile::tempdir().unwrap();
@@ -1993,7 +2118,12 @@ mod tests {
                 value: "Done".to_string(),
             },
         );
-        assert!(matches!(resp, Response::Ok));
+        // Loose file, outside any plans/ folder: Done archives nothing, and
+        // the reply carries the path it still has.
+        match resp {
+            Response::PlanFieldSet { path } => assert_eq!(path, plan.to_string_lossy()),
+            other => panic!("expected PlanFieldSet, got {other:?}"),
+        }
         assert_eq!(std::fs::read_to_string(&plan).unwrap(), "---\nstatus: Done\n---\n# P\n");
 
         let resp = request(
@@ -2277,6 +2407,65 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn archiving_a_card_re_keys_its_session_binding_and_rail_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let plans = ws.path().join(".gavin-root").join("plans");
+        let card = plans.join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\nstatus: In Progress\n---\n").unwrap();
+        let before = card.to_string_lossy().to_string();
+        let after = plans.join("done").join("ship.md").to_string_lossy().to_string();
+
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None).unwrap();
+        // The rail's one step points at the card about to move.
+        manager
+            .set_orchestration(
+                "ws-1",
+                vec![protocol::Rail {
+                    id: "r1".into(),
+                    name: "R1".into(),
+                    position: 0,
+                    worktree_path: None,
+                    page_id: None,
+                    stages: vec![protocol::Stage {
+                        id: "st1".into(),
+                        position: 0,
+                        steps: vec![protocol::Step {
+                            id: "t1".into(),
+                            position: 0,
+                            card_path: before.clone(),
+                        }],
+                    }],
+                }],
+                vec![],
+            )
+            .unwrap();
+
+        let resp = handle_request(
+            &manager,
+            Request::SetPlanFrontmatterField {
+                path: before.clone(),
+                key: "status".to_string(),
+                value: "Done".to_string(),
+            },
+        );
+
+        match resp {
+            Response::PlanFieldSet { path } => assert_eq!(path, after),
+            other => panic!("expected PlanFieldSet, got {other:?}"),
+        }
+        let board = manager.get_board("ws-1").unwrap();
+        assert_eq!(board.card_sessions[0].path, after);
+        let orch = manager.get_orchestration("ws-1").unwrap();
+        assert_eq!(orch.rails[0].stages[0].steps[0].card_path, after);
     }
 
     #[test]

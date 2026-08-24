@@ -11,7 +11,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -208,6 +208,16 @@ pub enum Request {
         cwd: String,
         limit: u32,
     },
+    /// An agent naming its own tab (gavin-mcp's `gavin_name_session`).
+    /// Routed by SESSION, not by root: an orchestration agent runs in a
+    /// rail's worktree, which matches no watcher, and the app displaying
+    /// a tab is by definition the connection attached to it. The daemon
+    /// holds no session names of its own -- they live in the app's
+    /// config -- so this only pushes `SessionNamed` on that connection.
+    NameSession {
+        session_id: String,
+        name: String,
+    },
     GetProtocolVersion,
 }
 
@@ -241,8 +251,15 @@ pub enum Response {
     PrdContent { content: String },
     PlanCreated { path: String },
     AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
+    /// Push: an agent renamed its own tab. The app applies it through the
+    /// very same path a human rename takes.
+    SessionNamed { session_id: String, name: String },
     ProtocolVersion { version: u32 },
     TaskPromoted { path: String },
+    /// A frontmatter write, answered with the card's path AFTERWARDS: a
+    /// status write can archive the file into `plans/done/` (or bring it
+    /// back), and callers hold that path as the card's identity.
+    PlanFieldSet { path: String },
     Ok,
     Error { message: String },
 }
@@ -1058,10 +1075,12 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_eight_until_a_breaking_change_bumps_it() {
+    fn protocol_version_is_nine_until_a_breaking_change_bumps_it() {
+        // v9: NameSession + the SessionNamed push (an agent naming its
+        // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 10);
     }
 
     #[test]
@@ -1182,6 +1201,45 @@ mod tests {
                 assert_eq!(root_path, "/ws");
                 assert_eq!(cwd, "/ws/auth");
                 assert_eq!(command, "claude");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn name_session_request_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(
+            &mut buf,
+            &Request::NameSession {
+                session_id: "s-1".to_string(),
+                name: "login flow".to_string(),
+            },
+        )
+        .unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::NameSession { session_id, name } => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(name, "login flow");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_named_push_roundtrips_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(
+            &mut buf,
+            &Response::SessionNamed { session_id: "s-1".to_string(), name: "login flow".to_string() },
+        )
+        .unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Response>(&mut cursor).unwrap().unwrap() {
+            Response::SessionNamed { session_id, name } => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(name, "login flow");
             }
             other => panic!("wrong variant: {other:?}"),
         }

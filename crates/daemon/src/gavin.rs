@@ -333,10 +333,27 @@ pub fn create_plan_file(
 
     let plans = gavin_dir.join("plans");
     std::fs::create_dir_all(&plans)?;
-    let path = plans.join(file_name);
-    if path.exists() {
-        anyhow::bail!("plan file already exists: {}", path.display());
+    // File names are unique per context (that is what `parent:` resolves
+    // on), so the check spans the whole tree -- a flat `x.md` and an
+    // archived `done/x.md` would be one ambiguous card, not two.
+    if let Some(existing) = find_in_plans_tree(&plans, file_name) {
+        anyhow::bail!("plan file already exists: {}", existing.display());
     }
+    // Born in the folder it belongs in, rather than created flat and
+    // immediately moved: a nested child beside its parent, a Done card in
+    // done/, everything else in plans/.
+    let dir = if kind == "task" && status.is_none() {
+        parent
+            .and_then(|p| find_in_plans_tree(&plans, p))
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| plans.clone())
+    } else if status.is_some_and(is_done_status) {
+        plans.join(DONE_DIR)
+    } else {
+        plans.clone()
+    };
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(file_name);
 
     let mut content = String::from("---\n");
     if kind != "plan" {
@@ -364,15 +381,169 @@ pub fn create_plan_file(
     Ok(path)
 }
 
+/// The archive folder inside a `plans/` directory. Finished cards live
+/// here so an agent listing or grepping `plans/` sees only live work --
+/// this repo had 30 Done cards among 44 when the rule was written.
+pub const DONE_DIR: &str = "done";
+
+/// A status archives iff it slugs to "done" -- the same match the board
+/// makes between a card's status and a column name, so "Done", "done" and
+/// " DONE " are one status and "Shipped" is not.
+fn is_done_status(status: &str) -> bool {
+    slug_title(status).as_deref() == Some(DONE_DIR)
+}
+
+/// True for a `plans` directory that really is a context's plans folder
+/// (its parent is a `.gavin*` marker directory).
+fn is_plans_dir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|n| n == "plans")
+        && dir
+            .parent()
+            .is_some_and(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
+}
+
+/// The `plans/` root governing this file, but ONLY for the two locations
+/// the archive rule owns: directly in `plans/`, or directly in
+/// `plans/done/`. A file filed under a hand-made `plans/roadmap/` yields
+/// None and is therefore never moved -- a status write must not flatten
+/// somebody else's hierarchy.
+fn governed_plans_root(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if is_plans_dir(parent) {
+        return Some(parent.to_path_buf());
+    }
+    if parent.file_name().is_some_and(|n| n == DONE_DIR) {
+        let plans = parent.parent()?;
+        if is_plans_dir(plans) {
+            return Some(plans.to_path_buf());
+        }
+    }
+    None
+}
+
+/// Every md file under a `plans/` root, in walk order.
+fn plans_tree_files(plans_root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(plans_root, &mut out);
+    out.sort();
+    out
+}
+
+/// The one file of this name anywhere under `plans/`. Card file names are
+/// unique per context by construction -- `parent:` resolves on
+/// (context, file_name) -- so a tree-wide lookup is the right one.
+fn find_in_plans_tree(plans_root: &Path, file_name: &str) -> Option<PathBuf> {
+    plans_tree_files(plans_root)
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file_name))
+}
+
+/// The directory a card belongs in, given its own frontmatter. A nested
+/// child (task + parent + no status) lives wherever its parent lives --
+/// the same "children travel with their parent" rule deletion already
+/// applies. Everything else is `plans/done/` when Done, `plans/`
+/// otherwise. None when the answer is "leave it exactly where it is".
+fn home_dir_for(plans_root: &Path, info: &PlanFileInfo) -> Option<PathBuf> {
+    if info.kind == CardKind::Task && info.status.is_none() {
+        if let Some(parent) = info.parent.as_deref() {
+            // An unresolvable parent is a broken link, not a licence to
+            // move the card: leave it and let the board flag it.
+            return find_in_plans_tree(plans_root, parent).and_then(|p| p.parent().map(Path::to_path_buf));
+        }
+    }
+    Some(match info.status.as_deref() {
+        Some(s) if is_done_status(s) => plans_root.join(DONE_DIR),
+        _ => plans_root.to_path_buf(),
+    })
+}
+
+/// Moves one card file to `dest_dir`, creating it if needed. A taken
+/// destination leaves the file where it is: two cards sharing a file name
+/// in one context already break `parent:` resolution, and inventing a
+/// suffix here would only make the name wrong again when the card comes
+/// back out of `done/`.
+fn move_card(path: &Path, dest_dir: &Path) -> anyhow::Result<PathBuf> {
+    let Some(file_name) = path.file_name() else { return Ok(path.to_path_buf()) };
+    let dest = dest_dir.join(file_name);
+    if dest == path {
+        return Ok(path.to_path_buf());
+    }
+    if dest.exists() {
+        eprintln!(
+            "not moving {} to {}: a file of that name is already there",
+            path.display(),
+            dest.display()
+        );
+        return Ok(path.to_path_buf());
+    }
+    std::fs::create_dir_all(dest_dir)?;
+    std::fs::rename(path, &dest)?;
+    Ok(dest)
+}
+
+/// Files a card where its status says it belongs, and takes its nested
+/// children with it. Returns the card's path afterwards -- unchanged when
+/// no move was called for, when the card lives outside the two governed
+/// locations, or when the destination name was taken.
+pub fn relocate_for_status(path: &Path) -> anyhow::Result<PathBuf> {
+    let Some(plans_root) = governed_plans_root(path) else { return Ok(path.to_path_buf()) };
+    let content = std::fs::read_to_string(path)?;
+    let info = plan_file_info(path, &content);
+    let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
+    let moved = move_card(path, &home)?;
+    if moved == path {
+        return Ok(moved);
+    }
+    // The children follow. Their own home_dir_for now resolves to the
+    // parent's new folder, so this is the same rule applied one level
+    // down rather than a special case.
+    if info.kind == CardKind::Plan {
+        for child in plans_tree_files(&plans_root) {
+            if child == moved || governed_plans_root(&child).is_none() {
+                continue;
+            }
+            let Ok(child_content) = std::fs::read_to_string(&child) else { continue };
+            let child_info = plan_file_info(&child, &child_content);
+            let follows = child_info.kind == CardKind::Task
+                && child_info.status.is_none()
+                && child_info.parent.as_deref() == Some(info.file_name.as_str());
+            if follows {
+                if let Some(dest) = moved.parent() {
+                    move_card(&child, dest)?;
+                }
+            }
+        }
+    }
+    Ok(moved)
+}
+
 /// The public, validated entry point (and the future MCP tool body). The
 /// allow-list is enforced HERE, not trusted to callers -- this must never
 /// become an arbitrary-line writer.
-pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
+///
+/// Returns the file's path AFTER the write: a status write can move the
+/// card between `plans/` and `plans/done/` (see `relocate_for_status`),
+/// and every caller that holds the path as an identity needs the new one.
+pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<PathBuf> {
     // Empty value removes the line -- permitted only where the card model
     // needs it (status: nesting, parent: un-parenting, labels: clearing).
     if value.is_empty() {
         match key {
-            "status" | "parent" | "labels" => return write_plan_field(path, key, value),
+            "status" | "parent" | "labels" => {
+                write_plan_field(path, key, value)?;
+                return relocate_for_status(path);
+            }
             other => anyhow::bail!("empty value not allowed for: {other}"),
         }
     }
@@ -413,7 +584,10 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()>
         }
         other => anyhow::bail!("field not allowed: {other}"),
     }
-    write_plan_field(path, key, value)
+    write_plan_field(path, key, value)?;
+    // Run on every field, not just status: it costs one read, and it
+    // heals a card someone dragged into the wrong folder in Finder.
+    relocate_for_status(path)
 }
 
 /// Splits a checkbox line into (prefix "  - [", mark ' '|'x', rest after
@@ -520,11 +694,10 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
     }
     let line_index = matches[0];
 
-    // The plan's folder must be a `.gavin*/plans/`; the context folder is
-    // its grandparent's parent.
-    let plans_dir = plan_path
-        .parent()
-        .filter(|d| d.file_name().is_some_and(|n| n == "plans"))
+    // The plan must sit in a `.gavin*/plans/` -- or in its `done/`, since
+    // an archived plan is still a plan someone can promote a step out of.
+    // The context folder is the marker directory's parent.
+    let plans_dir = governed_plans_root(plan_path)
         .ok_or_else(|| anyhow::anyhow!("not a plans/ file: {}", plan_path.display()))?;
     let gavin_dir = plans_dir
         .parent()
@@ -538,7 +711,7 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
         .ok_or_else(|| anyhow::anyhow!("item text has no usable characters for a file name: {item}"))?;
     let mut file_name = format!("{slug}.md");
     let mut n = 2;
-    while plans_dir.join(&file_name).exists() {
+    while find_in_plans_tree(&plans_dir, &file_name).is_some() {
         file_name = format!("{slug}-{n}.md");
         n += 1;
     }
@@ -2353,4 +2526,226 @@ mod tests {
         assert!(watcher.watched_paths().contains(&root));
     }
 
+    // --- archive-on-Done (plans/done/) ------------------------------------
+
+    /// Writes a plan file and returns its path.
+    fn write_card(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn done_status_moves_the_file_into_done_and_back_out() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans, "ship.md", "---\ntitle: Ship\nstatus: To Do\n---\nbody\n");
+
+        let moved = set_plan_field(&card, "status", "Done").unwrap();
+        assert_eq!(moved, plans.join("done").join("ship.md"));
+        assert!(!card.exists());
+        assert_eq!(
+            std::fs::read_to_string(&moved).unwrap(),
+            "---\ntitle: Ship\nstatus: Done\n---\nbody\n"
+        );
+
+        // ...and back out again.
+        let back = set_plan_field(&moved, "status", "In Progress").unwrap();
+        assert_eq!(back, plans.join("ship.md"));
+        assert!(!moved.exists());
+    }
+
+    /// Contexts are not special-cased: `is_plans_dir` keys on a `.gavin*`
+    /// marker, so a nested `.gavin/plans/` archives exactly like the
+    /// root's. Pinned because every other test here uses GAVIN_ROOT_DIR,
+    /// and a rule that quietly only worked at the root would leave every
+    /// sub-context's plans folder as cluttered as before.
+    #[test]
+    fn a_nested_gavin_context_archives_the_same_way_the_root_does() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join("app").join(GAVIN_DIR).join("plans");
+        let card = write_card(&plans, "tokens.md", "---\ntitle: Tokens\nstatus: To Do\n---\nb\n");
+        let child = write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: tokens.md\n---\nb\n");
+
+        let moved = set_plan_field(&card, "status", "Done").unwrap();
+        assert_eq!(moved, plans.join("done").join("tokens.md"));
+        // The nested child travels with it here too.
+        assert!(plans.join("done").join("step.md").exists());
+        assert!(!child.exists());
+
+        let back = set_plan_field(&moved, "status", "To Do").unwrap();
+        assert_eq!(back, plans.join("tokens.md"));
+        assert!(plans.join("step.md").exists());
+    }
+
+    #[test]
+    fn done_matching_is_by_slug_and_only_done_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+
+        let lower = write_card(&plans, "a.md", "---\ntitle: A\n---\n");
+        assert_eq!(set_plan_field(&lower, "status", "done").unwrap(), plans.join("done").join("a.md"));
+        let spaced = write_card(&plans, "b.md", "---\ntitle: B\n---\n");
+        assert_eq!(set_plan_field(&spaced, "status", " DONE ").unwrap(), plans.join("done").join("b.md"));
+
+        // Every other terminal-sounding column stays flat.
+        let shipped = write_card(&plans, "c.md", "---\ntitle: C\n---\n");
+        assert_eq!(set_plan_field(&shipped, "status", "Shipped").unwrap(), shipped);
+        let cancelled = write_card(&plans, "d.md", "---\ntitle: D\n---\n");
+        assert_eq!(set_plan_field(&cancelled, "status", "Cancelled").unwrap(), cancelled);
+        assert!(shipped.exists() && cancelled.exists());
+    }
+
+    #[test]
+    fn nested_children_travel_with_their_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: To Do\n---\n");
+        let nested = write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        // A child with its own status is a free-standing card: it stays.
+        let standing =
+            write_card(&plans, "own.md", "---\nkind: task\ntitle: Own\nparent: big.md\nstatus: To Do\n---\n");
+        // A task parented elsewhere is untouched.
+        let other = write_card(&plans, "other.md", "---\nkind: task\ntitle: O\nparent: small.md\n---\n");
+
+        set_plan_field(&plan, "status", "Done").unwrap();
+        assert!(plans.join("done").join("step.md").is_file());
+        assert!(!nested.exists());
+        assert!(standing.exists());
+        assert!(other.exists());
+
+        // Back out: the child follows again.
+        set_plan_field(&plans.join("done").join("big.md"), "status", "To Do").unwrap();
+        assert!(nested.is_file());
+        assert!(!plans.join("done").join("step.md").exists());
+    }
+
+    #[test]
+    fn a_nested_child_stays_with_its_archived_parent_on_its_own_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: To Do\n---\n");
+        write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        set_plan_field(&plan, "status", "Done").unwrap();
+
+        // The child has no status of its own -- writing any other field must
+        // not tear it back out of done/ (its home is wherever its parent is).
+        let child = plans.join("done").join("step.md");
+        assert_eq!(set_plan_field(&child, "labels", "bug").unwrap(), child);
+        assert!(child.is_file());
+
+        // Giving it a status makes it free-standing: it leaves done/.
+        assert_eq!(set_plan_field(&child, "status", "To Do").unwrap(), plans.join("step.md"));
+    }
+
+    #[test]
+    fn a_name_collision_leaves_the_file_in_place_and_still_writes_status() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        write_card(&plans.join("done"), "dup.md", "---\ntitle: Old\nstatus: Done\n---\n");
+        let card = write_card(&plans, "dup.md", "---\ntitle: New\nstatus: To Do\n---\n");
+
+        assert_eq!(set_plan_field(&card, "status", "Done").unwrap(), card);
+        assert_eq!(
+            std::fs::read_to_string(&card).unwrap(),
+            "---\ntitle: New\nstatus: Done\n---\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(plans.join("done").join("dup.md")).unwrap(),
+            "---\ntitle: Old\nstatus: Done\n---\n"
+        );
+    }
+
+    #[test]
+    fn hand_made_subfolders_are_never_flattened() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let filed = write_card(&plans.join("roadmap"), "q3.md", "---\ntitle: Q3\n---\n");
+        assert_eq!(set_plan_field(&filed, "status", "Done").unwrap(), filed);
+        assert_eq!(set_plan_field(&filed, "status", "To Do").unwrap(), filed);
+        assert!(filed.is_file());
+    }
+
+    #[test]
+    fn plan_files_outside_a_plans_folder_are_never_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let loose = write_card(dir.path(), "p.md", "---\ntitle: P\n---\n");
+        assert_eq!(set_plan_field(&loose, "status", "Done").unwrap(), loose);
+        assert!(loose.is_file());
+    }
+
+    #[test]
+    fn create_plan_file_places_done_cards_and_children_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+
+        let done =
+            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None)
+                .unwrap();
+        assert_eq!(done, plans.join("done").join("shipped.md"));
+
+        // A nested child of an archived plan is created beside its parent.
+        let child = create_plan_file(
+            dir.path(),
+            "sub.md",
+            "Sub",
+            None,
+            None,
+            None,
+            Some("task"),
+            Some("shipped.md"),
+        )
+        .unwrap();
+        assert_eq!(child, plans.join("done").join("sub.md"));
+
+        // A file name already used anywhere in the tree is refused.
+        assert!(
+            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None).is_err()
+        );
+    }
+
+    #[test]
+    fn promote_checklist_item_works_from_an_archived_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(
+            &plans.join("done"),
+            "big.md",
+            "---\ntitle: Big\nstatus: Done\n---\n- [ ] Ship the API\n",
+        );
+
+        let child = promote_checklist_item(&plan, "Ship the API").unwrap();
+        assert_eq!(child, plans.join("done").join("ship-the-api.md"));
+        assert!(
+            std::fs::read_to_string(&plan).unwrap().contains("- [ ] [Ship the API](./ship-the-api.md)")
+        );
+
+        // The suffix check spans the whole tree, not one folder: a flat
+        // file of that name must still push the new card to -2.
+        write_card(&plans, "second.md", "x");
+        std::fs::write(plans.join("done").join("big.md"), "---\ntitle: Big\nstatus: Done\n---\n- [ ] Second\n")
+            .unwrap();
+        let child2 = promote_checklist_item(&plan, "Second").unwrap();
+        assert_eq!(child2, plans.join("done").join("second-2.md"));
+    }
+
+    #[test]
+    fn delete_card_file_accepts_an_archived_card() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let card = write_card(&plans.join("done"), "gone.md", "---\ntitle: G\n---\n");
+        delete_card_file(&card).unwrap();
+        assert!(!card.exists());
+    }
 }

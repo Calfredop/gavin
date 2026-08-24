@@ -120,7 +120,7 @@ fn tool_definitions() -> Value {
             "kind": { "type": "string", "enum": ["note", "task", "plan"], "description": "Default plan" },
             "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte. Setting status to Done files the card under plans/done/ (and any status off Done brings it back); the reply carries the card's path afterwards.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
             "key": { "type": "string", "enum": ["status", "priority", "order"] },
             "value": { "type": "string" }
@@ -144,7 +144,10 @@ fn tool_definitions() -> Value {
         { "name": "gavin_spawn_session", "description": "Spawn a terminal session in the gavin app (visible to the human on the Agents page). Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
             "command": { "type": "string", "description": "Program to run, e.g. claude" },
             "cwd": { "type": "string", "description": "Defaults to the workspace root" }
-        }, "required": ["command"] } }
+        }, "required": ["command"] } },
+        { "name": "gavin_name_session", "description": "Name your own tab in the gavin app — do this first, so the human can tell your session apart from every other one. Short and specific: what this session is working on, not who you are.", "inputSchema": { "type": "object", "properties": {
+            "name": { "type": "string", "description": "2-4 words, e.g. \"login flow\" or \"git tab conflicts\"" }
+        }, "required": ["name"] } }
     ])
 }
 
@@ -163,7 +166,22 @@ fn dispatch_tool(
     root: Option<&Path>,
     transport: &mut dyn DaemonTransport,
 ) -> anyhow::Result<String> {
-    // gavin_init_root is the only tool that works without a resolved root.
+    // Naming a tab needs no root at all, only the session id the PTY
+    // exported: the agent may well be standing in a rail's worktree,
+    // which is outside the workspace root (and, in a repo whose
+    // .gavin-root is not checked out there, not under one at all).
+    if name == "gavin_name_session" {
+        return name_session(
+            &require_arg(args, "name")?,
+            // Injected into every PTY the daemon spawns (pty.rs). Absent
+            // means this agent is not running in a gavin tab at all.
+            std::env::var("GAVIN_SESSION_ID").ok().filter(|v| !v.is_empty()),
+            transport,
+        );
+    }
+
+    // gavin_init_root is the only other tool that works without a
+    // resolved root.
     if name == "gavin_init_root" {
         let cwd = std::env::current_dir()?;
         let path = str_arg(args, "path")
@@ -249,6 +267,12 @@ fn dispatch_tool(
         other => anyhow::bail!("unknown tool: {other}"),
     };
 
+    // Kept so a moved card can be reported as moved: an agent that just
+    // marked its own plan Done needs to know the file is under done/ now.
+    let requested_path = match &req {
+        Request::SetPlanFrontmatterField { path, .. } => Some(path.clone()),
+        _ => None,
+    };
     let resp = transport.request(&req)?;
     match resp {
         Response::GavinTreeScanned { tree } => Ok(serde_json::to_string_pretty(&tree)?),
@@ -261,7 +285,49 @@ fn dispatch_tool(
         Response::SessionCreated { id } => {
             Ok(format!("spawned session {id} — visible on the Agents page in gavin"))
         }
+        Response::PlanFieldSet { path } => Ok(match requested_path {
+            Some(before) if before != path => format!("ok — the card now lives at {path}"),
+            _ => "ok".to_string(),
+        }),
         Response::Ok => Ok("ok".to_string()),
+        Response::Error { message } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    }
+}
+
+/// A tab label, not a sentence: one line, collapsed whitespace, and
+/// short enough that the tab still shows the beginning of it. An agent
+/// handed a whole task description would otherwise push every other tab
+/// off the bar.
+const MAX_SESSION_NAME: usize = 40;
+
+fn clean_session_name(raw: &str) -> anyhow::Result<String> {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        anyhow::bail!("name is empty");
+    }
+    // char_indices, not byte slicing: a truncated multi-byte character
+    // would panic.
+    let truncated = match collapsed.char_indices().nth(MAX_SESSION_NAME) {
+        Some((byte, _)) => format!("{}…", &collapsed[..byte]),
+        None => collapsed,
+    };
+    Ok(truncated)
+}
+
+const NOT_IN_A_SESSION: &str =
+    "not running in a gavin session (no GAVIN_SESSION_ID) — only an agent in a gavin tab can name one";
+
+fn name_session(
+    raw_name: &str,
+    session_id: Option<String>,
+    transport: &mut dyn DaemonTransport,
+) -> anyhow::Result<String> {
+    let session_id = session_id.ok_or_else(|| anyhow::anyhow!(NOT_IN_A_SESSION))?;
+    let name = clean_session_name(raw_name)?;
+    let resp = transport.request(&Request::NameSession { session_id, name: name.clone() })?;
+    match resp {
+        Response::Ok => Ok(format!("named this tab \"{name}\"")),
         Response::Error { message } => Err(anyhow::anyhow!(message)),
         other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
     }
@@ -814,6 +880,40 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_session_name_is_one_short_line() {
+        assert_eq!(clean_session_name("  login   flow \n").unwrap(), "login flow");
+        assert!(clean_session_name("   ").is_err());
+        // Truncation counts CHARACTERS: byte-slicing a multi-byte one
+        // would panic instead of shortening.
+        let long = "é".repeat(60);
+        let short = clean_session_name(&long).unwrap();
+        assert_eq!(short.chars().count(), MAX_SESSION_NAME + 1);
+        assert!(short.ends_with('…'));
+    }
+
+    #[test]
+    fn naming_a_session_sends_the_id_the_pty_exported() {
+        let mut t = mock(vec![Response::Ok]);
+        let reply = name_session("  login  flow ", Some("s-1".into()), &mut t).unwrap();
+        assert!(reply.contains("login flow"));
+        match &t.requests[0] {
+            Request::NameSession { session_id, name } => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(name, "login flow");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn naming_outside_a_gavin_session_says_so_without_calling_the_daemon() {
+        let mut t = mock(vec![]);
+        let err = name_session("x", None, &mut t).unwrap_err();
+        assert!(err.to_string().contains("GAVIN_SESSION_ID"));
+        assert!(t.requests.is_empty());
     }
 
     #[test]

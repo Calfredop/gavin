@@ -273,6 +273,17 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// Re-keys every step pointing at a card whose file moved. Steps are
+    /// authored against a card, not a folder, so an archived card must
+    /// not read as a broken step on the rail that runs it.
+    pub fn rename_card_path(&mut self, old_path: &str, new_path: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE orch_steps SET card_path = ?2 WHERE card_path = ?1",
+            params![old_path, new_path],
+        )?;
+        Ok(())
+    }
+
     pub fn set_rail_run(
         &mut self,
         rail_id: &str,
@@ -348,6 +359,20 @@ mod tests {
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.rails.len(), 1);
         assert_eq!(o.rails[0].stages[0].steps[0].card_path, "/x/a.md");
+    }
+
+    #[test]
+    fn rename_card_path_follows_a_moved_card_on_every_rail() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md"), ("t2", "/x/b.md")])], &[]).unwrap();
+        s.replace_plan("ws-2", &[rail("r2", &[("t3", "/x/a.md")])], &[]).unwrap();
+
+        s.rename_card_path("/x/a.md", "/x/done/a.md").unwrap();
+
+        let steps = &s.get("ws-1").unwrap().rails[0].stages[0].steps;
+        assert_eq!(steps[0].card_path, "/x/done/a.md");
+        assert_eq!(steps[1].card_path, "/x/b.md");
+        assert_eq!(s.get("ws-2").unwrap().rails[0].stages[0].steps[0].card_path, "/x/done/a.md");
     }
 
     #[test]
