@@ -21,6 +21,7 @@ pub fn run() {
         .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .manage(session::ConnectionEpoch(std::sync::atomic::AtomicU64::new(0)))
+        .manage(session::DaemonCompatState(std::sync::Mutex::new(None)))
         .manage(fileviewer::FileWatchers::default())
         .manage(git::GitWatchers::default())
         .manage(git::GitOps::default())

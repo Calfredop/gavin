@@ -497,12 +497,16 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
     // Verified before ANYTHING is swapped in: a daemon that fails the
     // version probe must leave a named error and an app that is merely
     // disconnected, never one wired half onto each daemon.
-    verify_daemon_protocol(&probe)?;
+    let compat = verify_daemon_protocol(&probe)?;
 
     let writer = Arc::clone(&app_handle.state::<DaemonConnection>().writer);
     *writer.lock().unwrap() = stream_conn.try_clone()?;
     *app_handle.state::<CommandConnection>().0.lock().unwrap() =
         probe.into_inner().expect("protocol probe mutex poisoned");
+    // A restart can hand the app a differently-versioned daemon than the
+    // one it started with -- refresh the stored verdict so the app never
+    // keeps serving a stale compatibility band after a reconnect.
+    *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
 
     let data = app_handle.state::<WorkspacesState>().0.lock().unwrap().clone();
     let non_session_tab_ids = non_session_tab_ids(
@@ -551,19 +555,63 @@ fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Resul
 /// request-id field.
 pub struct CommandConnection(pub Mutex<UnixStream>);
 
+/// What the app negotiated with the daemon it just connected to.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonCompat {
+    pub daemon_version: u32,
+    pub app_version: u32,
+    /// True when the daemon is older than us but still inside the
+    /// window: usable, with the newer requests gated off.
+    pub degraded: bool,
+}
+
+/// Holds the verdict from the most recent `verify_daemon_protocol` call, so
+/// commands issued later (and, eventually, the frontend) can see whether
+/// they're talking to a degraded daemon without re-probing it. `None`
+/// until the first successful probe.
+pub struct DaemonCompatState(pub Mutex<Option<DaemonCompat>>);
+
+/// Sorts a daemon's advertised version into one of three bands relative to
+/// this app: too new (hard error -- Task 4 does not teach the app to
+/// speak an unreleased protocol), too old (below `floor`, i.e.
+/// `MIN_COMPATIBLE_VERSION` -- the daemon predates the oldest request
+/// shape this app still knows how to send), or inside the window, which
+/// is usable either at parity or degraded.
+///
+/// Pure so the bands are testable without a daemon. Split out of
+/// `verify_daemon_protocol`, which owns the I/O.
+pub fn classify(daemon: u32, app: u32, floor: u32) -> Result<DaemonCompat, String> {
+    if daemon > app {
+        return Err(format!(
+            "the gavin daemon is newer than this app (v{daemon} vs v{app}) — update the app"
+        ));
+    }
+    if daemon < floor {
+        return Err(format!(
+            "the gavin daemon is too old to use (v{daemon}, minimum v{floor}) — restart it"
+        ));
+    }
+    Ok(DaemonCompat { daemon_version: daemon, app_version: app, degraded: daemon < app })
+}
+
 /// Spec §4: probe the daemon's protocol version before anything else.
 /// Interprets FAILURE SHAPE -- a daemon older than the probe itself can't
 /// parse the request and closes the connection, which must map to the
 /// same actionable message as an explicit lower version (this turned the
 /// 2026-08-07 stale-daemon incident's mystery close into a named state).
-fn verify_daemon_protocol(command_conn: &Mutex<UnixStream>) -> anyhow::Result<()> {
-    const OLDER: &str = "the gavin daemon is older than this app — restart it (pkill gavin-daemon, then relaunch the gavin app)";
+fn verify_daemon_protocol(command_conn: &Mutex<UnixStream>) -> anyhow::Result<DaemonCompat> {
+    const UNREACHABLE: &str = "the gavin daemon is too old to talk to this app — restart it (quit gavin, then relaunch)";
     match send_command(command_conn, &Request::GetProtocolVersion) {
-        Ok(Response::ProtocolVersion { version }) if version == protocol::PROTOCOL_VERSION => Ok(()),
-        Ok(Response::ProtocolVersion { version }) if version > protocol::PROTOCOL_VERSION => {
-            anyhow::bail!("the gavin daemon is newer than this app — rebuild and restart the app")
+        Ok(Response::ProtocolVersion { version }) => {
+            classify(version, protocol::PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION)
+                .map_err(|e| anyhow::anyhow!(e))
         }
-        Ok(_) | Err(_) => anyhow::bail!(OLDER),
+        // A daemon too old to parse the probe closes the connection.
+        // Preserved from the 2026-08-07 stale-daemon incident: this
+        // failure SHAPE has to map to the same named state as an
+        // explicit too-low version, not to a mystery.
+        Ok(_) | Err(_) => anyhow::bail!(UNREACHABLE),
     }
 }
 
@@ -1330,7 +1378,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     // immediately, no retry/backoff needed.
     let command_stream = UnixStream::connect(socket_path())?;
     let command_conn = Mutex::new(command_stream);
-    verify_daemon_protocol(&command_conn)?;
+    let compat = verify_daemon_protocol(&command_conn)?;
+    *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
 
     let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));
     let reader_stream = stream_conn;
@@ -2239,7 +2288,22 @@ mod version_probe_tests {
         let (client, _dir) = fake_daemon_replying_with(vec![Response::ProtocolVersion {
             version: protocol::PROTOCOL_VERSION,
         }]);
-        assert!(verify_daemon_protocol(&Mutex::new(client)).is_ok());
+        let compat = verify_daemon_protocol(&Mutex::new(client)).unwrap();
+        assert_eq!(compat.daemon_version, protocol::PROTOCOL_VERSION);
+        assert!(!compat.degraded);
+    }
+
+    #[test]
+    fn an_older_in_window_daemon_connects_degraded_instead_of_erroring() {
+        // This is the behaviour the whole feature exists for: an older
+        // daemon inside the window used to be a hard error that forced a
+        // daemon-killing restart. It must now come back Ok, just flagged.
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::ProtocolVersion {
+            version: protocol::MIN_COMPATIBLE_VERSION,
+        }]);
+        let compat = verify_daemon_protocol(&Mutex::new(client)).unwrap();
+        assert_eq!(compat.daemon_version, protocol::MIN_COMPATIBLE_VERSION);
+        assert!(compat.degraded);
     }
 
     #[test]
@@ -2252,17 +2316,57 @@ mod version_probe_tests {
     }
 
     #[test]
-    fn unparsed_probe_or_error_reply_names_the_daemon_as_stale() {
+    fn unparsed_probe_or_error_reply_names_the_daemon_as_unreachable() {
         // An old daemon can't parse the probe at all: closed connection.
+        // This is a distinct band from an explicit too-low version -- the
+        // daemon never got far enough to report one -- but per the
+        // 2026-08-07 incident it must still land on a named, actionable
+        // error rather than a bare connection-closed mystery.
         let (client, _dir) = fake_daemon_replying_with(vec![]);
         let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
-        assert!(err.contains("older than this app"));
+        assert!(err.contains("too old to talk to this app"));
         // A daemon that replies Error (unknown request) maps the same way.
         let (client, _dir) = fake_daemon_replying_with(vec![Response::Error {
             message: "unknown".to_string(),
         }]);
         let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
-        assert!(err.contains("older than this app"));
+        assert!(err.contains("too old to talk to this app"));
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    #[test]
+    fn an_exactly_matching_daemon_is_not_degraded() {
+        let c = classify(12, 12, 5).unwrap();
+        assert_eq!(c.daemon_version, 12);
+        assert!(!c.degraded);
+    }
+
+    #[test]
+    fn an_older_daemon_inside_the_window_is_usable_but_degraded() {
+        let c = classify(9, 12, 5).unwrap();
+        assert!(c.degraded);
+        assert_eq!(c.daemon_version, 9);
+    }
+
+    #[test]
+    fn the_floor_itself_is_inside_the_window() {
+        assert!(classify(5, 12, 5).is_ok());
+    }
+
+    #[test]
+    fn a_daemon_below_the_floor_is_rejected() {
+        let err = classify(4, 12, 5).unwrap_err();
+        assert!(err.contains("too old"), "message should say what to do: {err}");
+    }
+
+    #[test]
+    fn a_daemon_newer_than_the_app_is_rejected() {
+        let err = classify(13, 12, 5).unwrap_err();
+        assert!(err.contains("newer"));
     }
 }
 
