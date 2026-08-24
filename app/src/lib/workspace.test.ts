@@ -113,6 +113,19 @@ describe("switchWorkspaceView", () => {
     const updated = switchWorkspaceView(state, "does-not-exist", "kanban");
     expect(updated).toEqual(state);
   });
+
+  it("remembers the hub tab it was showing when the workspace drops to the terminal", () => {
+    const onKanban = switchWorkspaceView(createWorkspace(empty, "ws-1", "A"), "ws-1", "kanban");
+    const onTerminal = switchWorkspaceView(onKanban, "ws-1", "terminal");
+    expect(getActiveView(onTerminal.workspaces[0])).toBe("terminal");
+    expect(onTerminal.workspaces[0].hubView).toBe("kanban");
+  });
+
+  it("moves the remembered hub tab along with each hub switch", () => {
+    const onKanban = switchWorkspaceView(createWorkspace(empty, "ws-1", "A"), "ws-1", "kanban");
+    const onGit = switchWorkspaceView(onKanban, "ws-1", "git");
+    expect(onGit.workspaces[0].hubView).toBe("git");
+  });
 });
 
 describe("removeWorkspace", () => {

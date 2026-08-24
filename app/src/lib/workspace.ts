@@ -27,6 +27,11 @@ export interface Workspace {
   pages: Page[];
   activePageId: string | null;
   activeView?: string;
+  /// The hub tab this workspace was last showing. Kept apart from
+  /// activeView, which the terminal overwrites -- this is what the
+  /// sidebar's Hub button reopens, so leaving for a terminal and coming
+  /// back lands where you left off instead of on Home.
+  hubView?: string;
   /// The workspace's bound root directory (agent-orchestration phase).
   /// Optional; never auto-cleared when the directory goes missing on disk.
   rootPath?: string;
@@ -252,10 +257,16 @@ export function getActiveView(ws: Workspace): string {
   return ws.activeView ?? (ws.rootPath ? "home" : "terminal");
 }
 
+// Switching to a hub tab also records it as the workspace's hubView --
+// the tab its Hub button reopens. Switching to the terminal leaves that
+// memory alone, which is the whole point: the terminal is a detour, not
+// a new destination.
 export function switchWorkspaceView(state: WorkspacesData, workspaceId: string, view: string): WorkspacesData {
   return {
     ...state,
-    workspaces: state.workspaces.map((w) => (w.id === workspaceId ? { ...w, activeView: view } : w)),
+    workspaces: state.workspaces.map((w) =>
+      w.id === workspaceId ? { ...w, activeView: view, hubView: view === "terminal" ? w.hubView : view } : w
+    ),
   };
 }
 

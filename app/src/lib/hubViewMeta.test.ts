@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { HUB_VIEW_META, visibleHubViewIds } from "./hubViewMeta";
-import { SMOKETEST_WORKSPACE_ID } from "./workspace";
+import { HUB_VIEW_META, visibleHubViewIds, resolveHubView } from "./hubViewMeta";
+import { SMOKETEST_WORKSPACE_ID, type Workspace } from "./workspace";
 
 describe("visibleHubViewIds", () => {
   it("keeps the declaration order", () => {
@@ -23,3 +23,23 @@ describe("visibleHubViewIds", () => {
   });
 });
 
+
+describe("resolveHubView", () => {
+  function workspace(fields: Partial<Workspace>): Workspace {
+    return { id: "ws-1", name: "A", pages: [], activePageId: null, rootPath: "/tmp/ws", ...fields };
+  }
+
+  it("reopens the hub tab the workspace was last showing", () => {
+    expect(resolveHubView(workspace({ hubView: "kanban" }), false)).toBe("kanban");
+  });
+
+  it("falls back to the first offered tab when nothing is remembered yet", () => {
+    expect(resolveHubView(workspace({}), false)).toBe("home");
+  });
+
+  it("falls back when the remembered tab is no longer offered", () => {
+    // A workspace whose root was never bound is offered neither Git nor
+    // Home, so a remembered "git" would land on a tab that isn't there.
+    expect(resolveHubView(workspace({ hubView: "git", rootPath: undefined }), false)).toBe("kanban");
+  });
+});
