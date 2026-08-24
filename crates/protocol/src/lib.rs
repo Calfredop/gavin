@@ -13,6 +13,15 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 pub const PROTOCOL_VERSION: u32 = 10;
 
+/// The oldest daemon this client can still talk to. Bumped ONLY when a
+/// change breaks the wire for an older peer -- adding a Request variant
+/// does not, because clients gate on `min_version_for`.
+///
+/// 5 is derived, not chosen: v4 -> v5 added `card_sessions` to
+/// Response::Board with no serde default, so a v4 daemon's reply cannot
+/// be parsed by a v5+ client. See the design doc's audit.
+pub const MIN_COMPATIBLE_VERSION: u32 = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
@@ -219,6 +228,64 @@ pub enum Request {
         name: String,
     },
     GetProtocolVersion,
+}
+
+/// The protocol version that introduced `req`'s variant.
+///
+/// Deliberately an exhaustive match with no `_` arm: adding a Request
+/// variant must not compile until its version is recorded here, because
+/// a missing entry would let the app send it to a daemon too old to
+/// parse it -- which closes the connection outright.
+pub fn min_version_for(req: &Request) -> u32 {
+    match req {
+        Request::Attach { .. }
+        | Request::CreateGavinContext { .. }
+        | Request::CreatePlan { .. }
+        | Request::CreateSession { .. }
+        | Request::DeleteBoard { .. }
+        | Request::GetBoard { .. }
+        | Request::GetBoardByRoot { .. }
+        | Request::GetGavinTree { .. }
+        | Request::GetProtocolVersion
+        | Request::InitGavinRoot { .. }
+        | Request::KillSession { .. }
+        | Request::ListSessions
+        | Request::ReadPrd { .. }
+        | Request::ResizeSession { .. }
+        | Request::ScanGavinRoot { .. }
+        | Request::SetBoard { .. }
+        | Request::SetPlanFrontmatterField { .. }
+        | Request::SpawnAgentSession { .. }
+        | Request::UnwatchGavinRoot { .. }
+        | Request::WatchGavinRoot { .. }
+        | Request::WriteInput { .. } => 1,
+
+        Request::PromoteChecklistItem { .. } | Request::SetChecklistItem { .. } => 4,
+
+        Request::LinkCardSession { .. } | Request::UnlinkCardSession { .. } => 5,
+
+        Request::DeleteCardFile { .. } => 6,
+
+        Request::SetRootConfigField { .. } => 7,
+
+        Request::AddExternalGavinContext { .. } | Request::RemoveExternalGavinContext { .. } => 8,
+
+        // 374eb7d bumped v9 and v10 together; attributed to 10, the
+        // conservative direction (never sent to a v9 daemon).
+        Request::GetOrchestration { .. }
+        | Request::GetOrchestrationByRoot { .. }
+        | Request::GitDirtyPaths { .. }
+        | Request::NameSession { .. }
+        | Request::SetOrchestration { .. }
+        | Request::SetOrchestrationByRoot { .. }
+        | Request::SetRailRun { .. }
+        | Request::SetStepRun { .. } => 10,
+
+        // v11 is reserved for the orchestration merge's tool requests
+        // (SaveTool, GetTools, GetToolsByRoot, DeleteTool). They do not
+        // exist on this branch. When that work lands, this match stops
+        // compiling until its `=> 11` arm is added -- by design.
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1081,6 +1148,41 @@ mod tests {
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
         assert_eq!(PROTOCOL_VERSION, 10);
+    }
+
+    #[test]
+    fn the_window_floor_is_never_above_the_current_version() {
+        assert!(MIN_COMPATIBLE_VERSION <= PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn v1_requests_are_available_to_the_oldest_supported_daemon() {
+        // ListSessions has existed since v1, so any daemon in the window serves it.
+        assert_eq!(min_version_for(&Request::ListSessions), 1);
+        assert_eq!(min_version_for(&Request::GetProtocolVersion), 1);
+    }
+
+    #[test]
+    fn later_variants_report_the_version_that_introduced_them() {
+        assert_eq!(min_version_for(&Request::SetChecklistItem {
+            path: "/p.md".into(),
+            line_index: 0,
+            expected_text: "x".into(),
+            checked: true,
+        }), 4);
+        assert_eq!(min_version_for(&Request::DeleteCardFile { path: "/p.md".into() }), 6);
+        assert_eq!(min_version_for(&Request::NameSession {
+            session_id: "s-1".into(), name: "login flow".into(),
+        }), 10);
+    }
+
+    #[test]
+    fn no_variant_claims_a_version_beyond_the_current_one() {
+        // Guards the table against a typo that would make a request unsendable.
+        assert!(min_version_for(&Request::NameSession {
+            session_id: "s-1".into(),
+            name: "login flow".into(),
+        }) <= PROTOCOL_VERSION);
     }
 
     #[test]
