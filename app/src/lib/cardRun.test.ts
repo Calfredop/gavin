@@ -7,6 +7,8 @@ import {
   composeResumePlanPrompt,
   shellQuote,
   buildRunCommand,
+  buildHeadlessCommand,
+  COMMIT_PROMPT,
   buildToolCommand,
   runStatusNeeded,
   provisionalSessionName,
@@ -107,6 +109,37 @@ describe("buildRunCommand", () => {
   it("appends the quoted prompt to the agent command", () => {
     expect(buildRunCommand("claude", "do it")).toBe("claude 'do it'");
     expect(buildRunCommand("claude --model x", "a'b")).toBe("claude --model x 'a'\\''b'");
+  });
+});
+
+describe("buildHeadlessCommand", () => {
+  it("puts the profile's headless argv between the command and the quoted prompt", () => {
+    expect(buildHeadlessCommand("claude", '-p --allowedTools "Bash(git *)" --', "do it")).toBe(
+      'claude -p --allowedTools "Bash(git *)" -- \'do it\''
+    );
+  });
+
+  it("quotes the prompt the same way an interactive run does", () => {
+    expect(buildHeadlessCommand("claude", "-p", "a'b")).toBe("claude -p 'a'\\''b'");
+  });
+
+  // A profile with no verified headless argv would launch a TUI that
+  // never exits -- invisibly, since the whole point is a hidden session.
+  // Refused, so the caller has to disable the action instead.
+  it("refuses a profile that has no headless argv", () => {
+    expect(buildHeadlessCommand("codex", "", "do it")).toBeNull();
+    expect(buildHeadlessCommand("codex", "   ", "do it")).toBeNull();
+  });
+});
+
+describe("COMMIT_PROMPT", () => {
+  // The human wrote this line on the card; it is the whole instruction
+  // the hidden agent gets, so it is asserted verbatim rather than
+  // spot-checked.
+  it("is the card's text, and forbids pushing", () => {
+    expect(COMMIT_PROMPT).toBe(
+      "Commit pending and unversioned changes, in logical chunks. Do not push."
+    );
   });
 });
 

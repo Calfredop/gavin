@@ -5,7 +5,18 @@
 import { writable, get } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
-import { layoutState, setGitViewPrefs, createSessionForCard } from "./layoutState";
+import {
+  layoutState,
+  setGitViewPrefs,
+  createSessionForCard,
+  resolvedAgentFor,
+  sessionExits,
+  handleAgentSessionSpawned,
+  switchWorkspaceView,
+  switchToSessionInPage,
+} from "./layoutState";
+import { findSessionLocation } from "./workspace";
+import { buildHeadlessCommand, COMMIT_PROMPT } from "./cardRun";
 import type {
   ApplyMode,
   Area,
@@ -74,6 +85,16 @@ export interface GitViewState {
   conflictToken: number;
   /// `merge.tool` from git config, null when unset.
   mergeTool: string | null;
+  // ---- commit via agent ----
+  /// The hidden agent session asked to commit, from the click until it
+  /// exits. `sessionId` is null for the gap between the click and the
+  /// daemon handing one back -- the only window with nothing to reveal.
+  agentCommit: { sessionId: string | null } | null;
+  /// Set for AGENT_COMMIT_FLASH_MS after a run that actually emptied the
+  /// tree, so the button can say it worked. Nothing else flashes: a
+  /// failure, or a run that left changes behind, goes to `error`, which
+  /// stays until dismissed.
+  agentCommitDone: boolean;
 }
 
 export const GIT_NOT_FOUND = "git was not found on PATH";
@@ -112,6 +133,8 @@ export function initialState(cwd: string): GitViewState {
     conflict: null,
     conflictToken: 0,
     mergeTool: null,
+    agentCommit: null,
+    agentCommitDone: false,
   };
 }
 
@@ -385,6 +408,153 @@ export async function commit(workspaceId: string): Promise<boolean> {
 
 export function initRepo(workspaceId: string): Promise<boolean> {
   return run(workspaceId, "Initialize repository", (cwd) => backend.gitInit(cwd));
+}
+
+// ---- commit via agent ------------------------------------------------------
+
+/// How long the button says it worked before returning to idle.
+export const AGENT_COMMIT_FLASH_MS = 4000;
+
+export type AgentCommitPhase = "idle" | "starting" | "running" | "done";
+
+export function agentCommitPhase(view: GitViewState | null): AgentCommitPhase {
+  if (!view) return "idle";
+  if (view.agentCommit) return view.agentCommit.sessionId ? "running" : "starting";
+  return view.agentCommitDone ? "done" : "idle";
+}
+
+/// Why the action is unavailable, or null when it can run. Separate from
+/// the phase so the button can SAY why it is disabled rather than just
+/// looking broken.
+export function agentCommitBlocker(view: GitViewState | null, headlessArgs: string): string | null {
+  if (!view) return "No repository";
+  if (!headlessArgs.trim()) return "This workspace's agent has no verified headless mode";
+  if (view.busy || view.op) return "Another git operation is running";
+  const dirty = (view.status?.unstaged.length ?? 0) + (view.status?.staged.length ?? 0);
+  if (dirty === 0) return "Nothing to commit";
+  return null;
+}
+
+/// How much of a hidden run's output is kept for the error message.
+/// Long enough for the agent's closing paragraph, short enough to read
+/// in a banner.
+const AGENT_TAIL_CHARS = 400;
+
+/// The tail of a hidden session's output. It is the ONLY trace such a
+/// run leaves -- the session is gone by the time anything went wrong,
+/// and nobody was watching it -- so a failure quotes it rather than
+/// reporting a bare exit code. Best-effort: output already emitted
+/// between the daemon starting the pty and this listener attaching is
+/// not captured, which costs nothing on a run that ends in a paragraph.
+async function captureTail(sessionId: string): Promise<{ text: () => string; stop: () => void }> {
+  let buf = "";
+  const unlisten = await listen<[string, string]>("pty-output", (event) => {
+    if (event.payload[0] !== sessionId) return;
+    buf = (buf + event.payload[1]).slice(-AGENT_TAIL_CHARS);
+  });
+  return { text: () => buf.replace(/\s+/g, " ").trim(), stop: unlisten };
+}
+
+/// Resolves with the session's exit code. `sessionExits` is written by
+/// layoutState's global session-exited listener, and a store
+/// subscription fires immediately with the current value -- so a run
+/// that exits between createSession returning and this call is still
+/// witnessed rather than waited on forever.
+function awaitExit(sessionId: string): Promise<number> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let unsub: () => void = () => {};
+    unsub = sessionExits.subscribe((exits) => {
+      const code = exits.get(sessionId);
+      if (settled || code === undefined) return;
+      settled = true;
+      resolve(code);
+      // Deferred: when this callback runs synchronously from inside
+      // subscribe() itself, `unsub` is still the no-op above.
+      void Promise.resolve().then(() => unsub());
+    });
+  });
+}
+
+/// The Git tab's "Commit via agent": one canned prompt (COMMIT_PROMPT),
+/// run by a HIDDEN agent session -- no tab, no page, the button is the
+/// whole interface. This app stages and commits nothing itself; the
+/// agent decides the chunks.
+///
+/// The run has to be a headless one: an interactive agent sits at its
+/// prompt forever, and an invisible session that never returns is a
+/// spinner with no end. Its verdict is the exit code AND the working
+/// tree afterwards -- see below for why the code alone is not enough.
+export async function commitViaAgent(workspaceId: string): Promise<boolean> {
+  const s = current(workspaceId);
+  if (!s || s.busy || s.op || s.agentCommit) return false;
+  const agent = resolvedAgentFor(workspaceId);
+  const command = buildHeadlessCommand(agent.command, agent.headlessArgs, COMMIT_PROMPT);
+  if (!command) {
+    noteError(workspaceId, `Commit via agent needs a headless agent — ${agent.profileId} has none`);
+    return false;
+  }
+  update(workspaceId, (st) => ({ ...st, agentCommit: { sessionId: null }, agentCommitDone: false, error: null }));
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(s.cwd, command);
+  } catch (e) {
+    update(workspaceId, (st) => ({ ...st, agentCommit: null, error: `Commit via agent failed: ${errorText(e)}` }));
+    return false;
+  }
+  const tail = await captureTail(sessionId);
+  // Cosmetic and best-effort: it only matters once the human reveals the
+  // session, where a tab labelled by its cwd is indistinguishable from
+  // every other agent running in the same repo.
+  await backend.setSessionName(sessionId, "commit").catch(() => {});
+  update(workspaceId, (st) => (st.agentCommit?.sessionId === null ? { ...st, agentCommit: { sessionId } } : st));
+
+  const code = await awaitExit(sessionId);
+  tail.stop();
+  // A worktree switch replaces this view wholesale (ensureGitView), and
+  // the run it started is then no longer this view's business -- it must
+  // not write its verdict into the state that replaced it.
+  if (current(workspaceId)?.agentCommit?.sessionId !== sessionId) return false;
+  update(workspaceId, (st) => ({ ...st, agentCommit: null }));
+  await refresh(workspaceId);
+
+  // Exit 0 is NOT the verdict on its own: a headless agent that decides
+  // it cannot do the job still reports that in prose and exits cleanly.
+  // The working tree is the fact, so it is what gets checked -- saying
+  // "Committed" over a tree that is still dirty would be a lie the
+  // human only catches by looking.
+  const after = current(workspaceId);
+  const left = (after?.status?.unstaged.length ?? 0) + (after?.status?.staged.length ?? 0);
+  const said = tail.text();
+  const quoted = said ? ` — ${said}` : "";
+  if (code !== 0) {
+    noteError(workspaceId, `Commit via agent failed (exit ${code})${quoted}`);
+    return false;
+  }
+  if (left > 0) {
+    noteError(workspaceId, `Commit via agent left ${left} change${left === 1 ? "" : "s"} uncommitted${quoted}`);
+    return false;
+  }
+  update(workspaceId, (st) => ({ ...st, agentCommitDone: true }));
+  setTimeout(() => {
+    update(workspaceId, (st) => (st.agentCommitDone ? { ...st, agentCommitDone: false } : st));
+  }, AGENT_COMMIT_FLASH_MS);
+  return true;
+}
+
+/// Pulls the hidden session onto the Agents page and jumps to it. The
+/// run carries on either way -- this is for a human who wants to watch
+/// it, or to see why it is taking so long. Only new output appears: the
+/// session has been attached since it was created, so there is no
+/// scrollback replay to catch up on.
+export async function revealAgentCommit(workspaceId: string): Promise<void> {
+  const sessionId = current(workspaceId)?.agentCommit?.sessionId;
+  if (!sessionId) return;
+  handleAgentSessionSpawned(workspaceId, sessionId);
+  const location = findSessionLocation(get(layoutState), sessionId);
+  if (!location) return;
+  await switchWorkspaceView(location.workspaceId, "terminal");
+  await switchToSessionInPage(location.workspaceId, location.pageId, sessionId);
 }
 
 // ---- SP2: long ops, refs actions, nav selection ----------------------------

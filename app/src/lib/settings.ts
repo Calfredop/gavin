@@ -13,6 +13,9 @@ export interface AgentProfileInfo {
   /// Whether the agent takes a positional prompt argument; gates the
   /// wizard's agent-driven flows (spec §7.2).
   promptArg: boolean;
+  /// The argv for a one-shot run with no TUI, empty where unverified;
+  /// gates every hidden background run (agent_setup.rs's headless_args).
+  headlessArgs: string;
 }
 
 export const DEFAULT_ACCENT = "#4a9eff";
@@ -69,6 +72,7 @@ export interface ResolvedAgent {
   file: string;
   command: string;
   mcpSupported: boolean;
+  headlessArgs: string;
 }
 
 const FALLBACK_PROFILE = "claude-code";
@@ -103,6 +107,11 @@ export function resolveAgentConfig(
       nonEmpty(fallback?.command) ??
       "claude",
     mcpSupported: effective?.mcpSupported ?? false,
+    // No fallback chain, unlike file/command: this argv describes the
+    // BINARY, and claude-code's flags on someone else's agent would be
+    // garbage in its argv. Empty means "no headless run offered", the
+    // same posture mcpSupported takes.
+    headlessArgs: effective?.headlessArgs ?? "",
   };
 }
 

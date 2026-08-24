@@ -66,6 +66,33 @@ export function buildRunCommand(agentCommand: string, prompt: string): string {
   return `${agentCommand} ${shellQuote(prompt)}`;
 }
 
+/// The one instruction behind the Git tab's "Commit via agent". Fixed
+/// text with nothing interpolated: the button IS the whole interaction,
+/// so there is no user input to compose in -- and no NAME_TAB_FIRST
+/// either, because this run has no tab to name. The app names its
+/// session itself, for the case where the human reveals it.
+export const COMMIT_PROMPT =
+  "Commit pending and unversioned changes, in logical chunks. Do not push.";
+
+// `<command> <headlessArgs> '<prompt>'`: one prompt, no TUI, then exit.
+// What a HIDDEN session needs -- an interactive agent sits at its prompt
+// forever, and a session nobody can see never coming back is a spinner
+// with no end, so a profile with no verified headless argv is refused
+// here rather than launched and hoped for (agent_setup.rs's
+// headless_args carries the argv, and only for verified rows).
+//
+// The prompt goes LAST and the argv ends in `--`, which is the profile
+// table's job to guarantee: an allow-list flag that takes a variadic
+// value would otherwise swallow the prompt whole.
+export function buildHeadlessCommand(
+  agentCommand: string,
+  headlessArgs: string,
+  prompt: string
+): string | null {
+  if (!headlessArgs.trim()) return null;
+  return `${agentCommand} ${headlessArgs.trim()} ${shellQuote(prompt)}`;
+}
+
 // The daemon runs a session's command as `sh -c <line>` (pty.rs), so a
 // one-line `command` tool needs no wrapping at all, while a multi-line
 // `script` tool wants bash -- `[[`, arrays and pipefail all behave as

@@ -43,6 +43,24 @@ pub struct AgentProfile {
     /// verified: getting it wrong puts garbage in the agent's argv, so
     /// agent-driven flows are hidden rather than risked (spec §7.2).
     pub prompt_arg: bool,
+    /// The argv that makes this agent run ONE prompt with no TUI and
+    /// then exit: `<command> <headless_args> "<prompt>"`. Empty where
+    /// the convention is unverified, which hides every background run --
+    /// a hidden session that never exits is a spinner with no end, so
+    /// this is a harder requirement than `prompt_arg` alone.
+    ///
+    /// The tool allow-list is part of it: a headless agent cannot be
+    /// asked to approve anything, so a run with no grant is a run that
+    /// can only report it was refused. Scoped to git deliberately --
+    /// gavin's background runs are git work, and a blanket bypass is
+    /// not gavin's to hand out.
+    ///
+    /// Must end in `--`. Verified the hard way: claude's allow-list flag
+    /// takes a VARIADIC value, so without the separator it swallows the
+    /// prompt that follows and the run dies with "input must be provided
+    /// either through stdin or as a prompt argument". The separator also
+    /// keeps a prompt that starts with `-` from being read as a flag.
+    pub headless_args: &'static str,
     pub mcp: Option<McpLayout>,
 }
 
@@ -53,6 +71,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         instructions_file: "CLAUDE.md",
         command: "claude",
         prompt_arg: true,
+        headless_args: "-p --allowedTools \"Bash(git *)\" --",
         mcp: Some(McpLayout {
             config_file: ".mcp.json",
             server_key: "gavin",
@@ -87,6 +106,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         instructions_file: "AGENTS.md",
         command: "codex",
         prompt_arg: false,
+        headless_args: "",
         mcp: None,
     },
     AgentProfile {
@@ -95,6 +115,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         instructions_file: "GEMINI.md",
         command: "gemini",
         prompt_arg: false,
+        headless_args: "",
         mcp: None,
     },
     AgentProfile {
@@ -103,6 +124,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         instructions_file: "AGENTS.md",
         command: "cursor",
         prompt_arg: false,
+        headless_args: "",
         mcp: None,
     },
     AgentProfile {
@@ -111,6 +133,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         instructions_file: "AGENTS.md",
         command: "opencode",
         prompt_arg: false,
+        headless_args: "",
         mcp: None,
     },
     AgentProfile {
@@ -119,6 +142,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         instructions_file: "",
         command: "",
         prompt_arg: false,
+        headless_args: "",
         mcp: None,
     },
 ];
@@ -426,6 +450,7 @@ pub struct AgentProfileDto {
     pub command: String,
     pub mcp_supported: bool,
     pub prompt_arg: bool,
+    pub headless_args: String,
 }
 
 #[tauri::command]
@@ -439,6 +464,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             command: p.command.to_string(),
             mcp_supported: p.mcp.is_some(),
             prompt_arg: p.prompt_arg,
+            headless_args: p.headless_args.to_string(),
         })
         .collect()
 }
@@ -498,6 +524,28 @@ mod tests {
         let with_mcp: Vec<&str> =
             AGENT_PROFILES.iter().filter(|p| p.mcp.is_some()).map(|p| p.id).collect();
         assert_eq!(with_mcp, ["claude-code"]);
+    }
+
+    /// A headless row must also take a positional prompt: the caller
+    /// builds `<command> <headless_args> '<prompt>'`, so an agent that
+    /// cannot be handed a prompt in argv has nowhere to put one. And it
+    /// must end in `--`, or a variadic flag ahead of the prompt eats it.
+    #[test]
+    fn only_claude_code_runs_headless_and_headless_rows_are_well_formed() {
+        let headless: Vec<&str> =
+            AGENT_PROFILES.iter().filter(|p| !p.headless_args.is_empty()).map(|p| p.id).collect();
+        assert_eq!(headless, ["claude-code"]);
+        for p in AGENT_PROFILES {
+            if p.headless_args.is_empty() {
+                continue;
+            }
+            assert!(p.prompt_arg, "{} runs headless but takes no positional prompt", p.id);
+            assert!(
+                p.headless_args.ends_with(" --"),
+                "{} must end its headless argv with `--`",
+                p.id
+            );
+        }
     }
 
     #[test]

@@ -596,6 +596,26 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "git-not-a-repo",
         text: "A rooted non-repo workspace shows “Initialize repository”; clicking it turns the tab live",
       },
+      {
+        id: "git-agent-commit",
+        text: "Toolbar's “Commit via agent” (right of Stash/Pop, left of Refresh) opens NO tab, shows “Committing…”, ends with “Committed” plus the agent's commits in the list",
+        hint: "The agent decides the chunks; expect more than one commit and nothing pushed.",
+      },
+      {
+        id: "git-agent-commit-show",
+        text: "“Show” during a run puts that agent on the Agents page (named “commit”) and its tab disappears when it finishes",
+        hint: "The toolbar's right end must not jump as the run changes phase.",
+      },
+      {
+        id: "git-agent-commit-blocked",
+        text: "The button is disabled with a reason on a clean tree, and on a workspace whose agent profile is not claude-code",
+        hint: "Hover for the tooltip: “Nothing to commit” / “…no verified headless mode”.",
+      },
+      {
+        id: "git-agent-commit-refused",
+        text: "An agent run that leaves changes behind says so in the banner and quotes what it reported — no “Committed”",
+        hint: "Force it: unset user.email in the repo, then run it.",
+      },
     ],
   },
   {

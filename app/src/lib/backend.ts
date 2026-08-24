@@ -266,6 +266,7 @@ export function agentProfiles(): Promise<
     command: string;
     mcpSupported: boolean;
     promptArg: boolean;
+    headlessArgs: string;
   }>
 > {
   return invoke("agent_profiles");
