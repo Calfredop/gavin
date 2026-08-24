@@ -12,9 +12,10 @@
 
 ## Global Constraints
 
-- `PROTOCOL_VERSION` becomes `12`. This work is itself a wire change (adds `Request::Shutdown` and the `Unknown` catch-all).
+- `PROTOCOL_VERSION` goes **10 → 12**. This work is itself a wire change (adds `Request::Shutdown` and the `Unknown` catch-all).
 - `MIN_COMPATIBLE_VERSION` is `5`. Derived, not chosen — v4→v5 changed `Response::Board`'s shape. Do not lower it without re-running the audit in the spec's §1.
-- **v11 must be committed before this plan starts.** `HEAD` is at v10; v11 lives in an in-flight orchestration merge in this worktree.
+- **v11 is deliberately skipped, not a typo.** This branch is based on v10. A separate, uncommitted orchestration merge claims v11 (it adds `SaveTool`, `GetTools`, `GetToolsByRoot`, `DeleteTool`). Reserving v11 for it means the two lines of work can land in either order without a version collision.
+- **Do not reference the v11 tool requests anywhere in this plan's code.** They do not exist on this branch and will not compile. When the orchestration merge lands, `min_version_for`'s exhaustive `match` will refuse to build until someone adds `=> 11` arms for those four variants — which is the intended forcing function, not a bug.
 - No `Request` variant may ever be removed or renamed. The whole design rests on the request side being append-only.
 - A daemon *newer* than the client stays a hard error in the app. Only `gavin-mcp` handles that case, in the Phase 2 plan.
 - Rust: `cargo test -p <crate>`. Frontend: `cd app && npm test`.
@@ -54,7 +55,9 @@ fn later_variants_report_the_version_that_introduced_them() {
         plan_path: "/p.md".into(), item: "x".into(), checked: true,
     }), 4);
     assert_eq!(min_version_for(&Request::DeleteCardFile { path: "/p.md".into() }), 6);
-    assert_eq!(min_version_for(&Request::GetTools { workspace_id: "w".into() }), 11);
+    assert_eq!(min_version_for(&Request::NameSession {
+        session_id: "s-1".into(), name: "login flow".into(),
+    }), 10);
 }
 
 #[test]
@@ -64,7 +67,7 @@ fn no_variant_claims_a_version_beyond_the_current_one() {
 }
 ```
 
-> The literal field names/types in `SetChecklistItem`, `DeleteCardFile` and `GetTools` must match the current definitions in this file. Read them before writing the test rather than trusting this snippet.
+> The literal field names/types in `SetChecklistItem`, `DeleteCardFile` and `NameSession` must match the current definitions in this file. Read them before writing the test rather than trusting this snippet.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -136,10 +139,10 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::SetRailRun { .. }
         | Request::SetStepRun { .. } => 10,
 
-        Request::DeleteTool { .. }
-        | Request::GetTools { .. }
-        | Request::GetToolsByRoot { .. }
-        | Request::SaveTool { .. } => 11,
+        // v11 is reserved for the orchestration merge's tool requests
+        // (SaveTool, GetTools, GetToolsByRoot, DeleteTool). They do not
+        // exist on this branch. When that work lands, this match stops
+        // compiling until its `=> 11` arm is added -- by design.
     }
 }
 ```
@@ -201,7 +204,7 @@ fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p protocol`
-Expected: FAIL — unknown variants `Unknown` and `Shutdown`; version assertion fails at 11.
+Expected: FAIL — unknown variants `Unknown` and `Shutdown`; version assertion fails at 10.
 
 - [ ] **Step 3: Implement**
 
@@ -554,8 +557,9 @@ This is the task that makes a degraded connection actually safe. Everything else
 #[test]
 fn a_request_the_daemon_predates_is_refused_before_it_is_sent() {
     let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
-    let err = gate(&Request::GetTools { workspace_id: "w".into() }, &compat).unwrap_err();
-    assert!(err.contains("v11"), "should name the version needed: {err}");
+    let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+    let err = gate(&too_new, &compat).unwrap_err();
+    assert!(err.contains("v10"), "should name the version needed: {err}");
     assert!(err.contains("v9"), "should name the version running: {err}");
 }
 
@@ -568,7 +572,8 @@ fn a_request_the_daemon_understands_passes() {
 #[test]
 fn an_exact_match_gates_nothing() {
     let compat = DaemonCompat { daemon_version: 12, app_version: 12, degraded: false };
-    assert!(gate(&Request::GetTools { workspace_id: "w".into() }, &compat).is_ok());
+    let newest = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+    assert!(gate(&newest, &compat).is_ok());
 }
 ```
 
@@ -736,7 +741,8 @@ failure instead of an explanation. Add to `daemonCompat.ts`:
 /// versions the UI actually branches on need entries here.
 export const FEATURE_MIN_VERSION = {
   orchestration: 10,
-  tools: 11,
+  // `tools: 11` belongs here once the orchestration merge lands and
+  // ToolLibraryDialog.svelte exists. It does not on this branch.
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
@@ -762,28 +768,26 @@ describe("featureBlockedReason", () => {
     expect(featureBlockedReason(v9, "orchestration")).toContain("v10");
   });
 
-  it("blocks tools on a v10 daemon", () => {
+  it("stops blocking orchestration at exactly v10", () => {
     const v10 = { daemonVersion: 10, appVersion: 12, degraded: true };
-    expect(featureBlockedReason(v10, "tools")).toContain("v11");
     expect(featureBlockedReason(v10, "orchestration")).toBeNull();
   });
 
   it("blocks nothing on a matching daemon", () => {
     const v12 = { daemonVersion: 12, appVersion: 12, degraded: false };
-    expect(featureBlockedReason(v12, "tools")).toBeNull();
+    expect(featureBlockedReason(v12, "orchestration")).toBeNull();
   });
 
   it("blocks nothing before a connection exists", () => {
-    expect(featureBlockedReason(null, "tools")).toBeNull();
+    expect(featureBlockedReason(null, "orchestration")).toBeNull();
   });
 });
 ```
 
-Apply it at the two entry points, disabling the control and using the
+Apply it at the entry point, disabling the control and using the
 returned string as its `title`:
 
 - `app/src/lib/OrchestrationHubView.svelte` — the `orchestration` feature
-- `app/src/lib/ToolLibraryDialog.svelte` and whatever opens it — the `tools` feature
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -801,7 +805,7 @@ Expected: no new errors.
 git add app/src/lib/daemonCompat.ts app/src/lib/daemonCompat.test.ts \
         app/src/lib/DaemonCompatBanner.svelte app/src/lib/backend.ts \
         app/src/lib/layoutState.ts app/src/routes/+page.svelte \
-        app/src/lib/OrchestrationHubView.svelte app/src/lib/ToolLibraryDialog.svelte \
+        app/src/lib/OrchestrationHubView.svelte \
         app/src-tauri/src/lib.rs
 git commit -m "feat(app): banner and gating for a degraded daemon connection"
 ```
@@ -828,7 +832,7 @@ fn the_app_never_sends_a_request_a_v9_daemon_cannot_parse() {
     let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
 
     let too_new = [
-        Request::GetTools { workspace_id: "w".into() },
+        Request::NameSession { session_id: "s-1".into(), name: "x".into() },
         Request::SetStepRun {
             step_id: "s1".into(),
             state: "running".into(),
@@ -863,7 +867,7 @@ pkill -x gavin-daemon; ./target/debug/gavin-daemon &
 cd app && npm run tauri dev
 ```
 
-Expected: the app **connects**. The banner names v9 and v12. Terminal sessions work. Orchestration and Tools affordances are disabled with a tooltip. No error overlay.
+Expected: the app **connects**. The banner names v9 and v12. Terminal sessions work. The Orchestration affordance is disabled with a tooltip naming v10. No error overlay.
 
 - [ ] **Step 4: Commit**
 
