@@ -373,6 +373,16 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The rail's step is re-keyed to the new path; a step that goes blank means rename_card_path regressed.",
       },
       {
+        id: "arch-rail-heals",
+        text: "Move a card's file yourself (mv it into plans/done/ from a terminal) — its rail step follows on the next scan instead of the rail stalling on it",
+        hint: "The daemon re-keys a step by file name when the path it holds goes missing. A step that reads “card file is missing”, or a rail that pauses on a finished card, means that recovery regressed.",
+      },
+      {
+        id: "arch-drawer-count",
+        text: "Orchestration: “Unplaced (n)” counts only cards still waiting — a Done card stays listed in its collapsed group but is out of the number, and an archived card is in neither the drawer nor + Add step",
+        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one.",
+      },
+      {
         id: "arch-agent-told",
         text: "An agent calling gavin_set_plan_field(..., \"status\", \"Done\") is answered with the card's new path",
       },
@@ -689,7 +699,10 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Orchestration: a query keeps only the rails holding a hit, rings the matching chips and fades the rest",
         hint: "A rail also matches on its own name and its bound worktree path.",
       },
-      { id: "search-orch-drawer", text: "The Unplaced drawer filters to matches, opens every group, and reads “n / total”" },
+      {
+        id: "search-orch-drawer",
+        text: "The Unplaced drawer filters to matches, opens every group, and reads “n / total” — both numbers skipping the Done group",
+      },
       { id: "search-orch-locked", text: "No step or card drags while the Orchestration search is set; clearing it restores dragging" },
       {
         id: "search-plans",

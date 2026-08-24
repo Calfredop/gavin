@@ -623,6 +623,28 @@ export function removeSteps(orch: Orchestration, stepIds: string[]): Orchestrati
   return sweepOrphans({ ...orch, rails });
 }
 
+/// A step is a card OR a tool, never neither (spec T1) -- and the daemon
+/// refuses to store one that is neither. A pre-v11 daemon had no
+/// `tool_id` column, so every tool step handed to it came back as
+/// exactly that: an untitled chip, and a plan the current daemon will
+/// reject wholesale until it is gone, which would wedge every later
+/// save. Dropped on the way in from the wire, so neither the eye nor the
+/// next save ever meets one.
+export function dropImpossibleSteps(orch: Orchestration): Orchestration {
+  const rails = orch.rails.map((r) => ({
+    ...r,
+    stages: renumber(
+      r.stages
+        .map((s) => ({
+          ...s,
+          steps: renumber(s.steps.filter((t) => isToolStep(t) || t.cardPath !== "")),
+        }))
+        .filter((s) => s.steps.length > 0)
+    ),
+  }));
+  return sweepOrphans({ ...orch, rails });
+}
+
 /// The step and the stage it currently sits in, or null.
 function locateStep(orch: Orchestration, stepId: string): { step: Step; stageId: string } | null {
   for (const rail of orch.rails) {
@@ -1001,6 +1023,37 @@ export function groupUnplacedByStatus(cards: CardEntry[], board: Board): Unplace
   }
 
   return [...known.values(), ...extra.values()].filter((g) => g.cards.length > 0);
+}
+
+/// The cards a rail can take on: every runnable card not already on one.
+/// Feeds both the unplaced drawer and a stage's "+ Add step" picker, so
+/// the two can never disagree about what is on offer.
+///
+/// Two kinds never appear. A NOTE is not runnable (launchBlocker says so
+/// too, one tick too late to be useful here). An ARCHIVED card is not on
+/// the board at all -- mergePlanCards pulls it out before any column sees
+/// it -- and offering filed-away work back as a candidate would undo the
+/// human's filing decision in the one place they came to see what is
+/// left to do.
+export function availableCards(
+  cards: Map<string, CardEntry>,
+  placed: Set<string>
+): CardEntry[] {
+  return [...cards.values()].filter(
+    (e) => e.plan.kind !== "note" && !isArchivedCard(e.plan.path) && !placed.has(e.plan.path)
+  );
+}
+
+/// How many unplaced cards the tab REPORTS -- the drawer's header, and
+/// the search summary in the bar.
+///
+/// The done group is listed but never counted: its cards are still
+/// placeable (a rail may want one for its shape), yet nothing about them
+/// is waiting, and the scheduler marks such a step done and cascades past
+/// it without ever launching. A headline "Unplaced (40)" that is mostly
+/// finished work answers a question nobody asked.
+export function unplacedCount(groups: UnplacedGroup[]): number {
+  return groups.reduce((n, g) => (g.isDone ? n : n + g.cards.length), 0);
 }
 
 // ---- Conflicts -------------------------------------------------------------

@@ -131,4 +131,33 @@ describe("filterUnplaced", () => {
     expect(out.groups).toHaveLength(1);
     expect(out.groups[0].cards).toHaveLength(2);
   });
+
+  // Both counts are "how much is still waiting for a rail", so a done
+  // group's cards are listed in the drawer but never counted -- the
+  // header would otherwise report finished work as outstanding.
+  const withDone: UnplacedGroup[] = [
+    { status: "To Do", slug: "to-do", isDone: false, cards: [entry(gitTab), entry(kanban)] },
+    { status: "Done", slug: "done", isDone: true, cards: [entry(gitTab)] },
+  ];
+
+  it("never counts a done group, for a blank query", () => {
+    const out = searchOrchestration(orch([]), cards, "").filterUnplaced(withDone);
+    expect(out.groups).toBe(withDone);
+    expect(out.shown).toBe(2);
+    expect(out.total).toBe(2);
+  });
+
+  it("never counts a done group while filtering", () => {
+    const out = searchOrchestration(orch([]), cards, "kanban").filterUnplaced(withDone);
+    expect(out.groups).toHaveLength(1);
+    expect(out.shown).toBe(1);
+    expect(out.total).toBe(2);
+  });
+
+  it("shows zero when the only matches are done cards", () => {
+    const out = searchOrchestration(orch([]), cards, "git").filterUnplaced(withDone);
+    expect(out.groups.map((g) => g.status)).toEqual(["To Do", "Done"]);
+    expect(out.shown).toBe(1);
+    expect(out.total).toBe(2);
+  });
 });

@@ -12,6 +12,7 @@
 //     leave the grid, so what is left is scannable.
 
 import { matchesFields, queryTokens } from "./search";
+import { unplacedCount } from "./orchestration";
 import type { CardEntry, Orchestration, Step, UnplacedGroup } from "./orchestration";
 
 function cardFields(entry: CardEntry | undefined): string[] {
@@ -30,6 +31,9 @@ export function stepMatches(step: Step, cards: Map<string, CardEntry>, tokens: s
 
 export interface UnplacedResult {
   groups: UnplacedGroup[];
+  /// Cards shown / in the pool -- both by `unplacedCount`, so a done
+  /// group is filtered and rendered like any other but stays out of
+  /// every number the tab prints.
   shown: number;
   total: number;
 }
@@ -63,8 +67,8 @@ export function searchOrchestration(
       stepLit: () => false,
       filterUnplaced: (groups) => ({
         groups,
-        shown: groups.reduce((n, g) => n + g.cards.length, 0),
-        total: groups.reduce((n, g) => n + g.cards.length, 0),
+        shown: unplacedCount(groups),
+        total: unplacedCount(groups),
       }),
     };
   }
@@ -94,8 +98,6 @@ export function searchOrchestration(
     railShown: (railId) => shownRails.has(railId),
     stepLit: (stepId) => lit.has(stepId),
     filterUnplaced: (groups) => {
-      const total = groups.reduce((n, g) => n + g.cards.length, 0);
-      let shown = 0;
       const kept: UnplacedGroup[] = [];
       for (const group of groups) {
         // A group name is a match target too: "shipped" should show what
@@ -103,10 +105,9 @@ export function searchOrchestration(
         const all = matchesFields(tokens, [group.status]);
         const cardsKept = all ? group.cards : group.cards.filter((c) => matchesFields(tokens, cardFields(c)));
         if (cardsKept.length === 0) continue;
-        shown += cardsKept.length;
         kept.push({ ...group, cards: cardsKept });
       }
-      return { groups: kept, shown, total };
+      return { groups: kept, shown: unplacedCount(kept), total: unplacedCount(groups) };
     },
   };
 }

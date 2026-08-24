@@ -1174,6 +1174,73 @@ describe("groupUnplacedByStatus", () => {
   });
 });
 
+describe("availableCards", () => {
+  const at = (path: string, over: Partial<PlanFileInfo> = {}): CardEntry => ({
+    plan: { ...plan(path.split("/").pop() as string, over), path },
+    contextFolder: "/ws/.gavin-root",
+  });
+  const index = (entries: CardEntry[]) => new Map(entries.map((e) => [e.plan.path, e]));
+
+  const todo = at("/ws/.gavin-root/plans/todo.md");
+  const onRail = at("/ws/.gavin-root/plans/on-rail.md");
+  const note = at("/ws/.gavin-root/plans/reminder.md", { kind: "note" });
+  const filed = at("/ws/.gavin-root/plans/archive/filed.md");
+
+  it("offers every runnable card that is not already on a rail", () => {
+    const out = availableCards(index([todo, onRail]), new Set([onRail.plan.path]));
+    expect(out.map((e) => e.plan.path)).toEqual([todo.plan.path]);
+  });
+
+  it("never offers a note -- a note is not runnable", () => {
+    const out = availableCards(index([todo, note]), new Set());
+    expect(out.map((e) => e.plan.path)).toEqual([todo.plan.path]);
+  });
+
+  // The archive is off the board by definition (mergePlanCards pulls it
+  // out before any column sees it), so it must be off the rails too --
+  // otherwise filed-away work is offered back as if it were waiting.
+  it("never offers an archived card", () => {
+    const out = availableCards(index([todo, filed]), new Set());
+    expect(out.map((e) => e.plan.path)).toEqual([todo.plan.path]);
+  });
+
+  it("keeps a card whose path merely mentions archive elsewhere", () => {
+    const roadmap = at("/ws/archive-rework/.gavin/plans/roadmap.md");
+    const out = availableCards(index([roadmap]), new Set());
+    expect(out.map((e) => e.plan.path)).toEqual([roadmap.plan.path]);
+  });
+});
+
+describe("unplacedCount", () => {
+  const group = (status: string, isDone: boolean, n: number): UnplacedGroup => ({
+    status,
+    slug: status.toLowerCase().replace(/ /g, "-"),
+    isDone,
+    cards: Array.from({ length: n }, (_, i) => ({
+      plan: plan(`${i}-${status}.md`, { status }),
+      contextFolder: "/ws/.gavin-root",
+    })),
+  });
+
+  it("counts the cards still waiting for a rail", () => {
+    expect(unplacedCount([group("To Do", false, 3), group("In Progress", false, 2)])).toBe(5);
+  });
+
+  // The headline number answers "how much is left to place". Finished
+  // work is not left to place, so the done group is listed but uncounted.
+  it("leaves the done group out", () => {
+    expect(unplacedCount([group("To Do", false, 3), group("Done", true, 12)])).toBe(3);
+  });
+
+  it("is zero when only done cards are unplaced", () => {
+    expect(unplacedCount([group("Done", true, 12)])).toBe(0);
+  });
+
+  it("is zero for no groups", () => {
+    expect(unplacedCount([])).toBe(0);
+  });
+});
+
 describe("addCardAsStage", () => {
   it("inserts a new single-step stage at the index", () => {
     const o = addCardAsStage(built(), "r1", 1, "new", "/x/z.md");
@@ -1676,6 +1743,63 @@ describe("describeConflict — tool steps", () => {
       (x) => x.kind === "same-worktree" && x.scope === "stage"
     ) as Conflict;
     expect(describeConflict(c, cardIndex(CARDS), both, [])).toContain("builtin:push");
+  });
+});
+
+describe("dropImpossibleSteps", () => {
+  // A step with neither a card path nor a tool id is what a pre-v11
+  // daemon leaves behind when the app hands it a tool step: those
+  // columns did not exist yet, so the tool is dropped on the way in and
+  // the step comes back empty. The current daemon REFUSES to store one,
+  // so a plan still holding it cannot be saved at all -- which is why
+  // the app has to drop it on the way out of the wire.
+  function withSteps(steps: Step[][]): Orchestration {
+    return {
+      ...emptyOrchestration(),
+      rails: [
+        {
+          id: "r1",
+          name: "r1",
+          position: 0,
+          worktreePath: null,
+          pageId: null,
+          stages: steps.map((s, i) => ({ id: `st${i}`, position: i, steps: s })),
+        },
+      ],
+    };
+  }
+  const ghost = (id: string): Step => ({ id, position: 0, cardPath: "", toolId: null });
+  const card = (id: string): Step => ({ id, position: 0, cardPath: "/ws/a.md", toolId: null });
+  const tool = (id: string): Step => ({ id, position: 0, cardPath: "", toolId: "builtin:push" });
+
+  it("drops a step with neither a card path nor a tool id", () => {
+    const out = dropImpossibleSteps(withSteps([[card("t1"), ghost("t2")]]));
+    expect(out.rails[0].stages[0].steps.map((s) => s.id)).toEqual(["t1"]);
+  });
+
+  it("keeps card steps and tool steps", () => {
+    const out = dropImpossibleSteps(withSteps([[card("t1"), tool("t2")]]));
+    expect(out.rails[0].stages[0].steps.map((s) => s.id)).toEqual(["t1", "t2"]);
+  });
+
+  it("drops the stage a ghost step leaves empty and renumbers the rest", () => {
+    const out = dropImpossibleSteps(withSteps([[ghost("t1")], [card("t2")]]));
+    expect(out.rails[0].stages.map((s) => [s.id, s.position])).toEqual([["st1", 0]]);
+  });
+
+  // It runs on EVERY read from the wire, so a healthy plan has to come
+  // back byte-identical -- silently renumbering one would reorder stages
+  // the human arranged.
+  it("leaves a well-formed plan exactly as it was", () => {
+    const orch = withSteps([[card("t1")], [tool("t2"), card("t3")]]);
+    orch.rails[0].stages[1].steps[1].position = 1;
+    expect(dropImpossibleSteps(orch).rails).toEqual(orch.rails);
+  });
+
+  it("sweeps run state naming a dropped step", () => {
+    const orch = withSteps([[card("t1"), ghost("t2")]]);
+    orch.stepRuns = [{ stepId: "t2", state: "running", sessionId: null, reason: null }];
+    expect(dropImpossibleSteps(orch).stepRuns).toEqual([]);
   });
 });
 

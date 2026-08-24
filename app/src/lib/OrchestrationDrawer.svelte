@@ -13,6 +13,7 @@
   import { orchDragState } from "./orchestrationDrag";
   import { toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
+  import { unplacedCount } from "./orchestration";
   import type { UnplacedGroup } from "./orchestration";
 
   interface Props {
@@ -29,6 +30,13 @@
     hiddenCount?: number;
     onAddTool: (toolId: string) => void;
     onManageTools: () => void;
+    /// Why the running daemon cannot carry tools, or null. A daemon
+    /// older than v11 has no `tool_id` column: it would accept a tool
+    /// step and store a step with neither a card nor a tool, which comes
+    /// back as an untitled chip. So the rows stay visible -- the human
+    /// should still see what tools ARE -- but inert, with the reason on
+    /// hover and no drag handle at all.
+    toolsBlocked?: string | null;
   }
   let {
     groups,
@@ -39,11 +47,18 @@
     onManageTools,
     filtering = false,
     hiddenCount = 0,
+    toolsBlocked = null,
   }: Props = $props();
 
   let collapsed = $state(false);
   const dragging = $derived($orchDragState !== null);
-  const total = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
+  // Two different questions, deliberately answered by two numbers. The
+  // HEADER answers "how much is left to place", so it skips the done
+  // group (unplacedCount). `rows` is just "is this panel empty", which
+  // the done group does fill -- otherwise a drawer showing twelve
+  // finished cards would also claim every runnable card is on a rail.
+  const total = $derived(unplacedCount(groups));
+  const rows = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
   const label = $derived(filtering ? `Unplaced (${total} / ${total + hiddenCount})` : `Unplaced (${total})`);
 
   // Only DEVIATIONS from the default are stored, so a group the human has
@@ -101,10 +116,11 @@
           <li>
             <button
               type="button"
-              data-orch-tool={tool.id}
+              data-orch-tool={toolsBlocked ? undefined : tool.id}
               class:dragging={$orchDragState?.id === tool.id}
-              disabled={!targetRailId}
-              title="{toolKindLabel(tool.kind)}{tool.description ? ` — ${tool.description}` : ''}"
+              disabled={Boolean(toolsBlocked) || !targetRailId}
+              title={toolsBlocked ??
+                `${toolKindLabel(tool.kind)}${tool.description ? ` — ${tool.description}` : ""}`}
               onclick={() => onAddTool(tool.id)}
             >
               <Icon size={12} />
@@ -116,7 +132,13 @@
           </li>
         {/each}
       </ul>
-      <button type="button" class="manage" onclick={onManageTools}>
+      <button
+        type="button"
+        class="manage"
+        disabled={Boolean(toolsBlocked)}
+        title={toolsBlocked ?? ""}
+        onclick={onManageTools}
+      >
         <Settings2 size={12} /> Manage tools…
       </button>
     {/if}
@@ -150,7 +172,7 @@
         </ul>
       {/if}
     {/each}
-    {#if total === 0}
+    {#if rows === 0}
       <p class="empty">{filtering ? "No unplaced card matches." : "Every runnable card is on a rail."}</p>
     {/if}
   {/if}
@@ -295,8 +317,12 @@
     font-size: 11px;
     cursor: pointer;
   }
-  .manage:hover {
+  .manage:hover:not(:disabled) {
     background: var(--surface-hover);
     color: var(--text);
+  }
+  .manage:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
 </style>

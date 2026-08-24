@@ -32,6 +32,7 @@
     numberConflicts,
     describeConflict,
     groupUnplacedByStatus,
+    availableCards,
     stepParams,
     findStep,
   } from "./orchestration";
@@ -253,13 +254,12 @@
     if (err) cardWriteError = err;
   }
 
-  // The cards a rail can take on: every runnable card not already on one.
+  // The cards a rail can take on -- see availableCards for what is left
+  // out and why. Shared by the drawer and the "+ Add step" picker below.
   const placed = $derived(
     new Set((orch?.rails ?? []).flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))))
   );
-  const available = $derived(
-    [...cards.values()].filter((e) => e.plan.kind !== "note" && !placed.has(e.plan.path))
-  );
+  const available = $derived(availableCards(cards, placed));
   const allUnplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
 
   // The search lens (orchestrationSearch.ts): rails with no hit leave
@@ -292,6 +292,11 @@
     // cards. Same refresh the kanban tab does on reveal.
     void refreshBoard(workspaceId);
     void refreshOrchestration(workspaceId);
+    // Re-read on a compat change too: against a pre-v11 daemon every
+    // GetTools is refused, so the library stays unfetched. Restarting
+    // the daemon from the banner is exactly the moment it becomes
+    // readable, and nothing else in this effect would notice.
+    void $daemonCompat;
     void fetchTools(workspaceId);
     void refreshTools(workspaceId);
     if (root) {
@@ -388,6 +393,14 @@
   // the wording (and the version numbers) identical wherever the app
   // names this.
   const orchestrationBlocked = $derived(featureBlockedReason($daemonCompat, "orchestration"));
+  // Tools are gated a version ABOVE orchestration, so there is a real
+  // daemon -- v10 -- that runs rails happily and knows nothing of tools.
+  // Handed one, it stores a step with neither a card nor a tool: an
+  // untitled chip, and a plan the current daemon then refuses to save.
+  // Gating every surface that can place a tool is what stops that step
+  // being written in the first place (dropImpossibleSteps clears up the
+  // ones already stored).
+  const toolsBlocked = $derived(featureBlockedReason($daemonCompat, "tools"));
   const conflictSummary = $derived(
     orch
       ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
@@ -538,6 +551,7 @@
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
         onAddTool={(toolId) => void addToolAsStepAction(workspaceId, rails[0].id, toolId)}
         onManageTools={() => (managingTools = true)}
+        {toolsBlocked}
       />
     </div>
   {/if}
@@ -661,6 +675,8 @@
           <li>
             <button
               type="button"
+              disabled={Boolean(toolsBlocked)}
+              title={toolsBlocked ?? ""}
               onclick={() => {
                 void addToolAsStepAction(workspaceId, railId, tool.id);
                 picking = null;
@@ -809,8 +825,12 @@
     text-align: left;
     cursor: pointer;
   }
-  .picker button:hover {
+  .picker button:hover:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .picker button:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
   .pick-title {
     flex: 1;

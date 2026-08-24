@@ -77,7 +77,7 @@ const pendingSaves = new Map<string, number>();
 export async function fetchOrchestration(workspaceId: string): Promise<void> {
   if (workspaceId in get(orchestrations)) return;
   try {
-    const orch = await backend.getOrchestration(workspaceId);
+    const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
     // Leave it unset; the tab renders its loading state and the next
@@ -90,7 +90,7 @@ export async function fetchOrchestration(workspaceId: string): Promise<void> {
 export async function refreshOrchestration(workspaceId: string): Promise<void> {
   if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
   try {
-    const orch = await backend.getOrchestration(workspaceId);
+    const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
     if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {

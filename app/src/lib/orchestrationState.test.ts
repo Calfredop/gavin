@@ -125,6 +125,35 @@ describe("fetchOrchestration", () => {
     expect(get(orchestrations)["ws-1"].rails[0].id).toBe("r1");
   });
 
+  // A pre-v11 daemon has no tool_id column, so a tool step handed to it
+  // comes back as a step with neither a card nor a tool: an untitled
+  // chip, and one the current daemon refuses to store, wedging every
+  // later save. The app drops it on the way in.
+  it("drops a step the daemon returned with neither a card nor a tool", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...emptyOrchestration(),
+      rails: [
+        {
+          ...rail("r1"),
+          stages: [
+            {
+              id: "st0",
+              position: 0,
+              steps: [
+                { id: "t1", position: 0, cardPath: "/x/a.md", toolId: null },
+                { id: "t2", position: 1, cardPath: "", toolId: null },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    await fetchOrchestration("ws-1");
+    expect(
+      get(orchestrations)["ws-1"].rails[0].stages[0].steps.map((s) => s.id)
+    ).toEqual(["t1"]);
+  });
+
   it("leaves the workspace unset when the load fails", async () => {
     vi.mocked(backend.getOrchestration).mockRejectedValue(new Error("nope"));
     await fetchOrchestration("ws-1");
