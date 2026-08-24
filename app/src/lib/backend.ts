@@ -4,6 +4,7 @@ import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
+import type { DaemonCompat } from "./daemonCompat";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -106,6 +107,12 @@ export function getBootstrapError(): Promise<string | null> {
 // was restarted but this app process needs a relaunch to rewire.
 export function restartDaemon(): Promise<void> {
   return invoke("restart_daemon");
+}
+
+// The compat verdict from the most recent connect/reconnect. null before
+// the first successful probe -- see DaemonCompatState on the Rust side.
+export function daemonCompat(): Promise<DaemonCompat | null> {
+  return invoke("daemon_compat");
 }
 
 // Fire-and-forget: rides the streaming connection, so there is no reply --

@@ -105,6 +105,8 @@ import {
   setAgentField,
   setGitViewPrefs,
   startMainAgentWithPrompt,
+  runningSessionCount,
+  type LayoutState,
 } from "./layoutState";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
@@ -1607,5 +1609,66 @@ describe("restartDaemonInPlace", () => {
 
     await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
     expect(get(layoutState).status).toBe("ready");
+  });
+});
+
+// The set of sessions a daemon restart would end -- what DaemonCompatBanner
+// sizes its "restarting will end N running agents" warning from. Tested
+// directly against a hand-built LayoutState rather than through the store,
+// since the point is the derivation itself, not any store plumbing.
+describe("runningSessionCount", () => {
+  function state(overrides: Partial<LayoutState>): LayoutState {
+    return {
+      status: "ready",
+      errorMessage: "",
+      workspaces: [],
+      activeWorkspaceId: null,
+      focusedSessionId: null,
+      cwdBySessionId: {},
+      sessionNames: {},
+      sessionStatusById: {},
+      gitStatusById: {},
+      restoredSessionIds: new Set(),
+      fileTabsById: {},
+      boardTabsById: {},
+      ...overrides,
+    };
+  }
+
+  it("counts every session tab across every page and workspace", () => {
+    const s = state({
+      workspaces: [
+        ws("w1", [page("p1", leaf(["a", "b"])), page("p2", leaf(["c"]))]),
+        ws("w2", [page("p3", leaf(["d"]))]),
+      ],
+    });
+    expect(runningSessionCount(s)).toBe(4);
+  });
+
+  it("counts a main agent session, which lives outside every page tree", () => {
+    const s = state({
+      workspaces: [{ ...ws("w1", [page("p1", leaf(["a"]))]), mainSessionId: "main-1" }],
+    });
+    expect(runningSessionCount(s)).toBe(2);
+  });
+
+  it("excludes file and board tabs -- the daemon has never heard of them", () => {
+    const s = state({
+      workspaces: [ws("w1", [page("p1", leaf(["a", "file-1", "board-1"]))])],
+      fileTabsById: { "file-1": { path: "/tmp/x" } },
+      boardTabsById: { "board-1": { workspaceId: "w1", contextFolder: "." } },
+    });
+    expect(runningSessionCount(s)).toBe(1);
+  });
+
+  it("dedupes an id that happens to appear on more than one page", () => {
+    const s = state({
+      workspaces: [ws("w1", [page("p1", leaf(["a"])), page("p2", leaf(["a"]))])],
+    });
+    expect(runningSessionCount(s)).toBe(1);
+  });
+
+  it("is zero with no workspaces", () => {
+    expect(runningSessionCount(state({}))).toBe(0);
   });
 });

@@ -15,7 +15,8 @@
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
-  import { layoutState, switchWorkspaceView } from "./layoutState";
+  import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
+  import { featureBlockedReason } from "./daemonCompat";
   import {
     cardIndex,
     doneColumn,
@@ -194,6 +195,13 @@
   });
 
   const mainAgentRunning = $derived(Boolean(ws?.mainSessionId));
+  // Every orchestration write (SetOrchestration/SetRailRun/SetStepRun) is
+  // gated at protocol v10 (see protocol::min_version_for) -- against an
+  // older daemon these buttons would otherwise dispatch requests Task 6's
+  // wire guard silently swallows, with no explanation. Reusing the same
+  // featureBlockedReason the banner is built from keeps the wording (and
+  // the version numbers) identical wherever the app names this.
+  const orchestrationBlocked = $derived(featureBlockedReason($daemonCompat, "orchestration"));
   const conflictSummary = $derived(
     orch ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch)}`) : []
   );
@@ -233,13 +241,19 @@
     <button
       type="button"
       class="add-rail"
-      disabled={!mainAgentRunning}
-      title={mainAgentRunning ? "" : "Start the workspace agent on Home first"}
+      disabled={!mainAgentRunning || Boolean(orchestrationBlocked)}
+      title={orchestrationBlocked || (mainAgentRunning ? "" : "Start the workspace agent on Home first")}
       onclick={() => void reorganize()}
     >
       Reorganize with agent…
     </button>
-    <button type="button" class="add-rail" onclick={() => void newRail()}>
+    <button
+      type="button"
+      class="add-rail"
+      disabled={Boolean(orchestrationBlocked)}
+      title={orchestrationBlocked ?? ""}
+      onclick={() => void newRail()}
+    >
       <Plus size={14} /> Rail
     </button>
   </header>
