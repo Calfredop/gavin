@@ -602,11 +602,21 @@ export function setStepParams(
 /// A stage left with no steps is removed: an empty stage is invisible in
 /// the grid and would otherwise be a silent gap the scheduler steps over.
 export function removeStep(orch: Orchestration, stepId: string): Orchestration {
+  return removeSteps(orch, [stepId]);
+}
+
+/// Remove a whole SET of steps in one write -- what "Clear done" needs,
+/// and what removeStep is the one-element case of. One pass, so a stage
+/// emptied by the last of its steps is dropped exactly as it is when a
+/// single step leaves it empty.
+export function removeSteps(orch: Orchestration, stepIds: string[]): Orchestration {
+  if (stepIds.length === 0) return orch;
+  const drop = new Set(stepIds);
   const rails = orch.rails.map((r) => ({
     ...r,
     stages: renumber(
       r.stages
-        .map((s) => ({ ...s, steps: renumber(s.steps.filter((t) => t.id !== stepId)) }))
+        .map((s) => ({ ...s, steps: renumber(s.steps.filter((t) => !drop.has(t.id))) }))
         .filter((s) => s.steps.length > 0)
     ),
   }));
@@ -814,6 +824,90 @@ export function sendCardToRail(
   if (placement?.railId === railId) return orch;
   if (placement) return moveStepToNewStage(orch, placement.stepId, railId, rail.stages.length);
   return addCardAsStage(orch, railId, rail.stages.length, stepId, cardPath);
+}
+
+/// Every distinct card a rail carries, in run order (stage by position,
+/// then step by position). Tool steps have no card and drop out; a card
+/// written onto two steps counts ONCE, because what a caller does with
+/// this list it does to the card FILE.
+export function railCardPaths(rail: Rail): string[] {
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const stage of [...rail.stages].sort((a, b) => a.position - b.position)) {
+    for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
+      if (isToolStep(step) || !step.cardPath || seen.has(step.cardPath)) continue;
+      seen.add(step.cardPath);
+      paths.push(step.cardPath);
+    }
+  }
+  return paths;
+}
+
+/// The cards a "move all to <column>" would actually WRITE: the rail's
+/// cards, minus the ones already in that column (a no-op write still
+/// churns the file and re-pushes the tree) and minus the ones the tree
+/// has no card for -- a card deleted out from under the plan has no file
+/// to write, and its chip already says so.
+///
+/// Empty means the action has nothing to do, which is how the surfaces
+/// decide to disable it.
+export function railCardsToMove(
+  rail: Rail,
+  cards: Map<string, CardEntry>,
+  columnName: string
+): string[] {
+  const target = slugStatus(columnName);
+  return railCardPaths(rail).filter((path) => {
+    const entry = cards.get(path);
+    if (!entry) return false;
+    // A card with NO status is never "already there": the board shows it
+    // in the first column, but the file does not say so, and this is the
+    // write that makes it say so. Same rule as a card's own menu.
+    if (entry.plan.status === null) return true;
+    return slugStatus(entry.plan.status) !== target;
+  });
+}
+
+/// The steps a "Clear done" would take OFF the rail, in run order.
+///
+/// Two facts make a step done, the same two rule 1 of the scheduler
+/// joins (§4.2): the scheduler marked it `done`, or -- for a card step
+/// on a rail that was never run, and so has no run state at all -- its
+/// card already sits in the board's done column. A TOOL step has no card
+/// and can only be finished by its run state.
+///
+/// A `running` step is never listed, whatever its card says: the daemon
+/// refuses a plan write that drops one (replace_plan guard 3), and one
+/// refusal would lose the whole clear rather than that single step.
+///
+/// Empty means the action has nothing to do, which is how the surfaces
+/// decide to disable it.
+export function railDoneStepIds(
+  rail: Rail,
+  orch: Orchestration,
+  cards: Map<string, CardEntry>,
+  doneColumnName: string | null
+): string[] {
+  const target = doneColumnName ? slugStatus(doneColumnName) : null;
+  const plans = planIndex(cards);
+  const ids: string[] = [];
+  for (const stage of [...rail.stages].sort((a, b) => a.position - b.position)) {
+    for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
+      const state = stepStateOf(orch, step.id);
+      if (state === "running") continue;
+      if (state === "done") {
+        ids.push(step.id);
+        continue;
+      }
+      if (isToolStep(step) || !target) continue;
+      const entry = cards.get(step.cardPath);
+      // The status the BOARD shows the card in, so a nested task clears
+      // with its Done parent exactly as the scheduler skips it.
+      const status = entry ? effectiveStatus(entry, plans) : null;
+      if (status !== null && slugStatus(status) === target) ids.push(step.id);
+    }
+  }
+  return ids;
 }
 
 /// Split one stage of N steps into N consecutive single-step stages, in

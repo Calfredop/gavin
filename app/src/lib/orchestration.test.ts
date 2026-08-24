@@ -1275,6 +1275,77 @@ describe("sendCardToRail", () => {
   });
 });
 
+describe("railCardPaths", () => {
+  it("lists the rail's cards in run order", () => {
+    expect(railCardPaths(rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"], ["t3", "/x/c.md"]]]))).toEqual([
+      "/x/a.md",
+      "/x/b.md",
+      "/x/c.md",
+    ]);
+  });
+
+  it("reads stages and steps by position, not array order", () => {
+    const r = rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"], ["t3", "/x/c.md"]]]);
+    r.stages = [r.stages[1], r.stages[0]];
+    r.stages[0].steps = [r.stages[0].steps[1], r.stages[0].steps[0]];
+    expect(railCardPaths(r)).toEqual(["/x/a.md", "/x/b.md", "/x/c.md"]);
+  });
+
+  // The FILE is what a caller writes, so a card on two steps is one card.
+  it("counts a duplicated card once", () => {
+    expect(railCardPaths(rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/a.md"]]]))).toEqual(["/x/a.md"]);
+  });
+
+  it("leaves tool steps out", () => {
+    const r = rail("r1", [[["t1", "/x/a.md"]]]);
+    r.stages.push({ id: "r1-s1", position: 1, steps: [{ id: "t2", position: 0, cardPath: "", toolId: "builtin:push" }] });
+    expect(railCardPaths(r)).toEqual(["/x/a.md"]);
+  });
+
+  it("is empty for a rail with no stages", () => {
+    expect(railCardPaths(rail("r1", []))).toEqual([]);
+  });
+});
+
+describe("railCardsToMove", () => {
+  const r = rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"], ["t3", "/x/c.md"]]]);
+  const index = (statuses: Array<string | null>) =>
+    cardIndex(
+      tree([
+        plan("a.md", { path: "/x/a.md", status: statuses[0] }),
+        plan("b.md", { path: "/x/b.md", status: statuses[1] }),
+        plan("c.md", { path: "/x/c.md", status: statuses[2] }),
+      ])
+    );
+
+  it("skips the cards already in that column", () => {
+    expect(railCardsToMove(r, index(["To Do", "Done", "In Progress"]), "Done")).toEqual([
+      "/x/a.md",
+      "/x/c.md",
+    ]);
+  });
+
+  it("compares statuses by slug, not spelling", () => {
+    expect(railCardsToMove(r, index(["in progress", "In Progress", "IN-PROGRESS"]), "In Progress")).toEqual([]);
+  });
+
+  // Matching a card's own menu: no status is never "already there".
+  it("moves a card with no status at all", () => {
+    expect(railCardsToMove(r, index([null, "To Do", "To Do"]), "To Do")).toEqual(["/x/a.md"]);
+  });
+
+  // A card deleted out from under the plan has no file to write.
+  it("drops a card the tree has no entry for", () => {
+    expect(railCardsToMove(r, cardIndex(tree([plan("a.md", { path: "/x/a.md" })])), "Done")).toEqual([
+      "/x/a.md",
+    ]);
+  });
+
+  it("is empty for a rail carrying no cards", () => {
+    expect(railCardsToMove(rail("r1", []), index(["To Do", "To Do", "To Do"]), "Done")).toEqual([]);
+  });
+});
+
 // ---- Tool steps -------------------------------------------------------------
 // A step is a card step or a tool step (tools spec T1). These cover the
 // second shape everywhere it behaves differently: completion by exit
@@ -1608,6 +1679,98 @@ describe("describeConflict — tool steps", () => {
   });
 });
 
+describe("railDoneStepIds", () => {
+  const r = rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"], ["t3", "/x/c.md"]]]);
+  const index = (statuses: Array<string | null>) =>
+    cardIndex(
+      tree([
+        plan("a.md", { path: "/x/a.md", status: statuses[0] }),
+        plan("b.md", { path: "/x/b.md", status: statuses[1] }),
+        plan("c.md", { path: "/x/c.md", status: statuses[2] }),
+      ])
+    );
+  const runs = (states: Array<[string, StepState]>): Orchestration =>
+    orchOf([r], {
+      stepRuns: states.map(([stepId, state]) => ({ stepId, state, sessionId: null, reason: null })),
+    });
+
+  it("lists the steps the scheduler marked done, in run order", () => {
+    const o = runs([
+      ["t3", "done"],
+      ["t1", "done"],
+      ["t2", "running"],
+    ]);
+    expect(railDoneStepIds(r, o, index([null, null, null]), "Done")).toEqual(["t1", "t3"]);
+  });
+
+  // A rail that was never started has no run state at all, and its cards
+  // can still be finished -- the board is what says so.
+  it("counts a pending card step whose card sits in the done column", () => {
+    const o = runs([]);
+    expect(railDoneStepIds(r, o, index(["Done", "To Do", "done"]), "Done")).toEqual(["t1", "t3"]);
+  });
+
+  it("compares the card's status by slug, not spelling", () => {
+    expect(railDoneStepIds(r, runs([]), index(["DONE", null, null]), "Done")).toEqual(["t1"]);
+  });
+
+  // The daemon refuses a plan write that drops a running step, so one is
+  // never offered up -- whatever its card says.
+  it("never lists a running step", () => {
+    const o = runs([["t1", "running"]]);
+    expect(railDoneStepIds(r, o, index(["Done", null, null]), "Done")).toEqual([]);
+  });
+
+  it("leaves stalled and pending steps alone", () => {
+    const o = runs([
+      ["t1", "stalled"],
+      ["t2", "pending"],
+    ]);
+    expect(railDoneStepIds(r, o, index([null, null, null]), "Done")).toEqual([]);
+  });
+
+  // A tool step has no card, so only its run state can finish it.
+  it("takes a tool step only on its run state", () => {
+    const t = toolRail("r1", [[["t1", "builtin:push"]]]);
+    expect(railDoneStepIds(t, orchOf([t]), index([null, null, null]), "Done")).toEqual([]);
+    const done = orchOf([t], {
+      stepRuns: [{ stepId: "t1", state: "done", sessionId: null, reason: null }],
+    });
+    expect(railDoneStepIds(t, done, index([null, null, null]), "Done")).toEqual(["t1"]);
+  });
+
+  // No columns means nothing can complete (spec O6): only run state is
+  // left to go on.
+  it("falls back to run state alone on a board with no columns", () => {
+    const o = runs([["t2", "done"]]);
+    expect(railDoneStepIds(r, o, index(["Done", null, null]), null)).toEqual(["t2"]);
+  });
+
+  it("ignores the other rails' steps", () => {
+    const other = rail("r2", [[["t9", "/x/a.md"]]]);
+    const o = orchOf([r, other], {
+      stepRuns: [{ stepId: "t9", state: "done", sessionId: null, reason: null }],
+    });
+    expect(railDoneStepIds(r, o, index([null, null, null]), "Done")).toEqual([]);
+  });
+
+  // The same "done" the scheduler skips on: a nested task is drawn in
+  // its parent's card, so a Done parent clears it too. Two spellings of
+  // done would let Clear done leave behind exactly the steps a Start
+  // then walks straight past.
+  it("counts a nested task whose parent sits in the done column", () => {
+    const nestedIndex = cardIndex(
+      tree([
+        plan("big.md", { path: "/x/big.md", kind: "plan", status: "Done" }),
+        plan("a.md", { path: "/x/a.md", kind: "task", parent: "big.md", status: null }),
+        plan("b.md", { path: "/x/b.md", status: null }),
+        plan("c.md", { path: "/x/c.md", status: null }),
+      ])
+    );
+    expect(railDoneStepIds(r, runs([]), nestedIndex, "Done")).toEqual(["t1"]);
+  });
+});
+
 describe("effectiveStatus", () => {
   const index = (plans: PlanFileInfo[]) => planIndex(cardIndex(tree(plans)));
   const entryFor = (plans: PlanFileInfo[], fileName: string): CardEntry =>
@@ -1671,5 +1834,44 @@ describe("effectiveStatus", () => {
     const cards = cardIndex(t);
     const entry = cards.get("/ws/.gavin-root/plans/a.md") as CardEntry;
     expect(effectiveStatus(entry, planIndex(cards))).toBeNull();
+  });
+});
+
+describe("removeSteps", () => {
+  it("removes several steps at once and renumbers the survivors", () => {
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    o = addStep(o, "s1", "t2", "/x/b.md");
+    o = addStep(o, "s1", "t3", "/x/c.md");
+    o = removeSteps(o, ["t1", "t3"]);
+    expect(o.rails[0].stages[0].steps.map((t) => [t.id, t.position])).toEqual([["t2", 0]]);
+  });
+
+  it("drops every stage it empties and renumbers the rest", () => {
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    o = addStep(addStage(o, "r1", "s2"), "s2", "t2", "/x/b.md");
+    o = addStep(addStage(o, "r1", "s3"), "s3", "t3", "/x/c.md");
+    o = removeSteps(o, ["t1", "t2"]);
+    expect(o.rails[0].stages.map((s) => [s.id, s.position])).toEqual([["s3", 0]]);
+  });
+
+  it("drops run state and notes for every step it removed", () => {
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    o = addStep(o, "s1", "t2", "/x/b.md");
+    o = {
+      ...o,
+      stepRuns: [
+        { stepId: "t1", state: "done", sessionId: null, reason: null },
+        { stepId: "t2", state: "pending", sessionId: null, reason: null },
+      ],
+      conflictNotes: [{ id: "n1", stepIds: ["t1", "t2"], note: "careful" }],
+    };
+    o = removeSteps(o, ["t1"]);
+    expect(o.stepRuns.map((r) => r.stepId)).toEqual(["t2"]);
+    expect(o.conflictNotes).toEqual([]);
+  });
+
+  it("is the identity for an empty list", () => {
+    const o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    expect(removeSteps(o, [])).toEqual(o);
   });
 });

@@ -79,6 +79,7 @@ vi.mock("./gitState", () => ({
 }));
 
 import * as backend from "./backend";
+import * as gavinState from "./gavinState";
 import * as layoutStateModule from "./layoutState";
 import * as kanbanStateModule from "./kanbanState";
 import { toolRecords, __resetForTesting as toolsResetForTesting } from "./toolsState";
@@ -87,6 +88,7 @@ import {
   fetchOrchestration,
   startRail,
   pauseRail,
+  resumeRail,
   retryStep,
   executeActions,
   mutatePlan,
@@ -94,6 +96,8 @@ import {
   setStepRunAction,
   saveErrors,
   dismissSaveError,
+  moveRailCardsAction,
+  clearDoneStepsAction,
   __resetForTesting,
 } from "./orchestrationState";
 import { emptyOrchestration } from "./orchestration";
@@ -239,6 +243,33 @@ describe("rail controls", () => {
     expect(backend.setRailRun).toHaveBeenLastCalledWith("r1", "paused", "s1");
   });
 
+  it("Resume picks up at the stage the pause left the rail on", async () => {
+    await startRail("ws-1", "r1");
+    await pauseRail("ws-1", "r1");
+    vi.mocked(backend.setRailRun).mockClear();
+    await resumeRail("ws-1", "r1");
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1");
+  });
+
+  // An edit, a reorganize or a Clear done that lands while a rail is
+  // paused can take the very stage it is parked on. Handing that id back
+  // to the scheduler finds no stage and calls the rail COMPLETE, so
+  // pressing Play would idle the rail instead of running it.
+  it("Resume re-arms when the stage it was paused on is gone", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "swept-stage");
+    vi.mocked(backend.setRailRun).mockClear();
+    await resumeRail("ws-1", "r1");
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1");
+  });
+
+  it("Resume on a rail with nothing left to run lets the tick complete it", async () => {
+    await setStepRunAction("ws-1", "t1", "done", null, null);
+    await setRailRunAction("ws-1", "r1", "paused", "swept-stage");
+    vi.mocked(backend.setRailRun).mockClear();
+    await resumeRail("ws-1", "r1");
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", null);
+  });
+
   it("Retry returns a stalled step to pending and clears its reason", async () => {
     await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "card file is missing");
     await retryStep("ws-1", "t1");
@@ -337,6 +368,174 @@ describe("executeActions", () => {
     });
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
+  });
+});
+
+describe("moveRailCardsAction", () => {
+  /// A rail over the one card the mocked tree knows (/x/a.md, "To Do"),
+  /// a card it does NOT (/x/gone.md), and a tool step.
+  function mixedRail(): Orchestration {
+    return {
+      ...emptyOrchestration(),
+      rails: [
+        {
+          id: "r1",
+          name: "r1",
+          position: 0,
+          worktreePath: null,
+          pageId: null,
+          stages: [
+            {
+              id: "s1",
+              position: 0,
+              steps: [
+                { id: "t1", position: 0, cardPath: "/x/a.md" },
+                { id: "t2", position: 1, cardPath: "/x/gone.md" },
+              ],
+            },
+            {
+              id: "s2",
+              position: 1,
+              steps: [{ id: "t3", position: 0, cardPath: "", toolId: "builtin:push" }],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    orchestrations.set({ "ws-1": mixedRail() });
+  });
+
+  it("writes the column to every card the tree resolves, and patches each", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    expect(await moveRailCardsAction("ws-1", "r1", "Done")).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/x/a.md", "status", "Done"],
+    ]);
+    expect(gavinState.patchPlanField).toHaveBeenCalledWith("ws-1", "/x/a.md", "status", "Done");
+  });
+
+  it("writes nothing when every card is already in that column", async () => {
+    expect(await moveRailCardsAction("ws-1", "r1", "To Do")).toBeNull();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("names the file that refused and stops there", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockRejectedValue(new Error("read-only"));
+    expect(await moveRailCardsAction("ws-1", "r1", "Done")).toBe(
+      "Couldn't move a.md to Done: read-only"
+    );
+    expect(gavinState.patchPlanField).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op for an unknown rail", async () => {
+    expect(await moveRailCardsAction("ws-1", "nope", "Done")).toBeNull();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearDoneStepsAction", () => {
+  /// Three sequential stages over the one card the mocked tree knows,
+  /// so every step here is a card step the board could also finish.
+  function threeStages(): Orchestration {
+    return {
+      ...emptyOrchestration(),
+      rails: [
+        {
+          id: "r1",
+          name: "backend",
+          position: 0,
+          worktreePath: "/x/wt",
+          pageId: "p1",
+          stages: [
+            { id: "s1", position: 0, steps: [{ id: "t1", position: 0, cardPath: "/x/a.md" }] },
+            { id: "s2", position: 1, steps: [{ id: "t2", position: 0, cardPath: "/x/b.md" }] },
+            { id: "s3", position: 2, steps: [{ id: "t3", position: 0, cardPath: "/x/c.md" }] },
+          ],
+        },
+      ],
+    };
+  }
+
+  function done(...stepIds: string[]): Orchestration["stepRuns"] {
+    return stepIds.map((stepId) => ({ stepId, state: "done" as const, sessionId: null, reason: null }));
+  }
+
+  beforeEach(() => {
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    orchestrations.set({ "ws-1": { ...threeStages(), stepRuns: done("t1", "t2") } });
+  });
+
+  it("takes the done steps off the rail and drops the stages they emptied", async () => {
+    expect(await clearDoneStepsAction("ws-1", "r1")).toBeNull();
+    const rails = vi.mocked(backend.setOrchestration).mock.calls[0][1] as Rail[];
+    expect(rails[0].stages.map((s) => [s.id, s.position])).toEqual([["s3", 0]]);
+    expect(get(orchestrations)["ws-1"].stepRuns).toEqual([]);
+  });
+
+  it("writes nothing when the rail has no done steps", async () => {
+    orchestrations.set({ "ws-1": threeStages() });
+    expect(await clearDoneStepsAction("ws-1", "r1")).toBeNull();
+    expect(backend.setOrchestration).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op for an unknown rail", async () => {
+    expect(await clearDoneStepsAction("ws-1", "nope")).toBeNull();
+    expect(backend.setOrchestration).not.toHaveBeenCalled();
+  });
+
+  // The daemon refuses a plan write that drops a running step, so the
+  // clear leaves it -- and the stage it stands in -- exactly where it is.
+  it("leaves a running step on the rail", async () => {
+    orchestrations.set({
+      "ws-1": {
+        ...threeStages(),
+        stepRuns: [
+          ...done("t1"),
+          { stepId: "t2", state: "running", sessionId: "sess-1", reason: null },
+        ],
+      },
+    });
+    expect(await clearDoneStepsAction("ws-1", "r1")).toBeNull();
+    const rails = vi.mocked(backend.setOrchestration).mock.calls[0][1] as Rail[];
+    expect(rails[0].stages.map((s) => s.id)).toEqual(["s2", "s3"]);
+  });
+
+  // Cleared out from under a running rail, `currentStageId` would name a
+  // stage that no longer exists and the next tick would call the rail
+  // complete.
+  it("repoints a running rail whose current stage was cleared away", async () => {
+    orchestrations.set({
+      "ws-1": {
+        ...threeStages(),
+        stepRuns: done("t1", "t2"),
+        railRuns: [{ railId: "r1", state: "running", currentStageId: "s2" }],
+      },
+    });
+    expect(await clearDoneStepsAction("ws-1", "r1")).toBeNull();
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s3");
+  });
+
+  it("leaves a current stage that survived the clear alone", async () => {
+    orchestrations.set({
+      "ws-1": {
+        ...threeStages(),
+        stepRuns: done("t1"),
+        railRuns: [{ railId: "r1", state: "running", currentStageId: "s2" }],
+      },
+    });
+    expect(await clearDoneStepsAction("ws-1", "r1")).toBeNull();
+    expect(backend.setRailRun).not.toHaveBeenCalled();
+  });
+
+  it("reports the failure and rolls the plan back", async () => {
+    vi.mocked(backend.setOrchestration).mockRejectedValue(new Error("step t1 is running"));
+    expect(await clearDoneStepsAction("ws-1", "r1")).toBe("step t1 is running");
+    expect(get(orchestrations)["ws-1"].rails[0].stages.map((s) => s.id)).toEqual(["s1", "s2", "s3"]);
+    expect(backend.setRailRun).not.toHaveBeenCalled();
   });
 });
 

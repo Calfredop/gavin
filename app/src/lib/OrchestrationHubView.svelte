@@ -27,6 +27,7 @@
   import {
     cardIndex,
     doneColumn,
+    railCardsToMove,
     detectConflicts,
     numberConflicts,
     describeConflict,
@@ -34,6 +35,8 @@
     stepParams,
     findStep,
   } from "./orchestration";
+  import type { Rail } from "./orchestration";
+  import { railDeleteConfirm, railClearDoneConfirm } from "./railConfirm";
   import { findTool, toolKindLabel } from "./orchestrationTools";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
@@ -63,6 +66,8 @@
     addToolAsStageAction,
     addToolToStageAction,
     setStepParamsAction,
+    moveRailCardsAction,
+    clearDoneStepsAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -119,6 +124,33 @@
   // by the conflicts box's inline fix.
   let binding = $state<string | null>(null);
 
+  // A rail's two destructive header buttons ask first, in the app's own
+  // ConfirmPrompt: both take steps off the plan for good, and neither is
+  // undoable. Held as {kind, railId} rather than a rail object so a plan
+  // that reloads under the open prompt re-derives fresh counts (or
+  // closes, if the rail went).
+  let railPrompt = $state<{ kind: "delete" | "clear"; railId: string } | null>(null);
+  const promptRail = $derived.by<Rail | null>(() => {
+    const p = railPrompt;
+    return p ? (orch?.rails.find((r) => r.id === p.railId) ?? null) : null;
+  });
+  const railPromptContent = $derived.by(() => {
+    const p = railPrompt;
+    if (!p || !promptRail || !orch) return null;
+    return p.kind === "delete"
+      ? railDeleteConfirm(promptRail, orch)
+      : railClearDoneConfirm(promptRail, orch, cards, doneName);
+  });
+
+  // Closes the prompt BEFORE the write: a failed write is reported by
+  // the save-error strip these actions already feed, and a prompt left
+  // standing over it would be asking a second time.
+  function confirmRailPrompt(pending: { kind: "delete" | "clear"; railId: string }): void {
+    railPrompt = null;
+    if (pending.kind === "delete") void deleteRailAction(workspaceId, pending.railId);
+    else void clearDoneStepsAction(workspaceId, pending.railId);
+  }
+
   // --- the card surface -------------------------------------------------
   // A card step IS a kanban card here, so this tab owns the same three
   // pieces of furniture the board does: the detail modal, the delete
@@ -158,6 +190,35 @@
         sendToAgent: (c) => void handleSendToAgent(c),
         agentAvailable,
         reportError: (msg) => (cardWriteError = msg),
+      })
+    );
+  }
+
+  // The rail's own "move all": one entry per board column, each saying
+  // how many of the rail's cards that pick would actually rewrite. A
+  // column every card already sits in is marked and dead, exactly as a
+  // card's own current column is in its menu.
+  function handleMoveAll(rail: Rail, e: MouseEvent): void {
+    if (!board) return;
+    const columns = [...board.columns].sort((a, b) => a.position - b.position);
+    openContextMenuFromEvent(
+      e,
+      columns.map((col) => {
+        const paths = railCardsToMove(rail, cards, col.name);
+        const n = paths.length;
+        return {
+          label:
+            n === 0
+              ? `All cards are in ${col.name}`
+              : `Move ${n} ${n === 1 ? "card" : "cards"} to ${col.name}`,
+          active: n === 0,
+          disabled: n === 0,
+          onPick: () => {
+            void moveRailCardsAction(workspaceId, rail.id, col.name).then((err) => {
+              if (err) cardWriteError = err;
+            });
+          },
+        };
       })
     );
   }
@@ -442,7 +503,9 @@
           onStart={() => onStart(rail.id)}
           onPause={() => void pauseRail(workspaceId, rail.id)}
           onReset={() => void resetRail(workspaceId, rail.id)}
-          onDelete={() => void deleteRailAction(workspaceId, rail.id)}
+          onDelete={() => (railPrompt = { kind: "delete", railId: rail.id })}
+          onMoveAll={(e) => handleMoveAll(rail, e)}
+          onClearDone={() => (railPrompt = { kind: "clear", railId: rail.id })}
           pageName={ws?.pages.find((p) => p.id === rail.pageId)?.name ?? null}
           editing={editingRailId === rail.id}
           onStartEdit={() => (editingRailId = rail.id)}
@@ -525,6 +588,22 @@
   {#if bindingRail}
     <RailBindDialog {workspaceId} rail={bindingRail} onClose={() => (binding = null)} />
   {/if}
+{/if}
+
+{#if railPrompt && railPromptContent}
+  {@const pending = railPrompt}
+  <ConfirmPrompt
+    title={railPromptContent.title}
+    lines={railPromptContent.lines}
+    choices={[
+      {
+        label: railPromptContent.confirmLabel,
+        danger: true,
+        onPick: () => void confirmRailPrompt(pending),
+      },
+    ]}
+    onCancel={() => (railPrompt = null)}
+  />
 {/if}
 
 {#if pendingDelete}

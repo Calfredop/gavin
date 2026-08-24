@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Play, Pause, RotateCcw, Trash2, Plus } from "@lucide/svelte";
+  import { Play, Pause, RotateCcw, Trash2, Plus, SquareStack, BrushCleaning } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
@@ -14,6 +14,8 @@
     stepStateOf,
     numbersForStep,
     numbersForRail,
+    railCardPaths,
+    railDoneStepIds,
     severityForStep,
     severityForRail,
   } from "./orchestration";
@@ -48,6 +50,13 @@
     onPause: () => void;
     onReset: () => void;
     onDelete: () => void;
+    /// Opens the column menu at the pointer -- the parent owns the
+    /// board's columns and builds the entries, exactly as it does for a
+    /// card's own right-click menu.
+    onMoveAll: (e: MouseEvent) => void;
+    /// Takes the rail's finished steps off it. The cards are untouched:
+    /// only the steps that pointed at them leave.
+    onClearDone: () => void;
     /// Resolved page name for the bindings row; null when unbound.
     pageName: string | null;
     onBind: () => void;
@@ -88,6 +97,8 @@
     onPause,
     onReset,
     onDelete,
+    onMoveAll,
+    onClearDone,
     onBind,
     onAddStep,
     onRetryStep,
@@ -107,6 +118,26 @@
   // A rail-level conflict (missing/unbound worktree) badges the HEADER,
   // not any chip -- the cause is the binding, not a step.
   const railBadges = $derived(numbersForRail(numbered, rail.id));
+  // What "move all" would act on: cards, not steps -- a tool step has no
+  // card and a card written onto two steps is still one file.
+  const cardCount = $derived(railCardPaths(rail).length);
+  // A disabled button says WHY, in the tooltip -- the two reasons it can
+  // be dead are different problems with different fixes.
+  const moveAllTip = $derived(
+    !doneColumnName
+      ? "This board has no columns"
+      : cardCount === 0
+        ? "This rail carries no cards"
+        : `Move all ${cardCount} ${cardCount === 1 ? "card" : "cards"} to a column…`
+  );
+  // What "clear done" would take off: the finished steps, by the same
+  // two facts the scheduler joins -- run state, or the card's own column.
+  const doneSteps = $derived(railDoneStepIds(rail, orch, cards, doneColumnName));
+  const clearDoneTip = $derived(
+    doneSteps.length === 0
+      ? "This rail has no done steps"
+      : `Remove ${doneSteps.length} done ${doneSteps.length === 1 ? "step" : "steps"} from this rail`
+  );
   const railSeverity = $derived(severityForRail(numbered, rail.id));
 
   let draft = $state("");
@@ -192,6 +223,20 @@
         />
       {/if}
       <IconButton icon={RotateCcw} label="Reset run state" onclick={onReset} />
+      <IconButton
+        icon={SquareStack}
+        label="Move all cards to a column…"
+        tip={moveAllTip}
+        disabled={cardCount === 0 || !doneColumnName}
+        onclick={onMoveAll}
+      />
+      <IconButton
+        icon={BrushCleaning}
+        label="Clear done steps"
+        tip={clearDoneTip}
+        disabled={doneSteps.length === 0}
+        onclick={onClearDone}
+      />
       <IconButton icon={Trash2} label="Delete rail" tone="danger" onclick={onDelete} />
     </div>
     <button type="button" class="bindings" onclick={onBind}>
