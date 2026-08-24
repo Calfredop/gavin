@@ -500,14 +500,24 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
     // disconnected, never one wired half onto each daemon.
     let compat = verify_daemon_protocol(&probe)?;
 
+    // A restart can hand the app a differently-versioned daemon than the
+    // one it started with -- refresh the stored verdict BEFORE either
+    // connection is repointed at the new daemon. A concurrent Tauri
+    // command reads this state via `current_compat` and gates its
+    // `send_request` against it; if the verdict still described the
+    // outgoing daemon while the writer below already pointed at the
+    // incoming one, that command could pass the gate and write a request
+    // the new (older) daemon can't parse -- closing the connection and
+    // taking every push riding on it down with it, the exact failure this
+    // compatibility window exists to prevent. `compat` was already
+    // computed above via `verify_daemon_protocol`, and `DaemonCompat` is
+    // `Copy`, so this is a pure reorder.
+    *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
+
     let writer = Arc::clone(&app_handle.state::<DaemonConnection>().writer);
     *writer.lock().unwrap() = stream_conn.try_clone()?;
     *app_handle.state::<CommandConnection>().0.lock().unwrap() =
         probe.into_inner().expect("protocol probe mutex poisoned");
-    // A restart can hand the app a differently-versioned daemon than the
-    // one it started with -- refresh the stored verdict so the app never
-    // keeps serving a stale compatibility band after a reconnect.
-    *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
 
     let data = app_handle.state::<WorkspacesState>().0.lock().unwrap().clone();
     let non_session_tab_ids = non_session_tab_ids(
@@ -598,9 +608,13 @@ pub struct DaemonCompatState(pub Mutex<Option<DaemonCompat>>);
 /// The verdict for a `#[tauri::command]` to `gate` its own `send_request`
 /// calls against. `DaemonCompatState` is `.manage()`d at app setup (see
 /// lib.rs) and only ever turns `Some` -- both `bootstrap` and `reconnect`
-/// populate it before they `.manage()`/mutate the connection state a
-/// command would need to even be reachable -- so `None` here means a
-/// command ran before bootstrap finished, which should not be possible.
+/// populate it before they publish (`bootstrap`, via `.manage()`) or
+/// repoint (`reconnect`, by overwriting the `Mutex`es in place) the
+/// connection state a command would need to even be reachable -- so
+/// `None` here means a command ran before bootstrap finished, which
+/// should not be possible, and a command that does run never sees a
+/// verdict for a daemon other than the one its connection currently
+/// points at.
 fn current_compat(state: &DaemonCompatState) -> DaemonCompat {
     state.0.lock().unwrap().expect("DaemonCompatState populated before any command runs")
 }
