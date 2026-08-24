@@ -557,14 +557,11 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
 /// handle_connection) -- taking every push with it. So the check has to
 /// happen here, before the bytes leave, not as error handling after.
 pub fn gate(req: &Request, compat: &DaemonCompat) -> Result<(), String> {
-    let needed = protocol::min_version_for(req);
-    if needed > compat.daemon_version {
-        return Err(format!(
-            "this needs daemon protocol v{needed}, but the running daemon is v{} — restart the daemon to use it",
-            compat.daemon_version
-        ));
-    }
-    Ok(())
+    // The predicate is `protocol::gate_request`, shared with gavin-mcp so
+    // both clients refuse the same requests against the same daemon. Only
+    // the advice is ours: the app has a Restart daemon button to point at.
+    protocol::gate_request(req, compat.daemon_version)
+        .map_err(|gated| format!("this {gated} — restart the daemon to use it"))
 }
 
 fn send_request(
@@ -619,27 +616,29 @@ fn current_compat(state: &DaemonCompatState) -> DaemonCompat {
     state.0.lock().unwrap().expect("DaemonCompatState populated before any command runs")
 }
 
-/// Sorts a daemon's advertised version into one of three bands relative to
-/// this app: too new (hard error -- this app has no idea how to speak an
-/// unreleased protocol newer than its own), too old (below `floor`, i.e.
-/// `MIN_COMPATIBLE_VERSION` -- the daemon predates the oldest request
-/// shape this app still knows how to send), or inside the window, which
-/// is usable either at parity or degraded.
+/// Wraps `protocol::version_band` -- too new (hard error: this app has no
+/// idea how to speak an unreleased protocol newer than its own), too old
+/// (below `floor`, i.e. `MIN_COMPATIBLE_VERSION`, so the daemon predates
+/// the oldest request shape this app still knows how to send), or inside
+/// the window, usable at parity or degraded.
 ///
-/// Pure so the bands are testable without a daemon. Split out of
-/// `verify_daemon_protocol`, which owns the I/O.
+/// The arithmetic moved to `protocol` when gavin-mcp was brought into the
+/// same window; what stays here is this app's WORDING and its
+/// `DaemonCompat`, which is a serde contract with the frontend
+/// (`app/src/lib/daemonCompat.ts`). Pure so the bands are testable without
+/// a daemon. Split out of `verify_daemon_protocol`, which owns the I/O.
 pub fn classify(daemon: u32, app: u32, floor: u32) -> Result<DaemonCompat, String> {
-    if daemon > app {
-        return Err(format!(
+    match protocol::version_band(daemon, app, floor) {
+        protocol::VersionBand::DaemonNewer => Err(format!(
             "the gavin daemon is newer than this app (v{daemon} vs v{app}) — update the app"
-        ));
-    }
-    if daemon < floor {
-        return Err(format!(
+        )),
+        protocol::VersionBand::DaemonTooOld => Err(format!(
             "the gavin daemon is too old to use (v{daemon}, minimum v{floor}) — restart it"
-        ));
+        )),
+        protocol::VersionBand::Usable { degraded } => {
+            Ok(DaemonCompat { daemon_version: daemon, app_version: app, degraded })
+        }
     }
-    Ok(DaemonCompat { daemon_version: daemon, app_version: app, degraded: daemon < app })
 }
 
 /// Spec §4: probe the daemon's protocol version before anything else.

@@ -10,48 +10,97 @@ pub trait DaemonTransport {
     fn request(&mut self, req: &Request) -> anyhow::Result<Response>;
 }
 
+/// A daemon too old to parse the version probe answers nothing and closes
+/// the connection. Per the 2026-08-07 stale-daemon incident that failure
+/// SHAPE has to land on a named, actionable state rather than a mystery,
+/// so it maps to the same message as an explicit below-floor version.
+const UNREACHABLE: &str =
+    "the gavin daemon is too old to talk to this gavin-mcp — restart it from the gavin app";
+
+/// A live daemon connection together with the protocol version the daemon
+/// on it advertised, held in ONE value so a version can never outlive the
+/// connection it was negotiated on. `connect` is the only constructor and
+/// it always probes, so every reconnect re-negotiates: a daemon replaced
+/// mid-session is gated against what is running NOW, not against what
+/// answered at startup. (The app keeps the two apart and has a documented
+/// gap to match -- see `send_command_reconnecting_at` in
+/// `app/src-tauri/src/session.rs`.)
+struct Connection {
+    reader: BufReader<UnixStream>,
+    daemon_version: u32,
+}
+
 /// Lazy persistent connection to the daemon socket. Every fresh connect
-/// runs the version probe (spec §4): a daemon too old to parse the probe
-/// closes the connection, which maps to the same "restart the daemon"
-/// error as an explicit lower version.
+/// runs the version probe (spec §4) and sorts the answer into the same
+/// three-way band the app uses (`protocol::version_band`): a daemon inside
+/// the window is USED, with the requests it predates gated off, rather
+/// than refused outright.
 struct SocketTransport {
-    stream: Option<BufReader<UnixStream>>,
+    socket_path: PathBuf,
+    conn: Option<Connection>,
 }
 
 impl SocketTransport {
     fn new() -> Self {
-        Self { stream: None }
+        Self::at(protocol::socket_path())
+    }
+
+    /// Takes the socket path rather than resolving one itself, so the
+    /// connect/probe/gate path stays directly testable against a throwaway
+    /// tempdir socket -- the same seam `send_command_reconnecting_at` uses
+    /// on the app side. The alternative, a test overriding `$HOME` to move
+    /// `protocol::socket_path()`, would be racing every other test in the
+    /// process for one global.
+    fn at(socket_path: PathBuf) -> Self {
+        Self { socket_path, conn: None }
     }
 
     fn connect(&mut self) -> anyhow::Result<()> {
-        let stream = UnixStream::connect(protocol::socket_path())
+        // Dropped before the probe, not after it: a failed connect must
+        // not leave the previous daemon's version behind for the gate.
+        self.conn = None;
+        let stream = UnixStream::connect(&self.socket_path)
             .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
         let mut reader = BufReader::new(stream);
         write_message(reader.get_mut(), &Request::GetProtocolVersion)
             .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
-        match read_message::<_, Response>(&mut reader) {
-            Ok(Some(Response::ProtocolVersion { version })) if version == PROTOCOL_VERSION => {
-                self.stream = Some(reader);
+        let version = match read_message::<_, Response>(&mut reader) {
+            Ok(Some(Response::ProtocolVersion { version })) => version,
+            _ => anyhow::bail!(UNREACHABLE),
+        };
+        match protocol::version_band(version, PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION) {
+            // Stays a hard error, as it is for the app: an unreleased
+            // protocol cannot be guessed at. Phase 2 of the compat work
+            // replaces this arm with a self re-exec (spec §3).
+            protocol::VersionBand::DaemonNewer => anyhow::bail!(
+                "the gavin daemon is newer than this gavin-mcp (v{version} vs v{PROTOCOL_VERSION}) — update gavin, then restart this Claude Code session"
+            ),
+            protocol::VersionBand::DaemonTooOld => anyhow::bail!(
+                "the gavin daemon is too old to use (v{version}, minimum v{}) — restart it from the gavin app",
+                protocol::MIN_COMPATIBLE_VERSION
+            ),
+            // Degraded or at parity, the connection is the same; what
+            // differs is only which requests the gate below lets through.
+            protocol::VersionBand::Usable { .. } => {
+                self.conn = Some(Connection { reader, daemon_version: version });
                 Ok(())
             }
-            Ok(Some(Response::ProtocolVersion { version })) if version > PROTOCOL_VERSION => {
-                anyhow::bail!(
-                    "the gavin daemon is newer than this gavin-mcp — rebuild and restart the app"
-                )
-            }
-            _ => anyhow::bail!(
-                "the gavin daemon is older than this app — restart it (pkill gavin-daemon, then relaunch the gavin app)"
-            ),
         }
     }
 
     fn request_once(&mut self, req: &Request) -> anyhow::Result<Response> {
-        if self.stream.is_none() {
+        if self.conn.is_none() {
             self.connect()?;
         }
-        let reader = self.stream.as_mut().unwrap();
-        write_message(reader.get_mut(), req)?;
-        match read_message::<_, Response>(reader)? {
+        let conn = self.conn.as_mut().unwrap();
+        // Gated HERE -- after connect, which is what learns the version,
+        // and before a single byte leaves. Inside `request_once` rather
+        // than once in `request` so the reconnect below re-gates against
+        // the daemon it actually lands on, which need not be the one the
+        // first attempt talked to.
+        protocol::gate_request(req, conn.daemon_version)?;
+        write_message(conn.reader.get_mut(), req)?;
+        match read_message::<_, Response>(&mut conn.reader)? {
             Some(resp) => Ok(resp),
             None => anyhow::bail!("daemon closed the connection"),
         }
@@ -62,9 +111,14 @@ impl DaemonTransport for SocketTransport {
     fn request(&mut self, req: &Request) -> anyhow::Result<Response> {
         match self.request_once(req) {
             Ok(resp) => Ok(resp),
+            // A gated request never reached the socket, so there is
+            // nothing for a reconnect to fix -- and retrying would throw
+            // away the one message that says which version is missing, in
+            // favour of whatever the second attempt happened to fail on.
+            Err(e) if e.is::<protocol::GatedRequest>() => Err(e),
             Err(_) => {
                 // One reconnect per call: the daemon may have restarted.
-                self.stream = None;
+                self.conn = None;
                 self.request_once(req)
             }
         }
@@ -549,6 +603,21 @@ fn tool_text_result(id: &Value, text: String, is_error: bool) -> String {
     rpc_result(id, json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
 }
 
+/// Turns the gate's refusal into something an agent can act on rather
+/// than a bare transport failure: WHICH tool is unavailable, the daemon
+/// version it needs, the version actually running, and what to do. The
+/// tool name is added here because only this layer knows it -- the
+/// transport sees a `Request`, and a tool like `gavin_get_orchestration`
+/// makes several. Every other error passes through untouched.
+fn gated_tool_error(tool: &str, e: &anyhow::Error) -> String {
+    match e.downcast_ref::<protocol::GatedRequest>() {
+        Some(gated) => format!(
+            "{tool} {gated} (this gavin-mcp speaks v{PROTOCOL_VERSION}) — restart the daemon from the gavin app to use it"
+        ),
+        None => e.to_string(),
+    }
+}
+
 /// One request line in, at most one reply line out (None for
 /// notifications and unparseable input -- MCP stdio never replies to
 /// those).
@@ -583,7 +652,7 @@ fn handle_line(line: &str, root: Option<&Path>, transport: &mut dyn DaemonTransp
             let args = msg.pointer("/params/arguments").unwrap_or(&empty);
             match dispatch_tool(name, args, root, transport) {
                 Ok(text) => Some(tool_text_result(&id, text, false)),
-                Err(e) => Some(tool_text_result(&id, e.to_string(), true)),
+                Err(e) => Some(tool_text_result(&id, gated_tool_error(name, &e), true)),
             }
         }
         _ => Some(rpc_error(&id, -32601, &format!("method not found: {method}"))),
@@ -615,6 +684,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     struct MockTransport {
         replies: Vec<Response>,
@@ -631,6 +701,170 @@ mod tests {
     }
     fn mock(replies: Vec<Response>) -> MockTransport {
         MockTransport { replies, requests: vec![] }
+    }
+
+    /// A fake daemon on a throwaway socket that answers the version probe
+    /// with `version` and every later request from `replies`, in order,
+    /// while recording everything it ACTUALLY receives.
+    ///
+    /// The recording is the point. The gate's contract is not "the call
+    /// fails" -- a bare `Err` proves nothing about the wire -- it is that a
+    /// request the daemon predates produces zero bytes, and only the
+    /// receiving end can testify to that.
+    fn fake_daemon(
+        version: u32,
+        replies: Vec<Response>,
+    ) -> (PathBuf, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fake.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+
+        std::thread::spawn(move || {
+            let mut replies = replies.into_iter();
+            // Accepts repeatedly, not once: SocketTransport reconnects on
+            // failure, and a one-shot accept would hang that retry instead
+            // of failing it.
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                while let Ok(Some(req)) = read_message::<_, Request>(&mut reader) {
+                    recorder.lock().unwrap().push(req.clone());
+                    let resp = match req {
+                        Request::GetProtocolVersion => Response::ProtocolVersion { version },
+                        _ => match replies.next() {
+                            Some(r) => r,
+                            None => break,
+                        },
+                    };
+                    if write_message(&mut stream, &resp).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        (path, seen, dir)
+    }
+
+    fn call_tool(tool: &str, transport: &mut dyn DaemonTransport) -> String {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+        );
+        let reply = handle_line(&line, Some(Path::new("/ws")), transport).unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        v.pointer("/result/content/0/text").unwrap().as_str().unwrap().to_string()
+    }
+
+    fn is_error(tool: &str, transport: &mut dyn DaemonTransport) -> bool {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+        );
+        let reply = handle_line(&line, Some(Path::new("/ws")), transport).unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        v.pointer("/result/isError").unwrap().as_bool().unwrap()
+    }
+
+    /// The version `gavin_get_orchestration`'s first request was
+    /// introduced at, read from the table rather than typed as a literal:
+    /// a test hard-coding 10 would keep passing while silently testing
+    /// nothing if that entry ever moved.
+    fn orchestration_min_version() -> u32 {
+        protocol::min_version_for(&Request::GetOrchestrationByRoot { root_path: "/ws".into() })
+    }
+
+    #[test]
+    fn a_request_the_daemon_predates_never_reaches_the_socket() {
+        let needed = orchestration_min_version();
+        let daemon_version = needed - 1;
+        assert!(
+            daemon_version >= protocol::MIN_COMPATIBLE_VERSION,
+            "the pinned daemon has to sit INSIDE the window, or this tests the connect \
+             refusal instead of the gate"
+        );
+
+        let (path, seen, _dir) = fake_daemon(daemon_version, vec![]);
+        let mut t = SocketTransport::at(path);
+        let text = call_tool("gavin_get_orchestration", &mut t);
+
+        // Names the tool, the version it needs, and the version running --
+        // everything needed to decide whether to restart the daemon.
+        assert!(text.contains("gavin_get_orchestration"), "{text}");
+        assert!(text.contains(&format!("v{needed}")), "should name the version needed: {text}");
+        assert!(
+            text.contains(&format!("v{daemon_version}")),
+            "should name the version running: {text}"
+        );
+
+        // The contract: zero bytes on the wire. The probe is the only
+        // thing the daemon ever saw.
+        let seen = seen.lock().unwrap();
+        assert!(
+            matches!(seen.as_slice(), [Request::GetProtocolVersion]),
+            "a gated request must produce nothing on the wire, but the daemon saw {seen:?}"
+        );
+    }
+
+    #[test]
+    fn an_older_in_window_daemon_still_serves_the_requests_it_does_understand() {
+        // The whole reason for the band: on a daemon below several tools'
+        // requirements, the v1 tools are unaffected. Before this, the
+        // connect probe's equality check failed them all.
+        let (path, seen, _dir) = fake_daemon(
+            protocol::MIN_COMPATIBLE_VERSION,
+            vec![Response::GavinTreeScanned { tree: two_card_tree() }],
+        );
+        let mut t = SocketTransport::at(path);
+        assert!(!is_error("gavin_get_tree", &mut t), "a v1 request must survive the band");
+
+        let seen = seen.lock().unwrap();
+        assert!(
+            matches!(seen.as_slice(), [Request::GetProtocolVersion, Request::ScanGavinRoot { .. }]),
+            "{seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_daemon_below_the_floor_is_refused_at_connect() {
+        let (path, seen, _dir) = fake_daemon(protocol::MIN_COMPATIBLE_VERSION - 1, vec![]);
+        let mut t = SocketTransport::at(path);
+        let text = call_tool("gavin_get_tree", &mut t);
+        assert!(text.contains("too old"), "{text}");
+        assert!(
+            text.contains(&format!("v{}", protocol::MIN_COMPATIBLE_VERSION - 1)),
+            "should name the version running: {text}"
+        );
+        // Below the floor nothing is safe to send, not even a v1 request.
+        assert!(!seen.lock().unwrap().iter().any(|r| !matches!(r, Request::GetProtocolVersion)));
+    }
+
+    #[test]
+    fn a_daemon_newer_than_this_gavin_mcp_is_refused_naming_both_versions() {
+        let (path, _seen, _dir) = fake_daemon(PROTOCOL_VERSION + 1, vec![]);
+        let mut t = SocketTransport::at(path);
+        let text = call_tool("gavin_get_tree", &mut t);
+        assert!(text.contains("newer than this gavin-mcp"), "{text}");
+        assert!(text.contains(&format!("v{}", PROTOCOL_VERSION + 1)), "{text}");
+        assert!(text.contains(&format!("v{PROTOCOL_VERSION}")), "{text}");
+    }
+
+    #[test]
+    fn a_gated_request_is_not_retried_through_a_reconnect() {
+        // The retry exists for a daemon that went away mid-call. A gate
+        // refusal is the opposite case -- nothing was sent, so nothing can
+        // be fixed by reconnecting -- and retrying it would replace the
+        // version message with whatever the second attempt failed on.
+        let needed = orchestration_min_version();
+        let (path, seen, _dir) = fake_daemon(needed - 1, vec![]);
+        let mut t = SocketTransport::at(path);
+        let text = call_tool("gavin_get_orchestration", &mut t);
+
+        assert!(text.contains(&format!("v{needed}")), "{text}");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "one probe, one refusal -- a retry would have re-probed"
+        );
     }
 
     fn two_card_tree() -> protocol::GavinTree {

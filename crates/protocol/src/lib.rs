@@ -334,6 +334,80 @@ pub fn min_version_for(req: &Request) -> u32 {
     }
 }
 
+/// Where a daemon's advertised version falls relative to a client's own
+/// `PROTOCOL_VERSION` and `MIN_COMPATIBLE_VERSION`.
+///
+/// The band arithmetic lives here, in the crate both clients already
+/// depend on, rather than in either of them: the app (`classify` in
+/// `app/src-tauri/src/session.rs`) and `gavin-mcp`
+/// (`SocketTransport::connect`) have to sort the SAME daemon into the
+/// same band or the two answer differently about one process -- which is
+/// exactly the split this was hoisted to close. Wording stays with each
+/// client, because the recovery differs: the app tells the user to update
+/// the app, `gavin-mcp` cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionBand {
+    /// The daemon speaks a protocol newer than this client knows. A hard
+    /// error for both clients: an unreleased protocol cannot be guessed at.
+    DaemonNewer,
+    /// The daemon predates the oldest request shape this client still
+    /// knows how to send (`floor`, i.e. `MIN_COMPATIBLE_VERSION`).
+    DaemonTooOld,
+    /// Inside the window. `degraded` is true when the daemon is behind the
+    /// client but still usable with the newer requests gated off.
+    Usable { degraded: bool },
+}
+
+/// Sorts `daemon` into its band relative to `client` and `floor`. Pure, so
+/// the bands are testable without a daemon.
+pub fn version_band(daemon: u32, client: u32, floor: u32) -> VersionBand {
+    if daemon > client {
+        return VersionBand::DaemonNewer;
+    }
+    if daemon < floor {
+        return VersionBand::DaemonTooOld;
+    }
+    VersionBand::Usable { degraded: daemon < client }
+}
+
+/// A request the running daemon predates. Returned instead of a formatted
+/// string so each client can say what IT wants done about it while both
+/// report the same two numbers -- and so `gavin-mcp` can carry it as a
+/// typed error and name the tool the agent actually called (see
+/// `name_the_tool` in `crates/gavin-mcp/src/main.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GatedRequest {
+    /// The protocol version that introduced the request's variant.
+    pub needed: u32,
+    /// What the daemon on the current connection actually advertised.
+    pub daemon: u32,
+}
+
+impl std::fmt::Display for GatedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "needs gavin daemon protocol v{}, but the running daemon is v{}",
+            self.needed, self.daemon
+        )
+    }
+}
+
+impl std::error::Error for GatedRequest {}
+
+/// The gate every client puts in front of its own send path: a request the
+/// daemon predates must produce ZERO bytes on the wire. Not error handling
+/// after the fact -- an older daemon cannot PARSE a request it predates,
+/// and `read_message` propagates that parse error with `?`, dropping the
+/// connection and everything riding on it.
+pub fn gate_request(req: &Request, daemon_version: u32) -> Result<(), GatedRequest> {
+    let needed = min_version_for(req);
+    if needed > daemon_version {
+        return Err(GatedRequest { needed, daemon: daemon_version });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Response {
@@ -744,6 +818,55 @@ pub fn socket_path() -> PathBuf {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// The band both clients sort a daemon into. Hoisted here from the
+    /// app when gavin-mcp was brought into the same window, so a drift
+    /// between the two -- an off-by-one on the floor, a forgotten
+    /// `degraded` -- is not even expressible.
+    #[test]
+    fn the_three_bands_split_where_the_window_does() {
+        assert_eq!(version_band(12, 12, 5), VersionBand::Usable { degraded: false });
+        assert_eq!(version_band(9, 12, 5), VersionBand::Usable { degraded: true });
+        // The floor is INSIDE the window; one below it is not.
+        assert_eq!(version_band(5, 12, 5), VersionBand::Usable { degraded: true });
+        assert_eq!(version_band(4, 12, 5), VersionBand::DaemonTooOld);
+        assert_eq!(version_band(13, 12, 5), VersionBand::DaemonNewer);
+    }
+
+    /// Sweeps the gate against `min_version_for` over every daemon version
+    /// in the real window: the predicate and the table must never disagree,
+    /// for either client.
+    #[test]
+    fn the_gate_admits_exactly_what_the_table_says_it_should() {
+        for daemon in MIN_COMPATIBLE_VERSION..=PROTOCOL_VERSION {
+            for req in one_of_every_request_variant() {
+                let needed = min_version_for(&req);
+                let verdict = gate_request(&req, daemon);
+                assert_eq!(
+                    verdict.is_ok(),
+                    needed <= daemon,
+                    "{req:?} needs v{needed}; a v{daemon} daemon should {} it, got {verdict:?}",
+                    if needed <= daemon { "accept" } else { "refuse" }
+                );
+                if let Err(gated) = verdict {
+                    // Both numbers, because a message with only one of them
+                    // leaves the reader unable to tell what to do about it.
+                    assert_eq!(gated.needed, needed);
+                    assert_eq!(gated.daemon, daemon);
+                    let text = gated.to_string();
+                    assert!(text.contains(&format!("v{needed}")), "{text}");
+                    assert!(text.contains(&format!("v{daemon}")), "{text}");
+                }
+            }
+        }
+    }
+
+    /// `Unknown` is never sent, and `u32::MAX` is what keeps it that way if
+    /// it ever reaches a send path.
+    #[test]
+    fn the_unknown_variant_is_refused_by_every_daemon() {
+        assert!(gate_request(&Request::Unknown, u32::MAX - 1).is_err());
+    }
 
     #[test]
     fn request_roundtrips_through_json_line() {
