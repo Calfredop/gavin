@@ -52,7 +52,7 @@ import { handleAgentSessionSpawned, switchToSessionInPage, switchWorkspaceView, 
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
-import { runCard, relaunchCard, jumpToBoundSession, sendToMainAgent } from "./cardRunActions";
+import { runCard, resumeCard, relaunchCard, jumpToBoundSession, sendToMainAgent } from "./cardRunActions";
 import type { CardView } from "./planBoard";
 import type { Board } from "./kanban";
 
@@ -98,7 +98,7 @@ describe("runCard", () => {
     });
     vi.mocked(backend.createSession).mockResolvedValue("s-9");
     vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
 
     const err = await runCard("ws-1", card("task", "To Do"));
 
@@ -117,10 +117,42 @@ describe("runCard", () => {
     );
   });
 
+  it("plan: a card in done/ is un-archived first, and the prompt names where it landed", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue("/ws/.gavin-root/plans/t.md");
+
+    const archived = card("plan", "Done");
+    archived.id = "/ws/.gavin-root/plans/done/t.md";
+    const err = await runCard("ws-1", archived);
+
+    expect(err).toBeNull();
+    // Status first, from the path the card is at now...
+    expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith(
+      "/ws/.gavin-root/plans/done/t.md",
+      "status",
+      "In Progress"
+    );
+    // ...then the prompt, naming the path the write moved it to.
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("/ws/.gavin-root/plans/t.md");
+    expect(command).not.toContain("done/t.md");
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0][1]).toBe("/ws/.gavin-root/plans/t.md");
+  });
+
+  it("plan: a failed status write stops the run before the agent starts", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockRejectedValue(new Error("read-only"));
+
+    const err = await runCard("ws-1", card("plan", "To Do"));
+
+    expect(err).toContain("In Progress");
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
   it("plan: pointer prompt, never reads the body", async () => {
     vi.mocked(backend.createSession).mockResolvedValue("s-9");
     vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
 
     const err = await runCard("ws-1", card("plan", "In Progress"));
 
@@ -153,6 +185,78 @@ describe("runCard", () => {
     const err = await runCard("ws-1", card("task", null));
     expect(err).toContain("spawn failed");
     expect(backend.linkCardSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("resumeCard", () => {
+  it("task: the resume prompt, and no status write on a card already In Progress", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Fix login\nstatus: In Progress\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    const err = await resumeCard("ws-1", card("task", "In Progress"));
+
+    expect(err).toBeNull();
+    const [cwd, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(cwd).toBe("/ws");
+    expect(command).toContain("Use the gavin-resume skill");
+    expect(command).toContain("Do the thing.");
+    expect(command).not.toContain("You are executing the task card");
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("plan: the resume pointer prompt, body never read", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await resumeCard("ws-1", card("plan", "In Progress"))).toBeNull();
+
+    expect(backend.readFileForViewer).not.toHaveBeenCalled();
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("resume the plan at /ws/.gavin-root/plans/t.md");
+  });
+
+  it("spawns over an EXITED binding — that is what resuming is — and re-links", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-dead", cwd: "/ws", command: "x" },
+      ]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await resumeCard("ws-1", card("plan", "In Progress"))).toBeNull();
+
+    expect(backend.createSession).toHaveBeenCalled();
+    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-new");
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0].slice(0, 3)).toEqual([
+      "ws-1",
+      "/ws/.gavin-root/plans/t.md",
+      "s-new",
+    ]);
+  });
+
+  it("jumps to a LIVE session instead of spawning a second agent", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+      ]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+
+    expect(await resumeCard("ws-1", card("plan", "In Progress"))).toBeNull();
+
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(switchToSessionInPage).toHaveBeenCalledWith("ws-1", "pg-1", "s-live");
+  });
+
+  it("refuses notes, like every other run", async () => {
+    expect(await resumeCard("ws-1", card("note", "In Progress"))).toContain("not runnable");
   });
 });
 
@@ -215,7 +319,7 @@ describe("sendToMainAgent", () => {
       exists: true,
     });
     vi.mocked(backend.writeInput).mockResolvedValue(undefined);
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
 
     const err = await sendToMainAgent("ws-1", card("task", "To Do"));
 

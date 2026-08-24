@@ -1,7 +1,7 @@
 ---
-order: 3072
+order: 512
 title: Run session: spawn the launch command as a shell command line
-status: In Progress
+status: Done
 priority: high
 ---
 "Run session" on a card fails with:
@@ -23,4 +23,4 @@ is exactly what `shellQuote` emits). `command: None` keeps spawning `$SHELL` dir
 - [x] Second test pins the `'\''` quoting contract `shellQuote` emits
 - [x] Retarget the two tests that relied on a bad command failing the spawn (it now exits 127 instead)
 - [x] `cargo test -p gavin-daemon` green (191 passed)
-- [ ] Manual smoke: restart the daemon, then Run session on a card actually starts the agent
+- [x] Manual smoke: restart the daemon, then Run session on a card actually starts the agent

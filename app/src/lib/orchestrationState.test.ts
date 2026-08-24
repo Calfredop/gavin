@@ -294,7 +294,7 @@ describe("executeActions", () => {
       truncated: false,
       exists: true,
     });
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
 

@@ -1,14 +1,15 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
-  import { marked } from "marked";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
+  import { renderMarkdown } from "./markdown";
   import { openPath } from "@tauri-apps/plugin-opener";
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
   import { slugStatus } from "./planBoard";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "./planChecklist";
   import { requestedExplorerPath, slugFileName } from "./planExplorer";
-  import { patchPlanField, patchPlanCreated } from "./gavinState";
+  import { patchPlanField, patchPlanCreated, patchPlanPath } from "./gavinState";
   import type { PlanFileInfo } from "./gavin";
   import { switchWorkspaceView, layoutState } from "./layoutState";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
@@ -27,22 +28,44 @@
     // plan's free-standing children.
     allCards: CardView[];
     onClose: () => void;
+    // Fires when a field write moved the card's file -- setting it Done
+    // archives it into `plans/done/`. The host holds the open card's path
+    // as identity, so it has to follow, or the modal vanishes mid-edit.
+    onPathChange?: (path: string) => void;
   }
-  let { card, workspaceId, columns, labels, allCards, onClose }: Props = $props();
+  let { card, workspaceId, columns, labels, allCards, onClose, onPathChange }: Props = $props();
 
   const PRIORITIES: Priority[] = ["none", "low", "medium", "high", "urgent"];
   let errorMessage = $state<string | null>(null);
 
   // --- file content (body preview + checklist) -------------------------
   let content = $state<string | null>(null);
+  // Read once, then kept live: the card's file changes under this modal
+  // whenever an agent ticks a checklist item or the human edits the plan
+  // in another editor, and a stale body preview is worse than no modal.
+  // The Rust-side watch is refcounted, so watching a file an editor tab
+  // already holds open leaves that tab's watch intact when this closes.
   $effect(() => {
     const path = card.id;
-    void backend.readFileForViewer(path).then((r) => {
-      if (path === card.id) content = r.exists ? r.content : null;
-    });
+    let unlisten: UnlistenFn | null = null;
+    let closed = false;
+    const read = () =>
+      void backend.readFileForViewer(path).then((r) => {
+        if (!closed) content = r.exists ? r.content : null;
+      });
+    read();
+    void backend.watchFileForViewer(path).catch(() => {});
+    void listen<string>("file-changed", (event) => {
+      if (event.payload === path) read();
+    }).then((fn) => (closed ? fn() : (unlisten = fn)));
+    return () => {
+      closed = true;
+      unlisten?.();
+      void backend.unwatchFileForViewer(path).catch(() => {});
+    };
   });
   const bodyHtml = $derived(
-    content !== null ? DOMPurify.sanitize(marked.parse(stripFrontmatter(content), { async: false }) as string) : null
+    content !== null ? DOMPurify.sanitize(renderMarkdown(content)) : null
   );
   const checklist = $derived<ChecklistItem[]>(
     card.kind === "plan" && content !== null ? parseChecklist(content) : []
@@ -108,8 +131,12 @@
   async function writeField(key: "title" | "status" | "priority" | "labels", value: string): Promise<boolean> {
     errorMessage = null;
     try {
-      await backend.setPlanFrontmatterField(card.id, key, value);
+      const moved = await backend.setPlanFrontmatterField(card.id, key, value);
       patchPlanField(workspaceId, card.id, key, value);
+      if (moved && moved !== card.id) {
+        patchPlanPath(workspaceId, card.id, moved);
+        onPathChange?.(moved);
+      }
       return true;
     } catch (e) {
       errorMessage = String(e);

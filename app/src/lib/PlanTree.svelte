@@ -33,6 +33,9 @@
   // Collapsed rather than expanded ids: .gavin folders are few, so
   // everything starts open and this stays empty in the common case.
   let collapsed = $state<Set<string>>(new Set());
+  // Inverted against `collapsed` on purpose: the Done node starts folded
+  // (that is the whole point of it), so this holds the ones opened.
+  let archiveOpen = $state<Set<string>>(new Set());
   let composer = $state<{ folderPath: string; group: ExplorerGroup } | null>(null);
   let composerTitle = $state("");
   // Hoisted: `{#each [...] as const as g}` does not parse -- the `as
@@ -44,6 +47,13 @@
   const INDENT_PX = 14;
   function inset(level: number): string {
     return `${4 + level * INDENT_PX}px`;
+  }
+
+  function toggleArchive(id: string): void {
+    const next = new Set(archiveOpen);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    archiveOpen = next;
   }
 
   function toggle(id: string): void {
@@ -90,6 +100,39 @@
     openContextMenuFromEvent(e, items);
   }
 </script>
+
+{#snippet fileRow(file: ExplorerFile, level: number)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="row file-row"
+    class:selected={file.path === selectedPath}
+    style:padding-left={inset(level)}
+    oncontextmenu={(e) => openMenu(e, fileMenuItems(file, menuCallbacks()))}
+  >
+    <button type="button" class="file" title={file.path} onclick={() => onSelect(file.path)}>
+      <span class="glyph"><FileText size={11} /></span>
+      <span class="label">{file.label}</span>
+      {#if file.priority && file.priority !== "none"}
+        <span class="priority priority-{file.priority}" title="Priority: {file.priority}"></span>
+      {/if}
+      {#if file.status}
+        <span class="status">{file.status}</span>
+      {/if}
+      {#if file.parseWarning}
+        <span class="warn" title="Frontmatter has issues"><TriangleAlert size={11} /></span>
+      {/if}
+    </button>
+    {#if onOpenInSplit}
+      <IconButton
+        icon={Columns2}
+        label="Open beside a terminal"
+        size={11}
+        class="split"
+        onclick={() => onOpenInSplit?.(file.path)}
+      />
+    {/if}
+  </div>
+{/snippet}
 
 <div class="tree">
   {#each contexts as context (context.folderPath)}
@@ -168,41 +211,33 @@
               onclick={() => toggle(groupId)}
             />
             <span class="group-label">{group.label}</span>
-            <span class="count">{group.files.length}</span>
+            <!-- Archived cards count here too: a context whose plans are
+                 ALL Done would otherwise read "Plans 0" above a "Done 8". -->
+            <span class="count">{group.files.length + group.archived.length}</span>
           </div>
           {#if !groupCollapsed}
             {#each group.files as file (file.path)}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="row file-row"
-                class:selected={file.path === selectedPath}
-                style:padding-left={inset(context.depth + 2)}
-                oncontextmenu={(e) => openMenu(e, fileMenuItems(file, menuCallbacks()))}
-              >
-                <button type="button" class="file" title={file.path} onclick={() => onSelect(file.path)}>
-                  <span class="glyph"><FileText size={11} /></span>
-                  <span class="label">{file.label}</span>
-                  {#if file.priority && file.priority !== "none"}
-                    <span class="priority priority-{file.priority}" title="Priority: {file.priority}"></span>
-                  {/if}
-                  {#if file.status}
-                    <span class="status">{file.status}</span>
-                  {/if}
-                  {#if file.parseWarning}
-                    <span class="warn" title="Frontmatter has issues"><TriangleAlert size={11} /></span>
-                  {/if}
-                </button>
-                {#if onOpenInSplit}
-                  <IconButton
-                    icon={Columns2}
-                    label="Open beside a terminal"
-                    size={11}
-                    class="split"
-                    onclick={() => onOpenInSplit?.(file.path)}
-                  />
-                {/if}
-              </div>
+              {@render fileRow(file, context.depth + 2)}
             {/each}
+            {#if group.archived.length > 0}
+              {@const doneId = `${groupId}#done`}
+              {@const doneOpen = archiveOpen.has(doneId)}
+              <div class="row group-row" style:padding-left={inset(context.depth + 2)}>
+                <IconButton
+                  icon={doneOpen ? ChevronDown : ChevronRight}
+                  label={doneOpen ? "Hide archived plans" : "Show archived plans"}
+                  size={12}
+                  onclick={() => toggleArchive(doneId)}
+                />
+                <span class="group-label">Done</span>
+                <span class="count">{group.archived.length}</span>
+              </div>
+              {#if doneOpen}
+                {#each group.archived as file (file.path)}
+                  {@render fileRow(file, context.depth + 3)}
+                {/each}
+              {/if}
+            {/if}
           {/if}
         {/each}
       {/if}

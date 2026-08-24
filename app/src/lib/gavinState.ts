@@ -48,12 +48,15 @@ export async function refreshGavinTree(workspaceId: string): Promise<void> {
   }
 }
 
-// Optimistic bridge for the watcher's debounce+floor confirmation latency
-// (spec §2): called ONLY after a successful SetPlanFrontmatterField, so a
-// dragged card doesn't snap back while waiting ~2.5s for the push. The
-// eventual push carries the same tree and re-renders as a no-op.
+// Optimistic bridge for the watcher's confirmation latency (spec §2):
+// called ONLY after a successful SetPlanFrontmatterField, so a dragged
+// card doesn't snap back while waiting for the push. That wait is ~170ms
+// for a lone action now (fast-first debounce) and up to the 2s floor only
+// under sustained churn -- but a drag is exactly what must never flicker,
+// so the bridge stays. The eventual push carries the same tree and
+// re-renders as a no-op.
 // Optimistic insert for a freshly created card file (two-speed composer,
-// card-model spec §4): the watcher push arrives ~2.5s later carrying the
+// card-model spec §4): the watcher push arrives ~170ms later carrying the
 // same file and re-renders as a no-op. Skips silently when the context
 // isn't in the tree yet or the path already exists.
 export function patchPlanCreated(workspaceId: string, contextFolder: string, plan: PlanFileInfo): void {
@@ -70,7 +73,7 @@ export function patchPlanCreated(workspaceId: string, contextFolder: string, pla
 }
 
 // Optimistic removal for a deleted card file; the watcher push confirms
-// ~2.5s later.
+// ~170ms later.
 export function patchPlanRemoved(workspaceId: string, path: string): void {
   gavinTrees.update((m) => {
     const tree = m[workspaceId];
@@ -78,6 +81,25 @@ export function patchPlanRemoved(workspaceId: string, path: string): void {
     const contexts = tree.contexts.map((ctx) => ({
       ...ctx,
       plans: ctx.plans.filter((p) => p.path !== path),
+    }));
+    return { ...m, [workspaceId]: { ...tree, contexts } };
+  });
+}
+
+// A status write can archive the card into `plans/done/` (or bring it
+// back), and the daemon answers with the path it landed on. The rescan
+// carries the same move ~3s later; until then the projection would hold a
+// path that no longer names a file, and every host that keys a card by
+// path -- the open modal above all -- would lose it. Re-identify in place:
+// only `path` changes, the file keeps its name.
+export function patchPlanPath(workspaceId: string, oldPath: string, newPath: string): void {
+  if (oldPath === newPath) return;
+  gavinTrees.update((m) => {
+    const tree = m[workspaceId];
+    if (!tree) return m;
+    const contexts = tree.contexts.map((ctx) => ({
+      ...ctx,
+      plans: ctx.plans.map((p) => (p.path === oldPath ? { ...p, path: newPath } : p)),
     }));
     return { ...m, [workspaceId]: { ...tree, contexts } };
   });

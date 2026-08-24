@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { buildExplorerTree, slugFileName, isUnderRoot, statusOptions, newFilePath } from "./planExplorer";
+import {
+  buildExplorerTree,
+  followRenamedContext,
+  followRenamedPath,
+  slugFileName,
+  isUnderRoot,
+  statusOptions,
+  newFilePath,
+} from "./planExplorer";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 
 function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
@@ -59,6 +67,81 @@ describe("buildExplorerTree", () => {
     expect(node.groups.map((g) => g.group)).toEqual(["plans", "docs"]);
     expect(node.groups[0].files[0].label).toBe("Login flow");
     expect(node.groups[1].files[0].label).toBe("guides/setup.md");
+  });
+
+  it("collects done/ plans under one archived node and leaves flat plans in place", () => {
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        plans: [
+          plan("live.md"),
+          plan("old.md", { path: "/ws/.gavin-root/plans/done/old.md", status: "Done" }),
+          plan("older.md", { path: "/ws/.gavin-root/plans/done/older.md", status: "Done" }),
+        ],
+      }),
+    ]);
+    const plans = buildExplorerTree(t)[0].groups[0];
+    expect(plans.files.map((f) => f.path)).toEqual(["/ws/.gavin-root/plans/live.md"]);
+    expect(plans.archived.map((f) => f.path)).toEqual([
+      "/ws/.gavin-root/plans/done/old.md",
+      "/ws/.gavin-root/plans/done/older.md",
+    ]);
+    expect(plans.archived[0].status).toBe("Done");
+  });
+
+  it("leaves the archived node empty when nothing is filed under done/", () => {
+    const t = tree([ctx("/ws", "root", { kind: "root", plans: [plan("live.md")] })]);
+    const plans = buildExplorerTree(t)[0].groups[0];
+    expect(plans.archived).toEqual([]);
+  });
+
+  it("keeps the plans group when every card in it is archived", () => {
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        plans: [plan("old.md", { path: "/ws/.gavin-root/plans/done/old.md", status: "Done" })],
+      }),
+    ]);
+    const plans = buildExplorerTree(t)[0].groups[0];
+    expect(plans.group).toBe("plans");
+    expect(plans.files).toEqual([]);
+    expect(plans.archived).toHaveLength(1);
+  });
+
+  it("docs and specs groups never carry archived files", () => {
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        docs: [{ path: "/ws/.gavin-root/docs/a.md", relPath: "a.md" }],
+      }),
+    ]);
+    expect(buildExplorerTree(t)[0].groups[0].archived).toEqual([]);
+  });
+
+  it("folds archived plans in a nested .gavin context, not just the root's", () => {
+    const t = tree([
+      ctx("/ws/app", "app", {
+        plans: [
+          plan("live.md", { path: "/ws/app/.gavin/plans/live.md" }),
+          plan("old.md", { path: "/ws/app/.gavin/plans/done/old.md", status: "Done" }),
+        ],
+      }),
+    ]);
+    const plans = buildExplorerTree(t)[0].groups[0];
+    expect(plans.files.map((f) => f.path)).toEqual(["/ws/app/.gavin/plans/live.md"]);
+    expect(plans.archived.map((f) => f.path)).toEqual(["/ws/app/.gavin/plans/done/old.md"]);
+  });
+
+  it("leaves a hand-made folder alone even when it happens to be called done", () => {
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        plans: [plan("q3.md", { path: "/ws/.gavin-root/plans/roadmap/done/q3.md", status: "Done" })],
+      }),
+    ]);
+    const plans = buildExplorerTree(t)[0].groups[0];
+    expect(plans.archived).toEqual([]);
+    expect(plans.files.map((f) => f.path)).toEqual(["/ws/.gavin-root/plans/roadmap/done/q3.md"]);
   });
 
   it("carries plan metadata onto file rows", () => {
@@ -184,5 +267,114 @@ describe("newFilePath", () => {
   it("builds paths under the context's gavin directory", () => {
     expect(newFilePath("/ws/.gavin-root", "docs", "notes.md")).toBe("/ws/.gavin-root/docs/notes.md");
     expect(newFilePath("/ws/auth/.gavin", "specs", "api.md")).toBe("/ws/auth/.gavin/specs/api.md");
+  });
+});
+
+describe("followRenamedPath", () => {
+  const before = tree([ctx("/ws", "ws", { kind: "root", plans: [plan("auth.md"), plan("git.md")] })]);
+
+  it("follows the selection when one file left and one arrived", () => {
+    const after = tree([
+      ctx("/ws", "ws", { kind: "root", plans: [plan("auth-flow.md"), plan("git.md")] }),
+    ]);
+    expect(followRenamedPath(before, after, "/ws/.gavin-root/plans/auth.md")).toBe(
+      "/ws/.gavin-root/plans/auth-flow.md"
+    );
+  });
+
+  it("follows a file moved into another context", () => {
+    const after = tree([
+      ctx("/ws", "ws", { kind: "root", plans: [plan("git.md")] }),
+      ctx("/ws/api", "api", {
+        plans: [plan("auth.md", { path: "/ws/api/.gavin/plans/auth.md" })],
+      }),
+    ]);
+    expect(followRenamedPath(before, after, "/ws/.gavin-root/plans/auth.md")).toBe(
+      "/ws/api/.gavin/plans/auth.md"
+    );
+  });
+
+  it("returns null when the selection is still there", () => {
+    const after = tree([
+      ctx("/ws", "ws", { kind: "root", plans: [plan("auth.md"), plan("git.md"), plan("new.md")] }),
+    ]);
+    expect(followRenamedPath(before, after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("returns null for a plain delete -- nothing arrived to follow", () => {
+    const after = tree([ctx("/ws", "ws", { kind: "root", plans: [plan("git.md")] })]);
+    expect(followRenamedPath(before, after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("refuses to guess when more than one file changed in the same push", () => {
+    const after = tree([
+      ctx("/ws", "ws", { kind: "root", plans: [plan("auth-flow.md"), plan("notes.md")] }),
+    ]);
+    // auth.md AND git.md went, two arrived: which one is the rename is
+    // genuinely unknowable, so the selection is reported gone instead.
+    expect(followRenamedPath(before, after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("does not follow when a DIFFERENT file was the one renamed", () => {
+    const after = tree([
+      ctx("/ws", "ws", { kind: "root", plans: [plan("auth.md"), plan("git-tab.md")] }),
+    ]);
+    expect(followRenamedPath(before, after, "/ws/.gavin-root/plans/git.md")).toBe(
+      "/ws/.gavin-root/plans/git-tab.md"
+    );
+    expect(followRenamedPath(before, after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("follows docs and specs too, not just plans", () => {
+    const withDoc = tree([
+      ctx("/ws", "ws", {
+        kind: "root",
+        docs: [{ path: "/ws/.gavin-root/docs/setup.md", relPath: "setup.md" }],
+      }),
+    ]);
+    const renamed = tree([
+      ctx("/ws", "ws", {
+        kind: "root",
+        docs: [{ path: "/ws/.gavin-root/docs/getting-started.md", relPath: "getting-started.md" }],
+      }),
+    ]);
+    expect(followRenamedPath(withDoc, renamed, "/ws/.gavin-root/docs/setup.md")).toBe(
+      "/ws/.gavin-root/docs/getting-started.md"
+    );
+  });
+
+  it("returns null with no previous tree to compare against", () => {
+    expect(followRenamedPath(undefined, before, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+});
+
+describe("followRenamedContext", () => {
+  const before = tree([ctx("/ws", "ws", { kind: "root" }), ctx("/ws/api", "api")]);
+
+  it("follows a pinned board tab through a folder rename", () => {
+    const after = tree([ctx("/ws", "ws", { kind: "root" }), ctx("/ws/core", "core")]);
+    expect(followRenamedContext(before, after, "/ws/api")).toBe("/ws/core");
+  });
+
+  it("returns null when the context is simply gone", () => {
+    const after = tree([ctx("/ws", "ws", { kind: "root" })]);
+    expect(followRenamedContext(before, after, "/ws/api")).toBeNull();
+  });
+
+  it("returns null when the context is still there", () => {
+    const after = tree([ctx("/ws", "ws", { kind: "root" }), ctx("/ws/api", "api"), ctx("/ws/web", "web")]);
+    expect(followRenamedContext(before, after, "/ws/api")).toBeNull();
+  });
+
+  it("refuses to guess when one context left and two arrived", () => {
+    const after = tree([ctx("/ws", "ws", { kind: "root" }), ctx("/ws/core", "core"), ctx("/ws/web", "web")]);
+    expect(followRenamedContext(before, after, "/ws/api")).toBeNull();
+  });
+
+  it("never reads a vanished root as a rename", () => {
+    // The whole root going missing empties `contexts`; that is a
+    // disconnected workspace, not a folder that moved.
+    const gone: GavinTree = { rootPath: "/ws", rootMissing: true, contexts: [] };
+    expect(followRenamedContext(before, gone, "/ws/api")).toBeNull();
   });
 });

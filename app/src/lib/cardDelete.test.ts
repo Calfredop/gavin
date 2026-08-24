@@ -75,7 +75,7 @@ describe("columnDeletionPlan", () => {
 describe("executeDeletion", () => {
   it("deletes then un-parents, sequentially, patch-on-success", async () => {
     vi.mocked(backend.deleteCardFile).mockResolvedValue(undefined);
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     const err = await executeDeletion("ws", {
       files: [view("/p/a.md", "plan", "To Do"), view("/p/b.md", "task", null)],
       unparent: [view("/p/c.md", "task", "Done")],
@@ -102,7 +102,7 @@ describe("executeDeletion", () => {
 
 describe("executeMoveCards", () => {
   it("writes each card's status to the destination, in order", async () => {
-    vi.mocked(backend.setPlanFrontmatterField).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
     const err = await executeMoveCards(
       "ws",
       [view("/p/a.md", "plan", "Blocked"), view("/p/b.md", "note", "Blocked")],
@@ -117,7 +117,7 @@ describe("executeMoveCards", () => {
 
   it("stops on the first failure and names the file", async () => {
     vi.mocked(backend.setPlanFrontmatterField)
-      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async (p) => p)
       .mockRejectedValueOnce(new Error("read-only"));
     const err = await executeMoveCards(
       "ws",

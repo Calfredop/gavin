@@ -9,8 +9,15 @@ import * as backend from "./backend";
 import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, switchWorkspaceView, switchToSessionInPage } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
-import { patchPlanField } from "./gavinState";
-import { composeTaskPrompt, composePlanPrompt, buildRunCommand, runStatusNeeded } from "./cardRun";
+import { patchPlanField, patchPlanPath } from "./gavinState";
+import {
+  composeTaskPrompt,
+  composePlanPrompt,
+  composeResumeTaskPrompt,
+  composeResumePlanPrompt,
+  buildRunCommand,
+  runStatusNeeded,
+} from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
 import type { CardView } from "./planBoard";
 
@@ -31,7 +38,24 @@ export async function jumpToBoundSession(
 }
 
 // Returns an error string for the board's error strip, or null.
-export async function runCard(workspaceId: string, card: CardView): Promise<string | null> {
+export function runCard(workspaceId: string, card: CardView): Promise<string | null> {
+  return launchCard(workspaceId, card, "run");
+}
+
+// Resume: the same launch, with the prompt that tells the agent work on
+// this card already happened (columnRunAction.ts). Deliberately usable
+// on a card whose bound session has EXITED -- picking that work back up
+// is the whole point -- and the fresh session replaces the dead
+// binding. A live session still just gets a jump: it is the work.
+export function resumeCard(workspaceId: string, card: CardView): Promise<string | null> {
+  return launchCard(workspaceId, card, "resume");
+}
+
+async function launchCard(
+  workspaceId: string,
+  card: CardView,
+  mode: "run" | "resume"
+): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
 
   if ((await jumpToBoundSession(workspaceId, card.id)) === "jumped") return null;
@@ -39,13 +63,33 @@ export async function runCard(workspaceId: string, card: CardView): Promise<stri
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
   if (binding && findSessionLocation(state, binding.sessionId)) return null;
 
+  // Status FIRST: running a Done card un-archives it out of `plans/done/`,
+  // and the prompt has to name where the file ends up, not where it was.
+  // A nested task gaining In Progress frees itself from its plan --
+  // deliberate: it is actively being worked (spec §3). A resume normally
+  // writes nothing here: its card already sits In Progress.
+  let path = card.id;
+  if (runStatusNeeded(card.status)) {
+    try {
+      path = await backend.setPlanFrontmatterField(card.id, "status", "In Progress");
+      patchPlanField(workspaceId, card.id, "status", "In Progress");
+      if (path !== card.id) patchPlanPath(workspaceId, card.id, path);
+    } catch (e) {
+      return `Couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
+    }
+  }
+
   let prompt: string;
   if (card.kind === "task") {
-    const file = await backend.readFileForViewer(card.id);
-    if (!file.exists) return `Card file not found: ${card.id}`;
-    prompt = composeTaskPrompt(card.id, card.title, stripFrontmatter(file.content).trim());
+    const file = await backend.readFileForViewer(path);
+    if (!file.exists) return `Card file not found: ${path}`;
+    const body = stripFrontmatter(file.content).trim();
+    prompt =
+      mode === "resume"
+        ? composeResumeTaskPrompt(path, card.title, body)
+        : composeTaskPrompt(path, card.title, body);
   } else {
-    prompt = composePlanPrompt(card.id);
+    prompt = mode === "resume" ? composeResumePlanPrompt(path) : composePlanPrompt(path);
   }
 
   // The launch command lives in .gavin-root/config.toml now (D41), so it
@@ -61,17 +105,7 @@ export async function runCard(workspaceId: string, card: CardView): Promise<stri
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
   handleAgentSessionSpawned(workspaceId, sessionId);
-  await linkCardSessionAction(workspaceId, { path: card.id, sessionId, cwd, command });
-  // A nested task gaining In Progress frees itself from its plan --
-  // deliberate: it is actively being worked (spec §3).
-  if (runStatusNeeded(card.status)) {
-    try {
-      await backend.setPlanFrontmatterField(card.id, "status", "In Progress");
-      patchPlanField(workspaceId, card.id, "status", "In Progress");
-    } catch (e) {
-      return `Agent started, but couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
-    }
-  }
+  await linkCardSessionAction(workspaceId, { path, sessionId, cwd, command });
   return null;
 }
 
@@ -115,24 +149,28 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // Checked before composing: composing reads the card file, and "no
   // agent" is the more useful message when both are true.
   if (!mainAgentSessionId(workspaceId)) return NO_MAIN_AGENT;
+  // Status FIRST, for the same reason as launchCard: sending a Done card
+  // un-archives it, and the agent must be handed the path it lands on.
+  let path = card.id;
+  if (runStatusNeeded(card.status)) {
+    try {
+      path = await backend.setPlanFrontmatterField(card.id, "status", "In Progress");
+      patchPlanField(workspaceId, card.id, "status", "In Progress");
+      if (path !== card.id) patchPlanPath(workspaceId, card.id, path);
+    } catch (e) {
+      return `Couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
+    }
+  }
   let prompt: string;
   if (card.kind === "task") {
-    const file = await backend.readFileForViewer(card.id);
-    if (!file.exists) return `Card file not found: ${card.id}`;
-    prompt = composeTaskPrompt(card.id, card.title, stripFrontmatter(file.content).trim());
+    const file = await backend.readFileForViewer(path);
+    if (!file.exists) return `Card file not found: ${path}`;
+    prompt = composeTaskPrompt(path, card.title, stripFrontmatter(file.content).trim());
   } else {
-    prompt = composePlanPrompt(card.id);
+    prompt = composePlanPrompt(path);
   }
   const pasteError = await pasteToMainAgent(workspaceId, prompt);
   if (pasteError) return pasteError;
-  if (runStatusNeeded(card.status)) {
-    try {
-      await backend.setPlanFrontmatterField(card.id, "status", "In Progress");
-      patchPlanField(workspaceId, card.id, "status", "In Progress");
-    } catch (e) {
-      return `Sent, but couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
-    }
-  }
   await switchWorkspaceView(workspaceId, "home");
   return null;
 }

@@ -1,6 +1,7 @@
 ---
+order: 1536
 title: Orchestration tab — Conflicts and direct manipulation (SP2 of 3)
-status: In Progress
+status: Done
 priority: high
 ---
 # Orchestration tab — Conflicts and direct manipulation (SP2 of 3)

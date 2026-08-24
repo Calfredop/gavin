@@ -182,11 +182,14 @@ export function createPlan(
   return invoke("create_plan", { contextFolder, fileName, title, status, priority, body, kind, parent });
 }
 
+/// Resolves to the card's path AFTER the write: a status write can archive
+/// the file into `plans/done/`, and callers holding a path as identity have
+/// to follow it.
 export function setPlanFrontmatterField(
   path: string,
   key: "status" | "priority" | "order" | "title" | "kind" | "parent" | "labels",
   value: string
-): Promise<void> {
+): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });
 }
 
