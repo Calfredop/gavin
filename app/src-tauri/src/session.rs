@@ -1840,6 +1840,56 @@ pub fn kill_session(
     }
 }
 
+/// Whether `session_id` is still alive, attaching to it when it is.
+///
+/// The one case that needs this: a HIDDEN run (the Git tab's "Commit via
+/// agent") outlives the window it was launched from. Bootstrap cannot
+/// recover it -- `resolve_sessions` only reconciles ids a page
+/// references, and a hidden run is referenced by none -- so the frontend
+/// re-offers the id it wrote down and asks this.
+///
+/// Attaching is the point, not a side effect: exit and output events only
+/// reach the app for attached sessions, so a "yes, running" answer that
+/// left the relay unsubscribed would be a spinner that never resolves.
+/// Attach is idempotent daemon-side, so re-adopting an already-attached
+/// session is harmless.
+///
+/// `ListSessions` keeps exited records, which is what makes a dead
+/// session distinguishable from an unknown one -- both answer `false`
+/// here, because the caller does the same thing with either.
+fn adopt_session_impl(
+    command_conn: &Mutex<UnixStream>,
+    daemon_writer: &Arc<Mutex<UnixStream>>,
+    session_id: String,
+    compat: &DaemonCompat,
+) -> anyhow::Result<bool> {
+    let sessions = list_valid_session_ids(command_conn, compat)?;
+    let Some(record) = sessions.get(&session_id) else {
+        return Ok(false);
+    };
+    if record.status == "exited" {
+        return Ok(false);
+    }
+    send_request(daemon_writer, &Request::Attach { id: session_id }, compat)?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn adopt_session(
+    session_id: String,
+    command_state: State<CommandConnection>,
+    daemon_state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<bool, String> {
+    adopt_session_impl(
+        &command_state.0,
+        &daemon_state.writer,
+        session_id,
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
+}
+
 fn get_board_impl(
     command_conn: &Mutex<UnixStream>,
     workspace_id: String,
@@ -2629,6 +2679,91 @@ pub fn set_root_config_field(
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod adopt_session_tests {
+    use super::test_support::*;
+    use super::*;
+
+    fn running_session(id: &str) -> protocol::SessionSummary {
+        protocol::SessionSummary {
+            id: id.to_string(),
+            workspace_path: "/r".to_string(),
+            cwd: "/r".to_string(),
+            status: "working".to_string(),
+            restored: false,
+        }
+    }
+
+    fn exited(id: &str) -> protocol::SessionSummary {
+        protocol::SessionSummary {
+            id: id.to_string(),
+            workspace_path: "/r".to_string(),
+            cwd: "/r".to_string(),
+            status: "exited".to_string(),
+            restored: false,
+        }
+    }
+
+    /// The reason this command exists at all: the events a hidden run's
+    /// verdict is read from only reach an ATTACHED session, so "still
+    /// running" and "now attached" have to be the same answer.
+    #[test]
+    fn attaches_to_a_session_that_is_still_running() {
+        let (command_client, _d1) = fake_daemon_replying_with(vec![Response::SessionList {
+            sessions: vec![running_session("commit-1")],
+        }]);
+        let (writer_client, attached, _d2) =
+            fake_daemon_capturing_requests(vec![Response::Ok]);
+        let writer = Arc::new(Mutex::new(writer_client));
+
+        let alive = adopt_session_impl(
+            &Mutex::new(command_client),
+            &writer,
+            "commit-1".to_string(),
+            &parity_compat(),
+        )
+        .unwrap();
+
+        assert!(alive);
+        // Poll: send_request writes and returns, so the fake daemon's
+        // read of it races this assertion.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while attached.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let requests = attached.lock().unwrap();
+        match &requests[0] {
+            Request::Attach { id } => assert_eq!(id, "commit-1"),
+            other => panic!("expected an Attach, got {other:?}"),
+        }
+    }
+
+    /// An exited record and an unknown id answer the same way, because
+    /// the caller does the same thing with either: drop what it wrote
+    /// down. Neither may attach -- a subscription to a dead session is a
+    /// spinner with no end.
+    #[test]
+    fn reports_a_finished_or_unknown_session_as_gone_without_attaching() {
+        for sessions in [vec![exited("commit-1")], vec![]] {
+            let (command_client, _d1) =
+                fake_daemon_replying_with(vec![Response::SessionList { sessions }]);
+            let (writer_client, attached, _d2) = fake_daemon_capturing_requests(vec![]);
+            let writer = Arc::new(Mutex::new(writer_client));
+
+            let alive = adopt_session_impl(
+                &Mutex::new(command_client),
+                &writer,
+                "commit-1".to_string(),
+                &parity_compat(),
+            )
+            .unwrap();
+
+            assert!(!alive);
+            assert!(attached.lock().unwrap().is_empty());
+        }
     }
 }
 

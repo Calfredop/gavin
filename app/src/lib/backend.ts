@@ -92,6 +92,15 @@ export function getSessionNames(): Promise<Record<string, string>> {
   return invoke("get_session_names");
 }
 
+/// Whether `sessionId` is still running -- and, when it is, attaches to
+/// it so its output and exit reach this window. The recovery path for a
+/// HIDDEN run (the Git tab's commit agent) that outlived the window that
+/// launched it: bootstrap only reconciles sessions a page references, and
+/// a hidden one is referenced by none.
+export function adoptSession(sessionId: string): Promise<boolean> {
+  return invoke<boolean>("adopt_session", { sessionId });
+}
+
 export function setSessionName(sessionId: string, name: string): Promise<void> {
   return invoke("set_session_name", { sessionId, name });
 }
