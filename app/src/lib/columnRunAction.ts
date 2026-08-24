@@ -1,0 +1,106 @@
+// Contextual run actions for the board's permanent columns. One "Run
+// all" meant the same thing everywhere, which read as a lie in two of
+// the three canonical statuses: a To Do card has never started, an In
+// Progress card stopped halfway, and a Done card is finished. The
+// column's NAME is all the context the button needs -- it picks the
+// verb, the prompt the spawned agent gets (cardRun.ts), which cards
+// count as targets, and whether the button exists at all.
+//
+// Custom columns keep the neutral "Run all": their name is the human's
+// vocabulary, and gavin has no idea what it means.
+
+import { slugStatus, type CardView } from "./planBoard";
+
+/// "start" and "run" spawn the ordinary run prompt; "resume" spawns the
+/// gavin-resume one.
+export type ColumnRunMode = "start" | "resume" | "run";
+
+export interface ColumnRunAction {
+  mode: ColumnRunMode;
+  /// The verb, as the header menu says it.
+  label: string;
+  /// aria-label for the header button.
+  aria: string;
+}
+
+/// A card's binding as the board sees it: a live session, a session that
+/// has exited (the binding outlives it), or no binding at all.
+export type CardSessionState = "live" | "exited" | "none";
+
+const TO_DO: ColumnRunAction = {
+  mode: "start",
+  label: "Start all",
+  aria: "Start every card in this column",
+};
+const IN_PROGRESS: ColumnRunAction = {
+  mode: "resume",
+  label: "Resume",
+  aria: "Resume the stopped cards in this column",
+};
+const CUSTOM: ColumnRunAction = {
+  mode: "run",
+  label: "Run all",
+  aria: "Run all unbound cards",
+};
+
+/// What this column's run button does, or null when it has none. Done
+/// gets none: finishing a card is the human's call, and a whole column
+/// of finished work is the last thing to re-run by accident. Single
+/// cards there still run from the card itself or a multi-select.
+export function columnRunAction(columnName: string): ColumnRunAction | null {
+  switch (slugStatus(columnName)) {
+    case "to-do":
+      return TO_DO;
+    case "in-progress":
+      return IN_PROGRESS;
+    case "done":
+      return null;
+    default:
+      return CUSTOM;
+  }
+}
+
+/// What the button would actually spawn. Notes never run, and a LIVE
+/// session is the work itself -- running would only jump to it. Resume
+/// parts company there: a card whose agent exited is the whole reason In
+/// Progress needs its own verb, so it counts as a target even though its
+/// binding is still on file. Start and Run stay unbound-only, the way
+/// Run all always behaved.
+export function columnRunTargets(
+  cards: CardView[],
+  mode: ColumnRunMode,
+  sessionState: (id: string) => CardSessionState
+): CardView[] {
+  return cards.filter((c) => {
+    if (c.kind === "note") return false;
+    const state = sessionState(c.id);
+    if (state === "live") return false;
+    return mode === "resume" || state === "none";
+  });
+}
+
+function cards(count: number): string {
+  return count === 1 ? "card" : "cards";
+}
+
+/// The header button's tooltip.
+export function columnRunTip(action: ColumnRunAction, count: number): string {
+  switch (action.mode) {
+    case "start":
+      return `Start ${count} unbound ${cards(count)} with the workspace agent`;
+    case "resume":
+      return (
+        `Resume ${count} stopped ${cards(count)} — each agent picks up the work ` +
+        `already done instead of starting over`
+      );
+    case "run":
+      return `Run ${count} unbound ${cards(count)} with the workspace agent`;
+  }
+}
+
+/// The header context menu's entry.
+export function columnRunMenuLabel(action: ColumnRunAction, count: number): string {
+  return action.mode === "resume"
+    ? `${action.label} (${count} stopped)`
+    : `${action.label} (${count} unbound)`;
+}
