@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { Trash2 } from "@lucide/svelte";
   import { splitPath, type Area, type FileEntry } from "./git";
   import { tooltip } from "./tooltip";
+  import IconButton from "./ui/IconButton.svelte";
 
   interface Props {
     entry: FileEntry;
@@ -33,13 +35,15 @@
   </span>
   <span class="actions" class:hidden={readonly}>
     {#if onDiscard}
-      <button
-        type="button"
-        class="danger"
-        use:tooltip={entry.status === "?" ? "Delete untracked file" : "Discard changes"}
+      <IconButton
+        icon={Trash2}
+        variant="outlined"
+        tone="danger"
+        size={11}
+        label={entry.status === "?" ? "Delete untracked file" : "Discard changes"}
         {disabled}
         onclick={(e) => { e.stopPropagation(); onDiscard?.(); }}
-      >🗑</button>
+      />
     {/if}
     <button type="button" use:tooltip={entry.status === "U" ? "Mark resolved (refused while conflict markers remain)" : toggleLabel + " file"} {disabled} onclick={(e) => { e.stopPropagation(); onToggle(); }}>
       {area === "unstaged" ? "+" : "−"}
@@ -117,9 +121,5 @@
   .actions button:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .actions .danger:hover:not(:disabled) {
-    border-color: var(--border-danger);
-    color: var(--danger-text);
   }
 </style>
