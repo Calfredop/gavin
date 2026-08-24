@@ -1,6 +1,6 @@
 // Right-click menus for the sidebar: workspace rows, page rows, and the
-// session rows inside a page's expanded git detail. Pure builders; the
-// Sidebar supplies inline-rename / new-page / error hooks.
+// tab rows inside an expanded page. Pure builders; the Sidebar supplies
+// inline-rename / new-page / error hooks.
 import { openPath } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as backend from "./backend";
@@ -10,16 +10,17 @@ import {
   movePageAction,
   switchWorkspaceView,
   switchToSessionInPage,
-  closeSession,
   setWorkspaceRoot,
 } from "./layoutState";
-import { confirmWorkspaceClose, confirmPageClose, confirmTabClose } from "./confirmClose";
+import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
+import { buildTabMenuEntries, type TabMenuContext } from "./tabMenu";
 import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
 import type { ContextMenuEntry } from "./contextMenu";
 
 export interface SidebarMenuHooks {
   startRenameWorkspace: (workspaceId: string) => void;
   startRenamePage: (pageId: string) => void;
+  startRenameSession: (sessionId: string) => void;
   newPage: (workspaceId: string) => void;
   reportError: (message: string) => void;
 }
@@ -119,35 +120,31 @@ export function buildPageMenuEntries(
   return entries;
 }
 
+// A row inside an expanded page is the same tab the tab bar draws, so it
+// offers the same menu: close/close-others, pin, split, rename, reveal,
+// copy path. Delegating to tabMenu.ts rather than keeping a second,
+// thinner copy is the whole point -- one list, one set of labels, and
+// every future tab action reaches both surfaces at once. The one entry
+// the tab bar has no use for stays on top: from the sidebar you may be
+// looking at a page that isn't even on screen.
 export function buildSessionRowMenuEntries(
   ws: Workspace,
   page: Page,
-  sessionId: string,
-  cwd: string | null,
+  ctx: TabMenuContext,
   hooks: SidebarMenuHooks
 ): ContextMenuEntry[] {
   return [
     {
-      label: "Jump to Session",
+      label: ctx.kind === "terminal" ? "Jump to Session" : "Jump to Tab",
       onPick: () => {
         void switchWorkspaceView(ws.id, "terminal");
-        void switchToSessionInPage(ws.id, page.id, sessionId);
-      },
-    },
-    {
-      label: "Open cwd in Finder",
-      disabled: cwd === null,
-      onPick: () => {
-        if (cwd) openPath(cwd).catch(fail(hooks.reportError, "Couldn't open in Finder"));
+        void switchToSessionInPage(ws.id, page.id, ctx.tabId);
       },
     },
     { separator: true },
-    {
-      label: "Close Session",
-      danger: true,
-      onPick: () => {
-        void confirmTabClose(sessionId).then((ok) => (ok ? closeSession(sessionId) : undefined));
-      },
-    },
+    ...buildTabMenuEntries(ctx, {
+      startRename: hooks.startRenameSession,
+      reportError: hooks.reportError,
+    }),
   ];
 }

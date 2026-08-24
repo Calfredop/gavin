@@ -14,10 +14,11 @@
     renamePage,
     closeWorkspace,
     closePage,
+    setSessionName,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   import type { SessionStatus } from "./layoutState";
-  import { presetSingle, allSessionIds } from "./layout";
+  import { presetSingle, allSessionIds, findLeafPath, getNodeAtPath } from "./layout";
   import {
     ChevronRight,
     ChevronDown,
@@ -91,6 +92,7 @@
     buildSessionRowMenuEntries,
     type SidebarMenuHooks,
   } from "./sidebarMenu";
+  import type { TabMenuContext } from "./tabMenu";
 
   let expanded: Set<string> = $state(new Set());
 
@@ -126,6 +128,15 @@
   let editingPageId: string | null = $state(null);
   let pageEditValue = $state("");
   let pageEditInput: HTMLInputElement | null = $state(null);
+
+  // A tab row inside an expanded page renames in place, exactly as the
+  // workspace and page rows above it do. The tab menu's "Rename…" reaches
+  // this surface now, and sending it off to the tab bar to type the name
+  // would undo the reason for acting from the sidebar at all -- the row
+  // may belong to a page that isn't even on screen.
+  let editingSessionId: string | null = $state(null);
+  let sessionEditValue = $state("");
+  let sessionEditInput: HTMLInputElement | null = $state(null);
 
   // Tracks which row is currently being hovered during a drag, and how --
   // recomputed fresh on every dragover, so a stale highlight left behind
@@ -433,6 +444,25 @@
     editingPageId = null;
   }
 
+  function startEditingSession(sessionId: string): void {
+    // File and board tabs are never renameable -- their labels are exact
+    // (the same rule the tab bar's own rename applies).
+    if ($layoutState.fileTabsById[sessionId] || $layoutState.boardTabsById[sessionId]) return;
+    editingSessionId = sessionId;
+    sessionEditValue = sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId);
+  }
+
+  function commitSessionEdit(): void {
+    if (editingSessionId === null) return;
+    const id = editingSessionId;
+    editingSessionId = null;
+    void setSessionName(id, sessionEditValue);
+  }
+
+  function cancelSessionEdit(): void {
+    editingSessionId = null;
+  }
+
   function quickAddPage(workspaceId: string): void {
     const ws = $layoutState.workspaces.find((w) => w.id === workspaceId);
     if (!ws) return;
@@ -454,6 +484,7 @@
         const p = $layoutState.workspaces.flatMap((w) => w.pages).find((x) => x.id === id);
         if (p) startEditingPage(p.id, p.name);
       },
+      startRenameSession: startEditingSession,
       newPage: quickAddPage,
       reportError: reportMenuError,
     };
@@ -474,9 +505,39 @@
     openContextMenuFromEvent(e, buildPageMenuEntries(ws, page, $layoutState.workspaces, menuHooks()));
   }
 
-  function openSessionRowMenu(e: MouseEvent, ws: Workspace, page: Page, sessionId: string): void {
-    const cwd = $layoutState.cwdBySessionId[sessionId] ?? null;
-    openContextMenuFromEvent(e, buildSessionRowMenuEntries(ws, page, sessionId, cwd, menuHooks()));
+  // The pane a row's tab actually shares. "Close Others" and the two
+  // directional closes are defined over the tabs of ONE leaf, not over
+  // the whole page, so the menu has to resolve the leaf itself -- and
+  // from here that page may not be the active one, which is exactly why
+  // it reads the row's own page tree rather than the app's active tree.
+  function leafOf(page: Page, tabId: string): { tabs: string[]; pinned: string[] } {
+    const path = findLeafPath(page.layout, tabId);
+    const node = path ? getNodeAtPath(page.layout, path) : null;
+    if (!node || node.type !== "leaf") return { tabs: [tabId], pinned: [] };
+    return { tabs: node.tabs, pinned: node.pinned ?? [] };
+  }
+
+  // The tab-bar menu's own context, assembled for a sidebar row: same
+  // kind vocabulary ("session" is the row word for what the tab menu
+  // calls a terminal) and the same per-kind path -- a board tab's
+  // context folder, a file tab's file, a terminal's cwd.
+  function rowMenuContext(page: Page, row: PageTabRow): TabMenuContext {
+    const leaf = leafOf(page, row.id);
+    const board = $layoutState.boardTabsById[row.id];
+    const file = $layoutState.fileTabsById[row.id];
+    return {
+      tabId: row.id,
+      kind: row.kind === "session" ? "terminal" : row.kind,
+      path: board ? board.contextFolder : (file?.path ?? $layoutState.cwdBySessionId[row.id] ?? null),
+      pinned: leaf.pinned.includes(row.id),
+      tabs: leaf.tabs,
+      pinnedTabs: leaf.pinned,
+    };
+  }
+
+  function openSessionRowMenu(e: MouseEvent, ws: Workspace, page: Page, row: PageTabRow): void {
+    if (inTextInput(e)) return;
+    openContextMenuFromEvent(e, buildSessionRowMenuEntries(ws, page, rowMenuContext(page, row), menuHooks()));
   }
 
   function handleWorkspaceDragStart(event: DragEvent, workspaceId: string): void {
@@ -623,6 +684,13 @@
     if (editingPageId !== null && pageEditInput) {
       pageEditInput.focus();
       pageEditInput.select();
+    }
+  });
+
+  $effect(() => {
+    if (editingSessionId !== null && sessionEditInput) {
+      sessionEditInput.focus();
+      sessionEditInput.select();
     }
   });
 </script>
@@ -810,7 +878,7 @@
                   switchWorkspaceView(ws.id, "terminal");
                   switchToSessionInPage(ws.id, page.id, row.id);
                 }}
-                oncontextmenu={(e) => openSessionRowMenu(e, ws, page, row.id)}
+                oncontextmenu={(e) => openSessionRowMenu(e, ws, page, row)}
               >
                 <span class="tab-kind {row.status ?? row.kind}">
                   {#if row.kind === "board"}
@@ -826,7 +894,26 @@
                   {/if}
                 </span>
                 <span class="tab-body">
-                  <span class="tab-label">{tabRowLabel(row)}</span>
+                  {#if editingSessionId === row.id}
+                    <input
+                      class="tab-name-input"
+                      bind:this={sessionEditInput}
+                      bind:value={sessionEditValue}
+                      onclick={(e) => e.stopPropagation()}
+                      onblur={commitSessionEdit}
+                      onkeydown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          commitSessionEdit();
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          cancelSessionEdit();
+                        }
+                      }}
+                    />
+                  {:else}
+                    <span class="tab-label" ondblclick={() => startEditingSession(row.id)}>{tabRowLabel(row)}</span>
+                  {/if}
                   {#if gitStatus}
                     <span class="tab-git">
                       <span class="worktree">{worktreeName(gitStatus)}</span>
@@ -1446,6 +1533,21 @@
        a long branch name would push the row's own width out. */
     min-width: 0;
     flex: 1 1 auto;
+  }
+  /* The rename input takes the label's place in the row, so it inherits
+     the row's own type scale rather than the browser's input default --
+     otherwise the row jumps a few pixels taller the moment you rename. */
+  .tab-name-input {
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border-focus);
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 1em;
+    padding: 0 3px;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
   }
   .tab-label {
     overflow: hidden;

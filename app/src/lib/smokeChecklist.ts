@@ -590,6 +590,31 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Sidebar tab rows",
+    items: [
+      {
+        id: "sidebar-row-menu-parity",
+        text: "Right-click a tab row inside an expanded page: the menu is the tab bar's own — Close / Close Others / to the Right / to the Left, Pin, Split Right/Down, Rename…, Open Folder in Finder, Copy Path — under a Jump entry",
+        hint: "Compare it side by side with a right-click on the same tab in the tab bar. The closes must be greyed out exactly where the tab bar greys them (nothing to the right, only a pinned tab to the left).",
+      },
+      {
+        id: "sidebar-row-menu-kinds",
+        text: "A file row says “Reveal in Finder” and offers no Split/Rename; a board row says “Open Folder in Finder” and copies its context folder",
+        hint: "Both jump entries read “Jump to Tab”; only a terminal row says “Jump to Session”.",
+      },
+      {
+        id: "sidebar-row-menu-other-page",
+        text: "Do all of it on a page you are NOT looking at: Pin reorders that page's tabs while the view stays put; Split spawns a terminal AND brings that page on screen",
+        hint: "Try it on another workspace's page too. Pin must not switch workspaces; Split must, since it just started a session you would otherwise never see.",
+      },
+      {
+        id: "sidebar-row-rename",
+        text: "Rename… turns the row into an input in place; Enter renames the session (the tab bar agrees at once), Escape leaves it alone",
+        hint: "Double-clicking the row's name starts the same rename. A blank name must fall back to the cwd label, not stick as empty.",
+      },
+    ],
+  },
+  {
     title: "Terminal & viewer regressions",
     items: [
       { id: "term-basics", text: "Split/new tab/close still work; sessions survive an app restart" },

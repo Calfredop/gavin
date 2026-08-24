@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn().mockResolvedValue(undefined) }));
+// The tab row's menu delegates to the REAL buildTabMenuEntries, so this
+// file has to stand in for everything that builder reaches for too.
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openPath: vi.fn().mockResolvedValue(undefined),
+  revealItemInDir: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("./backend", () => ({ gavinRootExists: vi.fn() }));
 vi.mock("./layoutState", () => ({
@@ -11,14 +17,18 @@ vi.mock("./layoutState", () => ({
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
   setWorkspaceRoot: vi.fn().mockResolvedValue(undefined),
+  setTabPinned: vi.fn().mockResolvedValue(undefined),
+  splitPane: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./confirmClose", () => ({
   confirmWorkspaceClose: vi.fn().mockResolvedValue(true),
   confirmPageClose: vi.fn().mockResolvedValue(true),
   confirmTabClose: vi.fn().mockResolvedValue(true),
 }));
 
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import { gavinRootExists } from "./backend";
 import {
@@ -29,7 +39,10 @@ import {
   switchToSessionInPage,
   closeSession,
   setWorkspaceRoot,
+  setTabPinned,
+  splitPane,
 } from "./layoutState";
+import { closeTabs } from "./tabActions";
 import { confirmPageClose } from "./confirmClose";
 import {
   buildWorkspaceMenuEntries,
@@ -38,6 +51,7 @@ import {
   changeWorkspaceRoot,
   type SidebarMenuHooks,
 } from "./sidebarMenu";
+import type { TabMenuContext } from "./tabMenu";
 import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "./contextMenu";
 import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
 
@@ -56,7 +70,13 @@ const ws = (id: string, pages: Page[], rootPath?: string): Workspace => ({
 });
 
 function hooks(): SidebarMenuHooks {
-  return { startRenameWorkspace: vi.fn(), startRenamePage: vi.fn(), newPage: vi.fn(), reportError: vi.fn() };
+  return {
+    startRenameWorkspace: vi.fn(),
+    startRenamePage: vi.fn(),
+    startRenameSession: vi.fn(),
+    newPage: vi.fn(),
+    reportError: vi.fn(),
+  };
 }
 const items = (entries: ContextMenuEntry[]) => entries.filter((e): e is ContextMenuItem => !isSeparator(e));
 const find = (entries: ContextMenuEntry[], label: string) => {
@@ -169,21 +189,75 @@ describe("buildPageMenuEntries", () => {
 
 describe("buildSessionRowMenuEntries", () => {
   const w = ws("w1", [page("p1")]);
-  it("jumps, opens cwd, closes", async () => {
-    const entries = buildSessionRowMenuEntries(w, w.pages[0], "s1", "/cwd", hooks());
-    expect(items(entries).map((e) => e.label)).toEqual(["Jump to Session", "Open cwd in Finder", "Close Session"]);
-    find(entries, "Jump to Session").onPick();
+  const rowCtx = (extra: Partial<TabMenuContext> = {}): TabMenuContext => ({
+    tabId: "s1",
+    kind: "terminal",
+    path: "/cwd",
+    pinned: false,
+    tabs: ["p", "s0", "s1", "s2"],
+    pinnedTabs: ["p"],
+    ...extra,
+  });
+
+  it("offers the jump plus the whole tab menu, in that order", () => {
+    const entries = buildSessionRowMenuEntries(w, w.pages[0], rowCtx(), hooks());
+    expect(items(entries).map((e) => e.label)).toEqual([
+      "Jump to Session",
+      "Close",
+      "Close Others",
+      "Close to the Right",
+      "Close to the Left",
+      "Pin",
+      "Split Right",
+      "Split Down",
+      "Rename…",
+      "Open Folder in Finder",
+      "Copy Path",
+    ]);
+  });
+
+  it("jumps to the row's own page, switching the view first", () => {
+    find(buildSessionRowMenuEntries(w, w.pages[0], rowCtx(), hooks()), "Jump to Session").onPick();
     expect(switchWorkspaceView).toHaveBeenCalledWith("w1", "terminal");
     expect(switchToSessionInPage).toHaveBeenCalledWith("w1", "p1", "s1");
-    find(entries, "Open cwd in Finder").onPick();
-    expect(openPath).toHaveBeenCalledWith("/cwd");
-    find(entries, "Close Session").onPick();
+  });
+
+  it("fires the tab actions against the row's tab", async () => {
+    const h = hooks();
+    const entries = buildSessionRowMenuEntries(w, w.pages[0], rowCtx(), h);
+    find(entries, "Close").onPick();
     await flush();
     expect(closeSession).toHaveBeenCalledWith("s1");
+    // Never the clicked tab, never the pinned one.
+    find(entries, "Close Others").onPick();
+    expect(closeTabs).toHaveBeenCalledWith(["s0", "s2"]);
+    find(entries, "Close to the Right").onPick();
+    expect(closeTabs).toHaveBeenCalledWith(["s2"]);
+    find(entries, "Pin").onPick();
+    expect(setTabPinned).toHaveBeenCalledWith("s1", true);
+    find(entries, "Split Right").onPick();
+    expect(splitPane).toHaveBeenCalledWith("s1", "row");
+    find(entries, "Rename…").onPick();
+    expect(h.startRenameSession).toHaveBeenCalledWith("s1");
+    find(entries, "Open Folder in Finder").onPick();
+    expect(openPath).toHaveBeenCalledWith("/cwd");
+    find(entries, "Copy Path").onPick();
+    expect(writeText).toHaveBeenCalledWith("/cwd");
   });
-  it("disables Open cwd without a cwd", () => {
-    expect(find(buildSessionRowMenuEntries(w, w.pages[0], "s1", null, hooks()), "Open cwd in Finder").disabled).toBe(
-      true
-    );
+
+  it("names the jump for a tab no agent runs, and drops the terminal-only actions", () => {
+    const entries = buildSessionRowMenuEntries(w, w.pages[0], rowCtx({ kind: "file", path: "/repo/a.md" }), hooks());
+    const labels = items(entries).map((e) => e.label);
+    expect(labels[0]).toBe("Jump to Tab");
+    expect(labels).not.toContain("Split Right");
+    expect(labels).not.toContain("Rename…");
+    find(entries, "Reveal in Finder").onPick();
+    expect(revealItemInDir).toHaveBeenCalledWith("/repo/a.md");
+  });
+
+  it("disables the path entries when the row has no path", () => {
+    const entries = buildSessionRowMenuEntries(w, w.pages[0], rowCtx({ path: null }), hooks());
+    expect(find(entries, "Open Folder in Finder").disabled).toBe(true);
+    expect(find(entries, "Copy Path").disabled).toBe(true);
   });
 });

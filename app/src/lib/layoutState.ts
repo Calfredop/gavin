@@ -233,6 +233,27 @@ function activePageLocation(
   return { workspaceId: ws.id, pageId: page.id, tree: page.layout };
 }
 
+// The page that actually OWNS `sessionId`, for the actions the sidebar can
+// aim at a tab on a page that isn't the one on screen. The tab bar only
+// ever addresses the active page, so for it this resolves to exactly what
+// activePageLocation returns; for the sidebar it is the difference between
+// acting and silently doing nothing, since a tree lookup that misses
+// returns the tree unchanged and the no-op gets persisted as if it worked.
+// Falls back to the active page so a caller holding an id that belongs to
+// no page (a just-closed tab) behaves as it did before.
+function pageLocationForSession(
+  state: WorkspacesData,
+  sessionId: string
+): { workspaceId: string; pageId: string; tree: LayoutNode } | null {
+  const found = workspace.findSessionLocation(state, sessionId);
+  if (!found) return activePageLocation(state);
+  const page = state.workspaces
+    .find((w) => w.id === found.workspaceId)
+    ?.pages.find((p) => p.id === found.pageId);
+  if (!page) return activePageLocation(state);
+  return { workspaceId: found.workspaceId, pageId: found.pageId, tree: page.layout };
+}
+
 // Board tabs are pinned to a context by FOLDER PATH, so renaming or
 // moving that folder on disk would otherwise strand every tab on it
 // behind "this context no longer exists" -- a dead tab for what was only
@@ -679,17 +700,32 @@ function clearMainSession(workspaceId: string): void {
   void persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
+// Splits the pane holding `targetSessionId` and drops a fresh session into
+// the new half. Scoped to the target's OWN page, and brings that page on
+// screen: a split spawns a session and focuses it, so leaving it on an
+// invisible page would be a terminal running where nobody can see it. Both
+// are no-ops for the tab bar and the keyboard shortcut, which can only
+// address the active page anyway -- they matter for the sidebar, which
+// reaches every page of every workspace.
 export async function splitPane(targetSessionId: string, direction: "row" | "column"): Promise<void> {
   const state = get(layoutState);
-  const location = activePageLocation(state);
+  const location = pageLocationForSession(state, targetSessionId);
   if (!location) return;
   const newId = await createFreshSession(location.workspaceId);
   if (!newId) return;
   const newTree = layout.splitLeaf(location.tree, targetSessionId, direction, newId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
-  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, newId);
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: newId }));
-  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+  const withFocus = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, newId);
+  const switchedPage = workspace.switchPage(withFocus, location.workspaceId, location.pageId);
+  const switchedWs = workspace.switchWorkspace(switchedPage, location.workspaceId);
+  const data = workspace.switchWorkspaceView(switchedWs, location.workspaceId, "terminal");
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    activeWorkspaceId: data.activeWorkspaceId,
+    focusedSessionId: newId,
+  }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
 }
 
 // Opens `path` as a new file tab, split beside the pane holding
@@ -1467,9 +1503,14 @@ export async function reorderTabWithinPane(sessionId: string, targetIndex: numbe
 
 // Pins or unpins a tab in the active page. The layout helpers keep pinned
 // tabs as a prefix of the pane's tab list, so the tab visibly moves.
+// Scoped to the tab's own page, not the active one -- see
+// pageLocationForSession. Unlike splitPane this deliberately does NOT
+// bring that page on screen: pinning is a bookkeeping change to where a
+// tab sits in its own bar, and yanking the view away from what the user
+// is looking at would be a far bigger side effect than the edit itself.
 export async function setTabPinned(sessionId: string, pinned: boolean): Promise<void> {
   const state = get(layoutState);
-  const location = activePageLocation(state);
+  const location = pageLocationForSession(state, sessionId);
   if (!location) return;
   const newTree = pinned
     ? layout.pinTab(location.tree, sessionId)

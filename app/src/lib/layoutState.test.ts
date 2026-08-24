@@ -64,6 +64,7 @@ import * as notifications from "./notifications";
 import {
   layoutState,
   splitPane,
+  setTabPinned,
   addTab,
   closeSession,
   switchToTab,
@@ -357,6 +358,80 @@ describe("splitPane", () => {
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
     expect(state.status).toBe("error");
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  // The sidebar can aim a split at any page of any workspace. Scoped to
+  // the active page this silently did nothing (splitLeaf misses, the
+  // unchanged tree is re-persisted) -- and the new session it spawns has
+  // to be somewhere the user can see it.
+  it("splits the target's own page and brings it on screen", async () => {
+    setState(
+      [
+        ws("ws-1", [page("page-1", leaf(["a"]))]),
+        ws("ws-2", [page("page-2", leaf(["b"])), page("page-3", leaf(["c"]))], "page-2"),
+      ],
+      "ws-1",
+      "a"
+    );
+    vi.mocked(backend.createSession).mockResolvedValue("d");
+
+    await splitPane("c", "column");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
+    expect(state.workspaces[1].pages[1].layout).toEqual({
+      type: "split",
+      direction: "column",
+      sizes: [0.5, 0.5],
+      children: [leaf(["c"]), leaf(["d"])],
+    });
+    expect(state.activeWorkspaceId).toBe("ws-2");
+    expect(state.workspaces[1].activePageId).toBe("page-3");
+    expect(getActiveView(state.workspaces[1])).toBe("terminal");
+    expect(state.focusedSessionId).toBe("d");
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-2");
+  });
+});
+
+describe("setTabPinned", () => {
+  it("pins a tab on a page that is not the active one, without switching to it", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b", "c"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+
+    await setTabPinned("c", true);
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[1].layout).toEqual({
+      type: "leaf",
+      tabs: ["c", "b"],
+      activeTabIndex: 1,
+      pinned: ["c"],
+    });
+    // Pinning is bookkeeping -- it must not yank the view somewhere else.
+    expect(state.workspaces[0].activePageId).toBe("page-1");
+    expect(state.focusedSessionId).toBe("a");
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
+  });
+
+  it("unpins through the same lookup", async () => {
+    setState(
+      [
+        ws(
+          "ws-1",
+          [page("page-1", leaf(["a"])), { ...page("page-2", leaf(["b"])), layout: { type: "leaf", tabs: ["b", "c"], activeTabIndex: 0, pinned: ["b"] } }],
+          "page-1"
+        ),
+      ],
+      "ws-1",
+      "a"
+    );
+
+    await setTabPinned("b", false);
+
+    expect(get(layoutState).workspaces[0].pages[1].layout).toEqual(leaf(["b", "c"]));
   });
 });
 
