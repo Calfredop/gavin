@@ -1305,6 +1305,39 @@ describe("findCardPlacement", () => {
   });
 });
 
+describe("cardRailBadge", () => {
+  it("names the rail a card sits on and where in its run order", () => {
+    expect(cardRailBadge(built(), "/x/c.md")).toEqual({
+      railId: "r1",
+      railName: "backend",
+      stageNumber: 2,
+      stageCount: 2,
+    });
+    expect(cardRailBadge(built(), "/x/d.md")).toEqual({
+      railId: "r2",
+      railName: "ui",
+      stageNumber: 1,
+      stageCount: 1,
+    });
+  });
+
+  it("is null for a card on no rail", () => {
+    expect(cardRailBadge(built(), "/x/z.md")).toBeNull();
+  });
+
+  // The board renders long before the Orchestration tab is ever opened;
+  // an unloaded plan must read as "no rail", never as a crash.
+  it("is null when the workspace has no orchestration loaded", () => {
+    expect(cardRailBadge(null, "/x/c.md")).toBeNull();
+    expect(cardRailBadge(undefined, "/x/c.md")).toBeNull();
+  });
+
+  it("never matches a tool step", () => {
+    const o = { ...emptyOrchestration(), rails: [toolRail("r1", [[["t1", "builtin:push"]]])] };
+    expect(cardRailBadge(o, "")).toBeNull();
+  });
+});
+
 describe("sendCardToRail", () => {
   it("appends an unplaced card as the rail's own trailing stage", () => {
     const o = sendCardToRail(built(), "r1", "/x/z.md", "new");

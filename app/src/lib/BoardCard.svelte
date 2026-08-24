@@ -2,10 +2,12 @@
   import type { Snippet } from "svelte";
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
-  import { FileText, TriangleAlert, StickyNote, Play, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { FileText, TriangleAlert, StickyNote, Play, Route, ChevronRight, ChevronDown } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
+  import { orchestrations } from "./orchestrationState";
+  import { cardRailBadge } from "./orchestration";
   import { boardSelection } from "./boardSelection";
   import { tooltip } from "./tooltip";
   import { layoutState } from "./layoutState";
@@ -34,6 +36,11 @@
     // is the strip the card is standing in, and repeating it on every
     // card would be noise.
     columnName?: string | null;
+    // The rail glyph beside the kind one, for a card an orchestration
+    // rail carries. On by default and suppressed by the rails
+    // themselves: inside a rail every card is on one, so the glyph would
+    // state the surface the human is already looking at.
+    showRailBadge?: boolean;
     // Extra controls the surface owns, rendered as the card's last row.
     // The Orchestration rails hang a step's run state, its conflict
     // badges and its rail buttons here without this component having to
@@ -52,6 +59,7 @@
     onDelete = null,
     onContextMenu = null,
     columnName = null,
+    showRailBadge = true,
     adornment,
   }: Props = $props();
 
@@ -72,6 +80,14 @@
     if (location) return { cls: "status-idle", tip: "Agent idle — click to open the session" };
     return { cls: "status-exited", tip: "Session exited — open the card for Re-launch" };
   });
+
+  // Which rail carries this card (orchestration spec O2). Read from the
+  // store rather than passed down, exactly like the session dot: every
+  // board surface renders the same membership, and a step is a REFERENCE
+  // to the card, so nothing about the card itself says it.
+  const railBadge = $derived(
+    showRailBadge && workspaceId !== null ? cardRailBadge($orchestrations[workspaceId], card.id) : null
+  );
 
   async function handleDotClick(): Promise<void> {
     if (workspaceId === null) return;
@@ -167,6 +183,14 @@
           size={11}
         />{:else}<FileText size={11} />{/if}
     </span>
+    {#if railBadge}
+      <span
+        class="rail-glyph"
+        use:tooltip={`On rail “${railBadge.railName}” — stage ${railBadge.stageNumber} of ${railBadge.stageCount}`}
+      >
+        <Route size={11} />
+      </span>
+    {/if}
     {#if card.priority && card.priority !== "none"}
       <span class="priority priority-{card.priority}" use:tooltip={"Priority: " + card.priority}></span>
     {/if}
@@ -268,7 +292,7 @@
       {#each nestedSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
         {#if slot.type === "item"}
           <div data-kb-plan={slot.item.id} data-kb-kind={slot.item.kind} data-kb-ctx={slot.item.contextFolder}>
-            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onSendToAgent} {agentAvailable} {onDelete} {onContextMenu} />
+            <BoardCardSelf card={slot.item} {labelDefs} {onOpen} nested={true} {workspaceId} {onRun} {onSendToAgent} {agentAvailable} {onDelete} {onContextMenu} {showRailBadge} />
           </div>
         {:else}
           <div class="nested-placeholder" data-kb-ph style:height="{slotDrag?.size?.height ?? 30}px"></div>
@@ -357,6 +381,18 @@
   }
   .kind-note .glyph {
     color: var(--warning-text);
+  }
+  /* Muted, not one of the kind colours: the kind glyph beside it owns
+     the card's palette (green plan, blue task, amber note), and a second
+     coloured glyph would read as a second kind. This one is a fact about
+     where the card SITS, like the checklist counter. */
+  .rail-glyph {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+  }
+  .card:hover .rail-glyph {
+    color: var(--text);
   }
   .priority {
     display: inline-block;

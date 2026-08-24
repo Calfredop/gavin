@@ -825,6 +825,39 @@ export function findCardPlacement(orch: Orchestration, cardPath: string): CardPl
   return null;
 }
 
+/// The rail a card is on, as a board card wears it: the rail's NAME and
+/// where in its run order the card falls -- everything a glyph and its
+/// tooltip need, without the surface walking the rails itself.
+///
+/// Null when the card is on no rail, and null for an orchestration that
+/// is not loaded yet: a board renders long before the Orchestration tab
+/// is ever opened, and an unloaded plan has to read as "no rail".
+export interface CardRailBadge {
+  railId: string;
+  railName: string;
+  /// 1-based, paired with `stageCount`, exactly as `CardPlacement` gives
+  /// them -- "stage 2 of 4".
+  stageNumber: number;
+  stageCount: number;
+}
+
+export function cardRailBadge(
+  orch: Orchestration | null | undefined,
+  cardPath: string
+): CardRailBadge | null {
+  if (!orch) return null;
+  const placement = findCardPlacement(orch, cardPath);
+  if (!placement) return null;
+  const rail = orch.rails.find((r) => r.id === placement.railId);
+  if (!rail) return null;
+  return {
+    railId: rail.id,
+    railName: rail.name,
+    stageNumber: placement.stageNumber,
+    stageCount: placement.stageCount,
+  };
+}
+
 /// Put a card on a rail from OUTSIDE the tab -- the board's composer, a
 /// card's context menu, its detail modal. The card lands as the rail's
 /// own trailing stage, the sequential default the drawer's click already

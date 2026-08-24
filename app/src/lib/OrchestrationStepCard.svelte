@@ -81,6 +81,7 @@
     {agentAvailable}
     {onContextMenu}
     columnName={placed.columnName}
+    showRailBadge={false}
   >
     {#snippet adornment()}
       <div class="rail-strip">
