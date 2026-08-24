@@ -42,6 +42,8 @@ import {
   switchPage,
   switchWorkspace,
   addTab,
+  closeSession,
+  splitPane,
 } from "./layoutState";
 import { copySelection, pasteClipboard } from "./clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "./keyboard";
@@ -74,6 +76,26 @@ function setState(over: Record<string, unknown> = {}): void {
     boardTabsById: {},
     ...over,
   });
+}
+
+/// The same two pages as setState, but with a HUB tab as the active
+/// view -- the state a workspace is in the moment ⌘T is pressed on the
+/// Kanban/Git/PRD screen, with focusedSessionId still pointing at the
+/// pane the terminal detour left behind.
+function hubWorkspace(view: string): unknown[] {
+  return [
+    {
+      id: "ws-1",
+      name: "ws-1",
+      rootPath: "/r",
+      activeView: view,
+      activePageId: "p1",
+      pages: [
+        { id: "p1", name: "p1", layout: leaf(["a", "b", "c"]), focusedSessionId: "a" },
+        { id: "p2", name: "p2", layout: leaf(["d"]), focusedSessionId: "d" },
+      ],
+    },
+  ];
 }
 
 beforeEach(() => {
@@ -231,6 +253,28 @@ describe("letter shortcuts", () => {
     expect(await handleShortcutKeydown(event({ key: "t", code: "KeyT" }))).toBe(true);
     expect(addTab).toHaveBeenCalledWith("a");
   });
+
+  it("⌘T does nothing while a hub tab is on screen", async () => {
+    setState({ workspaces: hubWorkspace("kanban") });
+    const e = event({ key: "t", code: "KeyT" });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(addTab).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("⌘T does nothing when the focused session is not on the active page", async () => {
+    setState({ focusedSessionId: "d" });
+    expect(await handleShortcutKeydown(event({ key: "t", code: "KeyT" }))).toBe(false);
+    expect(addTab).not.toHaveBeenCalled();
+  });
+
+  it("⌘W and ⌘D refuse off the terminal view too", async () => {
+    setState({ workspaces: hubWorkspace("git") });
+    expect(await handleShortcutKeydown(event({ key: "w", code: "KeyW" }))).toBe(false);
+    expect(await handleShortcutKeydown(event({ key: "d", code: "KeyD" }))).toBe(false);
+    expect(closeSession).not.toHaveBeenCalled();
+    expect(splitPane).not.toHaveBeenCalled();
+  });
 });
 
 describe("clipboard shortcuts", () => {
@@ -288,6 +332,21 @@ describe("clipboard shortcuts", () => {
     const e = copy({ target: xtermTextarea() });
     expect(await handleShortcutKeydown(e)).toBe(true);
     expect(copySelection).toHaveBeenCalled();
+  });
+
+  it("⌘V from a hub tab never reaches a background page's terminal", async () => {
+    setState({ workspaces: hubWorkspace("prd") });
+    const e = paste({ target: domTarget({ tagName: "DIV" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(pasteClipboard).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("⌘C from a hub tab leaves the page's own selection to the browser", async () => {
+    setState({ workspaces: hubWorkspace("prd") });
+    const e = copy({ target: domTarget({ tagName: "DIV" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
   });
 });
 

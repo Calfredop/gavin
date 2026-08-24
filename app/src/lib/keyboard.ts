@@ -119,6 +119,32 @@ function routeDigit(
   return () => switchWorkspaceView(ws.id, viewId);
 }
 
+/// The session the terminal chords may act on: the focused session, but
+/// only while a terminal page is what the workspace is actually SHOWING
+/// and that session is one of the page's own tabs.
+///
+/// LayoutState.focusedSessionId deliberately outlives a detour into a hub
+/// tab -- switching back has to restore the same pane, which is why
+/// switchWorkspaceView leaves it alone. That made every terminal chord
+/// fire from the hub against a page nowhere on screen: ⌘T spawned a
+/// session into it, ⌘W closed one of its tabs, and ⌘V typed the
+/// clipboard into it while the human was looking at the board. The digit
+/// router has always refused to address tabs off the terminal view; the
+/// letters have to refuse for the same reason.
+///
+/// The membership check is not redundant with the view check: the two
+/// halves of "which page" (activePageId, and the app-wide focus) are
+/// updated by different actions, and acting on a stale focus would put
+/// the tab on the visible page while addressing a pane that left it.
+function focusedTerminalSession(state: LayoutState): string | null {
+  const ws = getActiveWorkspace(state);
+  if (!ws || getActiveView(ws) !== "terminal") return null;
+  const tree = getActiveTree(state);
+  const focused = state.focusedSessionId;
+  if (!tree || !focused) return null;
+  return findLeafPath(tree, focused) ? focused : null;
+}
+
 /// Handles one keydown. Exported for tests; the window listener below is
 /// the only production caller. Returns whether the event was consumed.
 export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<boolean> {
@@ -159,22 +185,24 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
     return true;
   }
 
-  // Everything below acts on the focused terminal session.
-  if (!state.focusedSessionId) return false;
+  // Everything below acts on the focused terminal session -- and only
+  // while that session's page is the one on screen.
+  const focused = focusedTerminalSession(state);
+  if (!focused) return false;
 
   if (matchesChord(event, SHORTCUTS["split-down"], isMac)) {
     consume();
-    await splitPane(state.focusedSessionId, "column");
+    await splitPane(focused, "column");
     return true;
   }
   if (matchesChord(event, SHORTCUTS["split-right"], isMac)) {
     consume();
-    await splitPane(state.focusedSessionId, "row");
+    await splitPane(focused, "row");
     return true;
   }
   if (matchesChord(event, SHORTCUTS["new-tab"], isMac)) {
     consume();
-    await addTab(state.focusedSessionId);
+    await addTab(focused);
     return true;
   }
   if (matchesChord(event, SHORTCUTS["close-tab"], isMac)) {
@@ -182,9 +210,9 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
     // A pinned tab is protected from the close shortcut (browser-style);
     // the tab menu's explicit Close still works.
     const tree = getActiveTree(state);
-    if (tree && isPinned(tree, state.focusedSessionId)) return true;
-    if (await confirmTabClose(state.focusedSessionId)) {
-      await closeSession(state.focusedSessionId);
+    if (tree && isPinned(tree, focused)) return true;
+    if (await confirmTabClose(focused)) {
+      await closeSession(focused);
     }
     return true;
   }
