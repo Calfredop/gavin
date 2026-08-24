@@ -15,7 +15,8 @@ import type { Board } from "./kanban";
 import type { GavinTree } from "./gavin";
 import type { Orchestration } from "./orchestration";
 import { cardIndex } from "./orchestration";
-import { switchWorkspaceView } from "./layoutState";
+import type { PageTabRow } from "./sidebarSummary";
+import { switchWorkspace, switchWorkspaceView } from "./layoutState";
 
 /// Which hub tab a card is best seen in: a card on a rail belongs to the
 /// run that owns it, everything else to the board.
@@ -70,11 +71,33 @@ export function linkedCardFor(
   };
 }
 
+/// The same question asked of a sidebar page-expansion row. The row
+/// already carries its kind, so the gate the tab bar spells out with two
+/// lookups ("not a file tab, not a board tab") is one comparison here.
+/// Same reverse lookup underneath, so the link in the sidebar and the
+/// one on the tab can never disagree about which card a session runs.
+export function rowLinkedCard(
+  board: Board | undefined,
+  orch: Orchestration | undefined,
+  tree: GavinTree | undefined,
+  row: PageTabRow
+): LinkedCard | null {
+  return row.kind === "session" ? linkedCardFor(board, orch, tree, row.id) : null;
+}
+
 /// Jump to the card: its rail's tab or the board, with its detail modal
 /// open. The store is set BEFORE the view switch so a tab mounting for
 /// the first time already finds the request waiting.
+///
+/// The workspace is activated first, and not only for tidiness: the
+/// sidebar links cards from EVERY workspace's pages at once, so the one
+/// being jumped to is often not the one on screen. Flipping only its hub
+/// view would move a tab the human cannot see and leave them where they
+/// were. A no-op when it is already active, which is every call the tab
+/// bar makes.
 export async function openLinkedCard(workspaceId: string, card: LinkedCard): Promise<void> {
   requestedCardDetail.set({ workspaceId, path: card.path, view: card.view });
+  await switchWorkspace(workspaceId);
   await switchWorkspaceView(workspaceId, card.view);
 }
 

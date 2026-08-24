@@ -29,7 +29,7 @@
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import Tooltip from "./Tooltip.svelte";
-  import { sessionLabel, folderName } from "./paths";
+  import { sessionLabel, folderName, boardTabLabel } from "./paths";
   import {
     setDragPayload,
     getDragKind,
@@ -81,20 +81,19 @@
     return $layoutState.boardTabsById[tabId] ?? null;
   }
 
-  // A board tab's label names its context, live from the tree (folder
-  // basename fallback) -- exact information like a file tab's filename,
-  // and equally not renameable.
-  function boardTabLabel(tabId: string): string {
+  // A board tab's label names its context, live from the tree -- exact
+  // information like a file tab's filename, and equally not renameable.
+  // The format itself lives in paths.ts, shared with the sidebar's page
+  // expansion, so one tab never goes by two names.
+  function boardLabel(tabId: string): string {
     const tab = boardTab(tabId);
     if (!tab) return tabId;
-    const name =
-      $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name ??
-      (tab.contextFolder.split("/").at(-1) || tab.contextFolder);
-    return `${name} · board`;
+    const name = $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name;
+    return boardTabLabel(name, tab.contextFolder);
   }
 
   function tabLabel(sessionId: string): string {
-    if (boardTab(sessionId)) return boardTabLabel(sessionId);
+    if (boardTab(sessionId)) return boardLabel(sessionId);
     const path = fileTabPath(sessionId);
     // A file tab's label is always its filename -- exact, known
     // information, unlike a terminal's cwd-derived guess, which is why it

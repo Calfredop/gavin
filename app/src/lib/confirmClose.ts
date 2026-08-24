@@ -1,20 +1,8 @@
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { get } from "svelte/store";
 import { layoutState } from "./layoutState";
-import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds } from "./layout";
+import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds, sessionTabsOnly } from "./layout";
 import { getActiveTree, allSessionIdsInWorkspace, findSessionLocation } from "./workspace";
-
-// Neither a file tab nor a board tab is a terminal session: closing one
-// ends no process, so neither may appear in a "N terminal sessions will
-// end" count, and a pane/page/workspace holding only such tabs needs no
-// prompt at all.
-function sessionTabsOnly(
-  ids: string[],
-  fileTabsById: Record<string, { path: string }>,
-  boardTabsById: Record<string, unknown>
-): string[] {
-  return ids.filter((id) => !fileTabsById[id] && !boardTabsById[id]);
-}
 
 // Prompts before closing a single tab, but only when doing so would empty
 // its pane -- closing a tab that leaves siblings behind needs no prompt,

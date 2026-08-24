@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { folderName, sessionLabel } from "./paths";
+import { folderName, sessionLabel, boardTabLabel } from "./paths";
 
 describe("folderName", () => {
   it("returns the last path segment", () => {
@@ -34,5 +34,17 @@ describe("sessionLabel", () => {
 
   it("ignores a blank cwd entry and falls back to the id fragment", () => {
     expect(sessionLabel({}, { "s-1": "" }, "s-1")).toBe("s-1");
+  });
+});
+
+describe("boardTabLabel", () => {
+  it("names the context the tree gave it", () => {
+    expect(boardTabLabel("backend", "/ws/crates/backend")).toBe("backend · board");
+  });
+
+  it("falls back to the folder's own basename when the tree has no name for it", () => {
+    expect(boardTabLabel(null, "/ws/crates/backend")).toBe("backend · board");
+    expect(boardTabLabel(undefined, "/ws/crates/backend")).toBe("backend · board");
+    expect(boardTabLabel("", "/ws/crates/backend")).toBe("backend · board");
   });
 });

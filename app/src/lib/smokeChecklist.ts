@@ -246,6 +246,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Works on a cold start too: the plan is fetched by the tab, not only by the Orchestration tab having been visited.",
       },
       {
+        id: "run-sidebar-card-link",
+        text: "Expanding a page in the sidebar puts the same ↗ on the bound agent's row, and it makes the same jump",
+        hint: "Click the arrow, not the row: the row must NOT also switch to the terminal. Then try it on a page belonging to a workspace you are NOT in — the jump has to activate that workspace, not flip its hub view behind your back.",
+      },
+      {
         id: "skill-updated",
         text: "Re-run “Set up agent integration”: SKILL.md teaches name-your-tab-first, kinds, nesting, promotion, tick-when-done; gavin-orchestrate and gavin-resume land beside it",
       },

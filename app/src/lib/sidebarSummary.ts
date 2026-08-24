@@ -1,18 +1,20 @@
-// What the sidebar's per-workspace recap row counts: the workspace's git
-// checkouts, its kanban cards and its orchestration rails, as plain
-// tallies. Pure counting over data the app already holds, and always over
-// the same projection the full view uses -- the git side reads the very
-// per-session statuses the page rows show, the card side goes through
-// boardSummary -- so a recap can never disagree with what it summarises,
-// and no new polling is introduced.
+// What the sidebar's recap rows count: per workspace, its git checkouts,
+// its kanban cards and its orchestration rails; per page, its tabs and
+// the agents behind them. Pure counting over data the app already holds,
+// and always over the same projection the full view uses -- the git side
+// reads the very per-session statuses the page rows show, the card side
+// goes through boardSummary, the tab side goes through sessionTabsOnly --
+// so a recap can never disagree with what it summarises, and no new
+// polling is introduced.
 
-import { allSessionIds } from "./layout";
+import { allSessionIds, sessionTabsOnly } from "./layout";
 import { boardSummary } from "./homeSummary";
 import { railStateOf, stepStateOf, type Orchestration, type Rail } from "./orchestration";
 import { slugStatus } from "./planBoard";
 import type { Board } from "./kanban";
 import type { GavinTree } from "./gavin";
-import type { GitStatus, Workspace } from "./workspace";
+import type { GitStatus, Page, Workspace } from "./workspace";
+import type { SessionStatus } from "./notifications";
 
 export interface WorkspaceGitSummary {
   /// Distinct repositories (by repoRoot) across the workspace's sessions.
@@ -144,6 +146,83 @@ export function railsSummary(orch: Orchestration | null | undefined): RailsSumma
     summary.total += 1;
   }
   return summary;
+}
+
+/// The three maps a page's tab tally reads, structurally rather than as
+/// the whole LayoutState: two of them only ever answer "is this id a tab
+/// of that kind", so `unknown` values are all this needs to know.
+export interface PageTabState {
+  sessionStatusById: Record<string, SessionStatus>;
+  fileTabsById: Record<string, unknown>;
+  boardTabsById: Record<string, unknown>;
+}
+
+export interface PageAgentsSummary {
+  /// Every tab on the page, agent-backed or not.
+  tabs: number;
+  /// Those tabs that are terminal sessions. `tabs - agents` is the file
+  /// and board tabs, which no agent runs behind.
+  agents: number;
+  running: number;
+  /// Blocked on the human. Its own bucket, in neither `running` nor
+  /// `idle`: an agent waiting for input is plainly not working, and just
+  /// as plainly not finished with you. The sidebar draws this count as
+  /// the page row's attention badge rather than inside the recap.
+  waiting: number;
+  idle: number;
+}
+
+/// Tallies one page's tabs, and buckets the agents among them by status.
+/// A session with no status recorded yet counts as idle -- a tab that has
+/// never reported in has certainly not started working -- which is also
+/// what keeps `running + waiting + idle === agents` true at all times.
+///
+/// Which tabs are agents goes through layout's sessionTabsOnly, the same
+/// projection behind the close-page prompt's "N terminal sessions will
+/// end", so the number the recap shows and the number that prompt warns
+/// about are the same number.
+export function pageAgentsSummary(page: Page, state: PageTabState): PageAgentsSummary {
+  const ids = allSessionIds(page.layout);
+  const agentIds = sessionTabsOnly(ids, state.fileTabsById, state.boardTabsById);
+  let running = 0;
+  let waiting = 0;
+  for (const id of agentIds) {
+    const status = state.sessionStatusById[id];
+    if (status === "working") running += 1;
+    else if (status === "waiting_for_input") waiting += 1;
+  }
+  return {
+    tabs: ids.length,
+    agents: agentIds.length,
+    running,
+    waiting,
+    idle: agentIds.length - running - waiting,
+  };
+}
+
+export type PageTabKind = "session" | "file" | "board";
+
+export interface PageTabRow {
+  id: string;
+  kind: PageTabKind;
+  /// The agent's live status -- null for a file or board tab, which no
+  /// agent runs behind. A session that has not reported in yet reads as
+  /// idle, the same default pageAgentsSummary counts by, so an expanded
+  /// page's rows can never disagree with the tallies on its own row.
+  status: SessionStatus | null;
+}
+
+/// One row per tab, in layout order (allSessionIds' own left-to-right,
+/// top-to-bottom walk), each classified by kind. This is exactly what the
+/// sidebar renders when a page is expanded, which is why the walk and the
+/// classification live here rather than in the template: the expansion
+/// and the recap have to be two views of one list.
+export function pageTabRows(page: Page, state: PageTabState): PageTabRow[] {
+  return allSessionIds(page.layout).map((id): PageTabRow => {
+    if (state.boardTabsById[id]) return { id, kind: "board", status: null };
+    if (state.fileTabsById[id]) return { id, kind: "file", status: null };
+    return { id, kind: "session", status: state.sessionStatusById[id] ?? "idle" };
+  });
 }
 
 /// Whether the recap row has anything worth a row of its own. A workspace

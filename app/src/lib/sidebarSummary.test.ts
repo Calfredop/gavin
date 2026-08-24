@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { workspaceGitSummary, kanbanSummary, railPhase, railsSummary, hasRecap } from "./sidebarSummary";
+import {
+  workspaceGitSummary,
+  kanbanSummary,
+  railPhase,
+  railsSummary,
+  hasRecap,
+  pageAgentsSummary,
+  pageTabRows,
+} from "./sidebarSummary";
+import type { PageTabState } from "./sidebarSummary";
 import type { LayoutNode } from "./layout";
 import type { GitStatus, Page, Workspace } from "./workspace";
 import type { Orchestration, Rail, Stage, Step } from "./orchestration";
@@ -12,6 +21,14 @@ function leaf(tabs: string[]): LayoutNode {
 
 function page(id: string, layout: LayoutNode): Page {
   return { id, name: id, layout, focusedSessionId: null };
+}
+
+function split(children: LayoutNode[]): LayoutNode {
+  return { type: "split", direction: "row", children, sizes: children.map(() => 1 / children.length) };
+}
+
+function tabState(overrides: Partial<PageTabState> = {}): PageTabState {
+  return { sessionStatusById: {}, fileTabsById: {}, boardTabsById: {}, ...overrides };
 }
 
 function workspace(pages: Page[], overrides: Partial<Workspace> = {}): Workspace {
@@ -306,5 +323,145 @@ describe("kanbanSummary", () => {
       { name: "Done", count: 1 },
       { name: "Reviewing", count: 1 },
     ]);
+  });
+});
+
+describe("pageAgentsSummary", () => {
+  it("counts nothing for a page with no tabs at all", () => {
+    expect(pageAgentsSummary(page("p1", leaf([])), tabState())).toEqual({
+      tabs: 0,
+      agents: 0,
+      running: 0,
+      waiting: 0,
+      idle: 0,
+    });
+  });
+
+  it("counts every tab, and treats a session with no status yet as idle", () => {
+    expect(pageAgentsSummary(page("p1", leaf(["a", "b", "c"])), tabState())).toEqual({
+      tabs: 3,
+      agents: 3,
+      running: 0,
+      waiting: 0,
+      idle: 3,
+    });
+  });
+
+  it("buckets each agent by its status", () => {
+    const state = tabState({
+      sessionStatusById: { a: "working", b: "waiting_for_input", c: "idle", d: "working" },
+    });
+    expect(pageAgentsSummary(page("p1", leaf(["a", "b", "c", "d"])), state)).toEqual({
+      tabs: 4,
+      agents: 4,
+      running: 2,
+      waiting: 1,
+      idle: 1,
+    });
+  });
+
+  it("keeps waiting_for_input out of both running and idle -- it is its own bucket", () => {
+    const state = tabState({ sessionStatusById: { a: "waiting_for_input" } });
+    expect(pageAgentsSummary(page("p1", leaf(["a"])), state)).toMatchObject({ running: 0, idle: 0, waiting: 1 });
+  });
+
+  it("counts a file tab and a board tab as tabs but never as agents", () => {
+    const state = tabState({
+      fileTabsById: { f: { path: "/ws/README.md" } },
+      boardTabsById: { b: { workspaceId: "ws-1", contextFolder: "/ws" } },
+      sessionStatusById: { a: "working" },
+    });
+    expect(pageAgentsSummary(page("p1", leaf(["a", "f", "b"])), state)).toEqual({
+      tabs: 3,
+      agents: 1,
+      running: 1,
+      waiting: 0,
+      idle: 0,
+    });
+  });
+
+  it("does not count a file tab as an idle agent even if a status was recorded against its id", () => {
+    const state = tabState({
+      fileTabsById: { f: { path: "/ws/README.md" } },
+      sessionStatusById: { f: "working" },
+    });
+    expect(pageAgentsSummary(page("p1", leaf(["f"])), state)).toEqual({
+      tabs: 1,
+      agents: 0,
+      running: 0,
+      waiting: 0,
+      idle: 0,
+    });
+  });
+
+  it("walks the whole layout tree, not just the first leaf", () => {
+    const layout = split([leaf(["a", "b"]), split([leaf(["c"]), leaf(["d"])])]);
+    const state = tabState({ sessionStatusById: { a: "working", d: "waiting_for_input" } });
+    expect(pageAgentsSummary(page("p1", layout), state)).toEqual({
+      tabs: 4,
+      agents: 4,
+      running: 1,
+      waiting: 1,
+      idle: 2,
+    });
+  });
+
+  it("splits the agents exactly three ways -- running + waiting + idle is always the agent count", () => {
+    const state = tabState({
+      fileTabsById: { f: { path: "/ws/README.md" } },
+      sessionStatusById: { a: "working", b: "waiting_for_input", c: "idle" },
+    });
+    const summary = pageAgentsSummary(page("p1", leaf(["a", "b", "c", "d", "f"])), state);
+    expect(summary.running + summary.waiting + summary.idle).toBe(summary.agents);
+    expect(summary.agents).toBeLessThan(summary.tabs);
+  });
+});
+
+describe("pageTabRows", () => {
+  it("classifies each tab, and leaves file and board tabs without a status", () => {
+    const state = tabState({
+      fileTabsById: { f: { path: "/ws/README.md" } },
+      boardTabsById: { b: { workspaceId: "ws-1", contextFolder: "/ws" } },
+      sessionStatusById: { a: "working" },
+    });
+    expect(pageTabRows(page("p1", leaf(["a", "f", "b"])), state)).toEqual([
+      { id: "a", kind: "session", status: "working" },
+      { id: "f", kind: "file", status: null },
+      { id: "b", kind: "board", status: null },
+    ]);
+  });
+
+  it("reads a session that has not reported in yet as idle", () => {
+    expect(pageTabRows(page("p1", leaf(["a"])), tabState())).toEqual([
+      { id: "a", kind: "session", status: "idle" },
+    ]);
+  });
+
+  it("keeps layout order across a nested split", () => {
+    const layout = split([leaf(["a", "b"]), split([leaf(["c"]), leaf(["d"])])]);
+    expect(pageTabRows(page("p1", layout), tabState()).map((r) => r.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("has a row for every tab and nothing else", () => {
+    const layout = split([leaf(["a", "f"]), leaf(["b"])]);
+    const state = tabState({ fileTabsById: { f: { path: "/ws/README.md" } } });
+    expect(pageTabRows(page("p1", layout), state)).toHaveLength(3);
+  });
+
+  it("tallies to exactly what pageAgentsSummary counts", () => {
+    const layout = split([leaf(["a", "b", "f"]), leaf(["c", "d", "bd"])]);
+    const state = tabState({
+      fileTabsById: { f: { path: "/ws/README.md" } },
+      boardTabsById: { bd: { workspaceId: "ws-1", contextFolder: "/ws" } },
+      sessionStatusById: { a: "working", b: "waiting_for_input", c: "idle" },
+    });
+    const rows = pageTabRows(page("p1", layout), state);
+    const summary = pageAgentsSummary(page("p1", layout), state);
+    const sessions = rows.filter((r) => r.kind === "session");
+    expect(rows).toHaveLength(summary.tabs);
+    expect(sessions).toHaveLength(summary.agents);
+    expect(sessions.filter((r) => r.status === "working")).toHaveLength(summary.running);
+    expect(sessions.filter((r) => r.status === "waiting_for_input")).toHaveLength(summary.waiting);
+    expect(sessions.filter((r) => r.status === "idle")).toHaveLength(summary.idle);
   });
 });
