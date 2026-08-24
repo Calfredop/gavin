@@ -1493,6 +1493,18 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::NameSession { session_id, name } => {
             manager.name_session(&session_id, &name).map(|_| Response::Ok)
         }
+        // handle_connection intercepts Shutdown first (mirroring
+        // Attach/WatchGavinRoot) so it can reply and then exit the process.
+        // This arm only exists so the match stays exhaustive; it is never
+        // expected to fire.
+        Request::Shutdown => Ok(Response::Ok),
+        // A client newer than this daemon sent a request type we don't
+        // know. Answer instead of the parse error that used to close the
+        // whole connection (and every push riding on it).
+        Request::Unknown => Ok(Response::Unsupported {
+            request_type: "unknown".to_string(),
+            min_version: protocol::PROTOCOL_VERSION,
+        }),
     };
 
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
@@ -1551,6 +1563,17 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
         if let Request::WatchGavinRoot { workspace_id, root_path } = req {
             manager.watch_gavin_root(&workspace_id, &root_path, Arc::clone(&writer));
             continue;
+        }
+
+        // Also intercepted rather than routed through handle_request: this
+        // is the one request that ends the whole process, not just this
+        // connection, so it can't be expressed as an `Ok(Response)` return
+        // value. Reply first so the caller (the app, asking the daemon to
+        // stop politely instead of pkill-ing every daemon on the machine)
+        // sees an acknowledgement rather than a connection that just closed.
+        if matches!(req, Request::Shutdown) {
+            let _ = write_message(&mut *writer.lock().unwrap(), &Response::Ok);
+            std::process::exit(0);
         }
 
         let response = handle_request(&manager, req);
@@ -1774,6 +1797,20 @@ mod tests {
             Response::Error { message } => assert!(message.contains("t1"), "{message}"),
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_unknown_request_gets_a_reply_and_leaves_the_connection_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        // The regression this guards: before v12, an unparseable line closed
+        // the socket, so the *next* request never got an answer at all.
+        let unsupported = handle_request(&manager, Request::Unknown);
+        assert!(matches!(unsupported, Response::Unsupported { .. }));
+
+        let after = handle_request(&manager, Request::GetProtocolVersion);
+        assert!(matches!(after, Response::ProtocolVersion { version } if version == protocol::PROTOCOL_VERSION));
     }
 
     use super::*;
@@ -2565,6 +2602,8 @@ mod tests {
                             id: "t1".into(),
                             position: 0,
                             card_path: before.clone(),
+                            tool_id: None,
+                            tool_params: Default::default(),
                         }],
                     }],
                 }],

@@ -5,7 +5,6 @@
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
   import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
   import RailBindDialog from "./RailBindDialog.svelte";
-  import CardDetailModal from "./CardDetailModal.svelte";
   import SearchInput from "./ui/SearchInput.svelte";
   import { searchOrchestration } from "./orchestrationSearch";
   import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
@@ -22,9 +21,9 @@
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
-  import { mergePlanCards, type CardView } from "./planBoard";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
-  import { layoutState, switchWorkspaceView } from "./layoutState";
+  import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
+  import { featureBlockedReason } from "./daemonCompat";
   import {
     cardIndex,
     doneColumn,
@@ -103,14 +102,6 @@
   // projection is the board's own -- same modal, same columns, same
   // nested children -- so nothing about a card reads differently here.
   let openPlanPath = $state<string | null>(null);
-  const merged = $derived(board ? mergePlanCards(board, tree) : null);
-  const allCards = $derived<CardView[]>(
-    merged
-      ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
-          (c) => [c, ...c.nestedChildren]
-        )
-      : []
-  );
   const openPlan = $derived<CardView | null>(
     openPlanPath ? (allCards.find((c) => c.id === openPlanPath) ?? null) : null
   );
@@ -328,6 +319,14 @@
     });
   });
 
+  // Every orchestration write (SetOrchestration/SetRailRun/SetStepRun) is
+  // gated at protocol v10 (see protocol::min_version_for) -- against an
+  // older daemon these buttons would otherwise dispatch requests the wire
+  // guard in session.rs's `gate` silently refuses, with no explanation.
+  // Reusing the same featureBlockedReason the banner is built from keeps
+  // the wording (and the version numbers) identical wherever the app
+  // names this.
+  const orchestrationBlocked = $derived(featureBlockedReason($daemonCompat, "orchestration"));
   const conflictSummary = $derived(
     orch
       ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
@@ -369,13 +368,19 @@
     <button
       type="button"
       class="add-rail"
-      disabled={!agentAvailable}
-      title={agentAvailable ? "" : "Start the workspace agent on Home first"}
+      disabled={!agentAvailable || Boolean(orchestrationBlocked)}
+      title={orchestrationBlocked || (agentAvailable ? "" : "Start the workspace agent on Home first")}
       onclick={() => void reorganize()}
     >
       Reorganize with agent…
     </button>
-    <button type="button" class="add-rail" onclick={() => void newRail()}>
+    <button
+      type="button"
+      class="add-rail"
+      disabled={Boolean(orchestrationBlocked)}
+      title={orchestrationBlocked ?? ""}
+      onclick={() => void newRail()}
+    >
       <Plus size={14} /> Rail
     </button>
   </header>
@@ -408,7 +413,11 @@
   {/if}
 
   {#if !orch}
-    <p class="empty">Loading…</p>
+    {#if orchestrationBlocked}
+      <p class="empty">{orchestrationBlocked}</p>
+    {:else}
+      <p class="empty">Loading…</p>
+    {/if}
   {:else if rails.length === 0}
     <p class="empty">
       No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.

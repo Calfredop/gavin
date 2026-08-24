@@ -15,6 +15,7 @@ import { followRenamedContext } from "./planExplorer";
 import { normalizeColor, resolveAgentConfig, type AgentProfileInfo } from "./settings";
 import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
+import type { DaemonCompat } from "./daemonCompat";
 
 export type { SessionStatus };
 
@@ -57,6 +58,29 @@ const initialState: LayoutState = {
 
 export const layoutState = writable<LayoutState>(initialState);
 
+// The compat verdict Rust negotiated with the daemon at connect time.
+// null until the first successful probe -- DaemonCompatBanner
+// stays silent on null the same way compatMessage does. Refreshed
+// wherever this module re-syncs against a (re)connected daemon; see
+// refreshDaemonCompat.
+export const daemonCompat = writable<DaemonCompat | null>(null);
+
+// Pulls the current compat verdict from the Rust side. Called at every
+// point this module already re-syncs against a (re)connected daemon --
+// the workspaces-ready event, pollForStartupState's success path, and
+// restartDaemonInPlace -- so the banner and featureBlockedReason never
+// keep serving a verdict from a connection that no longer exists.
+// Best-effort: a failed fetch (including, in tests, backend.daemonCompat
+// simply not being mocked) leaves the previous value in place rather than
+// blanking the banner over a transient IPC hiccup.
+async function refreshDaemonCompat(): Promise<void> {
+  try {
+    daemonCompat.set(await backend.daemonCompat());
+  } catch {
+    // leave the previous verdict in place
+  }
+}
+
 function setError(message: string): void {
   layoutState.update((s) => ({ ...s, status: "error", errorMessage: message }));
 }
@@ -81,6 +105,29 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
 // the user in their home directory.
 function freshSessionCwd(workspaceId: string): string | undefined {
   return get(layoutState).workspaces.find((w) => w.id === workspaceId)?.rootPath || undefined;
+}
+
+// Every terminal/agent session id currently live anywhere in the app --
+// every page of every workspace, main agent sessions included -- with
+// file and board tabs excluded (they share the tab-id space, but the
+// daemon has never heard of them, so they cost a restart nothing). This
+// is exactly the set a daemon restart would end -- DaemonCompatBanner
+// uses its size for compatMessage's "restarting will end N running
+// agents" warning. Recomputed on demand rather than tracked
+// incrementally: handleSessionExited already keeps every tree pruned to
+// only sessions that are still alive, so there is nothing stale here to
+// filter by status.
+export function runningSessionCount(state: LayoutState): number {
+  const ids = new Set<string>();
+  for (const ws of state.workspaces) {
+    if (ws.mainSessionId) ids.add(ws.mainSessionId);
+    for (const page of ws.pages) {
+      for (const id of layout.allSessionIds(page.layout)) {
+        if (!state.fileTabsById[id] && !state.boardTabsById[id]) ids.add(id);
+      }
+    }
+  }
+  return ids.size;
 }
 
 // Shared by every action that creates exactly one fresh session before
@@ -231,6 +278,7 @@ export async function bootstrap(): Promise<void> {
         };
       });
       watchRootedWorkspaces(event.payload.workspaces);
+      void refreshDaemonCompat();
     })
   );
   unlisteners.push(
@@ -400,6 +448,10 @@ export async function restartDaemonInPlace(): Promise<void> {
     activeWorkspaceId: resolved.state.activeWorkspaceId,
     focusedSessionId: resolved.focusedSessionId,
   }));
+  // A restart can hand the app a differently-versioned daemon than the
+  // one it started with (session::reconnect's own doc comment) -- refresh
+  // the stored verdict so the banner/gating never keep serving a stale one.
+  void refreshDaemonCompat();
 }
 
 async function pollForStartupState(): Promise<void> {
@@ -435,6 +487,7 @@ async function pollForStartupState(): Promise<void> {
         };
       });
       watchRootedWorkspaces(data.workspaces);
+      void refreshDaemonCompat();
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));

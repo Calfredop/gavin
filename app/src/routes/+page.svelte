@@ -27,6 +27,7 @@
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
+  import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
 
   let closeConfirmed = false;
   let uninstallShortcuts: (() => void) | null = null;
@@ -106,6 +107,11 @@
       <button onclick={retryConnect}>Restart daemon &amp; retry</button>
     </div>
   {:else}
+    <!-- A degraded-but-usable daemon connection is a caveat
+         on a working app, not an error -- rendered here in the working
+         branch, spanning above the sidebar so it stays visible regardless
+         of which workspace or tab is active. -->
+    <DaemonCompatBanner />
     <!-- The active workspace's accent, read by every tab indicator and
          drop marker inside (Pane.svelte's var(--ws-accent)). -->
     <div class="body" style:--ws-accent={accent}>

@@ -8,7 +8,19 @@ mod layout;
 mod mac_window;
 mod session;
 
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
+
+/// The frontend's read of the compat verdict Rust negotiated with the
+/// daemon (session::verify_daemon_protocol, at both bootstrap and
+/// reconnect). `None` before that first probe completes -- there is no
+/// panicking equivalent of `session::current_compat` here on purpose: this
+/// command is exactly what lets the frontend distinguish "not connected
+/// yet" from "connected but degraded" instead of assuming one or crashing
+/// on the other.
+#[tauri::command]
+fn daemon_compat(app_handle: AppHandle) -> Option<session::DaemonCompat> {
+    *app_handle.state::<session::DaemonCompatState>().0.lock().unwrap()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -21,6 +33,7 @@ pub fn run() {
         .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .manage(session::ConnectionEpoch(std::sync::atomic::AtomicU64::new(0)))
+        .manage(session::DaemonCompatState(std::sync::Mutex::new(None)))
         .manage(fileviewer::FileWatchers::default())
         .manage(git::GitWatchers::default())
         .manage(git::GitOps::default())
@@ -64,6 +77,7 @@ pub fn run() {
             mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
             session::restart_daemon,
+            daemon_compat,
             session::get_board,
             session::set_board,
             session::get_orchestration,
