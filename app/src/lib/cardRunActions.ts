@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, switchWorkspaceView, switchToSessionInPage } from "./layoutState";
+import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
 import { patchPlanField, patchPlanPath } from "./gavinState";
@@ -16,6 +16,7 @@ import {
   composeResumeTaskPrompt,
   composeResumePlanPrompt,
   buildRunCommand,
+  provisionalSessionName,
   runStatusNeeded,
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
@@ -105,6 +106,13 @@ async function launchCard(
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
   handleAgentSessionSpawned(workspaceId, sessionId);
+  // Named before the agent has drawn a frame. The agent's own
+  // gavin_name_session replaces this the moment it runs -- but that call
+  // is the FIRST thing it does and the first thing to break when the
+  // gavin tools are unreachable, and a tab labelled by a session-id
+  // fragment tells the human nothing about which card is running.
+  const provisional = provisionalSessionName(card.title);
+  if (provisional) await setSessionName(sessionId, provisional);
   await linkCardSessionAction(workspaceId, { path, sessionId, cwd, command });
   return null;
 }

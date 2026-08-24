@@ -9,6 +9,7 @@ import {
   buildRunCommand,
   buildToolCommand,
   runStatusNeeded,
+  provisionalSessionName,
 } from "./cardRun";
 
 describe("composeTaskPrompt", () => {
@@ -74,6 +75,23 @@ describe("every launched prompt", () => {
       expect(p.startsWith(NAME_TAB_FIRST)).toBe(true);
       expect(p).toContain("gavin_name_session");
     }
+  });
+});
+
+describe("provisionalSessionName", () => {
+  it("collapses whitespace so a wrapped title cannot widen the tab bar", () => {
+    expect(provisionalSessionName("  Fix   the\n login  flow ")).toBe("Fix the login flow");
+  });
+
+  it("caps at the same 40 characters gavin-mcp's clean_session_name does", () => {
+    const long = "a".repeat(60);
+    expect(provisionalSessionName(long)).toBe("a".repeat(40) + "\u2026");
+    expect(provisionalSessionName("b".repeat(40))).toBe("b".repeat(40));
+  });
+
+  it("returns null for a title with nothing in it, rather than naming a tab \"\"", () => {
+    expect(provisionalSessionName("   ")).toBeNull();
+    expect(provisionalSessionName("")).toBeNull();
   });
 });
 

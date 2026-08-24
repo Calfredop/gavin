@@ -43,12 +43,13 @@ import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore } from "./gitState";
-import { layoutState, resolvedAgentFor, createSessionOnPage, sessionExits } from "./layoutState";
+import { layoutState, resolvedAgentFor, createSessionOnPage, sessionExits, setSessionName } from "./layoutState";
 import { allSessionIds } from "./layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
   buildRunCommand,
+  provisionalSessionName,
   buildToolCommand,
   runStatusNeeded,
 } from "./cardRun";
@@ -308,7 +309,10 @@ async function executeToolLaunch(
   // effort: a nameless tab is cosmetic, not a reason to stall a step
   // whose session is already running.
   try {
-    await backend.setSessionName(sessionId, tool.name);
+    // The store, not backend.setSessionName: the backend command only
+    // persists the name to config and pushes nothing back, so a tab named
+    // that way keeps its cwd label until the app restarts.
+    await setSessionName(sessionId, tool.name);
   } catch {
     // Cosmetic only.
   }
@@ -354,6 +358,19 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
     return;
   }
 
+  // Named before the agent has drawn a frame, same as a board Run and the
+  // tool step above: the agent's own gavin_name_session refines this, but
+  // it is the first call it makes and the first to break when the gavin
+  // tools are unreachable. Best effort -- the agent is already running,
+  // so a failed rename is not worth stalling a live step over.
+  const provisional = provisionalSessionName(entry.plan.title);
+  if (provisional) {
+    try {
+      await setSessionName(sessionId, provisional);
+    } catch {
+      // Cosmetic only.
+    }
+  }
   await linkCardSessionAction(workspaceId, { path: step.cardPath, sessionId, cwd, command });
   await setStepRunAction(workspaceId, stepId, "running", sessionId, null);
   if (runStatusNeeded(entry.plan.status)) {

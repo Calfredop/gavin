@@ -21,6 +21,7 @@ vi.mock("./layoutState", () => ({
   layoutState: { subscribe: (fn: (v: unknown) => void) => (fn({ workspaces: [] }), () => {}) },
   resolvedAgentFor: vi.fn(() => ({ command: "claude", file: "CLAUDE.md", profile: "claude-code" })),
   createSessionOnPage: vi.fn(),
+  setSessionName: vi.fn().mockResolvedValue(undefined),
   // tick() reads this through get(), so it has to be a real store.
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
 }));
@@ -373,6 +374,39 @@ describe("executeActions", () => {
     );
   });
 
+  it("a launch names the tab from the card title, so a rail tab is never a bare session id", async () => {
+    // Same reason as the tool step below: the tab has to say what it is
+    // running before the agent has drawn a frame -- and the agent's own
+    // gavin_name_session is the first thing to break when the gavin
+    // tools are unreachable.
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(layoutStateModule.setSessionName).toHaveBeenCalledWith("sess-9", "Wire the API");
+  });
+
+  it("a launch whose naming fails still records the run", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(layoutStateModule.setSessionName).mockRejectedValueOnce(new Error("nope"));
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+  });
+
   it("a launch binds the card session, records the session id, and writes In Progress", async () => {
     vi.mocked(backend.readFileForViewer).mockResolvedValue({
       content: "---\ntitle: Wire the API\n---\ndo the thing",
@@ -602,7 +636,7 @@ describe("launching a tool step", () => {
     toolsResetForTesting();
     vi.clearAllMocks();
     vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
-    vi.mocked(backend.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
     vi.mocked(backend.getOrchestration).mockResolvedValue(toolRail());
     await fetchOrchestration("ws-1");
     // An EMPTY library, which still contains the built-ins.
@@ -632,14 +666,17 @@ describe("launching a tool step", () => {
   it("names the session after the tool, so a fast command's tab is identifiable", async () => {
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    expect(backend.setSessionName).toHaveBeenCalledWith("sess-9", "Push branch");
+    // Through the STORE, not backend.setSessionName directly: the backend
+    // command only persists to config and pushes nothing back, so a tab
+    // named that way keeps its cwd label until the app restarts.
+    expect(layoutStateModule.setSessionName).toHaveBeenCalledWith("sess-9", "Push branch");
   });
 
   // Cosmetic only: the agent is already running, so a failed rename must
   // not stall a live step.
   it("still records the run when naming the session fails", async () => {
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
-    vi.mocked(backend.setSessionName).mockRejectedValue(new Error("nope"));
+    vi.mocked(layoutStateModule.setSessionName).mockRejectedValue(new Error("nope"));
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
   });

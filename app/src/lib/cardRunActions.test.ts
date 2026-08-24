@@ -34,6 +34,7 @@ vi.mock("./layoutState", () => ({
     cwdBySessionId: {},
   }),
   handleAgentSessionSpawned: vi.fn(),
+  setSessionName: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   resolvedAgentFor: vi.fn(() => ({
@@ -48,7 +49,7 @@ vi.mock("./workspace", () => ({
 }));
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, switchToSessionInPage, switchWorkspaceView, layoutState } from "./layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
@@ -162,6 +163,24 @@ describe("runCard", () => {
     expect(command).toContain("Read /ws/.gavin-root/plans/t.md and execute that plan");
     // Already slug-matching In Progress: no status write.
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("names the tab from the card title at launch, so it is never a bare session id", async () => {
+    // The agent renames itself over this via gavin_name_session. Until it
+    // does -- and if the gavin tools are unreachable, it never will -- the
+    // tab has to say which card it is running.
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+
+    await runCard("ws-1", card("task", "To Do"));
+
+    expect(setSessionName).toHaveBeenCalledWith("s-9", "Fix login");
   });
 
   it("jumps instead of spawning when a live binding exists", async () => {

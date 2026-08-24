@@ -13,6 +13,29 @@ export const NAME_TAB_FIRST =
   "First, before anything else: call gavin_name_session to name this tab — " +
   "two to four words for the work itself, not for you.";
 
+// The provisional tab name the app writes the moment it launches a card,
+// before the agent has said anything. The agent's own gavin_name_session
+// then overwrites it with something sharper -- but until it does (and if
+// it never does, because the gavin tools are unreachable), the tab reads
+// as the card rather than as a session-id fragment.
+//
+// Same 40-character cap as gavin-mcp's clean_session_name, so a tab is
+// bounded the same way whichever side named it. Null for a title with
+// nothing in it: no name at all falls back to the cwd label, which beats
+// naming a tab "".
+const MAX_SESSION_NAME = 40;
+
+export function provisionalSessionName(title: string): string | null {
+  const collapsed = title.split(/\s+/).filter(Boolean).join(" ");
+  if (!collapsed) return null;
+  // Array spread, not slice: a title ending in an astral character would
+  // be cut mid-surrogate-pair by index slicing.
+  const chars = [...collapsed];
+  return chars.length > MAX_SESSION_NAME
+    ? chars.slice(0, MAX_SESSION_NAME).join("") + "\u2026"
+    : collapsed;
+}
+
 export function composeTaskPrompt(path: string, title: string, body: string): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
