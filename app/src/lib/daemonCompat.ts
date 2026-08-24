@@ -22,14 +22,17 @@ export function compatMessage(c: DaemonCompat | null, runningAgents: number): st
 /// versions the UI actually branches on need entries here.
 export const FEATURE_MIN_VERSION = {
   orchestration: 10,
-  // No component reads this on this branch -- ToolLibraryDialog.svelte
-  // arrives with the orchestration merge and will be the first consumer.
-  // Recorded now anyway: unlike protocol::min_version_for's exhaustive
-  // match, nothing forces this table to be updated, so leaving it as a
-  // TODO risks the Tools UI staying enabled against a daemon too old to
-  // parse the request -- a raw error on click instead of a disabled
-  // control with a tooltip.
+  // A version ABOVE orchestration, which is the whole reason this entry
+  // earns its keep: a v10 daemon runs rails happily and has no `tool_id`
+  // column, so it accepts a tool step and stores one with neither a card
+  // nor a tool -- an untitled chip, and a plan a newer daemon then
+  // refuses outright. Read by the Orchestration tab, which greys out
+  // every surface that can place a tool.
   tools: 11,
+  // The archive (plans/archive/). A v12 daemon cannot parse
+  // ArchiveCard/UnarchiveCard at all, so the toggle and both actions are
+  // disabled with the reason rather than failing on click.
+  archive: 13,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

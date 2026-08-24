@@ -227,6 +227,19 @@ export function deleteCardFile(path: string): Promise<void> {
   return invoke("delete_card_file", { path });
 }
 
+/// Moves a card into its context's `plans/archive/` (children included)
+/// and resolves with the path it landed on -- the card's identity moves
+/// with it, exactly as it does for a status write.
+export function archiveCard(path: string): Promise<string> {
+  return invoke("archive_card", { path });
+}
+
+/// Takes a card back out of the archive, filed by its status. Resolves
+/// with its new path.
+export function unarchiveCard(path: string): Promise<string> {
+  return invoke("unarchive_card", { path });
+}
+
 export function linkCardSession(
   workspaceId: string,
   path: string,

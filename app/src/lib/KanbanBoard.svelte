@@ -8,7 +8,7 @@
   import { mergePlanCards, type CardView } from "./planBoard";
   import { planCommitFromMerged } from "./planDrop";
   import { runCard, resumeCard, sendToMainAgent } from "./cardRunActions";
-  import { layoutState } from "./layoutState";
+  import { layoutState, daemonCompat } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
@@ -21,6 +21,12 @@
   import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
   import SearchInput from "./ui/SearchInput.svelte";
+  import IconButton from "./ui/IconButton.svelte";
+  import { Archive } from "@lucide/svelte";
+  import ArchiveGrid from "./ArchiveGrid.svelte";
+  import { archiveView } from "./archive";
+  import { executeUnarchive } from "./archiveActions";
+  import { featureBlockedReason } from "./daemonCompat";
   import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
   import { isSearching } from "./search";
   import { flip } from "svelte/animate";
@@ -73,13 +79,24 @@
   let search = $state("");
   const searching = $derived(isSearching(search));
   const view = $derived(merged ? filterBoard(merged, search) : null);
+
+  // The archive lens. A toggle rather than a tab: it is the same board's
+  // cards under the same search box, so switching must not cost the
+  // human their query or their place in the workspace.
+  let showingArchive = $state(false);
+  const archive = $derived(archiveView(merged?.archived ?? [], search));
+  const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
   // Every card view in the projection, nested children included -- the
-  // detail modal must resolve a nested child's path too.
+  // detail modal must resolve a nested child's path too. The ARCHIVE is
+  // in here as well: its cards are off the board but the grid opens,
+  // deletes and selects them through exactly these paths.
   const allCards = $derived<CardView[]>(
     merged
-      ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
-          (c) => [c, ...c.nestedChildren]
-        )
+      ? [
+          ...merged.columns.flatMap((c) => c.planCards),
+          ...merged.autoColumns.flatMap((a) => a.planCards),
+          ...merged.archived,
+        ].flatMap((c) => [c, ...c.nestedChildren])
       : []
   );
   const openPlan = $derived<CardView | null>(
@@ -147,6 +164,12 @@
   async function handleResume(card: CardView): Promise<void> {
     planWriteError = null;
     const err = await resumeCard(workspaceId, card);
+    if (err) planWriteError = err;
+  }
+
+  async function handleRestore(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await executeUnarchive(workspaceId, [card]);
     if (err) planWriteError = err;
   }
 
@@ -261,12 +284,48 @@
     <SearchInput
       bind:value={search}
       class="board-search"
-      label="Search cards"
-      placeholder="Search cards — title, file, status, label, context…"
-      matches={view ? { shown: view.shown, total: view.total } : null}
-      hint="filtered: clear to drag cards"
+      label={showingArchive ? "Search the archive" : "Search cards"}
+      placeholder={showingArchive
+        ? "Search the archive — title, file, status, label, context…"
+        : "Search cards — title, file, status, label, context…"}
+      matches={showingArchive
+        ? { shown: archive.shown, total: archive.total }
+        : view
+          ? { shown: view.shown, total: view.total }
+          : null}
+      hint={showingArchive ? null : "filtered: clear to drag cards"}
     />
+    <IconButton
+      icon={Archive}
+      label={showingArchive ? "Back to the board" : "Open the archive"}
+      variant="outlined"
+      tone={showingArchive ? "accent" : "default"}
+      size={12}
+      active={showingArchive}
+      class="archive-toggle"
+      disabled={archiveBlocked !== null}
+      tip={archiveBlocked ??
+        (showingArchive
+          ? "Back to the board"
+          : `Archive — ${archive.total} ${archive.total === 1 ? "card" : "cards"} filed away, newest first`)}
+      onclick={() => (showingArchive = !showingArchive)}
+    >
+      {#if archive.total > 0}<span class="archive-count">{archive.total}</span>{/if}
+    </IconButton>
   </div>
+  {#if showingArchive}
+    <ArchiveGrid
+      {workspaceId}
+      cards={archive.cards}
+      labels={board.labels}
+      hiddenCount={archive.total - archive.shown}
+      onOpenCard={(path) => (openPlanPath = path)}
+      onRestore={(card) => void handleRestore(card)}
+      onDeleteCard={(card) => (pendingDelete = card)}
+      onCardContextMenu={handleCardContextMenu}
+      restoreBlocked={archiveBlocked}
+    />
+  {:else}
   <div class="board" bind:this={boardEl} oncontextmenu={handleBoardContextMenu} role="presentation">
     {#each buildColumnSlots(board.columns, (c) => c.id, $dragState) as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div class="column-slot" animate:flip={{ duration: 150 }}>
@@ -309,6 +368,7 @@
       <button type="button" class="add-column" use:tooltip={"Add a column — its name becomes a status"} onclick={() => (addingColumn = true)}>+ Add column</button>
     {/if}
   </div>
+  {/if}
   </div>
   <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
@@ -342,6 +402,15 @@
   }
   .board-bar :global(.board-search) {
     max-width: 520px;
+  }
+  .board-bar :global(.archive-toggle) {
+    margin-left: 10px;
+    flex: 0 0 auto;
+  }
+  .archive-count {
+    font-family: monospace;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
   }
   .kanban {
     display: flex;

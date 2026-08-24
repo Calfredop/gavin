@@ -3,7 +3,12 @@ import { railIndex, statusFacets, filterExplorer, NO_RAIL, ANY } from "./planFil
 import type { ExplorerContextNode } from "./planExplorer";
 import type { Orchestration, Rail } from "./orchestration";
 
-function file(path: string, label: string, status: string | null, group: "plans" | "docs" | "specs" = "plans") {
+function file(
+  path: string,
+  label: string,
+  status: string | null,
+  group: "plans" | "docs" | "specs" | "archive" = "plans"
+) {
   return { path, label, group, status, priority: null, parseWarning: false } as const;
 }
 
@@ -153,5 +158,64 @@ describe("filterExplorer", () => {
     const two = [...contexts, context({ folderPath: "/ws/auth", name: "auth", kind: "context", groups: [] })];
     const out = filterExplorer(two, { ...base, query: "git" }, railIndex(orch));
     expect(out.contexts.map((c) => c.name)).toEqual(["root"]);
+  });
+
+  // The archive holds ordinary plan files that happen to be filed away,
+  // so the two card-only facets have to read them. Before the archive
+  // was its own group they were `plans` rows and did; the group split
+  // must not quietly take them out of the facets' reach.
+  describe("the archive group", () => {
+    const filed = file("/ws/.gavin-root/plans/archive/old.md", "Old work", "Done", "archive");
+    const withArchive: ExplorerContextNode[] = [
+      context({
+        groups: [
+          { group: "plans", label: "Plans", files: [gitTab], archived: [] },
+          { group: "archive", label: "Archive", files: [filed], archived: [] },
+          { group: "docs", label: "Docs", files: [readme], archived: [] },
+        ],
+      }),
+    ];
+
+    it("answers the status facet", () => {
+      const out = filterExplorer(withArchive, { ...base, status: "Done" }, railIndex(orch));
+      expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["archive"]);
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Old work"]);
+    });
+
+    it("answers the rail facet", () => {
+      const onRail = railIndex({
+        rails: [rail("r9", "Ship", [filed.path])],
+        conflictNotes: [],
+        railRuns: [],
+        stepRuns: [],
+      });
+      const out = filterExplorer(withArchive, { ...base, rail: "r9" }, onRail);
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Old work"]);
+    });
+
+    // An EMPTY rail index, so that "on no rail at all" keeps both card
+    // groups: `orch` puts gitTab on r1, which would drop the plans group
+    // on its own merits and hide the thing this asserts -- that the facet
+    // takes out docs and specs, and only those.
+    it("still lets docs and specs fall out when a facet is set", () => {
+      const out = filterExplorer(withArchive, { ...base, status: ANY, rail: NO_RAIL }, railIndex(null));
+      expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans", "archive"]);
+    });
+
+    it("contributes an off-vocabulary status to the facet options", () => {
+      const odd = [
+        context({
+          groups: [
+            {
+              group: "archive",
+              label: "Archive",
+              files: [file("/ws/.gavin-root/plans/archive/x.md", "X", "Shipped", "archive")],
+              archived: [],
+            },
+          ],
+        }),
+      ];
+      expect(statusFacets(["To Do", "Done"], odd)).toEqual(["To Do", "Done", "Shipped"]);
+    });
   });
 });

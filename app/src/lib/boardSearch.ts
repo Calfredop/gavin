@@ -45,7 +45,7 @@ export function cardMatches(card: CardView, tokens: string[]): boolean {
 // A plan that matches on its own keeps every child (the human asked for
 // that plan, and its children are part of it); one that only matches
 // through a child narrows to the children that matched.
-function project(card: CardView, tokens: string[]): CardView | null {
+export function project(card: CardView, tokens: string[]): CardView | null {
   if (matchesFields(tokens, ownFields(card))) return card;
   const children = card.nestedChildren.filter((child) => matchesFields(tokens, ownFields(child)));
   if (children.length === 0) return null;

@@ -3,12 +3,13 @@
 // the orchestration RAIL it sits on.
 //
 // The two facets are ANDed with the text, and they are exclusive to
-// plans: docs and specs have no frontmatter contract, so setting either
-// facet takes those groups out of the tree rather than showing them as
-// unexplained empties.
+// CARDS -- plans and the archive alike: docs and specs have no
+// frontmatter contract, so setting either facet takes those groups out
+// of the tree rather than showing them as unexplained empties.
 
 import { matchesFields, queryTokens } from "./search";
 import { slugStatus } from "./planBoard";
+import { isCardGroup } from "./planExplorer";
 import type { ExplorerContextNode, ExplorerFile, ExplorerGroupNode } from "./planExplorer";
 import type { Orchestration } from "./orchestration";
 
@@ -45,7 +46,7 @@ export function statusFacets(columnNames: string[], contexts: ExplorerContextNod
   const seen = new Set(columnNames.map(slugStatus));
   for (const ctx of contexts) {
     for (const group of ctx.groups) {
-      if (group.group !== "plans") continue;
+      if (!isCardGroup(group.group)) continue;
       for (const file of [...group.files, ...group.archived]) {
         const slug = file.status ? slugStatus(file.status) : "";
         if (!slug || seen.has(slug)) continue;
@@ -86,12 +87,15 @@ function fileKeeper(state: PlanFilterState, rails: RailIndex): (file: ExplorerFi
 
   return (file) => {
     if (!matchesFields(tokens, [file.label, file.path, file.status])) return false;
+    // Archived cards answer both facets: they are ordinary plan files
+    // that happen to be filed away, and they keep the status they were
+    // archived with. Only docs and specs are taken out of the tree.
     if (wantStatus !== null) {
-      if (file.group !== "plans") return false;
+      if (!isCardGroup(file.group)) return false;
       if (slugStatus(file.status ?? "") !== wantStatus) return false;
     }
     if (wantRail !== null) {
-      if (file.group !== "plans") return false;
+      if (!isCardGroup(file.group)) return false;
       const on = rails.byCard.get(file.path);
       if (wantRail === NO_RAIL ? on !== undefined : on !== wantRail) return false;
     }

@@ -4,9 +4,26 @@ import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 // Deep link into the Plans tab: set a path here before switching the
 // hub view and PlanExplorerHubView selects it (then clears the store).
 export const requestedExplorerPath = writable<string | null>(null);
-import { slugStatus } from "./planBoard";
+import { isArchivedCard, slugStatus } from "./planBoard";
 
-export type ExplorerGroup = "plans" | "docs" | "specs";
+/// The folders the navigator shows under a context. `archive` is the
+/// odd one out: it is the only group nothing can be CREATED in -- a card
+/// gets there by being archived, never by being authored there -- which
+/// is why the creation paths take `CreatableGroup` instead.
+export type ExplorerGroup = "plans" | "docs" | "specs" | "archive";
+
+/// The three groups the composer can write into.
+export type CreatableGroup = Exclude<ExplorerGroup, "archive">;
+
+export const CREATABLE_GROUPS = ["plans", "docs", "specs"] as const;
+
+/// True for the groups whose files are CARDS, and therefore the only
+/// ones that can answer a status or rail question. Docs and specs have
+/// no frontmatter contract; the archive holds ordinary plan files that
+/// happen to be filed away.
+export function isCardGroup(group: ExplorerGroup): boolean {
+  return group === "plans" || group === "archive";
+}
 
 export interface ExplorerFile {
   path: string;
@@ -55,6 +72,7 @@ const GROUP_LABELS: Record<ExplorerGroup, string> = {
   plans: "Plans",
   docs: "Docs",
   specs: "Specs",
+  archive: "Archive",
 };
 
 // The daemon archives a Done card by moving it into a `done/` folder
@@ -74,8 +92,15 @@ export function gavinDirFor(context: { folderPath: string; kind: GavinContext["k
   return `${context.folderPath}/${context.kind === "root" ? ".gavin-root" : ".gavin"}`;
 }
 
-export function newFilePath(gavinDir: string, group: ExplorerGroup, fileName: string): string {
+export function newFilePath(gavinDir: string, group: CreatableGroup, fileName: string): string {
   return `${gavinDir}/${group}/${fileName}`;
+}
+
+/// The folder a group's rows live in, for "Show in Finder". The archive
+/// is a subfolder of plans/ rather than a sibling of it, which is the
+/// one place the group name is not the folder name.
+export function groupFolder(gavinDir: string, group: ExplorerGroup): string {
+  return group === "archive" ? `${gavinDir}/plans/archive` : `${gavinDir}/${group}`;
 }
 
 // The tree the explorer renders. A pure projection: the daemon already
@@ -110,20 +135,39 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
 
     const groups: ExplorerGroupNode[] = [];
 
-    if (ctx.plans.length > 0) {
-      const planFile = (p: PlanFileInfo): ExplorerFile => ({
-        path: p.path,
-        label: p.title,
-        group: "plans" as const,
-        status: p.status,
-        priority: p.priority,
-        parseWarning: p.parseWarning,
-      });
+    // Three buckets out of one `plans` listing, split by the FOLDER each
+    // file sits in:
+    //   plans/          -> the Plans group's flat rows
+    //   plans/done/     -> the Done fold inside the Plans group
+    //   plans/archive/  -> its own top-level Archive group
+    // The first two are the same board (Done cards still stand in the
+    // Done column); the third has left the board, which is why it gets a
+    // folder of its own here rather than a second fold.
+    const planFile = (group: ExplorerGroup) => (p: PlanFileInfo): ExplorerFile => ({
+      path: p.path,
+      label: p.title,
+      group,
+      status: p.status,
+      priority: p.priority,
+      parseWarning: p.parseWarning,
+    });
+    const archiveCards = ctx.plans.filter((p) => isArchivedCard(p.path));
+    const boardCards = ctx.plans.filter((p) => !isArchivedCard(p.path));
+
+    if (boardCards.length > 0) {
       groups.push({
         group: "plans",
         label: GROUP_LABELS.plans,
-        files: ctx.plans.filter((p) => !isArchivedPlan(p.path)).map(planFile),
-        archived: ctx.plans.filter((p) => isArchivedPlan(p.path)).map(planFile),
+        files: boardCards.filter((p) => !isArchivedPlan(p.path)).map(planFile("plans")),
+        archived: boardCards.filter((p) => isArchivedPlan(p.path)).map(planFile("plans")),
+      });
+    }
+    if (archiveCards.length > 0) {
+      groups.push({
+        group: "archive",
+        label: GROUP_LABELS.archive,
+        files: archiveCards.map(planFile("archive")),
+        archived: [],
       });
     }
     for (const group of ["docs", "specs"] as const) {

@@ -1,9 +1,15 @@
 <script lang="ts">
-  import type { ExplorerContextNode, ExplorerFile, ExplorerGroup } from "./planExplorer";
+  import { CREATABLE_GROUPS } from "./planExplorer";
+  import type {
+    CreatableGroup,
+    ExplorerContextNode,
+    ExplorerFile,
+    ExplorerGroupNode,
+  } from "./planExplorer";
   // Icon names are a COMPILE error when wrong (verified against the
   // installed @lucide/svelte): Columns2 is the current name for the old
   // SplitSquareHorizontal.
-  import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X } from "@lucide/svelte";
+  import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X, Archive } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { message } from "@tauri-apps/plugin-dialog";
@@ -20,27 +26,50 @@
     contexts: ExplorerContextNode[];
     selectedPath: string | null;
     onSelect: (path: string) => void;
-    onCreateFile: (context: ExplorerContextNode, group: ExplorerGroup, title: string) => void;
+    onCreateFile: (context: ExplorerContextNode, group: CreatableGroup, title: string) => void;
     // Null when there is no terminal session to anchor a split to.
     onOpenInSplit: ((path: string) => void) | null;
     onDeleteFile: (file: ExplorerFile) => void;
+    // Archive group only. Null while the board projection this restores
+    // through hasn't loaded.
+    onRestoreFile: ((file: ExplorerFile) => void) | null;
+    // Reason the archive is unavailable on the running daemon, or null.
+    restoreBlocked?: string | null;
     // Outside contexts only: unlist from the navigator (files stay).
     onRemoveOutside: (context: ExplorerContextNode) => void;
   }
-  let { contexts, selectedPath, onSelect, onCreateFile, onOpenInSplit, onDeleteFile, onRemoveOutside }: Props =
-    $props();
+  let {
+    contexts,
+    selectedPath,
+    onSelect,
+    onCreateFile,
+    onOpenInSplit,
+    onDeleteFile,
+    onRestoreFile,
+    restoreBlocked = null,
+    onRemoveOutside,
+  }: Props = $props();
 
   // Collapsed rather than expanded ids: .gavin folders are few, so
   // everything starts open and this stays empty in the common case.
   let collapsed = $state<Set<string>>(new Set());
-  // Inverted against `collapsed` on purpose: the Done node starts folded
-  // (that is the whole point of it), so this holds the ones opened.
+  // Inverted against `collapsed` on purpose: the Done node and the
+  // Archive group both start FOLDED (that is the whole point of them),
+  // so this holds the ones opened rather than the ones closed.
   let archiveOpen = $state<Set<string>>(new Set());
-  let composer = $state<{ folderPath: string; group: ExplorerGroup } | null>(null);
+
+  /// Whether a group renders its rows. The Archive group is the one
+  /// group that defaults to shut: it is the longest list in the tree and
+  /// the one nobody is working out of.
+  function groupIsOpen(group: ExplorerGroupNode, groupId: string): boolean {
+    if (group.group === "archive") return archiveOpen.has(groupId);
+    return !collapsed.has(groupId);
+  }
+  let composer = $state<{ folderPath: string; group: CreatableGroup } | null>(null);
   let composerTitle = $state("");
   // Hoisted: `{#each [...] as const as g}` does not parse -- the `as
   // const` collides with each's own `as` binding.
-  const GROUPS = ["plans", "docs", "specs"] as const;
+  const GROUPS = CREATABLE_GROUPS;
 
   // Inline because the level is data (context.depth), not a fixed class:
   // groups sit one level under their context, files one under the group.
@@ -63,7 +92,7 @@
     collapsed = next;
   }
 
-  function openComposer(folderPath: string, group: ExplorerGroup = "plans"): void {
+  function openComposer(folderPath: string, group: CreatableGroup = "plans"): void {
     composer = { folderPath, group };
     composerTitle = "";
   }
@@ -83,7 +112,16 @@
   // Built at event time so the menu always closes over the current
   // props (onOpenInSplit toggles with terminal focus).
   function menuCallbacks(): TreeMenuCallbacks {
-    return { onSelect, onOpenInSplit, onDeleteFile, onCompose: openComposer, onRemoveOutside, onShowInFinder: showInFinder };
+    return {
+      onSelect,
+      onOpenInSplit,
+      onDeleteFile,
+      onRestoreFile,
+      restoreBlocked,
+      onCompose: openComposer,
+      onRemoveOutside,
+      onShowInFinder: showInFinder,
+    };
   }
 
   function showInFinder(folderPath: string): void {
@@ -197,7 +235,8 @@
       {#if !contextCollapsed}
         {#each context.groups as group (group.group)}
           {@const groupId = `${context.folderPath}#${group.group}`}
-          {@const groupCollapsed = collapsed.has(groupId)}
+          {@const isArchive = group.group === "archive"}
+          {@const groupOpen = groupIsOpen(group, groupId)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="row group-row"
@@ -205,17 +244,20 @@
             oncontextmenu={(e) => openMenu(e, groupRowMenuItems(context, group.group, menuCallbacks()))}
           >
             <IconButton
-              icon={groupCollapsed ? ChevronRight : ChevronDown}
-              label={groupCollapsed ? "Expand group" : "Collapse group"}
+              icon={groupOpen ? ChevronDown : ChevronRight}
+              label={groupOpen ? "Collapse group" : "Expand group"}
               size={12}
-              onclick={() => toggle(groupId)}
+              onclick={() => (isArchive ? toggleArchive(groupId) : toggle(groupId))}
             />
+            {#if isArchive}
+              <span class="glyph"><Archive size={11} /></span>
+            {/if}
             <span class="group-label">{group.label}</span>
             <!-- Archived cards count here too: a context whose plans are
                  ALL Done would otherwise read "Plans 0" above a "Done 8". -->
             <span class="count">{group.files.length + group.archived.length}</span>
           </div>
-          {#if !groupCollapsed}
+          {#if groupOpen}
             {#each group.files as file (file.path)}
               {@render fileRow(file, context.depth + 2)}
             {/each}

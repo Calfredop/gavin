@@ -6,12 +6,12 @@
   import { openPath } from "@tauri-apps/plugin-opener";
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
-  import { slugStatus } from "./planBoard";
+  import { isArchivedCard, slugStatus } from "./planBoard";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "./planChecklist";
   import { requestedExplorerPath, slugFileName } from "./planExplorer";
   import { patchPlanField, patchPlanCreated, patchPlanPath } from "./gavinState";
   import type { PlanFileInfo } from "./gavin";
-  import { switchWorkspaceView, layoutState } from "./layoutState";
+  import { switchWorkspaceView, layoutState, daemonCompat } from "./layoutState";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, relaunchCard } from "./cardRunActions";
   import { findCardPlacement, stepStateOf } from "./orchestration";
@@ -21,6 +21,8 @@
     removeCardFromRailAction,
   } from "./orchestrationState";
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
+  import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
+  import { featureBlockedReason } from "./daemonCompat";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { findSessionLocation } from "./workspace";
   import * as backend from "./backend";
@@ -265,6 +267,31 @@
     else onClose();
   }
 
+  // --- archive / restore ------------------------------------------------
+  // The same pair the card menu carries, on the surface the human is
+  // most likely to be looking at when they want it: opening an archived
+  // card is how you read it, and reading it is when you decide it comes
+  // back.
+  const archived = $derived(isArchivedCard(card.id));
+  const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
+
+  async function toggleArchive(): Promise<void> {
+    errorMessage = null;
+    const run = archived ? executeUnarchive : executeArchive;
+    const err = await run(workspaceId, [card]);
+    // Backed out of the "this will close N agents" prompt: the card is
+    // exactly where it was, so this modal must be too.
+    if (err === ARCHIVE_CANCELLED) return;
+    if (err) {
+      errorMessage = err;
+      return;
+    }
+    // Closed, not followed: the move rewrote the card's path and the
+    // host holds the OLD one as this modal's identity, so staying open
+    // would leave the modal resolving nothing. Delete ends the same way.
+    onClose();
+  }
+
   function openInPlansTab(): void {
     requestedExplorerPath.set(card.id);
     void switchWorkspaceView(workspaceId, "plans");
@@ -452,6 +479,17 @@
   {/if}
   <div class="actions">
     <button type="button" class="danger" onclick={() => (confirmingDelete = true)}>Delete</button>
+    <button
+      type="button"
+      disabled={archiveBlocked !== null}
+      title={archiveBlocked ??
+        (archived
+          ? "Files the card back on the board by its status"
+          : "Takes the card off the board — its agents and file tabs close with it")}
+      onclick={() => void toggleArchive()}
+    >
+      {archived ? "Restore from archive" : "Archive"}
+    </button>
     <button type="button" onclick={openInPlansTab}>Open in Plans tab</button>
     <button type="button" onclick={() => void openExternally()}>Open externally</button>
     <button type="button" onclick={onClose}>Close</button>
@@ -714,5 +752,11 @@
     background: var(--surface-danger);
     color: var(--danger-text);
     margin-right: auto;
+  }
+  /* Blocked by daemon skew: the title says why, so the row must read as
+     unavailable rather than as an unresponsive button. */
+  .actions button:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
 </style>

@@ -379,6 +379,54 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Archiving closes what the card was using",
+    items: [
+      {
+        id: "arch-close-session",
+        text: "Archive a card with a RUNNING agent → a dialog names the count, and on OK the agent's tab is gone from its pane",
+        hint: "Run a card, wait for the terminal, then right-click → Archive. Cancel must leave both the card and the agent exactly where they were.",
+      },
+      {
+        id: "arch-close-file-tab",
+        text: "Archive a card whose .md is open as a file tab and nothing is running → NO dialog, and the file tab closes on its own",
+        hint: "Open the card from the Plans tab first. A file tab ends no process, so a prompt here would be noise.",
+      },
+      {
+        id: "arch-close-relaunch",
+        text: "Restore that card from the archive grid → its menu still offers “Re-launch agent”, not “Run in dedicated session”",
+        hint: "The session dies but the binding survives, so the remembered cwd/command is still there. “Run in dedicated session” means the binding was dropped.",
+      },
+      {
+        id: "arch-close-archive-all",
+        text: "“Archive all” on the Done column asks ONCE for the whole batch, not once per card",
+      },
+    ],
+  },
+  {
+    title: "Getting a card back out of the archive",
+    items: [
+      {
+        id: "unarch-detail-modal",
+        text: "Open an archived card from the archive grid → its footer reads “Restore from archive”; pressing it closes the modal and the card is back in its column",
+        hint: "Open a card that is still on the board and the same button reads “Archive”. The modal closes on either, because the card's file has moved and the path the modal was opened with is gone.",
+      },
+      {
+        id: "unarch-detail-status",
+        text: "A card archived from Done comes back into Done, and one archived from To Do comes back into To Do",
+        hint: "The status the card kept while archived is what picks the column — restoring never re-files it.",
+      },
+      {
+        id: "unarch-plans-tab",
+        text: "Plans tab → Archive group → right-click a card → “Restore from archive”; the row leaves the Archive group and the editor stays on the same file",
+        hint: "The selection follows the move on its own for a card with no nested tasks. A plan that took children with it is more than one rename, so the pane may fall back to “this file no longer exists” — that is expected, not a bug.",
+      },
+      {
+        id: "unarch-plans-tab-only-archive",
+        text: "Right-click a row under Plans, Docs or Specs → NO restore entry (it belongs only to the Archive group)",
+      },
+    ],
+  },
+  {
     title: "Orchestration home",
     items: [
       { id: "home-default", text: "A rooted workspace opens on Home; one where you last chose another tab still opens there" },

@@ -209,6 +209,60 @@ describe("mergePlanCards", () => {
     expect(autoColumns).toHaveLength(1);
     expect(autoColumns[0].planCards.map((p) => p.fileName)).toEqual(["a.md"]);
   });
+
+  it("keeps archived cards OFF the board, in their own bucket", () => {
+    // The archived card still says `status: Done` -- that is exactly why
+    // it has to be pulled before a column sees it, or it would stand in
+    // the Done column as if it had never been filed away.
+    const doneCol: Board = { columns: [col("c1", "To Do"), col("c3", "Done")], labels: [], cardSessions: [] };
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("live.md", "Done"),
+        plan("filed.md", "Done", { path: "/ws/.gavin-root/plans/archive/filed.md" }),
+      ]),
+    ]);
+    const { columns, archived } = mergePlanCards(doneCol, t);
+    expect(columns[1].planCards.map((p) => p.fileName)).toEqual(["live.md"]);
+    expect(archived.map((p) => p.fileName)).toEqual(["filed.md"]);
+  });
+
+  it("never conjures an auto column for an archived card's status", () => {
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("odd.md", "Shipped", { path: "/ws/.gavin-root/plans/archive/odd.md" }),
+      ]),
+    ]);
+    const { autoColumns, archived } = mergePlanCards(board, t);
+    expect(autoColumns).toEqual([]);
+    expect(archived.map((p) => p.fileName)).toEqual(["odd.md"]);
+  });
+
+  it("an archived plan carries its nested children into the archive with it", () => {
+    // The daemon moved both files, so both paths are archived; nesting
+    // resolves first and the child rides in inside its parent rather
+    // than showing up as a second archived card.
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("big.md", "Done", { path: "/ws/.gavin-root/plans/archive/big.md" }),
+        plan("step.md", null, {
+          path: "/ws/.gavin-root/plans/archive/step.md",
+          kind: "task",
+          parent: "big.md",
+        }),
+      ]),
+    ]);
+    const { archived } = mergePlanCards(board, t);
+    expect(archived.map((p) => p.fileName)).toEqual(["big.md"]);
+    expect(archived[0].nestedChildren.map((c) => c.fileName)).toEqual(["step.md"]);
+  });
+
+  it("carries the daemon's mtime onto the card view", () => {
+    const t = tree([ctx("/ws", "root", [plan("a.md", "To Do", { modifiedAt: 1234 })])]);
+    expect(mergePlanCards(board, t).columns[0].planCards[0].modifiedAt).toBe(1234);
+    // An older daemon sends nothing; the view says so rather than lying.
+    const old = tree([ctx("/ws", "root", [plan("b.md", "To Do")])]);
+    expect(mergePlanCards(board, old).columns[0].planCards[0].modifiedAt).toBeNull();
+  });
 });
 
 describe("nearestContext", () => {
@@ -260,6 +314,20 @@ describe("indexCardViews", () => {
     const t = tree([ctx("/ws", "root", [plan("a.md", "Blocked")])]);
     const index = indexCardViews(mergePlanCards(board, t));
     expect(index.get("/ws/.gavin-root/plans/a.md")?.columnName).toBe("Blocked");
+  });
+
+  it("indexes archived cards too, with no column", () => {
+    // A rail step whose card was archived still has to render as itself
+    // rather than as "missing card".
+    const t = tree([
+      ctx("/ws", "root", [
+        plan("filed.md", "Done", { path: "/ws/.gavin-root/plans/archive/filed.md" }),
+      ]),
+    ]);
+    const index = indexCardViews(mergePlanCards(board, t));
+    const placed = index.get("/ws/.gavin-root/plans/archive/filed.md");
+    expect(placed?.columnName).toBeNull();
+    expect(placed?.view.fileName).toBe("filed.md");
   });
 
   it("is empty for a board with no cards", () => {

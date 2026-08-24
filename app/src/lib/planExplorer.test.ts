@@ -7,6 +7,8 @@ import {
   isUnderRoot,
   statusOptions,
   newFilePath,
+  groupFolder,
+  isCardGroup,
 } from "./planExplorer";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 
@@ -106,6 +108,60 @@ describe("buildExplorerTree", () => {
     expect(plans.group).toBe("plans");
     expect(plans.files).toEqual([]);
     expect(plans.archived).toHaveLength(1);
+  });
+
+  it("gives plans/archive/ a folder of its own, beside Plans", () => {
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        plans: [
+          plan("live.md"),
+          plan("done.md", { path: "/ws/.gavin-root/plans/done/done.md", status: "Done" }),
+          plan("filed.md", { path: "/ws/.gavin-root/plans/archive/filed.md", status: "Done" }),
+        ],
+        docs: [{ path: "/ws/.gavin-root/docs/a.md", relPath: "a.md" }],
+      }),
+    ]);
+    const [node] = buildExplorerTree(t);
+    expect(node.groups.map((g) => g.group)).toEqual(["plans", "archive", "docs"]);
+
+    // The archive is a flat list -- it has no Done fold of its own, and
+    // the Done fold in Plans is untouched by it.
+    const [plans, archive] = node.groups;
+    expect(plans.files.map((f) => f.path)).toEqual(["/ws/.gavin-root/plans/live.md"]);
+    expect(plans.archived.map((f) => f.path)).toEqual(["/ws/.gavin-root/plans/done/done.md"]);
+    expect(archive.label).toBe("Archive");
+    expect(archive.files.map((f) => f.path)).toEqual(["/ws/.gavin-root/plans/archive/filed.md"]);
+    expect(archive.archived).toEqual([]);
+  });
+
+  it("archive rows keep the card's status, so the facets can read them", () => {
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        plans: [plan("filed.md", { path: "/ws/.gavin-root/plans/archive/filed.md", status: "Done" })],
+      }),
+    ]);
+    const [archive] = buildExplorerTree(t)[0].groups;
+    expect(archive.group).toBe("archive");
+    expect(archive.files[0].status).toBe("Done");
+  });
+
+  it("shows no Archive folder when nothing is archived", () => {
+    const t = tree([ctx("/ws", "root", { kind: "root", plans: [plan("live.md")] })]);
+    expect(buildExplorerTree(t)[0].groups.map((g) => g.group)).toEqual(["plans"]);
+  });
+
+  it("shows no Plans folder when EVERY card is archived", () => {
+    // The opposite edge of the one above: an empty "Plans 0" row above a
+    // full Archive would be a row about nothing.
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        plans: [plan("filed.md", { path: "/ws/.gavin-root/plans/archive/filed.md" })],
+      }),
+    ]);
+    expect(buildExplorerTree(t)[0].groups.map((g) => g.group)).toEqual(["archive"]);
   });
 
   it("docs and specs groups never carry archived files", () => {
@@ -267,6 +323,26 @@ describe("newFilePath", () => {
   it("builds paths under the context's gavin directory", () => {
     expect(newFilePath("/ws/.gavin-root", "docs", "notes.md")).toBe("/ws/.gavin-root/docs/notes.md");
     expect(newFilePath("/ws/auth/.gavin", "specs", "api.md")).toBe("/ws/auth/.gavin/specs/api.md");
+  });
+});
+
+describe("groupFolder", () => {
+  it("is the group name for the three authored folders", () => {
+    expect(groupFolder("/ws/.gavin-root", "plans")).toBe("/ws/.gavin-root/plans");
+    expect(groupFolder("/ws/.gavin-root", "docs")).toBe("/ws/.gavin-root/docs");
+  });
+
+  it("nests the archive inside plans/, which is where it actually lives", () => {
+    expect(groupFolder("/ws/.gavin-root", "archive")).toBe("/ws/.gavin-root/plans/archive");
+  });
+});
+
+describe("isCardGroup", () => {
+  it("is true for the two groups holding card files", () => {
+    expect(isCardGroup("plans")).toBe(true);
+    expect(isCardGroup("archive")).toBe(true);
+    expect(isCardGroup("docs")).toBe(false);
+    expect(isCardGroup("specs")).toBe(false);
   });
 });
 

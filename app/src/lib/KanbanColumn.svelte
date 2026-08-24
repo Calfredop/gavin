@@ -18,7 +18,7 @@
     columnRunMenuLabel,
     type CardSessionState,
   } from "./columnRunAction";
-  import { Play, RotateCcw } from "@lucide/svelte";
+  import { Play, RotateCcw, Archive } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
   import { buildCreatePlanArgs } from "./cardCompose";
@@ -26,6 +26,9 @@
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
   import { orchestrations, sendCardToRailAction } from "./orchestrationState";
+  import { executeArchive, isDoneColumn } from "./archiveActions";
+  import { featureBlockedReason } from "./daemonCompat";
+  import { daemonCompat } from "./layoutState";
   import * as backend from "./backend";
 
   interface Props {
@@ -216,6 +219,36 @@
       }
     } finally {
       runningAll = false;
+    }
+  }
+
+  // --- archive all (the Done column only) ------------------------------
+  // The Done column is the one that grows without bound: every finished
+  // card lands there and nothing takes it away. This button is what
+  // takes them away -- into `plans/archive/`, off the board, still on
+  // disk and still searchable from the archive grid.
+  //
+  // Only the FULL board offers it: the per-context BoardPane is a
+  // read-only structural view (spec §4), and a bulk file move is not
+  // something to hide behind a read-only header.
+  const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
+  const canArchiveAll = $derived(
+    mode === "full" && isDoneColumn(column.name) && planCards.length > 0
+  );
+  let archivingAll = $state(false);
+  let archiveError = $state<string | null>(null);
+
+  async function archiveAll(): Promise<void> {
+    if (archivingAll || filtered || archiveBlocked !== null) return;
+    archivingAll = true;
+    archiveError = null;
+    try {
+      // Snapshot: each move takes its card out of `planCards` under the
+      // loop's feet, the same reason runAll snapshots.
+      const err = await executeArchive(workspaceId, [...planCards]);
+      if (err) archiveError = err;
+    } finally {
+      archivingAll = false;
     }
   }
 
@@ -414,6 +447,23 @@
         <span class="run-all-count">{runnable.length}</span>
       </IconButton>
     {/if}
+    {#if canArchiveAll}
+      <IconButton
+        icon={Archive}
+        label="Archive all"
+        variant="outlined"
+        size={10}
+        class="archive-all"
+        disabled={archivingAll || filtered || archiveBlocked !== null}
+        tip={archiveBlocked ??
+          (filtered
+            ? FILTERED_TIP
+            : `Archive all — files ${planCards.length} ${planCards.length === 1 ? "card" : "cards"} away; nothing is deleted`)}
+        onclick={() => void archiveAll()}
+      >
+        <span class="archive-all-count">{planCards.length}</span>
+      </IconButton>
+    {/if}
     {#if mode === "full"}
       <IconButton
         icon={X}
@@ -450,6 +500,9 @@
   </div>
   {#if deleteError}
     <div class="delete-error">{deleteError}</div>
+  {/if}
+  {#if archiveError}
+    <div class="delete-error">{archiveError}</div>
   {/if}
   {#if composing}
     <div class="composer">
@@ -664,7 +717,8 @@
   :global(.run-all) {
     flex: 0 0 auto;
   }
-  .run-all-count {
+  .run-all-count,
+  .archive-all-count {
     font-size: 0.75em;
     font-family: monospace;
   }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
+  import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
   import { gavinTrees, refreshGavinTree } from "./gavinState";
   import type { GavinTree } from "./gavin";
   import { fetchBoard, kanbanState } from "./kanbanState";
@@ -13,10 +13,12 @@
     slugFileName,
     type ExplorerContextNode,
     type ExplorerFile,
-    type ExplorerGroup,
+    type CreatableGroup,
   } from "./planExplorer";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { executeUnarchive } from "./archiveActions";
+  import { featureBlockedReason } from "./daemonCompat";
   import PlanTree from "./PlanTree.svelte";
   import FileEditor from "./FileEditor.svelte";
   import PlanMetadataPanel from "./PlanMetadataPanel.svelte";
@@ -133,7 +135,7 @@
 
   async function createFile(
     context: ExplorerContextNode,
-    group: ExplorerGroup,
+    group: CreatableGroup,
     title: string
   ): Promise<void> {
     error = null;
@@ -186,13 +188,19 @@
 
   let pendingDelete = $state<ExplorerFile | null>(null);
 
+  // The board's own reading of these files. Held once because two row
+  // actions need different slices of it: delete needs the cascade over
+  // the cards ON the board, restore needs the ones that have left it.
+  const merged = $derived.by(() => {
+    const board = $kanbanState[workspaceId];
+    return board ? mergePlanCards(board, $gavinTrees[workspaceId]) : null;
+  });
+
   // The board projection, for the plan-deletion cascade: nested children
   // die with their plan, free-standing children get un-parented -- same
   // rules as the kanban's delete.
   const allCards = $derived.by<CardView[]>(() => {
-    const board = $kanbanState[workspaceId];
-    if (!board) return [];
-    const merged = mergePlanCards(board, $gavinTrees[workspaceId]);
+    if (!merged) return [];
     return [
       ...merged.columns.flatMap((c) => c.planCards),
       ...merged.autoColumns.flatMap((a) => a.planCards),
@@ -239,6 +247,37 @@
       }
     }
     if (selectedPath && deleted.includes(selectedPath)) selectedPath = null;
+    void refreshGavinTree(workspaceId);
+  }
+
+  // ---- restore from the archive ---------------------------------------
+
+  // Archived cards are NOT in `allCards`: mergePlanCards routes them out
+  // of the columns into their own bucket, which is exactly what takes
+  // them off the board. Restoring reads that bucket rather than widening
+  // the deletion cascade's view, which must stay the board's.
+  const archivedCards = $derived<CardView[]>(merged?.archived ?? []);
+  const restoreBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
+
+  async function restoreFile(file: ExplorerFile): Promise<void> {
+    error = null;
+    const card = archivedCards.find((c) => c.id === file.path);
+    if (!card) {
+      // The tree lists it but the board projection does not -- a stale
+      // tree, or a card whose file vanished. Say so instead of moving
+      // nothing and looking like a no-op.
+      error = `Couldn't restore ${file.path.split("/").at(-1)}: it isn't on the board's archive.`;
+      void refreshGavinTree(workspaceId);
+      return;
+    }
+    const err = await executeUnarchive(workspaceId, [card]);
+    if (err) error = err;
+    // The selection is NOT reset here: executeUnarchive patches the new
+    // path into the tree store, and the followRenamedPath effect above
+    // moves the selection with it. A plan whose nested children moved
+    // too is more than one rename, so that inference declines and the
+    // pane falls back to "this file no longer exists" -- the same honest
+    // answer it gives for any move it can't attribute.
     void refreshGavinTree(workspaceId);
   }
 
@@ -332,6 +371,8 @@
           onCreateFile={createFile}
           onOpenInSplit={anchorSessionId ? openInSplit : null}
           onDeleteFile={(f) => (pendingDelete = f)}
+          onRestoreFile={(f) => void restoreFile(f)}
+          {restoreBlocked}
           onRemoveOutside={(c) => (pendingRemoveOutside = c)}
         />
       {/if}
