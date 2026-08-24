@@ -8,10 +8,19 @@
   import CardDetailModal from "./CardDetailModal.svelte";
   import SearchInput from "./ui/SearchInput.svelte";
   import { searchOrchestration } from "./orchestrationSearch";
+  import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
+  import StepParamsDialog from "./StepParamsDialog.svelte";
   import { attachOrchestrationDrag } from "./orchestrationDragGlue";
   import Modal from "./Modal.svelte";
+  import CardDetailModal from "./CardDetailModal.svelte";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { gavinTrees } from "./gavinState";
-  import { fetchBoard, kanbanState } from "./kanbanState";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "./kanbanState";
+  import { mergePlanCards, indexCardViews, type CardView, type PlacedCardView } from "./planBoard";
+  import { runCard, sendToMainAgent } from "./cardRunActions";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { openContextMenuFromEvent } from "./contextMenu";
+  import { buildCardMenuEntries } from "./cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
@@ -23,7 +32,11 @@
     numberConflicts,
     describeConflict,
     groupUnplacedByStatus,
+    stepParams,
+    findStep,
   } from "./orchestration";
+  import { findTool, toolKindLabel } from "./orchestrationTools";
+  import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
     orchestrations,
     fetchOrchestration,
@@ -47,6 +60,10 @@
     addStepToStageAction,
     requestReorganize,
     renameRailAction,
+    addToolAsStepAction,
+    addToolAsStageAction,
+    addToolToStageAction,
+    setStepParamsAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -61,11 +78,24 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const cards = $derived(cardIndex(tree));
   const doneName = $derived(board ? (doneColumn(board)?.name ?? null) : null);
+  // The board's OWN projection, so a card on a rail is the very same card
+  // object the kanban tab renders -- kind colours, labels, priority,
+  // checklist, nesting and all -- carrying the one fact a rail has to add:
+  // which column it sits in.
+  const merged = $derived(board ? mergePlanCards(board, tree) : null);
+  const placedCards = $derived<Map<string, PlacedCardView>>(
+    merged ? indexCardViews(merged) : new Map()
+  );
+  const allCards = $derived<CardView[]>([...placedCards.values()].map((p) => p.view));
   const rails = $derived([...(orch?.rails ?? [])].sort((a, b) => a.position - b.position));
   // null, not [], while the refs snapshot is still loading -- unknown
   // must not read as "every worktree is gone".
   const worktrees = $derived($gitStore[workspaceId]?.refs?.worktrees ?? null);
   const numbered = $derived(orch ? numberConflicts(detectConflicts(orch, tree, worktrees)) : []);
+  // renderLibraryFor, not libraryFor: while the fetch is in flight the
+  // drawer shows the ten built-ins rather than an empty panel. The
+  // SCHEDULER uses libraryFor, which can tell loading from empty.
+  const tools = $derived(renderLibraryFor($toolRecords, workspaceId));
 
   // The card detail modal, opened from a tab's card-link button (and
   // from a step chip's own menu once it has one): a step is a card, and
@@ -91,9 +121,85 @@
   });
 
   let picking = $state<string | null>(null);
+  let managingTools = $state(false);
+  /// The tool step whose parameters are being edited, by step id.
+  let editingParamsFor = $state<string | null>(null);
   // The rail whose bindings are being edited, set by the rail header and
   // by the conflicts box's inline fix.
   let binding = $state<string | null>(null);
+
+  // --- the card surface -------------------------------------------------
+  // A card step IS a kanban card here, so this tab owns the same three
+  // pieces of furniture the board does: the detail modal, the delete
+  // prompt, and an error strip for writes that fail. Everything routes
+  // through the same helpers, so a rail card and a board card cannot
+  // drift apart.
+  let openCardPath = $state<string | null>(null);
+  const openCard = $derived<CardView | null>(
+    openCardPath ? (placedCards.get(openCardPath)?.view ?? null) : null
+  );
+  let cardWriteError = $state<string | null>(null);
+
+  const agentAvailable = $derived(Boolean(ws?.mainSessionId));
+
+  async function handleRun(card: CardView): Promise<void> {
+    cardWriteError = null;
+    const err = await runCard(workspaceId, card);
+    if (err) cardWriteError = err;
+  }
+
+  async function handleSendToAgent(card: CardView): Promise<void> {
+    cardWriteError = null;
+    const err = await sendToMainAgent(workspaceId, card);
+    if (err) cardWriteError = err;
+  }
+
+  function handleCardContextMenu(card: CardView, e: MouseEvent): void {
+    if (!board) return;
+    openContextMenuFromEvent(
+      e,
+      buildCardMenuEntries(card, {
+        workspaceId,
+        columns: board.columns,
+        openDetail: (path) => (openCardPath = path),
+        requestDelete: (c) => (pendingDelete = c),
+        run: (c) => void handleRun(c),
+        sendToAgent: (c) => void handleSendToAgent(c),
+        agentAvailable,
+        reportError: (msg) => (cardWriteError = msg),
+      })
+    );
+  }
+
+  // Deleting a card FILE from a rail is the board's own cascade, prompt
+  // and all -- the step referencing it disappears with the card, because
+  // a step is only ever a reference (spec O2).
+  let pendingDelete = $state<CardView | null>(null);
+  const pendingPlan = $derived<DeletionPlan | null>(
+    pendingDelete ? deletionPlanFor(pendingDelete, allCards) : null
+  );
+  const pendingDeleteLines = $derived.by(() => {
+    if (!pendingDelete || !pendingPlan) return [];
+    const lines = [`Deletes ${pendingDelete.fileName} permanently.`];
+    const nested = pendingPlan.files.length - 1;
+    if (nested > 0) lines.push(`Also deletes ${nested} nested ${nested === 1 ? "task" : "tasks"}.`);
+    if (pendingPlan.unparent.length > 0)
+      lines.push(
+        `${pendingPlan.unparent.length} free-standing ${pendingPlan.unparent.length === 1 ? "task keeps" : "tasks keep"} their column (un-parented).`
+      );
+    if (pendingPlan.files.some((f) => cardSessionFor(board, f.id) !== null))
+      lines.push("A bound agent session keeps running on the Agents page.");
+    return lines;
+  });
+
+  async function confirmDelete(): Promise<void> {
+    const plan = pendingPlan;
+    pendingDelete = null;
+    if (!plan) return;
+    cardWriteError = null;
+    const err = await executeDeletion(workspaceId, plan);
+    if (err) cardWriteError = err;
+  }
 
   // The cards a rail can take on: every runnable card not already on one.
   const placed = $derived(
@@ -129,7 +235,13 @@
   $effect(() => {
     void fetchOrchestration(workspaceId);
     void fetchBoard(workspaceId);
+    // The board is no longer just the status vocabulary here: its columns
+    // and labels are drawn on every card step, so a stale one shows stale
+    // cards. Same refresh the kanban tab does on reveal.
+    void refreshBoard(workspaceId);
     void refreshOrchestration(workspaceId);
+    void fetchTools(workspaceId);
+    void refreshTools(workspaceId);
     if (root) {
       ensureGitView(workspaceId, root);
       void refreshGit(workspaceId);
@@ -143,6 +255,10 @@
     void $gavinTrees[workspaceId];
     void $layoutState.workspaces;
     void $kanbanState[workspaceId];
+    // A tool step launches only once the library has loaded, so the tick
+    // has to re-run when it arrives -- otherwise an armed rail sitting
+    // on a tool step would wait for some unrelated change.
+    void $toolRecords[workspaceId];
     void tick(workspaceId);
   });
 
@@ -168,13 +284,22 @@
       root: bodyEl,
       scrollEl: gridEl,
       commit: (drag) => {
-        // `id` is a step id for a step drag and a card path for a card
-        // drag -- the two commit into different mutators entirely.
+        // `id` is a step id for a step drag, a card path for a card
+        // drag, and a tool id for a tool drag -- three sources, three
+        // sets of mutators, one drop-target vocabulary.
         if (drag.kind === "card") {
           if (drag.target.kind === "into-stage") {
             void addStepToStageAction(workspaceId, drag.target.stageId, drag.id);
           } else if (drag.target.kind === "new-stage") {
             void addCardAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
+          }
+          return;
+        }
+        if (drag.kind === "tool") {
+          if (drag.target.kind === "into-stage") {
+            void addToolToStageAction(workspaceId, drag.target.stageId, drag.id);
+          } else if (drag.target.kind === "new-stage") {
+            void addToolAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
           }
           return;
         }
@@ -186,16 +311,27 @@
           void moveStepToNewStageAction(workspaceId, drag.id, drag.target.railId, drag.target.index);
         }
       },
-      // A press with no movement does nothing here: the chip's own
-      // buttons handle clicks, and the glue already ignores pointerdowns
-      // that land on a button.
-      click: () => {},
+      // A press with no movement on a CARD step opens that card, exactly
+      // as a click on the board does. `cardPath` is set when the press
+      // landed on a card of its own -- a nested child inside an expanded
+      // plan -- and that one opens as itself. A tool step has no card to
+      // open, and a drawer row fires its own onclick, so both fall
+      // through to nothing.
+      click: (stepId, cardPath) => {
+        if (cardPath) {
+          openCardPath = cardPath;
+          return;
+        }
+        const step = orch ? findStep(orch, stepId) : null;
+        if (step && !step.toolId) openCardPath = step.cardPath;
+      },
     });
   });
 
-  const mainAgentRunning = $derived(Boolean(ws?.mainSessionId));
   const conflictSummary = $derived(
-    orch ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch)}`) : []
+    orch
+      ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
+      : []
   );
 
   async function reorganize(): Promise<void> {
@@ -233,8 +369,8 @@
     <button
       type="button"
       class="add-rail"
-      disabled={!mainAgentRunning}
-      title={mainAgentRunning ? "" : "Start the workspace agent on Home first"}
+      disabled={!agentAvailable}
+      title={agentAvailable ? "" : "Start the workspace agent on Home first"}
       onclick={() => void reorganize()}
     >
       Reorganize with agent…
@@ -251,11 +387,21 @@
     </div>
   {/if}
 
+  <!-- A card write failing is a different fact from the PLAN failing to
+       save, so it gets its own line rather than borrowing that one. -->
+  {#if cardWriteError}
+    <div class="save-error">
+      <span>{cardWriteError}</span>
+      <button type="button" onclick={() => (cardWriteError = null)}>Dismiss</button>
+    </div>
+  {/if}
+
   {#if orch}
     <OrchestrationConflicts
       {numbered}
       {cards}
       {orch}
+      {tools}
       onBindWorktree={(railId) => (binding = railId)}
       onMakeSequential={(stageId) => void makeStageSequentialAction(workspaceId, stageId)}
     />
@@ -278,6 +424,10 @@
           {rail}
           {orch}
           {cards}
+          {tools}
+          {placedCards}
+          {workspaceId}
+          labelDefs={board?.labels ?? []}
           doneColumnName={doneName}
           {numbered}
           onStart={() => onStart(rail.id)}
@@ -298,6 +448,12 @@
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
           filtering={lens.filtering}
           stepLit={lens.stepLit}
+          onEditStepParams={(stepId) => (editingParamsFor = stepId)}
+          onOpenCard={(path) => (openCardPath = path)}
+          onRunCard={(card) => void handleRun(card)}
+          onSendCardToAgent={(card) => void handleSendToAgent(card)}
+          {agentAvailable}
+          onCardContextMenu={handleCardContextMenu}
         />
       {/each}
       </div>
@@ -305,14 +461,43 @@
         groups={unplacedGroups}
         filtering={lens.filtering}
         hiddenCount={unplaced.total - unplaced.shown}
+        {tools}
         targetRailId={rails[0]?.id ?? null}
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
+        onAddTool={(toolId) => void addToolAsStepAction(workspaceId, rails[0].id, toolId)}
+        onManageTools={() => (managingTools = true)}
       />
     </div>
   {/if}
 </div>
 
-<OrchestrationDragPreview {orch} {cards} dragRoot={bodyEl} />
+<OrchestrationDragPreview
+  {orch}
+  {cards}
+  {tools}
+  {placedCards}
+  labelDefs={board?.labels ?? []}
+  dragRoot={bodyEl}
+/>
+
+{#if managingTools}
+  <ToolLibraryDialog {workspaceId} {tools} onClose={() => (managingTools = false)} />
+{/if}
+
+{#if editingParamsFor && orch}
+  {@const step = orch.rails
+    .flatMap((r) => r.stages.flatMap((s) => s.steps))
+    .find((t) => t.id === editingParamsFor)}
+  {@const tool = step?.toolId ? findTool(tools, step.toolId) : undefined}
+  {#if step && tool}
+    <StepParamsDialog
+      {tool}
+      params={stepParams(step)}
+      onSave={(params) => void setStepParamsAction(workspaceId, step.id, params)}
+      onClose={() => (editingParamsFor = null)}
+    />
+  {/if}
+{/if}
 
 {#if openPlan && board}
   <CardDetailModal
@@ -333,11 +518,35 @@
   {/if}
 {/if}
 
+{#if pendingDelete}
+  <ConfirmPrompt
+    title={`Delete "${pendingDelete.title}"?`}
+    lines={pendingDeleteLines}
+    choices={[{ label: "Delete", danger: true, onPick: () => void confirmDelete() }]}
+    onCancel={() => (pendingDelete = null)}
+  />
+{/if}
+
+{#if openCard && board}
+  <CardDetailModal
+    card={openCard}
+    {workspaceId}
+    columns={board.columns}
+    labels={board.labels}
+    {allCards}
+    onClose={() => (openCardPath = null)}
+  />
+{/if}
+
 {#if picking}
   {@const railId = picking}
   <Modal onClose={() => (picking = null)}>
     <div class="picker-body">
       <h3>Add a step</h3>
+      <!-- Both step kinds, because the drawer's click-to-add can only
+           reach the FIRST rail; this picker is how a card or a tool
+           lands on a specific one without dragging. -->
+      <p class="pick-head">Cards</p>
       {#if available.length === 0}
         <p class="empty">Every runnable card is already on a rail.</p>
       {:else}
@@ -358,6 +567,23 @@
           {/each}
         </ul>
       {/if}
+      <p class="pick-head">Tools</p>
+      <ul class="picker">
+        {#each tools as tool (tool.id)}
+          <li>
+            <button
+              type="button"
+              onclick={() => {
+                void addToolAsStepAction(workspaceId, railId, tool.id);
+                picking = null;
+              }}
+            >
+              <span class="pick-title">{tool.name}</span>
+              <span class="pick-kind">{toolKindLabel(tool.kind)}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
     </div>
   </Modal>
 {/if}
@@ -468,8 +694,18 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    max-height: 50vh;
+    max-height: 32vh;
     overflow-y: auto;
+  }
+  .pick-head {
+    margin: 10px 0 4px;
+    color: var(--text-subtle);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .pick-head:first-of-type {
+    margin-top: 0;
   }
   .picker button {
     display: flex;

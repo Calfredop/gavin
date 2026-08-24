@@ -4,6 +4,7 @@ import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
+import type { ToolRecord } from "./orchestrationTools";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -498,4 +499,18 @@ export function setStepRun(
   reason: string | null
 ): Promise<void> {
   return invoke("set_step_run", { stepId, stateValue: state, sessionId, reason });
+}
+
+// --- The tool library -------------------------------------------------------
+
+export function getTools(workspaceId: string): Promise<ToolRecord[]> {
+  return invoke("get_tools", { workspaceId });
+}
+
+export function saveTool(tool: ToolRecord): Promise<void> {
+  return invoke("save_tool", { tool });
+}
+
+export function deleteTool(id: string): Promise<void> {
+  return invoke("delete_tool", { id });
 }

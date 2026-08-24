@@ -738,6 +738,10 @@ mod tests {
         assert!(workflow.contains("gavin_create_plan"), "{workflow}");
         let orchestrate = std::fs::read_to_string(&paths[1]).unwrap();
         assert!(orchestrate.contains("gavin_get_orchestration"), "{orchestrate}");
+        // Tool steps are half the step vocabulary; a skill that never
+        // mentions them would have the agent rewrite them into broken
+        // card steps on the first reorganize.
+        assert!(orchestrate.contains("toolId"), "{orchestrate}");
         assert!(
             orchestrate.contains("When unsure, serialize"),
             "the parallelism rule must survive into the installed file"

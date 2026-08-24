@@ -2,7 +2,13 @@
   import { Play, Pause, RotateCcw, Trash2, Plus } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
+  import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
+  import type { Label } from "./kanban";
+  import type { CardView, PlacedCardView } from "./planBoard";
   import type { CardEntry, NumberedConflict, Orchestration, Rail } from "./orchestration";
+  import { stepParams } from "./orchestration";
+  import { findTool } from "./orchestrationTools";
+  import type { Tool } from "./orchestrationTools";
   import {
     railStateOf,
     stepStateOf,
@@ -18,6 +24,16 @@
     rail: Rail;
     orch: Orchestration;
     cards: Map<string, CardEntry>;
+    /// The tool library, for resolving a tool step's chip. A step whose
+    /// tool is absent still renders -- by its id (see the chip).
+    tools: Tool[];
+    /// The board's own projection of every card, by path. A card step
+    /// found here renders as the KANBAN CARD; one that isn't (the board
+    /// still loading, or a card deleted out from under the plan) falls
+    /// back to the slim chip, which can say so honestly.
+    placedCards: Map<string, PlacedCardView>;
+    labelDefs: Label[];
+    workspaceId: string;
     /// Null when the board has no columns at all — nothing can complete,
     /// and the header says so rather than looking hung.
     doneColumnName: string | null;
@@ -40,14 +56,27 @@
     onRemoveStep: (stepId: string) => void;
     /// The tab's search box holds a query. A rail keeps its whole shape
     /// while filtered -- a pipeline with holes in it would read as a
-    /// different pipeline -- so the non-matching chips only dim.
+    /// different pipeline -- so the non-matching steps only dim.
     filtering?: boolean;
     stepLit?: (stepId: string) => boolean;
+    onEditStepParams: (stepId: string) => void;
+    // The board plumbing a card step needs to behave like a card: open,
+    // run, right-click. Handed down rather than reached for, so this
+    // component stays as dumb as it was.
+    onOpenCard: (path: string) => void;
+    onRunCard: (card: CardView) => void;
+    onSendCardToAgent: (card: CardView) => void;
+    agentAvailable: boolean;
+    onCardContextMenu: (card: CardView, e: MouseEvent) => void;
   }
   let {
     rail,
     orch,
     cards,
+    tools,
+    placedCards,
+    labelDefs,
+    workspaceId,
     doneColumnName,
     numbered,
     pageName,
@@ -63,6 +92,12 @@
     onAddStep,
     onRetryStep,
     onRemoveStep,
+    onEditStepParams,
+    onOpenCard,
+    onRunCard,
+    onSendCardToAgent,
+    agentAvailable,
+    onCardContextMenu,
     filtering = false,
     stepLit = () => false,
   }: Props = $props();
@@ -183,19 +218,49 @@
       {/if}
       <div class="steps">
         {#each [...stage.steps].sort((a, b) => a.position - b.position) as step (step.id)}
-          <OrchestrationStepChip
-            stepId={step.id}
-            cardPath={step.cardPath}
-            entry={cards.get(step.cardPath)}
-            state={stepStateOf(orch, step.id)}
-            reason={runOf(step.id)?.reason ?? null}
-            badges={numbersForStep(numbered, step.id)}
-            severity={severityForStep(numbered, step.id)}
-            onRetry={() => onRetryStep(step.id)}
-            onRemove={() => onRemoveStep(step.id)}
-            dimmed={filtering && !stepLit(step.id)}
-            hit={filtering && stepLit(step.id)}
-          />
+          <!-- A card step IS the kanban card; a TOOL step keeps the chip,
+               because a tool is not a card and the dashed chip is what
+               says so. -->
+          {@const placed = step.toolId ? undefined : placedCards.get(step.cardPath)}
+          {#if placed}
+            <OrchestrationStepCard
+              stepId={step.id}
+              {placed}
+              state={stepStateOf(orch, step.id)}
+              reason={runOf(step.id)?.reason ?? null}
+              badges={numbersForStep(numbered, step.id)}
+              severity={severityForStep(numbered, step.id)}
+              onRetry={() => onRetryStep(step.id)}
+              onRemove={() => onRemoveStep(step.id)}
+              {labelDefs}
+              {workspaceId}
+              onOpen={onOpenCard}
+              onRun={onRunCard}
+              onSendToAgent={onSendCardToAgent}
+              {agentAvailable}
+              onContextMenu={onCardContextMenu}
+              dimmed={filtering && !stepLit(step.id)}
+              hit={filtering && stepLit(step.id)}
+            />
+          {:else}
+            <OrchestrationStepChip
+              stepId={step.id}
+              cardPath={step.cardPath}
+              entry={cards.get(step.cardPath)}
+              toolId={step.toolId ?? null}
+              tool={step.toolId ? findTool(tools, step.toolId) : undefined}
+              toolParams={stepParams(step)}
+              state={stepStateOf(orch, step.id)}
+              reason={runOf(step.id)?.reason ?? null}
+              badges={numbersForStep(numbered, step.id)}
+              severity={severityForStep(numbered, step.id)}
+              onRetry={() => onRetryStep(step.id)}
+              onRemove={() => onRemoveStep(step.id)}
+              onEditParams={() => onEditStepParams(step.id)}
+              dimmed={filtering && !stepLit(step.id)}
+              hit={filtering && stepLit(step.id)}
+            />
+          {/if}
         {/each}
       </div>
     </section>
@@ -361,8 +426,12 @@
     flex-direction: row;
     flex-wrap: wrap;
   }
+  /* Wide enough that a card keeps its shape: below this a parallel
+     stage's cards wrap and stack, which the band still marks as
+     concurrent. */
   .stage.parallel .steps > :global(*) {
-    flex: 1 1 120px;
+    flex: 1 1 200px;
+    min-width: 0;
   }
   .add-step {
     display: flex;

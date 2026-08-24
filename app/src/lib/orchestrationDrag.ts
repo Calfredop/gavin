@@ -94,13 +94,21 @@ export function computeOrchDropTarget(
 // ---- The controller --------------------------------------------------------
 
 /// What is being dragged. "step" moves an existing step between stages
-/// and rails; "card" places an unplaced card from the drawer, which has
-/// no step id yet -- its `id` is the card path.
-export type OrchDragKind = "step" | "card";
+/// and rails; "card" places an unplaced card from the drawer, whose `id`
+/// is the card path; "tool" places a tool from the drawer's library,
+/// whose `id` is the tool id. The two drawer kinds behave identically
+/// here and diverge only at commit, which calls different mutators.
+export type OrchDragKind = "step" | "card" | "tool";
+
+/// True for the drawer kinds -- the ones that have no step id yet, so
+/// nothing to detach and nowhere to be "dropped back".
+export function isPlacementDrag(kind: OrchDragKind): boolean {
+  return kind === "card" || kind === "tool";
+}
 
 /// `sourceStageId` is what makes "dropped back where it started"
-/// detectable, so a click-like drag commits nothing. Null for a card,
-/// which came from no stage.
+/// detectable, so a click-like drag commits nothing. Null for a card or
+/// a tool, which came from no stage.
 export interface ActiveOrchDrag {
   kind: OrchDragKind;
   id: string;
@@ -115,7 +123,11 @@ export interface OrchDragCallbacks {
   measure: () => MeasuredRail[];
   measureDrawer: () => Rect | null;
   commit: (drag: ActiveOrchDrag & { target: OrchDropTarget }) => void;
-  click: (stepId: string) => void;
+  /// `cardPath` is the card the press actually landed ON, which differs
+  /// from the step's own card only inside an expanded plan: a nested
+  /// child is its own card and must open as itself, not as its parent.
+  /// Null whenever the press was not on a card at all.
+  click: (stepId: string, cardPath: string | null) => void;
 }
 
 export const orchDragState = writable<ActiveOrchDrag | null>(null);
@@ -127,6 +139,9 @@ interface Candidate {
   start: Point;
   grabOffset: Point;
   size: { width: number; height: number };
+  /// The card under the press, for the click path only -- see
+  /// OrchDragCallbacks.click. Never consulted by a drag.
+  clickCardPath: string | null;
 }
 
 let candidate: Candidate | null = null;
@@ -138,7 +153,8 @@ export function beginCandidate(
   sourceStageId: string | null,
   start: Point,
   itemRect: Rect,
-  cbs: OrchDragCallbacks
+  cbs: OrchDragCallbacks,
+  clickCardPath: string | null = null
 ): void {
   candidate = {
     kind,
@@ -147,6 +163,7 @@ export function beginCandidate(
     start,
     grabOffset: { x: start.x - itemRect.left, y: start.y - itemRect.top },
     size: { width: itemRect.width, height: itemRect.height },
+    clickCardPath,
   };
   callbacks = cbs;
 }
@@ -199,14 +216,14 @@ export function endPointer(): void {
   orchDragState.set(null);
   if (!cbs) return;
   if (!active) {
-    if (wasCandidate) cbs.click(wasCandidate.id);
+    if (wasCandidate) cbs.click(wasCandidate.id, wasCandidate.clickCardPath);
     return;
   }
   if (!active.target) return;
   // Dropping back into the stage it came from changes nothing.
   if (active.target.kind === "into-stage" && active.target.stageId === active.sourceStageId) return;
-  // A card dropped on the drawer is already unplaced.
-  if (active.kind === "card" && active.target.kind === "unplace") return;
+  // A card or tool dropped back on the drawer was never placed.
+  if (isPlacementDrag(active.kind) && active.target.kind === "unplace") return;
   cbs.commit(active as ActiveOrchDrag & { target: OrchDropTarget });
 }
 

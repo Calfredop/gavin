@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
 /// Cap on a single protocol line, so a client that never sends a newline
@@ -11,7 +12,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -204,6 +205,24 @@ pub enum Request {
         #[serde(default)]
         conflict_notes: Vec<ConflictNote>,
     },
+    /// This workspace's tools PLUS every global one (tools spec §2).
+    /// Never an error for an unknown workspace -- an empty list.
+    GetTools {
+        workspace_id: String,
+    },
+    /// Upsert by id. `workspace_id: None` stores the tool global to this
+    /// machine; re-saving with the other value is how a tool changes scope.
+    SaveTool {
+        tool: ToolDef,
+    },
+    DeleteTool {
+        id: String,
+    },
+    /// Root -> watcher -> workspace, per GetBoardByRoot. For the MCP
+    /// server, which knows a root path and nothing else.
+    GetToolsByRoot {
+        root_path: String,
+    },
     GitDirtyPaths {
         cwd: String,
         limit: u32,
@@ -240,6 +259,7 @@ pub enum Response {
         rail_runs: Vec<RailRun>,
         step_runs: Vec<StepRun>,
     },
+    Tools { tools: Vec<ToolDef> },
     GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
     GavinTreeChanged { workspace_id: String, tree: GavinTree },
     /// Pushed on the watching connection after any SetOrchestration, so
@@ -386,13 +406,60 @@ pub struct Stage {
 }
 
 /// A step is a REFERENCE to a card file (spec O2) -- title, prompt,
-/// status and checklist all stay in the card.
+/// status and checklist all stay in the card -- OR to a tool (tools spec
+/// T1), in which case `tool_id` is set and `card_path` is `""`. Never
+/// both: `card_path` stays a non-optional String so the running-step
+/// guard's message and the NOT NULL column both survive untouched, and
+/// an absolute card path can never be empty.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Step {
     pub id: String,
     pub position: i64,
+    /// Defaulted so an agent writing a TOOL step can omit it entirely
+    /// rather than having to spell `"cardPath": ""`. The daemon still
+    /// refuses a step that is neither a card nor a tool.
+    #[serde(default)]
     pub card_path: String,
+    /// Set for a tool step; None for a card step.
+    #[serde(default)]
+    pub tool_id: Option<String>,
+    /// Per-step parameter OVERRIDES only. A parameter the human never
+    /// touched is absent here and resolves to the tool's own default.
+    #[serde(default)]
+    pub tool_params: HashMap<String, String>,
+}
+
+/// What a tool RUNS AS (tools spec T2). A String rather than an enum for
+/// the same reason RailRun::state is: the daemon only stores and returns
+/// it, and widening the vocabulary must not become a wire break.
+/// agent | command | script
+pub type ToolKind = String;
+
+/// One parameter of a tool, substituted into its body as `{{name}}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolParam {
+    pub name: String,
+    pub label: String,
+    pub default: String,
+}
+
+/// A reusable unit of work droppable onto a rail. `workspace_id` is the
+/// SCOPE: Some(id) is that workspace's own, None is global to this
+/// machine (tools spec T4). Built-in tools never reach the daemon --
+/// they are constants in the app.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDef {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub name: String,
+    pub description: String,
+    pub kind: ToolKind,
+    pub body: String,
+    pub params: Vec<ToolParam>,
+    pub position: i64,
 }
 
 /// The agent's own judgement about a set of steps, rendered beside the
@@ -1075,12 +1142,19 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_nine_until_a_breaking_change_bumps_it() {
+    fn protocol_version_is_eleven_until_a_breaking_change_bumps_it() {
+        // v11: the tool library -- ToolDef, Step.tool_id/tool_params,
+        // and Get/Save/DeleteTool + GetToolsByRoot. A v10 daemon answers
+        // none of those, so the probe has to see the mismatch rather
+        // than let every tool fetch fail in its own way.
+        // v10: PlanFieldSet carries the path a frontmatter write landed
+        // on, because a status write can archive the card into
+        // `plans/done/`.
         // v9: NameSession + the SessionNamed push (an agent naming its
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
     }
 
     #[test]
@@ -1314,7 +1388,13 @@ mod tests {
             stages: vec![Stage {
                 id: "s1".into(),
                 position: 0,
-                steps: vec![Step { id: "t1".into(), position: 0, card_path: "/x/a.md".into() }],
+                steps: vec![Step {
+                    id: "t1".into(),
+                    position: 0,
+                    card_path: "/x/a.md".into(),
+                    tool_id: None,
+                    tool_params: HashMap::new(),
+                }],
             }],
         };
         assert_eq!(
@@ -1326,7 +1406,8 @@ mod tests {
                 "worktreePath": "/x/gavin-backend",
                 "pageId": null,
                 "stages": [{ "id": "s1", "position": 0,
-                             "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md" }] }]
+                             "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md",
+                                         "toolId": null, "toolParams": {} }] }]
             })
         );
 
@@ -1339,6 +1420,61 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&run).unwrap(),
             serde_json::json!({ "stepId": "t1", "state": "running", "sessionId": "sess-1", "reason": null })
+        );
+    }
+
+    /// The old shape must still parse: an agent that has never heard of
+    /// tools writes a step with only these three fields (tools spec §6).
+    #[test]
+    fn a_step_without_tool_fields_parses_as_a_card_step() {
+        let step: Step =
+            serde_json::from_value(serde_json::json!({ "id": "t1", "position": 0, "cardPath": "/x/a.md" }))
+                .unwrap();
+        assert_eq!(step.tool_id, None);
+        assert!(step.tool_params.is_empty());
+    }
+
+    #[test]
+    fn a_tool_step_round_trips_with_an_empty_card_path() {
+        let step = Step {
+            id: "t1".into(),
+            position: 0,
+            card_path: String::new(),
+            tool_id: Some("builtin:push".into()),
+            tool_params: HashMap::from([("remote".to_string(), "upstream".to_string())]),
+        };
+        let back: Step = serde_json::from_value(serde_json::to_value(&step).unwrap()).unwrap();
+        assert_eq!(back, step);
+    }
+
+    #[test]
+    fn tool_def_is_camel_case_on_the_wire() {
+        let tool = ToolDef {
+            id: "u1".into(),
+            workspace_id: None,
+            name: "Push".into(),
+            description: "git push".into(),
+            kind: "command".into(),
+            body: "git push -u {{remote}} HEAD".into(),
+            params: vec![ToolParam {
+                name: "remote".into(),
+                label: "Remote".into(),
+                default: "origin".into(),
+            }],
+            position: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(&tool).unwrap(),
+            serde_json::json!({
+                "id": "u1",
+                "workspaceId": null,
+                "name": "Push",
+                "description": "git push",
+                "kind": "command",
+                "body": "git push -u {{remote}} HEAD",
+                "params": [{ "name": "remote", "label": "Remote", "default": "origin" }],
+                "position": 0
+            })
         );
     }
 }

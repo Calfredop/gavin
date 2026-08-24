@@ -136,9 +136,9 @@ fn tool_definitions() -> Value {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
-        { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees and uncommitted files, stages, steps with their cards and live run state, the board's columns, and every runnable card not yet on a rail. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail, and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
-            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, pageId, stages: [{ id, position, steps: [{ id, position, cardPath }] }] }. A stage's steps run IN PARALLEL in that rail's checkout; stages run one after another.", "items": { "type": "object" } },
+            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, pageId, stages: [{ id, position, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. A stage's steps run IN PARALLEL in that rail's checkout; stages run one after another.", "items": { "type": "object" } },
             "conflict_notes": { "type": "array", "description": "Your judgements, shown to the human in the Conflicts box. Each: { id, stepIds: [...], note }.", "items": { "type": "object" } }
         }, "required": ["rails"] } },
         { "name": "gavin_spawn_session", "description": "Spawn a terminal session in the gavin app (visible to the human on the Agents page). Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
@@ -372,6 +372,12 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
     // the array's order is not the board's order.
     let done_column = columns.iter().max_by_key(|c| c.position).map(|c| c.name.clone());
 
+    let tools = match transport.request(&Request::GetToolsByRoot { root_path: root_str.clone() })? {
+        Response::Tools { tools } => tools,
+        Response::Error { message } => return Err(anyhow::anyhow!(message)),
+        other => return Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    };
+
     let tree = match transport.request(&Request::ScanGavinRoot { root_path: root_str })? {
         Response::GavinTreeScanned { tree } => tree,
         Response::Error { message } => return Err(anyhow::anyhow!(message)),
@@ -414,8 +420,12 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
         .iter()
         .flat_map(|r| r.stages.iter())
         .flat_map(|s| s.steps.iter())
+        .filter(|t| t.tool_id.is_none())
         .map(|t| t.card_path.as_str())
         .collect();
+
+    let tool_by_id: HashMap<&str, &protocol::ToolDef> =
+        tools.iter().map(|t| (t.id.as_str(), t)).collect();
 
     let rails_json: Vec<Value> = rails
         .iter()
@@ -434,6 +444,23 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
                         .steps
                         .iter()
                         .map(|step| {
+                            let run = run_of.get(step.id.as_str()).map(|r| r.state.clone())
+                                .unwrap_or_else(|| "pending".to_string());
+                            // A TOOL step (tools spec T1). Rendered by its
+                            // tool rather than by a card it does not have,
+                            // so an agent rewriting this rail carries the
+                            // toolId through instead of inventing a card.
+                            if let Some(tool_id) = &step.tool_id {
+                                let tool = tool_by_id.get(tool_id.as_str());
+                                return json!({
+                                    "id": step.id,
+                                    "toolId": tool_id,
+                                    "toolName": tool.map(|t| t.name.clone()),
+                                    "toolKind": tool.map(|t| t.kind.clone()),
+                                    "toolParams": step.tool_params,
+                                    "run": run,
+                                });
+                            }
                             let card = cards.get(step.card_path.as_str());
                             json!({
                                 "id": step.id,
@@ -441,8 +468,7 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
                                 "title": card.map(|c| c.title.clone()),
                                 "kind": card.map(|c| kind_str(&c.kind)),
                                 "status": card.and_then(|c| c.status.clone()),
-                                "run": run_of.get(step.id.as_str()).map(|r| r.state.clone())
-                                    .unwrap_or_else(|| "pending".to_string()),
+                                "run": run,
                             })
                         })
                         .collect();
@@ -479,12 +505,33 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
         })
         .collect();
 
+    // The tool library, so an arrangement can PLACE a tool rather than
+    // only preserve one. Bodies are deliberately absent: what the agent
+    // needs is which tools exist and what each takes, and a body can be
+    // a hundred lines of script.
+    let tools_json: Vec<Value> = tools
+        .iter()
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "kind": t.kind,
+                "scope": if t.workspace_id.is_none() { "global" } else { "workspace" },
+                "params": t.params.iter().map(|p| json!({
+                    "name": p.name, "label": p.label, "default": p.default
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
     Ok(serde_json::to_string_pretty(&json!({
         "rails": rails_json,
         "conflictNotes": conflict_notes,
         "doneColumn": done_column,
         "columns": columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
         "unplacedCards": unplaced,
+        "tools": tools_json,
     }))?)
 }
 
@@ -630,11 +677,25 @@ mod tests {
                 stages: vec![protocol::Stage {
                     id: "s1".into(),
                     position: 0,
-                    steps: vec![protocol::Step {
-                        id: "t1".into(),
-                        position: 0,
-                        card_path: "/ws/.gavin-root/plans/a.md".into(),
-                    }],
+                    steps: vec![
+                        protocol::Step {
+                            id: "t1".into(),
+                            position: 0,
+                            card_path: "/ws/.gavin-root/plans/a.md".into(),
+                            tool_id: None,
+                            tool_params: Default::default(),
+                        },
+                        protocol::Step {
+                            id: "t2".into(),
+                            position: 1,
+                            card_path: String::new(),
+                            tool_id: Some("u1".into()),
+                            tool_params: std::collections::HashMap::from([(
+                                "remote".to_string(),
+                                "upstream".to_string(),
+                            )]),
+                        },
+                    ],
                 }],
             }],
             conflict_notes: vec![],
@@ -660,12 +721,32 @@ mod tests {
         }
     }
 
+    fn tools_reply() -> Response {
+        Response::Tools {
+            tools: vec![protocol::ToolDef {
+                id: "u1".into(),
+                workspace_id: None,
+                name: "Push branch".into(),
+                description: "git push".into(),
+                kind: "command".into(),
+                body: "git push -u {{remote}} HEAD".into(),
+                params: vec![protocol::ToolParam {
+                    name: "remote".into(),
+                    label: "Remote".into(),
+                    default: "origin".into(),
+                }],
+                position: 0,
+            }],
+        }
+    }
+
     #[test]
     fn get_orchestration_composes_plan_board_tree_and_dirty_paths() {
         let root = Path::new("/ws");
         let mut t = mock(vec![
             orchestration_reply(),
             board_reply(),
+            tools_reply(),
             Response::GavinTreeScanned { tree: two_card_tree() },
             Response::DirtyPaths { paths: vec!["app/src/lib/git.ts".into()], truncated: false },
         ]);
@@ -677,7 +758,7 @@ mod tests {
         .unwrap();
 
         // One GitDirtyPaths per DISTINCT rail worktree, capped at 200.
-        match &t.requests[3] {
+        match &t.requests[4] {
             Request::GitDirtyPaths { cwd, limit } => {
                 assert_eq!(cwd, "/x/wt-a");
                 assert_eq!(*limit, 200);
@@ -705,6 +786,72 @@ mod tests {
             .map(|c| c["title"].as_str().unwrap())
             .collect();
         assert_eq!(unplaced, vec!["Card B"]);
+
+        // A TOOL step is rendered by its tool, with the step's own
+        // overrides, so an agent rewriting this rail can carry both
+        // through instead of inventing a card for it.
+        let step = &text["rails"][0]["stages"][0]["steps"][1];
+        assert_eq!(step["toolId"], "u1");
+        assert_eq!(step["toolName"], "Push branch");
+        assert_eq!(step["toolKind"], "command");
+        assert_eq!(step["toolParams"]["remote"], "upstream");
+        assert!(step["cardPath"].is_null(), "a tool step carries no cardPath");
+
+        // The library, so an arrangement can PLACE a tool rather than
+        // only preserve one. Bodies stay out: a script can be long.
+        assert_eq!(text["tools"][0]["id"], "u1");
+        assert_eq!(text["tools"][0]["scope"], "global");
+        assert_eq!(text["tools"][0]["params"][0]["default"], "origin");
+        assert!(text["tools"][0]["body"].is_null(), "bodies stay out of the payload");
+    }
+
+    #[test]
+    fn set_orchestration_accepts_a_tool_step_without_a_card_path() {
+        let root = Path::new("/ws");
+        let mut t = mock(vec![Response::Ok]);
+        handle_line(
+            r#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"gavin_set_orchestration","arguments":{
+                "rails":[{"id":"r1","name":"backend","position":0,"worktreePath":null,"pageId":null,
+                  "stages":[{"id":"s1","position":0,"steps":[
+                    {"id":"t1","position":0,"toolId":"u1","toolParams":{"remote":"upstream"}}]}]}]
+            }}}"#,
+            Some(root),
+            &mut t,
+        )
+        .unwrap();
+        match &t.requests[0] {
+            Request::SetOrchestrationByRoot { rails, .. } => {
+                let step = &rails[0].stages[0].steps[0];
+                assert_eq!(step.tool_id.as_deref(), Some("u1"));
+                assert_eq!(step.card_path, "");
+                assert_eq!(step.tool_params.get("remote").map(String::as_str), Some("upstream"));
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// An agent that predates tools writes only the three original
+    /// fields; that must still parse as a card step.
+    #[test]
+    fn set_orchestration_still_accepts_the_pre_tools_step_shape() {
+        let root = Path::new("/ws");
+        let mut t = mock(vec![Response::Ok]);
+        handle_line(
+            r#"{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"gavin_set_orchestration","arguments":{
+                "rails":[{"id":"r1","name":"backend","position":0,"worktreePath":null,"pageId":null,
+                  "stages":[{"id":"s1","position":0,"steps":[{"id":"t1","position":0,"cardPath":"/ws/a.md"}]}]}]
+            }}}"#,
+            Some(root),
+            &mut t,
+        )
+        .unwrap();
+        match &t.requests[0] {
+            Request::SetOrchestrationByRoot { rails, .. } => {
+                assert_eq!(rails[0].stages[0].steps[0].card_path, "/ws/a.md");
+                assert_eq!(rails[0].stages[0].steps[0].tool_id, None);
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
     }
 
     #[test]

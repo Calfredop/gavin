@@ -12,6 +12,8 @@ vi.mock("./backend", () => ({
   readFileForViewer: vi.fn(),
   linkCardSession: vi.fn(),
   unlinkCardSession: vi.fn(),
+  getOrchestration: vi.fn(),
+  setOrchestration: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {}, sessionNames: {}, cwdBySessionId: {} }),
@@ -22,8 +24,11 @@ vi.mock("./layoutState", () => ({
 }));
 vi.mock("./workspace", () => ({ findSessionLocation: vi.fn() }));
 
+import * as backend from "./backend";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
+import { orchestrations } from "./orchestrationState";
+import { emptyOrchestration, addRail, addStage, addStep } from "./orchestration";
 import { buildCardMenuEntries, type CardMenuHooks } from "./cardMenu";
 import { isSeparator, type ContextMenuItem } from "./contextMenu";
 import type { CardView } from "./planBoard";
@@ -76,9 +81,25 @@ function board(cardSessions: Board["cardSessions"] = []): Board {
   return { columns: [], labels: [], cardSessions };
 }
 
+function item(entries: ReturnType<typeof buildCardMenuEntries>, label: string): ContextMenuItem | undefined {
+  return entries.find((e): e is ContextMenuItem => !isSeparator(e) && e.label === label);
+}
+
+/// Two rails, "backend" and "ui"; `on` optionally puts the card on one of
+/// them as a single-step stage.
+function rails(on?: "backend" | "ui"): void {
+  let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "ui");
+  if (on) {
+    const railId = on === "backend" ? "r1" : "r2";
+    o = addStep(addStage(o, railId, "s1"), "s1", "step-1", "/p/t.md");
+  }
+  orchestrations.set({ "ws-1": o });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   kanbanState.set({ "ws-1": board() });
+  orchestrations.set({ "ws-1": emptyOrchestration() });
   vi.mocked(findSessionLocation).mockReturnValue(null);
 });
 
@@ -116,6 +137,44 @@ describe("buildCardMenuEntries", () => {
 
     vi.mocked(findSessionLocation).mockReturnValue(null);
     expect(labels(buildCardMenuEntries(card("plan", null), hooks()))).toContain("Re-launch agent");
+  });
+
+  it("no rail block at all in a workspace with no rails", () => {
+    expect(labels(buildCardMenuEntries(card("task", "To Do"), hooks())).join()).not.toContain("rail");
+  });
+
+  it("offers one entry per rail, in board order", () => {
+    rails();
+    const l = labels(buildCardMenuEntries(card("plan", "To Do"), hooks()));
+    expect(l.filter((x) => x.startsWith("Send to rail"))).toEqual([
+      "Send to rail “backend”",
+      "Send to rail “ui”",
+    ]);
+  });
+
+  it("marks the rail the card is already on, and offers to take it off", () => {
+    rails("backend");
+    const entries = buildCardMenuEntries(card("task", "To Do"), hooks());
+    const here = item(entries, "Send to rail “backend”");
+    expect(here?.active).toBe(true);
+    expect(here?.disabled).toBe(true);
+    expect(item(entries, "Send to rail “ui”")?.disabled).toBe(false);
+    expect(item(entries, "Take off rail “backend”")).toBeDefined();
+  });
+
+  it("no rail entries for a note — notes are not runnable", () => {
+    rails();
+    expect(labels(buildCardMenuEntries(card("note", "To Do"), hooks())).join()).not.toContain("rail");
+  });
+
+  it("picking a rail persists the whole plan with the card on it", async () => {
+    rails();
+    const entries = buildCardMenuEntries(card("task", "To Do"), hooks());
+    item(entries, "Send to rail “ui”")?.onPick();
+    await vi.waitFor(() => expect(backend.setOrchestration).toHaveBeenCalled());
+    const [wsId, saved] = vi.mocked(backend.setOrchestration).mock.calls[0];
+    expect(wsId).toBe("ws-1");
+    expect(saved.find((r) => r.id === "r2")?.stages[0].steps[0].cardPath).toBe("/p/t.md");
   });
 
   it("Un-parent appears only for parented tasks", () => {

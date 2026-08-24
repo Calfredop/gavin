@@ -7,20 +7,30 @@ description: Use when the human asks to plan, order, parallelize, or reorganize 
 
 The Orchestration tab lays this workspace's cards out in time. A **rail**
 is a vertical track bound to a git worktree and a workspace page. A rail
-holds ordered **stages**; a stage holds one or more **steps**; a step is
-a reference to a card file. Stages run one after another. **A stage's
-steps run at the same time, in that rail's checkout.**
+holds ordered **stages**; a stage holds one or more **steps**. Stages run
+one after another. **A stage's steps run at the same time, in that rail's
+checkout.**
+
+A step is one of two things, never both:
+
+- a **card step** (`cardPath`) — an agent runs that card, and the step is
+  done when the card reaches the board's done column;
+- a **tool step** (`toolId` + `toolParams`) — a reusable unit of work
+  from the workspace's tool library: an agent prompt, a bash command, or
+  a bash script. It is done when its session exits 0, and stalled on any
+  other exit.
 
 The human arms a rail with Start; gavin then launches each stage and
-advances when every step's card reaches the board's done column.
+advances when every step in it is done.
 
 ## 1. Read before you write
 
 Call `gavin_get_orchestration` first, every time. It returns the current
 rails with their worktrees and their **uncommitted files**, every step
-with its card and live run state, the board's columns, and every runnable
-card not yet on a rail. Never author an arrangement from memory or from
-the card titles alone.
+with its card or tool and live run state, the board's columns, every
+runnable card not yet on a rail, and the **tool library** with each
+tool's parameters. Never author an arrangement from memory or from the
+card titles alone.
 
 If there are no rails yet, create one per natural workstream — a
 subsystem, a layer, a piece of the PRD — and propose a worktree name for
@@ -49,6 +59,27 @@ human has to untangle two agents' half-finished edits.
 If two pieces of work must run at once and might collide, the right move
 is two rails on two worktrees — not one parallel stage.
 
+A tool step counts here exactly like a card step: a `Run tests` or
+`Commit changes` step writes to the rail's checkout, so co-staging it
+with anything else in that rail is the same hazard.
+
+## 2a. Placing tools
+
+Tools are how a rail finishes its own work rather than leaving it for the
+human: a `Commit changes` after the cards that produced the diff, a
+`Run tests` before it, a `Push branch` or `Send a notification` at the
+end. Pick them from the `tools` list in the read payload — never invent a
+`toolId`.
+
+- Give a tool step its own stage unless you have a reason not to. Tools
+  are usually the *boundary* between pieces of work, and a boundary that
+  runs concurrently with the work is not a boundary.
+- Override a parameter with `toolParams: { "name": "value" }`, using the
+  parameter names the payload lists. Omit a parameter to take the tool's
+  own default — and prefer omitting, so a later edit to that default
+  reaches the step.
+- A tool step needs no `cardPath` at all. Sending both is refused.
+
 ## 3. Record your reasoning
 
 Every judgement you made goes back as a `conflict_notes` entry naming the
@@ -62,6 +93,9 @@ to be trusted blindly; one with notes can be checked.
 
 - **Preserve the ids** of steps you are keeping. Run state follows the
   step id, so a new id silently discards which agent is on which work.
+- **Carry `toolId` and `toolParams` through** on every tool step you are
+  keeping. A rewrite that drops them turns a tool step into a step that
+  is neither a card nor a tool, and the daemon refuses the whole write.
 - **Never remove a step whose `run` is `running`.** The daemon refuses
   the whole write and tells you which step — moving it between stages or
   rails is fine, only deleting it is not.
@@ -71,6 +105,10 @@ Then say what you changed and why, in a sentence or two per rail.
 
 ## 5. When a rail is stuck
 
-A step shows `stalled` when its agent exited before the card reached the
-done column, or when its card or worktree went missing. Read the card,
-fix the cause, and tell the human — Retry is theirs to press, not yours.
+A card step shows `stalled` when its agent exited before the card reached
+the done column, or when its card or worktree went missing. A tool step
+shows `stalled` when it exited non-zero, when gavin was not running to
+see it exit, or when its tool has been deleted from the library.
+
+Read the cause, fix it, and tell the human — Retry is theirs to press,
+not yours.

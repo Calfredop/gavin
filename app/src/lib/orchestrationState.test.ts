@@ -8,6 +8,10 @@ vi.mock("./backend", () => ({
   setStepRun: vi.fn(),
   readFileForViewer: vi.fn(),
   setPlanFrontmatterField: vi.fn(),
+  setSessionName: vi.fn(),
+  getTools: vi.fn(),
+  saveTool: vi.fn(),
+  deleteTool: vi.fn(),
 }));
 
 // tick() reads four stores through get(), so each mock must expose a
@@ -17,6 +21,8 @@ vi.mock("./layoutState", () => ({
   layoutState: { subscribe: (fn: (v: unknown) => void) => (fn({ workspaces: [] }), () => {}) },
   resolvedAgentFor: vi.fn(() => ({ command: "claude", file: "CLAUDE.md", profile: "claude-code" })),
   createSessionOnPage: vi.fn(),
+  // tick() reads this through get(), so it has to be a real store.
+  sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
 }));
 // kanbanState is an empty map on purpose: tick() bails early without a
 // board, so the rail-control tests exercise arming without also running
@@ -75,6 +81,7 @@ vi.mock("./gitState", () => ({
 import * as backend from "./backend";
 import * as layoutStateModule from "./layoutState";
 import * as kanbanStateModule from "./kanbanState";
+import { toolRecords, __resetForTesting as toolsResetForTesting } from "./toolsState";
 import {
   orchestrations,
   fetchOrchestration,
@@ -312,5 +319,194 @@ describe("executeActions", () => {
     });
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
+  });
+});
+
+// ---- Tool steps -------------------------------------------------------------
+
+/// The same bound rail, but its single step runs a tool. `cardPath` is
+/// empty on purpose: a step is a card OR a tool, never both.
+function toolRail(toolParams: Record<string, string> = {}): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        pageId: "p1",
+        stages: [
+          {
+            id: "s1",
+            position: 0,
+            steps: [
+              { id: "t1", position: 0, cardPath: "", toolId: "builtin:push", toolParams },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("launching a tool step", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(backend.getOrchestration).mockResolvedValue(toolRail());
+    await fetchOrchestration("ws-1");
+    // An EMPTY library, which still contains the built-ins.
+    toolRecords.set({ "ws-1": [] });
+  });
+
+  it("runs a command tool's body in the rail's worktree, on the rail's page", async () => {
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("git push -u origin HEAD")
+    );
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+  });
+
+  // A tool is not a card: no card_sessions binding and no status write.
+  it("never binds a card session or writes In Progress", async () => {
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(kanbanStateModule.linkCardSessionAction).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("names the session after the tool, so a fast command's tab is identifiable", async () => {
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(backend.setSessionName).toHaveBeenCalledWith("sess-9", "Push branch");
+  });
+
+  // Cosmetic only: the agent is already running, so a failed rename must
+  // not stall a live step.
+  it("still records the run when naming the session fails", async () => {
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(backend.setSessionName).mockRejectedValue(new Error("nope"));
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+  });
+
+  it("substitutes the step's parameter overrides", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue(toolRail({ remote: "upstream" }));
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("git push -u upstream HEAD")
+    );
+  });
+
+  it("stalls when the tool is no longer in the library", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...toolRail(),
+      rails: [
+        {
+          ...toolRail().rails[0],
+          stages: [
+            {
+              id: "s1",
+              position: 0,
+              steps: [{ id: "t1", position: 0, cardPath: "", toolId: "gone", toolParams: {} }],
+            },
+          ],
+        },
+      ],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      "tool is no longer in the library"
+    );
+  });
+
+  it("stalls when the session cannot be created, naming the tool", async () => {
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue(null);
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      "could not start Push branch"
+    );
+  });
+
+  // An AGENT tool goes through the same launch command a card step
+  // uses, so the agent binary and its quoting have one implementation.
+  it("runs an agent tool through the workspace's agent command", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...toolRail(),
+      rails: [
+        {
+          ...toolRail().rails[0],
+          stages: [
+            {
+              id: "s1",
+              position: 0,
+              steps: [
+                { id: "t1", position: 0, cardPath: "", toolId: "builtin:commit", toolParams: {} },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command.startsWith("claude '")).toBe(true);
+    expect(command).toContain("Commit the uncommitted work in this checkout");
+  });
+});
+
+describe("launching a tool step before the library has loaded", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.getOrchestration).mockResolvedValue(toolRail());
+    await fetchOrchestration("ws-1");
+    // toolRecords deliberately left UNSET: not fetched yet.
+  });
+
+  // Stalling here would turn a cold start into a stalled rail. The step
+  // stays pending and the tab re-ticks when the library lands.
+  it("writes nothing and leaves the step pending", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  it("launches once the library lands", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
   });
 });

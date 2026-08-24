@@ -25,8 +25,18 @@ import {
   splitStageIntoSequence,
   groupUnplacedByStatus,
   addCardAsStage,
+  describeConflict,
+  isToolStep,
+  stepParams,
+  addToolStep,
+  addToolAsStage,
+  setStepParams,
+  conflictStepIds,
+  findCardPlacement,
+  sendCardToRail,
+  findStep,
 } from "./orchestration";
-import type { Conflict } from "./orchestration";
+import type { Conflict, ToolSummary } from "./orchestration";
 import type { WorktreeInfo } from "./git";
 import type { Action, Orchestration, Rail } from "./orchestration";
 import type { Board } from "./kanban";
@@ -918,5 +928,408 @@ describe("addCardAsStage", () => {
   it("is a no-op for an unknown rail", () => {
     const before = built();
     expect(stageMap(addCardAsStage(before, "nope", 0, "new", "/x/z.md"))).toEqual(stageMap(before));
+  });
+});
+
+describe("findStep", () => {
+  it("finds a step on any rail, in any stage", () => {
+    expect(findStep(built(), "t3")?.cardPath).toBe("/x/c.md");
+    expect(findStep(built(), "t4")?.cardPath).toBe("/x/d.md");
+  });
+
+  it("is null for an id that is on no rail", () => {
+    expect(findStep(built(), "nope")).toBeNull();
+  });
+});
+
+describe("findCardPlacement", () => {
+  it("locates a card's step, its rail, and where the stage sits", () => {
+    expect(findCardPlacement(built(), "/x/c.md")).toEqual({
+      railId: "r1",
+      stageId: "s2",
+      stepId: "t3",
+      stageNumber: 2,
+      stageCount: 2,
+    });
+  });
+
+  it("is null for a card on no rail", () => {
+    expect(findCardPlacement(built(), "/x/z.md")).toBeNull();
+  });
+
+  // A tool step's cardPath is "", which must never match a card.
+  it("never matches a tool step", () => {
+    const o = { ...emptyOrchestration(), rails: [toolRail("r1", [[["t1", "builtin:push"]]])] };
+    expect(findCardPlacement(o, "")).toBeNull();
+  });
+});
+
+describe("sendCardToRail", () => {
+  it("appends an unplaced card as the rail's own trailing stage", () => {
+    const o = sendCardToRail(built(), "r1", "/x/z.md", "new");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t1"], ["t2", "t3"], ["new"]]],
+      ["r2", [["t4"]]],
+    ]);
+  });
+
+  it("adds to an empty rail", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = sendCardToRail(o, "r1", "/x/z.md", "new");
+    expect(stageMap(o)).toEqual([["r1", [["new"]]]]);
+  });
+
+  // The step id rides along, so the run state keyed by it survives the
+  // move -- sending a card somewhere is not a reason to forget it ran.
+  it("moves a card already on another rail, keeping its step id", () => {
+    const o = sendCardToRail(built(), "r2", "/x/a.md", "unused");
+    expect(stageMap(o)).toEqual([
+      ["r1", [["t2", "t3"]]],
+      ["r2", [["t4"], ["t1"]]],
+    ]);
+  });
+
+  it("leaves a card already on that rail exactly alone", () => {
+    const before = built();
+    const o = sendCardToRail(before, "r1", "/x/a.md", "new");
+    expect(o).toBe(before);
+  });
+
+  it("is a no-op for an unknown rail", () => {
+    const before = built();
+    expect(stageMap(sendCardToRail(before, "nope", "/x/z.md", "new"))).toEqual(stageMap(before));
+  });
+});
+
+// ---- Tool steps -------------------------------------------------------------
+// A step is a card step or a tool step (tools spec T1). These cover the
+// second shape everywhere it behaves differently: completion by exit
+// code, its own launch blocker, and its exemption from duplicate-card.
+
+const TOOLS: ToolSummary[] = [
+  { id: "builtin:push", name: "Push branch" },
+  { id: "builtin:notify", name: "Send a notification" },
+];
+
+/// A rail whose stages hold tool steps: [stepId, toolId] per step.
+function toolRail(id: string, stages: Array<Array<[string, string]>>): Rail {
+  return {
+    id,
+    name: id,
+    position: 0,
+    worktreePath: null,
+    pageId: null,
+    stages: stages.map((steps, si) => ({
+      id: `${id}-s${si}`,
+      position: si,
+      steps: steps.map(([stepId, toolId], pi) => ({
+        id: stepId,
+        position: pi,
+        cardPath: "",
+        toolId,
+        toolParams: {},
+      })),
+    })),
+  };
+}
+
+describe("isToolStep / stepParams", () => {
+  it("tells the two shapes apart", () => {
+    expect(isToolStep({ id: "t1", position: 0, cardPath: A })).toBe(false);
+    expect(isToolStep({ id: "t1", position: 0, cardPath: "", toolId: "builtin:push" })).toBe(true);
+  });
+
+  // Steps authored before tools existed carry neither field.
+  it("reads absent overrides as none, not undefined", () => {
+    expect(stepParams({ id: "t1", position: 0, cardPath: A })).toEqual({});
+  });
+});
+
+describe("nextActions — tool steps", () => {
+  const armed = (stepRuns: Orchestration["stepRuns"] = []) =>
+    running(toolRail("r1", [[["t1", "builtin:push"]]]), "r1-s0", stepRuns);
+
+  it("launches a pending tool step", () => {
+    expect(nextActions(armed(), BOARD, CARDS, [], new Set(), TOOLS)).toEqual([
+      { kind: "launch", stepId: "t1" },
+    ]);
+  });
+
+  // Rule 1 is about a CARD reaching the done column; a tool step has no
+  // card, so a done column full of matching statuses must not touch it.
+  it("never marks a tool step done from a card status", () => {
+    const doneTree = tree([plan("a.md", { status: "Done" })]);
+    expect(nextActions(armed(), BOARD, doneTree, [], new Set(), TOOLS)).toEqual([
+      { kind: "launch", stepId: "t1" },
+    ]);
+  });
+
+  it("stalls a pending tool step whose tool was deleted", () => {
+    const actions = nextActions(armed(), BOARD, CARDS, [], new Set(), []);
+    expect(actions).toEqual([
+      { kind: "stall", stepId: "t1", reason: "tool is no longer in the library" },
+    ]);
+  });
+
+  // Null, not [] -- an unloaded library must not read as "every tool was
+  // deleted" and stall every tool step on a cold start.
+  it("launches a tool step while the library is still loading", () => {
+    expect(nextActions(armed(), BOARD, CARDS, [], new Set(), null)).toEqual([
+      { kind: "launch", stepId: "t1" },
+    ]);
+  });
+
+  it("stalls a tool step on a rail whose worktree is gone", () => {
+    const r = { ...toolRail("r1", [[["t1", "builtin:push"]]]), worktreePath: "/x/gone" };
+    const actions = nextActions(running(r, "r1-s0"), BOARD, CARDS, WT, new Set(), TOOLS);
+    expect(actions).toEqual([
+      { kind: "stall", stepId: "t1", reason: "worktree /x/gone is gone" },
+    ]);
+  });
+
+  it("marks a tool step done when its session exited 0", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    const actions = nextActions(
+      armed(runs),
+      BOARD,
+      CARDS,
+      [],
+      new Set(),
+      TOOLS,
+      new Map([["s1", 0]])
+    );
+    expect(actions).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+  });
+
+  it("stalls a tool step whose session exited non-zero, naming the tool and the code", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    const actions = nextActions(
+      armed(runs),
+      BOARD,
+      CARDS,
+      [],
+      new Set(),
+      TOOLS,
+      new Map([["s1", 128]])
+    );
+    expect(actions).toEqual([
+      { kind: "stall", stepId: "t1", reason: "Push branch exited with code 128" },
+    ]);
+  });
+
+  // The app was closed when the session ended, so nobody witnessed the
+  // outcome. Advancing the rail on that assumption is the failure this
+  // avoids.
+  it("stalls a tool step whose exit code nobody witnessed", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    const actions = nextActions(armed(runs), BOARD, CARDS, [], new Set(), TOOLS, new Map());
+    expect(actions).toEqual([
+      {
+        kind: "stall",
+        stepId: "t1",
+        reason: "Push branch's session ended while gavin was not watching",
+      },
+    ]);
+  });
+
+  it("leaves a tool step alone while its session is still live", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    expect(nextActions(armed(runs), BOARD, CARDS, [], new Set(["s1"]), TOOLS)).toEqual([]);
+  });
+
+  it("falls back to a generic label when the tool is gone by the time it exits", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    const actions = nextActions(armed(runs), BOARD, CARDS, [], new Set(), [], new Map([["s1", 1]]));
+    expect(actions).toEqual([
+      { kind: "stall", stepId: "t1", reason: "the tool exited with code 1" },
+    ]);
+  });
+
+  it("advances past a finished tool stage to the next one in the same tick", () => {
+    const r = toolRail("r1", [[["t1", "builtin:push"]], [["t2", "builtin:notify"]]]);
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    const actions = nextActions(
+      running(r, "r1-s0", runs),
+      BOARD,
+      CARDS,
+      [],
+      new Set(),
+      TOOLS,
+      new Map([["s1", 0]])
+    );
+    expect(actions).toEqual([
+      { kind: "markDone", stepId: "t1" },
+      { kind: "advance", railId: "r1", stageId: "r1-s1" },
+      { kind: "launch", stepId: "t2" },
+    ]);
+  });
+
+  // A card step's rule is unchanged: session exit without the card
+  // reaching the done column is a stall, whatever the exit code was.
+  it("does not use the exit code for a card step", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    const actions = nextActions(
+      running(rail("r1", [[["t1", A]]]), "r1-s0", runs),
+      BOARD,
+      CARDS,
+      [],
+      new Set(),
+      TOOLS,
+      new Map([["s1", 0]])
+    );
+    expect(actions[0]).toMatchObject({ kind: "stall", stepId: "t1" });
+  });
+});
+
+describe("tool step mutators", () => {
+  it("addToolStep joins an existing stage — the parallel drop", () => {
+    const o = orchOf([rail("r1", [[["t1", A]]])]);
+    const after = addToolStep(o, "r1-s0", "t2", "builtin:push");
+    expect(after.rails[0].stages).toHaveLength(1);
+    expect(after.rails[0].stages[0].steps.map((s) => s.toolId ?? s.cardPath)).toEqual([
+      A,
+      "builtin:push",
+    ]);
+  });
+
+  it("addToolAsStage inserts its own stage at the index — the sequential drop", () => {
+    const o = orchOf([rail("r1", [[["t1", A]], [["t2", B]]])]);
+    const after = addToolAsStage(o, "r1", 1, "t3", "builtin:push");
+    expect(after.rails[0].stages).toHaveLength(3);
+    expect(after.rails[0].stages[1].steps[0].toolId).toBe("builtin:push");
+    expect(after.rails[0].stages.map((s) => s.position)).toEqual([0, 1, 2]);
+  });
+
+  it("addToolAsStage clamps an index past the end into an append", () => {
+    const o = orchOf([rail("r1", [[["t1", A]]])]);
+    const after = addToolAsStage(o, "r1", 99, "t3", "builtin:push");
+    expect(after.rails[0].stages[1].steps[0].toolId).toBe("builtin:push");
+  });
+
+  it("addToolAsStage ignores an unknown rail", () => {
+    const o = orchOf([rail("r1", [[["t1", A]]])]);
+    expect(addToolAsStage(o, "nope", 0, "t3", "builtin:push")).toBe(o);
+  });
+
+  it("a tool step is built with an empty cardPath — never both", () => {
+    const after = addToolAsStage(orchOf([rail("r1", [])]), "r1", 0, "t1", "builtin:push");
+    expect(after.rails[0].stages[0].steps[0].cardPath).toBe("");
+  });
+
+  it("setStepParams replaces the overrides wholesale", () => {
+    const o = orchOf([toolRail("r1", [[["t1", "builtin:push"]]])]);
+    const after = setStepParams(o, "t1", { remote: "upstream" });
+    expect(after.rails[0].stages[0].steps[0].toolParams).toEqual({ remote: "upstream" });
+    const cleared = setStepParams(after, "t1", {});
+    expect(cleared.rails[0].stages[0].steps[0].toolParams).toEqual({});
+  });
+
+  it("setStepParams leaves other steps alone", () => {
+    const o = orchOf([toolRail("r1", [[["t1", "builtin:push"], ["t2", "builtin:notify"]]])]);
+    const after = setStepParams(o, "t1", { remote: "upstream" });
+    expect(after.rails[0].stages[0].steps[1].toolParams).toEqual({});
+  });
+
+  it("a tool step moves between stages like any other", () => {
+    const o = orchOf([toolRail("r1", [[["t1", "builtin:push"]], [["t2", "builtin:notify"]]])]);
+    const after = moveStepIntoStage(o, "t2", "r1-s0");
+    expect(after.rails[0].stages).toHaveLength(1);
+    expect(after.rails[0].stages[0].steps.map((s) => s.toolId)).toEqual([
+      "builtin:push",
+      "builtin:notify",
+    ]);
+  });
+
+  it("removing a tool step keeps its overrides off the plan entirely", () => {
+    const o = setStepParams(
+      orchOf([toolRail("r1", [[["t1", "builtin:push"]]])]),
+      "t1",
+      { remote: "upstream" }
+    );
+    const after = removeStep(o, "t1");
+    expect(after.rails[0].stages).toEqual([]);
+  });
+});
+
+describe("detectConflicts — tool steps", () => {
+  it("does not report two steps running the same tool as a duplicate", () => {
+    const r = { ...toolRail("r1", [[["t1", "builtin:push"]], [["t2", "builtin:push"]]]), worktreePath: "/x/wt-a" };
+    const found = detectConflicts(orchOf([r]), CARDS, WT);
+    expect(found.filter((c) => c.kind === "duplicate-card")).toEqual([]);
+  });
+
+  it("still reports two steps on the same CARD as a duplicate", () => {
+    const r = bound("r1", "/x/wt-a", [[["t1", A]], [["t2", A]]]);
+    const found = detectConflicts(orchOf([r]), CARDS, WT);
+    expect(found.filter((c) => c.kind === "duplicate-card")).toHaveLength(1);
+  });
+
+  // A bash tool writing to the checkout is exactly the hazard the
+  // same-worktree rule exists for, so a tool step must join those groups.
+  it("puts a tool step in the same-worktree group beside a card step", () => {
+    const r = {
+      ...bound("r1", "/x/wt-a", [[["t1", A]]]),
+      stages: [
+        {
+          id: "r1-s0",
+          position: 0,
+          steps: [
+            { id: "t1", position: 0, cardPath: A },
+            { id: "t2", position: 1, cardPath: "", toolId: "builtin:push", toolParams: {} },
+          ],
+        },
+      ],
+    };
+    const found = detectConflicts(orchOf([r]), CARDS, WT);
+    const stageConflict = found.find((c) => c.kind === "same-worktree" && c.scope === "stage");
+    expect(stageConflict && conflictStepIds(stageConflict)).toEqual(["t1", "t2"]);
+  });
+});
+
+describe("describeConflict — tool steps", () => {
+  const both: Orchestration = orchOf([
+    {
+      ...bound("r1", "/x/wt-a", [[["t1", A]]]),
+      stages: [
+        {
+          id: "r1-s0",
+          position: 0,
+          steps: [
+            { id: "t1", position: 0, cardPath: A },
+            { id: "t2", position: 1, cardPath: "", toolId: "builtin:push", toolParams: {} },
+          ],
+        },
+      ],
+    },
+  ]);
+
+  it("names a tool step by its tool name", () => {
+    const c = detectConflicts(both, CARDS, WT).find(
+      (x) => x.kind === "same-worktree" && x.scope === "stage"
+    ) as Conflict;
+    expect(describeConflict(c, cardIndex(CARDS), both, TOOLS)).toContain("Push branch");
+  });
+
+  // A conflict about a tool that has since been deleted must still be
+  // describable, exactly as one about a missing card is.
+  it("falls back to the tool id when the tool is gone", () => {
+    const c = detectConflicts(both, CARDS, WT).find(
+      (x) => x.kind === "same-worktree" && x.scope === "stage"
+    ) as Conflict;
+    expect(describeConflict(c, cardIndex(CARDS), both, [])).toContain("builtin:push");
   });
 });

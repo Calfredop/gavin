@@ -235,6 +235,11 @@ export async function bootstrap(): Promise<void> {
   );
   unlisteners.push(
     await listen<[string, number]>("session-exited", (event) => {
+      // Recorded BEFORE the layout change, so the orchestration tick
+      // this triggers already sees the code (tools spec §3.1). The
+      // other way round, a tool step would read as "nobody witnessed
+      // the outcome" on every single run.
+      recordSessionExit(event.payload[0], event.payload[1]);
       handleSessionExited(event.payload[0]);
     })
   );
@@ -705,6 +710,20 @@ export async function closeSession(sessionId: string): Promise<void> {
 // removing it empties that page's tree entirely, the whole page is
 // removed too (see workspace.ts's updatePageLayout doc comment for why
 // there's no "clear the layout" alternative).
+/// Exit code by session id, for sessions that have ended while this app
+/// was running. A tool step is done or stalled by exactly this (tools
+/// spec T5), and a session absent from here has no WITNESSED outcome --
+/// which is a stall, not a pass.
+///
+/// Never pruned by age: an entry is a few bytes and the map only grows
+/// with sessions that actually ended in this app run. Pruning it would
+/// mean a slow rail's finished step could lose its verdict.
+export const sessionExits = writable<Map<string, number>>(new Map());
+
+export function recordSessionExit(sessionId: string, exitCode: number): void {
+  sessionExits.update((m) => new Map(m).set(sessionId, exitCode));
+}
+
 export function handleSessionExited(sessionId: string): void {
   const state = get(layoutState);
   // A main agent session lives outside every page tree (D12), so the

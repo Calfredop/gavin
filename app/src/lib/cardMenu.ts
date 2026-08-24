@@ -11,6 +11,12 @@ import { findSessionLocation } from "./workspace";
 import { patchPlanField } from "./gavinState";
 import { requestedExplorerPath } from "./planExplorer";
 import { jumpToBoundSession, relaunchCard } from "./cardRunActions";
+import { findCardPlacement } from "./orchestration";
+import {
+  orchestrations,
+  sendCardToRailAction,
+  removeCardFromRailAction,
+} from "./orchestrationState";
 import { slugStatus, type CardView } from "./planBoard";
 import type { Column } from "./kanban";
 import type { ContextMenuEntry } from "./contextMenu";
@@ -73,6 +79,44 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
         disabled: !hooks.agentAvailable,
         onPick: () => hooks.sendToAgent(card),
       });
+    }
+
+    // The rails, in the order the Orchestration tab shows them. The card
+    // lands as the rail's trailing stage; the rail it is already on is
+    // marked and disabled, exactly as its own column is below.
+    //
+    // A workspace with NO rails gets no block at all rather than a dead
+    // row: orchestration is opt-in, and the card detail is where the
+    // concept gets explained to someone who has not opted in.
+    const orch = get(orchestrations)[workspaceId];
+    const rails = [...(orch?.rails ?? [])].sort((a, b) => a.position - b.position);
+    const placement = orch ? findCardPlacement(orch, card.id) : null;
+    if (rails.length > 0) {
+      entries.push({ separator: true });
+      for (const r of rails) {
+        const here = placement?.railId === r.id;
+        entries.push({
+          label: `Send to rail “${r.name}”`,
+          active: here,
+          disabled: here,
+          onPick: () => {
+            void sendCardToRailAction(workspaceId, r.id, card.id).then((err) => {
+              if (err) hooks.reportError(err);
+            });
+          },
+        });
+      }
+      if (placement) {
+        const name = rails.find((r) => r.id === placement.railId)?.name ?? "its rail";
+        entries.push({
+          label: `Take off rail “${name}”`,
+          onPick: () => {
+            void removeCardFromRailAction(workspaceId, card.id).then((err) => {
+              if (err) hooks.reportError(err);
+            });
+          },
+        });
+      }
     }
   }
 

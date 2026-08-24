@@ -10,6 +10,7 @@
 //   [data-orch-step]       a step chip wrapper; value = step id
 //   [data-orch-drawer]     the unplaced drawer root
 //   [data-orch-card]       an unplaced drawer row; value = the card path
+//   [data-orch-tool]       a drawer tool row; value = the tool id
 
 import { get, writable } from "svelte/store";
 import {
@@ -20,6 +21,7 @@ import {
   endPointer,
   cancelDrag,
   type ActiveOrchDrag,
+  type OrchDragKind,
   type MeasuredRail,
   type MeasuredStage,
   type OrchDragCallbacks,
@@ -38,7 +40,7 @@ export interface OrchDragOptions {
   /// because the listening element is its parent.
   scrollEl: HTMLElement;
   commit: (drag: ActiveOrchDrag & { target: OrchDropTarget }) => void;
-  click: (stepId: string) => void;
+  click: (stepId: string, cardPath: string | null) => void;
 }
 
 function toRect(el: Element): Rect {
@@ -85,20 +87,28 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
 
-    // Drawer cards are checked FIRST and are exempt from the button
-    // guard below: the whole row IS a button, and it is also the drag
-    // subject. A press with no movement still fires its own onclick, so
-    // click-to-add keeps working.
+    // Drawer rows are checked FIRST and are exempt from the button guard
+    // below: the whole row IS a button, and it is also the drag subject.
+    // A press with no movement still fires its own onclick, so
+    // click-to-add keeps working. Cards and tools are the same gesture
+    // and differ only in which attribute carries the id.
     const cardEl = target.closest("[data-orch-card]");
-    let kind: "step" | "card";
+    const toolEl = cardEl ? null : target.closest("[data-orch-tool]");
+    let kind: OrchDragKind;
     let itemEl: Element;
     let draggedId: string;
     let sourceStageId: string | null;
+    let clickCardPath: string | null = null;
 
     if (cardEl) {
       kind = "card";
       itemEl = cardEl;
       draggedId = cardEl.getAttribute("data-orch-card") ?? "";
+      sourceStageId = null;
+    } else if (toolEl) {
+      kind = "tool";
+      itemEl = toolEl;
+      draggedId = toolEl.getAttribute("data-orch-tool") ?? "";
       sourceStageId = null;
     } else {
       if (target.closest("button, input, a, textarea, select")) return;
@@ -108,6 +118,11 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       itemEl = stepEl;
       draggedId = stepEl.getAttribute("data-orch-step") ?? "";
       sourceStageId = stepEl.closest("[data-orch-stage]")?.getAttribute("data-orch-stage") ?? "";
+      // Innermost first, and only when it is inside THIS step -- a
+      // press on the step's own card matches nothing and falls back to
+      // the step's card path.
+      const kbEl = target.closest("[data-kb-plan]");
+      clickCardPath = kbEl && stepEl.contains(kbEl) ? kbEl.getAttribute("data-kb-plan") : null;
     }
 
     const cbs: OrchDragCallbacks = {
@@ -117,7 +132,15 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       click: opts.click,
     };
     activeOrchDragRoot.set(root);
-    beginCandidate(kind, draggedId, sourceStageId, { x: e.clientX, y: e.clientY }, toRect(itemEl), cbs);
+    beginCandidate(
+      kind,
+      draggedId,
+      sourceStageId,
+      { x: e.clientX, y: e.clientY },
+      toRect(itemEl),
+      cbs,
+      clickCardPath
+    );
     // Window-level, capture-phase: the dragged chip's wrapper leaves the
     // DOM at activation and WKWebView then drops the pointerup instead
     // of retargeting it. setPointerCapture stays a best-effort extra.
