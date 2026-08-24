@@ -70,6 +70,7 @@
     pageAgentsSummary,
     pageTabRows,
     hasRecap,
+    showGitChip,
     type WorkspaceGitSummary,
     type KanbanSummary,
     type RailsSummary,
@@ -82,6 +83,7 @@
   import { gavinTrees } from "./gavinState";
   import { tooltip } from "./tooltip";
   import { hintMode } from "./shortcutHints";
+  import { agentCommitPhase, gitStore } from "./gitState";
   import { hintDigitFor } from "./shortcuts";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import { message } from "@tauri-apps/plugin-dialog";
@@ -200,7 +202,8 @@
   // The two halves of a workspace's recap row. Both are pure tallies
   // (sidebarSummary.ts); everything below only decides how they read.
   function gitRecap(ws: Workspace): WorkspaceGitSummary {
-    return workspaceGitSummary(ws, $layoutState.gitStatusById);
+    const phase = agentCommitPhase($gitStore[ws.id] ?? null);
+    return workspaceGitSummary(ws, $layoutState.gitStatusById, phase === "starting" || phase === "running");
   }
 
   function cardRecap(ws: Workspace): KanbanSummary {
@@ -297,7 +300,13 @@
   // Spelled out in the tooltip, because the row itself is deliberately
   // just icons and numbers -- there is no room for labels at 200px.
   function gitRecapTip(git: WorkspaceGitSummary): string {
-    const parts = [plural(git.repoCount, "repo", "repos")];
+    // A run in flight leads: it is the only part of this chip that is
+    // happening right now rather than merely true. And the repo tally
+    // drops out entirely at zero -- a run can be the chip's whole reason
+    // for existing, and "0 repos" would be the loudest thing on it.
+    const parts: string[] = [];
+    if (git.committing) parts.push("an agent is committing");
+    if (git.repoCount > 0) parts.push(plural(git.repoCount, "repo", "repos"));
     if (git.dirtyCount > 0) parts.push(`${git.dirtyCount} with uncommitted changes`);
     if (git.ahead > 0) parts.push(`${git.ahead} ahead`);
     if (git.behind > 0) parts.push(`${git.behind} behind`);
@@ -706,15 +715,19 @@
          recap. -->
     {#if hasRecap(git, cards, rails)}
       <div class="recap-row">
-        {#if git.repoCount > 0}
+        {#if showGitChip(git)}
           <button
             class="recap-chip git"
             aria-label={gitRecapTip(git)}
             use:tooltip={gitRecapTip(git)}
             onclick={() => openHubView(ws, "git")}
           >
-            <GitBranch size={11} />
-            <span class="recap-count">{git.repoCount}</span>
+            {#if git.committing}
+              <span class="commit-spinner" aria-hidden="true"></span>
+            {:else}
+              <GitBranch size={11} />
+            {/if}
+            {#if git.repoCount > 0}<span class="recap-count">{git.repoCount}</span>{/if}
             {#if git.dirtyCount > 0}
               <span class="git-dot dirty"></span>
               <span class="recap-count">{git.dirtyCount}</span>
@@ -1356,6 +1369,25 @@
   .recap-chip.git {
     --chip-border: var(--border-warning);
     --chip-border-hover: var(--warning);
+  }
+  /* Takes the branch glyph's place rather than sitting beside it, so the
+     chip keeps its width while a run is in flight -- the sidebar is
+     narrow, and a strip of chips that reflows on its own is worse than
+     one that stays put. */
+  .commit-spinner {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    margin: 1px;
+    border: 2px solid var(--border-accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: recap-spin 0.8s linear infinite;
+  }
+  @keyframes recap-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .recap-chip.cards {
     --chip-border: var(--border-accent);

@@ -25,6 +25,19 @@ export interface WorkspaceGitSummary {
   /// the same "only meaningful with an upstream" rule the page rows use.
   ahead: number;
   behind: number;
+  /// A "Commit via agent" run in flight somewhere in this workspace. Not
+  /// a count over sessions like the rest: the run is a HIDDEN session
+  /// with no tab and no git status of its own, so it is passed in from
+  /// the Git tab's own store.
+  committing: boolean;
+}
+
+/// Whether the workspace's git chip renders at all. A run in flight
+/// earns the chip on its own -- a workspace whose sessions have no repo
+/// between them (or has no sessions yet) still has an agent committing
+/// in it, and that is precisely when nothing else on screen says so.
+export function showGitChip(git: WorkspaceGitSummary): boolean {
+  return git.repoCount > 0 || git.committing;
 }
 
 /// Whose git status counts towards a workspace's recap: every page's
@@ -39,7 +52,8 @@ function workspaceSessionIds(ws: Workspace): string[] {
 
 export function workspaceGitSummary(
   ws: Workspace,
-  gitStatusById: Record<string, GitStatus | null>
+  gitStatusById: Record<string, GitStatus | null>,
+  committing = false
 ): WorkspaceGitSummary {
   // Deduped by repoRoot exactly like summarizePageGitStatus: five
   // sessions sharing one checkout are one repo, not five. Sessions with
@@ -60,7 +74,7 @@ export function workspaceGitSummary(
       behind += status.behind;
     }
   }
-  return { repoCount: byRepoRoot.size, dirtyCount, ahead, behind };
+  return { repoCount: byRepoRoot.size, dirtyCount, ahead, behind, committing };
 }
 
 export interface KanbanBucket {
@@ -229,5 +243,5 @@ export function pageTabRows(page: Page, state: PageTabState): PageTabRow[] {
 /// with no repo, no card and no rail renders no recap at all rather than
 /// an empty strip -- an all-zero tally is noise, not information.
 export function hasRecap(git: WorkspaceGitSummary, cards: KanbanSummary, rails: RailsSummary): boolean {
-  return git.repoCount > 0 || cards.total > 0 || rails.total > 0;
+  return showGitChip(git) || cards.total > 0 || rails.total > 0;
 }

@@ -5,6 +5,7 @@ import {
   railPhase,
   railsSummary,
   hasRecap,
+  showGitChip,
   pageAgentsSummary,
   pageTabRows,
 } from "./sidebarSummary";
@@ -99,7 +100,7 @@ const STANDARD = board(["To Do", "In Progress", "Done"]);
 describe("workspaceGitSummary", () => {
   it("counts no repos when no session has a status", () => {
     const ws = workspace([page("p1", leaf(["a", "b"]))]);
-    expect(workspaceGitSummary(ws, {})).toEqual({ repoCount: 0, dirtyCount: 0, ahead: 0, behind: 0 });
+    expect(workspaceGitSummary(ws, {})).toEqual({ repoCount: 0, dirtyCount: 0, ahead: 0, behind: 0, committing: false });
   });
 
   it("ignores sessions whose status is explicitly null", () => {
@@ -130,7 +131,16 @@ describe("workspaceGitSummary", () => {
       dirtyCount: 1,
       ahead: 0,
       behind: 0,
+      committing: false,
     });
+  });
+
+  // Passed in, not counted: the commit agent is a hidden session with no
+  // tab and no git status of its own, so nothing this function reads
+  // could find it.
+  it("carries the commit-run flag through untouched", () => {
+    const ws = workspace([], { mainSessionId: "main" });
+    expect(workspaceGitSummary(ws, { main: gitStatus("/repo-root") }, true).committing).toBe(true);
   });
 
   it("counts dirty repos, not dirty sessions", () => {
@@ -245,7 +255,7 @@ describe("railsSummary", () => {
 });
 
 describe("hasRecap", () => {
-  const noGit = { repoCount: 0, dirtyCount: 0, ahead: 0, behind: 0 };
+  const noGit = { repoCount: 0, dirtyCount: 0, ahead: 0, behind: 0, committing: false };
   const noCards = { todo: 0, inProgress: 0, done: 0, total: 0, columns: [] };
   const noRails = { running: 0, done: 0, idle: 0, total: 0 };
 
@@ -263,6 +273,15 @@ describe("hasRecap", () => {
 
   it("is true with a rail alone", () => {
     expect(hasRecap(noGit, noCards, { ...noRails, idle: 1, total: 1 })).toBe(true);
+  });
+
+  // The case the chip exists for: a workspace whose sessions report no
+  // repo between them still has an agent committing in it, and nothing
+  // else on screen would say so.
+  it("is true for a commit run alone, with no repo counted", () => {
+    expect(hasRecap({ ...noGit, committing: true }, noCards, noRails)).toBe(true);
+    expect(showGitChip({ ...noGit, committing: true })).toBe(true);
+    expect(showGitChip(noGit)).toBe(false);
   });
 });
 
