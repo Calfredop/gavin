@@ -263,6 +263,24 @@ describe("executeActions", () => {
     expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
   });
 
+  // Rule 5 stops a rail that is ADVANCING. A rail that is idle or paused
+  // has nothing to stop, and a reconciling stall must not relabel a rail
+  // nobody started as "paused".
+  it("a stall on a rail that is not running leaves its state alone", async () => {
+    await setRailRunAction("ws-1", "r1", "idle", null);
+    vi.mocked(backend.setRailRun).mockClear();
+    await executeActions("ws-1", [
+      { kind: "stall", stepId: "t1", reason: "agent exited before the card reached Done" },
+    ]);
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      "agent exited before the card reached Done"
+    );
+    expect(backend.setRailRun).not.toHaveBeenCalled();
+  });
+
   it("markDone keeps the session id so the transcript stays reachable", async () => {
     await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
     await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);

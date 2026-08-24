@@ -21,8 +21,10 @@ import {
   addStep,
   addToolStep,
   removeStep,
+  railStateOf,
   addCardAsStage,
   addToolAsStage,
+  dropImpossibleSteps,
   setStepParams,
   moveStepIntoStage,
   moveStepToNewStage,
@@ -364,7 +366,11 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
     } else if (action.kind === "stall") {
       await setStepRunAction(workspaceId, action.stepId, "stalled", null, action.reason);
       const rail = railOwning(orch, action.stepId);
-      if (rail) {
+      // Rule 5 stops a rail that is ADVANCING. A rail that is idle or
+      // paused has nothing to stop, and the reconciling stalls nextActions
+      // now issues for a dead session on such a rail must not relabel a
+      // rail nobody started as "paused".
+      if (rail && railStateOf(orch, rail.id) === "running") {
         const current = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
         await setRailRunAction(workspaceId, rail.id, "paused", current);
       }

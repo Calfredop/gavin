@@ -113,7 +113,14 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
 // board shows the columns for structure only). Statuses whose slug is
 // empty count as no status; no status lands in the first real column, or
 // in a "(no status)" auto column when the board has none.
-/// Plan cards are indexed by (contextFolder, fileName) joined with a NUL:
+/// The key a nested child resolves its parent on: (contextFolder,
+/// fileName) joined with a NUL -- the one character neither a folder nor
+/// a file name can hold, so no two distinct pairs can collide by
+/// spelling. Exported because the scheduler resolves the same link for
+/// the same reason (orchestration.effectiveStatus): one spelling of
+/// "which plan is this card's parent", not two that can drift.
+///
+/// Plan cards are indexed by this key:
 /// the one character neither a folder nor a file name can hold, so no two
 /// distinct pairs can collide by spelling.
 ///
@@ -121,7 +128,7 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
 /// A raw one makes git classify this whole file as BINARY -- no diffs, no
 /// merge resolution, and grep skips it -- which is how two of them sat here
 /// unnoticed. The runtime string is identical either way.
-function planKey(contextFolder: string, fileName: string): string {
+export function planKey(contextFolder: string, fileName: string): string {
   return `${contextFolder}\u0000${fileName}`;
 }
 

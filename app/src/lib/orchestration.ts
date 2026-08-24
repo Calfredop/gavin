@@ -6,7 +6,7 @@
 import type { Board, Column } from "./kanban";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 import type { WorktreeInfo } from "./git";
-import { slugStatus } from "./planBoard";
+import { isArchivedCard, planKey, slugStatus } from "./planBoard";
 
 export interface Step {
   id: string;
@@ -130,6 +130,42 @@ export function cardIndex(tree: GavinTree | undefined): Map<string, CardEntry> {
   return index;
 }
 
+/// The PLAN cards of a card index, keyed the way a nested task's
+/// `parent:` resolves: (contextFolder, fileName). Only plans, because
+/// only a plan card can be a parent -- exactly the index
+/// `mergePlanCards` builds for the board.
+export function planIndex(cards: Map<string, CardEntry>): Map<string, CardEntry> {
+  const index = new Map<string, CardEntry>();
+  for (const entry of cards.values()) {
+    if (entry.plan.kind === "plan") index.set(planKey(entry.contextFolder, entry.plan.fileName), entry);
+  }
+  return index;
+}
+
+/// THE STATUS THE BOARD SHOWS THIS CARD IN, which is not always the
+/// card's own. A task with a `parent:` and no `status:` of its own is
+/// NESTED: it is drawn inside its parent's card, so the column the human
+/// sees it in is the parent's, and on disk it travels into `plans/done/`
+/// with the parent rather than by any status of its own.
+///
+/// The scheduler used to read `plan.status` directly, so every nested
+/// task under a Done plan looked unfinished: pressing Start re-ran
+/// finished work, and the launch then wrote `In Progress` onto the card,
+/// which un-nested it and moved it back out of `done/`.
+///
+/// One hop, deliberately: a card that nests is a task, and a parent is
+/// always a plan, so no chain can form. The same conditions
+/// `mergePlanCards` nests on, resolved on the same `planKey` -- one
+/// spelling of the link, not two that can drift.
+export function effectiveStatus(entry: CardEntry, plans: Map<string, CardEntry>): string | null {
+  const { plan, contextFolder } = entry;
+  const own = plan.status ?? null;
+  if (own !== null || plan.kind !== "task" || !plan.parent || plan.parent === plan.fileName) {
+    return own;
+  }
+  return plans.get(planKey(contextFolder, plan.parent))?.plan.status ?? null;
+}
+
 /// WHERE AN AGENT'S SHELL STARTS. Not the isolation question: SP2 adds
 /// `conflictCheckout` for that, because a card's contextFolder is a
 /// subdirectory of the root checkout rather than a checkout of its own
@@ -215,6 +251,36 @@ function toolStepOutcome(
   return { kind: "stall", reason: `${label} exited with code ${exitCode}` };
 }
 
+/// The verdict on a step whose session is over. One spelling, because
+/// two paths need it: rule 3 inside a running rail, and the
+/// reconciliation pass over a rail that is not running.
+///
+/// A card that reached the done column outranks the exit -- an agent
+/// that finished the card and then quit counts as done, not stalled.
+function deadSessionAction(
+  step: Step,
+  cardStatus: string | null,
+  doneSlug: string | null,
+  doneName: string,
+  toolLabel: string,
+  exitCode: number | undefined
+): Action {
+  if (isToolStep(step)) {
+    const outcome = toolStepOutcome(exitCode, toolLabel);
+    return outcome.kind === "markDone"
+      ? { kind: "markDone", stepId: step.id }
+      : { kind: "stall", stepId: step.id, reason: outcome.reason };
+  }
+  if (doneSlug && cardStatus !== null && slugStatus(cardStatus) === doneSlug) {
+    return { kind: "markDone", stepId: step.id };
+  }
+  return {
+    kind: "stall",
+    stepId: step.id,
+    reason: `agent exited before the card reached ${doneName}`,
+  };
+}
+
 /// The scheduler (spec §4.2). Pure and total: same inputs, same list.
 /// Rules run in order per stage -- mark done, launch or stall pending,
 /// stall a running step whose session died -- and a fully-done stage
@@ -236,6 +302,12 @@ export function nextActions(
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
+  const plans = planIndex(cards);
+  /// What the BOARD says about this step's card -- a nested task reads
+  /// its parent's status (see effectiveStatus). Null for a step whose
+  /// card the tree has no entry for, which is never done.
+  const statusOf = (entry: CardEntry | undefined): string | null =>
+    entry ? effectiveStatus(entry, plans) : null;
   const done = doneColumn(board);
   const doneSlug = done ? slugStatus(done.name) : null;
   const knownWorktrees = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
@@ -244,7 +316,35 @@ export function nextActions(
   const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
 
   for (const rail of orch.rails) {
-    if (railStateOf(orch, rail.id) !== "running") continue;
+    if (railStateOf(orch, rail.id) !== "running") {
+      // Reconciliation is about what the SESSIONS say, not about whether
+      // the rail is advancing (spec §4.4). A step left `running` on an
+      // idle or paused rail -- the app quit mid-run, or a stall paused
+      // the rail around it -- gets no tick that would ever correct it,
+      // and the daemon refuses every plan write that drops a `running`
+      // step: the stale row wedges the rail shut, uneditable and
+      // undeletable. So write the truth about dead sessions here. Only
+      // that: nothing is launched and no stage advances, because the
+      // rail is not running.
+      for (const stage of rail.stages) {
+        for (const step of stage.steps) {
+          if (stepStateOf(orch, step.id) !== "running") continue;
+          const sessionId = runByStep.get(step.id)?.sessionId ?? null;
+          if (sessionId && liveSessionIds.has(sessionId)) continue;
+          actions.push(
+            deadSessionAction(
+              step,
+              statusOf(cards.get(step.cardPath)),
+              doneSlug,
+              done?.name ?? "the done column",
+              toolName.get(step.toolId as string) ?? "the tool",
+              sessionId ? exitCodes.get(sessionId) : undefined
+            )
+          );
+        }
+      }
+      continue;
+    }
 
     // Step states simulated forward within this tick, so an advance can
     // cascade without re-entering the function.
@@ -274,12 +374,20 @@ export function nextActions(
         //
         // Skipped entirely for a TOOL step: it has no card, so there is
         // no status to compare and rule 3 owns its completion.
+        //
+        // The status is the one the BOARD shows the card in, so a nested
+        // task under a Done plan is skipped here rather than re-run.
+        //
+        // `!== "done"` covers a STALLED step too: a card someone finished
+        // by hand while its step sat failed is done, not something rule 2
+        // should then retry.
+        const cardStatus = statusOf(entry);
         if (
           !isToolStep(step) &&
-          (state === "pending" || state === "running") &&
+          state !== "done" &&
           doneSlug &&
-          entry &&
-          slugStatus(entry.plan.status ?? "") === doneSlug
+          cardStatus !== null &&
+          slugStatus(cardStatus) === doneSlug
         ) {
           actions.push({ kind: "markDone", stepId: step.id });
           simulated.set(step.id, "done");
@@ -287,7 +395,16 @@ export function nextActions(
         }
 
         // Rule 2 -- launch a pending step, or stall it with a reason.
-        if (state === "pending") {
+        //
+        // A STALLED step is retried here, when the run REACHES it: a
+        // failed step used to be invisible to every rule, so a rail armed
+        // on its stage produced no actions at all and sat there looking
+        // busy, with the per-step Retry button the only way past it.
+        // Nothing is replayed -- the blocker is re-derived, so the step
+        // either goes this time or stalls again on its own merits, and a
+        // fresh stall re-pauses the rail (rule 5). That is what keeps
+        // this one attempt per press of Play rather than a spin.
+        if (state === "pending" || state === "stalled") {
           const reason = launchBlocker(rail, step, entry, knownWorktrees, knownTools);
           if (reason) {
             actions.push({ kind: "stall", stepId: step.id, reason });
@@ -307,21 +424,18 @@ export function nextActions(
         if (state === "running") {
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
           if (sessionId && !liveSessionIds.has(sessionId)) {
-            if (isToolStep(step)) {
-              const label = toolName.get(step.toolId as string) ?? "the tool";
-              const outcome = toolStepOutcome(exitCodes.get(sessionId), label);
-              if (outcome.kind === "markDone") {
-                actions.push({ kind: "markDone", stepId: step.id });
-                simulated.set(step.id, "done");
-                continue;
-              }
-              actions.push({ kind: "stall", stepId: step.id, reason: outcome.reason });
-            } else {
-              actions.push({
-                kind: "stall",
-                stepId: step.id,
-                reason: `agent exited before the card reached ${done?.name ?? "the done column"}`,
-              });
+            const action = deadSessionAction(
+              step,
+              cardStatus,
+              doneSlug,
+              done?.name ?? "the done column",
+              toolName.get(step.toolId as string) ?? "the tool",
+              exitCodes.get(sessionId)
+            );
+            actions.push(action);
+            if (action.kind === "markDone") {
+              simulated.set(step.id, "done");
+              continue;
             }
             simulated.set(step.id, "stalled");
             stalled = true;
