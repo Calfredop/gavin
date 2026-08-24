@@ -10,9 +10,11 @@ daemon owns it, and the only trace it leaves in the app is
    starts a *second* agent on the same working tree. Bootstrap cannot help:
    `resolve_sessions` only reconciles ids referenced by a page, and a hidden
    run is referenced by none.
-2. **The status is only visible inside the Git tab.** The sidebar's workspace
-   git chip -- the one place a workspace's repos are summarised from
-   anywhere -- says nothing about a commit in flight.
+2. **The status is only visible inside the Git tab**, and only in the corner
+   of its toolbar. Neither of the two places that speak for a tab from
+   outside it -- the hub's own Git tab in the tab strip, and the sidebar's
+   workspace git chip -- says anything about a commit in flight, so a human
+   on Kanban or PRD has no way to know one is running.
 
 ## Decisions
 
@@ -40,12 +42,21 @@ exist.
 
 ## Steps
 
-- [ ] `adopt_session` in `session.rs` (+ registration, + a fake-daemon test)
-- [ ] `backend.adoptSession`
-- [ ] `GitViewPrefs.agentCommit` in `workspace.ts` and `config.rs`
-- [ ] `gitState`: persist on launch, clear on every resolution, split the
+- [x] `adopt_session` in `session.rs` (+ registration, + a fake-daemon test)
+- [x] `backend.adoptSession`
+- [x] `GitViewPrefs.agentCommit` in `workspace.ts` and `config.rs`
+- [x] `gitState`: persist on launch, clear on every resolution, split the
       post-launch half into `watchAgentCommit`, add `adoptAgentCommits`
-- [ ] call the sweep from `+page.svelte` after `bootstrap()`
-- [ ] `workspaceGitSummary` gains `committing`; `showGitChip` shared by
+- [x] call the sweep from `+page.svelte` after `bootstrap()`
+- [x] `workspaceGitSummary` gains `committing`; `showGitChip` shared by
       `hasRecap` and the template; the sidebar chip spins
-- [ ] unit tests either side, and smoke items for the reload path
+- [x] `hubViewBusy` in `hubViewMeta.ts`; the hub's Git tab spins in place of
+      its branch icon, from whichever tab is on screen
+- [x] unit tests either side, and smoke items for the reload path
+
+## Landed differently than planned
+
+The clear-the-record step is guarded by session id (`forgetAgentCommit`),
+not unconditional. An abandoned run resolves long after the worktree switch
+that abandoned it, and by then a second run may be the one on record --
+clearing blind would erase the run still going.
