@@ -1,4 +1,5 @@
 ---
+status: Done
 parent: orchestration-rails-that-run.md
 kind: task
 title: MD file viewer bug

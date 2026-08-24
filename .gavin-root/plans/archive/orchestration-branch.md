@@ -1,6 +1,6 @@
 ---
 kind: task
 title: Orchestration branch
-status: In Progress
+status: Done
 ---
 Allow the user to use branches, just as work trees

@@ -1,7 +1,8 @@
 ---
+status: Done
+parent: orchestration-rails-that-run.md
 kind: task
 title: Paste not working
-status: Done
 ---
 # Paste not working
 Cmd+V not working
