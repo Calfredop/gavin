@@ -17,7 +17,22 @@
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   import { presetSingle, allSessionIds } from "./layout";
-  import { ChevronRight, ChevronDown, Plus, X, House, Sun, Moon, Monitor, Settings } from "@lucide/svelte";
+  import {
+    ChevronRight,
+    ChevronDown,
+    Plus,
+    X,
+    House,
+    Sun,
+    Moon,
+    Monitor,
+    Settings,
+    GitBranch,
+    Kanban,
+    Play,
+    Check,
+    CircleDashed,
+  } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import type { ThemePref } from "./ui/theme";
@@ -30,7 +45,7 @@
     { pref: "dark", label: "Dark", icon: Moon },
   ];
   import { sessionLabel } from "./paths";
-  import { HUB_VIEWS } from "./workspaceViews";
+  import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
   import {
     setDragPayload,
     getDragKind,
@@ -42,6 +57,19 @@
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
   import { UNFILED_WORKSPACE_ID, summarizePageGitStatus, getActiveView, sidebarWorkspaceOrder, type Workspace, type Page, type GitStatus } from "./workspace";
+  import {
+    workspaceGitSummary,
+    kanbanSummary,
+    railsSummary,
+    hasRecap,
+    type WorkspaceGitSummary,
+    type KanbanSummary,
+    type RailsSummary,
+  } from "./sidebarSummary";
+  import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  import { kanbanState, fetchBoard } from "./kanbanState";
+  import { gavinTrees } from "./gavinState";
+  import { tooltip } from "./tooltip";
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
@@ -151,6 +179,69 @@
 
   function pageGitSummary(page: Page) {
     return summarizePageGitStatus(page, $layoutState.gitStatusById);
+  }
+
+  // The two halves of a workspace's recap row. Both are pure tallies
+  // (sidebarSummary.ts); everything below only decides how they read.
+  function gitRecap(ws: Workspace): WorkspaceGitSummary {
+    return workspaceGitSummary(ws, $layoutState.gitStatusById);
+  }
+
+  function cardRecap(ws: Workspace): KanbanSummary {
+    return kanbanSummary($kanbanState[ws.id], $gavinTrees[ws.id]);
+  }
+
+  function railRecap(ws: Workspace): RailsSummary {
+    return railsSummary($orchestrations[ws.id]);
+  }
+
+  function plural(n: number, one: string, many: string): string {
+    return `${n} ${n === 1 ? one : many}`;
+  }
+
+  // Spelled out in the tooltip, because the row itself is deliberately
+  // just icons and numbers -- there is no room for labels at 200px.
+  function gitRecapTip(git: WorkspaceGitSummary): string {
+    const parts = [plural(git.repoCount, "repo", "repos")];
+    if (git.dirtyCount > 0) parts.push(`${git.dirtyCount} with uncommitted changes`);
+    if (git.ahead > 0) parts.push(`${git.ahead} ahead`);
+    if (git.behind > 0) parts.push(`${git.behind} behind`);
+    return `${parts.join(", ")} -- open Git`;
+  }
+
+  // Names every column, so the three-slot tally never hides which custom
+  // column a card is actually sitting in.
+  function cardRecapTip(cards: KanbanSummary): string {
+    const detail = cards.columns
+      .filter((c) => c.count > 0)
+      .map((c) => `${c.name} ${c.count}`)
+      .join(", ");
+    return `${plural(cards.total, "card", "cards")}: ${detail} -- open Kanban`;
+  }
+
+  function railRecapTip(rails: RailsSummary): string {
+    const parts: string[] = [];
+    if (rails.running > 0) parts.push(`${rails.running} running`);
+    if (rails.done > 0) parts.push(`${rails.done} done`);
+    if (rails.idle > 0) parts.push(`${rails.idle} idle`);
+    return `${plural(rails.total, "rail", "rails")}: ${parts.join(", ")} -- open Orchestration`;
+  }
+
+  /// The workspace row's Hub button: switch to that workspace and land on
+  /// the hub tab it was last showing -- never on a tab it no longer
+  /// offers. Where the home row under the workspace name used to go.
+  function openHub(ws: Workspace): void {
+    switchWorkspace(ws.id);
+    switchWorkspaceView(ws.id, resolveHubView(ws, import.meta.env.DEV));
+  }
+
+  /// A recap chip's click: straight to the tab that chip summarises,
+  /// falling back to the workspace's usual hub landing when that tab is
+  /// not on offer (both Git and Orchestration require a bound root).
+  function openHubView(ws: Workspace, view: string): void {
+    switchWorkspace(ws.id);
+    const offered = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
+    switchWorkspaceView(ws.id, offered.includes(view) ? view : resolveHubView(ws, import.meta.env.DEV));
   }
 
   // ahead/behind are only meaningful (and only shown) when hasUpstream is
@@ -399,6 +490,23 @@
     }
   });
 
+  // The recap needs EVERY rooted workspace's board and orchestration, not
+  // just the active one's (the hub views only fetch the one they show).
+  // The gavin tree needs no fetch of its own: bootstrap already watches
+  // every rooted workspace. Requested once each -- the Set is what keeps
+  // a FAILED fetch from being retried on every layout change, which the
+  // stores' own already-loaded guards would not catch.
+  const recapRequested = new Set<string>();
+  $effect(() => {
+    for (const ws of $layoutState.workspaces) {
+      if (ws.rootPath && !recapRequested.has(ws.id)) {
+        recapRequested.add(ws.id);
+        void fetchBoard(ws.id);
+        void fetchOrchestration(ws.id);
+      }
+    }
+  });
+
   $effect(() => {
     if (creatingWorkspace && newWorkspaceInput) {
       newWorkspaceInput.focus();
@@ -420,21 +528,65 @@
   });
 </script>
 
-{#snippet pageList(ws: Workspace, showHomeRow: boolean)}
+{#snippet pageList(ws: Workspace)}
+  {@const git = gitRecap(ws)}
+  {@const cards = cardRecap(ws)}
+  {@const rails = railRecap(ws)}
   <div class="page-list">
-    {#if showHomeRow}
-      <div
-        class="page-row home"
-        class:active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
-        onclick={() => {
-          switchWorkspace(ws.id);
-          switchWorkspaceView(ws.id, HUB_VIEWS[0].id);
-        }}
-        role="button"
-        tabindex="0"
-        title="Hub"
-      >
-        <House size={14} />
+    <!-- The workspace's first row: what its checkouts, its board and its
+         rails add up to, as icons and counters. Rendered only when there
+         is something to count -- an all-zero strip is noise, not a
+         recap. -->
+    {#if hasRecap(git, cards, rails)}
+      <div class="recap-row">
+        {#if git.repoCount > 0}
+          <button
+            class="recap-chip git"
+            aria-label={gitRecapTip(git)}
+            use:tooltip={gitRecapTip(git)}
+            onclick={() => openHubView(ws, "git")}
+          >
+            <GitBranch size={11} />
+            <span class="recap-count">{git.repoCount}</span>
+            {#if git.dirtyCount > 0}
+              <span class="git-dot dirty"></span>
+              <span class="recap-count">{git.dirtyCount}</span>
+            {/if}
+            {#if git.ahead > 0}<span class="recap-delta">&uarr;{git.ahead}</span>{/if}
+            {#if git.behind > 0}<span class="recap-delta">&darr;{git.behind}</span>{/if}
+          </button>
+        {/if}
+        {#if cards.total > 0}
+          <button
+            class="recap-chip cards"
+            aria-label={cardRecapTip(cards)}
+            use:tooltip={cardRecapTip(cards)}
+            onclick={() => openHubView(ws, "kanban")}
+          >
+            <Kanban size={11} />
+            <span class="card-stat todo">{cards.todo}</span>
+            <span class="card-stat progress">{cards.inProgress}</span>
+            <span class="card-stat done">{cards.done}</span>
+          </button>
+        {/if}
+        {#if rails.total > 0}
+          <button
+            class="recap-chip rails"
+            aria-label={railRecapTip(rails)}
+            use:tooltip={railRecapTip(rails)}
+            onclick={() => openHubView(ws, "orchestration")}
+          >
+            {#if rails.running > 0}
+              <span class="rail-stat running"><Play size={10} /><span class="recap-count">{rails.running}</span></span>
+            {/if}
+            {#if rails.done > 0}
+              <span class="rail-stat done"><Check size={10} /><span class="recap-count">{rails.done}</span></span>
+            {/if}
+            {#if rails.idle > 0}
+              <span class="rail-stat idle"><CircleDashed size={10} /><span class="recap-count">{rails.idle}</span></span>
+            {/if}
+          </button>
+        {/if}
       </div>
     {/if}
     {#each ws.pages as page, pageIndex (page.id)}
@@ -592,10 +744,12 @@
   <div class="workspace-list">
     {#if unfiledWorkspace}
       {@const ws = unfiledWorkspace}
-      <div class="workspace-row-group">
+      <div
+        class="workspace-row-group"
+        style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
+      >
         <div
           class="workspace-row pinned"
-          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
           ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
@@ -604,6 +758,10 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
+          <!-- Unfiled is a drawer for loose pages, not a project: it has
+               no hub worth landing on. The spacer keeps its chevron in
+               line with every other workspace's. -->
+          <span class="hub-spacer" aria-hidden="true"></span>
           <IconButton
             icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
             label={isExpanded(ws.id) ? "Collapse" : "Expand"}
@@ -621,15 +779,17 @@
           <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
         </div>
         {#if isExpanded(ws.id)}
-          {@render pageList(ws, false)}
+          {@render pageList(ws)}
         {/if}
       </div>
     {/if}
     {#each regularWorkspaces as ws (ws.id)}
-      <div class="workspace-row-group">
+      <div
+        class="workspace-row-group"
+        style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
+      >
         <div
           class="workspace-row"
-          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
           class:active={ws.id === $layoutState.activeWorkspaceId}
           class:drop-before={hoverState?.targetId === ws.id &&
             hoverState.kind === "reorder" &&
@@ -646,6 +806,13 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
+          <IconButton
+            icon={House}
+            label="Hub"
+            size={12}
+            active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
+            onclick={() => openHub(ws)}
+          />
           <IconButton
             icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
             label={isExpanded(ws.id) ? "Collapse" : "Expand"}
@@ -698,7 +865,7 @@
           </button>
         </div>
         {#if isExpanded(ws.id)}
-          {@render pageList(ws, true)}
+          {@render pageList(ws)}
         {/if}
       </div>
     {/each}
@@ -791,19 +958,32 @@
     width: calc(100% - 16px);
     box-sizing: border-box;
   }
+  .workspace-row-group {
+    /* The workspace's colour, as ONE stripe running the full height of
+       the group -- the header row, the recap row, the pages and their
+       git detail -- rather than a mark on the header alone. Its own
+       variable, always set: --ws-accent is inherited from the active
+       workspace's container, which would paint every group. */
+    border-left: 3px solid var(--row-accent, transparent);
+  }
   .workspace-row {
     /* Anchors the hold-⌘ hint badge. */
     position: relative;
     display: flex;
     align-items: center;
     gap: 4px;
-    /* padding-left drops by the stripe's width so the row's contents do
-       not shift when a colour is set. */
+    /* Every padding-left below drops by the stripe's width, so contents
+       sit exactly where they did before the group carried a stripe. */
     padding: 4px 8px 4px 5px;
-    /* Its own variable, always set: --ws-accent is inherited from the
-       active workspace's container, which would paint every row. */
-    border-left: 3px solid var(--row-accent, transparent);
     cursor: pointer;
+  }
+  /* An IconButton at size 12 measures 24px across (12px icon + 5px of
+     padding and 1px of transparent border a side), and this stands in
+     for one -- so Unfiled's chevron lines up with the chevrons that sit
+     beside a Hub button. */
+  .hub-spacer {
+    flex: 0 0 auto;
+    width: 24px;
   }
   .workspace-row.active {
     background: var(--surface-raised);
@@ -895,19 +1075,106 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 3px 8px 3px 28px;
+    padding: 3px 8px 3px 25px;
     cursor: pointer;
   }
   .page-row.active {
     background: var(--surface-base);
     color: var(--text);
   }
-  .page-row.home {
-    justify-content: center;
+  .recap-row {
+    display: flex;
+    align-items: center;
+    /* Wraps rather than overflows: three chips at their widest do not fit
+       a 200px sidebar, and a recap that clips is worse than one on two
+       lines. */
+    flex-wrap: wrap;
+    gap: 2px 6px;
+    /* 22, not the page rows' 25: the chips carry 3px of padding of their
+       own, so their icons land on the same column as the page names. */
+    padding: 2px 8px 2px 22px;
     color: var(--text-muted);
   }
-  .page-row.home.active {
+  .recap-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 4px;
+    background: transparent;
+    /* A hairline in the chip's own hue, so the three read as three
+       things rather than one run of numbers. */
+    border: 1px solid var(--chip-border, var(--border));
+    border-radius: 4px;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+  }
+  .recap-chip:hover {
+    background: var(--surface-hover);
+    border-color: var(--chip-border-hover, var(--border-strong));
     color: var(--text);
+  }
+  /* CATEGORICAL, not semantic: these three name a context -- git, board,
+     rails -- and carry no judgement about it. The --border-* ramp is the
+     dimmest tinted hairline the theme offers (and is tuned per theme, a
+     lighter step on light surfaces), which is what keeps an identity
+     colour from reading as a status. The full-strength hue is held back
+     for hover, so a chip only speaks up once you point at it. */
+  .recap-chip.git {
+    --chip-border: var(--border-warning);
+    --chip-border-hover: var(--warning);
+  }
+  .recap-chip.cards {
+    --chip-border: var(--border-accent);
+    --chip-border-hover: var(--accent);
+  }
+  .recap-chip.rails {
+    --chip-border: var(--border-success);
+    --chip-border-hover: var(--success);
+  }
+  .recap-chip:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: -1px;
+  }
+  .recap-count {
+    font-variant-numeric: tabular-nums;
+  }
+  .recap-delta {
+    font-size: 0.9em;
+    white-space: nowrap;
+  }
+  /* A fixed three-slot tally: to do, in progress, done, always in that
+     order and always all three, zeros included -- the positions are what
+     make three bare numbers readable, so hiding a zero would only make
+     the rest ambiguous. Hairline dividers keep them from reading as one
+     number; the tooltip names each column outright. */
+  .card-stat {
+    font-variant-numeric: tabular-nums;
+  }
+  .card-stat + .card-stat {
+    margin-left: 1px;
+    padding-left: 4px;
+    border-left: 1px solid var(--border);
+  }
+  .card-stat.progress {
+    color: var(--accent-text);
+  }
+  .card-stat.done {
+    color: var(--success-text);
+  }
+  /* One tally per rail phase, coloured the way the Orchestration tab
+     colours a rail's own state. */
+  .rail-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .rail-stat.running {
+    color: var(--accent-text);
+  }
+  .rail-stat.done {
+    color: var(--success-text);
   }
   .workspace-row.drop-before,
   .page-row.drop-before {
@@ -949,7 +1216,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 8px 2px 44px;
+    padding: 2px 8px 2px 41px;
     cursor: pointer;
     font-size: 0.9em;
   }
