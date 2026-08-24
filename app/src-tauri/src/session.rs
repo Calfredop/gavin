@@ -2827,11 +2827,19 @@ mod gate_tests {
         ]
     }
 
-    /// The sweep Task 8 asks for: across a representative slice of the
-    /// compat window (the floor, a mid-window value, and parity), `gate`'s
-    /// verdict must agree with what `min_version_for` reports for EVERY
-    /// request variant, not just the couple of variants the tests above
-    /// exercise.
+    /// The sweep: across EVERY daemon version in the compat window (not
+    /// just a representative slice of it), `gate`'s verdict must agree
+    /// with what `min_version_for` reports for EVERY request variant, not
+    /// just the couple of variants the tests above exercise.
+    ///
+    /// This used to sample only three daemon versions (the floor, v9, and
+    /// parity). Because the version table jumps v8 -> v10, no variant
+    /// needs exactly v9, so that sample put only 3 of the request variants
+    /// on their own `needed == daemon_version` boundary -- the case below
+    /// that actually catches comparison-operator drift. Iterating the
+    /// whole window instead costs nothing (39 variants * 8 versions = 312
+    /// trivial assertions) and puts roughly a third of the variants on
+    /// their boundary.
     ///
     /// Honest limit: `gate` computes `needed = min_version_for(req)` and
     /// this test's own `should_pass` comes from that same call, so this
@@ -2849,7 +2857,8 @@ mod gate_tests {
     /// (each pinned to one variant away from any boundary) stayed green.
     #[test]
     fn gate_agrees_with_min_version_for_across_every_variant_at_every_version_in_the_window() {
-        let daemon_versions = [protocol::MIN_COMPATIBLE_VERSION, 9, protocol::PROTOCOL_VERSION];
+        let daemon_versions =
+            (protocol::MIN_COMPATIBLE_VERSION..=protocol::PROTOCOL_VERSION).collect::<Vec<_>>();
 
         for &daemon_version in &daemon_versions {
             let compat = DaemonCompat {
