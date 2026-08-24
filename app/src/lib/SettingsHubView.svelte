@@ -6,6 +6,7 @@
     setNotifyFlag,
     setAgentField,
     agentProfilesStore,
+    restartDaemonInPlace,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig, validateAgentFileName, renameDecision, DEFAULT_ACCENT } from "./settings";
@@ -13,6 +14,7 @@
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
   import Modal from "./Modal.svelte";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
 
   interface Props {
     workspaceId: string;
@@ -38,6 +40,27 @@
   let focused = $state<string | null>(null);
   let fileError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
+
+  // --- daemon ----------------------------------------------------------
+  let confirmingRestart = $state(false);
+  let restarting = $state(false);
+  let restartError = $state<string | null>(null);
+  let restartedAt = $state<string | null>(null);
+
+  async function restartDaemon(): Promise<void> {
+    confirmingRestart = false;
+    restarting = true;
+    restartError = null;
+    restartedAt = null;
+    try {
+      await restartDaemonInPlace();
+      restartedAt = new Date().toLocaleTimeString();
+    } catch (e) {
+      restartError = String(e instanceof Error ? e.message : e);
+    } finally {
+      restarting = false;
+    }
+  }
 
   $effect(() => {
     const name = ws?.name ?? "";
@@ -223,7 +246,40 @@
         {/if}
       {/if}
     </section>
+
+    <section>
+      <h3>Daemon</h3>
+      <p class="hint">
+        gavin-daemon owns every terminal session and watches your plan files. Restart it after
+        rebuilding it, or if sessions and file watching have stopped responding.
+      </p>
+      <div class="row">
+        <button type="button" disabled={restarting} onclick={() => (confirmingRestart = true)}>
+          {restarting ? "Restarting…" : "Restart daemon"}
+        </button>
+        {#if restartedAt}
+          <span class="hint">Restarted at {restartedAt}.</span>
+        {/if}
+      </div>
+      {#if restartError}
+        <p class="hint warn">Couldn't restart the daemon: {restartError}</p>
+      {/if}
+    </section>
   </div>
+
+  {#if confirmingRestart}
+    <ConfirmPrompt
+      title="Restart gavin-daemon?"
+      lines={[
+        "Every terminal session restarts as a fresh shell at its current folder.",
+        "Any agent that is running right now is stopped.",
+        "Scrollback in open terminals is lost.",
+        "The window stays open — plans, boards and git keep working.",
+      ]}
+      choices={[{ label: "Restart daemon", danger: true, onPick: () => void restartDaemon() }]}
+      onCancel={() => (confirmingRestart = false)}
+    />
+  {/if}
 
   {#if pendingMove}
     <Modal onClose={() => void confirmMove(false)}>
@@ -305,6 +361,20 @@
     gap: 8px;
     justify-content: flex-end;
     margin-top: 12px;
+  }
+  .row button {
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 1em;
+  }
+  .row button:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
   .actions button {
     background: var(--surface-overlay);

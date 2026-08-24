@@ -130,6 +130,7 @@ mod smoketest_tests {
             pages: vec![],
             active_page_id: None,
             active_view: None,
+            hub_view: None,
             root_path: Some("/tmp/scratch".to_string()),
             main_session_id: None,
             legacy_agent_command: None,
@@ -409,6 +410,18 @@ pub struct FrontendReady(pub std::sync::atomic::AtomicBool);
 /// that might not exist yet. Same eager-`manage` rationale as `FrontendReady`.
 pub struct BootstrapError(pub Mutex<Option<String>>);
 
+/// Bumped on every deliberate reconnect (`reconnect`). A relay thread
+/// captures the epoch it was spawned in and reports a disconnect only
+/// while that epoch is still current -- without it, the OLD thread's
+/// "daemon closed the connection" would throw the connection-error
+/// overlay over a restart the human just asked for.
+///
+/// An epoch rather than a "restarting" flag: the old thread can notice
+/// its socket close at any point, including after the new connection is
+/// already live and serving, and a flag lowered at the end of the
+/// restart would still race it. An epoch it can never win.
+pub struct ConnectionEpoch(pub std::sync::atomic::AtomicU64);
+
 #[tauri::command]
 pub fn signal_frontend_ready(state: State<FrontendReady>) {
     state.0.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -419,41 +432,107 @@ pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
     state.0.lock().unwrap().clone()
 }
 
-/// Recovery behind the connection-error overlay: kill whatever daemon is
-/// running (by name -- see kill_running_daemons), clear the stale
-/// bootstrap error, and try bootstrapping again.
+/// Restarts `gavin-daemon` and puts this app back on it.
 ///
-/// Returns whether the app is fully reconnected. `false` means the daemon
-/// was restarted but this app process had ALREADY bootstrapped
-/// successfully earlier: Tauri's `manage` keeps the first value for a
-/// given type, so a second bootstrap can't rewire the existing
-/// connections, and only a relaunch will. That case (a daemon dying
-/// mid-session) is rarer than the one this exists for -- a version
-/// mismatch or missing daemon at startup, where bootstrap failed before
-/// managing anything and a second run wires everything cleanly.
+/// Two paths, both ending fully connected. If the app never bootstrapped
+/// (a version mismatch or missing daemon at startup, behind the
+/// connection-error overlay) it kills whatever is running, clears the
+/// stale bootstrap error and bootstraps cleanly. If it HAS bootstrapped
+/// -- the Settings button, with a live app around it -- it reconnects in
+/// place; see `reconnect` for why that is not simply "bootstrap again".
+///
+/// Restarting is destructive to sessions and callers must say so first:
+/// `SessionManager::recover` does not reattach to the old PTYs (they die
+/// with the daemon), it spawns a FRESH shell per surviving registry
+/// record. Every running agent is stopped.
 #[tauri::command]
-pub fn restart_daemon(app_handle: AppHandle) -> Result<bool, String> {
-    let already_bootstrapped = app_handle.try_state::<DaemonConnection>().is_some();
+pub fn restart_daemon(app_handle: AppHandle) -> Result<(), String> {
+    if app_handle.try_state::<DaemonConnection>().is_some() {
+        return reconnect(&app_handle).map_err(|e| e.to_string());
+    }
     crate::daemon::kill_running_daemons().map_err(|e| e.to_string())?;
     // Let the old process actually exit before connect_or_spawn looks for
     // a listener, so it doesn't reach a half-dead one.
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(DAEMON_EXIT_GRACE);
     if let Some(state) = app_handle.try_state::<BootstrapError>() {
         *state.0.lock().unwrap() = None;
     }
-    if already_bootstrapped {
-        // Still respawn the daemon (sessions and the socket come back),
-        // but tell the caller a relaunch is needed to rewire this app.
-        crate::daemon::connect_or_spawn(
-            &socket_path(),
-            Duration::from_secs(3),
-            crate::daemon::spawn_real_daemon,
-        )
-        .map_err(|e| e.to_string())?;
-        return Ok(false);
+    bootstrap(app_handle).map_err(|e| e.to_string())
+}
+
+/// How long to let a killed daemon actually exit before looking for a
+/// listener again -- otherwise `connect_or_spawn` can reach the dying
+/// process's socket and believe it succeeded.
+const DAEMON_EXIT_GRACE: Duration = Duration::from_millis(300);
+
+/// Rewires a running app onto a freshly restarted daemon, with no
+/// relaunch.
+///
+/// The obvious implementation -- call `bootstrap` again -- cannot work:
+/// it publishes the connections with `app_handle.manage(...)`, and
+/// Tauri's `manage` keeps the first value for a given type, so the second
+/// call would leave the app writing to the dead socket. (That is exactly
+/// why this command used to return "restarted, now relaunch".)
+///
+/// But the state does not need replacing. Both connections are already
+/// mutexes around a `UnixStream`, so a reconnect just assigns fresh
+/// streams into the ones the app is holding, and every command that
+/// borrows them keeps working untouched.
+fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
+    // Bump BEFORE killing: the old relay thread notices its socket close
+    // almost immediately, and this is the only thing keeping it quiet.
+    app_handle.state::<ConnectionEpoch>().0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    crate::daemon::kill_running_daemons()?;
+    std::thread::sleep(DAEMON_EXIT_GRACE);
+    if let Some(state) = app_handle.try_state::<BootstrapError>() {
+        *state.0.lock().unwrap() = None;
     }
-    bootstrap(app_handle).map_err(|e| e.to_string())?;
-    Ok(true)
+
+    let stream_conn = crate::daemon::connect_or_spawn(
+        &socket_path(),
+        Duration::from_secs(3),
+        crate::daemon::spawn_real_daemon,
+    )?;
+    let probe = Mutex::new(UnixStream::connect(socket_path())?);
+    // Verified before ANYTHING is swapped in: a daemon that fails the
+    // version probe must leave a named error and an app that is merely
+    // disconnected, never one wired half onto each daemon.
+    verify_daemon_protocol(&probe)?;
+
+    let writer = Arc::clone(&app_handle.state::<DaemonConnection>().writer);
+    *writer.lock().unwrap() = stream_conn.try_clone()?;
+    *app_handle.state::<CommandConnection>().0.lock().unwrap() =
+        probe.into_inner().expect("protocol probe mutex poisoned");
+
+    let data = app_handle.state::<WorkspacesState>().0.lock().unwrap().clone();
+    let non_session_tab_ids = non_session_tab_ids(
+        &app_handle.state::<FileTabs>().0.lock().unwrap(),
+        &app_handle.state::<BoardTabs>().0.lock().unwrap(),
+    );
+    attach_and_relay(
+        app_handle,
+        &writer,
+        stream_conn,
+        attachable_session_ids(&data, &non_session_tab_ids),
+    )?;
+
+    // The daemon's gavin watchers were per-connection and died with it.
+    // Re-armed here rather than from the frontend because this is where
+    // the new connection exists: miss it and the Plans, Kanban and
+    // Orchestration tabs go quietly dead after a restart -- the exact
+    // failure the fs-sync work just removed.
+    for ws in &data.workspaces {
+        if let Some(root) = &ws.root_path {
+            send_request(
+                &writer,
+                &Request::WatchGavinRoot {
+                    workspace_id: ws.id.clone(),
+                    root_path: root.clone(),
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn send_request(writer: &Arc<Mutex<UnixStream>>, req: &Request) -> anyhow::Result<()> {
@@ -744,6 +823,7 @@ mod resolve_workspaces_tests {
             pages,
             active_page_id: None,
             active_view: None,
+            hub_view: None,
             root_path: None,
             main_session_id: None,
             legacy_agent_command: None,
@@ -1025,6 +1105,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 pages: vec![],
                 active_page_id: None,
                 active_view: None,
+                hub_view: None,
                 root_path: None,
                 main_session_id: None,
                 legacy_agent_command: None,
@@ -1066,6 +1147,156 @@ fn reconcile_main_sessions(
     }
     Ok(())
 }
+
+/// Tab ids that are NOT sessions. File and board tabs live in the same id
+/// space as sessions in the layout tree, but the daemon has never heard
+/// of them -- attaching one would fail for an id that was never a
+/// session.
+fn non_session_tab_ids(
+    file_tabs: &HashMap<String, String>,
+    board_tabs: &HashMap<String, crate::config::BoardTabRecord>,
+) -> HashSet<String> {
+    file_tabs.keys().chain(board_tabs.keys()).cloned().collect()
+}
+
+/// Every session id this app expects the daemon to stream for it.
+///
+/// Main agent sessions live outside every page tree by design (D12), so
+/// the page-tree walk cannot see them -- without the second half they
+/// reattach to nothing and render blank forever (Milestone C's bug).
+fn attachable_session_ids(
+    data: &WorkspacesData,
+    non_session_tab_ids: &HashSet<String>,
+) -> Vec<String> {
+    data.workspaces
+        .iter()
+        .flat_map(|w| w.pages.iter())
+        .flat_map(|p| p.layout.all_session_ids())
+        .filter(|id| !non_session_tab_ids.contains(id))
+        .chain(data.workspaces.iter().filter_map(|w| w.main_session_id.clone()))
+        .collect()
+}
+
+/// A relay thread's stream ended. Silent when a newer connection has
+/// already taken over (see `ConnectionEpoch`) -- that disconnect WAS the
+/// restart, and surfacing it would flash the connection-error overlay
+/// over a reconnect that is going fine.
+fn report_disconnect(app_handle: &AppHandle, epoch: u64, message: String) {
+    if app_handle.state::<ConnectionEpoch>().0.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+        return;
+    }
+    let _ = app_handle.emit("daemon-error", message);
+}
+
+/// Attaches every session on the streaming connection and starts the
+/// thread that relays the daemon's pushes to the frontend as Tauri
+/// events. Shared by the cold path (`bootstrap`) and the reconnect path
+/// (`reconnect`) so the two can never drift on what gets attached or
+/// which pushes are forwarded.
+fn attach_and_relay(
+    app_handle: &AppHandle,
+    writer: &Arc<Mutex<UnixStream>>,
+    reader_stream: UnixStream,
+    session_ids: Vec<String>,
+) -> anyhow::Result<()> {
+    for id in session_ids {
+        send_request(writer, &Request::Attach { id })?;
+    }
+
+    let epoch = app_handle.state::<ConnectionEpoch>().0.load(std::sync::atomic::Ordering::SeqCst);
+    let mut reader = BufReader::new(reader_stream);
+    let reader_app_handle = app_handle.clone();
+    let relay_writer = Arc::clone(writer);
+    std::thread::spawn(move || {
+        // Wait for the frontend to confirm its listeners are registered
+        // before reading -- and therefore emitting -- anything from the
+        // daemon (see FrontendReady's doc comment). Bounded: an unbounded
+        // wait here would leave the daemon's connection-handling thread
+        // blocked mid-write on a full scrollback replay, backing up
+        // through the session's writer mutex into the PTY pump -- worse
+        // than the small chance of an early emit being missed if the
+        // frontend is simply slow rather than broken. On a reconnect the
+        // flag is long since set, so this falls straight through.
+        let gate_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if reader_app_handle
+                .state::<FrontendReady>()
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                break;
+            }
+            if Instant::now() >= gate_deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        loop {
+            let resp: Option<Response> = match read_message(&mut reader) {
+                Ok(r) => r,
+                Err(e) => {
+                    report_disconnect(&reader_app_handle, epoch, e.to_string());
+                    break;
+                }
+            };
+            let Some(resp) = resp else {
+                report_disconnect(
+                    &reader_app_handle,
+                    epoch,
+                    "daemon closed the connection".to_string(),
+                );
+                break;
+            };
+            match resp {
+                Response::Output { id, data } => {
+                    let _ = reader_app_handle.emit("pty-output", (id, data));
+                }
+                Response::SessionExited { id, exit_code } => {
+                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
+                }
+                Response::CwdChanged { id, cwd } => {
+                    let _ = reader_app_handle.emit("cwd-changed", (id, cwd));
+                }
+                Response::StatusChanged { id, status } => {
+                    let _ = reader_app_handle.emit("session-status-changed", (id, status));
+                }
+                Response::GitStatusChanged { id, status } => {
+                    let _ = reader_app_handle.emit("git-status-changed", (id, status));
+                }
+                Response::SessionRestored { id } => {
+                    let _ = reader_app_handle.emit("session-restored", id);
+                }
+                Response::OrchestrationChanged { workspace_id, orchestration } => {
+                    let _ = reader_app_handle
+                        .emit("orchestration-changed", (workspace_id, orchestration));
+                }
+                Response::GavinTreeChanged { workspace_id, tree } => {
+                    let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
+                }
+                Response::SessionNamed { session_id, name } => {
+                    // The frontend applies it through setSessionName, the
+                    // very path the tab's own rename UI takes -- so an
+                    // agent rename and a human rename persist identically.
+                    let _ = reader_app_handle.emit("session-named", (session_id, name));
+                }
+                Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
+                    // Attach BEFORE emitting: a session nobody attaches
+                    // renders blank forever (the Milestone-C lesson).
+                    let _ = send_request(&relay_writer, &Request::Attach { id: session_id.clone() });
+                    let _ = reader_app_handle
+                        .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
+                }
+                Response::Error { message } => {
+                    let _ = reader_app_handle.emit("daemon-error", message);
+                }
+                _ => {}
+            }
+        }
+    });
+    Ok(())
+}
+
 
 /// One-time carry-over of D34's `agentCommand` from config.json into
 /// config.toml (D41). Writes only when config.toml has no
@@ -1127,6 +1358,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 pages: vec![],
                 active_page_id: None,
                 active_view: None,
+                hub_view: None,
                 root_path: None,
                 main_session_id: None,
                 legacy_agent_command: None,
@@ -1148,8 +1380,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         }
     }
     reconcile_main_sessions(&mut workspaces, &command_conn)?;
-    let non_session_tab_ids: HashSet<String> =
-        file_tabs.keys().chain(board_tabs.keys()).cloned().collect();
+    let non_session_tab_ids = non_session_tab_ids(&file_tabs, &board_tabs);
     resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids)?;
     let active_workspace_id = if had_no_workspaces {
         Some(crate::config::UNFILED_WORKSPACE_ID.to_string())
@@ -1166,24 +1397,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.theme.clone(),
     )?;
 
-    let all_session_ids: Vec<String> = workspaces_data
-        .workspaces
-        .iter()
-        .flat_map(|w| w.pages.iter())
-        .flat_map(|p| p.layout.all_session_ids())
-        // A file or board tab id is not a session -- the daemon has never
-        // heard of it, so Attaching would fail for an id that was never a
-        // session.
-        .filter(|id| !non_session_tab_ids.contains(id))
-        .collect();
-    // Main agent sessions live outside every page tree by design (D12),
-    // so the page-tree walk above cannot see them -- without this they
-    // reattach to nothing and render blank forever (Milestone C's bug).
-    let main_session_ids: Vec<String> =
-        workspaces_data.workspaces.iter().filter_map(|w| w.main_session_id.clone()).collect();
-    for id in all_session_ids.into_iter().chain(main_session_ids) {
-        send_request(&writer, &Request::Attach { id })?;
-    }
+    let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
 
     app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
     app_handle.manage(CommandConnection(command_conn));
@@ -1194,86 +1408,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
-    let mut reader = BufReader::new(reader_stream);
-    let reader_app_handle = app_handle.clone();
-    let relay_writer = Arc::clone(&writer);
-    std::thread::spawn(move || {
-        // Wait for the frontend to confirm its listeners are registered
-        // before reading — and therefore emitting — anything from the
-        // daemon (see FrontendReady's doc comment). Bounded: an unbounded
-        // wait here would leave the daemon's connection-handling thread
-        // blocked mid-write on a full scrollback replay, backing up
-        // through the session's writer mutex into the PTY pump — worse
-        // than the small chance of an early emit being missed if the
-        // frontend is simply slow rather than broken.
-        let gate_deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if reader_app_handle
-                .state::<FrontendReady>()
-                .0
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
-                break;
-            }
-            if Instant::now() >= gate_deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        loop {
-            let resp: Option<Response> = match read_message(&mut reader) {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = reader_app_handle.emit("daemon-error", e.to_string());
-                    break;
-                }
-            };
-            let Some(resp) = resp else {
-                let _ = reader_app_handle.emit("daemon-error", "daemon closed the connection");
-                break;
-            };
-            match resp {
-                Response::Output { id, data } => {
-                    let _ = reader_app_handle.emit("pty-output", (id, data));
-                }
-                Response::SessionExited { id, exit_code } => {
-                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
-                }
-                Response::CwdChanged { id, cwd } => {
-                    let _ = reader_app_handle.emit("cwd-changed", (id, cwd));
-                }
-                Response::StatusChanged { id, status } => {
-                    let _ = reader_app_handle.emit("session-status-changed", (id, status));
-                }
-                Response::GitStatusChanged { id, status } => {
-                    let _ = reader_app_handle.emit("git-status-changed", (id, status));
-                }
-                Response::SessionRestored { id } => {
-                    let _ = reader_app_handle.emit("session-restored", id);
-                }
-                Response::OrchestrationChanged { workspace_id, orchestration } => {
-                    let _ = reader_app_handle
-                        .emit("orchestration-changed", (workspace_id, orchestration));
-                }
-                Response::GavinTreeChanged { workspace_id, tree } => {
-                    let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
-                }
-                Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
-                    // Attach BEFORE emitting: a session nobody attaches
-                    // renders blank forever (the Milestone-C lesson).
-                    let _ = send_request(&relay_writer, &Request::Attach { id: session_id.clone() });
-                    let _ = reader_app_handle
-                        .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
-                }
-                Response::Error { message } => {
-                    let _ = reader_app_handle.emit("daemon-error", message);
-                }
-                _ => {}
-            }
-        }
-    });
-
+    attach_and_relay(&app_handle, &writer, reader_stream, session_ids)?;
     Ok(())
 }
 
@@ -1955,16 +2090,18 @@ pub fn create_plan(
 }
 
 #[tauri::command]
+/// Returns the card's path AFTER the write: a status write can archive
+/// the file into `plans/done/`, and the UI holds that path as identity.
 pub fn set_plan_frontmatter_field(
     path: String,
     key: String,
     value: String,
     state: State<CommandConnection>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let resp = send_command(&state.0, &Request::SetPlanFrontmatterField { path, key, value })
         .map_err(|e| e.to_string())?;
     match resp {
-        Response::Ok => Ok(()),
+        Response::PlanFieldSet { path } => Ok(path),
         Response::Error { message } => Err(message),
         other => Err(format!("unexpected response: {other:?}")),
     }
@@ -2038,6 +2175,7 @@ mod main_session_tests {
             pages: vec![],
             active_page_id: None,
             active_view: None,
+            hub_view: None,
             root_path: Some("/tmp/ws".to_string()),
             main_session_id: main.map(|m| m.to_string()),
             legacy_agent_command: None,
@@ -2217,5 +2355,99 @@ mod kanban_command_tests {
             Request::DeleteBoard { workspace_id } => assert_eq!(workspace_id, "ws-1"),
             other => panic!("expected DeleteBoard, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod attach_target_tests {
+    use super::*;
+    use crate::config::Page;
+
+    fn leaf(tabs: &[&str]) -> LayoutNode {
+        LayoutNode::Leaf {
+            tabs: tabs.iter().map(|s| s.to_string()).collect(),
+            active_tab_index: 0,
+            pinned: Vec::new(),
+        }
+    }
+
+    fn ws(id: &str, tabs: &[&str], main: Option<&str>) -> Workspace {
+        Workspace {
+            id: id.to_string(),
+            name: id.to_string(),
+            pages: vec![Page {
+                id: format!("{id}-p1"),
+                name: "p1".to_string(),
+                layout: leaf(tabs),
+                focused_session_id: None,
+            }],
+            active_page_id: None,
+            active_view: None,
+            hub_view: None,
+            root_path: None,
+            main_session_id: main.map(|m| m.to_string()),
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
+            git_view: None,
+        }
+    }
+
+    fn data(workspaces: Vec<Workspace>) -> WorkspacesData {
+        WorkspacesData { workspaces, active_workspace_id: None }
+    }
+
+    #[test]
+    fn non_session_tab_ids_covers_both_file_and_board_tabs() {
+        let mut files = HashMap::new();
+        files.insert("f1".to_string(), "/tmp/a.md".to_string());
+        let mut boards = HashMap::new();
+        boards.insert(
+            "b1".to_string(),
+            crate::config::BoardTabRecord {
+                workspace_id: "w1".to_string(),
+                context_folder: "/tmp/ws".to_string(),
+            },
+        );
+
+        let ids = non_session_tab_ids(&files, &boards);
+
+        assert_eq!(ids, HashSet::from(["f1".to_string(), "b1".to_string()]));
+    }
+
+    #[test]
+    fn attachable_ids_include_main_agents_that_live_outside_every_page_tree() {
+        // D12: a main agent session is remembered on the workspace, not
+        // placed in a page. Walking page trees alone misses it, and a
+        // session nobody attaches renders blank forever.
+        let d = data(vec![ws("w1", &["s1", "s2"], Some("main-1"))]);
+
+        let ids = attachable_session_ids(&d, &HashSet::new());
+
+        assert_eq!(ids, vec!["s1".to_string(), "s2".to_string(), "main-1".to_string()]);
+    }
+
+    #[test]
+    fn attachable_ids_skip_file_and_board_tabs() {
+        // These share the layout tree's id space but were never sessions
+        // -- the daemon would reject an Attach for them.
+        let d = data(vec![ws("w1", &["s1", "f1", "b1"], None)]);
+
+        let ids = attachable_session_ids(
+            &d,
+            &HashSet::from(["f1".to_string(), "b1".to_string()]),
+        );
+
+        assert_eq!(ids, vec!["s1".to_string()]);
+    }
+
+    #[test]
+    fn attachable_ids_span_every_workspace() {
+        let d = data(vec![ws("w1", &["s1"], Some("m1")), ws("w2", &["s2"], None)]);
+
+        let ids = attachable_session_ids(&d, &HashSet::new());
+
+        assert_eq!(ids, vec!["s1".to_string(), "s2".to_string(), "m1".to_string()]);
     }
 }

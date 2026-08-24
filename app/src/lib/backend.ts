@@ -104,7 +104,7 @@ export function getBootstrapError(): Promise<string | null> {
 
 // Resolves true when the app is fully reconnected, false when the daemon
 // was restarted but this app process needs a relaunch to rewire.
-export function restartDaemon(): Promise<boolean> {
+export function restartDaemon(): Promise<void> {
   return invoke("restart_daemon");
 }
 
