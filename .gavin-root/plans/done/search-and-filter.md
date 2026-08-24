@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Search and filter
-status: In Progress
+status: Done
 ---
 Allow for search in:
 - kanban board

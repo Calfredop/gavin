@@ -1,7 +1,7 @@
 ---
 title: Multi-agent MCP support
 kind: plan
-status: To Do
+status: Done
 priority: high
 labels: agents
 ---
@@ -45,14 +45,14 @@ shape.
 
 ## Steps
 
-- [ ] Re-verify each CLI's MCP config path and shape against current docs
-- [ ] `McpLayout` for gemini and cursor — path change only, existing writer
-- [ ] Codex writer: `.codex/config.toml` via toml_edit, merge-aware, comments preserved
-- [ ] opencode writer: `opencode.json`, `mcp.<key>` with a command array
-- [ ] Verify each CLI's positional-prompt convention and set `prompt_arg`
-- [ ] Custom profile: user-specified MCP config path and shape
-- [ ] `skipped` shrinks accordingly; the wizard's Integration step needs no change
-- [ ] Update the smoke checklist: `wiz-integration-degrades` and `wiz-agent-gate` describe fewer profiles
+- [x] Re-verify each CLI's MCP config path and shape against current docs
+- [x] `McpLayout` for gemini and cursor — path change only, existing writer
+- [x] Codex writer: `.codex/config.toml` via toml_edit, merge-aware, comments preserved
+- [x] opencode writer: `opencode.json`, `mcp.<key>` with a command array
+- [x] Verify each CLI's positional-prompt convention and set `prompt_arg`
+- [x] Custom profile: user-specified MCP config path and shape
+- [x] `skipped` shrinks accordingly; the wizard's Integration step needs no change
+- [x] Update the smoke checklist: `wiz-integration-degrades` and `wiz-agent-gate` describe fewer profiles
 
 ## Already answered
 
