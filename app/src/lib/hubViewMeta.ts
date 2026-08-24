@@ -32,6 +32,23 @@ export function visibleHubViewIds(workspaceId: string, isDev: boolean, hasRoot: 
   return HUB_VIEW_META.filter((v) => hubViewIsVisible(v, workspaceId, isDev, hasRoot)).map((v) => v.id);
 }
 
+/// What a hub tab can be busy WITH. One field today -- the Git tab's
+/// hidden commit agent -- but shaped as a bag so the next background run
+/// that wants a tab to say so adds a field rather than a second
+/// mechanism.
+export interface HubViewActivity {
+  /// A "Commit via agent" run in flight in this workspace.
+  committing: boolean;
+}
+
+/// Whether this tab should say, from the tab strip, that something it
+/// owns is running right now. A hidden run has no tab and no window of
+/// its own, so the tab that launched it is the only place the app can
+/// admit it exists while the human is looking at some other tab.
+export function hubViewBusy(viewId: string, activity: HubViewActivity): boolean {
+  return viewId === "git" && activity.committing;
+}
+
 /// The hub tab to land on when a workspace's Hub button is clicked: the
 /// one it was last showing, or -- when nothing is remembered, or the
 /// remembered tab is no longer offered (its root was unbound, a dev-only

@@ -28,6 +28,9 @@
   import Sidebar from "$lib/Sidebar.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
+  import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
+  import { hubViewBusy } from "$lib/hubViewMeta";
+  import { tooltip } from "$lib/tooltip";
 
   let closeConfirmed = false;
   let uninstallShortcuts: (() => void) | null = null;
@@ -51,6 +54,11 @@
     )
   );
   const accent = $derived(accentVar(activeWorkspace?.color, themeState.effective));
+  // What the tab strip can report as running. The commit agent is a
+  // HIDDEN session with no tab of its own, so its Git tab is the only
+  // place the app can show it from while another tab is on screen.
+  const commitPhase = $derived(agentCommitPhase($gitStore[activeWorkspace?.id ?? ""] ?? null));
+  const activity = $derived({ committing: commitPhase === "starting" || commitPhase === "running" });
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -81,6 +89,12 @@
     } finally {
       await signalFrontendReady();
     }
+
+    // After the ready signal, not before: adoption attaches to a session,
+    // and the daemon starts pushing its output the moment it does --
+    // which the relay thread holds back until the frontend says its
+    // listeners are up.
+    void adoptAgentCommits();
 
     uninstallShortcuts = installKeyboardShortcuts();
     uninstallHints = installHintTracking();
@@ -135,13 +149,22 @@
           {/if}
           <div class="tabs">
             {#each hubViews as view, viewIndex (view.id)}
+              {@const busy = hubViewBusy(view.id, activity)}
               <button
                 type="button"
                 class="tab"
                 class:active={activeView === view.id}
+                use:tooltip={busy ? "An agent is committing" : ""}
+                aria-label={busy ? `${hubLabel(view, activeAgent.file)} — an agent is committing` : undefined}
                 onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
               >
-                <view.icon size={14} />
+                <!-- In the icon's place, not beside it: the tab row must
+                     not reflow when a run starts or ends. -->
+                {#if busy}
+                  <span class="tab-spinner" aria-hidden="true"></span>
+                {:else}
+                  <view.icon size={14} />
+                {/if}
                 {hubLabel(view, activeAgent.file)}
                 {#if $hintMode === "cmd"}
                   {@const digit = hintDigitFor(viewIndex, hubViews.length)}
@@ -228,6 +251,21 @@
     cursor: pointer;
     font-family: monospace;
     font-size: 0.85em;
+  }
+  .tab-spinner {
+    width: 10px;
+    height: 10px;
+    flex: 0 0 auto;
+    margin: 2px;
+    border: 2px solid var(--border-accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: tab-spin 0.8s linear infinite;
+  }
+  @keyframes tab-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .tab.active {
     color: var(--text);

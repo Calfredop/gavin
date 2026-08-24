@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { HUB_VIEW_META, visibleHubViewIds, resolveHubView } from "./hubViewMeta";
+import { HUB_VIEW_META, visibleHubViewIds, resolveHubView, hubViewBusy } from "./hubViewMeta";
 import { SMOKETEST_WORKSPACE_ID, type Workspace } from "./workspace";
 
 describe("visibleHubViewIds", () => {
@@ -41,5 +41,20 @@ describe("resolveHubView", () => {
     // A workspace whose root was never bound is offered neither Git nor
     // Home, so a remembered "git" would land on a tab that isn't there.
     expect(resolveHubView(workspace({ hubView: "git", rootPath: undefined }), false)).toBe("kanban");
+  });
+});
+
+describe("hubViewBusy", () => {
+  it("spins the Git tab, and only the Git tab, while a commit run is in flight", () => {
+    expect(hubViewBusy("git", { committing: true })).toBe(true);
+    for (const other of HUB_VIEW_META.filter((v) => v.id !== "git")) {
+      expect(hubViewBusy(other.id, { committing: true })).toBe(false);
+    }
+  });
+
+  it("leaves every tab alone when nothing is running", () => {
+    for (const view of HUB_VIEW_META) {
+      expect(hubViewBusy(view.id, { committing: false })).toBe(false);
+    }
   });
 });

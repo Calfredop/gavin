@@ -690,6 +690,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "An agent run that leaves changes behind says so in the banner and quotes what it reported — no “Committed”",
         hint: "Force it: unset user.email in the repo, then run it.",
       },
+      {
+        id: "git-agent-commit-survives-reload",
+        text: "Reloading the window mid-run comes back still saying “Committing…”, and the run's own verdict still lands",
+        hint: "Start it on a big tree, then ⌘R. The button must not be back to “Commit via agent” — that offers a second agent on the same tree.",
+      },
+      {
+        id: "git-agent-commit-sidebar",
+        text: "The sidebar's workspace git chip spins while a run is going, and its tooltip leads with “an agent is committing”",
+        hint: "Visible from any hub tab, including a workspace with no repo counted yet.",
+      },
+      {
+        id: "git-agent-commit-hub-tab",
+        text: "The hub's own “Git” tab spins in place of its branch icon while a run is going — visible from Kanban, PRD, any tab",
+        hint: "The tab row must not shift as the spinner replaces the icon; no other hub tab reacts.",
+      },
     ],
   },
   {
