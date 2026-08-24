@@ -22,8 +22,14 @@ export function compatMessage(c: DaemonCompat | null, runningAgents: number): st
 /// versions the UI actually branches on need entries here.
 export const FEATURE_MIN_VERSION = {
   orchestration: 10,
-  // `tools: 11` belongs here once the orchestration merge lands and
-  // ToolLibraryDialog.svelte exists. It does not on this branch.
+  // No component reads this on this branch -- ToolLibraryDialog.svelte
+  // arrives with the orchestration merge and will be the first consumer.
+  // Recorded now anyway: unlike protocol::min_version_for's exhaustive
+  // match, nothing forces this table to be updated, so leaving it as a
+  // TODO risks the Tools UI staying enabled against a daemon too old to
+  // parse the request -- a raw error on click instead of a disabled
+  // control with a tooltip.
+  tools: 11,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -295,7 +295,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // v11 is reserved for the orchestration merge's tool requests
         // (SaveTool, GetTools, GetToolsByRoot, DeleteTool). They do not
         // exist on this branch. When that work lands, this match stops
-        // compiling until its `=> 11` arm is added -- by design.
+        // compiling until its `=> 11` arm is added -- by design. Whoever
+        // hits that compile error also owes an entry in the frontend's
+        // mirror of this table: app/src/lib/daemonCompat.ts's
+        // FEATURE_MIN_VERSION (already carries `tools: 11`, unused until
+        // ToolLibraryDialog.svelte lands) -- nothing forces that table to
+        // stay in sync the way this match is forced to.
 
         Request::Shutdown => 12,
 
