@@ -1083,6 +1083,19 @@ mod tests {
         assert!(s.group_templates("ws-1").unwrap().is_empty());
     }
 
+    /// A hand-edited or newer-peer mode must degrade to the discipline
+    /// every template already carries, never fail the whole read -- same
+    /// rule as a stage's own `an_unknown_stage_mode_reads_as_parallel`.
+    #[test]
+    fn an_unknown_group_template_mode_reads_as_parallel() {
+        let mut s = store();
+        s.save_group_template(&a_group_template("g1", Some("ws-1"))).unwrap();
+        s.conn
+            .execute("UPDATE orch_group_templates SET mode = 'lockstep' WHERE id = 'g1'", [])
+            .unwrap();
+        assert_eq!(s.group_templates("ws-1").unwrap()[0].mode, "parallel");
+    }
+
     /// An unreadable `steps` JSON degrades to an empty list -- a dead row
     /// the human can delete -- rather than failing the whole library read,
     /// same rule as a tool's unreadable `params` (tools spec T4).
