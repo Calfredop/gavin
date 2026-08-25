@@ -373,16 +373,23 @@
         // drag, a tool id for a tool drag, and a STAGE id for a "stage"
         // drag -- one more source, the same drop-target vocabulary.
         //
-        // A drop that would FORM or reorder a group needs a daemon that
-        // can carry the `mode` column: every orchestration write is a
-        // full-plan save (see FEATURE_MIN_VERSION.groups), so a "stage"
-        // drag risks every group already on the plan, not just the one
-        // being dragged, and an "into-stage" target risks turning a
-        // single-step stage into one. Refusing here, before any mutator
-        // runs, keeps one message: the drawer rows, the header's own
-        // controls and a drag's drop all say the same thing. "template"
-        // is included on the same footing -- Task 12's drop also forms a
-        // group -- even though nothing places one yet.
+        // An "into-stage" target can turn a single-step stage into a
+        // group (or grow one further), which DOES need a daemon that can
+        // carry `mode` (FEATURE_MIN_VERSION.groups) -- a pre-v15 daemon
+        // has neither column and would silently hand the stage back
+        // parallel. "template" sits on the same footing: Task 12's drop
+        // is also how a group gets FORMED, even though nothing places one
+        // yet.
+        //
+        // A whole-stage drag ("stage") is gated too, but not because its
+        // own two reachable targets write `mode` -- they don't: `unplace`
+        // runs removeStage and `new-stage` runs moveStageToIndex, and a
+        // v14 daemon executes either correctly. This gesture only exists
+        // because groups exist, so it travels with the same gate as a
+        // matter of scope, not necessity -- deliberately conservative,
+        // not forced. Refusing here, before any mutator runs, keeps one
+        // message regardless of which of the three: the drawer rows, the
+        // header's own controls and a drag's drop all say the same thing.
         const wouldGroup =
           drag.target.kind === "into-stage" || drag.kind === "stage" || drag.kind === "template";
         if (wouldGroup && groupsBlocked) {

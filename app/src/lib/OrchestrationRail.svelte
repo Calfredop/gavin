@@ -374,6 +374,7 @@
             type="button"
             class="grip"
             data-orch-stage-handle={stage.id}
+            disabled={Boolean(groupsBlocked)}
             title={groupsBlocked ?? "Drag to move this group"}
             aria-label="Move this group"
           >
@@ -648,11 +649,16 @@
     border: none;
     border-radius: 4px;
     color: var(--text-subtle);
+  }
+  .grip:not(:disabled) {
     cursor: grab;
   }
-  .grip:hover {
+  .grip:hover:not(:disabled) {
     background: var(--surface-hover);
     color: var(--text-muted);
+  }
+  .grip:disabled {
+    cursor: default;
   }
   .group-name {
     flex: 1;
