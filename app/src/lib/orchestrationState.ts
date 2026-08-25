@@ -799,8 +799,8 @@ export function deleteRailAction(workspaceId: string, railId: string): Promise<s
 }
 
 /// Adds the card as its OWN new stage -- a sequential beat, the safe
-/// default. Parallel is the deliberate act of dropping onto an existing
-/// stage (SP2).
+/// default. Dropping onto an existing stage instead is the deliberate
+/// act of joining it or forming a group with it (SP2, grouping spec G3).
 export function addStepAsStageAction(workspaceId: string, railId: string, cardPath: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => {
     const stageId = crypto.randomUUID();
@@ -808,7 +808,8 @@ export function addStepAsStageAction(workspaceId: string, railId: string, cardPa
   });
 }
 
-/// The PARALLEL drop: the card joins an existing stage. If that stage is
+/// The JOIN drop: the card joins an existing stage, forming a sequence
+/// group if that stage held one step (grouping spec G3). If that stage is
 /// the one its rail is running right now, the card starts immediately --
 /// see startIfStageRunning.
 export async function addStepToStageAction(
@@ -988,7 +989,7 @@ export async function clearDoneStepsAction(
 // ---- Tool step actions -----------------------------------------------------
 // The card pair's exact shape, one rung over: a tool dropped into a gap
 // becomes its own stage (sequential), a tool dropped onto a stage joins
-// it (parallel).
+// it or forms a group with it (grouping spec G3).
 
 /// Appends the tool to the rail as its own stage -- what clicking a tool
 /// row in the drawer means.

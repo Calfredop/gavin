@@ -1048,7 +1048,7 @@ const stageMap = (o: Orchestration) =>
   o.rails.map((r) => [r.id, r.stages.map((s) => s.steps.map((t) => t.id))]);
 
 describe("moveStepIntoStage", () => {
-  it("makes a step parallel with an existing stage's steps", () => {
+  it("joins the tail of a stage that already holds two steps", () => {
     const o = moveStepIntoStage(built(), "t1", "s2", 2);
     expect(stageMap(o)).toEqual([
       ["r1", [["t2", "t3", "t1"]]],
@@ -1990,7 +1990,7 @@ describe("nextActions — an agent tool step's turn", () => {
 });
 
 describe("tool step mutators", () => {
-  it("addToolStep joins an existing stage — the parallel drop", () => {
+  it("addToolStep joins a single-step stage, forming a sequence group", () => {
     const o = orchOf([rail("r1", [[["t1", A]]])]);
     const after = addToolStep(o, "r1-s0", "t2", "builtin:push", 1);
     expect(after.rails[0].stages).toHaveLength(1);
@@ -1998,6 +1998,7 @@ describe("tool step mutators", () => {
       A,
       "builtin:push",
     ]);
+    expect(stageMode(after.rails[0].stages[0])).toBe("sequence");
   });
 
   it("addToolAsStage inserts its own stage at the index — the sequential drop", () => {

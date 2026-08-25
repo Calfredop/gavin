@@ -947,9 +947,15 @@ function armWorkspace(): void {
   });
 }
 
-/// A rail mid-run: stage s1 is the stage it is ON, its one step is
-/// running, and stage s2 is still ahead. Exactly what the human is
-/// looking at when they drag a second card onto s1.
+/// A rail mid-run: stage s1 is the stage it is ON, and stage s2 is still
+/// ahead. Exactly what the human is looking at when they drag a second
+/// card onto s1.
+///
+/// s1 holds TWO steps -- t1 running, t0 already done and inert -- on
+/// purpose: a stage holding exactly one step is what a drop GROUPS (G3),
+/// and these tests are about joining a stage that is already parallel,
+/// not forming a new group. A single-step s1 would silently flip these
+/// drops into sequence-group formation.
 function midRunRail(): Orchestration {
   return {
     ...emptyOrchestration(),
@@ -961,13 +967,23 @@ function midRunRail(): Orchestration {
         worktreePath: "/x/wt",
         pageId: "p1",
         stages: [
-          { id: "s1", position: 0, steps: [{ id: "t1", position: 0, cardPath: "/x/a.md" }] },
+          {
+            id: "s1",
+            position: 0,
+            steps: [
+              { id: "t1", position: 0, cardPath: "/x/a.md" },
+              { id: "t0", position: 1, cardPath: "/x/a0.md" },
+            ],
+          },
           { id: "s2", position: 1, steps: [{ id: "t2", position: 0, cardPath: "/x/b.md" }] },
         ],
       },
     ],
     railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
-    stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+    stepRuns: [
+      { stepId: "t1", state: "running", sessionId: "sess-1", reason: null },
+      { stepId: "t0", state: "done", sessionId: null, reason: null },
+    ],
   };
 }
 
@@ -1000,7 +1016,7 @@ describe("dropping onto a running stage", () => {
       "/x/wt",
       expect.stringContaining("claude ")
     );
-    const dropped = get(orchestrations)["ws-1"].rails[0].stages[0].steps[1];
+    const dropped = get(orchestrations)["ws-1"].rails[0].stages[0].steps[2];
     expect(get(orchestrations)["ws-1"].stepRuns).toContainEqual({
       stepId: dropped.id,
       state: "running",
@@ -1081,8 +1097,14 @@ describe("a tick requested while one is in flight", () => {
     vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
     // The same rail, armed at s1 with NOTHING running yet, so one tick
-    // launches its step -- and a drop can land mid-launch.
-    vi.mocked(backend.getOrchestration).mockResolvedValue({ ...midRunRail(), stepRuns: [] });
+    // launches its step -- and a drop can land mid-launch. t0 stays
+    // done (not wiped to `[]`): it exists only to keep s1 a two-member
+    // parallel stage, per midRunRail's doc comment, and a pending t0
+    // would launch alongside t1 and throw off this test's call counts.
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...midRunRail(),
+      stepRuns: [{ stepId: "t0", state: "done", sessionId: null, reason: null }],
+    });
     // The board lands AFTER the plan on purpose: a plan arriving ticks,
     // and this rail's step must still be unlaunched when the test runs
     // the pass it is about.
@@ -1096,7 +1118,7 @@ describe("a tick requested while one is in flight", () => {
   // reached by a narrower door.
   it("is replayed once the pass in flight drains", async () => {
     vi.mocked(layoutStateModule.createSessionOnPage).mockImplementationOnce(async () => {
-      orchestrations.update((m) => ({ ...m, "ws-1": addStep(m["ws-1"], "s1", "late", "/x/b.md", 1) }));
+      orchestrations.update((m) => ({ ...m, "ws-1": addStep(m["ws-1"], "s1", "late", "/x/b.md", 2) }));
       void tick("ws-1");
       return "sess-9";
     });

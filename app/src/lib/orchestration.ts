@@ -808,18 +808,22 @@ export function deleteRail(orch: Orchestration, railId: string): Orchestration {
   return sweepOrphans({ ...orch, rails: renumber(orch.rails.filter((r) => r.id !== railId)) });
 }
 
+/// A freshly minted stage: `mode: "sequence"`, `name: null`. A stage
+/// nobody has grouped yet has nothing to call itself, and single-step or
+/// empty runs identically in either mode -- which is what makes the NEXT
+/// drop onto it mean what it says (G3). One factory, so the sites that
+/// mint a stage (`addStage`, `insertAsStage`, `splitStageIntoSequence`)
+/// can't drift on this shape piecemeal as fields are added to `Stage`.
+function newStage(id: string, position: number, steps: Step[]): Stage {
+  return { id, position, mode: "sequence", name: null, steps };
+}
+
 export function addStage(orch: Orchestration, railId: string, stageId: string): Orchestration {
   return {
     ...orch,
     rails: orch.rails.map((r) =>
       r.id === railId
-        ? {
-            ...r,
-            stages: renumber([
-              ...r.stages,
-              { id: stageId, position: r.stages.length, mode: "sequence", name: null, steps: [] },
-            ]),
-          }
+        ? { ...r, stages: renumber([...r.stages, newStage(stageId, r.stages.length, [])]) }
         : r
     ),
   };
@@ -1069,6 +1073,17 @@ export function moveStepIntoStage(
 // so a same-stage move of the only step still finds nothing to insert
 // into and returns unchanged via the guard above.
 
+/// Insert a stage into a rail's list at `index`, clamped so "past the
+/// end" appends rather than failing, and renumbered. The one place that
+/// splices a stage list, so moveStageToIndex and insertAsStage -- one
+/// relocating an existing stage, one minting a fresh one -- can't drift
+/// on the clamp between them.
+function insertStageAt(stages: Stage[], index: number, stage: Stage): Stage[] {
+  const next = [...stages];
+  next.splice(Math.max(0, Math.min(index, next.length)), 0, stage);
+  return renumber(next);
+}
+
 /// Drop into the gap between stages: the step becomes its own stage
 /// there and runs SEQUENTIALLY. `index` is clamped, so "past the end"
 /// appends rather than failing.
@@ -1077,6 +1092,10 @@ export function moveStepIntoStage(
 /// dragged step's own stage already removed if that removal emptied it --
 /// which is what the drag glue measures, since the dragged chip is
 /// excluded from measurement.
+///
+/// Detach, then hand off to insertAsStage: the only difference from a
+/// brand-new card is that the step already exists, so its shape is
+/// carried over instead of built fresh.
 export function moveStepToNewStage(
   orch: Orchestration,
   stepId: string,
@@ -1085,23 +1104,7 @@ export function moveStepToNewStage(
 ): Orchestration {
   const found = locateStep(orch, stepId);
   if (!found || !orch.rails.some((r) => r.id === railId)) return orch;
-  const detached = detachStep(orch, stepId);
-  return {
-    ...detached,
-    rails: detached.rails.map((r) => {
-      if (r.id !== railId) return r;
-      const stages = [...r.stages];
-      const at = Math.max(0, Math.min(index, stages.length));
-      stages.splice(at, 0, {
-        id: crypto.randomUUID(),
-        position: at,
-        mode: "sequence",
-        name: null,
-        steps: [{ ...found.step, position: 0 }],
-      });
-      return { ...r, stages: renumber(stages) };
-    }),
-  };
+  return insertAsStage(detachStep(orch, stepId), railId, index, { ...found.step, position: 0 });
 }
 
 /// Move a whole stage -- every step it holds, with their ids and so their
@@ -1124,12 +1127,7 @@ export function moveStageToIndex(
   }));
   return {
     ...orch,
-    rails: detached.map((r) => {
-      if (r.id !== railId) return r;
-      const stages = [...r.stages];
-      stages.splice(Math.max(0, Math.min(index, stages.length)), 0, stage);
-      return { ...r, stages: renumber(stages) };
-    }),
+    rails: detached.map((r) => (r.id === railId ? { ...r, stages: insertStageAt(r.stages, index, stage) } : r)),
   };
 }
 
@@ -1167,13 +1165,11 @@ function insertAsStage(
   if (!orch.rails.some((r) => r.id === railId)) return orch;
   return {
     ...orch,
-    rails: orch.rails.map((r) => {
-      if (r.id !== railId) return r;
-      const stages = [...r.stages];
-      const at = Math.max(0, Math.min(index, stages.length));
-      stages.splice(at, 0, { id: crypto.randomUUID(), position: at, mode: "sequence", name: null, steps: [step] });
-      return { ...r, stages: renumber(stages) };
-    }),
+    rails: orch.rails.map((r) =>
+      r.id === railId
+        ? { ...r, stages: insertStageAt(r.stages, index, newStage(crypto.randomUUID(), 0, [step])) }
+        : r
+    ),
   };
 }
 
@@ -1263,7 +1259,8 @@ export function cardRailBadge(
 /// Put a card on a rail from OUTSIDE the tab -- the board's composer, a
 /// card's context menu, its detail modal. The card lands as the rail's
 /// own trailing stage, the sequential default the drawer's click already
-/// uses; parallel stays the deliberate act of dropping onto a stage.
+/// uses; joining or grouping with an existing stage stays the deliberate
+/// act of dropping onto one (grouping spec G3).
 ///
 /// A card already on ANOTHER rail MOVES, keeping its step id and so its
 /// run state -- sending a card somewhere is never a reason to forget that
@@ -1375,6 +1372,9 @@ export function railDoneStepIds(
 /// rail's `currentStageId` may point at this stage, and minting a fresh
 /// id for every slice would strand it mid-run. Step ids are untouched
 /// throughout, so run state and conflict notes ride along.
+///
+/// newStage also clears the name on every slice -- a name describes a
+/// GROUP, and ungrouping says there is no longer one to name.
 export function splitStageIntoSequence(orch: Orchestration, stageId: string): Orchestration {
   return {
     ...orch,
@@ -1384,15 +1384,7 @@ export function splitStageIntoSequence(orch: Orchestration, stageId: string): Or
         if (s.id !== stageId || s.steps.length < 2) return [s];
         return [...s.steps]
           .sort((a, b) => a.position - b.position)
-          .map((step, i) => ({
-            id: i === 0 ? s.id : crypto.randomUUID(),
-            position: 0, // renumber() fixes these up below
-            mode: "sequence" as StageMode,
-            // A name describes a GROUP; ungrouping says there is no
-            // longer one to name.
-            name: null,
-            steps: [{ ...step, position: 0 }],
-          }));
+          .map((step, i) => newStage(i === 0 ? s.id : crypto.randomUUID(), 0, [{ ...step, position: 0 }]));
       });
       return { ...r, stages: renumber(stages) };
     }),
