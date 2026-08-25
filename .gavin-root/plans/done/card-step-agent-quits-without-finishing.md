@@ -1,7 +1,7 @@
 ---
 kind: task
 title: A card step whose agent stops without finishing the card waits forever, silently
-status: In Progress
+status: Done
 ---
 Noticed while fixing the Commit tool card. Not fixed there on purpose: it
 changes how CARD steps behave, which that bug never asked for.
