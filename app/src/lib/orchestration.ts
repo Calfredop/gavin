@@ -615,7 +615,14 @@ export function nextActions(
         break;
       }
 
+      // A `sequence` stage runs ONE member at a time, in position order
+      // (grouping spec G4). The guard at the bottom of this loop is the
+      // whole of that rule: every existing rule is untouched, and a
+      // member that completes on this pass lets the next one launch in
+      // the same tick -- the cascade rule 4 already gives stages.
+      const sequential = stageMode(stage) === "sequence";
       for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
+        stepBody: {
         const state = simulated.get(step.id);
         const entry = cards.get(step.cardPath);
 
@@ -643,7 +650,7 @@ export function nextActions(
         ) {
           actions.push({ kind: "markDone", stepId: step.id });
           simulated.set(step.id, "done");
-          continue;
+          break stepBody;
         }
 
         // Rule 2 -- launch a pending step, or stall it with a reason.
@@ -666,7 +673,7 @@ export function nextActions(
             actions.push({ kind: "launch", stepId: step.id });
             simulated.set(step.id, "running");
           }
-          continue;
+          break stepBody;
         }
 
         // Rule 3 -- a running step whose session is gone (spec O6). For
@@ -681,7 +688,7 @@ export function nextActions(
           if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses)) {
             actions.push({ kind: "markDone", stepId: step.id });
             simulated.set(step.id, "done");
-            continue;
+            break stepBody;
           }
           if (sessionId && !liveSessionIds.has(sessionId)) {
             const action = deadSessionAction(
@@ -695,12 +702,18 @@ export function nextActions(
             actions.push(action);
             if (action.kind === "markDone") {
               simulated.set(step.id, "done");
-              continue;
+              break stepBody;
             }
             simulated.set(step.id, "stalled");
             stalled = true;
           }
         }
+        }
+        // Rule 5 is checked here as well as below so a stalled member
+        // reads as a stall rather than as "not done yet" -- the guard
+        // that follows would otherwise be indistinguishable.
+        if (stalled) break;
+        if (sequential && simulated.get(step.id) !== "done") break;
       }
 
       // Rule 5 -- any stall this tick pauses the rail; the executor

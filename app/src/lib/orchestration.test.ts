@@ -738,6 +738,78 @@ describe("nextActions", () => {
   });
 });
 
+describe("nextActions on a sequence group", () => {
+  function sequential(): Orchestration {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/ws/.gavin-root/plans/a.md", 0);
+    o = addStep(o, "s1", "t2", "/ws/.gavin-root/plans/b.md", 1);
+    o = setStageMode(o, "s1", "sequence");
+    return { ...o, railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }] };
+  }
+
+  const t = () => tree([plan("a.md"), plan("b.md")]);
+  const b = () => board(["To Do", "Done"]);
+
+  it("launches only the first member", () => {
+    const actions = nextActions(sequential(), b(), t(), [], new Set());
+    expect(actions).toEqual([{ kind: "launch", stepId: "t1" }]);
+  });
+
+  it("launches all members when the same stage is parallel", () => {
+    // The contrast is the whole feature: same stage, same steps, one
+    // field apart.
+    const o = setStageMode(sequential(), "s1", "parallel");
+    expect(nextActions(o, b(), t(), [], new Set())).toEqual([
+      { kind: "launch", stepId: "t1" },
+      { kind: "launch", stepId: "t2" },
+    ]);
+  });
+
+  it("does not launch the second while the first runs", () => {
+    const o = { ...sequential(), stepRuns: [{ stepId: "t1", state: "running" as StepState, sessionId: "sess-1", reason: null }] };
+    expect(nextActions(o, b(), t(), [], new Set(["sess-1"]))).toEqual([]);
+  });
+
+  it("launches the next as soon as the first is done", () => {
+    const o = { ...sequential(), stepRuns: [{ stepId: "t1", state: "done" as StepState, sessionId: null, reason: null }] };
+    expect(nextActions(o, b(), t(), [], new Set())).toEqual([{ kind: "launch", stepId: "t2" }]);
+  });
+
+  it("cascades within one tick when a member completes on this pass", () => {
+    // Rule 1 marks t1 done because its card reached the done column; the
+    // next member must not wait for an unrelated change to tick the
+    // workspace again.
+    const o = sequential();
+    const actions = nextActions(o, b(), tree([plan("a.md", { status: "Done" }), plan("b.md")]), [], new Set());
+    expect(actions).toEqual([
+      { kind: "markDone", stepId: "t1" },
+      { kind: "launch", stepId: "t2" },
+    ]);
+  });
+
+  it("advances the rail only when every member is done", () => {
+    let o = sequential();
+    o = addStep(addStage(o, "r1", "s2"), "s2", "t3", "/ws/.gavin-root/plans/c.md", 0);
+    o = { ...o, stepRuns: [
+      { stepId: "t1", state: "done", sessionId: null, reason: null },
+      { stepId: "t2", state: "done", sessionId: null, reason: null },
+    ] };
+    const actions = nextActions(o, b(), tree([plan("a.md"), plan("b.md"), plan("c.md")]), [], new Set());
+    expect(actions).toContainEqual({ kind: "advance", railId: "r1", stageId: "s2" });
+  });
+
+  it("still pauses the rail when a member stalls", () => {
+    // A stalled member must read as a stall, not as "just not done yet".
+    // A bound rail whose worktree is not in the known list is the
+    // cheapest blocker launchBlocker recognises.
+    const base = sequential();
+    const o = { ...base, rails: base.rails.map((r) => ({ ...r, worktreePath: "/gone" })) };
+    const actions = nextActions(o, b(), t(), [], new Set());
+    expect(actions.filter((a) => a.kind === "stall")).toHaveLength(1);
+    expect(actions.some((a) => a.kind === "launch")).toBe(false);
+  });
+});
+
 describe("plan mutators", () => {
   it("adds a rail at the end and numbers positions from zero", () => {
     let o = addRail(emptyOrchestration(), "r1", "backend");
