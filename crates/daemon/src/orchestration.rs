@@ -75,6 +75,10 @@ impl OrchestrationStore {
         // shape. Add the columns idempotently instead.
         add_column_if_missing(&conn, "orch_steps", "tool_id", "TEXT")?;
         add_column_if_missing(&conn, "orch_steps", "tool_params", "TEXT")?;
+        // orch_stages predates groups and is already live on disk, so the
+        // CREATE TABLE above would silently keep the old shape.
+        add_column_if_missing(&conn, "orch_stages", "mode", "TEXT")?;
+        add_column_if_missing(&conn, "orch_stages", "name", "TEXT")?;
         Ok(Self { conn })
     }
 
@@ -100,13 +104,24 @@ impl OrchestrationStore {
         for rail in rails.iter_mut() {
             let mut stages: Vec<Stage> = self
                 .conn
-                .prepare("SELECT id, position FROM orch_stages WHERE rail_id = ?1 ORDER BY position")?
+                .prepare(
+                    "SELECT id, position, mode, name FROM orch_stages
+                     WHERE rail_id = ?1 ORDER BY position",
+                )?
                 .query_map(params![rail.id], |row| {
+                    let mode: Option<String> = row.get(2)?;
                     Ok(Stage {
                         id: row.get(0)?,
                         position: row.get(1)?,
-                        mode: protocol::default_stage_mode(),
-                        name: None,
+                        // NULL is a row written before groups existed;
+                        // anything unrecognised is a hand edit or a newer
+                        // peer. Both degrade to the discipline every
+                        // existing plan already ran under.
+                        mode: match mode.as_deref() {
+                            Some("sequence") => "sequence".into(),
+                            _ => protocol::default_stage_mode(),
+                        },
+                        name: row.get(3)?,
                         steps: Vec::new(),
                     })
                 })?
@@ -317,8 +332,9 @@ impl OrchestrationStore {
             )?;
             for stage in &rail.stages {
                 tx.execute(
-                    "INSERT INTO orch_stages (id, rail_id, position) VALUES (?1, ?2, ?3)",
-                    params![stage.id, rail.id, stage.position],
+                    "INSERT INTO orch_stages (id, rail_id, position, mode, name)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![stage.id, rail.id, stage.position, stage.mode, stage.name],
                 )?;
                 for step in &stage.steps {
                     tx.execute(
@@ -595,6 +611,49 @@ mod tests {
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.rails.len(), 1);
         assert_eq!(o.rails[0].stages[0].steps[0].card_path, "/x/a.md");
+    }
+
+    #[test]
+    fn replace_plan_round_trips_stage_mode_and_name() {
+        let mut r = rail("r1", &[("t1", "/x/a.md")]);
+        r.stages[0].mode = "sequence".into();
+        r.stages[0].name = Some("Merge and push".into());
+        let mut s = store();
+        s.replace_plan("ws-1", &[r], &[], &none()).unwrap();
+        let o = s.get("ws-1").unwrap();
+        assert_eq!(o.rails[0].stages[0].mode, "sequence");
+        assert_eq!(o.rails[0].stages[0].name.as_deref(), Some("Merge and push"));
+    }
+
+    #[test]
+    fn a_stage_row_written_before_v15_reads_as_parallel() {
+        // The columns are added by migration, so an existing row has NULL in
+        // both. NULL must read as the discipline that row actually ran under.
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        let stage_id = s.get("ws-1").unwrap().rails[0].stages[0].id.clone();
+        s.conn
+            .execute(
+                "UPDATE orch_stages SET mode = NULL, name = NULL WHERE id = ?1",
+                params![stage_id],
+            )
+            .unwrap();
+        let o = s.get("ws-1").unwrap();
+        assert_eq!(o.rails[0].stages[0].mode, "parallel");
+        assert_eq!(o.rails[0].stages[0].name, None);
+    }
+
+    #[test]
+    fn an_unknown_stage_mode_reads_as_parallel() {
+        // A hand-edited or newer-peer value must degrade to the discipline
+        // every existing plan already ran under, never fail the whole read.
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        let stage_id = s.get("ws-1").unwrap().rails[0].stages[0].id.clone();
+        s.conn
+            .execute("UPDATE orch_stages SET mode = 'lockstep' WHERE id = ?1", params![stage_id])
+            .unwrap();
+        assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].mode, "parallel");
     }
 
     #[test]
