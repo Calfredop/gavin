@@ -70,6 +70,20 @@ export const layoutState = writable<LayoutState>(initialState);
 // refreshDaemonCompat.
 export const daemonCompat = writable<DaemonCompat | null>(null);
 
+/// The last request the daemon refused on the streaming connection, or
+/// null once nothing is outstanding.
+///
+/// Separate from `status: "error"` on purpose. That means the CONNECTION
+/// is gone and there is no app left to show; this means one Attach /
+/// WriteInput / ResizeSession came back rejected while everything else
+/// kept working -- typically for a session id that has just exited.
+/// Routing the second through the first is what turned a stray resize
+/// into "the app crashed with the Daemon restart error": a whole window
+/// replaced over one dead pane. DaemonRequestErrorBanner renders this as
+/// a dismissible strip instead, so the failure is still visible and the
+/// app is still usable.
+export const daemonRequestError = writable<string | null>(null);
+
 // Pulls the current compat verdict from the Rust side. Called at every
 // point this module already re-syncs against a (re)connected daemon --
 // the workspaces-ready event, pollForStartupState's success path, and
@@ -355,6 +369,47 @@ async function loadTabMaps(): Promise<void> {
   // rather than hanging keeps that path the one that reports it.
 }
 
+/// Refills what the frontend only ever learns from daemon pushes.
+///
+/// `cwdBySessionId`, `sessionStatusById` and `restoredSessionIds` are fed
+/// by the `cwd-changed` / `session-status-changed` / `session-restored`
+/// events, whose baseline the daemon sends in reply to `Attach` -- and
+/// `Attach` runs once per app PROCESS (session::attach_and_relay), not
+/// once per frontend load. So a reloaded frontend starts blank on all
+/// three and cannot refill them until the shell emits another OSC 7: the
+/// terminal's tab loses its cwd-derived label, its status dot, and its
+/// "open this context's board" button until the next prompt. Under
+/// `tauri dev` that is every frontend edit.
+///
+/// Never overwrites a value already in the store: a push that has landed
+/// is newer than this snapshot. Status is written straight into the map
+/// rather than through handleSessionStatusChanged -- re-reading a state
+/// the human has already seen is not a transition, and must not fire an
+/// OS notification for it.
+async function seedSessionBaselines(): Promise<void> {
+  // Same wait loadTabMaps satisfies: once those maps have come back, the
+  // Rust side has managed CommandConnection too.
+  await tabMapsLoaded;
+  const baselines = await backend.getSessionBaselines().catch(() => null);
+  if (!baselines) return;
+  const known = get(layoutState);
+  const fresh = baselines.filter((b) => known.cwdBySessionId[b.id] === undefined);
+  for (const b of fresh) {
+    // Not a plain map write: handleCwdChanged also mirrors the cwd into
+    // terminalRegistry, which the xterm link provider reads synchronously.
+    handleCwdChanged(b.id, b.cwd);
+  }
+  layoutState.update((s) => {
+    const sessionStatusById = { ...s.sessionStatusById };
+    const restoredSessionIds = new Set(s.restoredSessionIds);
+    for (const b of baselines) {
+      if (sessionStatusById[b.id] === undefined) sessionStatusById[b.id] = b.status;
+      if (b.restored) restoredSessionIds.add(b.id);
+    }
+    return { ...s, sessionStatusById, restoredSessionIds };
+  });
+}
+
 export async function bootstrap(): Promise<void> {
   // Ahead of the workspace listeners: the theme should be correct on the
   // first painted frame, and it has no dependency on workspace state.
@@ -362,6 +417,7 @@ export async function bootstrap(): Promise<void> {
   // Started before the ready paths that await it, so the maps are already
   // in flight by the time either of them has a payload to apply.
   tabMapsLoaded = loadTabMaps();
+  void seedSessionBaselines();
   unlisteners.push(
     await listen<WorkspacesData>("workspaces-ready", async (event) => {
       // Awaited BEFORE the tree lands in the store: a file or board tab
@@ -394,8 +450,20 @@ export async function bootstrap(): Promise<void> {
     })
   );
   unlisteners.push(
+    // The connection itself is gone (the relay's read failed, the daemon
+    // closed the socket, or bootstrap never got one) -- there is no
+    // working app left behind this, so it IS the whole-window overlay.
     await listen<string>("daemon-error", (event) => {
       setError(event.payload);
+    })
+  );
+  unlisteners.push(
+    // One request the daemon refused, on a connection that is still up.
+    // Deliberately NOT setError: everything else in the app keeps
+    // working, so this surfaces as a banner over it (see
+    // DaemonRequestErrorBanner) rather than replacing it.
+    await listen<string>("daemon-request-error", (event) => {
+      daemonRequestError.set(event.payload);
     })
   );
   unlisteners.push(

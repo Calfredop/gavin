@@ -5,6 +5,7 @@ import type { LayoutNode } from "./layout";
 import { allSessionIds } from "./layout";
 import type { Page, Workspace } from "./workspace";
 import { getActiveView } from "./workspace";
+import { listen } from "@tauri-apps/api/event";
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
@@ -44,6 +45,9 @@ vi.mock("./backend", () => ({
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
   unwatchGavinRoot: vi.fn().mockResolvedValue(undefined),
   getBoardTabs: vi.fn().mockResolvedValue({}),
+  // Resolved by default: bootstrap calls this best-effort to refill the
+  // maps a frontend reload starts blank on.
+  getSessionBaselines: vi.fn().mockResolvedValue([]),
   // Resolved by default: pruneBoardTabs calls .catch() on this.
   setBoardTabs: vi.fn().mockResolvedValue(undefined),
 }));
@@ -114,6 +118,7 @@ import {
   startMainAgentWithPrompt,
   runningSessionCount,
   daemonCompat,
+  daemonRequestError,
   type LayoutState,
 } from "./layoutState";
 
@@ -159,6 +164,8 @@ beforeEach(() => {
   // Module-level store, same reason: without this, a compat verdict set
   // by one test would leak into the next one's assertions.
   daemonCompat.set(null);
+  // Module-level store, same reason.
+  daemonRequestError.set(null);
   layoutState.set({
     status: "connecting",
     errorMessage: "",
@@ -1654,6 +1661,117 @@ describe("bootstrap / pollForStartupState readiness", () => {
       { timeout: 3000 }
     );
     expect(get(layoutState).status).toBe("ready");
+  });
+});
+
+// The streaming connection carries Attach/WriteInput/ResizeSession, so a
+// Response::Error on it means the daemon refused ONE of those -- usually
+// for a session that has just exited. Reporting that as a lost connection
+// is what let a stray resize replace the whole window with "Couldn't
+// connect to the daemon"; the two now travel on separate events.
+describe("daemon errors: refused request vs lost connection", () => {
+  afterEach(() => {
+    teardown();
+    vi.mocked(listen).mockResolvedValue(() => {});
+  });
+
+  /// Bootstraps with `listen` capturing every handler it registers, so a
+  /// test can fire a Tauri event by name the way the Rust side would.
+  async function bootstrapCapturingListeners(): Promise<Map<string, (e: { payload: unknown }) => void>> {
+    const handlers = new Map<string, (e: { payload: unknown }) => void>();
+    vi.mocked(listen).mockImplementation(async (event: string, handler: unknown) => {
+      handlers.set(event, handler as (e: { payload: unknown }) => void);
+      return () => {};
+    });
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+    await bootstrap();
+    await vi.waitFor(() => expect(get(layoutState).status).toBe("ready"));
+    return handlers;
+  }
+
+  it("a refused request banners, leaving the app up", async () => {
+    const handlers = await bootstrapCapturingListeners();
+
+    handlers.get("daemon-request-error")!({ payload: "unknown session: abc" });
+
+    expect(get(daemonRequestError)).toBe("unknown session: abc");
+    expect(get(layoutState).status).toBe("ready");
+    expect(get(layoutState).errorMessage).toBe("");
+  });
+
+  it("a lost connection still takes the whole window", async () => {
+    const handlers = await bootstrapCapturingListeners();
+
+    handlers.get("daemon-error")!({ payload: "daemon closed the connection" });
+
+    expect(get(layoutState).status).toBe("error");
+    expect(get(layoutState).errorMessage).toBe("daemon closed the connection");
+    expect(get(daemonRequestError)).toBeNull();
+  });
+});
+
+// cwd/status/restored reach the frontend only as pushes, and their
+// baseline only in reply to Attach -- which runs once per app PROCESS. A
+// reloaded frontend therefore has to ask for them, or every terminal tab
+// loses its cwd-derived label, its status dot, and its "open this
+// context's board" button until the shell's next prompt.
+describe("bootstrap seeds the push-fed session maps", () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  async function bootstrapReady(): Promise<void> {
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+    await bootstrap();
+    await vi.waitFor(() => expect(get(layoutState).status).toBe("ready"));
+  }
+
+  it("fills cwd, status and the restored badge from the daemon", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true },
+      { id: "s-2", cwd: "/ws", status: "idle", restored: false },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).cwdBySessionId["s-1"]).toBe("/ws/auth"));
+    const state = get(layoutState);
+    expect(state.cwdBySessionId["s-2"]).toBe("/ws");
+    expect(state.sessionStatusById["s-1"]).toBe("working");
+    expect(state.restoredSessionIds.has("s-1")).toBe(true);
+    expect(state.restoredSessionIds.has("s-2")).toBe(false);
+    // Straight into the map, never through handleSessionStatusChanged:
+    // re-reading a status the human has already seen is not a transition.
+    expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+  });
+
+  it("never overwrites a push that already landed", async () => {
+    vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
+      // A live push beats the snapshot this call is about to return.
+      handleCwdChanged("s-1", "/ws/live");
+      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false }];
+    });
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).cwdBySessionId["s-1"]).toBe("/ws/live"));
+  });
+
+  it("survives the daemon refusing the query", async () => {
+    vi.mocked(backend.getSessionBaselines).mockRejectedValue(new Error("state not managed"));
+
+    await bootstrapReady();
+
+    expect(get(layoutState).status).toBe("ready");
+    expect(get(layoutState).cwdBySessionId).toEqual({});
   });
 });
 

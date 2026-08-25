@@ -820,6 +820,47 @@ fn resolve_sessions(
 /// records are kept (not filtered out here) so `resolve_sessions` can look
 /// up an exited session's own last-known `cwd` before replacing it, rather
 /// than falling back to `$HOME`.
+/// One live session's push-derived state, read back in a single query.
+/// camelCase because it crosses to the frontend; the protocol's own
+/// `SessionSummary` stays as it is on the wire.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBaseline {
+    pub id: String,
+    pub cwd: String,
+    pub status: String,
+    pub restored: bool,
+}
+
+/// Every live session's cwd, status and restored flag, in one read.
+///
+/// The frontend only ever learns these from pushes (`cwd-changed`,
+/// `session-status-changed`, `session-restored`), and their baseline is
+/// what the daemon sends in reply to `Attach` -- which happens once per
+/// APP PROCESS, in `attach_and_relay`. A frontend reload therefore comes
+/// up with those maps empty and no way to refill them until the shell
+/// happens to emit another OSC 7: the tab loses its cwd-derived label and
+/// its "open this context's board" button until the next prompt. Under
+/// `tauri dev` that is every single frontend edit.
+///
+/// A re-`Attach` would rebuild the same state, but it also replays
+/// scrollback -- this just reads the registry instead. `ListSessions` has
+/// been in the protocol since v1, so nothing here needs a compat gate of
+/// its own beyond the one `send_command_reconnecting` already applies.
+#[tauri::command]
+pub fn get_session_baselines(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Vec<SessionBaseline>, String> {
+    let sessions =
+        list_valid_session_ids(&state.0, &current_compat(&compat)).map_err(|e| e.to_string())?;
+    Ok(sessions
+        .into_values()
+        .filter(|s| s.status != "exited")
+        .map(|s| SessionBaseline { id: s.id, cwd: s.cwd, status: s.status, restored: s.restored })
+        .collect())
+}
+
 fn list_valid_session_ids(
     command_conn: &Mutex<UnixStream>,
     compat: &DaemonCompat,
@@ -1603,7 +1644,21 @@ fn attach_and_relay(
                         .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
                 }
                 Response::Error { message } => {
-                    let _ = reader_app_handle.emit("daemon-error", message);
+                    // A REJECTED REQUEST, not a lost connection. This
+                    // connection carries Attach/WriteInput/ResizeSession,
+                    // and the daemon answers every one of them with
+                    // Response::Error for an id it no longer has -- so a
+                    // resize racing a session's exit, or a pane mounted
+                    // for a tab id that was never a session, used to put
+                    // the whole window behind the "Couldn't connect to
+                    // the daemon" overlay. (The Milestone-C plan called
+                    // that out as a known limitation it did not
+                    // special-case.) `daemon-error` now means only what
+                    // report_disconnect and bootstrap mean by it: the
+                    // connection is gone. A rejected request gets its own
+                    // event, surfaced as a dismissible banner over a
+                    // still-working app.
+                    let _ = reader_app_handle.emit("daemon-request-error", message);
                 }
                 _ => {}
             }

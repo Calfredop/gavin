@@ -28,6 +28,7 @@
   import Sidebar from "$lib/Sidebar.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
+  import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
   import { hubViewBusy } from "$lib/hubViewMeta";
   import { tooltip } from "$lib/tooltip";
@@ -126,6 +127,10 @@
          branch, spanning above the sidebar so it stays visible regardless
          of which workspace or tab is active. -->
     <DaemonCompatBanner />
+    <!-- Beside the compat banner, and for the same reason: a request
+         the daemon refused is a caveat on a working app, not a lost
+         connection, so it never belongs in the error branch above. -->
+    <DaemonRequestErrorBanner />
     <!-- The active workspace's accent, read by every tab indicator and
          drop marker inside (Pane.svelte's var(--ws-accent)). -->
     <div class="body" style:--ws-accent={accent}>

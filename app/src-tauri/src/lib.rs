@@ -98,6 +98,7 @@ pub fn run() {
             session::remove_external_gavin_context,
             session::gavin_root_exists,
             session::get_board_tabs,
+            session::get_session_baselines,
             session::set_board_tabs,
             session::set_plan_frontmatter_field,
             session::create_plan,

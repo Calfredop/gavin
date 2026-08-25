@@ -6,6 +6,7 @@ import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProg
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { ToolRecord } from "./orchestrationTools";
 import type { DaemonCompat } from "./daemonCompat";
+import type { SessionStatus } from "./notifications";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -164,6 +165,22 @@ export function gavinRootExists(rootPath: string): Promise<boolean> {
 
 export function getBoardTabs(): Promise<Record<string, BoardTab>> {
   return invoke("get_board_tabs");
+}
+
+/// One live session's cwd/status/restored, as session::SessionBaseline.
+export interface SessionBaseline {
+  id: string;
+  cwd: string;
+  status: SessionStatus;
+  restored: boolean;
+}
+
+// The frontend learns cwd/status/restored from pushes whose baseline the
+// daemon only sends in reply to Attach -- and Attach happens once per app
+// PROCESS, not per frontend load. This is how a reloaded frontend gets
+// them back; see the Rust command's own doc comment.
+export function getSessionBaselines(): Promise<SessionBaseline[]> {
+  return invoke("get_session_baselines");
 }
 
 export function setBoardTabs(boardTabs: Record<string, BoardTab>): Promise<void> {
