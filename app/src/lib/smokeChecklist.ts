@@ -360,7 +360,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "group-save-template-form",
-        text: "A lone, single-step stage's ⋯ has no Save as template… entry; only once it holds two or more members does the entry appear, opening a form with the This workspace / All workspaces choice",
+        text: "A lone, single-step stage shows no ⋯ menu at all; once it holds two or more members, ⋯ → Save as template… appears, opening a form with the This workspace / All workspaces choice",
       },
       {
         id: "group-save-template",
