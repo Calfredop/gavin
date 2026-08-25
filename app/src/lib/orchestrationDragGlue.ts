@@ -11,6 +11,8 @@
 //   [data-orch-drawer]     the unplaced drawer root
 //   [data-orch-card]       an unplaced drawer row; value = the card path
 //   [data-orch-tool]       a drawer tool row; value = the tool id
+//   [data-orch-stage-handle] a group header's drag handle; value = stage id
+//   [data-orch-template]   a drawer template row; value = the template id
 
 import { get, writable } from "svelte/store";
 import {
@@ -50,19 +52,26 @@ function toRect(el: Element): Rect {
 
 /// The dragged step is excluded from measurement, and a stage left with
 /// ONLY the dragged step is excluded too -- it is about to disappear, so
-/// letting it hold a slot would produce an index one too high.
-function measureRails(root: HTMLElement, draggedId: string): MeasuredRail[] {
+/// letting it hold a slot would produce an index one too high. A dragged
+/// STAGE is excluded outright, for the same reason.
+function measureRails(root: HTMLElement, draggedId: string, kind: OrchDragKind): MeasuredRail[] {
   const rails: MeasuredRail[] = [];
   for (const railEl of root.querySelectorAll("[data-orch-rail]")) {
     const stages: MeasuredStage[] = [];
     for (const stageEl of railEl.querySelectorAll("[data-orch-stage]")) {
+      const stageId = stageEl.getAttribute("data-orch-stage") ?? "";
+      if (kind === "stage" && stageId === draggedId) continue;
       const steps = [...stageEl.querySelectorAll("[data-orch-step]")];
       const remaining = steps.filter((s) => s.getAttribute("data-orch-step") !== draggedId);
       if (steps.length > 0 && remaining.length === 0) continue;
       stages.push({
-        id: stageEl.getAttribute("data-orch-stage") ?? "",
+        id: stageId,
         position: Number(stageEl.getAttribute("data-orch-stage-pos") ?? "0"),
         rect: toRect(stageEl),
+        steps: remaining.map((s) => ({
+          id: s.getAttribute("data-orch-step") ?? "",
+          rect: toRect(s),
+        })),
       });
     }
     rails.push({
@@ -90,14 +99,23 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
     // Drawer rows are checked FIRST and are exempt from the button guard
     // below: the whole row IS a button, and it is also the drag subject.
     // A press with no movement still fires its own onclick, so
-    // click-to-add keeps working. Cards and tools are the same gesture
-    // and differ only in which attribute carries the id.
+    // click-to-add keeps working. Cards, tools and templates are the
+    // same gesture and differ only in which attribute carries the id.
+    // The stage handle is checked the same way, ahead of the button
+    // guard, because it is itself a button and also the drag subject.
     const cardEl = target.closest("[data-orch-card]");
     const toolEl = cardEl ? null : target.closest("[data-orch-tool]");
+    const templateEl = cardEl || toolEl ? null : target.closest("[data-orch-template]");
+    const handleEl = cardEl || toolEl || templateEl ? null : target.closest("[data-orch-stage-handle]");
     let kind: OrchDragKind;
     let itemEl: Element;
     let draggedId: string;
     let sourceStageId: string | null;
+    // The slot the dragged chip sat in among ALL of its stage's members,
+    // BEFORE it was picked up -- the pre-removal position endPointer's
+    // same-slot guard needs. Drawer kinds and a whole-stage drag have no
+    // member slot, so it stays null for them.
+    let sourceIndex: number | null = null;
     let clickCardPath: string | null = null;
 
     if (cardEl) {
@@ -110,6 +128,20 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       itemEl = toolEl;
       draggedId = toolEl.getAttribute("data-orch-tool") ?? "";
       sourceStageId = null;
+    } else if (templateEl) {
+      kind = "template";
+      itemEl = templateEl;
+      draggedId = templateEl.getAttribute("data-orch-template") ?? "";
+      sourceStageId = null;
+    } else if (handleEl) {
+      // A GROUP moves as one unit. `itemEl` is the whole stage, not the
+      // handle, so the drag preview is the thing being moved.
+      const stageEl = handleEl.closest("[data-orch-stage]");
+      if (!stageEl) return;
+      kind = "stage";
+      itemEl = stageEl;
+      draggedId = stageEl.getAttribute("data-orch-stage") ?? "";
+      sourceStageId = draggedId;
     } else {
       if (target.closest("button, input, a, textarea, select")) return;
       const stepEl = target.closest("[data-orch-step]");
@@ -117,7 +149,9 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       kind = "step";
       itemEl = stepEl;
       draggedId = stepEl.getAttribute("data-orch-step") ?? "";
-      sourceStageId = stepEl.closest("[data-orch-stage]")?.getAttribute("data-orch-stage") ?? "";
+      const stageEl = stepEl.closest("[data-orch-stage]");
+      sourceStageId = stageEl?.getAttribute("data-orch-stage") ?? "";
+      sourceIndex = stageEl ? [...stageEl.querySelectorAll("[data-orch-step]")].indexOf(stepEl) : null;
       // Innermost first, and only when it is inside THIS step -- a
       // press on the step's own card matches nothing and falls back to
       // the step's card path.
@@ -126,7 +160,7 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
     }
 
     const cbs: OrchDragCallbacks = {
-      measure: () => measureRails(root, draggedId),
+      measure: () => measureRails(root, draggedId, kind),
       measureDrawer,
       commit: opts.commit,
       click: opts.click,
@@ -136,6 +170,7 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       kind,
       draggedId,
       sourceStageId,
+      sourceIndex,
       { x: e.clientX, y: e.clientY },
       toRect(itemEl),
       cbs,
