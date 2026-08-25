@@ -11,11 +11,31 @@ export type SessionStatus = "idle" | "working" | "waiting_for_input";
 // requestPermission() itself, not the isPermissionGranted() check.
 let permissionRequested = false;
 
+/// What a RAIL says about one of its own step's sessions, when the
+/// generic body would be wrong. Returns a replacement body, or null to
+/// leave the generic one alone.
+///
+/// Registered rather than imported, and this is the direction that
+/// works: orchestrationState.ts already reads layoutState, so the
+/// orchestration layer cannot be imported from here (or from
+/// layoutState) without a cycle. This module imports nothing of gavin's
+/// at all, which is what keeps that true.
+export type StatusVoice = (sessionId: string, status: SessionStatus) => string | null;
+
+let railVoice: StatusVoice | null = null;
+
+/// Called once at startup by initOrchestrationListeners. Passing null
+/// clears it, which is what the teardown and the tests do.
+export function setRailNotificationVoice(voice: StatusVoice | null): void {
+  railVoice = voice;
+}
+
 /**
  * @internal - for testing only
  */
 export async function __resetForTesting(): Promise<void> {
   permissionRequested = false;
+  railVoice = null;
 }
 
 async function ensurePermission(): Promise<boolean> {
@@ -65,8 +85,16 @@ export async function maybeNotifyStatusChange(
 
   if (!(await ensurePermission())) return;
 
-  const body = newStatus === "waiting_for_input" ? `${label} needs your input` : `${label} finished`;
-  sendNotification({ title: "gavin", body });
+  // A rail's own words first. "finished" is the generic body for
+  // working -> idle, and for a card step whose agent stopped WITHOUT
+  // setting its card's status that word is simply false -- the agent
+  // stopped, the work did not finish, and the rail is still waiting on
+  // it. Correcting the one notification beats adding a second one
+  // beside it: two lines contradicting each other in the same tray is
+  // worse than the silence this card was filed about.
+  const generic =
+    newStatus === "waiting_for_input" ? `${label} needs your input` : `${label} finished`;
+  sendNotification({ title: "gavin", body: railVoice?.(sessionId, newStatus) ?? generic });
 }
 
 // ---- the Git tab's hidden commit run ---------------------------------------

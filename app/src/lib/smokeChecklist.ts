@@ -269,6 +269,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The scheduler used to be an $effect inside the Orchestration tab, so a rail only moved while that tab was on screen and then caught up all at once when you returned. Watch the page: the finished step's tab should be joined by the next step's, live. The Kanban tab is a second place to stand.",
       },
       {
+        id: "run-step-turn-ended",
+        text: "A card step whose agent stops WITHOUT moving its card to Done marks itself “needs you” — the chip rings warning-coloured, the rail header and the Orchestration tab say so too — and the rail keeps running",
+        hint: "Start a rail on a card, then in that agent's tab just answer something and let it sit at its prompt without touching the card's status. Within a second the chip should ring amber with a pause glyph, the rail header gain “needs you”, the Orchestration tab a dot, and the sidebar recap a count. The rail must NOT pause and the step must NOT stall — Mark done is still the way past it. Then type something to the agent: every mark clears while it works, and comes back when it stops again.",
+      },
+      {
+        id: "run-step-asking",
+        text: "An agent that ASKS a question mid-step marks the same surfaces, with a question glyph rather than a pause one",
+        hint: "Any agent prompt that waits for input will do. The tooltip should read “the agent is asking you something”, not the turn-ended wording — and this one is true of a tool step as much as a card step.",
+      },
+      {
+        id: "run-step-turn-ended-notification",
+        text: "With gavin in the background, that same stop notifies “<card title> stopped without finishing its card” — NOT “<tab name> finished”",
+        hint: "One notification, not two. Needs the workspace's “finished” notification toggle on and the gavin window not frontmost. A step that really does finish (its card reaches Done, or an agent TOOL step's turn ends) keeps the ordinary “finished” wording — check one of those too, or this only proves the rewrite fires.",
+      },
+      {
         id: "run-drop-on-running-stage",
         text: "Dropping a card onto the stage a RUNNING rail is currently on spawns its agent at once; every other drop still just queues",
         hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage turns parallel and the second agent appears without touching Pause/Resume. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",

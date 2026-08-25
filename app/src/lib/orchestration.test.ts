@@ -48,12 +48,17 @@ import {
   dropImpossibleSteps,
   isStageRunning,
   runningStageId,
+  stepAttentions,
+  railAttention,
+  railsWantingAttention,
+  attentionTip,
 } from "./orchestration";
-import type { CardEntry, Conflict, ToolSummary, UnplacedGroup } from "./orchestration";
+import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "./orchestration";
 import { BUILTIN_TOOLS } from "./orchestrationTools";
 import type { WorktreeInfo } from "./git";
 import type { Action, Orchestration, Rail, RailState, Step, StepState } from "./orchestration";
 import type { Board } from "./kanban";
+import type { SessionStatus } from "./notifications";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 
 function board(names: string[]): Board {
@@ -2251,4 +2256,171 @@ describe("every built-in tool can finish", () => {
       });
     }
   }
+});
+
+// A `running` step says nothing about WHY it is running. Every other
+// surface in the app already reads a session's status -- the tab dot,
+// the sidebar badge, the board card, the OS notification -- and the rail
+// was the one place showing a live agent with nothing to say about it.
+// These are the three ways a running step is waiting on a human rather
+// than on itself.
+describe("stepAttentions", () => {
+  const A = "/ws/.gavin-root/plans/a.md";
+  const cardRail = rail("r1", [[["t1", A]]]);
+  const runs = (state: StepState = "running"): Orchestration["stepRuns"] => [
+    { stepId: "t1", state, sessionId: "s1", reason: null },
+  ];
+  const statuses = (s: SessionStatus) => new Map([["s1", s]]);
+  const attn = (
+    orch: Orchestration,
+    s: Map<string, SessionStatus>,
+    tree_: GavinTree = CARDS,
+    tools: ToolSummary[] | null = TOOLS
+  ) => stepAttentions(orch, BOARD, tree_, tools, s);
+
+  it("marks a step whose agent is asking the human something", () => {
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("waiting_for_input")).get("t1")).toBe("asking");
+  });
+
+  // The bug this card was filed for: the agent answered, or got
+  // confused, or decided the work was not for it, and sat back down at
+  // its prompt without ever setting the card's status.
+  it("marks a card step whose agent's turn ended with the card short of Done", () => {
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("idle")).get("t1")).toBe("turn-ended");
+  });
+
+  // Would be a lie: the card IS finished. Rule 1 marks the step done on
+  // this same tick, so a mark here would also flash on for one frame
+  // before the chip went green.
+  it("says nothing when the card reached the done column", () => {
+    const done = tree([plan("a.md", { status: "Done" })]);
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("idle"), done).get("t1")).toBeUndefined();
+  });
+
+  // A nested task's status is its parent's (effectiveStatus), so a task
+  // under a Done plan is finished and gets no mark either.
+  it("reads a nested task's done-ness through its parent", () => {
+    const nested = tree([
+      plan("parent.md", { kind: "plan", status: "Done" }),
+      plan("a.md", { status: null, parent: "parent.md" }),
+    ]);
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("idle"), nested).get("t1")).toBeUndefined();
+  });
+
+  it("says nothing while the agent is still working", () => {
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("working")).get("t1")).toBeUndefined();
+  });
+
+  // The daemon registers every new session idle, so an absent status is
+  // "nothing reported yet" -- believing it would mark a step the instant
+  // it launched.
+  it("says nothing about a session that has reported no status at all", () => {
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, new Map()).get("t1")).toBeUndefined();
+  });
+
+  // agentTurnEnded marks it done on this same tick, from both the
+  // running-rail rule and the reconciliation pass -- so the mark would
+  // only ever flicker.
+  it("says nothing about an idle AGENT tool step, which is about to be done", () => {
+    const orch = running(toolRail("r1", [[["t1", "builtin:commit"]]]), "r1-s0", runs());
+    expect(attn(orch, statuses("idle")).get("t1")).toBeUndefined();
+  });
+
+  // A command tool's verdict is its exit code (T5): a quiet `npm run
+  // dev` is a server that started, not an agent that stopped talking.
+  it("says nothing about an idle COMMAND tool step", () => {
+    const orch = running(toolRail("r1", [[["t1", "builtin:push"]]]), "r1-s0", runs());
+    expect(attn(orch, statuses("idle")).get("t1")).toBeUndefined();
+  });
+
+  // ...but a command tool that somehow reports waiting_for_input is a
+  // prompt on screen nobody is looking at, which is worth saying.
+  it("still marks a COMMAND tool step that is waiting for input", () => {
+    const orch = running(toolRail("r1", [[["t1", "builtin:push"]]]), "r1-s0", runs());
+    expect(attn(orch, statuses("waiting_for_input")).get("t1")).toBe("asking");
+  });
+
+  // An unloaded library must not read as "every tool was deleted" -- the
+  // same reason launchBlocker and agentTurnEnded take null here. Without
+  // knowing the kind, an idle tool step cannot be told from an agent's
+  // about-to-complete turn, so it says nothing rather than guessing.
+  it("says nothing about an idle tool step while the library is still loading", () => {
+    const orch = running(toolRail("r1", [[["t1", "builtin:commit"]]]), "r1-s0", runs());
+    expect(attn(orch, statuses("idle"), CARDS, null).get("t1")).toBeUndefined();
+  });
+
+  it.each(["pending", "done", "stalled"] as StepState[])(
+    "says nothing about a %s step -- only a running one can be waiting",
+    (state) => {
+      const orch = running(cardRail, "r1-s0", runs(state));
+      expect(attn(orch, statuses("idle")).get("t1")).toBeUndefined();
+    }
+  );
+
+  it("says nothing about a running step that has no session", () => {
+    const orch = running(cardRail, "r1-s0", [
+      { stepId: "t1", state: "running", sessionId: null, reason: null },
+    ]);
+    expect(attn(orch, statuses("idle")).size).toBe(0);
+  });
+
+  // The mark describes the STEP, not the rail. A paused rail holding a
+  // step stuck `running` is exactly the wedge worth seeing: the daemon
+  // refuses every plan write that drops a running step, so it is why the
+  // rail cannot be edited or deleted.
+  it("marks a step on a rail that is not running", () => {
+    const orch: Orchestration = {
+      rails: [cardRail],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: null }],
+      stepRuns: runs(),
+    };
+    expect(attn(orch, statuses("idle")).get("t1")).toBe("turn-ended");
+  });
+
+  it("returns an empty map for an orchestration with no rails", () => {
+    expect(attn(emptyOrchestration(), statuses("idle")).size).toBe(0);
+  });
+});
+
+describe("railAttention / railsWantingAttention", () => {
+  const A = "/ws/.gavin-root/plans/a.md";
+  const B = "/ws/.gavin-root/plans/b.md";
+  const marks = (m: Record<string, StepAttention>) => new Map(Object.entries(m));
+
+  // "asking" outranks "turn-ended": one is a question with a human on
+  // the other end of it, the other is work that quietly stopped.
+  it("is the rail's most urgent step mark", () => {
+    const r = rail("r1", [[["t1", A], ["t2", B]]]);
+    expect(railAttention(r, marks({ t1: "turn-ended", t2: "asking" }))).toBe("asking");
+    expect(railAttention(r, marks({ t1: "turn-ended" }))).toBe("turn-ended");
+    expect(railAttention(r, marks({}))).toBeNull();
+  });
+
+  it("collects the rails with any marked step", () => {
+    const orch: Orchestration = {
+      ...emptyOrchestration(),
+      rails: [rail("r1", [[["t1", A]]]), rail("r2", [[["t2", B]]])],
+    };
+    expect(railsWantingAttention(orch, marks({ t2: "asking" }))).toEqual(new Set(["r2"]));
+    expect(railsWantingAttention(orch, marks({}))).toEqual(new Set());
+  });
+});
+
+describe("attentionTip", () => {
+  it("names the board's own done column rather than a generic word", () => {
+    expect(attentionTip("turn-ended", "Shipped")).toBe(
+      "the agent's turn ended but the card is not in Shipped"
+    );
+  });
+
+  it("does not mention a column for a question, which has nothing to do with one", () => {
+    expect(attentionTip("asking", "Done")).toBe("the agent is asking you something");
+  });
 });

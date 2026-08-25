@@ -30,7 +30,9 @@
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
-  import { hubViewBusy } from "$lib/hubViewMeta";
+  import { hubViewBusy, hubViewAttention } from "$lib/hubViewMeta";
+  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
+  import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
   import { tooltip } from "$lib/tooltip";
 
   let closeConfirmed = false;
@@ -59,7 +61,15 @@
   // HIDDEN session with no tab of its own, so its Git tab is the only
   // place the app can show it from while another tab is on screen.
   const commitPhase = $derived(agentCommitPhase($gitStore[activeWorkspace?.id ?? ""] ?? null));
-  const activity = $derived({ committing: commitPhase === "starting" || commitPhase === "running" });
+  const activity = $derived({
+    committing: commitPhase === "starting" || commitPhase === "running",
+    railsWantingAttention: activeWorkspace
+      ? (railsWantingAttention(
+          $orchestrations[activeWorkspace.id] ?? emptyOrchestration(),
+          $stepAttentionsByWorkspace[activeWorkspace.id] ?? new Map()
+        ).size > 0)
+      : false,
+  });
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -155,12 +165,21 @@
           <div class="tabs">
             {#each hubViews as view, viewIndex (view.id)}
               {@const busy = hubViewBusy(view.id, activity)}
+              {@const wantsYou = hubViewAttention(view.id, activity)}
               <button
                 type="button"
                 class="tab"
                 class:active={activeView === view.id}
-                use:tooltip={busy ? "An agent is committing" : ""}
-                aria-label={busy ? `${hubLabel(view, activeAgent.file)} — an agent is committing` : undefined}
+                use:tooltip={busy
+                  ? "An agent is committing"
+                  : wantsYou
+                    ? "A rail is waiting on you"
+                    : ""}
+                aria-label={busy
+                  ? `${hubLabel(view, activeAgent.file)} — an agent is committing`
+                  : wantsYou
+                    ? `${hubLabel(view, activeAgent.file)} — a rail is waiting on you`
+                    : undefined}
                 onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
               >
                 <!-- In the icon's place, not beside it: the tab row must
@@ -171,6 +190,13 @@
                   <view.icon size={14} />
                 {/if}
                 {hubLabel(view, activeAgent.file)}
+                <!-- A dot, not a spinner: the rail is not the one working,
+                     the human is. Absolutely positioned so the tab row
+                     never reflows when a rail starts or stops wanting
+                     something. -->
+                {#if wantsYou}
+                  <span class="tab-attention" aria-hidden="true"></span>
+                {/if}
                 {#if $hintMode === "cmd"}
                   {@const digit = hintDigitFor(viewIndex, hubViews.length)}
                   {#if digit !== null}
@@ -271,6 +297,18 @@
     to {
       transform: rotate(360deg);
     }
+  }
+  /* Warning tone, matching the rail header, the chip ring and the
+     sidebar count it stands in for. Positioned off .tab, which is
+     already `position: relative` for the hold-⌘ hint. */
+  .tab-attention {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warning-text);
   }
   .tab.active {
     color: var(--text);

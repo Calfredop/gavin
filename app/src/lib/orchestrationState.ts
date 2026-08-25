@@ -5,7 +5,7 @@
 // mutate, same rollback-unless-superseded, same pendingSaves guard
 // against a refresh clobbering an in-flight save.
 
-import { writable, get, type Readable } from "svelte/store";
+import { writable, derived, get, type Readable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "./backend";
 import {
@@ -38,8 +38,10 @@ import {
   railDoneStepIds,
   removeSteps,
   isStageRunning,
+  stepAttentions,
+  findStep,
 } from "./orchestration";
-import type { Action, Orchestration, Rail, RailState, StepState, Step } from "./orchestration";
+import type { Action, Orchestration, Rail, RailState, StepAttention, StepState, Step } from "./orchestration";
 import { findTool, resolveToolBody } from "./orchestrationTools";
 import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
@@ -63,6 +65,7 @@ import {
   runStatusNeeded,
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
+import { setRailNotificationVoice, type SessionStatus } from "./notifications";
 import { pasteToMainAgent } from "./cardRunActions";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
@@ -81,6 +84,41 @@ export function dismissSaveError(workspaceId: string): void {
 /// its chips; hovering a chip lights its rows. Ephemeral UI state, never
 /// persisted -- which is why it lives here and not in the plan.
 export const highlightedConflict = writable<number | null>(null);
+
+/// Every running step that wants a human, per workspace (see
+/// stepAttentions). Derived rather than stored: it is a live read of the
+/// scheduler's own inputs, so it can never drift from what the rail is
+/// actually doing, and it costs nothing when it turns out to be wrong.
+///
+/// Four surfaces read this one computation -- the step chip and card,
+/// the rail header, the sidebar recap and the Orchestration hub tab --
+/// which is the reason it lives here rather than in whichever of them
+/// happens to be mounted. That is the same mistake startScheduler was
+/// written to undo.
+///
+/// Every workspace, not just the active one: the sidebar shows a recap
+/// per workspace, and a rail that needs you in the workspace you are not
+/// looking at is exactly the one you would otherwise miss.
+export const stepAttentionsByWorkspace: Readable<Record<string, Map<string, StepAttention>>> =
+  derived(
+    [orchestrations, kanbanState, gavinTrees, toolRecords, layoutState],
+    ([$orchestrations, $kanban, $trees, $tools, $layout]) => {
+      const statuses = new Map(Object.entries($layout.sessionStatusById));
+      const out: Record<string, Map<string, StepAttention>> = {};
+      for (const [workspaceId, orch] of Object.entries($orchestrations)) {
+        const board = $kanban[workspaceId];
+        if (!board) continue;
+        out[workspaceId] = stepAttentions(
+          orch,
+          board,
+          $trees[workspaceId],
+          libraryFor($tools, workspaceId),
+          statuses
+        );
+      }
+      return out;
+    }
+  );
 
 const pendingSaves = new Map<string, number>();
 
@@ -632,6 +670,49 @@ export function startScheduler(): () => void {
   return stop;
 }
 
+/// The rail's own words for one of its step's sessions, when the
+/// generic notification body would be wrong (see setRailNotificationVoice).
+///
+/// The one case: a CARD step whose agent went idle without ever moving
+/// its card to the done column. That transition already notified, as
+/// "<label> finished" -- and "finished" is exactly what did not happen.
+/// The agent stopped; the work is still undone and the rail is still
+/// waiting on it.
+///
+/// Only `turn-ended`. `asking` already says "needs your input", which is
+/// right, and an agent TOOL step going idle really has finished, because
+/// agentTurnEnded marks it done on that same tick.
+export function railStatusVoice(sessionId: string, status: SessionStatus): string | null {
+  if (status !== "idle") return null;
+  // Reads the same derived map the chips do, and the layout store it
+  // rides has already been updated with this very status by the time
+  // handleSessionStatusChanged calls the notifier -- so the mark here is
+  // the one the human is about to see on the rail.
+  const byWorkspace = get(stepAttentionsByWorkspace);
+  for (const [workspaceId, marks] of Object.entries(byWorkspace)) {
+    const orch = get(orchestrations)[workspaceId];
+    if (!orch) continue;
+    for (const run of orch.stepRuns) {
+      if (run.sessionId !== sessionId) continue;
+      if (marks.get(run.stepId) !== "turn-ended") continue;
+      const step = findStep(orch, run.stepId);
+      const label = step ? cardTitleFor(workspaceId, step) : null;
+      return `${label ?? "a rail step"} stopped without finishing its card`;
+    }
+  }
+  return null;
+}
+
+/// The card's own title for a notification body -- the session's name is
+/// a shell label and would not tell the human which card stalled. Falls
+/// back to the file name, which is the only honest thing left when the
+/// tree has not loaded.
+function cardTitleFor(workspaceId: string, step: Step): string | null {
+  if (isToolStep(step)) return null;
+  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
+  return entry?.plan.title ?? step.cardPath.split("/").pop() ?? null;
+}
+
 /// Must be registered BEFORE the first watchGavinRoot call: Tauri events
 /// emitted with no listener are lost, not buffered. layoutState.bootstrap()
 /// registers this beside initGavinListeners, and starts the scheduler
@@ -669,8 +750,10 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     void tick(workspaceId);
   });
   const stop = startScheduler();
+  setRailNotificationVoice(railStatusVoice);
   return () => {
     stop();
+    setRailNotificationVoice(null);
     unlisten();
   };
 }
@@ -684,6 +767,7 @@ export function __resetForTesting(): void {
   tickAgain.clear();
   // A scheduler left running would tick the next test's stores.
   stopScheduler?.();
+  setRailNotificationVoice(null);
   highlightedConflict.set(null);
 }
 

@@ -38,6 +38,7 @@
     FileText,
     PanelsTopLeft,
     SquareArrowOutUpRight,
+    MessageCircleQuestionMark,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -78,7 +79,12 @@
     type PageTabRow,
   } from "./sidebarSummary";
   import { rowLinkedCard, openLinkedCard, type LinkedCard } from "./cardTabLink";
-  import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  import {
+    orchestrations,
+    fetchOrchestration,
+    stepAttentionsByWorkspace,
+  } from "./orchestrationState";
+  import { railsWantingAttention } from "./orchestration";
   import { kanbanState, fetchBoard } from "./kanbanState";
   import { gavinTrees } from "./gavinState";
   import { tooltip } from "./tooltip";
@@ -211,7 +217,12 @@
   }
 
   function railRecap(ws: Workspace): RailsSummary {
-    return railsSummary($orchestrations[ws.id]);
+    // Every workspace has its own attention map, not just the active
+    // one: a rail that needs you in the workspace you are NOT looking at
+    // is exactly the one you would otherwise miss.
+    const orch = $orchestrations[ws.id];
+    const marks = $stepAttentionsByWorkspace[ws.id];
+    return railsSummary(orch, orch && marks ? railsWantingAttention(orch, marks) : new Set());
   }
 
   // A page's own half of the recap: what it holds, rather than what the
@@ -341,6 +352,7 @@
   function railRecapTip(rails: RailsSummary): string {
     const parts: string[] = [];
     if (rails.running > 0) parts.push(`${rails.running} running`);
+    if (rails.attention > 0) parts.push(`${rails.attention} needing you`);
     if (rails.done > 0) parts.push(`${rails.done} done`);
     if (rails.idle > 0) parts.push(`${rails.idle} idle`);
     return `${plural(rails.total, "rail", "rails")}: ${parts.join(", ")} -- open Orchestration`;
@@ -759,6 +771,12 @@
           >
             {#if rails.running > 0}
               <span class="rail-stat running"><Play size={10} /><span class="recap-count">{rails.running}</span></span>
+            {/if}
+            <!-- Straight after running, because that is the count it was
+                 taken out of: a rail needing a human is still going, it
+                 just is not going to get anywhere on its own. -->
+            {#if rails.attention > 0}
+              <span class="rail-stat attention"><MessageCircleQuestionMark size={10} /><span class="recap-count">{rails.attention}</span></span>
             {/if}
             {#if rails.done > 0}
               <span class="rail-stat done"><Check size={10} /><span class="recap-count">{rails.done}</span></span>
@@ -1440,6 +1458,10 @@
   }
   .rail-stat.done {
     color: var(--success-text);
+  }
+  /* Warning tone, matching the rail header and the chip ring it counts. */
+  .rail-stat.attention {
+    color: var(--warning-text);
   }
   /* The page row's own recap: how many tabs the page holds, and how many
      agents are running / idle behind them. Same icon vocabulary as the

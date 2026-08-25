@@ -69,6 +69,7 @@
     setStepParamsAction,
     moveRailCardsAction,
     clearDoneStepsAction,
+    stepAttentionsByWorkspace,
   } from "./orchestrationState";
 
   interface Props {
@@ -83,6 +84,11 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const cards = $derived(cardIndex(tree));
   const doneName = $derived(board ? (doneColumn(board)?.name ?? null) : null);
+  // Which running steps are waiting on a human. Read from the store
+  // rather than computed here: the sidebar recap and the hub tab want the
+  // same answer, and a view that only exists while it is mounted is the
+  // wrong owner for it (see startScheduler).
+  const attentions = $derived($stepAttentionsByWorkspace[workspaceId] ?? new Map());
   // The board's OWN projection, so a card on a rail is the very same card
   // object the kanban tab renders -- kind colours, labels, priority,
   // checklist, nesting and all -- carrying the one fact a rail has to add:
@@ -506,6 +512,7 @@
           labelDefs={board?.labels ?? []}
           doneColumnName={doneName}
           {numbered}
+          {attentions}
           onStart={() => onStart(rail.id)}
           onPause={() => void pauseRail(workspaceId, rail.id)}
           onReset={() => void resetRail(workspaceId, rail.id)}

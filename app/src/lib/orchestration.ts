@@ -357,6 +357,142 @@ function deadSessionAction(
   };
 }
 
+/// What a RUNNING step is waiting on, when it is waiting on a HUMAN
+/// rather than on itself.
+///
+/// `running` alone says nothing about why. Every other surface in the
+/// app already reads a session's status -- the tab dot (Pane.svelte),
+/// the sidebar badge, the board card, the OS notification -- and the
+/// rail was the one place in gavin that showed a live agent with
+/// nothing to say about it. A card step whose agent answered and sat
+/// back down at its prompt without setting the card's status looked
+/// exactly like one grinding away.
+///
+/// - `asking` -- the agent has a question on screen. The rail is right
+///   to wait; nobody has told the human it is their turn.
+/// - `turn-ended` -- the agent stopped talking and the card never
+///   reached the done column. The work is not finished and nothing is
+///   going to finish it.
+export type StepAttention = "asking" | "turn-ended";
+
+/// `asking` outranks `turn-ended` when a rail rolls its steps up: one is
+/// a question with a human on the other end of it, the other is work
+/// that quietly stopped.
+const ATTENTION_RANK: Record<StepAttention, number> = { asking: 2, "turn-ended": 1 };
+
+/// Every running step that wants a human, by step id. Derived, never
+/// stored: this is a live read of the same inputs the scheduler takes,
+/// so a mark clears itself the instant the agent's status moves, and
+/// nothing about it is ever written to a plan file.
+///
+/// Deliberately NOT an Action. Stalling would pause the rail and persist
+/// a verdict on a signal that is only two quiet seconds for an agent
+/// emitting no OSC 133 (HEURISTIC_QUIET_PERIOD in the daemon); this
+/// says the same thing and costs nothing if it is wrong.
+///
+/// `tools` is null while the library is still loading, on the same
+/// principle as launchBlocker's: an unloaded library must not read as
+/// "every tool was deleted", and without a kind an idle tool step cannot
+/// be told from an agent's about-to-complete turn.
+export function stepAttentions(
+  orch: Orchestration,
+  board: Board,
+  tree: GavinTree | undefined,
+  tools: ToolSummary[] | null,
+  sessionStatuses: Map<string, SessionStatus>
+): Map<string, StepAttention> {
+  const marks = new Map<string, StepAttention>();
+  // Before the tree walk. This runs on every layoutState emission -- a
+  // status change, a cwd report, a git poll -- for every workspace at
+  // once, and a workspace with no rails has nothing to say however many
+  // cards it holds.
+  if (orch.rails.length === 0) return marks;
+  const cards = cardIndex(tree);
+  const plans = planIndex(cards);
+  const done = doneColumn(board);
+  const doneSlug = done ? slugStatus(done.name) : null;
+  const toolKind = new Map((tools ?? []).map((t) => [t.id, t.kind]));
+  const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
+
+  for (const rail of orch.rails) {
+    // Every rail, not only a running one. The mark describes the STEP:
+    // a paused rail holding a step stuck `running` is precisely the
+    // wedge worth seeing, since the daemon refuses every plan write
+    // that drops a running step and that is what makes the rail
+    // uneditable and undeletable.
+    for (const stage of rail.stages) {
+      for (const step of stage.steps) {
+        if (stepStateOf(orch, step.id) !== "running") continue;
+        const sessionId = runByStep.get(step.id)?.sessionId ?? null;
+        if (!sessionId) continue;
+        const status = sessionStatuses.get(sessionId);
+        // No status at all is "nothing reported yet", not "finished":
+        // the daemon registers every new session idle, so believing an
+        // absent status would mark a step the instant it launched.
+        if (status === "waiting_for_input") {
+          marks.set(step.id, "asking");
+          continue;
+        }
+        if (status !== "idle") continue;
+        // An idle TOOL step is never this. An `agent` tool's step is
+        // marked done by agentTurnEnded on this very tick -- from the
+        // running-rail rule and from the reconciliation pass both -- so
+        // a mark would only flicker; a `command` tool's verdict is its
+        // exit code and nothing else (T5), because a quiet `npm run dev`
+        // is a server that started rather than an agent that stopped.
+        if (isToolStep(step)) continue;
+        // The card IS finished -- saying its turn ended short of Done
+        // would be false, and rule 1 marks the step done this same tick.
+        // Read through effectiveStatus, so a nested task under a Done
+        // plan counts as done rather than as abandoned work.
+        const entry = cards.get(step.cardPath);
+        const cardStatus = entry ? effectiveStatus(entry, plans) : null;
+        if (doneSlug && cardStatus !== null && slugStatus(cardStatus) === doneSlug) continue;
+        marks.set(step.id, "turn-ended");
+      }
+    }
+  }
+  return marks;
+}
+
+/// One spelling of what a mark MEANS, so the chip's tooltip, the rail
+/// header, the sidebar recap and the OS notification cannot drift into
+/// describing the same state three different ways.
+export function attentionTip(attention: StepAttention, doneName: string): string {
+  return attention === "asking"
+    ? "the agent is asking you something"
+    : `the agent's turn ended but the card is not in ${doneName}`;
+}
+
+/// The most urgent mark among a rail's steps, or null. What the rail
+/// header, the sidebar recap and the hub tab all roll up.
+export function railAttention(
+  rail: Rail,
+  marks: Map<string, StepAttention>
+): StepAttention | null {
+  let best: StepAttention | null = null;
+  for (const stage of rail.stages) {
+    for (const step of stage.steps) {
+      const mark = marks.get(step.id);
+      if (mark && (!best || ATTENTION_RANK[mark] > ATTENTION_RANK[best])) best = mark;
+    }
+  }
+  return best;
+}
+
+/// The rail ids with any marked step. The sidebar recap counts each rail
+/// once, so it needs the set rather than the tally.
+export function railsWantingAttention(
+  orch: Orchestration,
+  marks: Map<string, StepAttention>
+): Set<string> {
+  const ids = new Set<string>();
+  for (const rail of orch.rails) {
+    if (railAttention(rail, marks)) ids.add(rail.id);
+  }
+  return ids;
+}
+
 /// The scheduler (spec §4.2). Pure and total: same inputs, same list.
 /// Rules run in order per stage -- mark done, launch or stall pending,
 /// stall a running step whose session died -- and a fully-done stage

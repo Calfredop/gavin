@@ -126,15 +126,29 @@ export function kanbanSummary(board: Board | undefined, tree: GavinTree | undefi
   return { todo, inProgress, done, total: summary.totalCards, columns };
 }
 
-export type RailPhase = "running" | "done" | "idle";
+export type RailPhase = "running" | "attention" | "done" | "idle";
 
-/// Which bucket a rail falls in. "running" is the rail's own run state;
-/// "done" means every step finished; everything else is "idle" --
-/// including `paused`, which is a rail that stopped rather than one that
-/// arrived. A rail with no steps is idle, not vacuously done: `every` on
-/// an empty list is true, and an empty rail has plainly not completed
-/// anything.
-export function railPhase(orch: Orchestration, rail: Rail): RailPhase {
+/// Which bucket a rail falls in. "attention" means a step of it is
+/// waiting on a HUMAN (railsWantingAttention); "running" is the rail's
+/// own run state; "done" means every step finished; everything else is
+/// "idle" -- including `paused`, which is a rail that stopped rather than
+/// one that arrived. A rail with no steps is idle, not vacuously done:
+/// `every` on an empty list is true, and an empty rail has plainly not
+/// completed anything.
+///
+/// Attention is checked FIRST, and so outranks even idle. A rail waiting
+/// on a human is still running, but "3 running" says nothing about which
+/// of the three wants you -- and a paused rail holding a step stuck
+/// `running` with a live agent is the wedge that makes it uneditable and
+/// undeletable, which is worth surfacing rather than filing under idle.
+/// `attentionRailIds` is empty for every caller that has no orchestration
+/// attention map to hand, which reads as "nothing wants a human".
+export function railPhase(
+  orch: Orchestration,
+  rail: Rail,
+  attentionRailIds: Set<string> = new Set()
+): RailPhase {
+  if (attentionRailIds.has(rail.id)) return "attention";
   if (railStateOf(orch, rail.id) === "running") return "running";
   const steps = rail.stages.flatMap((stage) => stage.steps);
   if (steps.length > 0 && steps.every((step) => stepStateOf(orch, step.id) === "done")) return "done";
@@ -143,6 +157,7 @@ export function railPhase(orch: Orchestration, rail: Rail): RailPhase {
 
 export interface RailsSummary {
   running: number;
+  attention: number;
   done: number;
   idle: number;
   total: number;
@@ -152,11 +167,14 @@ export interface RailsSummary {
 /// loaded yet (or a workspace with no root, which never gets one) counts
 /// as no rails rather than as an error state -- the recap simply has
 /// nothing to say about rails until it arrives.
-export function railsSummary(orch: Orchestration | null | undefined): RailsSummary {
-  const summary: RailsSummary = { running: 0, done: 0, idle: 0, total: 0 };
+export function railsSummary(
+  orch: Orchestration | null | undefined,
+  attentionRailIds: Set<string> = new Set()
+): RailsSummary {
+  const summary: RailsSummary = { running: 0, attention: 0, done: 0, idle: 0, total: 0 };
   if (!orch) return summary;
   for (const rail of orch.rails) {
-    summary[railPhase(orch, rail)] += 1;
+    summary[railPhase(orch, rail, attentionRailIds)] += 1;
     summary.total += 1;
   }
   return summary;

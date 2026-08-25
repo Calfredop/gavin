@@ -1,12 +1,28 @@
 <script lang="ts">
-  import { Play, Pause, RotateCcw, Trash2, Plus, SquareStack, BrushCleaning } from "@lucide/svelte";
+  import {
+    Play,
+    Pause,
+    RotateCcw,
+    Trash2,
+    Plus,
+    SquareStack,
+    BrushCleaning,
+    CirclePause,
+    MessageCircleQuestionMark,
+  } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
   import type { Label } from "./kanban";
   import type { CardView, PlacedCardView } from "./planBoard";
-  import type { CardEntry, NumberedConflict, Orchestration, Rail } from "./orchestration";
-  import { stepParams } from "./orchestration";
+  import type {
+    CardEntry,
+    NumberedConflict,
+    Orchestration,
+    Rail,
+    StepAttention,
+  } from "./orchestration";
+  import { stepParams, attentionTip, railAttention } from "./orchestration";
   import { findTool } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
   import {
@@ -21,6 +37,7 @@
   } from "./orchestration";
   import { highlightedConflict } from "./orchestrationState";
   import { orchDragState } from "./orchestrationDrag";
+  import { tooltip } from "./tooltip";
 
   interface Props {
     rail: Rail;
@@ -40,6 +57,11 @@
     /// and the header says so rather than looking hung.
     doneColumnName: string | null;
     numbered: NumberedConflict[];
+    /// Every running step in this workspace that is waiting on a human,
+    /// by step id (see stepAttentions). Handed down rather than derived
+    /// here, so one computation feeds the chips, this header, the sidebar
+    /// recap and the hub tab alike.
+    attentions: Map<string, StepAttention>;
     /// Rename is CONTROLLED by the parent: it owns which rail is being
     /// renamed, so a freshly created rail can open straight into it.
     editing: boolean;
@@ -89,6 +111,7 @@
     workspaceId,
     doneColumnName,
     numbered,
+    attentions,
     pageName,
     editing,
     onStartEdit,
@@ -116,6 +139,12 @@
   }: Props = $props();
 
   const railState = $derived(railStateOf(orch, rail.id));
+  // The rail's most urgent step mark, so a hub full of rails says which
+  // one needs you without the human reading every stage.
+  const attention = $derived(railAttention(rail, attentions));
+  const attentionTitle = $derived(
+    attention ? attentionTip(attention, doneColumnName ?? "the done column") : ""
+  );
   const stages = $derived([...rail.stages].sort((a, b) => a.position - b.position));
   // A rail-level conflict (missing/unbound worktree) badges the HEADER,
   // not any chip -- the cause is the binding, not a step.
@@ -214,6 +243,19 @@
         >{n}</span>
       {/each}
       <span class="state {railState}">{railState}</span>
+      <!-- After the state word, not instead of it: a rail with a step
+           waiting on a human is still running, and saying otherwise here
+           would contradict the Pause button right beside it. -->
+      {#if attention}
+        <span class="attention" use:tooltip={attentionTitle}>
+          {#if attention === "asking"}
+            <MessageCircleQuestionMark size={11} />
+          {:else}
+            <CirclePause size={11} />
+          {/if}
+          needs you
+        </span>
+      {/if}
       {#if railState === "running"}
         <IconButton icon={Pause} label="Pause" onclick={onPause} />
       {:else}
@@ -277,6 +319,8 @@
               {placed}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
+              attention={attentions.get(step.id) ?? null}
+              {doneColumnName}
               badges={numbersForStep(numbered, step.id)}
               severity={severityForStep(numbered, step.id)}
               onRetry={() => onRetryStep(step.id)}
@@ -302,6 +346,8 @@
               toolParams={stepParams(step)}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
+              attention={attentions.get(step.id) ?? null}
+              {doneColumnName}
               badges={numbersForStep(numbered, step.id)}
               severity={severityForStep(numbered, step.id)}
               onRetry={() => onRetryStep(step.id)}
@@ -386,6 +432,16 @@
     color: var(--accent-text);
   }
   .state.paused {
+    color: var(--warning-text);
+  }
+  /* Warning tone, matching the chip ring it summarises. A running rail
+     keeps its accent-coloured state word: this qualifies that word, it
+     does not replace it. */
+  .attention {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
     color: var(--warning-text);
   }
   .rail-badge {
