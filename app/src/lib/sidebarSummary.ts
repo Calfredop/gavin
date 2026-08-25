@@ -126,6 +126,53 @@ export function kanbanSummary(board: Board | undefined, tree: GavinTree | undefi
   return { todo, inProgress, done, total: summary.totalCards, columns };
 }
 
+export type ColumnTone = "todo" | "progress" | "done";
+
+export interface KanbanColumnChip {
+  /// The column's full name, for the label and the tooltip -- the strip
+  /// itself only has room for the initials.
+  name: string;
+  initials: string;
+  tone: ColumnTone;
+  count: number;
+}
+
+/// A column name reduced to what a 200px row can draw: the first letter
+/// of each word, upper-cased. Capped at three, so one long name
+/// ("waiting on review from someone") cannot eat the whole strip on its
+/// own -- the full name is a hover away in cardRecapTip either way. A
+/// name with no letters or digits in it at all still gets a slot rather
+/// than a blank, which would read as a rendering fault rather than as a
+/// column the human named oddly.
+function columnInitials(name: string): string {
+  const words = name.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  return words
+    .slice(0, 3)
+    .map((w) => w[0].toUpperCase())
+    .join("");
+}
+
+/// What the board group expands into when it is pointed at: one stat per
+/// column, in the order kanbanSummary already put them -- board order
+/// first, auto columns after -- so the expansion reads left to right the
+/// way the board itself does.
+///
+/// Every column survives, including one standing at zero: this is the
+/// DETAIL view the single total hides, and a board whose shape changed
+/// with how full it happened to be would be worse than the total. The
+/// tone comes off the very slug fold kanbanSummary counts by (the two
+/// permanent ends by slug, everything else in progress by elimination),
+/// so a column's colour can never disagree with the bucket its cards
+/// were tallied into.
+export function kanbanColumnChips(cards: KanbanSummary): KanbanColumnChip[] {
+  return cards.columns.map((column) => {
+    const slug = slugStatus(column.name);
+    const tone: ColumnTone = slug === TODO_SLUG ? "todo" : slug === DONE_SLUG ? "done" : "progress";
+    return { name: column.name, initials: columnInitials(column.name), tone, count: column.count };
+  });
+}
+
 export type RailPhase = "running" | "attention" | "done" | "idle";
 
 /// Which bucket a rail falls in. "attention" means a step of it is

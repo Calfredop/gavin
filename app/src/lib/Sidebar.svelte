@@ -59,6 +59,7 @@
     kanbanSummary,
     railsSummary,
     railStripStats,
+    kanbanColumnChips,
     pageAgentsSummary,
     pageTabRows,
     hasRecap,
@@ -70,6 +71,7 @@
     type PageTabRow,
   } from "./sidebarSummary";
   import { rowLinkedCard, openLinkedCard, type LinkedCard } from "./cardTabLink";
+  import { createHoverIntent } from "./hoverIntent";
   import {
     orchestrations,
     fetchOrchestration,
@@ -214,6 +216,35 @@
     const orch = $orchestrations[ws.id];
     const marks = $stepAttentionsByWorkspace[ws.id];
     return railsSummary(orch, orch && marks ? railsWantingAttention(orch, marks) : new Set());
+  }
+
+  // Pointing AT the board group expands it; crossing the strip on the
+  // way somewhere else must not. 250ms is the whole difference between
+  // the two, and it lives in hoverIntent so the timing is testable --
+  // a delay wired straight into this file would be invisible to every
+  // suite here.
+  const CARDS_EXPAND_DELAY_MS = 250;
+
+  // One id, not a set: there is one pointer, so at most one workspace's
+  // board group can be expanded at a time.
+  let expandedCards = $state<string | null>(null);
+  const cardsIntent = createHoverIntent(CARDS_EXPAND_DELAY_MS, (key) => {
+    expandedCards = key;
+  });
+  $effect(() => () => cardsIntent.destroy());
+
+  // Mouse focus must NOT expand it: pointerdown has just taken it down
+  // so the click can land on a group that is not moving, and focus
+  // arriving a moment later would put it straight back up. :focus-visible
+  // is exactly the distinction, and an engine too old to parse it simply
+  // does not expand on focus -- the button's aria-label still names
+  // every column, which is the path that actually matters here.
+  function focusExpandsCards(el: Element, ws: Workspace): void {
+    try {
+      if (el.matches(":focus-visible")) cardsIntent.focusNow(ws.id);
+    } catch {
+      // no :focus-visible support -- leave it to the label
+    }
   }
 
   // A page's own half of the recap: what it holds, rather than what the
@@ -722,7 +753,7 @@
          is something to count -- an all-zero strip is noise, not a
          recap. -->
     {#if hasRecap(git, cards, rails)}
-      <div class="recap-row">
+      <div class="recap-row" class:cards-expanded={expandedCards === ws.id}>
         {#if showGitChip(git)}
           <button
             class="recap-group git"
@@ -730,35 +761,57 @@
             use:tooltip={gitRecapTip(git)}
             onclick={() => openHubView(ws, "git")}
           >
-            {#if git.committing}
-              <span class="commit-spinner" aria-hidden="true"></span>
-            {:else}
-              <GitBranch size={11} />
-            {/if}
-            {#if git.repoCount > 0}<span class="recap-count">{git.repoCount}</span>{/if}
-            {#if git.dirtyCount > 0}
-              <span class="git-dot dirty"></span>
-              <span class="recap-count">{git.dirtyCount}</span>
-            {/if}
-            {#if git.ahead > 0}<span class="recap-delta">&uarr;{git.ahead}</span>{/if}
-            {#if git.behind > 0}<span class="recap-delta">&darr;{git.behind}</span>{/if}
+            <span class="recap-body">
+              {#if git.committing}
+                <span class="commit-spinner" aria-hidden="true"></span>
+              {:else}
+                <GitBranch size={11} />
+              {/if}
+              {#if git.repoCount > 0}<span class="recap-count">{git.repoCount}</span>{/if}
+              {#if git.dirtyCount > 0}
+                <span class="git-dot dirty"></span>
+                <span class="recap-count">{git.dirtyCount}</span>
+              {/if}
+              {#if git.ahead > 0}<span class="recap-delta">&uarr;{git.ahead}</span>{/if}
+              {#if git.behind > 0}<span class="recap-delta">&darr;{git.behind}</span>{/if}
+            </span>
           </button>
         {/if}
-        <!-- One number: how many cards the board holds. The to-do /
-             doing / done split it used to draw was three bare digits
-             with nothing to tell them apart, and it was the widest thing
-             on a strip that has to fit 200px. cardRecapTip still names
-             every column with its own count, which is strictly more than
-             the split ever showed. -->
+        <!-- At rest, one number: how many cards the board holds. Point
+             at it and the group takes the whole strip -- the other two
+             stand down -- to spell the board out column by column, which
+             is the detail the total is standing in for. The initials and
+             the tone both come from kanbanColumnChips, off the same fold
+             the tally itself was counted by. aria-hidden because the
+             button's own label (cardRecapTip) already names every column
+             in full, and a screen reader should hear that once. -->
         {#if cards.total > 0}
           <button
             class="recap-group cards"
             aria-label={cardRecapTip(cards)}
             use:tooltip={cardRecapTip(cards)}
             onclick={() => openHubView(ws, "kanban")}
+            onmouseenter={() => cardsIntent.enter(ws.id)}
+            onmouseleave={() => cardsIntent.leave()}
+            onfocus={(e) => focusExpandsCards(e.currentTarget, ws)}
+            onblur={() => cardsIntent.leave()}
+            onpointerdown={() => cardsIntent.leave()}
           >
-            <Kanban size={11} />
-            <span class="recap-count">{cards.total}</span>
+            <span class="recap-body">
+              <Kanban size={11} />
+              <span class="card-total recap-count">{cards.total}</span>
+              <span class="card-cols" aria-hidden="true">
+                <!-- Deliberately unkeyed: these carry no state and nothing
+                     animates, and a board holding two columns of the same
+                     name would make a keyed each throw outright. -->
+                {#each kanbanColumnChips(cards) as column}
+                  <span class="card-col {column.tone}">
+                    <span class="col-initials">{column.initials}</span>
+                    <span class="recap-count">{column.count}</span>
+                  </span>
+                {/each}
+              </span>
+            </span>
           </button>
         {/if}
         <!-- At most two stats, chosen by railStripStats: what is active
@@ -773,20 +826,22 @@
             use:tooltip={railRecapTip(rails)}
             onclick={() => openHubView(ws, "orchestration")}
           >
-            {#each railStripStats(rails) as key (key)}
-              <span class="rail-stat {key}">
-                {#if key === "running"}
-                  <Play size={10} />
-                {:else if key === "attention"}
-                  <MessageCircleQuestionMark size={10} />
-                {:else if key === "done"}
-                  <Check size={10} />
-                {:else}
-                  <CircleDashed size={10} />
-                {/if}
-                <span class="recap-count">{rails[key]}</span>
-              </span>
-            {/each}
+            <span class="recap-body">
+              {#each railStripStats(rails) as key (key)}
+                <span class="rail-stat {key}">
+                  {#if key === "running"}
+                    <Play size={10} />
+                  {:else if key === "attention"}
+                    <MessageCircleQuestionMark size={10} />
+                  {:else if key === "done"}
+                    <Check size={10} />
+                  {:else}
+                    <CircleDashed size={10} />
+                  {/if}
+                  <span class="recap-count">{rails[key]}</span>
+                </span>
+              {/each}
+            </span>
           </button>
         {/if}
       </div>
@@ -1345,24 +1400,26 @@
   .recap-row {
     display: flex;
     align-items: center;
-    /* The wide gap is the separator now that no ring is: comfortably
-       more than any group's own 3px, so three runs of digits never read
-       as one. */
-    gap: 2px 10px;
+    gap: 2px 6px;
     /* Kept as a safety net for an unusually wide tally, not as the
-       normal case -- without the rings, their padding and the card
-       split, the strip is some 60px narrower than it was. */
+       normal case -- without the categorical rings and the card split,
+       the strip is a good 50px narrower than it was. */
     flex-wrap: wrap;
-    /* 25px: the page rows' own indent. The groups carry no padding of
-       their own any more, so their icons land on exactly the column the
-       page names below start at. */
-    padding: 2px 8px 2px 25px;
+    /* 21px + the group's own 1px hairline + 3px padding = the 25px the
+       page rows below indent by, so the icons land on exactly the column
+       the page names start at. */
+    padding: 2px 8px 2px 21px;
     color: var(--text-muted);
   }
+  /* The button is a bare hit area and draws nothing. Everything visible
+     -- the hairline, the padding, the fill -- belongs to .recap-body
+     inside it, which always hugs its own content.
+
+     The split exists for the board group's expansion below, and it is
+     what lets the pill stay content-width there without flickering. */
   .recap-group {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
     padding: 0;
     background: transparent;
     border: none;
@@ -1371,17 +1428,112 @@
     font-size: inherit;
     cursor: pointer;
   }
-  /* The whole affordance: the group brightens. No background, no ring,
-     no padding of its own -- so pointing at a group costs zero width and
-     can never reflow the strip out from under the pointer. The tooltip
-     that comes with the hover says the rest. */
+  /* A NEUTRAL hairline -- var(--border), the same one every other
+     divider in the sidebar uses -- not the three categorical hues these
+     carried before. The ring is back to give each group an edge, which
+     is what a run of digits needs to read as three separate things; what
+     is not back is the ring saying something about the group it wraps. */
+  .recap-body {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 3px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
   .recap-group:hover {
     color: var(--text);
   }
+  .recap-group:hover .recap-body {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+  /* On the pill, not the hit area: expanded, the hit area is the whole
+     row, and a focus ring around all of it would say the wrong thing
+     about what is focused. */
   .recap-group:focus-visible {
+    outline: none;
+  }
+  .recap-group:focus-visible .recap-body {
     outline: 1px solid var(--border-focus);
     outline-offset: 1px;
-    border-radius: 3px;
+  }
+  /* Pointing at the board group trades the whole strip for the board's
+     own columns: git and rails stand down, and the group spells out what
+     its one number was standing in for. The strip only ever has room for
+     one of the two, and a board's shape is worth more than a repo tally
+     for exactly as long as you are pointing at it.
+
+     The full width is not cosmetic. The pointer is somewhere inside the
+     COLLAPSED group when the swap fires, and a group that then occupies
+     the entire row is guaranteed to still be under it. Anything narrower
+     can slide out from under the pointer -- the board group sits in the
+     middle, so hiding git moves it left -- which drops the hover,
+     collapses it, restores the hover, and flickers between the two
+     states for as long as you hold still.
+     Driven by a class rather than by :hover directly: the expansion
+     waits 250ms (hoverIntent), so the trigger is a timer's verdict about
+     whether the hover was meant, not the hover itself. Keyboard focus
+     sets the same class with no delay. */
+  .recap-row.cards-expanded .recap-group.git,
+  .recap-row.cards-expanded .recap-group.rails {
+    display: none;
+  }
+  /* Only the HIT AREA spans the row; the pill inside it stays content
+     width and sits CENTRED in it, so the expansion reads as one thing
+     coming forward rather than as the strip sliding to one side.
+
+     They have to be two different boxes, and centring is the reason it
+     is free to be. git vanishes when this fires and git sits to the
+     LEFT, so the group slides left by however wide git was -- up to
+     ~112px of it, against an expanded pill of ~111px. A pill that WAS
+     the hover target would therefore slide out from under the pointer,
+     drop the hover, collapse, regain the hover, and flicker between the
+     two states for as long as you held still. A hit area covering the
+     whole row cannot: wherever the pointer was, it is still inside, and
+     the pill is then free to be drawn anywhere within it. */
+  .recap-row.cards-expanded .recap-group.cards {
+    width: 100%;
+    /* No global border-box in this app, and the row has 29px of padding
+       to clear. */
+    box-sizing: border-box;
+    justify-content: center;
+  }
+  .recap-row.cards-expanded .card-total {
+    display: none;
+  }
+  .card-cols {
+    display: none;
+  }
+  .recap-row.cards-expanded .card-cols {
+    display: inline-flex;
+    align-items: center;
+    /* Wider than the group's own 3px: the gap is what keeps one column's
+       count from reading as the next one's initials. */
+    gap: 7px;
+    /* Three columns clear the row with room to spare and five just fit;
+       a board with more than that takes a second line rather than
+       spilling past the sidebar. Growing DOWNWARD is safe -- the pointer
+       is inside the group and stays inside a taller one. */
+    flex-wrap: wrap;
+  }
+  .card-col {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  /* The name is the label and the number is the answer, so the initials
+     sit back a step and let the count carry the row. */
+  .col-initials {
+    opacity: 0.65;
+  }
+  /* The very tones kanbanSummary buckets by -- to do stays the row's
+     muted default, since "not started" is the absence of news. */
+  .card-col.progress {
+    color: var(--accent-text);
+  }
+  .card-col.done {
+    color: var(--success-text);
   }
   /* Takes the branch glyph's place rather than sitting beside it, so the
      group keeps its width while a run is in flight -- the sidebar is

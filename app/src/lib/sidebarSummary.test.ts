@@ -5,6 +5,7 @@ import {
   railPhase,
   railsSummary,
   railStripStats,
+  kanbanColumnChips,
   hasRecap,
   showGitChip,
   pageAgentsSummary,
@@ -355,6 +356,73 @@ describe("railStripStats", () => {
   // the empty case rather than a bucket to pick from.
   it("returns nothing for a workspace with no rails", () => {
     expect(railStripStats(none)).toEqual([]);
+  });
+});
+
+describe("kanbanColumnChips", () => {
+  function cards(columns: { name: string; count: number }[]) {
+    return { todo: 0, inProgress: 0, done: 0, total: 0, columns };
+  }
+
+  // What the board group expands into when it is hovered: one stat per
+  // column, in the order kanbanSummary already put them (board order,
+  // auto columns after), so the expansion reads left to right the way
+  // the board itself does.
+  it("keeps every column, in the order it was given", () => {
+    const chips = kanbanColumnChips(
+      cards([
+        { name: "To Do", count: 8 },
+        { name: "In Progress", count: 3 },
+        { name: "Done", count: 41 },
+      ])
+    );
+    expect(chips.map((c) => [c.initials, c.count])).toEqual([
+      ["TD", 8],
+      ["IP", 3],
+      ["D", 41],
+    ]);
+  });
+
+  // The expansion is the DETAIL view -- a column standing empty is a
+  // fact about the board, and dropping it would silently change the
+  // board's shape depending on how full it happens to be.
+  it("keeps a column standing at zero", () => {
+    const chips = kanbanColumnChips(cards([{ name: "Done", count: 0 }]));
+    expect(chips).toEqual([{ name: "Done", initials: "D", tone: "done", count: 0 }]);
+  });
+
+  // The same slug matching and the same by-elimination fold kanbanSummary
+  // uses, so the colour a column is drawn in can never disagree with the
+  // bucket its cards were counted into.
+  it("tones the two permanent ends by slug, not spelling", () => {
+    const chips = kanbanColumnChips(cards([{ name: "to do", count: 1 }, { name: "DONE", count: 2 }]));
+    expect(chips.map((c) => c.tone)).toEqual(["todo", "done"]);
+  });
+
+  it("tones a custom column as in progress -- it is neither not-started nor finished", () => {
+    const chips = kanbanColumnChips(cards([{ name: "Blocked", count: 4 }]));
+    expect(chips[0]).toMatchObject({ initials: "B", tone: "progress" });
+  });
+
+  it("initials a name by its words, capped so one column can never eat the row", () => {
+    const chips = kanbanColumnChips(
+      cards([
+        { name: "Code Review", count: 1 },
+        { name: "Phase 2", count: 1 },
+        { name: "waiting-on-review-from-someone", count: 1 },
+      ])
+    );
+    expect(chips.map((c) => c.initials)).toEqual(["CR", "P2", "WOR"]);
+  });
+
+  // A status the human typed that is all punctuation still gets a slot:
+  // it has cards in it, and a blank one would read as a rendering fault.
+  it("falls back to a placeholder for a name with no letters or digits", () => {
+    expect(kanbanColumnChips(cards([{ name: "---", count: 2 }]))[0].initials).toBe("?");
+  });
+
+  it("carries the full name through for the tooltip and the label", () => {
+    expect(kanbanColumnChips(cards([{ name: "In Progress", count: 3 }]))[0].name).toBe("In Progress");
   });
 });
 
