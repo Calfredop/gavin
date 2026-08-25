@@ -123,6 +123,49 @@ mod smoketest_tests {
         assert_eq!(workspaces.len(), 1, "must not duplicate on later launches");
     }
 
+    fn pinned(name: &str) -> Workspace {
+        Workspace {
+            id: crate::config::UNFILED_WORKSPACE_ID.to_string(),
+            name: name.to_string(),
+            pages: vec![],
+            active_page_id: None,
+            active_view: None,
+            hub_view: None,
+            root_path: None,
+            main_session_id: None,
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
+            confirm_tab_close: true,
+            git_view: None,
+        }
+    }
+
+    #[test]
+    fn rename_migrates_the_old_pinned_workspace_name() {
+        let mut workspaces = vec![pinned("Unfiled")];
+        rename_legacy_unfiled(&mut workspaces);
+        assert_eq!(workspaces[0].name, "Scratchpad");
+        assert_eq!(workspaces[0].id, crate::config::UNFILED_WORKSPACE_ID, "the id must never move");
+    }
+
+    #[test]
+    fn rename_leaves_a_hand_picked_pinned_name_alone() {
+        let mut workspaces = vec![pinned("Loose ends")];
+        rename_legacy_unfiled(&mut workspaces);
+        assert_eq!(workspaces[0].name, "Loose ends");
+    }
+
+    #[test]
+    fn rename_ignores_a_regular_workspace_that_happens_to_be_called_unfiled() {
+        let mut ws = pinned("Unfiled");
+        ws.id = "ws-1".to_string();
+        let mut workspaces = vec![ws];
+        rename_legacy_unfiled(&mut workspaces);
+        assert_eq!(workspaces[0].name, "Unfiled");
+    }
+
     #[test]
     fn reconcile_preserves_an_existing_smoketest_workspace_and_its_root() {
         let mut workspaces = vec![Workspace {
@@ -1437,6 +1480,25 @@ mod resolve_workspaces_tests {
 /// below, and spawns a background thread that relays every subsequent daemon
 /// message to the frontend as a Tauri event. Called once from the app's setup
 /// hook.
+/// Renames the pinned workspace from its old label to the current one.
+/// The id never moves (UNFILED_WORKSPACE_ID is what every persisted page
+/// hangs off), so this is purely cosmetic -- but without it an install
+/// that predates the app hub keeps saying "Unfiled" forever, since the
+/// seed above only runs when the workspace is absent entirely.
+///
+/// Guarded on the old name rather than applied unconditionally: a config
+/// whose pinned workspace reads anything else was renamed deliberately,
+/// and that outranks our default.
+fn rename_legacy_unfiled(workspaces: &mut [Workspace]) {
+    for ws in workspaces.iter_mut() {
+        if ws.id == crate::config::UNFILED_WORKSPACE_ID
+            && ws.name == crate::config::LEGACY_UNFILED_WORKSPACE_NAME
+        {
+            ws.name = crate::config::SCRATCHPAD_WORKSPACE_NAME.to_string();
+        }
+    }
+}
+
 /// Dev builds always offer a "Smoke Test" workspace (appended at the end,
 /// preserved if it already exists -- including its bound root); release
 /// builds strip it so a dev config.json can never leak it into prod. It is
@@ -1725,7 +1787,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             0,
             Workspace {
                 id: crate::config::UNFILED_WORKSPACE_ID.to_string(),
-                name: "Unfiled".to_string(),
+                name: crate::config::SCRATCHPAD_WORKSPACE_NAME.to_string(),
                 pages: vec![],
                 active_page_id: None,
                 active_view: None,
@@ -1741,6 +1803,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             },
         );
     }
+    rename_legacy_unfiled(&mut workspaces);
     reconcile_smoketest_workspace(&mut workspaces);
     // D41: take() clears the legacy value, so the next save drops the key
     // from config.json permanently.

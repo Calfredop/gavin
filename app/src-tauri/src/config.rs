@@ -25,6 +25,18 @@ pub struct Page {
 /// (app/src/lib/workspace.ts's UNFILED_WORKSPACE_ID).
 pub const UNFILED_WORKSPACE_ID: &str = "__unfiled__";
 
+/// The pinned workspace's display name. The id above stays "__unfiled__"
+/// forever -- changing it orphans every page in every existing
+/// config.json -- but the label is only a label, and "Scratchpad" says
+/// what the drawer is FOR rather than what its contents are not. Existing
+/// configs are migrated on load by session::rename_legacy_unfiled.
+pub const SCRATCHPAD_WORKSPACE_NAME: &str = "Scratchpad";
+
+/// The name SCRATCHPAD_WORKSPACE_NAME replaced. Only the migration reads
+/// it: a config whose pinned workspace says anything else was renamed by
+/// hand, and a hand-picked name outranks ours.
+pub const LEGACY_UNFILED_WORKSPACE_NAME: &str = "Unfiled";
+
 /// Well-known id for the dev-only "Smoke Test" workspace -- ensured at
 /// bootstrap by debug builds, actively stripped by release builds so a dev
 /// config.json can never leak it into prod. Closable: the next dev launch

@@ -591,7 +591,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Put a comment and a second server in .codex/config.toml first.",
       },
       { id: "wiz-complete", text: "Once all four are done the Home card disappears" },
-      { id: "wiz-unfiled", text: "The Unfiled workspace never offers the wizard" },
+      { id: "wiz-unfiled", text: "The Scratchpad workspace never offers the wizard" },
     ],
   },
   {

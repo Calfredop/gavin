@@ -18,7 +18,7 @@ function owningWorkspace(state: WorkspacesData, sessionId: string): Workspace | 
 }
 
 // Whether this workspace asks before closing a tab. Absent means on, so
-// an existing config.json (and the Unfiled workspace, which nobody has
+// an existing config.json (and the Scratchpad workspace, which nobody
 // visited settings for) gets the safe behaviour.
 function tabCloseConfirmEnabled(state: WorkspacesData, sessionId: string): boolean {
   return owningWorkspace(state, sessionId)?.confirmTabClose ?? true;

@@ -96,7 +96,7 @@ describe("buildWorkspaceMenuEntries", () => {
     const labels = items(buildWorkspaceMenuEntries(ws("w1", [page("p1")], "/r"), hooks())).map((e) => e.label);
     expect(labels).toEqual(["Rename…", "New Page", "Open Root in Finder", "Change Root Folder…", "Close Workspace"]);
   });
-  it("gives Unfiled only New Page", () => {
+  it("gives the Scratchpad only New Page", () => {
     const entries = buildWorkspaceMenuEntries(ws(UNFILED_WORKSPACE_ID, []), hooks());
     expect(items(entries).map((e) => e.label)).toEqual(["New Page"]);
   });

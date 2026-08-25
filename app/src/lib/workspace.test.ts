@@ -176,8 +176,8 @@ describe("removeWorkspace", () => {
     expect(removed.activeWorkspaceId).toBe("ws-1");
   });
 
-  it("is a no-op when targeting the pinned Unfiled workspace", () => {
-    const state = createWorkspace(empty, UNFILED_WORKSPACE_ID, "Unfiled");
+  it("is a no-op when targeting the pinned Scratchpad workspace", () => {
+    const state = createWorkspace(empty, UNFILED_WORKSPACE_ID, "Scratchpad");
     expect(removeWorkspace(state, UNFILED_WORKSPACE_ID)).toEqual(state);
   });
 });
