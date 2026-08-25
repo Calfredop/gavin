@@ -48,6 +48,9 @@ vi.mock("./backend", () => ({
   // Resolved by default: bootstrap calls this best-effort to refill the
   // maps a frontend reload starts blank on.
   getSessionBaselines: vi.fn().mockResolvedValue([]),
+  // Same: the git half of that refill, keyed by the cwds the call above
+  // returned.
+  getGitBaselines: vi.fn().mockResolvedValue([]),
   // Resolved by default: pruneBoardTabs calls .catch() on this.
   setBoardTabs: vi.fn().mockResolvedValue(undefined),
 }));
@@ -1801,6 +1804,70 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
     expect(get(layoutState).status).toBe("ready");
     expect(get(layoutState).cwdBySessionId).toEqual({});
+  });
+
+  // The fourth push-fed map, and the one the sidebar's repo chip, the
+  // page rows' branch lines and the pane's git dot all read. Its baseline
+  // is the same once-per-app-PROCESS Attach, so without this seed every
+  // frontend load after the first shows no git anywhere -- and the
+  // daemon cannot fix it by itself, because GitStatusChanged only fires
+  // when the status actually CHANGES.
+  it("fills the git status the sidebar's repo chip reads", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false },
+      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false },
+    ]);
+    vi.mocked(backend.getGitBaselines).mockResolvedValue([
+      { repoRoot: "/ws", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
+      null,
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).gitStatusById["s-1"]).not.toBeUndefined());
+    const state = get(layoutState);
+    expect(state.gitStatusById["s-1"]).toEqual({
+      repoRoot: "/ws",
+      branch: "main",
+      dirty: true,
+      ahead: 2,
+      behind: 0,
+      hasUpstream: true,
+    });
+    // Asked about the very cwds the session baselines reported, in order.
+    expect(backend.getGitBaselines).toHaveBeenCalledWith(["/ws/auth", "/elsewhere"]);
+    // A session outside any repo is recorded as null, not left absent:
+    // "checked, no repo" is a real answer and must not be re-asked.
+    expect(state.gitStatusById["s-2"]).toBeNull();
+  });
+
+  it("never overwrites a git push that already landed", async () => {
+    const live = { repoRoot: "/ws", branch: "live", dirty: false, ahead: 0, behind: 0, hasUpstream: false };
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false },
+    ]);
+    vi.mocked(backend.getGitBaselines).mockImplementation(async () => {
+      handleGitStatusChanged("s-1", live);
+      return [{ repoRoot: "/ws", branch: "stale", dirty: true, ahead: 9, behind: 9, hasUpstream: true }];
+    });
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).gitStatusById["s-1"]).toEqual(live));
+  });
+
+  // Not fatal, and never blocks the cwd/status seed it rides along with:
+  // git can be missing, slow, or refuse a repo outright.
+  it("keeps the cwd seed when the git half fails", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false },
+    ]);
+    vi.mocked(backend.getGitBaselines).mockRejectedValue(new Error("git was not found on PATH"));
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).cwdBySessionId["s-1"]).toBe("/ws"));
+    expect(get(layoutState).gitStatusById).toEqual({});
   });
 });
 

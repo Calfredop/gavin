@@ -118,6 +118,7 @@ pub fn run() {
             agent_setup::compose_agent_prompt,
             git::git_repo_info,
             git::git_status,
+            git::get_git_baselines,
             git::git_diff,
             git::git_stage_files,
             git::git_unstage_files,

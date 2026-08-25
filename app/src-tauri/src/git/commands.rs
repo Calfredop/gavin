@@ -604,6 +604,23 @@ pub fn git_status(cwd: String) -> Result<StatusResult, String> {
     status(&cwd)
 }
 
+/// The git half of what a reloaded frontend has to read back rather
+/// than wait for a push to bring (see `git::baseline`). One answer per
+/// cwd, in order, so the caller zips it onto the session ids the cwds
+/// came from; `null` means "checked, not in a repo".
+///
+/// `async` + `spawn_blocking` rather than a plain sync command like its
+/// neighbours here: this one runs on the app's load path, where a
+/// `git status` over a large dirty checkout must not hold the main
+/// thread through the first paint. Same shape `git::ops` uses for its
+/// own long-running calls.
+#[tauri::command]
+pub async fn get_git_baselines(cwds: Vec<String>) -> Result<Vec<Option<protocol::GitStatus>>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::git::baseline::git_baselines(&cwds))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn git_diff(cwd: String, path: String, old_path: Option<String>, staged: bool, untracked: bool, rev: Option<String>) -> Result<FileDiff, String> {
     diff_at(&cwd, &path, old_path.as_deref(), staged, untracked, rev.as_deref())

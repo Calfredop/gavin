@@ -741,6 +741,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Visible from any hub tab, including a workspace with no repo counted yet.",
       },
       {
+        id: "git-chip-survives-reload",
+        text: "The sidebar's workspace git chip is still there after ⌘R — repo count, dirty dot and ↑/↓ all back",
+        hint: "The chip's numbers only ever arrived as a change-only push baselined on the app's ONE Attach, so before the read-back seed a reload emptied it and nothing refilled it until the repo itself changed. Check the page rows' branch lines and the pane's git dot in the same pass.",
+      },
+      {
         id: "git-agent-commit-hub-tab",
         text: "The hub's own “Git” tab spins in place of its branch icon while a run is going — visible from Kanban, PRD, any tab",
         hint: "The tab row must not shift as the spinner replaces the icon; no other hub tab reacts.",

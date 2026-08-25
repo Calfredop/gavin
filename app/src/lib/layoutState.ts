@@ -371,21 +371,34 @@ async function loadTabMaps(): Promise<void> {
 
 /// Refills what the frontend only ever learns from daemon pushes.
 ///
-/// `cwdBySessionId`, `sessionStatusById` and `restoredSessionIds` are fed
-/// by the `cwd-changed` / `session-status-changed` / `session-restored`
+/// `cwdBySessionId`, `sessionStatusById`, `restoredSessionIds` and
+/// `gitStatusById` are fed by the `cwd-changed` /
+/// `session-status-changed` / `session-restored` / `git-status-changed`
 /// events, whose baseline the daemon sends in reply to `Attach` -- and
 /// `Attach` runs once per app PROCESS (session::attach_and_relay), not
 /// once per frontend load. So a reloaded frontend starts blank on all
-/// three and cannot refill them until the shell emits another OSC 7: the
+/// four and cannot refill them until the shell emits another OSC 7: the
 /// terminal's tab loses its cwd-derived label, its status dot, and its
 /// "open this context's board" button until the next prompt. Under
 /// `tauri dev` that is every frontend edit.
 ///
+/// Git is the worst of the four, and the reason this does two round
+/// trips instead of one. The other three come back on the session's next
+/// prompt; `git-status-changed` is change-only by design (see the
+/// daemon's `trigger_recheck`), so once a repo root's poller has cached
+/// a status, NOTHING re-sends it until the repo itself changes -- and a
+/// checkout that is already dirty stays byte-identical through a day of
+/// editing. The chip, the page rows' branch lines and the pane's dot
+/// simply stay gone. Its answer comes from the host's own git rather
+/// than a new daemon request, so a daemon a build behind still gets it.
+///
 /// Never overwrites a value already in the store: a push that has landed
-/// is newer than this snapshot. Status is written straight into the map
-/// rather than through handleSessionStatusChanged -- re-reading a state
-/// the human has already seen is not a transition, and must not fire an
-/// OS notification for it.
+/// is newer than this snapshot. `undefined` is the test, not falsiness --
+/// a landed `null` means "this session is in no repo", which is an answer
+/// and must not be overwritten either. Status is written straight into
+/// the map rather than through handleSessionStatusChanged -- re-reading a
+/// state the human has already seen is not a transition, and must not
+/// fire an OS notification for it.
 async function seedSessionBaselines(): Promise<void> {
   // Same wait loadTabMaps satisfies: once those maps have come back, the
   // Rust side has managed CommandConnection too.
@@ -407,6 +420,19 @@ async function seedSessionBaselines(): Promise<void> {
       if (b.restored) restoredSessionIds.add(b.id);
     }
     return { ...s, sessionStatusById, restoredSessionIds };
+  });
+  // Last, and awaited separately: this one shells out to git once per
+  // distinct checkout, so it must never hold up the three maps above --
+  // those are what the tab labels paint from.
+  const gitStatuses = await backend.getGitBaselines(baselines.map((b) => b.cwd)).catch(() => null);
+  if (!gitStatuses) return;
+  layoutState.update((s) => {
+    const gitStatusById = { ...s.gitStatusById };
+    baselines.forEach((b, i) => {
+      const status = gitStatuses[i];
+      if (status !== undefined && gitStatusById[b.id] === undefined) gitStatusById[b.id] = status;
+    });
+    return { ...s, gitStatusById };
   });
 }
 

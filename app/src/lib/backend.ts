@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Workspace, WorkspacesData } from "./workspace";
+import type { GitStatus, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
@@ -181,6 +181,16 @@ export interface SessionBaseline {
 // them back; see the Rust command's own doc comment.
 export function getSessionBaselines(): Promise<SessionBaseline[]> {
   return invoke("get_session_baselines");
+}
+
+/// The git half of the same read-back, one answer per cwd in the order
+/// given -- `null` for a cwd inside no repository. Answered by the host
+/// itself rather than the daemon, because GitStatusChanged is both
+/// baselined on Attach (once per app PROCESS) and change-only after
+/// that: nothing re-sends a status the repo has not altered. See the
+/// Rust module's own doc comment.
+export function getGitBaselines(cwds: string[]): Promise<(GitStatus | null)[]> {
+  return invoke("get_git_baselines", { cwds });
 }
 
 export function setBoardTabs(boardTabs: Record<string, BoardTab>): Promise<void> {
