@@ -214,6 +214,57 @@ export function pageAgentsSummary(page: Page, state: PageTabState): PageAgentsSu
   };
 }
 
+export interface WorkspaceAgentsSummary extends PageAgentsSummary {
+  /// How many pages were summed. The hub row's "4 pages" comes from
+  /// here rather than from ws.pages.length so the count and the tallies
+  /// beside it are one walk of one list.
+  pages: number;
+}
+
+/// A whole workspace's tab and agent tally: pageAgentsSummary over every
+/// page, plus the main agent session, which lives OUTSIDE every page
+/// tree (D12).
+///
+/// Built by summing the per-page function rather than by re-walking the
+/// layouts, so a hub row's "2 running · 4 pages" can never disagree with
+/// the per-page recap the sidebar shows directly underneath it -- the
+/// two are the same arithmetic over the same projection.
+///
+/// The main session is folded in as a tab and an agent of its own,
+/// bucketed by the same status rule pageAgentsSummary uses (no status
+/// recorded yet counts as idle), which keeps `running + waiting + idle
+/// === agents` true for the workspace exactly as it is for a page. It is
+/// counted once even if a page also happens to reference it: a workspace
+/// with one agent must not read as two.
+export function workspaceAgentsSummary(ws: Workspace, state: PageTabState): WorkspaceAgentsSummary {
+  const total: WorkspaceAgentsSummary = {
+    pages: ws.pages.length,
+    tabs: 0,
+    agents: 0,
+    running: 0,
+    waiting: 0,
+    idle: 0,
+  };
+  for (const page of ws.pages) {
+    const summary = pageAgentsSummary(page, state);
+    total.tabs += summary.tabs;
+    total.agents += summary.agents;
+    total.running += summary.running;
+    total.waiting += summary.waiting;
+    total.idle += summary.idle;
+  }
+  const main = ws.mainSessionId;
+  if (main && !ws.pages.some((p) => allSessionIds(p.layout).includes(main))) {
+    total.tabs += 1;
+    total.agents += 1;
+    const status = state.sessionStatusById[main];
+    if (status === "working") total.running += 1;
+    else if (status === "waiting_for_input") total.waiting += 1;
+    else total.idle += 1;
+  }
+  return total;
+}
+
 export type PageTabKind = "session" | "file" | "board";
 
 export interface PageTabRow {

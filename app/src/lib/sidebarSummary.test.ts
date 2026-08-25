@@ -7,6 +7,7 @@ import {
   hasRecap,
   showGitChip,
   pageAgentsSummary,
+  workspaceAgentsSummary,
   pageTabRows,
 } from "./sidebarSummary";
 import type { PageTabState } from "./sidebarSummary";
@@ -431,6 +432,95 @@ describe("pageAgentsSummary", () => {
       sessionStatusById: { a: "working", b: "waiting_for_input", c: "idle" },
     });
     const summary = pageAgentsSummary(page("p1", leaf(["a", "b", "c", "d", "f"])), state);
+    expect(summary.running + summary.waiting + summary.idle).toBe(summary.agents);
+    expect(summary.agents).toBeLessThan(summary.tabs);
+  });
+});
+
+describe("workspaceAgentsSummary", () => {
+  it("counts nothing for a workspace with no pages", () => {
+    expect(workspaceAgentsSummary(workspace([]), tabState())).toEqual({
+      pages: 0,
+      tabs: 0,
+      agents: 0,
+      running: 0,
+      waiting: 0,
+      idle: 0,
+    });
+  });
+
+  it("sums every page's tally and reports how many pages it summed", () => {
+    const state = tabState({
+      sessionStatusById: { a: "working", b: "waiting_for_input", c: "working", d: "idle" },
+    });
+    const ws = workspace([page("p1", leaf(["a", "b"])), page("p2", leaf(["c", "d"]))]);
+    expect(workspaceAgentsSummary(ws, state)).toEqual({
+      pages: 2,
+      tabs: 4,
+      agents: 4,
+      running: 2,
+      waiting: 1,
+      idle: 1,
+    });
+  });
+
+  it("agrees exactly with the per-page recaps it is built from", () => {
+    const state = tabState({
+      fileTabsById: { f: { path: "/ws/README.md" } },
+      sessionStatusById: { a: "working", c: "waiting_for_input" },
+    });
+    const pages = [page("p1", leaf(["a", "f"])), page("p2", split([leaf(["b"]), leaf(["c"])]))];
+    const total = workspaceAgentsSummary(workspace(pages), state);
+    const perPage = pages.map((p) => pageAgentsSummary(p, state));
+    for (const key of ["tabs", "agents", "running", "waiting", "idle"] as const) {
+      expect(total[key]).toBe(perPage.reduce((sum, s) => sum + s[key], 0));
+    }
+  });
+
+  it("folds in the main agent session, which sits outside every page tree", () => {
+    const state = tabState({ sessionStatusById: { main: "working" } });
+    const ws = workspace([page("p1", leaf(["a"]))], { mainSessionId: "main" });
+    expect(workspaceAgentsSummary(ws, state)).toEqual({
+      pages: 1,
+      tabs: 2,
+      agents: 2,
+      running: 1,
+      waiting: 0,
+      idle: 1,
+    });
+  });
+
+  it("counts a main session that has never reported in as idle", () => {
+    const ws = workspace([], { mainSessionId: "main" });
+    expect(workspaceAgentsSummary(ws, tabState())).toMatchObject({ agents: 1, running: 0, idle: 1 });
+  });
+
+  it("counts a main session waiting for input in its own bucket", () => {
+    const state = tabState({ sessionStatusById: { main: "waiting_for_input" } });
+    const ws = workspace([], { mainSessionId: "main" });
+    expect(workspaceAgentsSummary(ws, state)).toMatchObject({ agents: 1, running: 0, waiting: 1, idle: 0 });
+  });
+
+  it("counts a main session that also sits on a page exactly once", () => {
+    const state = tabState({ sessionStatusById: { main: "working" } });
+    const ws = workspace([page("p1", leaf(["main"]))], { mainSessionId: "main" });
+    expect(workspaceAgentsSummary(ws, state)).toEqual({
+      pages: 1,
+      tabs: 1,
+      agents: 1,
+      running: 1,
+      waiting: 0,
+      idle: 0,
+    });
+  });
+
+  it("splits the agents exactly three ways, main session included", () => {
+    const state = tabState({
+      fileTabsById: { f: { path: "/ws/README.md" } },
+      sessionStatusById: { a: "working", b: "waiting_for_input" },
+    });
+    const ws = workspace([page("p1", leaf(["a", "b", "c", "f"]))], { mainSessionId: "main" });
+    const summary = workspaceAgentsSummary(ws, state);
     expect(summary.running + summary.waiting + summary.idle).toBe(summary.agents);
     expect(summary.agents).toBeLessThan(summary.tabs);
   });
