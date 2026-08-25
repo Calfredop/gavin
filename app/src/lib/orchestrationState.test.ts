@@ -146,6 +146,10 @@ import {
   stepAttentionsByWorkspace,
   railStatusVoice,
   makeStageSequentialAction,
+  setStageModeAction,
+  renameStageAction,
+  moveStageToIndexAction,
+  ungroupStageAction,
   __resetForTesting,
 } from "./orchestrationState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "./orchestration";
@@ -1049,7 +1053,7 @@ describe("dropping onto a running stage", () => {
   });
 
   it("starts a card dropped onto the stage the rail is running", async () => {
-    expect(await addStepToStageAction("ws-1", "s1", "/x/b.md")).toBeNull();
+    expect(await addStepToStageAction("ws-1", "s1", "/x/b.md", 2)).toBeNull();
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
       "ws-1",
       "p1",
@@ -1068,14 +1072,14 @@ describe("dropping onto a running stage", () => {
   // The sibling was already running when the drop landed; re-running the
   // scheduler must not spawn a second session for it.
   it("leaves the step already running on that stage alone", async () => {
-    await addStepToStageAction("ws-1", "s1", "/x/b.md");
+    await addStepToStageAction("ws-1", "s1", "/x/b.md", 2);
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledTimes(1);
     expect(backend.setStepRun).not.toHaveBeenCalledWith("t1", expect.anything(), expect.anything(), expect.anything());
   });
 
   it("starts a tool dropped onto that stage the same way", async () => {
     toolRecords.set({ "ws-1": [] });
-    expect(await addToolToStageAction("ws-1", "s1", "builtin:push")).toBeNull();
+    expect(await addToolToStageAction("ws-1", "s1", "builtin:push", 2)).toBeNull();
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
       "ws-1",
       "p1",
@@ -1087,7 +1091,7 @@ describe("dropping onto a running stage", () => {
   // Same gesture, same rule: a queued step dragged onto the live stage is
   // now part of the beat in flight.
   it("starts a step moved onto that stage from a later one", async () => {
-    expect(await moveStepIntoStageAction("ws-1", "t2", "s1")).toBeNull();
+    expect(await moveStepIntoStageAction("ws-1", "t2", "s1", 2)).toBeNull();
     expect(backend.setStepRun).toHaveBeenCalledWith("t2", "running", "sess-9", null);
   });
 
@@ -1098,7 +1102,7 @@ describe("dropping onto a running stage", () => {
   });
 
   it("does not start a card dropped onto a stage the rail has not reached", async () => {
-    await addStepToStageAction("ws-1", "s2", "/x/b.md");
+    await addStepToStageAction("ws-1", "s2", "/x/b.md", 1);
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
 
@@ -1107,7 +1111,7 @@ describe("dropping onto a running stage", () => {
   it("does not start a card dropped onto the stage a PAUSED rail is parked on", async () => {
     await setRailRunAction("ws-1", "r1", "paused", "s1");
     vi.mocked(layoutStateModule.createSessionOnPage).mockClear();
-    await addStepToStageAction("ws-1", "s1", "/x/b.md");
+    await addStepToStageAction("ws-1", "s1", "/x/b.md", 2);
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
 
@@ -1115,8 +1119,134 @@ describe("dropping onto a running stage", () => {
   // start and the scheduler must not be handed the rolled-back plan.
   it("starts nothing when the drop failed to save", async () => {
     vi.mocked(backend.setOrchestration).mockRejectedValue(new Error("nope"));
-    expect(await addStepToStageAction("ws-1", "s1", "/x/b.md")).toContain("nope");
+    expect(await addStepToStageAction("ws-1", "s1", "/x/b.md", 2)).toContain("nope");
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+});
+
+/// A rail mid-run on a SEQUENCE group of one member -- t1 running, s1's
+/// own mode already "sequence". Distinct from midRunRail (parallel, two
+/// members already inert): this is what "queued behind a running one"
+/// needs to exercise the sequence branch of nextActions (G4) rather than
+/// the parallel branch the tests above cover.
+function midRunSequenceGroup(): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        pageId: "p1",
+        stages: [
+          {
+            id: "s1",
+            position: 0,
+            mode: "sequence",
+            steps: [{ id: "t1", position: 0, cardPath: "/x/a.md" }],
+          },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+  };
+}
+
+describe("dropping onto a running sequence group", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Ship the UI\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(backend.getOrchestration).mockResolvedValue(midRunSequenceGroup());
+    await fetchOrchestration("ws-1");
+  });
+
+  // startIfStageRunning ticks; the tick must decline to launch a member
+  // queued behind one still running in a SEQUENCE group (G4) -- the drop
+  // is correctly inert until the member ahead of it finishes. Asserted
+  // against layoutState.createSessionOnPage, the actual launch path this
+  // tick would take (see executeLaunch): backend.createSession sits
+  // underneath the REAL createSessionOnPage, which this file replaces
+  // wholesale, so it is never reachable from here and would prove
+  // nothing about whether the launch was attempted.
+  it("a member queued behind a running one does not start on drop", async () => {
+    await addStepToStageAction("ws-1", "s1", "/x/c.md", 1);
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+});
+
+describe("group actions", () => {
+  beforeEach(() => {
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    orchestrations.set({
+      "ws-1": {
+        ...emptyOrchestration(),
+        rails: [
+          {
+            id: "r1",
+            name: "backend",
+            position: 0,
+            worktreePath: "/x/wt",
+            pageId: "p1",
+            stages: [
+              {
+                id: "s1",
+                position: 0,
+                mode: "sequence",
+                steps: [
+                  { id: "t1", position: 0, cardPath: "/x/a.md" },
+                  { id: "t2", position: 1, cardPath: "/x/b.md" },
+                ],
+              },
+            ],
+          },
+          { id: "r2", name: "frontend", position: 1, worktreePath: "/y/wt", pageId: "p2", stages: [] },
+        ],
+      },
+    });
+  });
+
+  it("setStageModeAction persists the flip", async () => {
+    expect(await setStageModeAction("ws-1", "s1", "parallel")).toBeNull();
+    expect(stageMode(findStage(get(orchestrations)["ws-1"], "s1") as Stage)).toBe("parallel");
+  });
+
+  it("renameStageAction persists a name and clears it", async () => {
+    await renameStageAction("ws-1", "s1", "Merge and push");
+    expect(findStage(get(orchestrations)["ws-1"], "s1")?.name).toBe("Merge and push");
+    await renameStageAction("ws-1", "s1", null);
+    expect(findStage(get(orchestrations)["ws-1"], "s1")?.name).toBeNull();
+  });
+
+  it("moveStageToIndexAction moves the group and its run state", async () => {
+    await moveStageToIndexAction("ws-1", "s1", "r2", 0);
+    const o = get(orchestrations)["ws-1"];
+    expect(o.rails.find((r) => r.id === "r2")?.stages[0].id).toBe("s1");
+  });
+
+  it("ungroupStageAction leaves one stage per step", async () => {
+    await ungroupStageAction("ws-1", "s1");
+    expect(get(orchestrations)["ws-1"].rails[0].stages).toHaveLength(2);
+  });
+
+  it("addStepToStageAction inserts at the given index", async () => {
+    await addStepToStageAction("ws-1", "s1", "/x/c.md", 0);
+    const stage = findStage(get(orchestrations)["ws-1"], "s1") as Stage;
+    expect(stage.steps[0].cardPath).toBe("/x/c.md");
   });
 });
 

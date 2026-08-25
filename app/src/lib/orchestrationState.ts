@@ -18,7 +18,6 @@ import {
   bindRail,
   deleteRail,
   addStage,
-  findStage,
   addStep,
   addToolStep,
   removeStep,
@@ -31,6 +30,9 @@ import {
   moveStepToNewStage,
   splitStageIntoSequence,
   setStageMode,
+  renameStage,
+  moveStageToIndex,
+  removeStage,
   isToolStep,
   stepParams,
   findCardPlacement,
@@ -43,7 +45,16 @@ import {
   stepAttentions,
   findStep,
 } from "./orchestration";
-import type { Action, Orchestration, Rail, RailState, StepAttention, StepState, Step } from "./orchestration";
+import type {
+  Action,
+  Orchestration,
+  Rail,
+  RailState,
+  StageMode,
+  StepAttention,
+  StepState,
+  Step,
+} from "./orchestration";
 import { findTool, resolveToolBody } from "./orchestrationTools";
 import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
@@ -809,21 +820,60 @@ export function addStepAsStageAction(workspaceId: string, railId: string, cardPa
   });
 }
 
-/// The JOIN drop: the card joins an existing stage, forming a sequence
-/// group if that stage held one step (grouping spec G3). If that stage is
-/// the one its rail is running right now, the card starts immediately --
-/// see startIfStageRunning.
+/// The GROUPING drop: the card joins an existing stage at `index`,
+/// making it a sequence group if it held one step. If that stage is the
+/// one its rail is running right now, the card starts immediately --
+/// unless the group is sequential and something ahead of it is still
+/// running, in which case the tick correctly leaves it queued.
 export async function addStepToStageAction(
   workspaceId: string,
   stageId: string,
-  cardPath: string
+  cardPath: string,
+  index: number
 ): Promise<string | null> {
-  const error = await mutatePlan(workspaceId, (o) =>
-    // Task 7 makes this index meaningful (drop position); until then, append.
-    addStep(o, stageId, crypto.randomUUID(), cardPath, findStage(o, stageId)?.steps.length ?? 0)
-  );
+  const error = await mutatePlan(workspaceId, (o) => addStep(o, stageId, crypto.randomUUID(), cardPath, index));
   if (!error) await startIfStageRunning(workspaceId, stageId);
   return error;
+}
+
+export function setStageModeAction(
+  workspaceId: string,
+  stageId: string,
+  mode: StageMode
+): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => setStageMode(o, stageId, mode));
+}
+
+export function renameStageAction(
+  workspaceId: string,
+  stageId: string,
+  name: string | null
+): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => renameStage(o, stageId, name));
+}
+
+/// Moving a whole group. Nothing to start afterwards: a group that lands
+/// on a running rail is a later beat unless it IS the current stage, and
+/// it cannot be -- the rail was running a stage this move did not touch.
+export function moveStageToIndexAction(
+  workspaceId: string,
+  stageId: string,
+  railId: string,
+  index: number
+): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => moveStageToIndex(o, stageId, railId, index));
+}
+
+/// Drops the group and every step it held. The cards are untouched: only
+/// the steps that pointed at them leave.
+export function removeStageAction(workspaceId: string, stageId: string): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => removeStage(o, stageId));
+}
+
+/// One stage per member, in order -- the deliberate destruction of a
+/// group, as opposed to the conflict repair, which keeps it whole.
+export function ungroupStageAction(workspaceId: string, stageId: string): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => splitStageIntoSequence(o, stageId));
 }
 
 /// A step dropped onto the stage a rail is CURRENTLY running belongs to a
@@ -855,12 +905,10 @@ export function removeStepAction(workspaceId: string, stepId: string): Promise<s
 export async function moveStepIntoStageAction(
   workspaceId: string,
   stepId: string,
-  stageId: string
+  stageId: string,
+  index: number
 ): Promise<string | null> {
-  const error = await mutatePlan(workspaceId, (o) =>
-    // Task 7 makes this index meaningful (drop position); until then, append.
-    moveStepIntoStage(o, stepId, stageId, findStage(o, stageId)?.steps.length ?? 0)
-  );
+  const error = await mutatePlan(workspaceId, (o) => moveStepIntoStage(o, stepId, stageId, index));
   if (!error) await startIfStageRunning(workspaceId, stageId);
   return error;
 }
@@ -1019,12 +1067,10 @@ export function addToolAsStageAction(
 export async function addToolToStageAction(
   workspaceId: string,
   stageId: string,
-  toolId: string
+  toolId: string,
+  index: number
 ): Promise<string | null> {
-  const error = await mutatePlan(workspaceId, (o) =>
-    // Task 7 makes this index meaningful (drop position); until then, append.
-    addToolStep(o, stageId, crypto.randomUUID(), toolId, findStage(o, stageId)?.steps.length ?? 0)
-  );
+  const error = await mutatePlan(workspaceId, (o) => addToolStep(o, stageId, crypto.randomUUID(), toolId, index));
   if (!error) await startIfStageRunning(workspaceId, stageId);
   return error;
 }
