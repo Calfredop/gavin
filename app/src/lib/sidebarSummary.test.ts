@@ -4,6 +4,7 @@ import {
   kanbanSummary,
   railPhase,
   railsSummary,
+  railStripStats,
   hasRecap,
   showGitChip,
   pageAgentsSummary,
@@ -305,6 +306,55 @@ describe("railsSummary", () => {
     const r = rail("r1", [stage("s1", 0, [step("st1", 0)])]);
     const orch = orchestration({ rails: [r] });
     expect(railsSummary(orch, new Set(["elsewhere"]))).toMatchObject({ attention: 0, idle: 1 });
+  });
+});
+
+describe("railStripStats", () => {
+  const none = { running: 0, attention: 0, done: 0, idle: 0, total: 0 };
+
+  // The strip is one line in a 200px sidebar. Four stats never fit
+  // beside a git and a cards group, so the rails group answers ONE
+  // question at a time: what is going on, or -- when nothing is --
+  // what is there. The tooltip still names all four buckets.
+  it("shows the active pair when something is running", () => {
+    expect(railStripStats({ ...none, running: 2, done: 3, idle: 1, total: 6 })).toEqual(["running"]);
+  });
+
+  it("shows both active stats when a rail also wants a human", () => {
+    expect(railStripStats({ ...none, running: 2, attention: 1, done: 3, total: 6 })).toEqual([
+      "running",
+      "attention",
+    ]);
+  });
+
+  // Attention alone still counts as active: it is the loudest thing the
+  // recap can say, and burying it behind a done tally is how a human
+  // misses the rail that is waiting on them.
+  it("shows attention alone when nothing else is running", () => {
+    expect(railStripStats({ ...none, attention: 1, done: 4, idle: 2, total: 7 })).toEqual(["attention"]);
+  });
+
+  // Nothing active: the group falls back to the settled pair, and shows
+  // BOTH of them -- two stats is the same width the active pair costs,
+  // so a settled workspace gets a complete answer for free.
+  it("falls back to the settled pair when nothing is active", () => {
+    expect(railStripStats({ ...none, done: 3, idle: 1, total: 4 })).toEqual(["done", "idle"]);
+  });
+
+  it("drops a zero from the settled pair rather than printing it", () => {
+    expect(railStripStats({ ...none, done: 3, total: 3 })).toEqual(["done"]);
+    expect(railStripStats({ ...none, idle: 2, total: 2 })).toEqual(["idle"]);
+  });
+
+  it("never returns more than two stats", () => {
+    const all = { running: 1, attention: 1, done: 1, idle: 1, total: 4 };
+    expect(railStripStats(all).length).toBeLessThanOrEqual(2);
+  });
+
+  // A workspace with no rails renders no rails group at all, so this is
+  // the empty case rather than a bucket to pick from.
+  it("returns nothing for a workspace with no rails", () => {
+    expect(railStripStats(none)).toEqual([]);
   });
 });
 

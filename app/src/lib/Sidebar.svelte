@@ -58,6 +58,7 @@
     workspaceGitSummary,
     kanbanSummary,
     railsSummary,
+    railStripStats,
     pageAgentsSummary,
     pageTabRows,
     hasRecap,
@@ -724,7 +725,7 @@
       <div class="recap-row">
         {#if showGitChip(git)}
           <button
-            class="recap-chip git"
+            class="recap-group git"
             aria-label={gitRecapTip(git)}
             use:tooltip={gitRecapTip(git)}
             onclick={() => openHubView(ws, "git")}
@@ -743,41 +744,49 @@
             {#if git.behind > 0}<span class="recap-delta">&darr;{git.behind}</span>{/if}
           </button>
         {/if}
+        <!-- One number: how many cards the board holds. The to-do /
+             doing / done split it used to draw was three bare digits
+             with nothing to tell them apart, and it was the widest thing
+             on a strip that has to fit 200px. cardRecapTip still names
+             every column with its own count, which is strictly more than
+             the split ever showed. -->
         {#if cards.total > 0}
           <button
-            class="recap-chip cards"
+            class="recap-group cards"
             aria-label={cardRecapTip(cards)}
             use:tooltip={cardRecapTip(cards)}
             onclick={() => openHubView(ws, "kanban")}
           >
             <Kanban size={11} />
-            <span class="card-stat todo">{cards.todo}</span>
-            <span class="card-stat progress">{cards.inProgress}</span>
-            <span class="card-stat done">{cards.done}</span>
+            <span class="recap-count">{cards.total}</span>
           </button>
         {/if}
+        <!-- At most two stats, chosen by railStripStats: what is active
+             (running, then attention -- the count running was taken out
+             of, since a rail needing a human is still going, it just is
+             not going to get anywhere on its own), or, when nothing is,
+             what is there. All four buckets stay in the tooltip. -->
         {#if rails.total > 0}
           <button
-            class="recap-chip rails"
+            class="recap-group rails"
             aria-label={railRecapTip(rails)}
             use:tooltip={railRecapTip(rails)}
             onclick={() => openHubView(ws, "orchestration")}
           >
-            {#if rails.running > 0}
-              <span class="rail-stat running"><Play size={10} /><span class="recap-count">{rails.running}</span></span>
-            {/if}
-            <!-- Straight after running, because that is the count it was
-                 taken out of: a rail needing a human is still going, it
-                 just is not going to get anywhere on its own. -->
-            {#if rails.attention > 0}
-              <span class="rail-stat attention"><MessageCircleQuestionMark size={10} /><span class="recap-count">{rails.attention}</span></span>
-            {/if}
-            {#if rails.done > 0}
-              <span class="rail-stat done"><Check size={10} /><span class="recap-count">{rails.done}</span></span>
-            {/if}
-            {#if rails.idle > 0}
-              <span class="rail-stat idle"><CircleDashed size={10} /><span class="recap-count">{rails.idle}</span></span>
-            {/if}
+            {#each railStripStats(rails) as key (key)}
+              <span class="rail-stat {key}">
+                {#if key === "running"}
+                  <Play size={10} />
+                {:else if key === "attention"}
+                  <MessageCircleQuestionMark size={10} />
+                {:else if key === "done"}
+                  <Check size={10} />
+                {:else}
+                  <CircleDashed size={10} />
+                {/if}
+                <span class="recap-count">{rails[key]}</span>
+              </span>
+            {/each}
           </button>
         {/if}
       </div>
@@ -1322,53 +1331,62 @@
     background: var(--surface-base);
     color: var(--text);
   }
+  /* Three quiet groups of icons and numbers, in exactly the borderless
+     readout style the page rows below already use for their own tallies
+     (.page-recap) -- so the workspace strip and the page rows read as
+     one system rather than two.
+
+     They used to be bordered pills, each ringed in its own categorical
+     hue. That made the one row in the sidebar which is purely
+     informational also the loudest thing on it, and three rings plus
+     their padding do not fit 200px, so the strip wrapped as a matter of
+     course. What separates the groups now is space and their leading
+     glyph; what colour survives is semantic only. */
   .recap-row {
     display: flex;
     align-items: center;
-    /* Wraps rather than overflows: three chips at their widest do not fit
-       a 200px sidebar, and a recap that clips is worse than one on two
-       lines. */
+    /* The wide gap is the separator now that no ring is: comfortably
+       more than any group's own 3px, so three runs of digits never read
+       as one. */
+    gap: 2px 10px;
+    /* Kept as a safety net for an unusually wide tally, not as the
+       normal case -- without the rings, their padding and the card
+       split, the strip is some 60px narrower than it was. */
     flex-wrap: wrap;
-    gap: 2px 6px;
-    /* 22, not the page rows' 25: the chips carry 3px of padding of their
-       own, so their icons land on the same column as the page names. */
-    padding: 2px 8px 2px 22px;
+    /* 25px: the page rows' own indent. The groups carry no padding of
+       their own any more, so their icons land on exactly the column the
+       page names below start at. */
+    padding: 2px 8px 2px 25px;
     color: var(--text-muted);
   }
-  .recap-chip {
+  .recap-group {
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    padding: 1px 4px;
+    padding: 0;
     background: transparent;
-    /* A hairline in the chip's own hue, so the three read as three
-       things rather than one run of numbers. */
-    border: 1px solid var(--chip-border, var(--border));
-    border-radius: 4px;
+    border: none;
     color: inherit;
     font-family: inherit;
     font-size: inherit;
     cursor: pointer;
   }
-  .recap-chip:hover {
-    background: var(--surface-hover);
-    border-color: var(--chip-border-hover, var(--border-strong));
+  /* The whole affordance: the group brightens. No background, no ring,
+     no padding of its own -- so pointing at a group costs zero width and
+     can never reflow the strip out from under the pointer. The tooltip
+     that comes with the hover says the rest. */
+  .recap-group:hover {
     color: var(--text);
   }
-  /* CATEGORICAL, not semantic: these three name a context -- git, board,
-     rails -- and carry no judgement about it. The --border-* ramp is the
-     dimmest tinted hairline the theme offers (and is tuned per theme, a
-     lighter step on light surfaces), which is what keeps an identity
-     colour from reading as a status. The full-strength hue is held back
-     for hover, so a chip only speaks up once you point at it. */
-  .recap-chip.git {
-    --chip-border: var(--border-warning);
-    --chip-border-hover: var(--warning);
+  .recap-group:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: 1px;
+    border-radius: 3px;
   }
   /* Takes the branch glyph's place rather than sitting beside it, so the
-     chip keeps its width while a run is in flight -- the sidebar is
-     narrow, and a strip of chips that reflows on its own is worse than
-     one that stays put. */
+     group keeps its width while a run is in flight -- the sidebar is
+     narrow, and a strip that reflows on its own is worse than one that
+     stays put. */
   .commit-spinner {
     width: 9px;
     height: 9px;
@@ -1384,18 +1402,6 @@
       transform: rotate(360deg);
     }
   }
-  .recap-chip.cards {
-    --chip-border: var(--border-accent);
-    --chip-border-hover: var(--accent);
-  }
-  .recap-chip.rails {
-    --chip-border: var(--border-success);
-    --chip-border-hover: var(--success);
-  }
-  .recap-chip:focus-visible {
-    outline: 1px solid var(--border-focus);
-    outline-offset: -1px;
-  }
   .recap-count {
     font-variant-numeric: tabular-nums;
   }
@@ -1403,27 +1409,10 @@
     font-size: 0.9em;
     white-space: nowrap;
   }
-  /* A fixed three-slot tally: to do, in progress, done, always in that
-     order and always all three, zeros included -- the positions are what
-     make three bare numbers readable, so hiding a zero would only make
-     the rest ambiguous. Hairline dividers keep them from reading as one
-     number; the tooltip names each column outright. */
-  .card-stat {
-    font-variant-numeric: tabular-nums;
-  }
-  .card-stat + .card-stat {
-    margin-left: 1px;
-    padding-left: 4px;
-    border-left: 1px solid var(--border);
-  }
-  .card-stat.progress {
-    color: var(--accent-text);
-  }
-  .card-stat.done {
-    color: var(--success-text);
-  }
   /* One tally per rail phase, coloured the way the Orchestration tab
-     colours a rail's own state. */
+     colours a rail's own state. Idle deliberately has no rule: a rail
+     that is not doing anything stays the row's muted default, exactly as
+     the page rows' own idle tally does. */
   .rail-stat {
     display: inline-flex;
     align-items: center;

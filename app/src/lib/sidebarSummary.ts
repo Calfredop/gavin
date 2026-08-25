@@ -180,6 +180,34 @@ export function railsSummary(
   return summary;
 }
 
+export type RailStatKey = "running" | "attention" | "done" | "idle";
+
+/// Which of the four rail buckets the sidebar's recap strip actually
+/// draws. The strip is ONE line across a 200px sidebar shared with a git
+/// and a cards group, and four icon-and-number pairs is roughly twice the
+/// width there is -- so the rails group answers one question at a time.
+///
+/// Active first: `running` and `attention` are what is happening right
+/// now, and attention is the loudest thing this recap can say, so it is
+/// never buried behind a done tally. Only when NOTHING is active does the
+/// group fall back to the settled pair -- and then it shows both, since
+/// two stats cost exactly what the active pair costs, so a quiet
+/// workspace gets the complete answer for free.
+///
+/// Whatever is dropped here is still named in railRecapTip, which spells
+/// out all four buckets; this decides what the row shows, not what the
+/// human can find out.
+export function railStripStats(rails: RailsSummary): RailStatKey[] {
+  const active: RailStatKey[] = [];
+  if (rails.running > 0) active.push("running");
+  if (rails.attention > 0) active.push("attention");
+  if (active.length > 0) return active;
+  const settled: RailStatKey[] = [];
+  if (rails.done > 0) settled.push("done");
+  if (rails.idle > 0) settled.push("idle");
+  return settled;
+}
+
 /// The three maps a page's tab tally reads, structurally rather than as
 /// the whole LayoutState: two of them only ever answer "is this id a tab
 /// of that kind", so `unknown` values are all this needs to know.
