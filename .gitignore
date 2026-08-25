@@ -5,3 +5,4 @@ test-fixtures/gavin-orchestration/playground/
 node_modules/
 /.claude/worktrees/
 .DS_Store
+registry.sqlite
