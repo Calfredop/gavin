@@ -400,6 +400,11 @@
   // being written in the first place (dropImpossibleSteps clears up the
   // ones already stored).
   const toolsBlocked = $derived(featureBlockedReason($daemonCompat, "tools"));
+  // The conflict panel's repair now WRITES a mode (Task 6) instead of
+  // splitting the stage. Against a pre-groups daemon that field is
+  // silently dropped -- the badge would never clear, and the human would
+  // retry the same button forever with no explanation.
+  const groupsBlocked = $derived(featureBlockedReason($daemonCompat, "groups"));
   const conflictSummary = $derived(
     orch
       ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
@@ -480,6 +485,7 @@
       {cards}
       {orch}
       {tools}
+      {groupsBlocked}
       onBindWorktree={(railId) => (binding = railId)}
       onMakeSequential={(stageId) => void makeStageSequentialAction(workspaceId, stageId)}
     />

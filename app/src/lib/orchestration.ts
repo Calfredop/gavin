@@ -1620,12 +1620,17 @@ export function detectConflicts(
   const steps = placedSteps(orch, tree).filter((s) => s.state !== "done");
   const conflicts: Conflict[] = [];
 
-  // 1. A parallel stage IS a same-worktree conflict by construction: its
-  // steps share the rail's checkout. That is intended, and saying so out
-  // loud beats pretending it is safe (spec §5).
+  // 1. A PARALLEL stage IS a same-worktree conflict by construction: its
+  // steps share the rail's checkout at the same time. That is intended,
+  // and saying so out loud beats pretending it is safe (spec §5). A
+  // SEQUENCE group is exempt (grouping spec G5) -- its members share that
+  // checkout in turn, which is what a rail is for.
+  const parallelStages = new Set(
+    orch.rails.flatMap((r) => r.stages.filter((s) => stageMode(s) === "parallel").map((s) => s.id))
+  );
   const byStage = new Map<string, PlacedStep[]>();
   for (const s of steps) {
-    if (!s.checkout) continue;
+    if (!s.checkout || !parallelStages.has(s.stageId)) continue;
     const group = byStage.get(s.stageId) ?? [];
     group.push(s);
     byStage.set(s.stageId, group);

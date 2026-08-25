@@ -30,6 +30,7 @@ import {
   moveStepIntoStage,
   moveStepToNewStage,
   splitStageIntoSequence,
+  setStageMode,
   isToolStep,
   stepParams,
   findCardPlacement,
@@ -1039,8 +1040,12 @@ export function setStepParamsAction(
   return mutatePlan(workspaceId, (o) => setStepParams(o, stepId, params));
 }
 
+/// The repair for a parallel-stage conflict: tell the group to run its
+/// members one at a time. A mode flip rather than the old split, so the
+/// group the human built survives the fix -- ungrouping is a separate,
+/// deliberate act.
 export function makeStageSequentialAction(workspaceId: string, stageId: string): Promise<string | null> {
-  return mutatePlan(workspaceId, (o) => splitStageIntoSequence(o, stageId));
+  return mutatePlan(workspaceId, (o) => setStageMode(o, stageId, "sequence"));
 }
 
 /// Hand the reorganize request to the RUNNING workspace agent. A summary

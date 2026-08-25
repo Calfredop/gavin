@@ -985,6 +985,28 @@ describe("detectConflicts — same worktree", () => {
     });
     expect(detectConflicts(o, CARDS, WT)[0].severity).toBe("potential");
   });
+
+  it("does not call a sequence group a same-worktree conflict", () => {
+    // Its members share the rail's checkout IN TURN, which is what a rail
+    // is for -- reporting that as a collision is noise.
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = { ...o, rails: o.rails.map((r) => ({ ...r, worktreePath: "/wt/a" })) };
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/ws/.gavin-root/plans/a.md", 0);
+    o = addStep(o, "s1", "t2", "/ws/.gavin-root/plans/b.md", 1);
+    o = setStageMode(o, "s1", "sequence");
+    const found = detectConflicts(o, tree([plan("a.md"), plan("b.md")]), [{ path: "/wt/a" } as WorktreeInfo]);
+    expect(found.filter((c) => c.kind === "same-worktree" && c.scope === "stage")).toEqual([]);
+  });
+
+  it("still calls a parallel group one", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = { ...o, rails: o.rails.map((r) => ({ ...r, worktreePath: "/wt/a" })) };
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/ws/.gavin-root/plans/a.md", 0);
+    o = addStep(o, "s1", "t2", "/ws/.gavin-root/plans/b.md", 1);
+    o = setStageMode(o, "s1", "parallel");
+    const found = detectConflicts(o, tree([plan("a.md"), plan("b.md")]), [{ path: "/wt/a" } as WorktreeInfo]);
+    expect(found.filter((c) => c.kind === "same-worktree" && c.scope === "stage")).toHaveLength(1);
+  });
 });
 
 describe("detectConflicts — the other kinds", () => {

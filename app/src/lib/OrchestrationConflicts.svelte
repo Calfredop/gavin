@@ -13,12 +13,17 @@
     /// branch" rather than as a uuid.
     tools: Tool[];
     onBindWorktree: (railId: string) => void;
-    /// The repair for a parallel stage (spec O13): split it into
-    /// consecutive single-step stages. Only offered for scope "stage" --
-    /// no single stage can fix two rails sharing a checkout.
+    /// The repair for a parallel stage (grouping spec G5): tell the group
+    /// to run its members one at a time. The group stays whole.
     onMakeSequential: (stageId: string) => void;
+    /// featureBlockedReason(compat, "groups"), or null when the daemon can
+    /// take a mode write. The repair now flips `mode` (Task 6) instead of
+    /// splitting the stage -- an older daemon drops that field silently,
+    /// so a disabled button here has to say why rather than let the badge
+    /// never clear.
+    groupsBlocked: string | null;
   }
-  let { numbered, cards, orch, tools, onBindWorktree, onMakeSequential }: Props = $props();
+  let { numbered, cards, orch, tools, onBindWorktree, onMakeSequential, groupsBlocked }: Props = $props();
 
   let collapsed = $state(false);
 
@@ -60,9 +65,11 @@
               <button
                 type="button"
                 class="fix"
+                disabled={Boolean(groupsBlocked)}
+                title={groupsBlocked ?? undefined}
                 onclick={() => onMakeSequential(conflict.stageId as string)}
               >
-                Make sequential
+                Run in sequence
               </button>
             {/if}
           </li>
@@ -157,5 +164,10 @@
     font-size: 11px;
     text-decoration: underline;
     cursor: pointer;
+  }
+  .fix:disabled {
+    cursor: default;
+    opacity: 0.7;
+    text-decoration: none;
   }
 </style>

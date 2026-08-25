@@ -145,10 +145,11 @@ import {
   clearDoneStepsAction,
   stepAttentionsByWorkspace,
   railStatusVoice,
+  makeStageSequentialAction,
   __resetForTesting,
 } from "./orchestrationState";
-import { emptyOrchestration, addStep } from "./orchestration";
-import type { Orchestration, Rail } from "./orchestration";
+import { emptyOrchestration, addStep, findStage, stageMode } from "./orchestration";
+import type { Orchestration, Rail, Stage } from "./orchestration";
 
 function rail(id: string): Rail {
   return { id, name: id, position: 0, worktreePath: null, pageId: null, stages: [] };
@@ -722,6 +723,45 @@ describe("clearDoneStepsAction", () => {
     expect(await clearDoneStepsAction("ws-1", "r1")).toBe("step t1 is running");
     expect(get(orchestrations)["ws-1"].rails[0].stages.map((s) => s.id)).toEqual(["s1", "s2", "s3"]);
     expect(backend.setRailRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("makeStageSequentialAction", () => {
+  beforeEach(() => {
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    orchestrations.set({
+      "ws-1": {
+        ...emptyOrchestration(),
+        rails: [
+          {
+            id: "r1",
+            name: "backend",
+            position: 0,
+            worktreePath: "/x/wt",
+            pageId: "p1",
+            stages: [
+              {
+                id: "s1",
+                position: 0,
+                steps: [
+                  { id: "t1", position: 0, cardPath: "/x/a.md" },
+                  { id: "t2", position: 1, cardPath: "/x/b.md" },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("flips the mode and keeps the group whole", async () => {
+    // The repair used to detonate the stage into single-step stages, which
+    // threw away the grouping the human built.
+    await makeStageSequentialAction("ws-1", "s1");
+    const after = get(orchestrations)["ws-1"];
+    expect(findStage(after, "s1")?.steps).toHaveLength(2);
+    expect(stageMode(findStage(after, "s1") as Stage)).toBe("sequence");
   });
 });
 
