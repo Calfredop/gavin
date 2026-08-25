@@ -1030,9 +1030,10 @@
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
           <!-- The Scratchpad is a drawer for loose pages, not a
-               project: it has no hub worth landing on. The spacer keeps
-               its chevron in line with every other workspace's. -->
-          <span class="hub-spacer" aria-hidden="true"></span>
+               project: it has no hub worth landing on, and nothing
+               standing in for one either. Reserving the column read as a
+               Hub button that had failed to draw, so the row starts at
+               its chevron and is simply narrower than the rest. -->
           <IconButton
             icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
             label={isExpanded(ws.id) ? "Collapse" : "Expand"}
@@ -1247,14 +1248,6 @@
        sit exactly where they did before the group carried a stripe. */
     padding: 4px 8px 4px 5px;
     cursor: pointer;
-  }
-  /* An IconButton at size 12 measures 24px across (12px icon + 5px of
-     padding and 1px of transparent border a side), and this stands in
-     for one -- so the Scratchpad's chevron lines up with the chevrons
-     that sit beside a Hub button. */
-  .hub-spacer {
-    flex: 0 0 auto;
-    width: 24px;
   }
   .workspace-row.active {
     background: var(--surface-raised);
