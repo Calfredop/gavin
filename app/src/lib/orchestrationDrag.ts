@@ -128,13 +128,7 @@ export function computeOrchDropTarget(
 
   let index = 0;
   for (const stage of stages) {
-    // >= rather than strict >: a "stage" drag skips the loop above
-    // outright, so the pointer sitting exactly on another stage's own
-    // midpoint is a real, reachable position here (not just a tie no
-    // other kind can produce) and has to resolve to a side. "After" is
-    // consistent with the gaps: a pointer that has fully crossed a
-    // stage's midpoint has left "before" behind.
-    if (pointer.y >= stage.rect.top + stage.rect.height / 2) index += 1;
+    if (pointer.y > stage.rect.top + stage.rect.height / 2) index += 1;
   }
   return { kind: "new-stage", railId: best.id, index };
 }

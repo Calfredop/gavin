@@ -450,7 +450,7 @@ describe("dragging a whole stage", () => {
   ];
 
   it("never targets into-stage, because groups do not nest", () => {
-    const target = computeOrchDropTarget({ x: 100, y: 150 }, rails, null, 100, "stage");
+    const target = computeOrchDropTarget({ x: 100, y: 160 }, rails, null, 100, "stage");
     expect(target).toEqual({ kind: "new-stage", railId: "r1", index: 1 });
   });
 

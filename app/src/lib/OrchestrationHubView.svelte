@@ -35,7 +35,6 @@
     availableCards,
     stepParams,
     findStep,
-    findStage,
   } from "./orchestration";
   import type { Rail } from "./orchestration";
   import { railDeleteConfirm, railClearDoneConfirm } from "./railConfirm";
@@ -324,15 +323,6 @@
   // so a card can be dragged from one into the other.
   let bodyEl = $state<HTMLElement | null>(null);
 
-  // The target stage's current step count, i.e. append. `into-stage`
-  // carries no drop position of its own yet -- Task 8 puts one on
-  // OrchDropTarget and Task 9 passes drag.target.index here instead --
-  // so this is what keeps every join drop landing exactly where it does
-  // today until that lands.
-  function appendIndexFor(stageId: string): number {
-    return (orch && findStage(orch, stageId)?.steps.length) ?? 0;
-  }
-
   // $effect, NOT onMount: the elements below live inside the loaded
   // branch, so at mount time the plan is still being fetched and both
   // binds are null. onMount would early-return and never run again --
@@ -355,7 +345,7 @@
         // sets of mutators, one drop-target vocabulary.
         if (drag.kind === "card") {
           if (drag.target.kind === "into-stage") {
-            void addStepToStageAction(workspaceId, drag.target.stageId, drag.id, appendIndexFor(drag.target.stageId));
+            void addStepToStageAction(workspaceId, drag.target.stageId, drag.id, drag.target.index);
           } else if (drag.target.kind === "new-stage") {
             void addCardAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
           }
@@ -363,7 +353,7 @@
         }
         if (drag.kind === "tool") {
           if (drag.target.kind === "into-stage") {
-            void addToolToStageAction(workspaceId, drag.target.stageId, drag.id, appendIndexFor(drag.target.stageId));
+            void addToolToStageAction(workspaceId, drag.target.stageId, drag.id, drag.target.index);
           } else if (drag.target.kind === "new-stage") {
             void addToolAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
           }
@@ -372,7 +362,7 @@
         if (drag.target.kind === "unplace") {
           void removeStepAction(workspaceId, drag.id);
         } else if (drag.target.kind === "into-stage") {
-          void moveStepIntoStageAction(workspaceId, drag.id, drag.target.stageId, appendIndexFor(drag.target.stageId));
+          void moveStepIntoStageAction(workspaceId, drag.id, drag.target.stageId, drag.target.index);
         } else {
           void moveStepToNewStageAction(workspaceId, drag.id, drag.target.railId, drag.target.index);
         }
