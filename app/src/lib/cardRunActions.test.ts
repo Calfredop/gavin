@@ -53,7 +53,14 @@ import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switc
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
-import { runCard, resumeCard, relaunchCard, jumpToBoundSession, sendToMainAgent } from "./cardRunActions";
+import {
+  runCard,
+  resumeCard,
+  developCard,
+  relaunchCard,
+  jumpToBoundSession,
+  sendToMainAgent,
+} from "./cardRunActions";
 import type { CardView } from "./planBoard";
 import type { Board } from "./kanban";
 
@@ -276,6 +283,71 @@ describe("resumeCard", () => {
 
   it("refuses notes, like every other run", async () => {
     expect(await resumeCard("ws-1", card("note", "In Progress"))).toContain("not runnable");
+  });
+});
+
+describe("developCard", () => {
+  it("spawns the develop prompt without writing a status or binding the card", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+
+    const err = await developCard("ws-1", card("task", "To Do"));
+
+    expect(err).toBeNull();
+    const [cwd, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(cwd).toBe("/ws");
+    expect(command).toContain("Use the gavin-develop skill on the card at /ws/.gavin-root/plans/t.md");
+    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-9");
+    expect(setSessionName).toHaveBeenCalledWith("s-9", "Fix login");
+    // Developing is not starting: the card stays in To Do, and it stays
+    // UNBOUND -- a binding would take it out of the To Do column's
+    // "Start all" (unbound-only) and turn its menu entry into
+    // "Re-launch agent", which would develop it a second time.
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
+  });
+
+  it("never reads the body: the card file is the agent's to read", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    expect(backend.readFileForViewer).not.toHaveBeenCalled();
+  });
+
+  it("refuses while a live agent holds the card, rather than editing under it", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+      ]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+
+    const err = await developCard("ws-1", card("task", "To Do"));
+
+    expect(err).toContain("live agent");
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("develops over an EXITED binding and leaves that binding alone", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-dead", cwd: "/ws", command: "x" },
+      ]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+
+    expect(await developCard("ws-1", card("plan", "To Do"))).toBeNull();
+
+    expect(backend.createSession).toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
+  });
+
+  it("notes are not developable; a spawn failure surfaces", async () => {
+    expect(await developCard("ws-1", card("note", null))).toContain("not runnable");
+
+    vi.mocked(backend.createSession).mockRejectedValue(new Error("spawn failed"));
+    expect(await developCard("ws-1", card("task", "To Do"))).toContain("spawn failed");
   });
 });
 

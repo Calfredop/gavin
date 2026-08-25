@@ -244,6 +244,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "A card whose session is alive is skipped, not double-run; the spawned command starts “Use the gavin-resume skill…”.",
       },
       {
+        id: "run-develop-card",
+        text: "Right-click an unbound To Do card → “Develop into a plan…” spawns an agent that INTERVIEWS you instead of building; the card keeps its status and gains no session dot",
+        hint: "The card detail modal offers the same button above ▶ Run, and by the same rule. The entry is To Do only — confirm it is absent (in BOTH surfaces) on In Progress, on Done, on a note, and on a card that already has a session. The spawned command starts “Use the gavin-develop skill…”; answer its questions and the card comes back as a checklist or nested children, still in To Do and still unbound, so “Start all” can then run it.",
+      },
+      {
         id: "run-names-its-tab",
         text: "A launched agent renames its own tab within the first few seconds — short and about the card, not “gavin”",
         hint: "Run two cards at once: both tabs should be tellable apart at a glance. Board Run, Resume and an orchestration launch all carry the instruction.",
@@ -270,7 +275,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "skill-updated",
-        text: "Re-run “Set up agent integration”: SKILL.md teaches name-your-tab-first, kinds, nesting, promotion, tick-when-done; gavin-orchestrate and gavin-resume land beside it",
+        text: "Re-run “Set up agent integration”: SKILL.md teaches name-your-tab-first, kinds, nesting, promotion, tick-when-done; gavin-orchestrate, gavin-resume and gavin-develop land beside it",
       },
     ],
   },

@@ -15,6 +15,7 @@ import {
   composePlanPrompt,
   composeResumeTaskPrompt,
   composeResumePlanPrompt,
+  composeDevelopPrompt,
   buildRunCommand,
   provisionalSessionName,
   runStatusNeeded,
@@ -50,6 +51,52 @@ export function runCard(workspaceId: string, card: CardView): Promise<string | n
 // binding. A live session still just gets a jump: it is the work.
 export function resumeCard(workspaceId: string, card: CardView): Promise<string | null> {
   return launchCard(workspaceId, card, "resume");
+}
+
+// Develop (the To Do column's counterpart to Resume): hand a thin card
+// to the gavin-develop skill so it comes back as worked steps. It parts
+// company with a run in three ways, all of them "developing is not
+// starting":
+//
+//  - No In Progress write. The card is being SHAPED, not worked; it
+//    stays in the column it is in, ready to be started afterwards.
+//  - No card<->session binding. A binding would drop the card out of
+//    the To Do column's "Start all" (unbound-only, columnRunAction.ts)
+//    and turn its menu entry into "Re-launch agent" -- which would
+//    develop it a second time instead of running it. The session is
+//    still visible: handleAgentSessionSpawned lands it on Agents.
+//  - A live agent on the card is a refusal, not a jump. The develop run
+//    REWRITES the card file, and doing that under an agent executing it
+//    is the one way this action can destroy work in flight.
+export async function developCard(
+  workspaceId: string,
+  card: CardView
+): Promise<string | null> {
+  if (card.kind === "note") return "Notes are not runnable";
+
+  const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
+  if (binding && findSessionLocation(get(layoutState), binding.sessionId)) {
+    return "This card has a live agent — jump to it instead of developing under it";
+  }
+
+  // The card file is never read here: the skill's first move is to read
+  // it, and inlining a task's body is what turns an interview into a
+  // build.
+  const command = buildRunCommand(
+    resolvedAgentFor(workspaceId).command,
+    composeDevelopPrompt(card.id, card.title)
+  );
+
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(card.contextFolder, command);
+  } catch (e) {
+    return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
+  }
+  handleAgentSessionSpawned(workspaceId, sessionId);
+  const provisional = provisionalSessionName(card.title);
+  if (provisional) await setSessionName(sessionId, provisional);
+  return null;
 }
 
 async function launchCard(

@@ -5,12 +5,14 @@ import {
   composePlanPrompt,
   composeResumeTaskPrompt,
   composeResumePlanPrompt,
+  composeDevelopPrompt,
   shellQuote,
   buildRunCommand,
   buildHeadlessCommand,
   COMMIT_PROMPT,
   buildToolCommand,
   runStatusNeeded,
+  developAvailable,
   provisionalSessionName,
 } from "./cardRun";
 
@@ -64,6 +66,33 @@ describe("resume prompts", () => {
   });
 });
 
+describe("composeDevelopPrompt", () => {
+  // Develop is the To Do counterpart of Resume: same shape -- skill
+  // pointer, what makes THIS job different, then the contract -- and one
+  // composer for both kinds, because the skill's first move is to read
+  // the card whatever it is.
+  it("points at the skill, names both shapes, and forbids writing before approval", () => {
+    const p = composeDevelopPrompt("/p/t.md", "Fix login");
+    expect(p).toBe(
+      `${NAME_TAB_FIRST}\n\n` +
+        'Use the gavin-develop skill on the card at /p/t.md ("Fix login"): develop it into ' +
+        "worked steps — a checklist, nested task cards, or both.\n\n" +
+        "Interview me in this tab before you decide anything, and write nothing to the card " +
+        "until I approve what you propose. Leave the card's status where it is: developing a " +
+        "card is not starting it."
+    );
+  });
+
+  // The card's body is the seed idea, not a prompt to execute: inlining
+  // it is what makes an agent start building instead of interviewing.
+  it("never inlines the body or orders the work done", () => {
+    const p = composeDevelopPrompt("/p/t.md", "Fix login");
+    expect(p).not.toContain("You are executing");
+    expect(p).not.toContain("execute that plan");
+    expect(p).not.toContain("done column");
+  });
+});
+
 describe("every launched prompt", () => {
   it("opens by ordering the agent to name its tab", () => {
     // Board Run, board Resume and an orchestration launch all compose
@@ -73,6 +102,7 @@ describe("every launched prompt", () => {
       composePlanPrompt("/p/plan.md"),
       composeResumeTaskPrompt("/p/t.md", "T", "b"),
       composeResumePlanPrompt("/p/plan.md"),
+      composeDevelopPrompt("/p/t.md", "T"),
     ]) {
       expect(p.startsWith(NAME_TAB_FIRST)).toBe(true);
       expect(p).toContain("gavin_name_session");
@@ -140,6 +170,31 @@ describe("COMMIT_PROMPT", () => {
     expect(COMMIT_PROMPT).toBe(
       "Commit pending and unversioned changes, in logical chunks. Do not push."
     );
+  });
+});
+
+describe("developAvailable", () => {
+  // One rule, two surfaces (the card menu and the detail modal), so it
+  // lives here rather than being spelled out twice in templates.
+  it("is true only for an unbound, non-note card sitting in To Do", () => {
+    expect(developAvailable("task", "To Do", false)).toBe(true);
+    expect(developAvailable("plan", "To Do", false)).toBe(true);
+  });
+
+  it("reads the column the way the board does, not by exact spelling", () => {
+    expect(developAvailable("task", "to-do", false)).toBe(true);
+    expect(developAvailable("task", " TO  DO ", false)).toBe(true);
+  });
+
+  it("is false past To Do: started, finished, custom, and a nested task", () => {
+    for (const status of ["In Progress", "Done", "Shipped", null]) {
+      expect(developAvailable("task", status, false), `status ${status}`).toBe(false);
+    }
+  });
+
+  it("is false for a note, and false once a session is bound", () => {
+    expect(developAvailable("note", "To Do", false)).toBe(false);
+    expect(developAvailable("task", "To Do", true)).toBe(false);
   });
 });
 

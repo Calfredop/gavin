@@ -24,6 +24,7 @@ vi.mock("./layoutState", () => ({
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
+  setSessionName: vi.fn().mockResolvedValue(undefined),
   resolvedAgentFor: vi.fn(() => ({ profileId: "claude-code", file: "CLAUDE.md", command: "claude", mcpSupported: true })),
 }));
 vi.mock("./workspace", () => ({ findSessionLocation: vi.fn() }));
@@ -130,6 +131,50 @@ describe("buildCardMenuEntries", () => {
     );
     expect(current?.disabled).toBe(true);
     expect(current?.active).toBe(true);
+  });
+
+
+  it("an unbound To Do card offers Develop, right above the two run entries", () => {
+    const l = labels(buildCardMenuEntries(card("task", "To Do"), hooks()));
+    expect(l).toContain("Develop into a plan…");
+    // Reading order is the argument: develop the card, then run it.
+    expect(l.indexOf("Develop into a plan…")).toBe(l.indexOf("Run in dedicated session") - 1);
+  });
+
+  it("Develop is To Do only — a started, finished or nested card is past developing", () => {
+    for (const status of ["In Progress", "Done", "Shipped", null]) {
+      const l = labels(buildCardMenuEntries(card("task", status), hooks()));
+      expect(l.join(), `status ${status}`).not.toContain("Develop");
+    }
+    expect(labels(buildCardMenuEntries(card("note", "To Do"), hooks())).join()).not.toContain(
+      "Develop"
+    );
+  });
+
+  it("no Develop entry once a session is bound — live or exited", () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
+    expect(labels(buildCardMenuEntries(card("task", "To Do"), hooks())).join()).not.toContain(
+      "Develop"
+    );
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    expect(labels(buildCardMenuEntries(card("task", "To Do"), hooks())).join()).not.toContain(
+      "Develop"
+    );
+  });
+
+  it("picking Develop spawns the skill's agent and leaves the card's status alone", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    const entries = buildCardMenuEntries(card("task", "To Do"), hooks());
+    item(entries, "Develop into a plan…")?.onPick?.();
+    await vi.waitFor(() => expect(backend.createSession).toHaveBeenCalled());
+
+    const [cwd, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(cwd).toBe("/p");
+    expect(command).toContain("Use the gavin-develop skill on the card at /p/t.md");
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
   });
 
   it("a live binding offers Jump; a dead one offers Re-launch", () => {

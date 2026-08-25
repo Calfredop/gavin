@@ -55,6 +55,25 @@ export function composePlanPrompt(path: string): string {
   );
 }
 
+// Develop (the To Do column's counterpart to Resume): a thin card that
+// has not been started, handed to the gavin-develop skill so it comes
+// back as worked steps. One composer for both kinds -- the card file is
+// the agent's to read whatever it is, and inlining a task's body is
+// exactly what makes an agent start BUILDING instead of interviewing.
+//
+// Nothing here mentions the done column: the run ends when the card is
+// developed, and the card stays where it is. Developing is not starting.
+export function composeDevelopPrompt(path: string, title: string): string {
+  return (
+    `${NAME_TAB_FIRST}\n\n` +
+    `Use the gavin-develop skill on the card at ${path} ("${title}"): develop it into ` +
+    `worked steps \u2014 a checklist, nested task cards, or both.\n\n` +
+    `Interview me in this tab before you decide anything, and write nothing to the card ` +
+    `until I approve what you propose. Leave the card's status where it is: developing a ` +
+    `card is not starting it.`
+  );
+}
+
 // POSIX single-quoting: wrap in single quotes, closing/reopening around
 // each embedded single quote. Newlines and every other byte ride inside
 // the quotes untouched.
@@ -119,6 +138,21 @@ export function buildToolCommand(
     `[ "$__gavin_code" -ne 0 ] && printf '\\n[gavin] %s exited with code %s\\n' ${shellQuote(toolName)} "$__gavin_code"`,
     'exit "$__gavin_code"',
   ].join("\n");
+}
+
+// Where the "Develop into a plan…" action is offered, for both surfaces
+// that offer it (the card menu and the detail modal). To Do only: a card
+// that has been started or finished is past the point where reshaping it
+// helps, and a nested task -- no status of its own -- is already part of
+// a developed plan. Bound cards are out too, since a develop run rewrites
+// the card its agent is executing.
+export function developAvailable(
+  kind: "note" | "task" | "plan",
+  status: string | null,
+  bound: boolean
+): boolean {
+  if (kind === "note" || bound) return false;
+  return slugStatus(status ?? "") === slugStatus("To Do");
 }
 
 // The app writes "In Progress" on launch unless the card already sits in

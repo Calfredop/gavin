@@ -10,7 +10,8 @@ import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { patchPlanField } from "./gavinState";
 import { requestedExplorerPath } from "./planExplorer";
-import { jumpToBoundSession, relaunchCard } from "./cardRunActions";
+import { jumpToBoundSession, relaunchCard, developCard } from "./cardRunActions";
+import { developAvailable } from "./cardRun";
 import { findCardPlacement } from "./orchestration";
 import {
   orchestrations,
@@ -72,6 +73,20 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
         },
       });
     } else {
+      // Develop before Run: develop the card, then run it. The ellipsis
+      // is honest -- the spawned agent interviews the human before it
+      // writes anything. developAvailable (cardRun.ts) carries the rule,
+      // shared with the card detail modal's button.
+      if (developAvailable(card.kind, card.status, binding !== null)) {
+        entries.push({
+          label: "Develop into a plan…",
+          onPick: () => {
+            void developCard(workspaceId, card).then((err) => {
+              if (err) hooks.reportError(err);
+            });
+          },
+        });
+      }
       entries.push({
         label: "Run in dedicated session",
         onPick: () => hooks.run(card),

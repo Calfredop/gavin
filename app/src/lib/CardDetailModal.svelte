@@ -13,7 +13,8 @@
   import type { PlanFileInfo } from "./gavin";
   import { switchWorkspaceView, layoutState, daemonCompat } from "./layoutState";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
-  import { runCard, relaunchCard } from "./cardRunActions";
+  import { runCard, relaunchCard, developCard } from "./cardRunActions";
+  import { developAvailable } from "./cardRun";
   import { findCardPlacement, stepStateOf } from "./orchestration";
   import {
     orchestrations,
@@ -214,6 +215,17 @@
     const err = await runCard(workspaceId, card);
     if (err) errorMessage = err;
     else if (!binding || bindingLive) onClose();
+  }
+
+  // Same rule as the board's context menu (developAvailable): a thin To
+  // Do card gets an interview before it gets an agent.
+  const canDevelop = $derived(developAvailable(card.kind, card.status, binding !== null));
+
+  async function handleDevelop(): Promise<void> {
+    errorMessage = null;
+    const err = await developCard(workspaceId, card);
+    if (err) errorMessage = err;
+    else onClose();
   }
 
   async function handleRelaunch(): Promise<void> {
@@ -429,6 +441,11 @@
         </div>
       {:else}
         <div class="session-actions">
+          {#if canDevelop}
+            <button type="button" onclick={() => void handleDevelop()}>
+              Develop into a plan…
+            </button>
+          {/if}
           <button type="button" onclick={() => void handleRun()}>
             ▶ Run {card.kind === "plan" ? "this plan" : "this task"} with the agent
           </button>

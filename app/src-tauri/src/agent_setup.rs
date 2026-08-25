@@ -220,6 +220,14 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
                     file: "SKILL.md",
                     contents: include_str!("gavin_resume_skill.md"),
                 },
+                // The To Do counterpart, loaded by a card's "Develop
+                // into a plan": the card is one line of intent, and
+                // turning it into steps is an interview, not a build.
+                SkillFile {
+                    dir: ".claude/skills/gavin-develop",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_develop_skill.md"),
+                },
             ],
         }),
     },
@@ -1350,7 +1358,7 @@ mod tests {
     fn every_skill_is_written_and_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let paths = write_skills(dir.path(), &claude_layout()).unwrap();
-        assert_eq!(paths.len(), 3, "workflow skill plus the orchestrate and resume ones");
+        assert_eq!(paths.len(), 4, "workflow skill plus orchestrate, resume and develop");
 
         let workflow = std::fs::read_to_string(&paths[0]).unwrap();
         assert!(workflow.contains("gavin_create_plan"), "{workflow}");
@@ -1366,6 +1374,16 @@ mod tests {
         );
         let resume = std::fs::read_to_string(&paths[2]).unwrap();
         assert!(resume.contains("Finished work stays finished"), "{resume}");
+        let develop = std::fs::read_to_string(&paths[3]).unwrap();
+        // The approval gate IS the skill: an agent that writes before the
+        // human answers has done the one thing this action must not do.
+        assert!(develop.contains("Nothing is written before you hear yes"), "{develop}");
+        // A card that gains nested children must become kind: plan, or
+        // the board marks every child broken (planBoard.ts) and done/
+        // leaves them behind (gavin.rs). Losing this line from the
+        // installed file is how that bug reaches a user's workspace.
+        assert!(develop.contains("kind: plan"), "{develop}");
+        assert!(develop.contains("gavin_create_plan"), "{develop}");
 
         // Gavin-managed: a hand-edited skill is replaced, not merged.
         for p in &paths {
@@ -1375,6 +1393,9 @@ mod tests {
         assert!(std::fs::read_to_string(&paths[0]).unwrap().contains("gavin_create_plan"));
         assert!(std::fs::read_to_string(&paths[1]).unwrap().contains("gavin_get_orchestration"));
         assert!(std::fs::read_to_string(&paths[2]).unwrap().contains("Finished work stays finished"));
+        assert!(std::fs::read_to_string(&paths[3])
+            .unwrap()
+            .contains("Nothing is written before you hear yes"));
     }
 
     #[test]
@@ -1384,5 +1405,6 @@ mod tests {
         assert!(paths[0].ends_with(".claude/skills/gavin/SKILL.md"), "{:?}", paths[0]);
         assert!(paths[1].ends_with(".claude/skills/gavin-orchestrate/SKILL.md"), "{:?}", paths[1]);
         assert!(paths[2].ends_with(".claude/skills/gavin-resume/SKILL.md"), "{:?}", paths[2]);
+        assert!(paths[3].ends_with(".claude/skills/gavin-develop/SKILL.md"), "{:?}", paths[3]);
     }
 }
