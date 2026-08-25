@@ -53,10 +53,20 @@ with the sibling terminals still rendered.
   (the settled result was always right — only the order was wrong), two cover
   the startup gate and the retry.
 
-## Still open (not fixed here)
+## Follow-up, also fixed
 
-Any `Response::Error` on the streaming connection — a resize or a write to a
-session that has just exited, for instance — is reported as a lost daemon
-connection and blanks the window. That blast radius is what turned this bug into
-a "crash"; narrowing it means deciding which stream errors are fatal, which is a
-design call rather than part of this fix.
+`Response::Error` on the streaming connection is no longer reported as a lost
+daemon connection. That connection carries `Attach`/`WriteInput`/`ResizeSession`,
+so a rejection means *one* refused request, not a dead socket — relaying it as
+`daemon-error` is what let a stray resize blank the window. It now travels on
+`daemon-request-error` into its own store and renders as a dismissible strip
+(`DaemonRequestErrorBanner`) over a still-working app; `daemon-error` keeps only
+its real meaning, the one `report_disconnect` and `bootstrap` give it.
+
+Same commit: a frontend reload no longer loses every session's cwd, status and
+restored badge. Those reach the app only as pushes, and their baseline only in
+reply to `Attach` — which runs once per app *process*. So a reloaded frontend came
+up blank on all three and could not refill them until the shell's next OSC 7,
+which is why a terminal's tab lost its "open this context's board" button after
+every dev-server reload. `get_session_baselines` reads them back from the daemon's
+registry at bootstrap, never overwriting a push that has already landed.
