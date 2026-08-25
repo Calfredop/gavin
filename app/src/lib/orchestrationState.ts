@@ -5,7 +5,7 @@
 // mutate, same rollback-unless-superseded, same pendingSaves guard
 // against a refresh clobbering an in-flight save.
 
-import { writable, get } from "svelte/store";
+import { writable, get, type Readable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "./backend";
 import {
@@ -92,7 +92,14 @@ export async function fetchOrchestration(workspaceId: string): Promise<void> {
   } catch {
     // Leave it unset; the tab renders its loading state and the next
     // mount retries.
+    return;
   }
+  // Outside the catch, so a scheduler failure is never mistaken for a
+  // failed load. The plan is the one scheduler input the scheduler does
+  // not subscribe to (see tickInputStores), so its arrival has to say so
+  // itself -- without this, a rail left running across a restart waits
+  // for some unrelated push before it notices it has work.
+  await tick(workspaceId);
 }
 
 /// Re-reads from SQLite. Skipped while a save is in flight, and checked
@@ -105,7 +112,9 @@ export async function refreshOrchestration(workspaceId: string): Promise<void> {
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
     // Keep showing what we have.
+    return;
   }
+  await tick(workspaceId);
 }
 
 /// Every plan edit goes through here: apply optimistically, persist the
@@ -554,15 +563,85 @@ async function runTick(workspaceId: string): Promise<void> {
   );
 }
 
+// ---- What makes the scheduler run ------------------------------------------
+// Until this existed, the only self-firing tick was an $effect in
+// OrchestrationHubView. `+page.svelte` renders one hub view at a time,
+// and a terminal page renders none of them at all -- so a rail advanced
+// only while the Orchestration tab was the active view. Start a rail and
+// then go and watch its agent work on its page, which is the natural
+// thing to do, and nothing moved: the step's exit landed in
+// `sessionExits` and its status in `sessionStatusById` (both listeners
+// are global), but nothing read them until the human navigated back,
+// where the whole rail caught up at once.
+//
+// So the trigger lives here instead, subscribed at module level the way
+// layoutState.ts rides `gavinTrees` -- owned by the module that owns the
+// tick, not by whichever component happens to be mounted.
+
+/// Every store `runTick` reads EXCEPT `orchestrations`. Listing the rest
+/// in full rather than a chosen subset is the point: a scheduler that
+/// misses an input is exactly the bug above in a subtler form. Ticking on
+/// an emission that changed nothing costs one pure `nextActions` pass,
+/// and a burst of them collapses -- the `ticking` guard turns every
+/// emission raised while a pass is in flight into the single replay
+/// `tickAgain` already performs.
+///
+/// `orchestrations` is left out because it is the tick's OUTPUT as well
+/// as its input: a save that keeps failing (a daemon refusing writes
+/// across a version skew) rolls the plan back, and a tick riding that
+/// rollback would re-emit the same action and retry forever. The plan
+/// ARRIVING ticks explicitly instead, from each of the three places it
+/// can arrive: a fetch, a refresh, and the daemon's push.
+///
+/// Read when the scheduler starts, not at module scope: importing this
+/// module must not require every store it will eventually subscribe to
+/// to exist yet.
+function tickInputStores(): Readable<unknown>[] {
+  return [kanbanState, gavinTrees, gitStore, toolRecords, layoutState, sessionExits];
+}
+
+let stopScheduler: (() => void) | null = null;
+
+/// Ticks the ACTIVE workspace whenever anything the scheduler reads
+/// changes. Deliberately still one workspace: a single mounted hub view
+/// is what this replaces, and ticking every loaded workspace -- running
+/// rails in workspaces the human is not looking at -- is a separate
+/// change to make deliberately. Returns its own teardown; started by
+/// initOrchestrationListeners, which bootstrap registers and teardown
+/// unwinds.
+export function startScheduler(): () => void {
+  stopScheduler?.();
+  const unsubscribes = tickInputStores().map((store) =>
+    store.subscribe(() => {
+      // Null while the app is still connecting, and on a window with no
+      // workspace at all; either way there is nothing to tick.
+      const workspaceId = get(layoutState).activeWorkspaceId;
+      // Not recursion, even though a pass writes to `layoutState` itself
+      // when it creates a step's session: an emission raised while a
+      // pass is in flight collapses into `tick`'s single replay.
+      if (workspaceId) void tick(workspaceId);
+    })
+  );
+  const stop = () => {
+    for (const unsubscribe of unsubscribes) unsubscribe();
+    // Guarded: a later start owns the field, and this teardown arriving
+    // afterwards must not clear the live scheduler out of it.
+    if (stopScheduler === stop) stopScheduler = null;
+  };
+  stopScheduler = stop;
+  return stop;
+}
+
 /// Must be registered BEFORE the first watchGavinRoot call: Tauri events
 /// emitted with no listener are lost, not buffered. layoutState.bootstrap()
-/// registers this beside initGavinListeners.
+/// registers this beside initGavinListeners, and starts the scheduler
+/// with it -- both belong to the app, not to a tab.
 ///
 /// The payload REPLACES the plan but preserves whatever run state this
 /// app already holds: the daemon's copy can lag an optimistic local write
 /// by a round trip, and the agent never authors run state anyway.
 export async function initOrchestrationListeners(): Promise<UnlistenFn> {
-  return listen<[string, Orchestration]>("orchestration-changed", (event) => {
+  const unlisten = await listen<[string, Orchestration]>("orchestration-changed", (event) => {
     const [workspaceId, incoming] = event.payload;
     orchestrations.update((m) => {
       const current = m[workspaceId];
@@ -584,7 +663,16 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
         },
       };
     });
+    // A plan arrival like any other (an agent editing rails over MCP),
+    // so it ticks like the other two: a step added to the stage a rail
+    // is running must start, not wait for the human to come back.
+    void tick(workspaceId);
   });
+  const stop = startScheduler();
+  return () => {
+    stop();
+    unlisten();
+  };
 }
 
 /** @internal test-only reset for module-level state */
@@ -594,6 +682,8 @@ export function __resetForTesting(): void {
   pendingSaves.clear();
   ticking.clear();
   tickAgain.clear();
+  // A scheduler left running would tick the next test's stores.
+  stopScheduler?.();
   highlightedConflict.set(null);
 }
 

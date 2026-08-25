@@ -504,6 +504,12 @@
     display: flex;
     background: var(--surface-raised);
     flex: 0 0 auto;
+    /* A pane no longer widens itself to fit its tabs (see .child in
+       LayoutTree), so the strip has to carry its own overflow -- without
+       this, splitting a pane with several tabs open would clip the last
+       ones out of reach instead of merely making them scroll. */
+    overflow-x: auto;
+    min-width: 0;
   }
   .tab {
     /* Anchors the hold-⌘ hint badge, which overlays rather than

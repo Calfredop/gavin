@@ -264,6 +264,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The page chip reads “page at Start” beforehand and the rail's name afterwards; a new blank shell on that page opens in the rail's checkout, not $HOME. Re-arming it, or pressing Resume, must not make a second page — close the page while it is paused and Resume is the one case that should.",
       },
       {
+        id: "run-rail-advances-off-tab",
+        text: "Start a rail, switch to the page its agent is working on, and stay there — the rail advances to the next step without you going back to the Orchestration tab",
+        hint: "The scheduler used to be an $effect inside the Orchestration tab, so a rail only moved while that tab was on screen and then caught up all at once when you returned. Watch the page: the finished step's tab should be joined by the next step's, live. The Kanban tab is a second place to stand.",
+      },
+      {
         id: "run-drop-on-running-stage",
         text: "Dropping a card onto the stage a RUNNING rail is currently on spawns its agent at once; every other drop still just queues",
         hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage turns parallel and the second agent appears without touching Pause/Resume. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",

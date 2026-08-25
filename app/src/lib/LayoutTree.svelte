@@ -86,6 +86,22 @@
   .child {
     position: relative;
     overflow: hidden;
+    /* `sizes` reaches the DOM as flex-grow, which only ever divides the
+       space LEFT OVER once every child has its base width. A pane's only
+       in-flow content is its tab strip (TerminalPane/FileViewerPane/
+       BoardPane are all position:absolute), so under the default
+       flex-basis:auto each child started at the width of its own tabs,
+       and min-width:auto forbade shrinking below that floor. A
+       [0.5, 0.5] split therefore rendered 616/179, not 397/397 -- and
+       once one strip's floor outgrew its share, the sibling was driven
+       toward zero width and clipped to nothing by the overflow above:
+       an empty board, or a page of terminals that vanished together.
+       Basing every child at 0 and letting it shrink is what makes
+       `sizes` authoritative, so a pane is sized by the split it lives
+       in rather than by how many tabs happen to be open in it. */
+    flex-basis: 0;
+    min-width: 0;
+    min-height: 0;
   }
   .divider {
     flex: 0 0 4px;
