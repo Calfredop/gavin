@@ -289,12 +289,12 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "One notification, not two. Needs the workspace's “finished” notification toggle on and the gavin window not frontmost. A step that really does finish (its card reaches Done, or an agent TOOL step's turn ends) keeps the ordinary “finished” wording — check one of those too, or this only proves the rewrite fires.",
       },
       {
-        id: "run-drop-on-running-stage",
+        id: "run-drop-on-running-sequence-stage",
         text: "Dropping a card onto the SINGLE-STEP stage a RUNNING rail is currently on forms a sequence group and the drop stays pending — it goes live on its own the moment the running member finishes",
         hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage becomes a two-member sequence group and the new card sits queued, not started, without you touching Pause/Resume. Finish the running member (its card reaches Done, or its tool step's turn ends) and the second starts on its own, with no Play press needed. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",
       },
       {
-        id: "run-drop-on-running-parallel-stage",
+        id: "run-drop-on-running-stage",
         text: "Dropping a card onto a RUNNING stage that already holds two or more steps in parallel spawns its agent at once; every other drop still just queues",
         hint: "Start a rail on a stage that already runs two tool steps side by side, then drag a drawer card onto the running chip — the new agent appears at once, without touching Pause/Resume. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",
       },
