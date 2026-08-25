@@ -1,14 +1,10 @@
 <script lang="ts">
-  import { get } from "svelte/store";
   import { accentVar } from "./settings";
-  import WorkspaceCreateModal from "./WorkspaceCreateModal.svelte";
   import {
     layoutState,
     switchWorkspace,
     switchWorkspaceView,
     switchPage,
-    createWorkspace,
-    openWizard,
     renameWorkspace,
     createPage,
     renamePage,
@@ -17,6 +13,16 @@
     setSessionName,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
+  // The creation flow itself lives in workspaceCreate.ts: the app hub's
+  // "+ New workspace…" drives the very same steps, and a second copy of
+  // the create → setup → wizard handoff is the shape that drifts.
+  import {
+    newWorkspaceFlow,
+    startCreatingWorkspace,
+    setNewWorkspaceName,
+    commitNewWorkspace,
+    cancelNewWorkspace,
+  } from "./workspaceCreate";
   import type { SessionStatus } from "./layoutState";
   import { presetSingle, allSessionIds, findLeafPath, getNodeAtPath } from "./layout";
   import {
@@ -119,9 +125,10 @@
     expandedPages = next;
   }
 
-  let creatingWorkspace = $state(false);
-  let newWorkspaceName = $state("");
   let newWorkspaceInput: HTMLInputElement | null = $state(null);
+  // Only the box this surface opened: the hub renders one from the same
+  // store, and both showing at once would fight over focus and text.
+  const naming = $derived($newWorkspaceFlow.naming?.surface === "sidebar" ? $newWorkspaceFlow.naming : null);
 
   let editingWorkspaceId: string | null = $state(null);
   let workspaceEditValue = $state("");
@@ -393,29 +400,6 @@
     expanded = next;
   }
 
-  function startCreatingWorkspace(): void {
-    creatingWorkspace = true;
-    newWorkspaceName = "";
-  }
-
-  // The workspace whose creation modal is up, or null.
-  let pendingSetupId = $state<string | null>(null);
-
-  function commitNewWorkspace(): void {
-    if (!creatingWorkspace) return;
-    const trimmed = newWorkspaceName.trim();
-    creatingWorkspace = false;
-    if (!trimmed) return;
-    void createWorkspace(trimmed).then(() => {
-      // createWorkspace makes the new workspace active, so this is it.
-      pendingSetupId = get(layoutState).activeWorkspaceId;
-    });
-  }
-
-  function cancelNewWorkspace(): void {
-    creatingWorkspace = false;
-  }
-
   function startEditingWorkspace(workspaceId: string, currentName: string): void {
     editingWorkspaceId = workspaceId;
     workspaceEditValue = currentName;
@@ -678,7 +662,7 @@
   });
 
   $effect(() => {
-    if (creatingWorkspace && newWorkspaceInput) {
+    if (naming && newWorkspaceInput) {
       newWorkspaceInput.focus();
     }
   });
@@ -975,18 +959,19 @@
 <div class="sidebar">
   <div class="sidebar-header">
     <span>Workspaces</span>
-    <IconButton icon={Plus} label="New Workspace" size={14} onclick={startCreatingWorkspace} />
+    <IconButton icon={Plus} label="New Workspace" size={14} onclick={() => startCreatingWorkspace("sidebar")} />
   </div>
-  {#if creatingWorkspace}
+  {#if naming}
     <input
       class="new-workspace-input"
       bind:this={newWorkspaceInput}
-      bind:value={newWorkspaceName}
-      onblur={commitNewWorkspace}
+      value={naming.name}
+      oninput={(e) => setNewWorkspaceName(e.currentTarget.value)}
+      onblur={() => void commitNewWorkspace()}
       onkeydown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          commitNewWorkspace();
+          void commitNewWorkspace();
         } else if (e.key === "Escape") {
           e.preventDefault();
           cancelNewWorkspace();
@@ -1145,18 +1130,6 @@
     </div>
   </div>
 </div>
-
-{#if pendingSetupId}
-  <WorkspaceCreateModal
-    workspaceId={pendingSetupId}
-    onSkip={() => (pendingSetupId = null)}
-    onDone={() => {
-      const id = pendingSetupId;
-      pendingSetupId = null;
-      if (id) openWizard(id);
-    }}
-  />
-{/if}
 
 <style>
   .sidebar {

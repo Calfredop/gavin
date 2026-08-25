@@ -20,6 +20,8 @@
   import { gavinTrees } from "$lib/gavinState";
   import { agentProfilesStore, wizardWorkspaceId } from "$lib/layoutState";
   import SetupWizard from "$lib/SetupWizard.svelte";
+  import WorkspaceCreateModal from "$lib/WorkspaceCreateModal.svelte";
+  import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { visibleHubViews } from "$lib/workspaceViews";
@@ -191,6 +193,18 @@
        singleton, so a second mount would draw a duplicate menu. -->
   <ContextMenu />
 </div>
+
+<!-- App-level, beside the wizard it hands off to, rather than inside
+     whichever surface started the flow: the sidebar and the app hub both
+     create workspaces, and the modal has to outlive the one that opened
+     it (the hub closes the moment its new workspace becomes active). -->
+{#if $newWorkspaceFlow.pendingSetupId}
+  <WorkspaceCreateModal
+    workspaceId={$newWorkspaceFlow.pendingSetupId}
+    onSkip={skipSetup}
+    onDone={finishSetup}
+  />
+{/if}
 
 {#if $wizardWorkspaceId}
   <SetupWizard workspaceId={$wizardWorkspaceId} />
