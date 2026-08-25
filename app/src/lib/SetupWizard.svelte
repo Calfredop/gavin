@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, closeWizard, agentProfilesStore } from "./layoutState";
+  import { layoutState, closeWizard, agentProfilesStore, agentModelDefaultsStore} from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig } from "./settings";
   import { setupProgress, type SetupStep } from "./setupWizard";
@@ -25,7 +25,7 @@
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
-  const agentCfg = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore));
+  const agentCfg = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore));
 
   // The two file bodies the derivation needs. Re-read on demand rather
   // than watched: the wizard is short-lived, so a watcher would be more

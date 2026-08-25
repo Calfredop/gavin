@@ -932,6 +932,7 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
                     command: get("command"),
                     mcp_file: get("mcp_file"),
                     mcp_format: get("mcp_format"),
+                    model: get("model"),
                 }
             });
             (name, agent, false)
@@ -947,8 +948,29 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
 /// mcp_format carry the `custom` profile's MCP layout, which cannot come
 /// from the static profile table.
 pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
-    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format") {
+    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model") {
         anyhow::bail!("not a settable agent key: {key}");
+    }
+    // `model` alone can be cleared. Every other key has a profile default
+    // underneath it, so an empty one would mean nothing; an empty model
+    // means "fall back to the app-wide default", which needs the key gone
+    // rather than blanked -- a `model = ""` line reads as a deliberate
+    // empty model to whoever opens the file next.
+    if key == "model" && value.trim().is_empty() {
+        let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
+        // No file means no key to remove. Returning early rather than
+        // falling through keeps a clear from CREATING an empty
+        // config.toml, which is the one thing this path could do that
+        // the caller never asked for.
+        let Ok(existing) = std::fs::read_to_string(&path) else { return Ok(()) };
+        let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
+            anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", path.display())
+        })?;
+        if let Some(table) = doc.get_mut("agent").and_then(|a| a.as_table_mut()) {
+            table.remove("model");
+        }
+        std::fs::write(&path, doc.to_string())?;
+        return Ok(());
     }
     if value.trim().is_empty() || value.contains('\n') {
         anyhow::bail!("{key} must be a non-empty single line");
@@ -2213,6 +2235,50 @@ mod tests {
         assert!(set_root_config_field(dir.path(), "version", "9").is_err(), "unknown key");
         assert!(set_root_config_field(dir.path(), "profile", "").is_err(), "empty value");
         assert!(set_root_config_field(dir.path(), "profile", "a\nb").is_err(), "newline");
+    }
+
+    #[test]
+    fn model_is_settable_and_an_empty_value_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = dir.path().join(GAVIN_ROOT_DIR).join("config.toml");
+
+        set_root_config_field(dir.path(), "model", "opus").unwrap();
+        assert_eq!(
+            scan_root(dir.path()).contexts[0].agent.as_ref().unwrap().model.as_deref(),
+            Some("opus")
+        );
+
+        // Clearing is what "inherit the app-wide default again" means,
+        // and model is the only key with a fallback underneath it.
+        set_root_config_field(dir.path(), "command", "claude").unwrap();
+        set_root_config_field(dir.path(), "model", "").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("model"), "the key is removed, not blanked: {after}");
+        // The rest of [agent] survives the removal.
+        assert!(after.contains("command = \"claude\""), "{after}");
+
+        // Every other key still refuses an empty value.
+        assert!(set_root_config_field(dir.path(), "command", "").is_err());
+        // Clearing a model that was never set is a no-op, not an error.
+        set_root_config_field(dir.path(), "model", "").unwrap();
+
+        // And clearing in a root with no config.toml at all must not
+        // conjure one into existence.
+        let bare = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(bare.path().join(GAVIN_ROOT_DIR)).unwrap();
+        set_root_config_field(bare.path(), "model", "").unwrap();
+        assert!(!bare.path().join(GAVIN_ROOT_DIR).join("config.toml").exists());
+    }
+
+    #[test]
+    fn parse_context_config_reads_the_model_off_the_agent_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[agent]\nprofile = \"claude-code\"\nmodel = \"opus\"\n").unwrap();
+        let (_, agent, warn) = parse_context_config(&path);
+        assert!(!warn);
+        assert_eq!(agent.unwrap().model.as_deref(), Some("opus"));
     }
 
     #[test]

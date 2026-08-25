@@ -2,7 +2,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { setWorkspaceRoot, switchWorkspaceView } from "./layoutState";
   import { gavinTrees } from "./gavinState";
-  import { agentProfilesStore } from "./layoutState";
+  import { agentProfilesStore, agentModelDefaultsStore } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import * as backend from "./backend";
   import { UNFILED_WORKSPACE_ID, SMOKETEST_WORKSPACE_ID, type Workspace } from "./workspace";
@@ -24,7 +24,11 @@
   const tree = $derived($gavinTrees[workspace.id]);
   const rootMissing = $derived(Boolean(workspace.rootPath && tree?.rootMissing));
   const agent = $derived(
-    resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
+    resolveAgentConfig(
+      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $agentProfilesStore,
+      $agentModelDefaultsStore
+    )
   );
 
   // The banner variant never picks a folder itself (D56) -- it hands the

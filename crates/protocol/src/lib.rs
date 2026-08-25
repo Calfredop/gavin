@@ -12,7 +12,12 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
-pub const PROTOCOL_VERSION: u32 = 13;
+///
+/// 14 adds `model` to SetRootConfigField's allow-list. No Request variant
+/// changed, so `min_version_for` is untouched -- the gate that matters is
+/// the app's FEATURE_MIN_VERSION.agentModel, because a v13 daemon parses
+/// the request fine and then refuses the key.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -784,6 +789,14 @@ pub struct AgentConfig {
     /// of the five CLIs use.
     #[serde(default)]
     pub mcp_format: Option<String>,
+    /// The model this workspace's agent launches with, composed onto the
+    /// command as `<model_flag> <model>`. Absent means "inherit the
+    /// app-wide default for this profile" -- the first key in this block
+    /// with a fallback underneath it, which is also why it is the only
+    /// one `set_root_config_field` can clear. `default` keeps an older
+    /// daemon's tree parseable, exactly as `mcp_file` does above.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// A folder that contains a `.gavin-root/` (kind Root, only ever directly
@@ -1375,6 +1388,7 @@ mod tests {
                 command: Some("claude --model opus".to_string()),
                 mcp_file: None,
                 mcp_format: None,
+                model: Some("sonnet".to_string()),
             }),
             outside: false,
         };
@@ -1386,7 +1400,8 @@ mod tests {
                 "file": null,
                 "command": "claude --model opus",
                 "mcpFile": null,
-                "mcpFormat": null
+                "mcpFormat": null,
+                "model": "sonnet"
             })
         );
     }
@@ -1428,7 +1443,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 13);
+        assert_eq!(PROTOCOL_VERSION, 14);
     }
 
     #[test]

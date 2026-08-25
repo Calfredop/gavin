@@ -52,6 +52,10 @@ fn persist_workspaces(
     file_tabs: HashMap<String, String>,
     board_tabs: HashMap<String, crate::config::BoardTabRecord>,
     theme: Option<String>,
+    // Last, and deliberately not beside file_tabs/board_tabs: three
+    // same-shaped maps in a row is an argument list you can transpose
+    // without the compiler noticing.
+    agent_models: HashMap<String, String>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -62,6 +66,7 @@ fn persist_workspaces(
             file_tabs,
             board_tabs,
             theme,
+            agent_models,
         },
     )
 }
@@ -73,6 +78,12 @@ fn persist_workspaces(
 /// them to empty on every save.
 pub struct FileTabs(pub Mutex<HashMap<String, String>>);
 
+/// App-wide default model per agent profile id. Tauri-managed like
+/// `ThemePref`, and persisted into the same `AppConfig` -- so every
+/// command that saves must carry it along, exactly as `SessionNames`
+/// describes.
+pub struct AgentModels(pub Mutex<HashMap<String, String>>);
+
 #[cfg(test)]
 mod workspaces_data_tests {
     use super::*;
@@ -82,6 +93,30 @@ mod workspaces_data_tests {
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json, serde_json::json!({ "workspaces": [], "activeWorkspaceId": null }));
+    }
+
+    /// The same hazard D48 named for `theme`: `agent_models` is a fifth
+    /// carry-through field, so a save that rebuilds AppConfig without it
+    /// silently wipes every app-wide model default.
+    #[test]
+    fn persist_workspaces_carries_agent_models_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
+        let mut models = HashMap::new();
+        models.insert("claude-code".to_string(), "opus".to_string());
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            Some("light".to_string()),
+            models.clone(),
+        )
+        .unwrap();
+        let loaded = crate::config::load(dir.path()).unwrap();
+        assert_eq!(loaded.agent_models, models);
+        assert_eq!(loaded.theme, Some("light".to_string()));
     }
 
     /// The regression D48 exists to prevent: theme is a fourth field on
@@ -99,6 +134,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             HashMap::new(),
             Some("light".to_string()),
+            HashMap::new(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
@@ -296,6 +332,7 @@ pub fn set_workspaces_state(
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id };
     *state.0.lock().unwrap() = data.clone();
@@ -304,8 +341,65 @@ pub fn set_workspaces_state(
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+    )
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_agent_model_defaults(state: State<AgentModels>) -> HashMap<String, String> {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn set_agent_model_default(
+    profile_id: String,
+    model: String,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+) -> Result<(), String> {
+    // An empty model removes the entry rather than storing "": the
+    // picker's unset row must be able to UNDO a default, not just
+    // overwrite it, and a stored empty string would read as a deliberate
+    // empty model to resolveAgentConfig.
+    let agent_models = {
+        let mut current = agent_models_state.0.lock().unwrap();
+        if model.trim().is_empty() {
+            current.remove(&profile_id);
+        } else {
+            current.insert(profile_id, model.trim().to_string());
+        }
+        current.clone()
+    };
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -322,6 +416,7 @@ pub fn set_theme_pref(
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -336,7 +431,16 @@ pub fn set_theme_pref(
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+    )
         .map_err(|e| e.to_string())
 }
 
@@ -355,6 +459,7 @@ pub fn set_session_name(
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -374,7 +479,16 @@ pub fn set_session_name(
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+    )
         .map_err(|e| e.to_string())
 }
 
@@ -397,6 +511,7 @@ pub fn set_file_tabs(
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -404,7 +519,16 @@ pub fn set_file_tabs(
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+    )
         .map_err(|e| e.to_string())
 }
 
@@ -433,6 +557,7 @@ pub fn set_board_tabs(
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -440,7 +565,16 @@ pub fn set_board_tabs(
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
-    persist_workspaces(&config_dir, &data, session_names, file_tabs, board_tabs, theme)
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+    )
         .map_err(|e| e.to_string())
 }
 
@@ -1830,6 +1964,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         file_tabs.clone(),
         board_tabs.clone(),
         config.theme.clone(),
+        config.agent_models.clone(),
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -1841,6 +1976,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(FileTabs(Mutex::new(file_tabs)));
     app_handle.manage(BoardTabs(Mutex::new(board_tabs)));
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
+    app_handle.manage(AgentModels(Mutex::new(config.agent_models)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;

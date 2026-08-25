@@ -541,6 +541,26 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "set-rename-invalid", text: "A name with a slash, or an empty one, shows an inline error and changes nothing" },
       { id: "set-command", text: "Editing the command writes .gavin-root/config.toml and the next Start uses it" },
       {
+        id: "set-model",
+        text: "Picking a Model writes [agent] model, and the row's hint shows the launch line it produces",
+        hint: "Custom… reveals a text box; choosing the first row again removes the key and the hint disappears.",
+      },
+      {
+        id: "set-model-launch",
+        text: "A workspace Model set to Custom shows up in the next agent launch's command line",
+        hint: "Run a card; the terminal's first line should read `claude --model <what you typed>`.",
+      },
+      {
+        id: "global-settings-modal",
+        text: "The sidebar footer's Settings opens the global panel, and its Theme control still flips the theme",
+        hint: "The footer no longer has a theme toggle of its own — the panel's is the only one.",
+      },
+      {
+        id: "global-settings-inherit",
+        text: "A global default for Claude Code makes a workspace with no model of its own read “Default (…)”",
+        hint: "Set one in the panel, then look at that workspace's Settings ▸ Model row.",
+      },
+      {
         id: "set-external",
         text: "Editing config.toml in a terminal updates the panel (~3s); a field you're typing in is NOT clobbered",
         hint: "Focus the Command field, type, then edit config.toml externally.",

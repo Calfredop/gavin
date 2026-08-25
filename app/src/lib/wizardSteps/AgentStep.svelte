@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agentProfilesStore, setAgentField } from "./../layoutState";
+  import { agentProfilesStore, agentModelDefaultsStore, setAgentField } from "./../layoutState";
   import { gavinTrees } from "./../gavinState";
   import { resolveAgentConfig } from "./../settings";
 
@@ -13,7 +13,8 @@
   const agentCfg = $derived(
     resolveAgentConfig(
       tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
-      $agentProfilesStore
+      $agentProfilesStore,
+      $agentModelDefaultsStore
     )
   );
 

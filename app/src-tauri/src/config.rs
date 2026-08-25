@@ -187,6 +187,17 @@ pub struct AppConfig {
     /// resets on the next save.
     #[serde(default)]
     pub theme: Option<String>,
+    /// App-wide default model per agent profile id, e.g.
+    /// `{"claude-code": "opus"}`. A workspace with no `[agent] model` of
+    /// its own inherits the entry for the profile it runs. Keyed by
+    /// profile because one string cannot serve two CLIs -- `opus` is
+    /// noise to Codex, so a single field would produce a bad flag the
+    /// moment a workspace switched profiles. Like
+    /// session_names/file_tabs/board_tabs/theme this must be carried
+    /// through `persist_workspaces`, or it silently resets on the next
+    /// save.
+    #[serde(default)]
+    pub agent_models: HashMap<String, String>,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -289,6 +300,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -308,6 +320,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -341,6 +354,7 @@ mod tests {
             file_tabs,
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -447,6 +461,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -483,6 +498,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -519,6 +535,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -535,6 +552,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(&nested, &config).unwrap();
 
@@ -559,6 +577,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs,
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -608,6 +627,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -657,6 +677,7 @@ mod tests {
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
             theme: None,
+            agent_models: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

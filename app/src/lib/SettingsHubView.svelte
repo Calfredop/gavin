@@ -6,10 +6,14 @@
     setWorkspaceFlag,
     setAgentField,
     agentProfilesStore,
+    agentModelDefaultsStore,
     restartDaemonInPlace,
     mcpFormatsStore,
+    daemonCompat,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
+  import { featureBlockedReason } from "./daemonCompat";
+  import { modelOptions, CUSTOM_MODEL } from "./agentModel";
   import {
     resolveAgentConfig,
     validateAgentFileName,
@@ -31,7 +35,7 @@
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
-  const agent = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore));
+  const agent = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore));
   const configWarning = $derived(Boolean(rootContext?.configWarning));
   const hasRoot = $derived(Boolean(ws?.rootPath));
   const profileLabel = $derived(
@@ -93,6 +97,51 @@
   /// for writing gavin's config to the wrong place.
   const isCustom = $derived(agent.profileId === "custom");
   const mcpFormat = $derived(rootContext?.agent?.mcpFormat ?? $mcpFormatsStore[0]?.id ?? "");
+
+  // --- model ------------------------------------------------------------
+  /// The profile row itself, for its flag and presets. `agent` above is
+  /// the RESOLVED config, which carries neither.
+  const profileInfo = $derived($agentProfilesStore.find((p) => p.id === agent.profileId) ?? null);
+  /// What this workspace has set of its OWN, which is not agent.model:
+  /// that one has already fallen back to the app-wide default, and the
+  /// picker has to be able to tell "inheriting" from "chose the same
+  /// value deliberately".
+  const ownModel = $derived(rootContext?.agent?.model ?? "");
+  const globalModel = $derived($agentModelDefaultsStore[agent.profileId] ?? "");
+  /// A v13 daemon refuses the `model` key outright, so the control is
+  /// disabled with the reason instead of failing on blur. This is the
+  /// only surface that can produce a `model` payload -- the global panel
+  /// writes config.json through Tauri and never asks the daemon.
+  const modelBlocked = $derived(featureBlockedReason($daemonCompat, "agentModel"));
+
+  let modelCustomOpen = $state(false);
+  let modelDraft = $state("");
+  $effect(() => {
+    const model = ownModel;
+    if (focused !== "model") modelDraft = model;
+  });
+
+  const modelIsCustom = $derived(
+    modelCustomOpen || (ownModel !== "" && !(profileInfo?.models ?? []).includes(ownModel))
+  );
+
+  function pickModel(value: string): void {
+    if (value === CUSTOM_MODEL) {
+      modelCustomOpen = true;
+      modelDraft = ownModel;
+      return;
+    }
+    modelCustomOpen = false;
+    void setAgentField(workspaceId, "model", value);
+  }
+
+  function commitModel(): void {
+    const trimmed = modelDraft.trim();
+    if (trimmed === ownModel) return;
+    // "" is a real value here, not a no-op: it removes the key and puts
+    // the workspace back on the app-wide default.
+    void setAgentField(workspaceId, "model", trimmed);
+  }
 
   function commitMcpFile(): void {
     mcpFileError = null;
@@ -266,6 +315,47 @@
             }}
           />
         </label>
+        {#if profileInfo && profileInfo.modelFlag}
+          <div class="row model-row">
+            <span>Model</span>
+            <select
+              value={modelIsCustom ? CUSTOM_MODEL : ownModel}
+              disabled={Boolean(modelBlocked)}
+              title={modelBlocked ?? ""}
+              onchange={(e) => pickModel(e.currentTarget.value)}
+            >
+              {#each modelOptions(profileInfo, globalModel) as opt (opt.value)}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+            {#if modelIsCustom}
+              <input
+                bind:value={modelDraft}
+                spellcheck="false"
+                placeholder="model name"
+                disabled={Boolean(modelBlocked)}
+                title={modelBlocked ?? ""}
+                onfocus={() => (focused = "model")}
+                onblur={() => {
+                  focused = null;
+                  commitModel();
+                }}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+              />
+            {/if}
+          </div>
+          {#if modelBlocked}
+            <p class="hint warn">{modelBlocked}</p>
+          {:else if agent.model}
+            <p class="hint">Launches as <code>{agent.launchCommand}</code>.</p>
+          {/if}
+        {:else if profileInfo}
+          <p class="hint">
+            Set the model in Command — gavin knows no model flag for {profileLabel}.
+          </p>
+        {/if}
         <label class="row">
           <span>Agent file</span>
           <input
@@ -420,6 +510,15 @@
     font-size: 1em;
     padding: 3px 8px;
     min-width: 240px;
+  }
+  /* The only row with two controls side by side: the shared 240px floor
+     would push it past a narrow pane. */
+  .model-row select {
+    min-width: 160px;
+  }
+  .model-row input {
+    min-width: 0;
+    flex: 1 1 auto;
   }
   .check {
     display: flex;

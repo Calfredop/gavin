@@ -183,12 +183,29 @@ pub struct AgentProfile {
     /// either through stdin or as a prompt argument". The separator also
     /// keeps a prompt that starts with `-` from being read as a flag.
     pub headless_args: &'static str,
+    /// The flag that selects a model, e.g. `--model`. Empty where the
+    /// command takes none -- `cursor` is the IDE launcher, and `custom`
+    /// is the user's own argv. An empty flag hides every model control
+    /// for the profile rather than guessing one, which is the same
+    /// posture `headless_args` takes above.
+    pub model_flag: &'static str,
+    /// Model names offered as picks. Only ever names the CLI itself
+    /// documents as STABLE aliases: `claude --help` names `fable`,
+    /// `opus` and `sonnet`, which point at the latest model of each tier
+    /// and so never go stale. Nobody else offers that -- `opencode
+    /// models` is a per-user catalogue built from whichever providers
+    /// that user configured, and Gemini's and Codex's names are dated
+    /// ids that rot -- so those rows ship empty and the user types what
+    /// they want. A wrong name here lands in somebody's argv.
+    pub models: &'static [&'static str],
     pub mcp: Option<McpLayout>,
 }
 
 pub const AGENT_PROFILES: &[AgentProfile] = &[
     AgentProfile {
         id: "claude-code",
+        model_flag: "--model",
+        models: &["fable", "opus", "sonnet"],
         label: "Claude Code",
         instructions_file: "CLAUDE.md",
         command: "claude",
@@ -233,6 +250,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     },
     AgentProfile {
         id: "codex",
+        model_flag: "--model",
+        models: &[],
         label: "Codex CLI",
         instructions_file: "AGENTS.md",
         command: "codex",
@@ -249,6 +268,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     },
     AgentProfile {
         id: "gemini",
+        model_flag: "--model",
+        models: &[],
         label: "Gemini CLI",
         instructions_file: "GEMINI.md",
         command: "gemini",
@@ -266,6 +287,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     },
     AgentProfile {
         id: "cursor",
+        model_flag: "",
+        models: &[],
         label: "Cursor",
         instructions_file: "AGENTS.md",
         command: "cursor",
@@ -284,6 +307,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     },
     AgentProfile {
         id: "opencode",
+        model_flag: "--model",
+        models: &[],
         label: "opencode",
         instructions_file: "AGENTS.md",
         command: "opencode",
@@ -301,6 +326,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     },
     AgentProfile {
         id: "custom",
+        model_flag: "",
+        models: &[],
         label: "Custom…",
         instructions_file: "",
         command: "",
@@ -736,6 +763,13 @@ pub struct AgentProfileDto {
     pub mcp_config_file: String,
     pub prompt_arg: bool,
     pub headless_args: String,
+    /// The flag that selects a model, empty where the CLI takes none --
+    /// which is how the settings panels decide whether to offer a model
+    /// control for this profile at all.
+    pub model_flag: String,
+    /// Stable model aliases offered as picks; empty where the CLI has
+    /// none worth pinning.
+    pub models: Vec<String>,
 }
 
 /// The dialects a `custom` profile can be pointed at, for the settings
@@ -776,6 +810,8 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             mcp_config_file: p.mcp.as_ref().map(|m| m.config_file).unwrap_or("").to_string(),
             prompt_arg: p.prompt_arg,
             headless_args: p.headless_args.to_string(),
+            model_flag: p.model_flag.to_string(),
+            models: p.models.iter().map(|m| m.to_string()).collect(),
         })
         .collect()
 }
@@ -807,6 +843,32 @@ mod tests {
     /// rather than a second copy of the same constants.
     fn claude_layout() -> ResolvedMcp {
         profile_by_id("claude-code").mcp.as_ref().unwrap().into()
+    }
+
+    #[test]
+    fn only_claude_code_ships_model_presets_and_cursor_has_no_flag() {
+        let by = |id: &str| AGENT_PROFILES.iter().find(|p| p.id == id).unwrap();
+        // Aliases named by `claude --help`: pointers to the latest model
+        // of each tier, so they cannot go stale.
+        assert_eq!(by("claude-code").models, &["fable", "opus", "sonnet"]);
+        assert_eq!(by("claude-code").model_flag, "--model");
+        // Flags verified from each CLI's own --help; no preset names,
+        // because theirs are dated ids that rot.
+        assert_eq!(by("gemini").model_flag, "--model");
+        assert!(by("gemini").models.is_empty());
+        assert_eq!(by("opencode").model_flag, "--model");
+        assert!(by("opencode").models.is_empty());
+        // `cursor` is the IDE launcher -- no model control at all.
+        assert_eq!(by("cursor").model_flag, "");
+        assert_eq!(by("custom").model_flag, "");
+    }
+
+    #[test]
+    fn profile_dto_carries_the_model_fields_in_camel_case() {
+        let dto = agent_profiles().into_iter().find(|p| p.id == "claude-code").unwrap();
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["modelFlag"], "--model");
+        assert_eq!(json["models"], serde_json::json!(["fable", "opus", "sonnet"]));
     }
 
     #[test]

@@ -492,7 +492,7 @@ export async function commitViaAgent(workspaceId: string): Promise<boolean> {
   const s = current(workspaceId);
   if (!s || s.busy || s.op || s.agentCommit) return false;
   const agent = resolvedAgentFor(workspaceId);
-  const command = buildHeadlessCommand(agent.command, agent.headlessArgs, COMMIT_PROMPT);
+  const command = buildHeadlessCommand(agent.launchCommand, agent.headlessArgs, COMMIT_PROMPT);
   if (!command) {
     noteError(workspaceId, `Commit via agent needs a headless agent — ${agent.profileId} has none`);
     return false;

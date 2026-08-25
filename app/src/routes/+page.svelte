@@ -18,7 +18,11 @@
   import ContextMenu from "$lib/ContextMenu.svelte";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
-  import { agentProfilesStore, wizardWorkspaceId } from "$lib/layoutState";
+  import {
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    wizardWorkspaceId,
+  } from "$lib/layoutState";
   import SetupWizard from "$lib/SetupWizard.svelte";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
@@ -53,7 +57,8 @@
   const activeAgent = $derived(
     resolveAgentConfig(
       $gavinTrees[activeWorkspace?.id ?? ""]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
-      $agentProfilesStore
+      $agentProfilesStore,
+      $agentModelDefaultsStore
     )
   );
   const accent = $derived(accentVar(activeWorkspace?.color, themeState.effective));

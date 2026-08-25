@@ -60,6 +60,21 @@ describe("featureBlockedReason", () => {
     expect(featureBlockedReason(v11, "tools")).toBeNull();
   });
 
+  // The v13 daemon is the one that archives happily and still refuses
+  // `[agent] model`: SetRootConfigField parses fine, then the allow-list
+  // rejects the key. Nothing on the wire gate catches that, so the
+  // Settings row has to be blocked here or it fails on blur.
+  it("blocks the agent model on a v13 daemon that allows archiving", () => {
+    const v13 = { daemonVersion: 13, appVersion: 14, degraded: true };
+    expect(featureBlockedReason(v13, "archive")).toBeNull();
+    expect(featureBlockedReason(v13, "agentModel")).toContain("v14");
+  });
+
+  it("stops blocking the agent model at exactly v14", () => {
+    const v14 = { daemonVersion: 14, appVersion: 14, degraded: false };
+    expect(featureBlockedReason(v14, "agentModel")).toBeNull();
+  });
+
   it("blocks nothing before a connection exists", () => {
     expect(featureBlockedReason(null, "orchestration")).toBeNull();
   });

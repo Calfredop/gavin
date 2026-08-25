@@ -580,6 +580,11 @@ export async function bootstrap(): Promise<void> {
     .then((formats) => mcpFormatsStore.set(formats))
     .catch(() => {});
 
+  void backend
+    .getAgentModelDefaults()
+    .then((models) => agentModelDefaultsStore.set(models))
+    .catch(() => {});
+
   void pollForStartupState();
 }
 
@@ -703,12 +708,22 @@ export const agentProfilesStore = writable<AgentProfileInfo[]>([]);
 /// the profile table and, like it, empty until then.
 export const mcpFormatsStore = writable<McpFormatInfo[]>([]);
 
+/// App-wide default model per profile id, from config.json. Empty until
+/// bootstrap fetches it; resolveAgentConfig reads a missing entry as "no
+/// model", so an early call is safe rather than wrong -- the same
+/// posture agentProfilesStore takes above.
+export const agentModelDefaultsStore = writable<Record<string, string>>({});
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
 export function resolvedAgentFor(workspaceId: string) {
   const tree = get(gavinTrees)[workspaceId];
   const rootContext = tree?.contexts.find((c) => c.kind === "root");
-  return resolveAgentConfig(rootContext?.agent ?? null, get(agentProfilesStore));
+  return resolveAgentConfig(
+    rootContext?.agent ?? null,
+    get(agentProfilesStore),
+    get(agentModelDefaultsStore)
+  );
 }
 
 // Starts the workspace's main agent: a normal daemon session at the
@@ -720,7 +735,10 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   if (!ws?.rootPath || ws.mainSessionId) return;
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, resolvedAgentFor(workspaceId).command);
+    sessionId = await backend.createSession(
+      ws.rootPath,
+      resolvedAgentFor(workspaceId).launchCommand
+    );
   } catch (e) {
     setError(String(e));
     return;
@@ -756,7 +774,7 @@ export async function startMainAgentWithPrompt(
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws?.rootPath || ws.mainSessionId) return;
-  const command = buildRunCommand(resolvedAgentFor(workspaceId).command, prompt);
+  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
   let sessionId: string;
   try {
     sessionId = await backend.createSession(ws.rootPath, command);
@@ -789,13 +807,31 @@ export async function stopMainAgent(workspaceId: string): Promise<void> {
 /// watcher push -- no optimistic local copy to fall out of sync.
 export async function setAgentField(
   workspaceId: string,
-  key: "profile" | "file" | "command" | "mcp_file" | "mcp_format",
+  key: "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model",
   value: string
 ): Promise<void> {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
   if (!ws?.rootPath) return;
   try {
     await backend.setRootConfigField(ws.rootPath, key, value);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// The app-wide default model for one profile. Machine-local, so it goes
+/// straight to config.json through Tauri and never touches the daemon --
+/// which is why it keeps working against a daemon too old for
+/// `[agent] model`.
+export async function setAgentModelDefault(profileId: string, model: string): Promise<void> {
+  try {
+    await backend.setAgentModelDefault(profileId, model);
+    agentModelDefaultsStore.update((current) => {
+      const next = { ...current };
+      if (model.trim()) next[profileId] = model.trim();
+      else delete next[profileId];
+      return next;
+    });
   } catch (e) {
     setError(String(e));
   }

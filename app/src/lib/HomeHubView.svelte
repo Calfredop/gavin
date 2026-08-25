@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { layoutState, switchWorkspaceView, agentProfilesStore, openWizard } from "./layoutState";
+  import { layoutState, switchWorkspaceView, agentProfilesStore, openWizard, agentModelDefaultsStore} from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import { setupProgress } from "./setupWizard";
   import { gavinTrees } from "./gavinState";
@@ -27,7 +27,11 @@
   // Named agentCfg, not agent: `agent` is already the MainAgentPanel
   // bind:this handle below.
   const agentCfg = $derived(
-    resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
+    resolveAgentConfig(
+      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $agentProfilesStore,
+      $agentModelDefaultsStore
+    )
   );
 
   let prdLines = $state<string[]>([]);

@@ -83,7 +83,7 @@ export async function developCard(
   // it, and inlining a task's body is what turns an interview into a
   // build.
   const command = buildRunCommand(
-    resolvedAgentFor(workspaceId).command,
+    resolvedAgentFor(workspaceId).launchCommand,
     composeDevelopPrompt(card.id, card.title)
   );
 
@@ -143,7 +143,7 @@ async function launchCard(
   // The launch command lives in .gavin-root/config.toml now (D41), so it
   // comes from the same resolver the main agent and the settings panel
   // use rather than a per-workspace field.
-  const command = buildRunCommand(resolvedAgentFor(workspaceId).command, prompt);
+  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
   const cwd = card.contextFolder;
 
   let sessionId: string;

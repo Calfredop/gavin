@@ -2,7 +2,7 @@
   import { get } from "svelte/store";
   import { ChevronDown, FolderGit2, Play, GitMerge, Trash2, Plus, Eraser } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
-  import { agentProfilesStore, createSessionForCard } from "./layoutState";
+  import { agentProfilesStore, createSessionForCard, agentModelDefaultsStore} from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig } from "./settings";
   import {
@@ -35,7 +35,11 @@
   const anyPrunable = $derived(worktrees.some((w) => w.prunable));
   const tree = $derived($gavinTrees[workspaceId]);
   const agentCommand = $derived(
-    resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore).command
+    resolveAgentConfig(
+      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $agentProfilesStore,
+      $agentModelDefaultsStore
+    ).launchCommand
   );
 
   let open = $state(false);

@@ -12,9 +12,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --" },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "" },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "" },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"] },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "", modelFlag: "--model", models: [] },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "", modelFlag: "", models: [] },
 ];
 
 describe("normalizeColor", () => {
@@ -93,7 +93,7 @@ describe("renameDecision", () => {
 
 describe("resolveAgentConfig", () => {
   it("prefers explicit config over the profile default", () => {
-    const r = resolveAgentConfig({ profile: "codex", file: "NOTES.md", command: "codex --x" }, PROFILES);
+    const r = resolveAgentConfig({ profile: "codex", file: "NOTES.md", command: "codex --x" }, PROFILES, {});
     expect(r).toEqual({
       profileId: "codex",
       file: "NOTES.md",
@@ -101,28 +101,91 @@ describe("resolveAgentConfig", () => {
       mcpSupported: true,
       mcpConfigFile: ".codex/config.toml",
       headlessArgs: "",
+      model: "",
+      launchCommand: "codex --x",
     });
   });
 
   it("falls back to the profile's defaults for absent keys", () => {
-    const r = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES);
+    const r = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {});
     expect(r.file).toBe("AGENTS.md");
     expect(r.command).toBe("codex");
   });
 
   it("falls back to claude-code for a missing or unknown profile", () => {
-    expect(resolveAgentConfig(null, PROFILES)).toEqual({
+    expect(resolveAgentConfig(null, PROFILES, {})).toEqual({
       profileId: "claude-code", file: "CLAUDE.md", command: "claude",
       mcpSupported: true, mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --',
+      model: "", launchCommand: "claude",
     });
-    expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES).profileId).toBe(
+    expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES, {}).profileId).toBe(
       "claude-code"
     );
   });
 
+  it("prefers the workspace model over the app-wide default", () => {
+    const r = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: null, model: "sonnet" },
+      PROFILES,
+      { "claude-code": "opus" }
+    );
+    expect(r.model).toBe("sonnet");
+    expect(r.launchCommand).toBe("claude --model sonnet");
+  });
+
+  it("inherits the app-wide default for the RESOLVED profile only", () => {
+    const globals = { "claude-code": "opus", codex: "some-codex-model" };
+    expect(
+      resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, globals).model
+    ).toBe("some-codex-model");
+    // An unknown profile resolves to claude-code, so it inherits
+    // claude-code's default -- not the dead row's name it asked for.
+    expect(
+      resolveAgentConfig({ profile: "nope", file: null, command: null }, PROFILES, globals).model
+    ).toBe("opus");
+  });
+
+  it("leaves launchCommand equal to command when no model resolves", () => {
+    const r = resolveAgentConfig({ profile: "claude-code", file: null, command: null }, PROFILES, {});
+    expect(r.model).toBe("");
+    expect(r.launchCommand).toBe(r.command);
+  });
+
+  it("never folds the model into command", () => {
+    // command is what the Settings box writes back to config.toml; a
+    // flag folded into it would be persisted and then appended a second
+    // time on the next launch.
+    const r = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: "claude" },
+      PROFILES,
+      { "claude-code": "opus" }
+    );
+    expect(r.command).toBe("claude");
+    expect(r.launchCommand).toBe("claude --model opus");
+  });
+
+  it("adds no flag for a profile that has none", () => {
+    const r = resolveAgentConfig(
+      { profile: "custom", file: null, command: "my-agent" },
+      PROFILES,
+      { custom: "whatever" }
+    );
+    expect(r.model).toBe("whatever");
+    expect(r.launchCommand).toBe("my-agent");
+  });
+
+  it("treats a blank workspace model as unset", () => {
+    const r = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: null, model: "  " },
+      PROFILES,
+      { "claude-code": "opus" }
+    );
+    expect(r.model).toBe("opus");
+  });
+
   it("keeps custom usable only through its explicit values", () => {
-    const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES);
+    const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES, {});
     expect(r).toEqual({
       profileId: "custom",
       file: "RULES.md",
@@ -130,9 +193,11 @@ describe("resolveAgentConfig", () => {
       mcpSupported: false,
       mcpConfigFile: "",
       headlessArgs: "",
+      model: "",
+      launchCommand: "my-agent",
     });
     // Custom with nothing filled in still resolves to something safe.
-    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES);
+    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
     expect(bare.file).toBe("CLAUDE.md");
     expect(bare.command).toBe("claude");
   });
@@ -142,9 +207,9 @@ describe("resolveAgentConfig", () => {
   // must NOT borrow claude's flags, and an unfilled one offers no
   // headless run at all.
   it("takes the headless argv from the effective profile only, with no fallback", () => {
-    expect(resolveAgentConfig(null, PROFILES).headlessArgs).toBe('-p --allowedTools "Bash(git *)" --');
-    expect(resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES).headlessArgs).toBe("");
-    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES);
+    expect(resolveAgentConfig(null, PROFILES, {}).headlessArgs).toBe('-p --allowedTools "Bash(git *)" --');
+    expect(resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {}).headlessArgs).toBe("");
+    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
     expect(bare.command).toBe("claude");
     expect(bare.headlessArgs).toBe("");
   });
@@ -152,13 +217,14 @@ describe("resolveAgentConfig", () => {
   it("gives custom MCP support the moment a config file is named for it", () => {
     // The one profile with no verified layout of its own: its support
     // follows from config, the same resolution order as every other field.
-    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES);
+    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
     expect(bare.mcpSupported).toBe(false);
     expect(bare.mcpConfigFile).toBe("");
 
     const named = resolveAgentConfig(
       { profile: "custom", file: null, command: null, mcpFile: ".myagent/mcp.json" },
-      PROFILES
+      PROFILES,
+      {}
     );
     expect(named.mcpSupported).toBe(true);
     expect(named.mcpConfigFile).toBe(".myagent/mcp.json");
@@ -166,7 +232,8 @@ describe("resolveAgentConfig", () => {
     // A cleared box is not an override, here as everywhere else.
     const cleared = resolveAgentConfig(
       { profile: "custom", file: null, command: null, mcpFile: "  " },
-      PROFILES
+      PROFILES,
+      {}
     );
     expect(cleared.mcpSupported).toBe(false);
 
@@ -174,7 +241,8 @@ describe("resolveAgentConfig", () => {
     // make the panel offer a write that cannot happen.
     const escaping = resolveAgentConfig(
       { profile: "custom", file: null, command: null, mcpFile: "../outside.json" },
-      PROFILES
+      PROFILES,
+      {}
     );
     expect(escaping.mcpSupported).toBe(false);
     expect(escaping.mcpConfigFile).toBe("");
@@ -183,13 +251,14 @@ describe("resolveAgentConfig", () => {
   it("never lets a config path override a profile's verified layout", () => {
     const r = resolveAgentConfig(
       { profile: "codex", file: null, command: null, mcpFile: ".somewhere/else.json" },
-      PROFILES
+      PROFILES,
+      {}
     );
     expect(r.mcpConfigFile).toBe(".codex/config.toml");
   });
 
   it("is empty-string safe — a cleared field is not an override", () => {
-    const r = resolveAgentConfig({ profile: "codex", file: "  ", command: "" }, PROFILES);
+    const r = resolveAgentConfig({ profile: "codex", file: "  ", command: "" }, PROFILES, {});
     expect(r.file).toBe("AGENTS.md");
     expect(r.command).toBe("codex");
   });

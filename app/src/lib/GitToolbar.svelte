@@ -20,7 +20,7 @@
   } from "./gitState";
   import { branchLabel } from "./git";
   import { gavinTrees } from "./gavinState";
-  import { agentProfilesStore } from "./layoutState";
+  import { agentProfilesStore, agentModelDefaultsStore} from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import { tooltip } from "./tooltip";
   import IconButton from "./ui/IconButton.svelte";
@@ -49,7 +49,8 @@
   const agent = $derived(
     resolveAgentConfig(
       $gavinTrees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
-      $agentProfilesStore
+      $agentProfilesStore,
+      $agentModelDefaultsStore
     )
   );
   const agentPhase = $derived(agentCommitPhase(view));

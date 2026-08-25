@@ -34,6 +34,10 @@ export interface AgentConfig {
   /// because an older daemon's tree does not send them.
   mcpFile?: string | null;
   mcpFormat?: string | null;
+  /// The workspace's chosen model. Optional because an older daemon does
+  /// not send it; absent means the app-wide default for this profile
+  /// applies instead.
+  model?: string | null;
 }
 
 export interface GavinContext {

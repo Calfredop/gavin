@@ -68,6 +68,19 @@ export function setThemePref(theme: string | null): Promise<void> {
   return invoke("set_theme_pref", { theme });
 }
 
+/// App-wide default model per agent profile id. A workspace with no model
+/// of its own inherits the entry for the profile it runs -- machine-local
+/// (it lives in config.json beside the theme), unlike the workspace's own
+/// model, which is a committed project fact in config.toml.
+export function getAgentModelDefaults(): Promise<Record<string, string>> {
+  return invoke("get_agent_model_defaults");
+}
+
+/// An empty model removes the default rather than storing a blank.
+export function setAgentModelDefault(profileId: string, model: string): Promise<void> {
+  return invoke("set_agent_model_default", { profileId, model });
+}
+
 // Set once by layoutState.ts's bootstrap() -- both real input paths in
 // this app (terminalRegistry.ts's per-keystroke term.onData, and
 // clipboard.ts's paste action) already call writeInput directly, so
@@ -304,6 +317,8 @@ export function agentProfiles(): Promise<
     mcpConfigFile: string;
     promptArg: boolean;
     headlessArgs: string;
+    modelFlag: string;
+    models: string[];
   }>
 > {
   return invoke("agent_profiles");

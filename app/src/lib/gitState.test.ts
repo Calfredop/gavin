@@ -77,6 +77,7 @@ vi.mock("./layoutState", async () => {
       profileId: "claude-code",
       file: "CLAUDE.md",
       command: "claude",
+      launchCommand: "claude",
       mcpSupported: true,
       mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --',
@@ -599,6 +600,7 @@ describe("commit via agent", () => {
     vi.mocked(resolvedAgentFor).mockReturnValueOnce({
       profileId: "codex", file: "AGENTS.md", command: "codex",
       mcpSupported: false, mcpConfigFile: "", headlessArgs: "",
+      model: "", launchCommand: "codex",
     });
     ensureGitView("ws", "/r");
     await refresh("ws");

@@ -33,6 +33,11 @@ export const FEATURE_MIN_VERSION = {
   // ArchiveCard/UnarchiveCard at all, so the toggle and both actions are
   // disabled with the reason rather than failing on click.
   archive: 13,
+  // `[agent] model`. A v13 daemon parses SetRootConfigField perfectly
+  // well and then refuses the key -- its allow-list has no `model` --
+  // so nothing on the wire gate catches this. The row is disabled with
+  // the reason rather than failing on blur.
+  agentModel: 14,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

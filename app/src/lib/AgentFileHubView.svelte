@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, agentProfilesStore } from "./layoutState";
+  import { layoutState, agentProfilesStore, agentModelDefaultsStore} from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig } from "./settings";
   import FileEditor from "./FileEditor.svelte";
@@ -15,7 +15,11 @@
   // profile's default.
   const tree = $derived($gavinTrees[workspaceId]);
   const agent = $derived(
-    resolveAgentConfig(tree?.contexts.find((c) => c.kind === "root")?.agent ?? null, $agentProfilesStore)
+    resolveAgentConfig(
+      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $agentProfilesStore,
+      $agentModelDefaultsStore
+    )
   );
   const path = $derived(root ? `${root}/${agent.file}` : null);
 </script>

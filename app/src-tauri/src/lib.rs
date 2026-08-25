@@ -111,6 +111,8 @@ pub fn run() {
             session::promote_checklist_item,
             session::seed_smoke_test_data,
             session::set_root_config_field,
+            session::get_agent_model_defaults,
+            session::set_agent_model_default,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_setup::mcp_formats,

@@ -34,6 +34,7 @@ vi.mock("./backend", () => ({
   setRootConfigField: vi.fn().mockResolvedValue(undefined),
   composeAgentPrompt: vi.fn().mockResolvedValue("prompt"),
   agentProfiles: vi.fn().mockResolvedValue([]),
+  getAgentModelDefaults: vi.fn().mockResolvedValue({}),
   mcpFormats: vi.fn().mockResolvedValue([]),
   moveAgentFile: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: endTabs calls .catch() on this, so a bare

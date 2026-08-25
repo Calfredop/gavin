@@ -41,6 +41,7 @@ vi.mock("./layoutState", () => ({
     profileId: "claude-code",
     file: "CLAUDE.md",
     command: "claude --model opus",
+    launchCommand: "claude --model opus",
     mcpSupported: true,
   })),
 }));

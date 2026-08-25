@@ -42,7 +42,7 @@
 {#if forking}
   <GitForkDialog
     {workspaceId}
-    agentCommand={resolvedAgentFor(workspaceId).command}
+    agentCommand={resolvedAgentFor(workspaceId).launchCommand}
     onSpawnAgent={() => {}}
     allowSpawn={false}
     switchAfter={false}

@@ -22,7 +22,12 @@ vi.mock("./layoutState", () => ({
   // a test that needs a running step's session to still exist has to be
   // able to put a page holding it in here.
   layoutState: writable({ workspaces: [] as unknown[], sessionStatusById: {} as Record<string, string> }),
-  resolvedAgentFor: vi.fn(() => ({ command: "claude", file: "CLAUDE.md", profile: "claude-code" })),
+  resolvedAgentFor: vi.fn(() => ({
+    command: "claude",
+    launchCommand: "claude",
+    file: "CLAUDE.md",
+    profile: "claude-code",
+  })),
   createSessionOnPage: vi.fn(),
   createPage: vi.fn().mockResolvedValue(null),
   setSessionName: vi.fn().mockResolvedValue(undefined),

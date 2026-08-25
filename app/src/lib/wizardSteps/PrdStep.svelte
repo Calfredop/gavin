@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { layoutState, agentProfilesStore, startMainAgentWithPrompt } from "./../layoutState";
+  import {
+    layoutState,
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    startMainAgentWithPrompt,
+  } from "./../layoutState";
   import { gavinTrees } from "./../gavinState";
   import { resolveAgentConfig } from "./../settings";
   import { applyPrdSections, agentFlowAvailable } from "./../setupWizard";
@@ -17,7 +22,8 @@
   const agentCfg = $derived(
     resolveAgentConfig(
       tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
-      $agentProfilesStore
+      $agentProfilesStore,
+      $agentModelDefaultsStore
     )
   );
   const profile = $derived($agentProfilesStore.find((p) => p.id === agentCfg.profileId));

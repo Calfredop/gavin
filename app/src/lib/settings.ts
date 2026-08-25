@@ -1,3 +1,4 @@
+import { composeLaunchCommand } from "./agentModel";
 import type { AgentConfig } from "./gavin";
 import type { EffectiveTheme } from "./ui/theme";
 
@@ -19,6 +20,13 @@ export interface AgentProfileInfo {
   /// The argv for a one-shot run with no TUI, empty where unverified;
   /// gates every hidden background run (agent_setup.rs's headless_args).
   headlessArgs: string;
+  /// The flag that selects a model, e.g. `--model`. Empty where the CLI
+  /// takes none, which is how both settings panels decide whether to
+  /// offer a model control for this profile at all.
+  modelFlag: string;
+  /// Stable model aliases offered as picks; empty where the CLI has none
+  /// worth pinning, and the user types their own instead.
+  models: string[];
 }
 
 /// Mirrors McpFormatDto from agent_setup.rs, for the `custom` profile's
@@ -105,6 +113,14 @@ export interface ResolvedAgent {
   /// there is none to write -- which is only ever an unconfigured
   /// `custom` profile.
   mcpConfigFile: string;
+  /// The model this workspace launches with: its own `[agent] model`,
+  /// else the app-wide default for the RESOLVED profile, else "".
+  model: string;
+  /// `command` with the model flag composed on. What every LAUNCHER
+  /// uses. `command` above stays the raw configured value, because that
+  /// is what the settings box edits and writes back to config.toml -- a
+  /// flag folded into it would be persisted and then appended again.
+  launchCommand: string;
 }
 
 const FALLBACK_PROFILE = "claude-code";
@@ -118,7 +134,11 @@ function nonEmpty(value: string | null | undefined): string | null {
 /// and the agent-file view can never disagree.
 export function resolveAgentConfig(
   config: AgentConfig | null | undefined,
-  profiles: AgentProfileInfo[]
+  profiles: AgentProfileInfo[],
+  /// The app-wide default model per profile id (config.json). Required
+  /// rather than defaulted, so the compiler names every call site
+  /// instead of letting one silently stop inheriting.
+  globalModels: Record<string, string>
 ): ResolvedAgent {
   const requested = nonEmpty(config?.profile) ?? FALLBACK_PROFILE;
   const configured = nonEmpty(config?.mcpFile);
@@ -126,8 +146,20 @@ export function resolveAgentConfig(
   const profile = profiles.find((p) => p.id === requested);
   const fallback = profiles.find((p) => p.id === FALLBACK_PROFILE);
   const effective = profile ?? fallback;
+  const profileId = effective?.id ?? FALLBACK_PROFILE;
+  const command =
+    nonEmpty(config?.command) ??
+    nonEmpty(effective?.command) ??
+    nonEmpty(fallback?.command) ??
+    "claude";
+  // Keyed by the RESOLVED profile, not the requested one: a config
+  // naming a profile that no longer exists runs claude-code, so it must
+  // inherit claude-code's default rather than a dead row's.
+  const model = nonEmpty(config?.model) ?? nonEmpty(globalModels[profileId]) ?? "";
   return {
-    profileId: effective?.id ?? FALLBACK_PROFILE,
+    profileId,
+    model,
+    launchCommand: composeLaunchCommand(command, effective?.modelFlag ?? "", model),
     // `custom` carries empty defaults, so an unfilled custom profile still
     // resolves to something openable rather than an empty path.
     file:
@@ -135,11 +167,7 @@ export function resolveAgentConfig(
       nonEmpty(effective?.instructionsFile) ??
       nonEmpty(fallback?.instructionsFile) ??
       "CLAUDE.md",
-    command:
-      nonEmpty(config?.command) ??
-      nonEmpty(effective?.command) ??
-      nonEmpty(fallback?.command) ??
-      "claude",
+    command,
     // `custom` has no row in the table to carry a layout, so its support
     // follows from whether someone has named a USABLE file for it -- the
     // same resolution order as every other field, config over profile. A

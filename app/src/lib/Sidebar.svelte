@@ -2,6 +2,7 @@
   import { get } from "svelte/store";
   import { accentVar } from "./settings";
   import WorkspaceCreateModal from "./WorkspaceCreateModal.svelte";
+  import GlobalSettingsModal from "./GlobalSettingsModal.svelte";
   import {
     layoutState,
     switchWorkspace,
@@ -25,9 +26,6 @@
     Plus,
     X,
     House,
-    Sun,
-    Moon,
-    Monitor,
     Settings,
     GitBranch,
     Kanban,
@@ -42,15 +40,7 @@
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
-  import type { ThemePref } from "./ui/theme";
 
-  /// System first, matching the default -- and matching the order the
-  /// three states read in: follow the OS, or override it either way.
-  const THEME_OPTIONS: { pref: ThemePref; label: string; icon: typeof Sun }[] = [
-    { pref: "system", label: "Follow system", icon: Monitor },
-    { pref: "light", label: "Light", icon: Sun },
-    { pref: "dark", label: "Dark", icon: Moon },
-  ];
   import { sessionLabel, folderName, boardTabLabel } from "./paths";
   import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
   import {
@@ -412,6 +402,10 @@
 
   // The workspace whose creation modal is up, or null.
   let pendingSetupId = $state<string | null>(null);
+  /// The app-wide settings panel. A modal, not a hub tab: every hub tab
+  /// renders inside one workspace, which is the wrong shape for a
+  /// preference that spans all of them.
+  let showGlobalSettings = $state(false);
 
   function commitNewWorkspace(): void {
     if (!creatingWorkspace) return;
@@ -1143,27 +1137,16 @@
     {/each}
   </div>
   <div class="sidebar-footer">
-    <button class="footer-row" disabled title="Coming soon">
+    <button class="footer-row" onclick={() => (showGlobalSettings = true)}>
       <Settings size={12} />
       <span>Settings</span>
     </button>
-    <div class="footer-row theme-row">
-      <span>Theme</span>
-      <div class="theme-toggle">
-        {#each THEME_OPTIONS as opt (opt.pref)}
-          <IconButton
-            icon={opt.icon}
-            label={opt.label}
-            variant="segmented"
-            size={12}
-            active={themeState.pref === opt.pref}
-            onclick={() => void themeState.setPref(opt.pref)}
-          />
-        {/each}
-      </div>
-    </div>
   </div>
 </div>
+
+{#if showGlobalSettings}
+  <GlobalSettingsModal onClose={() => (showGlobalSettings = false)} />
+{/if}
 
 {#if pendingSetupId}
   <WorkspaceCreateModal
@@ -1660,17 +1643,5 @@
   button.footer-row:disabled {
     opacity: 0.45;
     cursor: default;
-  }
-  .theme-row {
-    justify-content: space-between;
-  }
-  .theme-toggle {
-    display: flex;
-    gap: 2px;
-    /* One inset well holding all three, so the active segment reads as a
-       selection rather than three unrelated buttons. */
-    background: var(--surface-sunken);
-    border-radius: 4px;
-    padding: 1px;
   }
 </style>

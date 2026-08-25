@@ -421,7 +421,7 @@ async function executeToolLaunch(
   const body = resolveToolBody(tool, stepParams(step));
   const command =
     tool.kind === "agent"
-      ? buildRunCommand(resolvedAgentFor(workspaceId).command, body)
+      ? buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, body)
       : buildToolCommand(tool.kind, body, tool.name);
 
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
@@ -475,7 +475,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
     prompt = composePlanPrompt(step.cardPath);
   }
 
-  const command = buildRunCommand(resolvedAgentFor(workspaceId).command, prompt);
+  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
   const cwd = rail.worktreePath ?? entry.contextFolder;
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
   if (!sessionId) {
