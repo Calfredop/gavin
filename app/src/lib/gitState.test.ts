@@ -66,6 +66,7 @@ vi.mock("@tauri-apps/api/event", () => ({
     });
   }),
 }));
+vi.mock("./notifications", () => ({ maybeNotifyAgentCommit: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
@@ -108,6 +109,7 @@ import {
   commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
   adoptAgentCommits,
 } from "./gitState";
+import { maybeNotifyAgentCommit } from "./notifications";
 import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
 
 const snapshot: RefsSnapshot = {
@@ -131,6 +133,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   gitStore.set({});
   sessionExits.set(new Map());
+  layoutState.set({ workspaces: [], activeWorkspaceId: null } as never);
   ptyListeners.length = 0;
   vi.mocked(backend.gitRepoInfo).mockResolvedValue(repo);
   vi.mocked(backend.gitStatus).mockResolvedValue(status);
@@ -631,6 +634,109 @@ describe("commit via agent", () => {
     await revealAgentCommit("ws");
     expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
   });
+
+  // Everything else a hidden run produces stays inside the Git tab: a
+  // banner only that tab shows, and a flash that is gone in four
+  // seconds. The notification is the run's only way of reaching a human
+  // who started it and moved on.
+  describe("announcing the verdict", () => {
+    function workspace(patch: Record<string, unknown> = {}, activeWorkspaceId: string | null = null): void {
+      layoutState.set({
+        workspaces: [{ id: "ws", name: "gavin", rootPath: "/r", pages: [], ...patch }],
+        activeWorkspaceId,
+      } as never);
+    }
+
+    it("announces a run that emptied the tree, by workspace name", async () => {
+      workspace();
+      const { done } = await launch();
+      vi.mocked(backend.gitStatus).mockResolvedValue({ unstaged: [], staged: [] });
+      exitWith(0);
+      expect(await done).toBe(true);
+      expect(maybeNotifyAgentCommit).toHaveBeenCalledWith(
+        "gavin",
+        { kind: "committed" },
+        { needsInput: true, finished: true },
+        false
+      );
+    });
+
+    it("announces a non-zero exit as a failure, with its code", async () => {
+      workspace();
+      const { done } = await launch();
+      exitWith(2);
+      expect(await done).toBe(false);
+      expect(maybeNotifyAgentCommit).toHaveBeenCalledWith(
+        "gavin",
+        { kind: "failed", exitCode: 2 },
+        expect.anything(),
+        false
+      );
+    });
+
+    it("announces a clean exit that left the tree dirty as what it is", async () => {
+      workspace();
+      const { done } = await launch();
+      exitWith(0);
+      expect(await done).toBe(false);
+      expect(maybeNotifyAgentCommit).toHaveBeenCalledWith(
+        "gavin",
+        { kind: "left-dirty", changes: 4 },
+        expect.anything(),
+        false
+      );
+    });
+
+    // The suppression rule itself lives in notifications.ts; this is the
+    // app-layout fact only this module can supply.
+    it("tells it when that workspace's Git tab is the view on screen", async () => {
+      workspace({ activeView: "git" }, "ws");
+      const { done } = await launch();
+      vi.mocked(backend.gitStatus).mockResolvedValue({ unstaged: [], staged: [] });
+      exitWith(0);
+      await done;
+      expect(maybeNotifyAgentCommit).toHaveBeenCalledWith("gavin", expect.anything(), expect.anything(), true);
+    });
+
+    it("does not count the Git tab as on screen while another workspace is active", async () => {
+      workspace({ activeView: "git" }, "other");
+      const { done } = await launch();
+      vi.mocked(backend.gitStatus).mockResolvedValue({ unstaged: [], staged: [] });
+      exitWith(0);
+      await done;
+      expect(maybeNotifyAgentCommit).toHaveBeenCalledWith("gavin", expect.anything(), expect.anything(), false);
+    });
+
+    it("passes the workspace's own notification toggles through", async () => {
+      workspace({ notifyNeedsInput: false, notifyFinished: false });
+      const { done } = await launch();
+      exitWith(2);
+      await done;
+      expect(maybeNotifyAgentCommit).toHaveBeenCalledWith("gavin", expect.anything(), {
+        needsInput: false,
+        finished: false,
+      }, false);
+    });
+
+    it("falls back to the checkout's folder for a workspace with no name", async () => {
+      workspace({ name: "" });
+      const { done } = await launch();
+      exitWith(2);
+      await done;
+      expect(maybeNotifyAgentCommit).toHaveBeenCalledWith("r", expect.anything(), expect.anything(), false);
+    });
+
+    // No verdict was reached, so there is nothing to announce -- the run
+    // belongs to a checkout this tab has left.
+    it("says nothing about a run the view was replaced under", async () => {
+      workspace();
+      const { done } = await launch();
+      ensureGitView("ws", "/other");
+      exitWith(3);
+      expect(await done).toBe(false);
+      expect(maybeNotifyAgentCommit).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("adoptAgentCommits", () => {
@@ -679,6 +785,22 @@ describe("adoptAgentCommits", () => {
     expect(get(gitStore)["ws"].error).toBe(
       "Commit via agent left 4 changes uncommitted — I stopped: no user.email."
     );
+    // Same verdict, same announcement, whether the click that began it
+    // happened five seconds or two restarts ago.
+    expect(maybeNotifyAgentCommit).toHaveBeenCalledWith(
+      "r",
+      { kind: "left-dirty", changes: 4 },
+      expect.anything(),
+      false
+    );
+  });
+
+  it("says nothing about a record whose session is gone", async () => {
+    vi.mocked(backend.adoptSession).mockResolvedValueOnce(false);
+    workspaceWith({ agentCommit: { sessionId: "agent-1", cwd: "/r" } });
+    await adoptAgentCommits();
+    await flush();
+    expect(maybeNotifyAgentCommit).not.toHaveBeenCalled();
   });
 
   // Its exit code and its output died with the last window. "Committed"

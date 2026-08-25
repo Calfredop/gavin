@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { maybeNotifyStatusChange, __resetForTesting } from "./notifications";
+import { maybeNotifyStatusChange, maybeNotifyAgentCommit, agentCommitBody, __resetForTesting } from "./notifications";
 
 /// Today's behaviour: both events enabled. The per-workspace toggles
 /// (D38) get their own test below; every pre-existing case asserts the
@@ -133,5 +133,64 @@ describe("per-workspace toggles", () => {
 
     await maybeNotifyStatusChange("s-1", "working", "idle", "zsh", { needsInput: true, finished: false });
     expect(requestPermission).not.toHaveBeenCalled();
+  });
+});
+
+describe("maybeNotifyAgentCommit", () => {
+  const ON_SCREEN = true;
+  const ELSEWHERE = false;
+
+  it("names the workspace and says what the run did", async () => {
+    await maybeNotifyAgentCommit("gavin", { kind: "committed" }, ALL_ON, ELSEWHERE);
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { title: string; body: string };
+    expect(call.body).toBe("gavin: changes committed");
+  });
+
+  it("reports a failure and a half-done run as themselves, not as 'finished'", () => {
+    expect(agentCommitBody("gavin", { kind: "failed", exitCode: 2 })).toBe("gavin: commit agent failed (exit 2)");
+    expect(agentCommitBody("gavin", { kind: "left-dirty", changes: 4 })).toBe(
+      "gavin: commit agent left 4 changes uncommitted"
+    );
+    expect(agentCommitBody("gavin", { kind: "left-dirty", changes: 1 })).toBe(
+      "gavin: commit agent left 1 change uncommitted"
+    );
+  });
+
+  // The whole point of the card: the human clicked the button and went
+  // to work on another tab. Being inside the app is not being told.
+  it("still notifies a focused window that is showing some other tab", async () => {
+    mockWindow(true);
+    await maybeNotifyAgentCommit("gavin", { kind: "committed" }, ALL_ON, ELSEWHERE);
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays quiet only when the Git tab is both focused and on screen", async () => {
+    mockWindow(true);
+    await maybeNotifyAgentCommit("gavin", { kind: "committed" }, ALL_ON, ON_SCREEN);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  // A background window's Git tab shows nothing at all, even though it
+  // is that workspace's current view.
+  it("notifies when the Git tab is on screen but the window is not frontmost", async () => {
+    mockWindow(false);
+    await maybeNotifyAgentCommit("gavin", { kind: "failed", exitCode: 2 }, ALL_ON, ON_SCREEN);
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it("obeys the workspace's 'finished' toggle, and asks nothing of the OS when it is off", async () => {
+    vi.mocked(isPermissionGranted).mockResolvedValue(false);
+    await maybeNotifyAgentCommit("gavin", { kind: "committed" }, { needsInput: true, finished: false }, ELSEWHERE);
+    expect(sendNotification).not.toHaveBeenCalled();
+    expect(requestPermission).not.toHaveBeenCalled();
+    expect(getCurrentWindow).not.toHaveBeenCalled();
+  });
+
+  it("does not notify when the lazy permission request is declined", async () => {
+    vi.mocked(isPermissionGranted).mockResolvedValue(false);
+    vi.mocked(requestPermission).mockResolvedValue("denied");
+    await maybeNotifyAgentCommit("gavin", { kind: "committed" }, ALL_ON, ELSEWHERE);
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 });

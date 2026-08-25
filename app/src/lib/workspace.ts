@@ -273,6 +273,18 @@ export function getActiveView(ws: Workspace): string {
   return ws.activeView ?? (ws.rootPath ? "home" : "terminal");
 }
 
+// Whether a given hub tab is the thing on screen right now: its own
+// workspace is the active one AND that tab is the view it is showing.
+// Both halves matter -- a workspace parked on its Git tab shows nothing
+// at all while a different workspace is active. Used to decide whether a
+// background run that reports only into one tab still needs to
+// interrupt the human; see notifications.ts.
+export function hubViewIsOnScreen(state: WorkspacesData, workspaceId: string, viewId: string): boolean {
+  if (state.activeWorkspaceId !== workspaceId) return false;
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  return ws ? getActiveView(ws) === viewId : false;
+}
+
 // Switching to a hub tab also records it as the workspace's hubView --
 // the tab its Hub button reopens. Switching to the terminal leaves that
 // memory alone, which is the whole point: the terminal is a detour, not

@@ -15,8 +15,10 @@ import {
   switchWorkspaceView,
   switchToSessionInPage,
 } from "./layoutState";
-import { findSessionLocation } from "./workspace";
+import { findSessionLocation, hubViewIsOnScreen } from "./workspace";
 import type { AgentCommitRecord, Workspace } from "./workspace";
+import { folderName } from "./paths";
+import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "./notifications";
 import { buildHeadlessCommand, COMMIT_PROMPT } from "./cardRun";
 import type {
   ApplyMode,
@@ -551,17 +553,48 @@ async function watchAgentCommit(
   const quoted = said ? ` — ${said}` : "";
   if (code !== 0) {
     noteError(workspaceId, `Commit via agent failed (exit ${code})${quoted}`);
+    void announceVerdict(workspaceId, { kind: "failed", exitCode: code });
     return false;
   }
   if (left > 0) {
     noteError(workspaceId, `Commit via agent left ${left} change${left === 1 ? "" : "s"} uncommitted${quoted}`);
+    void announceVerdict(workspaceId, { kind: "left-dirty", changes: left });
     return false;
   }
   update(workspaceId, (st) => ({ ...st, agentCommitDone: true }));
+  void announceVerdict(workspaceId, { kind: "committed" });
   setTimeout(() => {
     update(workspaceId, (st) => (st.agentCommitDone ? { ...st, agentCommitDone: false } : st));
   }, AGENT_COMMIT_FLASH_MS);
   return true;
+}
+
+/// Sends the verdict out of the Git tab. Everything else this run
+/// produces stays inside `GitViewState` -- a banner that only shows on
+/// one tab, and a "Committed" flash that is gone in four seconds -- so a
+/// human who started the run and moved on is told nowhere. The
+/// notification is the only channel a hidden run has.
+///
+/// Neither awaited nor allowed to reject: the verdict is already
+/// recorded in the view state by the time this runs, so a notification
+/// that fails (no permission, no OS support, a plugin that is not there)
+/// must not turn a successful commit run into a rejected promise -- and
+/// a bare `void` on a rejecting one is an unhandled rejection, not a
+/// swallowed error.
+///
+/// The workspace name is the label rather than the checkout's folder,
+/// because a worktree switch abandons the run outright (see the verdict
+/// guard above) -- the workspace is what the run is still attached to.
+async function announceVerdict(workspaceId: string, verdict: AgentCommitVerdict): Promise<void> {
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  const label = ws?.name || folderName(current(workspaceId)?.cwd ?? workspaceId);
+  await maybeNotifyAgentCommit(
+    label,
+    verdict,
+    { needsInput: ws?.notifyNeedsInput ?? true, finished: ws?.notifyFinished ?? true },
+    hubViewIsOnScreen(state, workspaceId, "git")
+  ).catch(() => {});
 }
 
 /// Writes the in-flight run into the workspace's persisted Git prefs, or

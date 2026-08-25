@@ -68,3 +68,57 @@ export async function maybeNotifyStatusChange(
   const body = newStatus === "waiting_for_input" ? `${label} needs your input` : `${label} finished`;
   sendNotification({ title: "gavin", body });
 }
+
+// ---- the Git tab's hidden commit run ---------------------------------------
+
+/// What a "Commit via agent" run turned out to have done. Only the three
+/// outcomes `watchAgentCommit` actually reaches: a run abandoned by a
+/// worktree switch, or one whose session died with the last window,
+/// reaches no verdict at all and so has nothing to announce.
+export type AgentCommitVerdict =
+  | { kind: "committed" }
+  | { kind: "failed"; exitCode: number }
+  | { kind: "left-dirty"; changes: number };
+
+/// Deliberately short. The notification is the POINTER -- the Git tab's
+/// banner is the record, and it keeps the agent's own closing words. A
+/// body long enough to quote them would be truncated by the OS anyway.
+export function agentCommitBody(label: string, verdict: AgentCommitVerdict): string {
+  switch (verdict.kind) {
+    case "committed":
+      return `${label}: changes committed`;
+    case "failed":
+      return `${label}: commit agent failed (exit ${verdict.exitCode})`;
+    case "left-dirty":
+      return `${label}: commit agent left ${verdict.changes} change${verdict.changes === 1 ? "" : "s"} uncommitted`;
+  }
+}
+
+/// Called once per commit run that reaches a verdict. A hidden run is
+/// the one piece of work in this app with no tab, no page and no status
+/// dot -- the human clicks a button and walks away -- so the verdict
+/// has to travel to them rather than wait on a tab.
+///
+/// Gated by the workspace's `finished` toggle: a hidden run is a session
+/// finishing, and a workspace silenced for that stays silenced. It gets
+/// no toggle of its own; one button does not earn a third checkbox.
+///
+/// `gitTabOnScreen` is the one thing this module cannot know, and it is
+/// why the suppression rule here is NARROWER than the one for session
+/// status above. There, any focused window means the in-app dot is
+/// visible; here, the verdict shows on exactly one tab, so a human who
+/// is in the app but looking at anything else is precisely the case
+/// that was announced nowhere.
+export async function maybeNotifyAgentCommit(
+  label: string,
+  verdict: AgentCommitVerdict,
+  prefs: NotifyPrefs,
+  gitTabOnScreen: boolean
+): Promise<void> {
+  // Checked before anything else so a silenced workspace neither
+  // queries the window nor prompts for OS permission.
+  if (!prefs.finished) return;
+  if (gitTabOnScreen && (await getCurrentWindow().isFocused())) return;
+  if (!(await ensurePermission())) return;
+  sendNotification({ title: "gavin", body: agentCommitBody(label, verdict) });
+}

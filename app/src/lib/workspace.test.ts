@@ -16,6 +16,7 @@ import {
   getActivePage,
   getActiveTree,
   getActiveView,
+  hubViewIsOnScreen,
   switchWorkspaceView,
   allSessionIdsInWorkspace,
   findSessionLocation,
@@ -91,6 +92,37 @@ describe("getActiveView", () => {
     const state = createWorkspace(empty, "ws-1", "A");
     const w = { ...state.workspaces[0], rootPath: "/tmp/ws", activeView: "terminal" };
     expect(getActiveView(w)).toBe("terminal");
+  });
+});
+
+describe("hubViewIsOnScreen", () => {
+  const twoRooted = (): WorkspacesData => {
+    const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
+    return { ...state, workspaces: state.workspaces.map((w) => ({ ...w, rootPath: "/tmp/" + w.id })) };
+  };
+
+  it("is true only for the active workspace's own current view", () => {
+    const state = switchWorkspaceView(switchWorkspace(twoRooted(), "ws-1"), "ws-1", "git");
+    expect(hubViewIsOnScreen(state, "ws-1", "git")).toBe(true);
+    expect(hubViewIsOnScreen(state, "ws-1", "kanban")).toBe(false);
+  });
+
+  // The tab a background workspace is parked on is showing nothing at
+  // all -- another workspace's tabs are what fill the window.
+  it("is false for a workspace parked on that view while another is active", () => {
+    const state = switchWorkspace(switchWorkspaceView(twoRooted(), "ws-2", "git"), "ws-1");
+    expect(hubViewIsOnScreen(state, "ws-2", "git")).toBe(false);
+  });
+
+  it("honours the default view of a workspace that has never chosen one", () => {
+    const state = switchWorkspace(twoRooted(), "ws-1");
+    expect(hubViewIsOnScreen(state, "ws-1", "home")).toBe(true);
+    expect(hubViewIsOnScreen(state, "ws-1", "git")).toBe(false);
+  });
+
+  it("is false for a workspace that no longer exists", () => {
+    const state = { ...twoRooted(), activeWorkspaceId: "gone" };
+    expect(hubViewIsOnScreen(state, "gone", "git")).toBe(false);
   });
 });
 

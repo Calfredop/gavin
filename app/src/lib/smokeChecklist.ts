@@ -715,6 +715,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "The hub's own “Git” tab spins in place of its branch icon while a run is going — visible from Kanban, PRD, any tab",
         hint: "The tab row must not shift as the spinner replaces the icon; no other hub tab reacts.",
       },
+      {
+        id: "git-agent-commit-notified",
+        text: "A run that finishes while you are on another tab (or another app) raises an OS notification naming the workspace and what it did",
+        hint: "Leave the Git tab for Kanban and wait. Staying on the Git tab is the only case that must be silent; unticking Settings' “finishes working” silences it everywhere.",
+      },
     ],
   },
   {

@@ -209,7 +209,10 @@
         />
         When a session finishes working
       </label>
-      <p class="hint">Never shown while the gavin window is focused.</p>
+      <p class="hint">
+        Not shown while the gavin window is focused — except a commit agent's verdict, which stays quiet only while its
+        Git tab is the one on screen.
+      </p>
     </section>
 
     <section>
