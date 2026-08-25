@@ -68,11 +68,13 @@ export interface WorkspacesData {
   activeWorkspaceId: string | null;
 }
 
-// Well-known id for the always-present "Unfiled" pseudo-workspace -- a
-// pinned, non-closable, non-renameable workspace for pages the user
-// hasn't organized into a real workspace yet. The Rust bootstrap ensures
-// a workspace with this exact id always exists in WorkspacesData; must
-// match config.rs's own copy of this constant exactly.
+// Well-known id for the always-present pinned pseudo-workspace -- a
+// non-closable drawer for pages the user hasn't organized into a real
+// workspace yet. It is DISPLAYED as "Scratchpad"; the id stays
+// "__unfiled__" from when the drawer was called Unfiled, because
+// changing it would orphan every page in every existing config.json.
+// The Rust bootstrap ensures a workspace with this exact id always
+// exists in WorkspacesData; must match config.rs's own copy exactly.
 export const UNFILED_WORKSPACE_ID = "__unfiled__";
 
 // Well-known id for the dev-only "Smoke Test" workspace, ensured by debug
@@ -361,8 +363,8 @@ export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
   return workspace.pages.flatMap((p) => allSessionIds(p.layout));
 }
 
-/// The order the sidebar renders workspaces in: Unfiled pinned to the
-/// top, then the rest as stored. Shared with the ⌘⌥-number router so a
+/// The order the sidebar renders workspaces in: the Scratchpad pinned
+/// to the top, then the rest as stored. Shared with the ⌘⌥-number router so a
 /// hint badge and the shortcut can never point at different workspaces.
 export function sidebarWorkspaceOrder(workspaces: Workspace[]): Workspace[] {
   const unfiled = workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID);

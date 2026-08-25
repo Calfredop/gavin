@@ -68,7 +68,7 @@ function setState(over: Record<string, unknown> = {}): void {
           { id: "p2", name: "p2", layout: leaf(["d"]), focusedSessionId: "d" },
         ],
       },
-      { id: "__unfiled__", name: "Unfiled", pages: [], activePageId: null },
+      { id: "__unfiled__", name: "Scratchpad", pages: [], activePageId: null },
     ],
     activeWorkspaceId: "ws-1",
     focusedSessionId: "a",
@@ -181,12 +181,12 @@ describe("digit navigation", () => {
     expect(switchPage).toHaveBeenCalledWith("ws-1", "p2");
   });
 
-  it("⌘⌥2 switches workspace in sidebar order (Unfiled first)", async () => {
+  it("⌘⌥2 switches workspace in sidebar order (Scratchpad first)", async () => {
     await press("Digit2", { altKey: true });
     expect(switchWorkspace).toHaveBeenCalledWith("ws-1");
   });
 
-  it("⌘⌥1 selects Unfiled, which the sidebar pins to the top", async () => {
+  it("⌘⌥1 selects the Scratchpad, which the sidebar pins to the top", async () => {
     await press("Digit1", { altKey: true });
     expect(switchWorkspace).toHaveBeenCalledWith("__unfiled__");
   });

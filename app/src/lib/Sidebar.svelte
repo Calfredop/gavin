@@ -158,7 +158,7 @@
     hoverState = null;
   }
 
-  // The pinned Unfiled workspace is always rendered first, separately
+  // The pinned Scratchpad workspace is always rendered first, separately
   // from the reorderable list -- these two derived values split
   // $layoutState.workspaces accordingly. unfiledWorkspace is null only
   // before bootstrap's first workspaces-ready/poll response arrives
@@ -167,8 +167,8 @@
   const regularWorkspaces = $derived($layoutState.workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID));
 
   // ⌘⌥-number addresses workspaces in the order this sidebar renders
-  // them (Unfiled pinned first) -- the same helper the router uses, so a
-  // badge and its shortcut can never point at different rows.
+  // them (Scratchpad pinned first) -- the same helper the router uses,
+  // so a badge and its shortcut can never point at different rows.
   const orderedWorkspaces = $derived(sidebarWorkspaceOrder($layoutState.workspaces));
 
   /// ⌘⇧-number switches pages, and only within the ACTIVE workspace --
@@ -556,8 +556,9 @@
   function handleWorkspaceDragOver(event: DragEvent, workspaceId: string): void {
     const kind = getDragKind(event);
     if (!kind) return;
-    // The pinned Unfiled workspace isn't part of the reorderable list, so
-    // a dragged workspace has nowhere meaningful to land on it -- ignore.
+    // The pinned Scratchpad workspace isn't part of the reorderable
+    // list, so a dragged workspace has nowhere meaningful to land on
+    // it -- ignore.
     if (kind === "workspace" && workspaceId === UNFILED_WORKSPACE_ID) return;
     event.preventDefault();
     // Without an explicit dropEffect, the browser shows the "copy" (+)
@@ -582,7 +583,7 @@
       if (ws.id === UNFILED_WORKSPACE_ID) return;
       // Looked up live from the authoritative array (not a loop index
       // passed in) so this is correct regardless of whether the pinned
-      // Unfiled workspace occupies a slot ahead of this row or not.
+      // Scratchpad workspace occupies a slot ahead of this row or not.
       // Simple index/index+1 relative to the currently rendered array --
       // an approximation (dragging past an immediate neighbor can land
       // one position off in edge cases, since reorderWorkspace removes
@@ -1010,9 +1011,9 @@
           ondrop={(e) => handleWorkspaceDrop(e, ws)}
           oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
         >
-          <!-- Unfiled is a drawer for loose pages, not a project: it has
-               no hub worth landing on. The spacer keeps its chevron in
-               line with every other workspace's. -->
+          <!-- The Scratchpad is a drawer for loose pages, not a
+               project: it has no hub worth landing on. The spacer keeps
+               its chevron in line with every other workspace's. -->
           <span class="hub-spacer" aria-hidden="true"></span>
           <IconButton
             icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
@@ -1231,8 +1232,8 @@
   }
   /* An IconButton at size 12 measures 24px across (12px icon + 5px of
      padding and 1px of transparent border a side), and this stands in
-     for one -- so Unfiled's chevron lines up with the chevrons that sit
-     beside a Hub button. */
+     for one -- so the Scratchpad's chevron lines up with the chevrons
+     that sit beside a Hub button. */
   .hub-spacer {
     flex: 0 0 auto;
     width: 24px;
