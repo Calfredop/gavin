@@ -1301,19 +1301,35 @@ describe("template actions", () => {
     expect(stage.steps.map((s) => s.toolId)).toEqual(["builtin:merge-into", "builtin:push"]);
   });
 
-  it("addTemplateToStageAction merges the members into an existing group at the index", async () => {
-    // seeded: s1 holds t1
+  it("addTemplateToStageAction merges the members into an existing group at the index, each carrying its own params", async () => {
+    // seeded: s1 holds t1 at position 0. Two members with DIFFERENT
+    // toolIds and DIFFERENT params, dropped at index 1 (after t1): a
+    // one-member template can't tell `index + i` apart from
+    // `index + minted.indexOf(step)` (both collapse to `index` when
+    // there is only one step to place), and a single shared param set
+    // can't tell a correct id->params pairing from one that grabbed the
+    // wrong member's overrides. This pins both in one test.
     const t: GroupTemplate = {
       id: "g1",
       name: "Merge and push",
       description: "",
       mode: "sequence",
       scope: "workspace",
-      steps: [{ toolId: "builtin:push", toolParams: {} }],
+      steps: [
+        { toolId: "builtin:push", toolParams: { remote: "origin" } },
+        { toolId: "builtin:merge", toolParams: { strategy: "squash" } },
+      ],
     };
-    expect(await addTemplateToStageAction("ws-1", "s1", 0, t)).toBeNull();
+    expect(await addTemplateToStageAction("ws-1", "s1", 1, t)).toBeNull();
     const stage = findStage(get(orchestrations)["ws-1"], "s1") as Stage;
-    expect(stage.steps[0].toolId).toBe("builtin:push");
+    const ordered = [...stage.steps].sort((a, b) => a.position - b.position);
+    expect(ordered.map((s) => s.toolId)).toEqual([
+      "builtin:merge-into",
+      "builtin:push",
+      "builtin:merge",
+    ]);
+    expect(ordered[1].toolParams).toEqual({ remote: "origin" });
+    expect(ordered[2].toolParams).toEqual({ strategy: "squash" });
     // Joining a single-step stage forms a sequence group (G3).
     expect(stageMode(stage)).toBe("sequence");
   });

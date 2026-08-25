@@ -26,14 +26,21 @@
   let error = $state<string | null>(null);
   let saving = $state(false);
 
-  // Seeded from the stage's name when the dialog OPENS, not at
-  // construction: OrchestrationHubView resolves `stage` afresh from
-  // `orch` on every push (savingTemplateStage's own derivation), so a
-  // bare `$state(stage.name)` would freeze on whatever the group was
-  // named the instant this dialog mounted and go stale under a rename
-  // that lands while it's still open. Mirrors OrchestrationRail's own
-  // rename-draft seeding.
+  // Seeded once per DISTINCT stage.id, not on every prop update:
+  // OrchestrationHubView re-derives `stage` from `orch` on every push
+  // (savingTemplateStage's own derivation), and `orchestrations` is
+  // replaced wholesale on both the optimistic write and the
+  // "orchestration-changed" push -- routine traffic in a workspace with
+  // running agents, none of it a rename. Tracking the whole `stage`
+  // object here would re-seed on every one of those and silently discard
+  // whatever the human is mid-typing. Tracking `stage.id` instead only
+  // re-seeds when this dialog is asked to represent a genuinely
+  // different group, which is the one case a stale name would actually
+  // be wrong.
+  let seededStageId: string | null = null;
   $effect(() => {
+    if (stage.id === seededStageId) return;
+    seededStageId = stage.id;
     name = stage.name ?? "";
   });
 
@@ -134,6 +141,16 @@
       </p>
     {/if}
 
+    <!-- A disabled button suppresses mouse events entirely, so a `title`
+         on the Save button itself never shows -- neither the native
+         tooltip nor this repo's own hover action can fire on it. Printed
+         here instead, the same way the dropped-card-count line above is
+         always readable rather than hidden behind a hover that cannot
+         happen. -->
+    {#if disabledReason}
+      <p class="disabled-reason">{disabledReason}</p>
+    {/if}
+
     <footer>
       <span class="spacer"></span>
       <button type="button" class="ghost" disabled={saving} onclick={onClose}>Cancel</button>
@@ -141,7 +158,6 @@
         type="button"
         class="primary"
         disabled={Boolean(disabledReason) || saving}
-        title={disabledReason ?? ""}
         onclick={() => void save()}
       >
         {saving ? "Saving…" : "Save template"}
@@ -182,6 +198,11 @@
   .warn {
     margin: 0;
     color: var(--warning-text);
+    font-size: 11px;
+  }
+  .disabled-reason {
+    margin: 0;
+    color: var(--text-subtle);
     font-size: 11px;
   }
   label {

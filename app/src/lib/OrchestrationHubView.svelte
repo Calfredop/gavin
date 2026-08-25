@@ -698,6 +698,7 @@
   {orch}
   {cards}
   {tools}
+  {templates}
   {placedCards}
   labelDefs={board?.labels ?? []}
   dragRoot={bodyEl}

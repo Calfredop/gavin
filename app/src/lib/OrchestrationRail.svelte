@@ -369,7 +369,16 @@
       data-orch-stage-pos={stage.position}
     >
       {#if isGroup(stage)}
-        <div class="group-head">
+        <!-- The blocked reason lives HERE, on the one element in this
+             header that is never itself disabled: a disabled control
+             suppresses its own hover entirely (no mouseenter, so neither
+             the native title nor this repo's own tooltip action ever
+             fires), which is exactly the state every child below is in
+             while groupsBlocked is set. The grip/name/mode-toggle/⋯ menu
+             keep their own titles for the non-blocked case (a real
+             per-control hint), but the header itself is what a blocked
+             human actually gets to hover. -->
+        <div class="group-head" title={groupsBlocked ?? undefined}>
           <button
             type="button"
             class="grip"

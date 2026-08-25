@@ -4,8 +4,9 @@
   import BoardCard from "./BoardCard.svelte";
   import type { Label } from "./kanban";
   import type { PlacedCardView } from "./planBoard";
-  import { findStep, type CardEntry, type Orchestration } from "./orchestration";
+  import { findStep, findStage, type CardEntry, type Orchestration } from "./orchestration";
   import type { Tool } from "./orchestrationTools";
+  import type { GroupTemplate } from "./orchestrationGroups";
 
   interface Props {
     orch: Orchestration | null;
@@ -13,6 +14,10 @@
     /// The tool library, so a tool drag and a tool STEP drag both show a
     /// name rather than a UUID.
     tools: Tool[];
+    /// The group template library, so dragging a template row off the
+    /// drawer shows its name instead of an empty ghost -- the same
+    /// reason `tools` is here for a tool row.
+    templates: GroupTemplate[];
     /// MUST be the very element handed to attachOrchestrationDrag as
     /// `root` -- the ghost renders only for the surface that owns the
     /// drag, and the glue registers that element by identity. Naming it
@@ -25,22 +30,35 @@
     placedCards: Map<string, PlacedCardView>;
     labelDefs: Label[];
   }
-  let { orch, cards, tools, dragRoot, placedCards, labelDefs }: Props = $props();
+  let { orch, cards, tools, templates, dragRoot, placedCards, labelDefs }: Props = $props();
 
   const ownsDrag = $derived(dragRoot !== null && $activeOrchDragRoot === dragRoot);
   const titleOfPath = (path: string): string =>
     cards.get(path)?.plan.title ?? (path.split("/").pop() ?? "");
   const nameOfTool = (id: string): string => tools.find((t) => t.id === id)?.name ?? id;
+  const nameOfTemplate = (id: string): string => templates.find((t) => t.id === id)?.name ?? id;
+  // Same fallback the rail itself falls back to for an unnamed group
+  // (`stage.name ?? \`stage ${i + 1}\``), minus the live position number:
+  // that index comes from the rail's own drag-adjusted stage list, which
+  // this component has no access to, so "Group" is the honest generic
+  // rather than a number that could be wrong.
+  const nameOfStage = (id: string): string => {
+    const stage = orch ? findStage(orch, id) : null;
+    return stage?.name ?? "Group";
+  };
 
-  /// The card path this drag is carrying, or null for a tool (and for a
-  /// step whose rail no longer holds it).
+  /// The card path this drag is carrying, or null for a tool, a
+  /// template, a whole group (and for a step whose rail no longer holds
+  /// it).
   const draggedPath = $derived.by(() => {
     const drag = $orchDragState;
     if (!drag) return null;
-    // A drawer drag carries the card PATH or the TOOL ID; only a step
-    // drag needs the rails walked to find what it points at.
+    // A drawer drag carries the card PATH, the TOOL id or the TEMPLATE
+    // id; a whole-group drag carries a STAGE id. None of those are a
+    // step id, so only a step drag needs the rails walked to find what
+    // it points at.
     if (drag.kind === "card") return drag.id;
-    if (drag.kind === "tool") return null;
+    if (drag.kind === "tool" || drag.kind === "template" || drag.kind === "stage") return null;
     const step = orch ? findStep(orch, drag.id) : null;
     return step && !step.toolId ? step.cardPath : null;
   });
@@ -54,6 +72,8 @@
     if (!drag) return "";
     if (draggedPath) return titleOfPath(draggedPath);
     if (drag.kind === "tool") return nameOfTool(drag.id);
+    if (drag.kind === "template") return nameOfTemplate(drag.id);
+    if (drag.kind === "stage") return nameOfStage(drag.id);
     const step = orch ? findStep(orch, drag.id) : null;
     return step?.toolId ? nameOfTool(step.toolId) : "";
   });
