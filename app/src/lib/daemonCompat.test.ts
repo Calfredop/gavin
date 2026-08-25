@@ -79,3 +79,17 @@ describe("featureBlockedReason", () => {
     expect(featureBlockedReason(null, "orchestration")).toBeNull();
   });
 });
+
+describe("the groups gate", () => {
+  it("blocks grouping on a daemon that would drop the mode", () => {
+    // A v14 daemon parses SetOrchestration perfectly and has no `mode`
+    // column: it accepts a sequential group and returns it parallel. The
+    // wire gate cannot see a widened request, so this is the only gate.
+    const c = { daemonVersion: 14, appVersion: 15, degraded: true };
+    expect(featureBlockedReason(c, "groups")).toContain("v15");
+  });
+
+  it("allows grouping on a v15 daemon", () => {
+    expect(featureBlockedReason({ daemonVersion: 15, appVersion: 15, degraded: false }, "groups")).toBeNull();
+  });
+});

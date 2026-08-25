@@ -38,6 +38,14 @@ export const FEATURE_MIN_VERSION = {
   // so nothing on the wire gate catches this. The row is disabled with
   // the reason rather than failing on blur.
   agentModel: 14,
+  // Groups: a stage's `mode` and `name`. A v14 daemon has neither column
+  // on orch_stages, so it accepts a sequential group, drops both fields
+  // and hands the stage back parallel -- the group silently runs its
+  // members all at once in one checkout. `mode` widens an EXISTING
+  // request, so min_version_for is structurally blind to it and this
+  // entry is the only gate there is. Every surface that can form or
+  // change a group reads it through featureBlockedReason.
+  groups: 15,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
