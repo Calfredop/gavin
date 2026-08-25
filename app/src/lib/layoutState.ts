@@ -148,43 +148,67 @@ async function createFreshSession(workspaceId: string): Promise<string | null> {
   }
 }
 
+/// The non-session tabs a close ended, handed back to the caller instead
+/// of being pruned on the spot.
+///
+/// `fileTabsById`/`boardTabsById` are the ONLY thing that tells
+/// Pane.svelte a tab is a file or a board rather than a terminal. Drop an
+/// id from them while it is still in a layout tree and that pane falls
+/// straight through to a `<TerminalPane>` for an id the daemon has never
+/// heard of: it mounts, calls fit(), and asks the daemon to resize it.
+/// The daemon answers "unknown session" on the STREAMING connection,
+/// which the Rust relay turns into a `daemon-error` -- and that is a
+/// whole-window "Couldn't connect to the daemon" overlay, not a
+/// swallowed per-call failure (TerminalPane's own .catch never sees it).
+/// So every caller updates the tree first and calls pruneClosedTabs
+/// afterwards.
+interface ClosedTabs {
+  fileTabIds: string[];
+  boardTabIds: string[];
+}
+
 // Every close path (tab, pane, page, workspace) ends the tabs it owns.
 // A file tab is not a session -- killing it would ask the daemon to kill
 // an id it has never heard of -- so it gets its watcher torn down instead.
-// Returns false (having already called setError) if a real session kill
+// Returns null (having already called setError) if a real session kill
 // failed, so callers can bail exactly as they do today.
 async function endTabs(
   tabIds: string[],
   fileTabsById: Record<string, FileTab>,
   boardTabsById: Record<string, BoardTab>
-): Promise<boolean> {
-  const closedFileTabIds: string[] = [];
-  const closedBoardTabIds: string[] = [];
+): Promise<ClosedTabs | null> {
+  const fileTabIds: string[] = [];
+  const boardTabIds: string[] = [];
   for (const id of tabIds) {
     const fileTab = fileTabsById[id];
     if (fileTab) {
       // Best-effort: a watcher that's already gone (or was never
       // started because the file read failed) must not block the close.
       await backend.unwatchFileForViewer(fileTab.path).catch(() => {});
-      closedFileTabIds.push(id);
+      fileTabIds.push(id);
       continue;
     }
     if (boardTabsById[id]) {
       // A board tab is not a session and holds no watcher of its own --
       // tree watching is workspace-level. Prune and persist only.
-      closedBoardTabIds.push(id);
+      boardTabIds.push(id);
       continue;
     }
     try {
       await backend.killSession(id);
     } catch (e) {
       setError(String(e));
-      return false;
+      return null;
     }
   }
-  if (closedFileTabIds.length > 0) await pruneFileTabs(closedFileTabIds);
-  if (closedBoardTabIds.length > 0) await pruneBoardTabs(closedBoardTabIds);
-  return true;
+  return { fileTabIds, boardTabIds };
+}
+
+/// Drops the tabs endTabs ended from the maps that classify them. Call
+/// only once the layout tree no longer holds them -- see ClosedTabs.
+async function pruneClosedTabs(closed: ClosedTabs): Promise<void> {
+  if (closed.fileTabIds.length > 0) await pruneFileTabs(closed.fileTabIds);
+  if (closed.boardTabIds.length > 0) await pruneBoardTabs(closed.boardTabIds);
 }
 
 // Mirrors pruneFileTabs: best-effort persistence, a failed prune costs a
@@ -286,12 +310,64 @@ function repairBoardTabs(
 
 const unlisteners: UnlistenFn[] = [];
 
+/// Resolves once `fileTabsById`/`boardTabsById` hold what the Rust side
+/// persisted -- see loadTabMaps. Both ready paths await it before letting
+/// `status` leave "connecting", so no layout tree is ever rendered
+/// against empty maps. Starts resolved so a test (or any caller) that
+/// never ran bootstrap is not left hanging.
+let tabMapsLoaded: Promise<void> = Promise.resolve();
+
+/// Loads the two frontend-owned maps that say which layout-tree ids are
+/// file views and which are boards.
+///
+/// Unlike session names, these are not cosmetic: every id NOT in them is
+/// taken to be a daemon session. Empty maps therefore do not degrade to
+/// "labels look wrong" -- they turn each restored file/board tab into a
+/// <TerminalPane> that asks the daemon to resize an id it has never heard
+/// of, and that answer arrives as a whole-window "Couldn't connect to the
+/// daemon" (see ClosedTabs for the same failure reached from the close
+/// path). So this retries the one failure it can actually hit -- FileTabs
+/// and BoardTabs are `manage`d at the very end of session::bootstrap, so
+/// an invoke that lands before it finishes rejects with "state not
+/// managed", exactly the case pollForStartupState already spins on --
+/// rather than swallowing it once and leaving the maps empty for the rest
+/// of the run.
+async function loadTabMaps(): Promise<void> {
+  const maxAttempts = 15;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const [fileTabs, boardTabs] = await Promise.all([
+      backend.getFileTabs().catch(() => null),
+      backend.getBoardTabs().catch(() => null),
+    ]);
+    if (fileTabs && boardTabs) {
+      const fileTabsById: Record<string, FileTab> = {};
+      for (const [tabId, path] of Object.entries(fileTabs)) {
+        fileTabsById[tabId] = { path };
+      }
+      layoutState.update((s) => ({ ...s, fileTabsById, boardTabsById: boardTabs }));
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  // Out of attempts: the daemon bootstrap that manages these states has
+  // failed outright, and pollForStartupState's own timeout (or the
+  // bootstrap error it surfaces) is what the human sees. Resolving here
+  // rather than hanging keeps that path the one that reports it.
+}
+
 export async function bootstrap(): Promise<void> {
   // Ahead of the workspace listeners: the theme should be correct on the
   // first painted frame, and it has no dependency on workspace state.
   await themeState.init();
+  // Started before the ready paths that await it, so the maps are already
+  // in flight by the time either of them has a payload to apply.
+  tabMapsLoaded = loadTabMaps();
   unlisteners.push(
-    await listen<WorkspacesData>("workspaces-ready", (event) => {
+    await listen<WorkspacesData>("workspaces-ready", async (event) => {
+      // Awaited BEFORE the tree lands in the store: a file or board tab
+      // rendered against empty maps is a TerminalPane for a non-session
+      // id (see loadTabMaps).
+      await tabMapsLoaded;
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
         const resolved = workspace.resolveActiveFocus(event.payload);
@@ -397,21 +473,6 @@ export async function bootstrap(): Promise<void> {
     })
     .catch(() => {});
 
-  // Like session names: frontend-owned, never externally driven, so a
-  // one-shot fetch is sufficient -- no live event. Best-effort, matching
-  // getSessionNames: a failure means file tabs render their error state
-  // until the next successful load, not a reason to block startup.
-  void backend
-    .getFileTabs()
-    .then((fileTabs) => {
-      const fileTabsById: Record<string, FileTab> = {};
-      for (const [tabId, path] of Object.entries(fileTabs)) {
-        fileTabsById[tabId] = { path };
-      }
-      layoutState.update((s) => ({ ...s, fileTabsById }));
-    })
-    .catch(() => {});
-
   // The agent profile table: static Rust data, so one fetch is enough.
   // Best-effort like the rest -- resolveAgentConfig falls back to
   // claude-code's defaults if this never arrives.
@@ -423,14 +484,6 @@ export async function bootstrap(): Promise<void> {
   void backend
     .mcpFormats()
     .then((formats) => mcpFormatsStore.set(formats))
-    .catch(() => {});
-
-  // Like file tabs: frontend-owned, one-shot, best-effort.
-  void backend
-    .getBoardTabs()
-    .then((boardTabsById) => {
-      layoutState.update((s) => ({ ...s, boardTabsById }));
-    })
     .catch(() => {});
 
   void pollForStartupState();
@@ -506,6 +559,9 @@ async function pollForStartupState(): Promise<void> {
     // get_workspaces_state's own doc comment on the Rust side for the same
     // rule stated from that side of the boundary.
     if (data) {
+      // Same rule as the workspaces-ready listener: the tab maps must be
+      // in the store before a tree that references them renders.
+      await tabMapsLoaded;
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
         const resolved = workspace.resolveActiveFocus(data);
@@ -803,8 +859,12 @@ export async function addTab(targetSessionId: string): Promise<void> {
 
 export async function closeSession(sessionId: string): Promise<void> {
   const state = get(layoutState);
-  if (!(await endTabs([sessionId], state.fileTabsById, state.boardTabsById))) return;
+  const closed = await endTabs([sessionId], state.fileTabsById, state.boardTabsById);
+  if (!closed) return;
+  // Tree first, maps second (see ClosedTabs): the other order leaves the
+  // tab in the tree for a render with nothing left to classify it.
   handleSessionExited(sessionId);
+  await pruneClosedTabs(closed);
 }
 
 // Shared by closeSession (after a successful daemon-side kill) and the
@@ -1094,7 +1154,8 @@ export async function closePane(anySessionId: string): Promise<void> {
   if (leaf.type !== "leaf") return;
   const sessionIds = [...leaf.tabs];
 
-  if (!(await endTabs(sessionIds, state.fileTabsById, state.boardTabsById))) return;
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  if (!closed) return;
 
   let tree: LayoutNode | null = location.tree;
   for (const id of sessionIds) {
@@ -1120,6 +1181,7 @@ export async function closePane(anySessionId: string): Promise<void> {
     activeWorkspaceId: updated.activeWorkspaceId,
     focusedSessionId,
   }));
+  await pruneClosedTabs(closed);
   await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 
@@ -1174,7 +1236,8 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
   if (!ws) return;
   const sessionIds = workspace.allSessionIdsInWorkspace(ws);
 
-  if (!(await endTabs(sessionIds, state.fileTabsById, state.boardTabsById))) return;
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  if (!closed) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }
@@ -1200,6 +1263,7 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
     activeWorkspaceId: updated.activeWorkspaceId,
     focusedSessionId,
   }));
+  await pruneClosedTabs(closed);
   await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 
@@ -1362,7 +1426,8 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
   if (!page) return;
   const sessionIds = layout.allSessionIds(page.layout);
 
-  if (!(await endTabs(sessionIds, state.fileTabsById, state.boardTabsById))) return;
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  if (!closed) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }
@@ -1381,6 +1446,7 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
     activeWorkspaceId: updated.activeWorkspaceId,
     focusedSessionId,
   }));
+  await pruneClosedTabs(closed);
   await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
 }
 

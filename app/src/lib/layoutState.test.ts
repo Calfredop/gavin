@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
 import { gavinTrees } from "./gavinState";
 import type { LayoutNode } from "./layout";
+import { allSessionIds } from "./layout";
 import type { Page, Workspace } from "./workspace";
 import { getActiveView } from "./workspace";
 
@@ -20,7 +21,11 @@ vi.mock("./backend", () => ({
   getSessionNames: vi.fn(),
   setSessionName: vi.fn(),
   deleteBoard: vi.fn(),
-  getFileTabs: vi.fn(),
+  // Resolved by default, like getBoardTabs below: loadTabMaps awaits both
+  // before startup may leave "connecting", so a mock returning undefined
+  // would wedge every bootstrap test that isn't specifically about file
+  // tabs.
+  getFileTabs: vi.fn().mockResolvedValue({}),
   // Resolved by default: pruneFileTabs calls .catch() on this, so a bare
   // vi.fn() returning undefined would throw instead of exercising the
   // real best-effort path.
@@ -309,6 +314,91 @@ describe("closing board tabs", () => {
     expect(backend.killSession).not.toHaveBeenCalled();
     expect(get(layoutState).boardTabsById).toEqual({});
     expect(backend.setBoardTabs).toHaveBeenCalledWith({});
+  });
+});
+
+// A tab is a board (or a file) only because boardTabsById/fileTabsById say
+// so; Pane.svelte renders everything else as a <TerminalPane>. So a state
+// that still has the tab in a layout tree but no longer in its map is not
+// a harmless in-between: Svelte renders it, the pane mounts, fit() asks
+// the daemon to resize an id it has never heard of, and the daemon's
+// "unknown session" comes back on the streaming connection as a
+// daemon-error -- the full-window "Couldn't connect to the daemon"
+// overlay. These assert on every state the store PASSES THROUGH, because
+// the settled result was always correct; only the order was wrong.
+describe("non-session tabs are never orphaned mid-close", () => {
+  async function statesDuring(action: () => Promise<void>): Promise<LayoutState[]> {
+    const seen: LayoutState[] = [];
+    const stop = layoutState.subscribe((s) => seen.push(s));
+    await action();
+    stop();
+    return seen;
+  }
+
+  function tabIdsInTrees(s: LayoutState): string[] {
+    return s.workspaces.flatMap((w) => w.pages.flatMap((p) => allSessionIds(p.layout)));
+  }
+
+  /// States where `tabId` is still in a tree with nothing left to classify
+  /// it -- i.e. states that would render a terminal for a non-session id.
+  function orphanedIn(states: LayoutState[], tabId: string): LayoutState[] {
+    return states.filter(
+      (s) => tabIdsInTrees(s).includes(tabId) && !s.boardTabsById[tabId] && !s.fileTabsById[tabId]
+    );
+  }
+
+  function seedBoardTab(): void {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "bt-1"]))])], "ws-1", "a");
+    layoutState.update((s) => ({
+      ...s,
+      boardTabsById: { "bt-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" } },
+    }));
+  }
+
+  it("closeSession removes the board tab from the tree before its map entry", async () => {
+    seedBoardTab();
+
+    const seen = await statesDuring(() => closeSession("bt-1"));
+
+    expect(orphanedIn(seen, "bt-1")).toEqual([]);
+    expect(get(layoutState).boardTabsById).toEqual({});
+  });
+
+  it("closeSession removes a file tab from the tree before its map entry", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "ft-1"]))])], "ws-1", "a");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "ft-1": { path: "/ws/readme.md" } } }));
+
+    const seen = await statesDuring(() => closeSession("ft-1"));
+
+    expect(orphanedIn(seen, "ft-1")).toEqual([]);
+    expect(get(layoutState).fileTabsById).toEqual({});
+  });
+
+  it("closePane removes the board tab from the tree before its map entry", async () => {
+    seedBoardTab();
+
+    const seen = await statesDuring(() => closePane("bt-1"));
+
+    expect(orphanedIn(seen, "bt-1")).toEqual([]);
+    expect(get(layoutState).boardTabsById).toEqual({});
+  });
+
+  it("closePage removes the board tab from the tree before its map entry", async () => {
+    seedBoardTab();
+
+    const seen = await statesDuring(() => closePage("ws-1", "page-1"));
+
+    expect(orphanedIn(seen, "bt-1")).toEqual([]);
+    expect(get(layoutState).boardTabsById).toEqual({});
+  });
+
+  it("closeWorkspace removes the board tab from the tree before its map entry", async () => {
+    seedBoardTab();
+
+    const seen = await statesDuring(() => closeWorkspace("ws-1"));
+
+    expect(orphanedIn(seen, "bt-1")).toEqual([]);
+    expect(get(layoutState).boardTabsById).toEqual({});
   });
 });
 
@@ -1509,6 +1599,60 @@ describe("bootstrap / pollForStartupState readiness", () => {
     expect(get(layoutState).status).toBe("connecting");
 
     await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(get(layoutState).status).toBe("ready");
+  });
+
+  // The tab maps decide which layout-tree ids are boards/files and which
+  // are daemon sessions. Reaching "ready" without them means the first
+  // render of a restored board or file tab is a <TerminalPane> for an id
+  // the daemon never had -- blank, and its resize takes the daemon's
+  // "unknown session" to the whole window as a connection error.
+  it("does not become ready until the tab maps are in the store", async () => {
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ "ft-1": "/ws/readme.md" }), 20))
+    );
+    vi.mocked(backend.getBoardTabs).mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ "bt-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" } }), 20)
+        )
+    );
+
+    const readyStates: LayoutState[] = [];
+    const stop = layoutState.subscribe((s) => {
+      if (s.status === "ready") readyStates.push(s);
+    });
+    await bootstrap();
+    await vi.waitFor(() => expect(get(layoutState).status).toBe("ready"));
+    stop();
+
+    expect(readyStates.length).toBeGreaterThan(0);
+    expect(readyStates[0].boardTabsById["bt-1"]).toEqual({ workspaceId: "ws-1", contextFolder: "/ws/auth" });
+    expect(readyStates[0].fileTabsById["ft-1"]).toEqual({ path: "/ws/readme.md" });
+  });
+
+  // FileTabs/BoardTabs are managed at the very end of session::bootstrap,
+  // so an invoke that lands first rejects with "state not managed" --
+  // exactly what getWorkspacesState is already retried for. Swallowing it
+  // once left the maps empty for the whole run.
+  it("retries the tab maps when the invoke rejects because Rust isn't managed yet", async () => {
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces: [], activeWorkspaceId: null });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs)
+      .mockRejectedValueOnce(new Error("state not managed"))
+      .mockResolvedValue({ "bt-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" } });
+
+    await bootstrap();
+
+    await vi.waitFor(
+      () => expect(get(layoutState).boardTabsById["bt-1"]).toBeDefined(),
+      { timeout: 3000 }
+    );
     expect(get(layoutState).status).toBe("ready");
   });
 });
