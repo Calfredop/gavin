@@ -1,8 +1,8 @@
 use crate::config::Workspace;
 use crate::layout::LayoutNode;
 use protocol::{
-    read_message, socket_path, write_message, Board, Column, ConflictNote, Label, Orchestration, Rail,
-    Request, Response, ToolDef,
+    read_message, socket_path, write_message, Board, Column, ConflictNote, GroupTemplate, Label,
+    Orchestration, Rail, Request, Response, ToolDef,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -2331,6 +2331,62 @@ pub fn delete_tool(
     let resp =
         send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteTool { id })
             .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+// --- Group templates --------------------------------------------------------
+//
+// v15 requests, so against a v14 daemon they fail LOCALLY through the
+// gated path rather than putting bytes on a socket that cannot parse
+// them. The UI is already dark there (FEATURE_MIN_VERSION.groups), so
+// this is the belt to that braces.
+
+#[tauri::command]
+pub fn get_group_templates(
+    workspace_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Vec<GroupTemplate>, String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::GetGroupTemplates { workspace_id },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::GroupTemplates { templates } => Ok(templates),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected GroupTemplates, got {other:?}")),
+    }
+}
+
+#[tauri::command]
+pub fn save_group_template(
+    template: GroupTemplate,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SaveGroupTemplate { template },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+#[tauri::command]
+pub fn delete_group_template(
+    id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::DeleteGroupTemplate { id },
+    )
+    .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
 

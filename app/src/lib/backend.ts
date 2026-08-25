@@ -5,6 +5,7 @@ import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { ToolRecord } from "./orchestrationTools";
+import type { GroupTemplateRecord } from "./orchestrationGroups";
 import type { DaemonCompat } from "./daemonCompat";
 import type { SessionStatus } from "./notifications";
 
@@ -590,4 +591,18 @@ export function saveTool(tool: ToolRecord): Promise<void> {
 
 export function deleteTool(id: string): Promise<void> {
   return invoke("delete_tool", { id });
+}
+
+// --- Group templates --------------------------------------------------------
+
+export function getGroupTemplates(workspaceId: string): Promise<GroupTemplateRecord[]> {
+  return invoke("get_group_templates", { workspaceId });
+}
+
+export function saveGroupTemplate(template: GroupTemplateRecord): Promise<void> {
+  return invoke("save_group_template", { template });
+}
+
+export function deleteGroupTemplate(id: string): Promise<void> {
+  return invoke("delete_group_template", { id });
 }
