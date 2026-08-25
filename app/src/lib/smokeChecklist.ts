@@ -264,6 +264,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The page chip reads “page at Start” beforehand and the rail's name afterwards; a new blank shell on that page opens in the rail's checkout, not $HOME. Re-arming it, or pressing Resume, must not make a second page — close the page while it is paused and Resume is the one case that should.",
       },
       {
+        id: "run-merge-into",
+        text: "“Merge this rail into a branch” on a rail bound to a worktree LANDS that branch on main; “Update from a branch” is the other direction and leaves main where it was",
+        hint: "Bind a rail to a fork carrying a commit, drop each tool on a stage in turn and read `git log main` between them — the landing one adds the merge there, the inbound one only moves the fork. The step must run the merge in the ROOT checkout, so watch that the rail's own tab stays on its branch. Then make the root dirty on a file the merge touches: the step has to report git's refusal and leave that WIP alone, never stash or commit it. On a rail with NO worktree it should stop and say the rail has no branch of its own.",
+      },
+      {
         id: "run-rail-advances-off-tab",
         text: "Start a rail, switch to the page its agent is working on, and stay there — the rail advances to the next step without you going back to the Orchestration tab",
         hint: "The scheduler used to be an $effect inside the Orchestration tab, so a rail only moved while that tab was on screen and then caught up all at once when you returned. Watch the page: the finished step's tab should be joined by the next step's, live. The Kanban tab is a second place to stand.",

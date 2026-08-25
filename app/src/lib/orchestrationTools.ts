@@ -57,8 +57,13 @@ export function isBuiltinId(id: string): boolean {
 }
 
 // ---- The built-in set ------------------------------------------------------
-// Ten tools covering every example the card named, and demonstrating all
-// three kinds. Data, not code: nothing about running these is special.
+// Eleven tools covering every example the card named, and demonstrating
+// all three kinds. Data, not code: nothing about running these is
+// special.
+//
+// Merge ships TWICE, once per direction, because a step always runs in
+// the rail's own checkout and only the inbound direction is reachable
+// from there.
 //
 // Substitution is LITERAL (spec T3) -- the tool author owns the quoting.
 // The bodies below are written with that in mind.
@@ -91,21 +96,60 @@ export const BUILTIN_TOOLS: Tool[] = [
   },
   {
     id: "builtin:merge",
-    name: "Merge a branch",
+    name: "Update from a branch",
     description:
-      "An agent merges a branch in, resolving conflicts or aborting cleanly rather than " +
-      "leaving the checkout mid-merge.",
+      "An agent merges a branch INTO this rail's checkout, resolving conflicts or aborting " +
+      "cleanly. It brings that branch's work here — it lands this rail nowhere.",
     kind: "agent",
     scope: "builtin",
     params: [{ name: "branch", label: "Branch to merge in", default: "main" }],
     body:
       "Merge the branch `{{branch}}` into the branch checked out in this worktree.\n\n" +
+      "This is the INBOUND direction: it brings `{{branch}}` here. It does not land this " +
+      "branch on `{{branch}}` — the “Merge this rail into a branch” tool does that.\n\n" +
       "1. Run `git merge --no-edit {{branch}}`.\n" +
       "2. If it conflicts, resolve each conflict by understanding BOTH sides — never by " +
       "taking one wholesale — then run the project's tests before committing the merge.\n" +
       "3. If you cannot resolve a conflict confidently, run `git merge --abort` and explain " +
       "exactly what blocked you. An aborted merge is a better outcome than a wrong one.\n\n" +
       "Do not push.",
+  },
+  {
+    id: "builtin:merge-into",
+    name: "Merge this rail into a branch",
+    description:
+      "An agent lands this rail's branch on another one, merging in the checkout that HOLDS " +
+      "that branch — the rail's own worktree cannot do it.",
+    kind: "agent",
+    scope: "builtin",
+    params: [{ name: "base", label: "Branch to land on", default: "main" }],
+    // The merge deliberately runs somewhere else. A step always runs in
+    // the rail's checkout, and from there the landing direction is
+    // unreachable: git refuses to check `{{base}}` out while another
+    // worktree holds it, and merging this branch into itself exits 0
+    // having done nothing. `git -C <the checkout that has it>` is the
+    // same move the Git tab's own merge-back makes (gitState.mergeBack).
+    body:
+      "Land the work in this checkout on the branch `{{base}}`, by merging it there.\n\n" +
+      "The merge cannot run here: git will not let you check `{{base}}` out while another " +
+      "worktree holds it, and merging this branch into itself does nothing. Run it in the " +
+      "checkout that HAS `{{base}}`.\n\n" +
+      "1. `git rev-parse --abbrev-ref HEAD` — the branch to land. If it is already " +
+      "`{{base}}`, stop and say so: this rail has no branch of its own to merge.\n" +
+      "2. `git status --short` — uncommitted changes here do NOT travel with a merge. If " +
+      "there are any, stop and list them rather than committing them yourself.\n" +
+      "3. `git worktree list` — find the checkout holding `{{base}}`, then merge from there: " +
+      "`git -C <that checkout> merge --no-edit <this branch>`. If no worktree has `{{base}}` " +
+      "checked out, stop and say so.\n" +
+      "4. If git refuses because that checkout has local changes, report its message and " +
+      "stop. Never commit, stash or discard work you did not write — that checkout is " +
+      "someone else's, and its stash stack is shared.\n" +
+      "5. If it conflicts, resolve each conflict by understanding BOTH sides — never by " +
+      "taking one wholesale — then run the project's tests before committing the merge. If " +
+      "you cannot resolve one confidently, run `git -C <that checkout> merge --abort` and " +
+      "explain exactly what blocked you. Leaving that checkout mid-merge is the worst " +
+      "outcome available here.\n\n" +
+      "Do not push, and do not remove this worktree or delete this branch.",
   },
   {
     id: "builtin:open-pr",

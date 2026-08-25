@@ -37,11 +37,24 @@ function record(over: Partial<ToolRecord> = {}): ToolRecord {
 }
 
 describe("the built-in set", () => {
-  it("ships ten tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(10);
+  const builtin = (id: string): Tool => {
+    const tool = BUILTIN_TOOLS.find((t) => t.id === id);
+    if (!tool) throw new Error(`no built-in ${id}`);
+    return tool;
+  };
+
+  it("ships eleven tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(11);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
+  });
+
+  // The library dialog lists tools by name, so two tools sharing one is
+  // a tool the human cannot pick deliberately.
+  it("gives every built-in a distinct name", () => {
+    const names = BUILTIN_TOOLS.map((t) => t.name);
+    expect(new Set(names).size).toBe(names.length);
   });
 
   it("covers every example the card named", () => {
@@ -57,6 +70,28 @@ describe("the built-in set", () => {
     ]) {
       expect(ids).toContain(wanted);
     }
+  });
+
+  // Both merge DIRECTIONS ship, and the names say which is which. A tool
+  // step always runs in the rail's own checkout (executeToolLaunch), so a
+  // merge authored there can only ever pull a branch IN -- it cannot land
+  // the rail's work anywhere, and no parameter value makes it: git refuses
+  // to check `main` out while another worktree holds it, and merging a
+  // branch into itself is a no-op that still exits 0.
+  it("names the in-bound merge for its direction", () => {
+    const tool = builtin("builtin:merge");
+    expect(tool.name).toMatch(/^Update from/);
+    expect(tool.params.map((p) => p.name)).toEqual(["branch"]);
+  });
+
+  it("ships a merge that lands this rail's branch on another one", () => {
+    const tool = builtin("builtin:merge-into");
+    expect(tool.kind).toBe("agent");
+    expect(tool.params.map((p) => [p.name, p.default])).toEqual([["base", "main"]]);
+    // The whole bug in one assertion: the merge must run in the checkout
+    // that HOLDS the base branch, which is never this one.
+    expect(tool.body).toContain("git worktree list");
+    expect(tool.body).toContain("git -C");
   });
 
   it("demonstrates all three kinds", () => {

@@ -309,14 +309,15 @@ possible at all.
 
 ## 7. The built-in set
 
-Ten tools, covering every example the card named and demonstrating all three
-kinds. `{{param}}` defaults in brackets.
+Eleven tools, covering every example the card named and demonstrating all
+three kinds. `{{param}}` defaults in brackets.
 
 | id | name | kind | params |
 |---|---|---|---|
 | `builtin:commit` | Commit changes | agent | — |
 | `builtin:push` | Push branch | command | `remote` [origin] |
-| `builtin:merge` | Merge a branch | agent | `branch` [main] |
+| `builtin:merge` | Update from a branch | agent | `branch` [main] |
+| `builtin:merge-into` | Merge this rail into a branch | agent | `base` [main] |
 | `builtin:open-pr` | Open a pull request | command | `base` [main] |
 | `builtin:run-tests` | Run tests | command | `command` [npm test] |
 | `builtin:unity-tests` | Run Unity tests | command | `unity`, `project` [.], `platform` [EditMode], `results` [TestResults.xml] |
@@ -334,3 +335,38 @@ success is exactly their exit code. `Send an email` is the script example.
 `Send a notification` and `Send an email` are macOS-only (`osascript`), and
 say so in their description — literal substitution (T3) means a `"` in a
 message breaks them, which the dialog's help text states.
+
+### 7.1 Merge ships in both directions (amended 2026-08-25)
+
+The table shipped ONE merge, and it was the inbound one: "merge `{{branch}}`
+into the branch checked out in this worktree". A tool step always runs in the
+rail's own checkout (`executeToolLaunch`), so on a rail bound to a worktree
+that tool pulls `main` in, and on a rail with none it merges `main` into
+`main` — "Already up to date", exit 0, step done. Neither lands the rail's
+work anywhere, which is what a step called *Merge a branch* sitting after
+*Commit* and *Push* reads as.
+
+No parameter value fixes it, because the landing direction is unreachable
+from the rail's checkout at all: git refuses to check `main` out while
+another worktree holds it (`fatal: 'main' is already used by worktree at …`),
+and merging the rail's own branch into itself is a no-op. It has to run in
+the checkout that HAS the base branch — `git -C <that checkout> merge <rail
+branch>` — which is the move the Git tab's own merge-back already makes
+(`gitState.mergeBack`, §3.4 of the worktrees spec: **root** cwd, not the
+fork's).
+
+So: `builtin:merge` keeps its id and its direction and is renamed **Update
+from a branch** — existing steps keep working and now say what they do — and
+**`builtin:merge-into` — Merge this rail into a branch** (`base` [main])
+joins it. Its prompt refuses rather than improvises: it stops if the rail is
+already on `base` (no branch of its own), stops if the rail's checkout is
+dirty (uncommitted work does not travel with a merge), and if git refuses
+because the base checkout has local changes it reports that verbatim and
+stops — it never commits, stashes or discards work it did not write, since
+that checkout is the human's and the stash stack is shared across every
+worktree.
+
+Renaming rather than flipping was deliberate: pulling `main` into a
+long-running rail is a real operation the human already used, and flipping
+`builtin:merge` would have changed the direction of every existing step
+silently, under an unchanged name.
