@@ -56,7 +56,6 @@
     resetRail,
     retryStep,
     markStepDone,
-    tick,
     makeStageSequentialAction,
     moveStepIntoStageAction,
     moveStepToNewStageAction,
@@ -306,24 +305,12 @@
     }
   });
 
-  // Re-tick whenever anything the scheduler reads changes: card statuses
-  // arrive on gavin-tree-changed pushes, sessions come and go in the
-  // layout, and the board decides what "done" means.
-  $effect(() => {
-    void $gavinTrees[workspaceId];
-    void $layoutState.workspaces;
-    // An agent tool step finishes without its session going anywhere, so
-    // nothing above changes when it does -- only its status does. Without
-    // this the rail would sit on a finished agent until some unrelated
-    // event happened to tick it.
-    void $layoutState.sessionStatusById;
-    void $kanbanState[workspaceId];
-    // A tool step launches only once the library has loaded, so the tick
-    // has to re-run when it arrives -- otherwise an armed rail sitting
-    // on a tool step would wait for some unrelated change.
-    void $toolRecords[workspaceId];
-    void tick(workspaceId);
-  });
+  // No re-tick effect here: this component being mounted is exactly what
+  // the scheduler must NOT depend on. `+page.svelte` renders one hub view
+  // at a time and a terminal page renders none, so a rail driven from
+  // here only advanced while this tab was on screen. The trigger lives in
+  // orchestrationState's startScheduler, on the same stores, for the life
+  // of the app.
 
   let gridEl = $state<HTMLElement | null>(null);
   // Listening happens on the row that holds BOTH the grid and the drawer,

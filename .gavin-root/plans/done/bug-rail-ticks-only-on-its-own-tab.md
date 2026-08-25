@@ -1,7 +1,7 @@
 ---
 kind: task
 title: [bug] A rail only advances while the Orchestration tab is on screen
-status: To Do
+status: Done
 ---
 Found while fixing the Commit tool card, and deliberately left out of that fix
 because it is a separate fault affecting every kind of step.

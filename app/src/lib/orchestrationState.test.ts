@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get, writable, type Writable } from "svelte/store";
 
 vi.mock("./backend", () => ({
@@ -92,6 +92,18 @@ vi.mock("./gavinState", () => ({
   },
   patchPlanField: vi.fn(),
 }));
+// The daemon's own pushes, capturable: initOrchestrationListeners is the
+// third place a plan can arrive, and the only one that needs a real
+// `listen` to reach.
+const tauriEvents = vi.hoisted(() => ({
+  handlers: new Map<string, (event: { payload: unknown }) => void>(),
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+    tauriEvents.handlers.set(name, handler);
+    return () => tauriEvents.handlers.delete(name);
+  },
+}));
 vi.mock("./gitState", () => ({
   gitStore: { subscribe: (fn: (v: unknown) => void) => (fn({}), () => {}) },
   ensureGitView: vi.fn(),
@@ -117,6 +129,8 @@ import {
   retryStep,
   markStepDone,
   executeActions,
+  startScheduler,
+  initOrchestrationListeners,
   mutatePlan,
   setRailRunAction,
   setStepRunAction,
@@ -144,6 +158,7 @@ const boardStore = kanbanStateModule.kanbanState as unknown as Writable<Record<s
 const layoutStore = layoutStateModule.layoutState as unknown as Writable<{
   workspaces: unknown[];
   sessionStatusById: Record<string, string>;
+  activeWorkspaceId?: string | null;
 }>;
 
 beforeEach(() => {
@@ -919,6 +934,9 @@ function armWorkspace(): void {
     // No status reported for either: a session the daemon has said
     // nothing about is not a finished one.
     sessionStatusById: {},
+    // The scheduler ticks the workspace the human is looking at, so a
+    // workspace nothing has activated is one it leaves alone.
+    activeWorkspaceId: "ws-1",
   });
 }
 
@@ -1044,7 +1062,6 @@ describe("a tick requested while one is in flight", () => {
     __resetForTesting();
     toolsResetForTesting();
     vi.clearAllMocks();
-    armWorkspace();
     vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
     vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
     vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
@@ -1059,7 +1076,11 @@ describe("a tick requested while one is in flight", () => {
     // The same rail, armed at s1 with NOTHING running yet, so one tick
     // launches its step -- and a drop can land mid-launch.
     vi.mocked(backend.getOrchestration).mockResolvedValue({ ...midRunRail(), stepRuns: [] });
+    // The board lands AFTER the plan on purpose: a plan arriving ticks,
+    // and this rail's step must still be unlaunched when the test runs
+    // the pass it is about.
     await fetchOrchestration("ws-1");
+    armWorkspace();
   });
 
   // The pass in flight read the plan before the new step existed, so
@@ -1171,6 +1192,119 @@ describe("an agent tool step whose turn has ended", () => {
   // instant it launched.
   it("keeps running while its session has reported nothing", async () => {
     await tick("ws-1");
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+});
+
+// ---- The scheduler's own trigger -------------------------------------------
+// A rail used to advance only while the Orchestration tab was on screen:
+// the one self-firing tick was an $effect in OrchestrationHubView, and
+// +page renders a single hub view at a time (a terminal page renders none
+// of them at all). Go and watch the agent work on its page -- the natural
+// thing to do -- and nothing moved until you navigated back.
+
+/// Long enough for a tick to have run: the subscription fires
+/// synchronously but `tick` is async, so a negative assertion made in the
+/// same task would pass whether the scheduler was listening or not.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe("the scheduler's trigger, with no hub view mounted", () => {
+  let stop: (() => void) | null = null;
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(backend.getOrchestration).mockResolvedValue(agentToolRail());
+    await fetchOrchestration("ws-1");
+    stop = startScheduler();
+  });
+
+  afterEach(() => {
+    stop?.();
+    stop = null;
+  });
+
+  it("advances the rail when the running agent goes idle", async () => {
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null)
+    );
+    // The next stage actually started: without this the rail is merely
+    // ticking, not running.
+    await vi.waitFor(() =>
+      expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+        "ws-1",
+        "p1",
+        "/x/wt",
+        expect.stringContaining("git push -u origin HEAD")
+      )
+    );
+  });
+
+  // One workspace, the one on screen -- which is what a single mounted
+  // hub view amounted to. Running the rails of a workspace the human is
+  // not in is a separate change, not a side effect of this one.
+  it("leaves a workspace the human is not in alone", async () => {
+    layoutStore.update((s) => ({
+      ...s,
+      activeWorkspaceId: "ws-2",
+      sessionStatusById: { "sess-1": "idle" },
+    }));
+    await settle();
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+
+  // The plan is the one input the scheduler cannot subscribe to, so its
+  // arrival ticks by hand. Without that, a rail left running across a
+  // restart sits still until some unrelated push happens along -- the
+  // same stall through a different door, and the one a human meets first
+  // after reopening the app.
+  it("picks up a rail whose plan lands last", async () => {
+    __resetForTesting();
+    stop = startScheduler();
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    await settle();
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+
+    await fetchOrchestration("ws-1");
+
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null);
+  });
+
+  // The daemon's push is the third plan arrival, and the one an agent
+  // editing rails over MCP comes in on. A step added to the stage a rail
+  // is running has to start, not wait for the human to come back.
+  it("picks up a plan the daemon pushes", async () => {
+    stop?.();
+    __resetForTesting();
+    const unlisten = await initOrchestrationListeners();
+    stop = unlisten;
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    await settle();
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+
+    tauriEvents.handlers.get("orchestration-changed")?.({
+      payload: ["ws-1", agentToolRail()],
+    });
+
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null)
+    );
+  });
+
+  it("stops when the app tears it down", async () => {
+    stop?.();
+    stop = null;
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
   });
 });
