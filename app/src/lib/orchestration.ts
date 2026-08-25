@@ -1175,6 +1175,29 @@ export function addToolAsStage(
   return insertAsStage(orch, railId, index, toolStep(stepId, 0, toolId));
 }
 
+/// Place a fully-formed stage -- a template's group, steps and all -- at
+/// `index` in `railId`. The multi-step twin of insertAsStage: that one
+/// mints a fresh single-step stage, this one is handed a whole stage
+/// (name, mode and members already set by the caller) and only renumbers
+/// it. Goes through insertStageAt like every other stage-list splice, so
+/// the clamp-past-the-end behaviour can't drift from moveStageToIndex's.
+export function insertStageWithSteps(
+  orch: Orchestration,
+  railId: string,
+  index: number,
+  stage: Stage
+): Orchestration {
+  if (!orch.rails.some((r) => r.id === railId)) return orch;
+  return {
+    ...orch,
+    rails: orch.rails.map((r) =>
+      r.id === railId
+        ? { ...r, stages: insertStageAt(r.stages, index, { ...stage, steps: renumber(stage.steps) }) }
+        : r
+    ),
+  };
+}
+
 function insertAsStage(
   orch: Orchestration,
   railId: string,

@@ -9,17 +9,23 @@
     Terminal,
     FileCode2,
     Settings2,
+    Group,
   } from "@lucide/svelte";
   import { orchDragState } from "./orchestrationDrag";
   import { toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
   import { unplacedCount } from "./orchestration";
   import type { UnplacedGroup } from "./orchestration";
+  import type { GroupTemplate } from "./orchestrationGroups";
 
   interface Props {
     groups: UnplacedGroup[];
     /// Every tool this workspace can reach: built-in, global, its own.
     tools: Tool[];
+    /// Every group template this workspace can reach: its own plus every
+    /// global one, in the order templateLibrary already sorted them --
+    /// this workspace's first, then the machine's, each alphabetical.
+    templates: GroupTemplate[];
     /// Clicking a row adds it to this rail as its own stage; null when
     /// there is no rail to add to yet.
     targetRailId: string | null;
@@ -30,6 +36,8 @@
     hiddenCount?: number;
     onAddTool: (toolId: string) => void;
     onManageTools: () => void;
+    onAddTemplate: (templateId: string) => void;
+    onManageTemplates: () => void;
     /// Why the running daemon cannot carry tools, or null. A daemon
     /// older than v11 has no `tool_id` column: it would accept a tool
     /// step and store a step with neither a card nor a tool, which comes
@@ -37,17 +45,26 @@
     /// should still see what tools ARE -- but inert, with the reason on
     /// hover and no drag handle at all.
     toolsBlocked?: string | null;
+    /// Same rule as toolsBlocked, one version later: placing a template
+    /// writes a `mode` (FEATURE_MIN_VERSION.groups) just as forming a
+    /// group by hand does, so a pre-v15 daemon needs the same inert
+    /// degradation here.
+    groupsBlocked?: string | null;
   }
   let {
     groups,
     tools,
+    templates,
     targetRailId,
     onAdd,
     onAddTool,
     onManageTools,
+    onAddTemplate,
+    onManageTemplates,
     filtering = false,
     hiddenCount = 0,
     toolsBlocked = null,
+    groupsBlocked = null,
   }: Props = $props();
 
   let collapsed = $state(false);
@@ -67,6 +84,15 @@
   // While filtering every group opens: a collapsed Done group would hide
   // the very row the query just found.
   const isCollapsed = (g: UnplacedGroup): boolean => (filtering ? false : (toggled[g.slug] ?? g.isDone));
+
+  // Groups sit ABOVE Tools, for the same reason Tools sit above the
+  // cards: a saved group is reached for, not browsed, so it starts open
+  // too and stays put while the card list churns underneath both.
+  let templatesCollapsed = $state(false);
+  const SCOPE_CAPTION: Record<GroupTemplate["scope"], string> = {
+    workspace: "This workspace",
+    global: "All workspaces",
+  };
 
   // Tools sit ABOVE the cards and start open: they are the same handful
   // every time, so they are the part of this panel a human learns to
@@ -100,6 +126,48 @@
       <p class="hint quiet">Drag a card or a tool onto a rail, or click to append it.</p>
     {/if}
 
+    <button
+      type="button"
+      class="group-head"
+      onclick={() => (templatesCollapsed = !templatesCollapsed)}
+    >
+      {#if templatesCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+      <span class="group-name">Groups</span>
+      <span class="group-count">{templates.length}</span>
+    </button>
+    {#if !templatesCollapsed}
+      <ul>
+        {#each templates as t (t.id)}
+          <li>
+            <button
+              type="button"
+              data-orch-template={groupsBlocked ? undefined : t.id}
+              class:dragging={$orchDragState?.id === t.id}
+              disabled={Boolean(groupsBlocked) || !targetRailId}
+              title={groupsBlocked ??
+                `${SCOPE_CAPTION[t.scope]}${t.description ? ` — ${t.description}` : ""}`}
+              onclick={() => onAddTemplate(t.id)}
+            >
+              <Group size={12} />
+              <span>{t.name}</span>
+              <span class="scope">{t.scope === "global" ? "all" : "ws"}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+      {#if templates.length === 0}
+        <p class="empty">No saved groups yet.</p>
+      {/if}
+      <button
+        type="button"
+        class="manage"
+        disabled={Boolean(groupsBlocked)}
+        title={groupsBlocked ?? ""}
+        onclick={onManageTemplates}
+      >
+        <Settings2 size={12} /> Manage groups…
+      </button>
+    {/if}
     <button
       type="button"
       class="group-head"

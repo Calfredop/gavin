@@ -150,10 +150,13 @@ import {
   renameStageAction,
   moveStageToIndexAction,
   ungroupStageAction,
+  addTemplateAsStageAction,
+  addTemplateToStageAction,
   __resetForTesting,
 } from "./orchestrationState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "./orchestration";
 import type { Orchestration, Rail, Stage } from "./orchestration";
+import type { GroupTemplate } from "./orchestrationGroups";
 
 function rail(id: string): Rail {
   return { id, name: id, position: 0, worktreePath: null, pageId: null, stages: [] };
@@ -1247,6 +1250,87 @@ describe("group actions", () => {
     await addStepToStageAction("ws-1", "s1", "/x/c.md", 0);
     const stage = findStage(get(orchestrations)["ws-1"], "s1") as Stage;
     expect(stage.steps[0].cardPath).toBe("/x/c.md");
+  });
+});
+
+describe("template actions", () => {
+  beforeEach(() => {
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    orchestrations.set({
+      "ws-1": {
+        ...emptyOrchestration(),
+        rails: [
+          {
+            id: "r1",
+            name: "backend",
+            position: 0,
+            worktreePath: "/x/wt",
+            pageId: "p1",
+            stages: [
+              {
+                id: "s1",
+                position: 0,
+                mode: "sequence",
+                steps: [
+                  { id: "t1", position: 0, cardPath: "", toolId: "builtin:merge-into", toolParams: {} },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("addTemplateAsStageAction places the template as its own group", async () => {
+    const t: GroupTemplate = {
+      id: "g1",
+      name: "Merge and push",
+      description: "",
+      mode: "sequence",
+      scope: "workspace",
+      steps: [
+        { toolId: "builtin:merge-into", toolParams: {} },
+        { toolId: "builtin:push", toolParams: {} },
+      ],
+    };
+    expect(await addTemplateAsStageAction("ws-1", "r1", 0, t)).toBeNull();
+    const stage = get(orchestrations)["ws-1"].rails[0].stages[0];
+    expect(stage.name).toBe("Merge and push");
+    expect(stageMode(stage)).toBe("sequence");
+    expect(stage.steps.map((s) => s.toolId)).toEqual(["builtin:merge-into", "builtin:push"]);
+  });
+
+  it("addTemplateToStageAction merges the members into an existing group at the index", async () => {
+    // seeded: s1 holds t1
+    const t: GroupTemplate = {
+      id: "g1",
+      name: "Merge and push",
+      description: "",
+      mode: "sequence",
+      scope: "workspace",
+      steps: [{ toolId: "builtin:push", toolParams: {} }],
+    };
+    expect(await addTemplateToStageAction("ws-1", "s1", 0, t)).toBeNull();
+    const stage = findStage(get(orchestrations)["ws-1"], "s1") as Stage;
+    expect(stage.steps[0].toolId).toBe("builtin:push");
+    // Joining a single-step stage forms a sequence group (G3).
+    expect(stageMode(stage)).toBe("sequence");
+  });
+
+  it("addTemplateToStageAction applies each member's own param overrides, not just places the steps", async () => {
+    const t: GroupTemplate = {
+      id: "g1",
+      name: "Merge and push",
+      description: "",
+      mode: "sequence",
+      scope: "workspace",
+      steps: [{ toolId: "builtin:push", toolParams: { remote: "upstream" } }],
+    };
+    await addTemplateToStageAction("ws-1", "s1", 1, t);
+    const stage = findStage(get(orchestrations)["ws-1"], "s1") as Stage;
+    const pushed = stage.steps.find((s) => s.toolId === "builtin:push");
+    expect(pushed?.toolParams).toEqual({ remote: "upstream" });
   });
 });
 

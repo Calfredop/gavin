@@ -44,6 +44,7 @@ import {
   isStageRunning,
   stepAttentions,
   findStep,
+  insertStageWithSteps,
 } from "./orchestration";
 import type {
   Action,
@@ -56,6 +57,8 @@ import type {
   Step,
 } from "./orchestration";
 import { findTool, resolveToolBody } from "./orchestrationTools";
+import { stepsFromTemplate } from "./orchestrationGroups";
+import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
@@ -1071,6 +1074,51 @@ export async function addToolToStageAction(
   index: number
 ): Promise<string | null> {
   const error = await mutatePlan(workspaceId, (o) => addToolStep(o, stageId, crypto.randomUUID(), toolId, index));
+  if (!error) await startIfStageRunning(workspaceId, stageId);
+  return error;
+}
+
+/// A template dropped into a gap: its members become a group of their
+/// own, carrying the template's name and mode -- the same sequential
+/// drop addToolAsStageAction is for one tool, minting every member at
+/// once instead of one step at a time.
+export function addTemplateAsStageAction(
+  workspaceId: string,
+  railId: string,
+  index: number,
+  template: GroupTemplate
+): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) =>
+    insertStageWithSteps(o, railId, index, {
+      id: crypto.randomUUID(),
+      position: index,
+      mode: template.mode,
+      name: template.name,
+      steps: stepsFromTemplate(template, () => crypto.randomUUID()),
+    })
+  );
+}
+
+/// A template dropped ONTO a stage: its members join that group at
+/// `index`, in order. The group's own name and mode win -- the human
+/// arranged that group, and a template merged into it is an addition,
+/// not a replacement.
+export async function addTemplateToStageAction(
+  workspaceId: string,
+  stageId: string,
+  index: number,
+  template: GroupTemplate
+): Promise<string | null> {
+  const error = await mutatePlan(workspaceId, (o) => {
+    const minted = stepsFromTemplate(template, () => crypto.randomUUID());
+    // Two passes because addToolStep places a step and setStepParams gives
+    // it its overrides -- one mutatePlan, so it is still one write.
+    const placed = minted.reduce(
+      (acc, step, i) => addToolStep(acc, stageId, step.id, step.toolId as string, index + i),
+      o
+    );
+    return minted.reduce((acc, step) => setStepParams(acc, step.id, step.toolParams ?? {}), placed);
+  });
   if (!error) await startIfStageRunning(workspaceId, stageId);
   return error;
 }

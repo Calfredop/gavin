@@ -42,6 +42,14 @@
   import { findTool, toolKindLabel } from "./orchestrationTools";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
+    groupTemplateRecords,
+    libraryFor as templateLibraryFor,
+    fetchGroupTemplates,
+    saveGroupTemplateAction,
+  } from "./groupTemplatesState";
+  import { templateFromStage } from "./orchestrationGroups";
+  import GroupTemplateSaveDialog from "./GroupTemplateSaveDialog.svelte";
+  import {
     orchestrations,
     fetchOrchestration,
     refreshOrchestration,
@@ -67,6 +75,8 @@
     addToolAsStepAction,
     addToolAsStageAction,
     addToolToStageAction,
+    addTemplateAsStageAction,
+    addTemplateToStageAction,
     setStepParamsAction,
     moveRailCardsAction,
     clearDoneStepsAction,
@@ -113,6 +123,10 @@
   // drawer shows the ten built-ins rather than an empty panel. The
   // SCHEDULER uses libraryFor, which can tell loading from empty.
   const tools = $derived(renderLibraryFor($toolRecords, workspaceId));
+  // Unlike tools there is no built-in fallback to render meanwhile (see
+  // groupTemplatesState's own doc): an empty Groups section for a beat,
+  // while the fetch is in flight, is honest.
+  const templates = $derived(templateLibraryFor($groupTemplateRecords, workspaceId) ?? []);
 
   // The card detail modal, opened from a tab's card-link button (and
   // from a step chip's own menu once it has one): a step is a card, and
@@ -131,6 +145,10 @@
 
   let picking = $state<string | null>(null);
   let managingTools = $state(false);
+  /// Which tab ToolLibraryDialog opens on -- the drawer's own "Manage
+  /// tools…" and "Manage groups…" buttons share one dialog instance
+  /// rather than opening a second one for the same two-scope question.
+  let libraryDialogTab = $state<"tools" | "groups">("tools");
   /// The tool step whose parameters are being edited, by step id.
   let editingParamsFor = $state<string | null>(null);
   // The rail whose bindings are being edited, set by the rail header and
@@ -164,10 +182,14 @@
     else void clearDoneStepsAction(workspaceId, pending.railId);
   }
 
-  // The group whose "Save as template…" dialog Task 12 owns -- set here,
-  // read there. Unread until that dialog lands, which is fine: nothing
-  // else in this file consumes it.
+  // The group whose "Save as template…" dialog is open, by stage id --
+  // set by the rail's own ⋯ menu (Task 9), resolved to a Stage below so
+  // a plan that reloads under the open dialog re-derives it fresh (or
+  // closes, if the stage went some other way meanwhile).
   let savingTemplateFor = $state<string | null>(null);
+  const savingTemplateStage = $derived(
+    savingTemplateFor && orch ? findStage(orch, savingTemplateFor) : null
+  );
 
   // A group dropped on the drawer takes every step it holds off the plan
   // with it, unlike every other unplace (one step) -- so it asks first,
@@ -334,6 +356,7 @@
     void $daemonCompat;
     void fetchTools(workspaceId);
     void refreshTools(workspaceId);
+    void fetchGroupTemplates(workspaceId);
     if (root) {
       ensureGitView(workspaceId, root);
       void refreshGit(workspaceId);
@@ -377,9 +400,10 @@
         // group (or grow one further), which DOES need a daemon that can
         // carry `mode` (FEATURE_MIN_VERSION.groups) -- a pre-v15 daemon
         // has neither column and would silently hand the stage back
-        // parallel. "template" sits on the same footing: Task 12's drop
-        // is also how a group gets FORMED, even though nothing places one
-        // yet.
+        // parallel. "template" sits on the same footing: placing one is
+        // also how a group gets FORMED (a fresh one at "new-stage", or
+        // an existing one grown at "into-stage") and writes `mode` either
+        // way.
         //
         // A whole-stage drag ("stage") is gated too, but not because its
         // own two reachable targets write `mode` -- they don't: `unplace`
@@ -427,11 +451,21 @@
           }
           return;
         }
-        // "template" is Task 12's to place -- until its mutator lands
-        // there is nothing to call here, so this returns rather than
-        // falling through to the step branch below, which would read
-        // `drag.id` (a template id) as a step id.
-        if (drag.kind === "template") return;
+        if (drag.kind === "template") {
+          // `drag.id` is the template's own id, resolved against the
+          // library that fed the drawer -- a template deleted mid-drag
+          // (another session, the manager tab) leaves nothing to place,
+          // so this quietly does nothing rather than placing a stale
+          // copy.
+          const template = templates.find((t) => t.id === drag.id);
+          if (!template) return;
+          if (drag.target.kind === "into-stage") {
+            void addTemplateToStageAction(workspaceId, drag.target.stageId, drag.target.index, template);
+          } else if (drag.target.kind === "new-stage") {
+            void addTemplateAsStageAction(workspaceId, drag.target.railId, drag.target.index, template);
+          }
+          return;
+        }
         if (drag.target.kind === "unplace") {
           void removeStepAction(workspaceId, drag.id);
         } else if (drag.target.kind === "into-stage") {
@@ -632,11 +666,29 @@
         filtering={lens.filtering}
         hiddenCount={unplaced.total - unplaced.shown}
         {tools}
+        {templates}
         targetRailId={rails[0]?.id ?? null}
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
         onAddTool={(toolId) => void addToolAsStepAction(workspaceId, rails[0].id, toolId)}
-        onManageTools={() => (managingTools = true)}
+        onAddTemplate={(templateId) => {
+          // The click-to-add path every drawer row gets: appended as its
+          // own new group at this rail's end, the same "past the end"
+          // append addToolAsStepAction gives a clicked tool.
+          const template = templates.find((t) => t.id === templateId);
+          if (template) {
+            void addTemplateAsStageAction(workspaceId, rails[0].id, rails[0].stages.length, template);
+          }
+        }}
+        onManageTools={() => {
+          libraryDialogTab = "tools";
+          managingTools = true;
+        }}
+        onManageTemplates={() => {
+          libraryDialogTab = "groups";
+          managingTools = true;
+        }}
         {toolsBlocked}
+        {groupsBlocked}
       />
     </div>
   {/if}
@@ -652,7 +704,24 @@
 />
 
 {#if managingTools}
-  <ToolLibraryDialog {workspaceId} {tools} onClose={() => (managingTools = false)} />
+  <ToolLibraryDialog
+    {workspaceId}
+    {tools}
+    {templates}
+    initialTab={libraryDialogTab}
+    onClose={() => (managingTools = false)}
+  />
+{/if}
+
+{#if savingTemplateFor && savingTemplateStage}
+  {@const stage = savingTemplateStage}
+  <GroupTemplateSaveDialog
+    {stage}
+    {tools}
+    onSave={(name, description, scope) =>
+      saveGroupTemplateAction(workspaceId, templateFromStage(stage, name, description, scope))}
+    onClose={() => (savingTemplateFor = null)}
+  />
 {/if}
 
 {#if editingParamsFor && orch}

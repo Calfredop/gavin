@@ -2,7 +2,7 @@
   // The tool library: one modal, two modes. List mode shows what exists,
   // grouped by scope; edit mode is the form. Built-ins are read-only and
   // offer Duplicate rather than Edit (tools spec T4).
-  import { Bot, Terminal, FileCode2, Plus, Copy, Pencil, Trash2 } from "@lucide/svelte";
+  import { Bot, Terminal, FileCode2, Plus, Copy, Pencil, Trash2, Group } from "@lucide/svelte";
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import {
@@ -12,18 +12,39 @@
     duplicateTool,
     validateTool,
     undeclaredPlaceholders,
+    findTool,
     type Tool,
     type ToolKind,
     type ToolScope,
   } from "./orchestrationTools";
   import { saveToolAction, deleteToolAction } from "./toolsState";
+  import { saveGroupTemplateAction, deleteGroupTemplateAction } from "./groupTemplatesState";
+  import type { GroupTemplate, GroupTemplateScope } from "./orchestrationGroups";
 
   interface Props {
     workspaceId: string;
     tools: Tool[];
+    /// The group template library, same shape and ordering the drawer's
+    /// Groups section already gets from libraryFor.
+    templates: GroupTemplate[];
+    /// Which tab opens first. "groups" is what the drawer's own "Manage
+    /// groups…" button asks for -- a human who clicked that should land
+    /// on Groups, not have to click past Tools to find it.
+    initialTab?: "tools" | "groups";
     onClose: () => void;
   }
-  let { workspaceId, tools, onClose }: Props = $props();
+  let { workspaceId, tools, templates, initialTab = "tools", onClose }: Props = $props();
+
+  let activeTab = $state<"tools" | "groups">("tools");
+  // Seeded from the prop when the dialog OPENS, not at construction: this
+  // instance lives only as long as the dialog is open (the parent tears
+  // it down on close and rebuilds it fresh next time it opens), so
+  // tracking `initialTab` here is what makes the first paint land on the
+  // right tab -- the same discipline OrchestrationRail's rename draft
+  // uses for a prop read once into local edit state.
+  $effect(() => {
+    activeTab = initialTab;
+  });
 
   /// Null is list mode. Editing holds a DRAFT, never a library object --
   /// the list re-renders from the store the moment a save lands, and
@@ -32,6 +53,63 @@
   let error = $state<string | null>(null);
   let confirmingDelete = $state<string | null>(null);
   let saving = $state(false);
+
+  /// The template side of the same list/edit split, kept as its own
+  /// state rather than reusing `editing` -- a Tool and a GroupTemplate
+  /// are different drafts, and conflating them would let a stray edit
+  /// leak across tabs.
+  let editingTemplate = $state<GroupTemplate | null>(null);
+  let templateError = $state<string | null>(null);
+  let confirmingDeleteTemplate = $state<string | null>(null);
+  let savingTemplate = $state(false);
+
+  const TEMPLATE_SECTIONS: Array<{ scope: GroupTemplateScope; title: string; blurb: string }> = [
+    { scope: "workspace", title: "This workspace", blurb: "Only this workspace sees these." },
+    { scope: "global", title: "All workspaces", blurb: "Shared by every workspace on this machine." },
+  ];
+  const templatesByScope = $derived((scope: GroupTemplateScope) =>
+    templates.filter((t) => t.scope === scope)
+  );
+  const nameOfTool = (toolId: string): string => findTool(tools, toolId)?.name ?? toolId;
+
+  function startEditTemplate(t: GroupTemplate): void {
+    templateError = null;
+    // A copy, so Cancel really cancels -- same reason startEdit copies a Tool.
+    editingTemplate = { ...t, steps: t.steps.map((s) => ({ ...s })) };
+  }
+
+  /// The only list-shape edit a template's steps get: removing one. There
+  /// is no drag-reorder and no way to add a step here -- a template's
+  /// members come from the group it was saved off, and growing the list
+  /// would need a tool picker this dialog does not have. Removing the
+  /// wrong one and re-saving is a real, if blunt, way to reorder by
+  /// elimination.
+  function removeTemplateStep(index: number): void {
+    if (!editingTemplate) return;
+    editingTemplate.steps = editingTemplate.steps.filter((_, i) => i !== index);
+  }
+
+  async function saveTemplate(): Promise<void> {
+    if (!editingTemplate || savingTemplate) return;
+    savingTemplate = true;
+    // No client-side pre-check here: toTemplateRecord already refuses a
+    // blank name or an empty step list and saveGroupTemplateAction turns
+    // that refusal into exactly this string, so there is one place that
+    // owns the rule instead of two copies of it drifting apart.
+    const failure = await saveGroupTemplateAction(workspaceId, editingTemplate);
+    savingTemplate = false;
+    if (failure) {
+      templateError = failure;
+      return;
+    }
+    editingTemplate = null;
+  }
+
+  async function removeTemplate(templateId: string): Promise<void> {
+    const failure = await deleteGroupTemplateAction(workspaceId, templateId);
+    confirmingDeleteTemplate = null;
+    if (failure) templateError = failure;
+  }
 
   const iconFor = (kind: ToolKind) =>
     kind === "agent" ? Bot : kind === "command" ? Terminal : FileCode2;
@@ -98,8 +176,25 @@
   }
 </script>
 
-<Modal onClose={editing ? () => (editing = null) : onClose}>
+<Modal
+  onClose={editing
+    ? () => (editing = null)
+    : editingTemplate
+      ? () => (editingTemplate = null)
+      : onClose}
+>
   <div class="body">
+    {#if !editing && !editingTemplate}
+      <div class="tabs">
+        <button type="button" class="tab" class:on={activeTab === "tools"} onclick={() => (activeTab = "tools")}>
+          Tools
+        </button>
+        <button type="button" class="tab" class:on={activeTab === "groups"} onclick={() => (activeTab = "groups")}>
+          Groups
+        </button>
+      </div>
+    {/if}
+    {#if activeTab === "tools"}
     {#if !editing}
       <header>
         <h3>Tools</h3>
@@ -302,6 +397,146 @@
         </button>
       </footer>
     {/if}
+    {:else}
+    {#if !editingTemplate}
+      <header>
+        <h3>Groups</h3>
+      </header>
+      <p class="intro">
+        A group template is a saved arrangement of tool steps -- drag one onto a rail from the
+        drawer to place it as a group of its own, or onto an existing group to merge it in.
+      </p>
+
+      {#if templateError}
+        <p class="error">{templateError}</p>
+      {/if}
+
+      <div class="sections">
+        {#each TEMPLATE_SECTIONS as section (section.scope)}
+          {@const rows = templatesByScope(section.scope)}
+          <section>
+            <h4>{section.title}</h4>
+            <p class="blurb">{section.blurb}</p>
+            {#if rows.length === 0}
+              <p class="empty">Nothing here yet.</p>
+            {:else}
+              <ul>
+                {#each rows as t (t.id)}
+                  <li>
+                    <Group size={13} />
+                    <span class="name">{t.name}</span>
+                    {#if t.description}<span class="desc">{t.description}</span>{/if}
+                    <span class="kind">{t.steps.length} {t.steps.length === 1 ? "step" : "steps"}</span>
+                    {#if confirmingDeleteTemplate === t.id}
+                      <span class="confirm">Delete?</span>
+                      <button type="button" class="danger" onclick={() => void removeTemplate(t.id)}>
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        class="ghost"
+                        onclick={() => (confirmingDeleteTemplate = null)}
+                      >
+                        Keep
+                      </button>
+                    {:else}
+                      <IconButton
+                        icon={Pencil}
+                        label="Edit"
+                        size={13}
+                        onclick={() => startEditTemplate(t)}
+                      />
+                      <IconButton
+                        icon={Trash2}
+                        label="Delete"
+                        tone="danger"
+                        size={13}
+                        onclick={() => (confirmingDeleteTemplate = t.id)}
+                      />
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+        {/each}
+      </div>
+
+      <footer>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" onclick={onClose}>Done</button>
+      </footer>
+    {:else}
+      <header>
+        <h3>Edit group template</h3>
+      </header>
+
+      {#if templateError}
+        <p class="error">{templateError}</p>
+      {/if}
+
+      <label>
+        <span class="field">Name</span>
+        <input bind:value={editingTemplate.name} placeholder="Merge and push" />
+      </label>
+      <label>
+        <span class="field">Description</span>
+        <input bind:value={editingTemplate.description} placeholder="What this does, in one line" />
+      </label>
+
+      <div class="pick">
+        <span class="field">Available in</span>
+        <div class="chips">
+          <button
+            type="button"
+            class="chip"
+            class:on={editingTemplate.scope === "workspace"}
+            onclick={() => editingTemplate && (editingTemplate.scope = "workspace")}
+          >
+            This workspace
+          </button>
+          <button
+            type="button"
+            class="chip"
+            class:on={editingTemplate.scope === "global"}
+            onclick={() => editingTemplate && (editingTemplate.scope = "global")}
+          >
+            All workspaces
+          </button>
+        </div>
+      </div>
+
+      <div class="params-head">
+        <span class="field">Steps</span>
+      </div>
+      {#if editingTemplate.steps.length === 0}
+        <p class="empty">No steps — this template would save nothing.</p>
+      {:else}
+        <ul>
+          {#each editingTemplate.steps as step, i (i)}
+            <li>
+              <span class="name">{nameOfTool(step.toolId)}</span>
+              <IconButton
+                icon={Trash2}
+                label="Remove step"
+                tone="danger"
+                size={13}
+                onclick={() => removeTemplateStep(i)}
+              />
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      <footer>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" onclick={() => (editingTemplate = null)}>Cancel</button>
+        <button type="button" class="primary" disabled={savingTemplate} onclick={() => void saveTemplate()}>
+          {savingTemplate ? "Saving…" : "Save template"}
+        </button>
+      </footer>
+    {/if}
+    {/if}
   </div>
 </Modal>
 
@@ -314,6 +549,27 @@
     max-width: 78vw;
     max-height: 76vh;
     overflow-y: auto;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 6px 10px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.on {
+    border-bottom-color: var(--border-focus);
+    color: var(--accent-text);
   }
   header {
     display: flex;
@@ -389,6 +645,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .desc {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-subtle);
+    font-size: 10px;
   }
   .kind,
   .params,

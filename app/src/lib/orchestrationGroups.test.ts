@@ -56,6 +56,22 @@ describe("toTemplateRecord", () => {
     };
     expect(toTemplateRecord(t, "ws-1", 0).workspaceId).toBe("ws-1");
   });
+
+  it("refuses a blank name -- the save form disables Save for this, but the guard is the real backstop", () => {
+    const t: GroupTemplate = {
+      id: "g1", name: "   ", description: "", mode: "sequence",
+      steps: [{ toolId: "builtin:push", toolParams: {} }], scope: "workspace",
+    };
+    expect(() => toTemplateRecord(t, "ws-1", 0)).toThrow("A template needs a name.");
+  });
+
+  it("refuses zero steps -- a template with nothing to place is not a template", () => {
+    const t: GroupTemplate = {
+      id: "g1", name: "Merge and push", description: "", mode: "sequence",
+      steps: [], scope: "workspace",
+    };
+    expect(() => toTemplateRecord(t, "ws-1", 0)).toThrow("A template needs at least one tool step.");
+  });
 });
 
 describe("templateFromStage", () => {

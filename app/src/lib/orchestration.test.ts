@@ -39,6 +39,7 @@ import {
   stepParams,
   addToolStep,
   addToolAsStage,
+  insertStageWithSteps,
   setStepParams,
   conflictStepIds,
   findCardPlacement,
@@ -2154,6 +2155,40 @@ describe("tool step mutators", () => {
     );
     const after = removeStep(o, "t1");
     expect(after.rails[0].stages).toEqual([]);
+  });
+});
+
+describe("insertStageWithSteps", () => {
+  it("places a whole group at the index and renumbers", () => {
+    const o = addRail(emptyOrchestration(), "r1", "backend");
+    const stage: Stage = {
+      id: "s-new",
+      position: 0,
+      mode: "sequence",
+      name: "Merge and push",
+      steps: [
+        { id: "t1", position: 0, cardPath: "", toolId: "builtin:merge-into", toolParams: {} },
+        { id: "t2", position: 1, cardPath: "", toolId: "builtin:push", toolParams: {} },
+      ],
+    };
+    const after = insertStageWithSteps(o, "r1", 0, stage);
+    expect(after.rails[0].stages[0].name).toBe("Merge and push");
+    expect(after.rails[0].stages[0].steps).toHaveLength(2);
+  });
+
+  it("clamps an index past the end into an append", () => {
+    const o = orchOf([rail("r1", [[["t1", A]]])]);
+    const stage: Stage = { id: "s-new", position: 0, mode: "parallel", steps: [{ id: "t2", position: 0, cardPath: B }] };
+    const after = insertStageWithSteps(o, "r1", 99, stage);
+    expect(after.rails[0].stages).toHaveLength(2);
+    expect(after.rails[0].stages[1].id).toBe("s-new");
+    expect(after.rails[0].stages.map((s) => s.position)).toEqual([0, 1]);
+  });
+
+  it("ignores an unknown rail", () => {
+    const o = orchOf([rail("r1", [[["t1", A]]])]);
+    const stage: Stage = { id: "s-new", position: 0, mode: "parallel", steps: [] };
+    expect(insertStageWithSteps(o, "nope", 0, stage)).toBe(o);
   });
 });
 
