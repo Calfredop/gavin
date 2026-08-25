@@ -37,12 +37,37 @@ export function stepParams(step: Step): Record<string, string> {
   return step.toolParams ?? {};
 }
 
-/// Stages run one after another; a stage's steps run in parallel, in the
-/// SAME checkout, since they share the rail's worktree.
+/// How a stage's steps run (grouping spec G1). Absent means `parallel`,
+/// because every stage written before groups existed ran that way -- read
+/// it through stageMode(), never directly.
+export type StageMode = "sequence" | "parallel";
+
+/// Stages run one after another. A stage holding two or more steps is a
+/// GROUP, and its `mode` says whether those steps run at once in the
+/// rail's checkout or one at a time in position order.
 export interface Stage {
   id: string;
   position: number;
+  mode?: StageMode;
+  /// The group's name, shown in its header. Null/absent renders as the
+  /// positional label the rail already draws.
+  name?: string | null;
   steps: Step[];
+}
+
+/// The mode a stage actually runs in, tolerating a field that is absent
+/// (written before groups existed) or unrecognised (a hand edit, a newer
+/// peer). Both degrade to the discipline every existing plan already ran
+/// under -- the same shape stepParams uses for a missing toolParams.
+export function stageMode(stage: Stage): StageMode {
+  return stage.mode === "sequence" ? "sequence" : "parallel";
+}
+
+/// A stage the human sees as a GROUP: one with something to order. A
+/// single-step stage runs identically in either mode, so it draws bare
+/// and its mode is not worth showing.
+export function isGroup(stage: Stage): boolean {
+  return stage.steps.length > 1;
 }
 
 export interface Rail {
@@ -788,10 +813,56 @@ export function addStage(orch: Orchestration, railId: string, stageId: string): 
     ...orch,
     rails: orch.rails.map((r) =>
       r.id === railId
-        ? { ...r, stages: renumber([...r.stages, { id: stageId, position: r.stages.length, steps: [] }]) }
+        ? {
+            ...r,
+            stages: renumber([
+              ...r.stages,
+              { id: stageId, position: r.stages.length, mode: "sequence", name: null, steps: [] },
+            ]),
+          }
         : r
     ),
   };
+}
+
+/// The stage with this id, wherever it sits -- the stage-level twin of
+/// findStep, for every surface that gets a stage id from the DOM.
+export function findStage(orch: Orchestration, stageId: string): Stage | null {
+  for (const rail of orch.rails) {
+    for (const stage of rail.stages) {
+      if (stage.id === stageId) return stage;
+    }
+  }
+  return null;
+}
+
+function mapStage(
+  orch: Orchestration,
+  stageId: string,
+  f: (stage: Stage) => Stage
+): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => ({
+      ...r,
+      stages: r.stages.map((s) => (s.id === stageId ? f(s) : s)),
+    })),
+  };
+}
+
+/// Flip a group between running its steps at once and one at a time.
+/// Safe mid-run in both directions: a sequence group has at most one
+/// running member, and flipping to parallel only lets the rest start on
+/// the next tick.
+export function setStageMode(orch: Orchestration, stageId: string, mode: StageMode): Orchestration {
+  return mapStage(orch, stageId, (s) => ({ ...s, mode }));
+}
+
+/// Name a group, or clear the name back to the positional label. A name
+/// that is only whitespace is a cleared name, not a blank header.
+export function renameStage(orch: Orchestration, stageId: string, name: string | null): Orchestration {
+  const trimmed = name?.trim() ?? "";
+  return mapStage(orch, stageId, (s) => ({ ...s, name: trimmed === "" ? null : trimmed }));
 }
 
 /// A step for a card (`cardPath`) or for a tool (`toolId`). Exactly one
@@ -805,36 +876,66 @@ function toolStep(stepId: string, position: number, toolId: string): Step {
   return { id: stepId, position, cardPath: "", toolId, toolParams: {} };
 }
 
-function insertStep(orch: Orchestration, stageId: string, make: (position: number) => Step): Orchestration {
-  return {
-    ...orch,
-    rails: orch.rails.map((r) => ({
-      ...r,
-      stages: r.stages.map((s) =>
-        s.id === stageId ? { ...s, steps: renumber([...s.steps, make(s.steps.length)]) } : s
-      ),
-    })),
-  };
+/// Would this drop FORM a group -- is the target a stage holding exactly
+/// one step, and is that step not the one arriving?
+///
+/// The second half is load-bearing and easy to miss: a member being
+/// REORDERED within its own stage is detached first, which leaves that
+/// stage momentarily holding one step. Read after the detach, a reorder
+/// inside a parallel group is indistinguishable from a drop that forms
+/// one, and would silently flip the group to sequence. So this is always
+/// evaluated against the orchestration BEFORE anything is detached.
+function formsGroup(orch: Orchestration, stageId: string, arrivingStepId: string | null): boolean {
+  const stage = findStage(orch, stageId);
+  return Boolean(stage) && stage!.steps.length === 1 && stage!.steps[0].id !== arrivingStepId;
+}
+
+/// Insert into a stage at `index`, clamped. `forming` makes it a
+/// `sequence` group (grouping spec G3): that stage's stored mode
+/// described nothing observable while it held one step, so overwriting it
+/// discards no intent, and the gesture means the same thing whether the
+/// target was written today or before groups existed. A stage that is
+/// already a group keeps the mode the human chose for it.
+function insertStep(
+  orch: Orchestration,
+  stageId: string,
+  index: number,
+  forming: boolean,
+  make: (position: number) => Step
+): Orchestration {
+  return mapStage(orch, stageId, (s) => {
+    const steps = [...s.steps].sort((a, b) => a.position - b.position);
+    steps.splice(Math.max(0, Math.min(index, steps.length)), 0, make(0));
+    return { ...s, mode: forming ? "sequence" : stageMode(s), steps: renumber(steps) };
+  });
 }
 
 export function addStep(
   orch: Orchestration,
   stageId: string,
   stepId: string,
-  cardPath: string
+  cardPath: string,
+  index: number
 ): Orchestration {
-  return insertStep(orch, stageId, (position) => cardStep(stepId, position, cardPath));
+  // A brand-new step is never already in the target, so `null` is the
+  // honest "nothing is arriving from inside this stage".
+  return insertStep(orch, stageId, index, formsGroup(orch, stageId, null), (position) =>
+    cardStep(stepId, position, cardPath)
+  );
 }
 
-/// Join an existing stage with a tool -- the PARALLEL drop, same as
-/// addStep is for a card.
+/// Join an existing stage with a tool -- the same grouping drop addStep
+/// is for a card.
 export function addToolStep(
   orch: Orchestration,
   stageId: string,
   stepId: string,
-  toolId: string
+  toolId: string,
+  index: number
 ): Orchestration {
-  return insertStep(orch, stageId, (position) => toolStep(stepId, position, toolId));
+  return insertStep(orch, stageId, index, formsGroup(orch, stageId, null), (position) =>
+    toolStep(stepId, position, toolId)
+  );
 }
 
 /// Replace a tool step's parameter overrides wholesale. The caller has
@@ -877,6 +978,16 @@ export function removeSteps(orch: Orchestration, stepIds: string[]): Orchestrati
         .map((s) => ({ ...s, steps: renumber(s.steps.filter((t) => !drop.has(t.id))) }))
         .filter((s) => s.steps.length > 0)
     ),
+  }));
+  return sweepOrphans({ ...orch, rails });
+}
+
+/// Remove a stage and every step it held -- what dropping a group on the
+/// drawer means. sweepOrphans, because those step ids are gone for good.
+export function removeStage(orch: Orchestration, stageId: string): Orchestration {
+  const rails = orch.rails.map((r) => ({
+    ...r,
+    stages: renumber(r.stages.filter((s) => s.id !== stageId)),
   }));
   return sweepOrphans({ ...orch, rails });
 }
@@ -931,30 +1042,32 @@ function detachStep(orch: Orchestration, stepId: string): Orchestration {
   };
 }
 
-/// Drop onto an existing stage's band: the step joins it and runs in
-/// PARALLEL with its steps, in that rail's checkout. No sweepOrphans --
+/// Drop onto an existing stage: the step joins it at `index`, forming a
+/// `sequence` group if that stage held one step (G3). No sweepOrphans --
 /// the step id survives a move, so its run state and notes must too.
+///
+/// CONTRACT: `index` counts the target's members with the dragged step
+/// already removed if it came from this same stage, which is what the
+/// drag glue measures.
 export function moveStepIntoStage(
   orch: Orchestration,
   stepId: string,
-  stageId: string
+  stageId: string,
+  index: number
 ): Orchestration {
   const found = locateStep(orch, stepId);
-  if (!found || found.stageId === stageId) return orch;
+  if (!found) return orch;
+  // Decided BEFORE the detach -- see formsGroup.
+  const forming = formsGroup(orch, stageId, stepId);
   const detached = detachStep(orch, stepId);
   if (!detached.rails.some((r) => r.stages.some((s) => s.id === stageId))) return orch;
-  return {
-    ...detached,
-    rails: detached.rails.map((r) => ({
-      ...r,
-      stages: r.stages.map((s) =>
-        s.id === stageId
-          ? { ...s, steps: renumber([...s.steps, { ...found.step, position: s.steps.length }]) }
-          : s
-      ),
-    })),
-  };
+  return insertStep(detached, stageId, index, forming, (position) => ({ ...found.step, position }));
 }
+// Note the removed `found.stageId === stageId` early return: reordering
+// *within* a stage is now a real move, and refusing it would make
+// within-group ordering impossible. detachStep drops a stage it empties,
+// so a same-stage move of the only step still finds nothing to insert
+// into and returns unchanged via the guard above.
 
 /// Drop into the gap between stages: the step becomes its own stage
 /// there and runs SEQUENTIALLY. `index` is clamped, so "past the end"
@@ -982,8 +1095,39 @@ export function moveStepToNewStage(
       stages.splice(at, 0, {
         id: crypto.randomUUID(),
         position: at,
+        mode: "sequence",
+        name: null,
         steps: [{ ...found.step, position: 0 }],
       });
+      return { ...r, stages: renumber(stages) };
+    }),
+  };
+}
+
+/// Move a whole stage -- every step it holds, with their ids and so their
+/// run state -- to `index` in `railId`. The unit move a group needs, and
+/// the stage-level twin of moveStepToNewStage.
+///
+/// CONTRACT: `index` counts stage positions in the target rail with the
+/// dragged stage already removed, which is what the drag glue measures.
+export function moveStageToIndex(
+  orch: Orchestration,
+  stageId: string,
+  railId: string,
+  index: number
+): Orchestration {
+  const stage = findStage(orch, stageId);
+  if (!stage || !orch.rails.some((r) => r.id === railId)) return orch;
+  const detached = orch.rails.map((r) => ({
+    ...r,
+    stages: renumber(r.stages.filter((s) => s.id !== stageId)),
+  }));
+  return {
+    ...orch,
+    rails: detached.map((r) => {
+      if (r.id !== railId) return r;
+      const stages = [...r.stages];
+      stages.splice(Math.max(0, Math.min(index, stages.length)), 0, stage);
       return { ...r, stages: renumber(stages) };
     }),
   };
@@ -1027,7 +1171,7 @@ function insertAsStage(
       if (r.id !== railId) return r;
       const stages = [...r.stages];
       const at = Math.max(0, Math.min(index, stages.length));
-      stages.splice(at, 0, { id: crypto.randomUUID(), position: at, steps: [step] });
+      stages.splice(at, 0, { id: crypto.randomUUID(), position: at, mode: "sequence", name: null, steps: [step] });
       return { ...r, stages: renumber(stages) };
     }),
   };
@@ -1243,6 +1387,10 @@ export function splitStageIntoSequence(orch: Orchestration, stageId: string): Or
           .map((step, i) => ({
             id: i === 0 ? s.id : crypto.randomUUID(),
             position: 0, // renumber() fixes these up below
+            mode: "sequence" as StageMode,
+            // A name describes a GROUP; ungrouping says there is no
+            // longer one to name.
+            name: null,
             steps: [{ ...step, position: 0 }],
           }));
       });

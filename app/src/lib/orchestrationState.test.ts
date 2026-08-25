@@ -1096,7 +1096,7 @@ describe("a tick requested while one is in flight", () => {
   // reached by a narrower door.
   it("is replayed once the pass in flight drains", async () => {
     vi.mocked(layoutStateModule.createSessionOnPage).mockImplementationOnce(async () => {
-      orchestrations.update((m) => ({ ...m, "ws-1": addStep(m["ws-1"], "s1", "late", "/x/b.md") }));
+      orchestrations.update((m) => ({ ...m, "ws-1": addStep(m["ws-1"], "s1", "late", "/x/b.md", 1) }));
       void tick("ws-1");
       return "sess-9";
     });

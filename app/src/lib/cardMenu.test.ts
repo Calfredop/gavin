@@ -102,7 +102,7 @@ function rails(on?: "backend" | "ui"): void {
   let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "ui");
   if (on) {
     const railId = on === "backend" ? "r1" : "r2";
-    o = addStep(addStage(o, railId, "s1"), "s1", "step-1", "/p/t.md");
+    o = addStep(addStage(o, railId, "s1"), "s1", "step-1", "/p/t.md", 0);
   }
   orchestrations.set({ "ws-1": o });
 }

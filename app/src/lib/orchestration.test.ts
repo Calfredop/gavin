@@ -15,6 +15,13 @@ import {
   addStage,
   addStep,
   removeStep,
+  stageMode,
+  isGroup,
+  findStage,
+  setStageMode,
+  renameStage,
+  moveStageToIndex,
+  removeStage,
   detectConflicts,
   numberConflicts,
   numbersForStep,
@@ -56,7 +63,7 @@ import {
 import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "./orchestration";
 import { BUILTIN_TOOLS } from "./orchestrationTools";
 import type { WorktreeInfo } from "./git";
-import type { Action, Orchestration, Rail, RailState, Step, StepState } from "./orchestration";
+import type { Action, Orchestration, Rail, RailState, Stage, StageMode, Step, StepState } from "./orchestration";
 import type { Board } from "./kanban";
 import type { SessionStatus } from "./notifications";
 import type { GavinTree, PlanFileInfo } from "./gavin";
@@ -757,7 +764,7 @@ describe("plan mutators", () => {
 
   it("deletes a rail, renumbers the rest, and drops notes that named its steps", () => {
     let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "ui");
-    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md", 0);
     o = { ...o, conflictNotes: [{ id: "n1", stepIds: ["t1"], note: "careful" }] };
     o = deleteRail(o, "r1");
     expect(o.rails.map((r) => [r.id, r.position])).toEqual([["r2", 0]]);
@@ -768,8 +775,8 @@ describe("plan mutators", () => {
     let o = addRail(emptyOrchestration(), "r1", "backend");
     o = addStage(o, "r1", "s1");
     o = addStage(o, "r1", "s2");
-    o = addStep(o, "s1", "t1", "/x/a.md");
-    o = addStep(o, "s1", "t2", "/x/b.md");
+    o = addStep(o, "s1", "t1", "/x/a.md", 0);
+    o = addStep(o, "s1", "t2", "/x/b.md", 1);
     expect(o.rails[0].stages.map((s) => [s.id, s.position])).toEqual([
       ["s1", 0],
       ["s2", 1],
@@ -781,8 +788,8 @@ describe("plan mutators", () => {
   });
 
   it("removes a step, renumbers its siblings, and drops a stage left empty", () => {
-    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
-    o = addStep(o, "s1", "t2", "/x/b.md");
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(o, "s1", "t2", "/x/b.md", 1);
     o = removeStep(o, "t1");
     expect(o.rails[0].stages[0].steps.map((t) => [t.id, t.position])).toEqual([["t2", 0]]);
     o = removeStep(o, "t2");
@@ -790,7 +797,7 @@ describe("plan mutators", () => {
   });
 
   it("drops run state and notes for a removed step", () => {
-    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md", 0);
     o = {
       ...o,
       stepRuns: [{ stepId: "t1", state: "done", sessionId: null, reason: null }],
@@ -1028,12 +1035,12 @@ function built(): Orchestration {
   // r1: [t1] [t2, t3]   r2: [t4]
   let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "ui");
   o = addStage(o, "r1", "s1");
-  o = addStep(o, "s1", "t1", "/x/a.md");
+  o = addStep(o, "s1", "t1", "/x/a.md", 0);
   o = addStage(o, "r1", "s2");
-  o = addStep(o, "s2", "t2", "/x/b.md");
-  o = addStep(o, "s2", "t3", "/x/c.md");
+  o = addStep(o, "s2", "t2", "/x/b.md", 0);
+  o = addStep(o, "s2", "t3", "/x/c.md", 1);
   o = addStage(o, "r2", "s3");
-  o = addStep(o, "s3", "t4", "/x/d.md");
+  o = addStep(o, "s3", "t4", "/x/d.md", 0);
   return o;
 }
 
@@ -1042,7 +1049,7 @@ const stageMap = (o: Orchestration) =>
 
 describe("moveStepIntoStage", () => {
   it("makes a step parallel with an existing stage's steps", () => {
-    const o = moveStepIntoStage(built(), "t1", "s2");
+    const o = moveStepIntoStage(built(), "t1", "s2", 2);
     expect(stageMap(o)).toEqual([
       ["r1", [["t2", "t3", "t1"]]],
       ["r2", [["t4"]]],
@@ -1050,22 +1057,207 @@ describe("moveStepIntoStage", () => {
   });
 
   it("moves across rails, which changes the step's effective worktree", () => {
-    const o = moveStepIntoStage(built(), "t4", "s1");
+    const o = moveStepIntoStage(built(), "t4", "s1", 1);
     expect(stageMap(o)).toEqual([
       ["r1", [["t1", "t4"], ["t2", "t3"]]],
       ["r2", []],
     ]);
   });
 
-  it("is a no-op when the step is already in that stage", () => {
+  it("is a no-op when the step is re-dropped in its own slot", () => {
     const before = built();
-    expect(stageMap(moveStepIntoStage(before, "t2", "s2"))).toEqual(stageMap(before));
+    expect(stageMap(moveStepIntoStage(before, "t2", "s2", 0))).toEqual(stageMap(before));
   });
 
   it("renumbers positions after the move", () => {
-    const o = moveStepIntoStage(built(), "t1", "s2");
+    const o = moveStepIntoStage(built(), "t1", "s2", 2);
     expect(o.rails[0].stages[0].steps.map((t) => t.position)).toEqual([0, 1, 2]);
     expect(o.rails[0].stages.map((s) => s.position)).toEqual([0]);
+  });
+});
+
+describe("stageMode", () => {
+  it("reads an absent mode as parallel", () => {
+    // Every stage written before groups existed omits it, and those ran
+    // their steps at once.
+    expect(stageMode({ id: "s1", position: 0, steps: [] })).toBe("parallel");
+  });
+
+  it("reads an unknown mode as parallel", () => {
+    expect(stageMode({ id: "s1", position: 0, mode: "lockstep" as StageMode, steps: [] })).toBe("parallel");
+  });
+
+  it("reads sequence as sequence", () => {
+    expect(stageMode({ id: "s1", position: 0, mode: "sequence", steps: [] })).toBe("sequence");
+  });
+});
+
+describe("isGroup", () => {
+  it("is false for a single-step stage whatever its mode", () => {
+    const one = { id: "s1", position: 0, mode: "sequence" as StageMode, steps: [{ id: "t1", position: 0, cardPath: "/x/a.md" }] };
+    expect(isGroup(one)).toBe(false);
+  });
+
+  it("is true for two steps", () => {
+    const two = {
+      id: "s1",
+      position: 0,
+      steps: [
+        { id: "t1", position: 0, cardPath: "/x/a.md" },
+        { id: "t2", position: 1, cardPath: "/x/b.md" },
+      ],
+    };
+    expect(isGroup(two)).toBe(true);
+  });
+});
+
+describe("forming a group", () => {
+  function twoStages(): Orchestration {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(addStage(o, "r1", "s2"), "s2", "t2", "/x/b.md", 0);
+    return o;
+  }
+
+  it("makes the target sequential when it held one step", () => {
+    // The whole point of the change: dropping a card onto another means
+    // "these two, in this order", not "these two at once".
+    const o = moveStepIntoStage(twoStages(), "t2", "s1", 1);
+    const stage = findStage(o, "s1") as Stage;
+    expect(stageMode(stage)).toBe("sequence");
+    expect(stage.steps.map((s) => s.id)).toEqual(["t1", "t2"]);
+  });
+
+  it("makes an OLD single-step stage sequential too", () => {
+    // A stage stored before groups reads as parallel. Its mode describes
+    // nothing observable while it holds one step, so the gesture means
+    // the same thing whenever the target was written.
+    let o = twoStages();
+    o = { ...o, rails: o.rails.map((r) => ({ ...r, stages: r.stages.map((s) => (s.id === "s1" ? { ...s, mode: "parallel" as StageMode } : s)) })) };
+    expect(stageMode(findStage(moveStepIntoStage(o, "t2", "s1", 1), "s1") as Stage)).toBe("sequence");
+  });
+
+  it("keeps the mode of a stage that is already a group", () => {
+    let o = twoStages();
+    o = moveStepIntoStage(o, "t2", "s1", 1); // s1 is now a sequence group
+    o = setStageMode(o, "s1", "parallel");
+    o = addStep(addStage(o, "r1", "s3"), "s3", "t3", "/x/c.md", 0);
+    o = moveStepIntoStage(o, "t3", "s1", 2);
+    expect(stageMode(findStage(o, "s1") as Stage)).toBe("parallel");
+  });
+
+  it("does NOT flip a parallel group to sequence when a member is reordered inside it", () => {
+    // The trap: detaching the member first leaves the stage momentarily
+    // holding one step, which reads exactly like the stage a drop is
+    // about to group. The decision has to be made before the detach.
+    let o = twoStages();
+    o = moveStepIntoStage(o, "t2", "s1", 1);
+    o = setStageMode(o, "s1", "parallel");
+    o = moveStepIntoStage(o, "t2", "s1", 0);
+    expect(stageMode(findStage(o, "s1") as Stage)).toBe("parallel");
+    expect((findStage(o, "s1") as Stage).steps.map((t) => t.id)).toEqual(["t2", "t1"]);
+  });
+
+  it("inserts at the given index and renumbers", () => {
+    const o = moveStepIntoStage(twoStages(), "t2", "s1", 0);
+    const stage = findStage(o, "s1") as Stage;
+    expect(stage.steps.map((s) => s.id)).toEqual(["t2", "t1"]);
+    expect(stage.steps.map((s) => s.position)).toEqual([0, 1]);
+  });
+
+  it("clamps an index past the end", () => {
+    const o = moveStepIntoStage(twoStages(), "t2", "s1", 99);
+    expect((findStage(o, "s1") as Stage).steps.map((s) => s.id)).toEqual(["t1", "t2"]);
+  });
+});
+
+describe("setStageMode / renameStage", () => {
+  function group(): Orchestration {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(o, "s1", "t2", "/x/b.md", 1);
+    return o;
+  }
+
+  it("flips the mode", () => {
+    expect(stageMode(findStage(setStageMode(group(), "s1", "parallel"), "s1") as Stage)).toBe("parallel");
+  });
+
+  it("leaves other stages alone", () => {
+    let o = addStep(addStage(group(), "r1", "s2"), "s2", "t3", "/x/c.md", 0);
+    o = setStageMode(o, "s1", "parallel");
+    expect(stageMode(findStage(o, "s2") as Stage)).toBe("sequence");
+  });
+
+  it("names and un-names", () => {
+    const named = renameStage(group(), "s1", "Merge and push");
+    expect((findStage(named, "s1") as Stage).name).toBe("Merge and push");
+    expect((findStage(renameStage(named, "s1", null), "s1") as Stage).name).toBeNull();
+  });
+
+  it("trims a name to null when it is only whitespace", () => {
+    // An empty name falls back to the positional label; storing "  "
+    // would render as a blank header instead.
+    expect((findStage(renameStage(group(), "s1", "   "), "s1") as Stage).name).toBeNull();
+  });
+});
+
+describe("moveStageToIndex", () => {
+  function threeStages(): Orchestration {
+    let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "frontend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(addStage(o, "r1", "s2"), "s2", "t2", "/x/b.md", 0);
+    o = addStep(addStage(o, "r1", "s3"), "s3", "t3", "/x/c.md", 0);
+    return o;
+  }
+
+  it("reorders within the rail and renumbers", () => {
+    const o = moveStageToIndex(threeStages(), "s3", "r1", 0);
+    const rail = o.rails.find((r) => r.id === "r1") as Rail;
+    expect(rail.stages.map((s) => s.id)).toEqual(["s3", "s1", "s2"]);
+    expect(rail.stages.map((s) => s.position)).toEqual([0, 1, 2]);
+  });
+
+  it("moves the whole stage to another rail with every step", () => {
+    let o = threeStages();
+    o = moveStepIntoStage(o, "t2", "s1", 1); // s1 is a group of t1, t2
+    o = moveStageToIndex(o, "s1", "r2", 0);
+    const r2 = o.rails.find((r) => r.id === "r2") as Rail;
+    expect(r2.stages[0].steps.map((s) => s.id)).toEqual(["t1", "t2"]);
+    expect((o.rails.find((r) => r.id === "r1") as Rail).stages.map((s) => s.id)).toEqual(["s3"]);
+  });
+
+  it("keeps run state: the ids survive the move", () => {
+    // Run state is keyed by step id, so a move must never mint new ones.
+    let o = threeStages();
+    o = { ...o, stepRuns: [{ stepId: "t1", state: "done", sessionId: null, reason: null }] };
+    o = moveStageToIndex(o, "s1", "r2", 0);
+    expect(stepStateOf(o, "t1")).toBe("done");
+  });
+
+  it("is a no-op for an unknown stage or rail", () => {
+    expect(moveStageToIndex(threeStages(), "nope", "r1", 0)).toEqual(threeStages());
+    expect(moveStageToIndex(threeStages(), "s1", "nope", 0)).toEqual(threeStages());
+  });
+});
+
+describe("removeStage", () => {
+  it("takes the stage and every step it held", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(o, "s1", "t2", "/x/b.md", 1);
+    o = { ...o, stepRuns: [{ stepId: "t1", state: "done", sessionId: null, reason: null }] };
+    const after = removeStage(o, "s1");
+    expect(after.rails[0].stages).toEqual([]);
+    // sweepOrphans: run state for steps that no longer exist must go too.
+    expect(after.stepRuns).toEqual([]);
+  });
+});
+
+describe("new single-step stages", () => {
+  it("are written sequence, so the next drop means what it says", () => {
+    const o = addCardAsStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", 0, "t1", "/x/a.md");
+    expect(o.rails[0].stages[0].mode).toBe("sequence");
   });
 });
 
@@ -1155,6 +1347,17 @@ describe("splitStageIntoSequence", () => {
     const before = built();
     expect(stageMap(splitStageIntoSequence(before, "s1"))).toEqual(stageMap(before));
     expect(stageMap(splitStageIntoSequence(before, "nope"))).toEqual(stageMap(before));
+  });
+
+  it("clears the name on every slice", () => {
+    // A name describes a group; ungrouping says there is no longer one.
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(o, "s1", "t2", "/x/b.md", 1);
+    o = renameStage(o, "s1", "Merge and push");
+    const after = splitStageIntoSequence(o, "s1");
+    expect(after.rails[0].stages).toHaveLength(2);
+    expect(after.rails[0].stages.every((s) => s.name == null)).toBe(true);
   });
 });
 
@@ -1789,7 +1992,7 @@ describe("nextActions — an agent tool step's turn", () => {
 describe("tool step mutators", () => {
   it("addToolStep joins an existing stage — the parallel drop", () => {
     const o = orchOf([rail("r1", [[["t1", A]]])]);
-    const after = addToolStep(o, "r1-s0", "t2", "builtin:push");
+    const after = addToolStep(o, "r1-s0", "t2", "builtin:push", 1);
     expect(after.rails[0].stages).toHaveLength(1);
     expect(after.rails[0].stages[0].steps.map((s) => s.toolId ?? s.cardPath)).toEqual([
       A,
@@ -1837,7 +2040,7 @@ describe("tool step mutators", () => {
 
   it("a tool step moves between stages like any other", () => {
     const o = orchOf([toolRail("r1", [[["t1", "builtin:push"]], [["t2", "builtin:notify"]]])]);
-    const after = moveStepIntoStage(o, "t2", "r1-s0");
+    const after = moveStepIntoStage(o, "t2", "r1-s0", 1);
     expect(after.rails[0].stages).toHaveLength(1);
     expect(after.rails[0].stages[0].steps.map((s) => s.toolId)).toEqual([
       "builtin:push",
@@ -2174,24 +2377,24 @@ describe("effectiveStatus", () => {
 
 describe("removeSteps", () => {
   it("removes several steps at once and renumbers the survivors", () => {
-    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
-    o = addStep(o, "s1", "t2", "/x/b.md");
-    o = addStep(o, "s1", "t3", "/x/c.md");
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(o, "s1", "t2", "/x/b.md", 1);
+    o = addStep(o, "s1", "t3", "/x/c.md", 2);
     o = removeSteps(o, ["t1", "t3"]);
     expect(o.rails[0].stages[0].steps.map((t) => [t.id, t.position])).toEqual([["t2", 0]]);
   });
 
   it("drops every stage it empties and renumbers the rest", () => {
-    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
-    o = addStep(addStage(o, "r1", "s2"), "s2", "t2", "/x/b.md");
-    o = addStep(addStage(o, "r1", "s3"), "s3", "t3", "/x/c.md");
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(addStage(o, "r1", "s2"), "s2", "t2", "/x/b.md", 0);
+    o = addStep(addStage(o, "r1", "s3"), "s3", "t3", "/x/c.md", 0);
     o = removeSteps(o, ["t1", "t2"]);
     expect(o.rails[0].stages.map((s) => [s.id, s.position])).toEqual([["s3", 0]]);
   });
 
   it("drops run state and notes for every step it removed", () => {
-    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
-    o = addStep(o, "s1", "t2", "/x/b.md");
+    let o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md", 0);
+    o = addStep(o, "s1", "t2", "/x/b.md", 1);
     o = {
       ...o,
       stepRuns: [
@@ -2206,7 +2409,7 @@ describe("removeSteps", () => {
   });
 
   it("is the identity for an empty list", () => {
-    const o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
+    const o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md", 0);
     expect(removeSteps(o, [])).toEqual(o);
   });
 });

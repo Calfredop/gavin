@@ -18,6 +18,7 @@ import {
   bindRail,
   deleteRail,
   addStage,
+  findStage,
   addStep,
   addToolStep,
   removeStep,
@@ -803,7 +804,7 @@ export function deleteRailAction(workspaceId: string, railId: string): Promise<s
 export function addStepAsStageAction(workspaceId: string, railId: string, cardPath: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => {
     const stageId = crypto.randomUUID();
-    return addStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), cardPath);
+    return addStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), cardPath, 0);
   });
 }
 
@@ -815,7 +816,10 @@ export async function addStepToStageAction(
   stageId: string,
   cardPath: string
 ): Promise<string | null> {
-  const error = await mutatePlan(workspaceId, (o) => addStep(o, stageId, crypto.randomUUID(), cardPath));
+  const error = await mutatePlan(workspaceId, (o) =>
+    // Task 7 makes this index meaningful (drop position); until then, append.
+    addStep(o, stageId, crypto.randomUUID(), cardPath, findStage(o, stageId)?.steps.length ?? 0)
+  );
   if (!error) await startIfStageRunning(workspaceId, stageId);
   return error;
 }
@@ -851,7 +855,10 @@ export async function moveStepIntoStageAction(
   stepId: string,
   stageId: string
 ): Promise<string | null> {
-  const error = await mutatePlan(workspaceId, (o) => moveStepIntoStage(o, stepId, stageId));
+  const error = await mutatePlan(workspaceId, (o) =>
+    // Task 7 makes this index meaningful (drop position); until then, append.
+    moveStepIntoStage(o, stepId, stageId, findStage(o, stageId)?.steps.length ?? 0)
+  );
   if (!error) await startIfStageRunning(workspaceId, stageId);
   return error;
 }
@@ -992,7 +999,7 @@ export function addToolAsStepAction(
 ): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => {
     const stageId = crypto.randomUUID();
-    return addToolStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), toolId);
+    return addToolStep(addStage(o, railId, stageId), stageId, crypto.randomUUID(), toolId, 0);
   });
 }
 
@@ -1013,7 +1020,8 @@ export async function addToolToStageAction(
   toolId: string
 ): Promise<string | null> {
   const error = await mutatePlan(workspaceId, (o) =>
-    addToolStep(o, stageId, crypto.randomUUID(), toolId)
+    // Task 7 makes this index meaningful (drop position); until then, append.
+    addToolStep(o, stageId, crypto.randomUUID(), toolId, findStage(o, stageId)?.steps.length ?? 0)
   );
   if (!error) await startIfStageRunning(workspaceId, stageId);
   return error;
