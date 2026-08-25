@@ -24,6 +24,19 @@ describe("smokeChecklist data", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(totalItems()).toBe(ids.length);
   });
+
+  it("gives every section a title and every item non-empty id and text", () => {
+    for (const section of SMOKE_SECTIONS) {
+      expect(section.title.length).toBeGreaterThan(0);
+      for (const item of section.items) {
+        expect(item.id.length).toBeGreaterThan(0);
+        expect(item.text.length).toBeGreaterThan(0);
+        if (item.hint !== undefined) {
+          expect(item.hint.length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
 });
 
 describe("checklist persistence", () => {

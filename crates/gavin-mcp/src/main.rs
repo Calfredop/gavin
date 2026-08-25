@@ -191,8 +191,8 @@ fn tool_definitions() -> Value {
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
         { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail, and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
-            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, pageId, stages: [{ id, position, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. A stage's steps run IN PARALLEL in that rail's checkout; stages run one after another.", "items": { "type": "object" } },
+        { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id — AND each stage's `mode` and `name`: omitting `mode` reverts that stage to `parallel`, which turns a sequential group into steps that all run at once in one checkout. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
+            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, pageId, stages: [{ id, position, mode, name, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. Stages run one after another. A stage's `mode` is \"parallel\" (its steps run at once in the rail's checkout) or \"sequence\" (one at a time, in position order); a stage of two or more steps is what the app calls a GROUP, and `name` is what it is called. `mode` defaults to \"parallel\" when omitted.", "items": { "type": "object" } },
             "conflict_notes": { "type": "array", "description": "Your judgements, shown to the human in the Conflicts box. Each: { id, stepIds: [...], note }.", "items": { "type": "object" } }
         }, "required": ["rails"] } },
         { "name": "gavin_spawn_session", "description": "Spawn a terminal session in the gavin app (visible to the human on the Agents page). Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
@@ -526,7 +526,13 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
                             })
                         })
                         .collect();
-                    json!({ "id": stage.id, "position": stage.position, "steps": steps })
+                    json!({
+                        "id": stage.id,
+                        "position": stage.position,
+                        "mode": stage.mode,
+                        "name": stage.name,
+                        "steps": steps,
+                    })
                 })
                 .collect();
             json!({
@@ -1058,6 +1064,31 @@ mod tests {
     }
 
     #[test]
+    fn get_orchestration_reports_each_stages_mode_and_name() {
+        // gavin_set_orchestration replaces the arrangement WHOLESALE, so an
+        // agent that cannot read a stage's mode cannot preserve it -- and
+        // every group in the workspace flattens to parallel on its first
+        // rewrite.
+        let mut orchestration = orchestration_reply();
+        if let Response::Orchestration { rails, .. } = &mut orchestration {
+            rails[0].stages[0].mode = "sequence".into();
+            rails[0].stages[0].name = Some("Merge and push".into());
+        } else {
+            panic!("orchestration_reply() no longer returns Response::Orchestration");
+        }
+        let mut t = mock(vec![
+            orchestration,
+            board_reply(),
+            tools_reply(),
+            Response::GavinTreeScanned { tree: two_card_tree() },
+            Response::DirtyPaths { paths: vec![], truncated: false },
+        ]);
+        let text: Value = serde_json::from_str(&call_tool("gavin_get_orchestration", &mut t)).unwrap();
+        assert_eq!(text["rails"][0]["stages"][0]["mode"], "sequence");
+        assert_eq!(text["rails"][0]["stages"][0]["name"], "Merge and push");
+    }
+
+    #[test]
     fn set_orchestration_accepts_a_tool_step_without_a_card_path() {
         let root = Path::new("/ws");
         let mut t = mock(vec![Response::Ok]);
@@ -1101,6 +1132,33 @@ mod tests {
             Request::SetOrchestrationByRoot { rails, .. } => {
                 assert_eq!(rails[0].stages[0].steps[0].card_path, "/ws/a.md");
                 assert_eq!(rails[0].stages[0].steps[0].tool_id, None);
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// A stage's `mode` and `name` are ordinary fields on the wholesale
+    /// replace, not something the daemon infers -- an agent that reads
+    /// them back from gavin_get_orchestration and writes them straight
+    /// through must see them land unchanged.
+    #[test]
+    fn set_orchestration_preserves_a_stage_mode_it_is_given() {
+        let root = Path::new("/ws");
+        let mut t = mock(vec![Response::Ok]);
+        handle_line(
+            r#"{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"gavin_set_orchestration","arguments":{
+                "rails":[{"id":"r1","name":"backend","position":0,"worktreePath":null,"pageId":null,
+                  "stages":[{"id":"s1","position":0,"mode":"sequence","name":"Merge and push",
+                  "steps":[{"id":"t1","position":0,"cardPath":"/ws/a.md"}]}]}]
+            }}}"#,
+            Some(root),
+            &mut t,
+        )
+        .unwrap();
+        match &t.requests[0] {
+            Request::SetOrchestrationByRoot { rails, .. } => {
+                assert_eq!(rails[0].stages[0].mode, "sequence");
+                assert_eq!(rails[0].stages[0].name.as_deref(), Some("Merge and push"));
             }
             other => panic!("wrong request: {other:?}"),
         }

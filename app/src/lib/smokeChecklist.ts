@@ -315,6 +315,82 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Orchestration groups",
+    items: [
+      {
+        id: "group-form-sequence",
+        text: "Dropping a card onto another forms a group whose header says “sequence”, with both cards stacked in drop order",
+        hint: "Dropping into the gap ABOVE or BELOW a stage still makes a separate stage — only the middle band groups.",
+      },
+      {
+        id: "group-reorder-member",
+        text: "Dragging a member onto the top half of the other member swaps their order inside the group",
+      },
+      {
+        id: "group-toggle-parallel",
+        text: "The header's parallel button re-lays the members side by side, and the conflicts panel reports the stage again",
+        hint: "A sequence group is deliberately NOT a same-worktree conflict; flipping to parallel brings the badge back.",
+      },
+      {
+        id: "group-rename",
+        text: "Clicking the group's name edits it; clearing it falls back to “stage N”",
+      },
+      {
+        id: "group-drag-whole",
+        text: "Dragging the group's grip moves every member together, to another position and to another rail",
+      },
+      {
+        id: "group-runs-in-order",
+        text: "Starting a rail on a sequence group launches ONE member; the next launches only when the first finishes",
+        hint: "Two tool steps (e.g. Commit then Push) make this visible without waiting on a card.",
+      },
+      {
+        id: "group-ungroup",
+        text: "⋯ → Ungroup leaves one stage per member, in order, with the name gone",
+      },
+      {
+        id: "group-band-sequence",
+        text: "A sequence group's header sits inside the same dashed band a parallel one does — the toggle carries the mode, not the band",
+        hint: "The band used to mean “these run at once”; check that a human who still reads it that way isn't misled by a sequence group.",
+      },
+      {
+        id: "group-drawer-groups-section",
+        text: "The drawer's Groups section sits above Tools, lists every saved template with its scope, and its rows drag onto a rail the same way a card does",
+        hint: "Needs at least one saved template first — save one from a group's ⋯ menu if the section is empty.",
+      },
+      {
+        id: "group-save-template-form",
+        text: "A lone, single-step stage's ⋯ has no Save as template… entry; only once it holds two or more members does the entry appear, opening a form with the This workspace / All workspaces choice",
+      },
+      {
+        id: "group-save-template",
+        text: "⋯ → Save as template… on a group of tool steps offers This workspace / All workspaces and the template appears in the drawer's Groups section",
+      },
+      {
+        id: "group-template-mixed",
+        text: "Saving a group that also holds CARDS says how many card steps it is not saving, and why",
+      },
+      {
+        id: "group-template-place",
+        text: "Dragging a template into a gap places it as a named group; dropping it onto an existing group merges its members at the drop slot",
+      },
+      {
+        id: "group-tool-library-groups-tab",
+        text: "The tool library has its own Groups tab, next to its Tools tab — separate from the drawer's inline Groups section — where a template's full row of controls lives",
+        hint: "This is the surface, not the actions — the next item exercises rename/re-scope/delete there.",
+      },
+      {
+        id: "group-template-manage",
+        text: "Tool library → Groups tab renames, re-scopes and deletes a template; a global one is visible from a second workspace",
+      },
+      {
+        id: "group-gate-old-daemon",
+        text: "Against a pre-v15 daemon the group header controls and the drawer's Groups rows are inert, each saying which daemon version they need",
+        hint: "The trap this guards: a v14 daemon accepts a sequential group and hands it back parallel.",
+      },
+    ],
+  },
+  {
     title: "Plans on the board",
     items: [
       { id: "seed", text: "“Seed demo data” fills the board within ~3s" },
