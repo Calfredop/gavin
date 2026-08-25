@@ -92,6 +92,8 @@ import {
   renameWorkspace,
   switchWorkspace,
   switchWorkspaceView,
+  appHubOpen,
+  openAppHub,
   closeWorkspace,
   createPage,
   createSessionForCard,
@@ -948,6 +950,68 @@ describe("switchWorkspace", () => {
     const state = get(layoutState);
     expect(state.activeWorkspaceId).toBe("ws-2");
     expect(state.focusedSessionId).toBe(null);
+  });
+});
+
+describe("the app hub", () => {
+  it("starts closed", () => {
+    expect(get(appHubOpen)).toBe(false);
+  });
+
+  it("stamps the workspace it switches to as last used", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+    const before = Date.now();
+
+    await switchWorkspace("ws-2");
+
+    const stamped = get(layoutState).workspaces.find((w) => w.id === "ws-2")?.lastActiveAt ?? 0;
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(get(layoutState).workspaces.find((w) => w.id === "ws-1")?.lastActiveAt).toBeUndefined();
+  });
+
+  it("closes when a workspace is switched to", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+    openAppHub();
+
+    await switchWorkspace("ws-2");
+
+    expect(get(appHubOpen)).toBe(false);
+  });
+
+  it("closes when the workspace switched to is the one already active", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    openAppHub();
+
+    await switchWorkspace("ws-1");
+
+    expect(get(appHubOpen)).toBe(false);
+  });
+
+  it("closes when a page is chosen", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))])], "ws-1", "a");
+    openAppHub();
+
+    await switchPage("ws-1", "page-2");
+
+    expect(get(appHubOpen)).toBe(false);
+  });
+
+  it("closes when a hub view is chosen", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    openAppHub();
+
+    await switchWorkspaceView("ws-1", "kanban");
+
+    expect(get(appHubOpen)).toBe(false);
+  });
+
+  it("closes when a workspace is created, so the hub lands you in what it made", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    openAppHub();
+
+    await createWorkspace("Fresh");
+
+    expect(get(appHubOpen)).toBe(false);
   });
 });
 

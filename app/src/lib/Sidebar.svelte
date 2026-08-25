@@ -11,6 +11,8 @@
     closeWorkspace,
     closePage,
     setSessionName,
+    appHubOpen,
+    openAppHub,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   // The creation flow itself lives in workspaceCreate.ts: the app hub's
@@ -44,6 +46,7 @@
     FileText,
     PanelsTopLeft,
     SquareArrowOutUpRight,
+    Boxes,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -957,6 +960,21 @@
 {/snippet}
 
 <div class="sidebar">
+  <!-- Above the Workspaces header, not inside the list: the hub is the
+       app itself, one level up from any workspace. It stays reachable
+       with a workspace open -- gavin has one window and the pinned
+       workspace always exists, so there is no "nothing open" moment to
+       hang a welcome screen on. -->
+  <button
+    type="button"
+    class="app-row"
+    class:active={$appHubOpen}
+    aria-current={$appHubOpen ? "page" : undefined}
+    onclick={openAppHub}
+  >
+    <Boxes size={13} />
+    <span>Gavin</span>
+  </button>
   <div class="sidebar-header">
     <span>Workspaces</span>
     <IconButton icon={Plus} label="New Workspace" size={14} onclick={() => startCreatingWorkspace("sidebar")} />
@@ -1151,6 +1169,33 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+  }
+  .app-row {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    box-sizing: border-box;
+    /* Matches .workspace-row's own padding so the app row and the rows
+       below it sit on one left edge. */
+    padding: 6px 8px 6px 5px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 1em;
+    text-align: left;
+    cursor: pointer;
+  }
+  .app-row:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+  .app-row.active {
+    background: var(--surface-selected);
+    color: var(--text);
   }
   .sidebar-header {
     /* Pinned now that .sidebar no longer scrolls -- without this it can

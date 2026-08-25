@@ -9,6 +9,7 @@
     createWorkspace,
     switchWorkspaceView,
     retryConnect,
+    appHubOpen,
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
@@ -28,6 +29,7 @@
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
+  import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
@@ -137,7 +139,16 @@
          drop marker inside (Pane.svelte's var(--ws-accent)). -->
     <div class="body" style:--ws-accent={accent}>
       <Sidebar />
-      {#if !activeWorkspace}
+      <!-- Ahead of every workspace branch, not inside one: the hub is
+           app-level -- it belongs to no workspace, and it must be
+           reachable with one open as well as with none. Switching to a
+           workspace clears the flag (layoutState's activateWorkspace),
+           so nothing here has to close it. -->
+      {#if $appHubOpen}
+        <div class="view">
+          <AppHubView />
+        </div>
+      {:else if !activeWorkspace}
         <div class="overlay">
           <button onclick={createFirstWorkspace}>New Workspace</button>
         </div>
