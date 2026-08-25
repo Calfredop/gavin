@@ -1,6 +1,6 @@
 ---
 title: App hub
-status: In Progress
+status: Done
 ---
 A centralized hub with recent workspaces, new workspace shortcut (with
 wizard), link to github repo, link to site… A là vscode new window ux
@@ -45,19 +45,19 @@ folder…", per-workspace repo links, changing what a workspace is.
       pageAgentsSummary over the workspace's pages and folds in
       mainSessionId, so a hub row's "2 running · 4 pages" can never
       disagree with the sidebar's own per-page recap.
-- [ ] AppHubView.svelte — a thin template over those two modules:
+- [x] AppHubView.svelte — a thin template over those two modules:
       version header, recent rows (name · recap · root · relative time),
       "+ New workspace…", and the links footer via openUrl.
-- [ ] Route it: an appHubOpen store in layoutState.ts, rendered in
+- [x] Route it: an appHubOpen store in layoutState.ts, rendered in
       +page.svelte ahead of the workspace branches. Switching to any
       workspace clears it.
-- [ ] The sidebar's pinned "Gavin" row above the Workspaces header,
+- [x] The sidebar's pinned "Gavin" row above the Workspaces header,
       highlighted while the hub is showing.
 - [x] Lift startCreatingWorkspace + the WorkspaceCreateModal handoff out
       of Sidebar.svelte so the hub button and the sidebar + call one
       implementation, not two.
-- [ ] Green: cargo test --workspace, and in app/ npm test && npm run
+- [x] Green: cargo test --workspace, and in app/ npm test && npm run
       check && npm run build.
-- [ ] Smoke items in smokeChecklist.ts: the hub row opens it, switching
+- [x] Smoke items in smokeChecklist.ts: the hub row opens it, switching
       workspaces reorders recents, New workspace reaches the wizard, and
       both links open in the browser.
