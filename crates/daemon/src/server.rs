@@ -898,6 +898,18 @@ impl SessionManager {
         self.orchestration.lock().unwrap().delete_tool(id)
     }
 
+    pub fn group_templates(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::GroupTemplate>> {
+        self.orchestration.lock().unwrap().group_templates(workspace_id)
+    }
+
+    pub fn save_group_template(&self, template: protocol::GroupTemplate) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().save_group_template(&template)
+    }
+
+    pub fn delete_group_template(&self, id: &str) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().delete_group_template(id)
+    }
+
     pub fn tools_by_root(&self, root_path: &str) -> anyhow::Result<Vec<protocol::ToolDef>> {
         let watcher = self
             .find_watcher_by_root(root_path)
@@ -1487,6 +1499,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::GetToolsByRoot { root_path } => {
             manager.tools_by_root(&root_path).map(|tools| Response::Tools { tools })
         }
+        Request::GetGroupTemplates { workspace_id } => manager
+            .group_templates(&workspace_id)
+            .map(|templates| Response::GroupTemplates { templates }),
+        Request::SaveGroupTemplate { template } => {
+            manager.save_group_template(template).map(|_| Response::Ok)
+        }
+        Request::DeleteGroupTemplate { id } => {
+            manager.delete_group_template(&id).map(|_| Response::Ok)
+        }
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
         Request::WatchGavinRoot { .. } => {
             unreachable!("WatchGavinRoot is intercepted in handle_connection")
@@ -1858,6 +1879,38 @@ mod tests {
         ) {
             Response::Error { message } => assert!(message.contains("not open"), "{message}"),
             other => panic!("wrong response: {other:?}"),
+        }
+    }
+
+    fn a_group_template(id: &str, workspace_id: Option<&str>) -> protocol::GroupTemplate {
+        protocol::GroupTemplate {
+            id: id.into(),
+            workspace_id: workspace_id.map(str::to_string),
+            name: "Merge and push".into(),
+            description: "Land it, then push".into(),
+            mode: "sequence".into(),
+            steps: vec![protocol::GroupTemplateStep {
+                tool_id: "builtin:push".into(),
+                tool_params: HashMap::from([("remote".to_string(), "origin".to_string())]),
+            }],
+            position: 0,
+        }
+    }
+
+    #[test]
+    fn save_then_get_group_templates_round_trips_through_handle_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        assert!(matches!(
+            handle_request(
+                &manager,
+                Request::SaveGroupTemplate { template: a_group_template("g1", Some("ws-1")) }
+            ),
+            Response::Ok
+        ));
+        match handle_request(&manager, Request::GetGroupTemplates { workspace_id: "ws-1".into() }) {
+            Response::GroupTemplates { templates } => assert_eq!(templates.len(), 1),
+            other => panic!("expected GroupTemplates, got {other:?}"),
         }
     }
 

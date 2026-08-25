@@ -1,4 +1,7 @@
-use protocol::{ConflictNote, Orchestration, Rail, RailRun, Stage, Step, StepRun, ToolDef, ToolParam};
+use protocol::{
+    default_stage_mode, ConflictNote, GroupTemplate, GroupTemplateStep, Orchestration, Rail,
+    RailRun, Stage, Step, StepRun, ToolDef, ToolParam,
+};
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 
@@ -67,6 +70,18 @@ impl OrchestrationStore {
                 kind TEXT NOT NULL,
                 body TEXT NOT NULL,
                 params TEXT NOT NULL,
+                position INTEGER NOT NULL
+            );
+            -- Group templates (grouping spec G8). workspace_id NULL means
+            -- GLOBAL, per orch_tools. Members are one JSON column because
+            -- a template is only ever read and written whole.
+            CREATE TABLE IF NOT EXISTS orch_group_templates (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                steps TEXT NOT NULL,
                 position INTEGER NOT NULL
             );",
         )?;
@@ -526,6 +541,86 @@ impl OrchestrationStore {
         self.conn.execute("DELETE FROM orch_tools WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    // ---- Group templates ---------------------------------------------------
+    // Targeted upsert/delete, like the tool library: a template outlives
+    // every arrangement that uses it.
+
+    /// This workspace's own templates plus every GLOBAL one,
+    /// workspace-first so a workspace template shadows a same-named
+    /// global in the app's merge.
+    pub fn group_templates(&self, workspace_id: &str) -> anyhow::Result<Vec<GroupTemplate>> {
+        let templates = self
+            .conn
+            .prepare(
+                "SELECT id, workspace_id, name, description, mode, steps, position
+                 FROM orch_group_templates
+                 WHERE workspace_id = ?1 OR workspace_id IS NULL
+                 ORDER BY workspace_id IS NULL, position, name",
+            )?
+            .query_map(params![workspace_id], |row| {
+                let steps_json: String = row.get(5)?;
+                let mode: String = row.get(4)?;
+                Ok(GroupTemplate {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    name: row.get(2)?,
+                    description: row.get(3)?,
+                    mode: if mode == "sequence" { mode } else { default_stage_mode() },
+                    // A template with unreadable members is not a
+                    // template; an empty list renders as a dead row the
+                    // human can delete, where a failed read would take
+                    // the whole library with it.
+                    steps: serde_json::from_str::<Vec<GroupTemplateStep>>(&steps_json)
+                        .unwrap_or_default(),
+                    position: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(templates)
+    }
+
+    /// Upsert by id. Re-saving with the other `workspace_id` is how a
+    /// template moves between this-workspace and global scope, which is
+    /// why the column is in the UPDATE list.
+    pub fn save_group_template(&mut self, t: &GroupTemplate) -> anyhow::Result<()> {
+        if t.id.is_empty() {
+            anyhow::bail!("a group template needs an id");
+        }
+        if t.name.trim().is_empty() {
+            anyhow::bail!("a group template needs a name");
+        }
+        if t.steps.is_empty() {
+            anyhow::bail!("a group template needs at least one step");
+        }
+        if t.steps.iter().any(|s| s.tool_id.trim().is_empty()) {
+            anyhow::bail!("every group template step needs a tool");
+        }
+        self.conn.execute(
+            "INSERT INTO orch_group_templates (id, workspace_id, name, description, mode, steps, position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+               workspace_id = ?2, name = ?3, description = ?4, mode = ?5,
+               steps = ?6, position = ?7",
+            params![
+                t.id,
+                t.workspace_id,
+                t.name,
+                t.description,
+                t.mode,
+                serde_json::to_string(&t.steps)?,
+                t.position
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Deleting a template is DELIBERATELY unconditional: a template is
+    /// copied at placement, so no rail can be holding a reference to it.
+    pub fn delete_group_template(&mut self, id: &str) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM orch_group_templates WHERE id = ?1", params![id])?;
+        Ok(())
+    }
 }
 
 /// `ALTER TABLE ... ADD COLUMN` is not idempotent and SQLite has no
@@ -914,6 +1009,96 @@ mod tests {
         s.delete_tool("u1").unwrap();
         assert!(s.tools("ws-1").unwrap().is_empty());
         assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].steps[0].tool_id.as_deref(), Some("u1"));
+    }
+
+    fn a_group_template(id: &str, workspace_id: Option<&str>) -> GroupTemplate {
+        GroupTemplate {
+            id: id.into(),
+            workspace_id: workspace_id.map(str::to_string),
+            name: "Merge and push".into(),
+            description: "Land it, then push".into(),
+            mode: "sequence".into(),
+            steps: vec![GroupTemplateStep {
+                tool_id: "builtin:push".into(),
+                tool_params: HashMap::from([("remote".to_string(), "origin".to_string())]),
+            }],
+            position: 0,
+        }
+    }
+
+    #[test]
+    fn save_then_get_group_templates_round_trips() {
+        let mut s = store();
+        s.save_group_template(&a_group_template("g1", Some("ws-1"))).unwrap();
+        let got = s.group_templates("ws-1").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].mode, "sequence");
+        assert_eq!(got[0].steps[0].tool_id, "builtin:push");
+        assert_eq!(got[0].steps[0].tool_params.get("remote").map(String::as_str), Some("origin"));
+    }
+
+    #[test]
+    fn a_global_template_is_visible_from_every_workspace() {
+        let mut s = store();
+        s.save_group_template(&a_group_template("g1", None)).unwrap();
+        for ws in ["ws-1", "ws-2"] {
+            assert_eq!(s.group_templates(ws).unwrap().len(), 1, "{ws}");
+        }
+    }
+
+    #[test]
+    fn another_workspaces_template_is_not_visible() {
+        let mut s = store();
+        s.save_group_template(&a_group_template("g1", Some("ws-2"))).unwrap();
+        assert!(s.group_templates("ws-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn re_saving_with_the_other_scope_moves_it() {
+        // Re-saving with a different workspace_id is how a template changes
+        // scope, exactly as it is for a tool -- so the column is in the
+        // UPDATE list and this must not create a second row.
+        let mut s = store();
+        s.save_group_template(&a_group_template("g1", Some("ws-1"))).unwrap();
+        s.save_group_template(&a_group_template("g1", None)).unwrap();
+        assert_eq!(s.group_templates("ws-2").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_template_needs_a_name_and_at_least_one_step() {
+        let mut s = store();
+        let mut t = a_group_template("g1", Some("ws-1"));
+        t.name = "   ".into();
+        assert!(s.save_group_template(&t).is_err());
+        let mut t = a_group_template("g2", Some("ws-1"));
+        t.steps.clear();
+        assert!(s.save_group_template(&t).is_err());
+    }
+
+    #[test]
+    fn delete_group_template_removes_it() {
+        let mut s = store();
+        s.save_group_template(&a_group_template("g1", Some("ws-1"))).unwrap();
+        s.delete_group_template("g1").unwrap();
+        assert!(s.group_templates("ws-1").unwrap().is_empty());
+    }
+
+    /// An unreadable `steps` JSON degrades to an empty list -- a dead row
+    /// the human can delete -- rather than failing the whole library read,
+    /// same rule as a tool's unreadable `params` (tools spec T4).
+    #[test]
+    fn a_template_with_unreadable_steps_json_degrades_to_an_empty_list() {
+        let mut s = store();
+        s.save_group_template(&a_group_template("g1", Some("ws-1"))).unwrap();
+        s.conn
+            .execute(
+                "UPDATE orch_group_templates SET steps = 'not json' WHERE id = 'g1'",
+                [],
+            )
+            .unwrap();
+        let got = s.group_templates("ws-1").unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].steps.is_empty());
     }
 
     #[test]

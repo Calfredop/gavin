@@ -250,6 +250,20 @@ pub enum Request {
     GetToolsByRoot {
         root_path: String,
     },
+    /// This workspace's group templates PLUS every global one, per
+    /// GetTools. Never an error for an unknown workspace -- an empty list.
+    GetGroupTemplates {
+        workspace_id: String,
+    },
+    /// Upsert by id. `workspace_id: None` stores it global to this
+    /// machine; re-saving with the other value is how a template changes
+    /// scope.
+    SaveGroupTemplate {
+        template: GroupTemplate,
+    },
+    DeleteGroupTemplate {
+        id: String,
+    },
     GitDirtyPaths {
         cwd: String,
         limit: u32,
@@ -353,6 +367,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         // serve, and daemonCompat.ts gates the UI on `archive: 13`.
         Request::ArchiveCard { .. } | Request::UnarchiveCard { .. } => 13,
 
+        // Group templates. v15 also widened Stage with `mode` and
+        // `name`, which are serde-defaulted and therefore invisible to
+        // this match -- daemonCompat.ts gates the UI on `groups: 15` for
+        // exactly that reason. These three are what a v14 daemon
+        // genuinely cannot serve.
+        Request::DeleteGroupTemplate { .. }
+        | Request::GetGroupTemplates { .. }
+        | Request::SaveGroupTemplate { .. } => 15,
+
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
         Request::Unknown => u32::MAX,
@@ -453,6 +476,7 @@ pub enum Response {
         step_runs: Vec<StepRun>,
     },
     Tools { tools: Vec<ToolDef> },
+    GroupTemplates { templates: Vec<GroupTemplate> },
     GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
     GavinTreeChanged { workspace_id: String, tree: GavinTree },
     /// Pushed on the watching connection after any SetOrchestration, so
@@ -682,6 +706,34 @@ pub struct ToolDef {
     pub kind: ToolKind,
     pub body: String,
     pub params: Vec<ToolParam>,
+    pub position: i64,
+}
+
+/// One member of a group template: a tool and the overrides it carries.
+/// Deliberately NOT a Step -- step ids are run-state keys and must be
+/// minted fresh at every placement, and a card path has no meaning in a
+/// template (grouping spec G7).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupTemplateStep {
+    pub tool_id: String,
+    #[serde(default)]
+    pub tool_params: HashMap<String, String>,
+}
+
+/// A reusable group droppable onto a rail -- merge + push, commit +
+/// test. `workspace_id` is the SCOPE, exactly as it is for a ToolDef:
+/// Some(id) is that workspace's own, None is global to this machine
+/// (grouping spec G8). There are no built-in templates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupTemplate {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub name: String,
+    pub description: String,
+    pub mode: StageMode,
+    pub steps: Vec<GroupTemplateStep>,
     pub position: i64,
 }
 
@@ -1490,6 +1542,32 @@ mod tests {
     }
 
     #[test]
+    fn group_template_requests_are_v15() {
+        for req in [
+            Request::GetGroupTemplates { workspace_id: "w".into() },
+            Request::SaveGroupTemplate { template: a_group_template() },
+            Request::DeleteGroupTemplate { id: "g1".into() },
+        ] {
+            assert_eq!(min_version_for(&req), 15, "{req:?}");
+        }
+    }
+
+    fn a_group_template() -> GroupTemplate {
+        GroupTemplate {
+            id: "g1".into(),
+            workspace_id: Some("ws-1".into()),
+            name: "Merge and push".into(),
+            description: "Land it, then push".into(),
+            mode: "sequence".into(),
+            steps: vec![GroupTemplateStep {
+                tool_id: "builtin:push".into(),
+                tool_params: HashMap::from([("remote".into(), "origin".into())]),
+            }],
+            position: 0,
+        }
+    }
+
+    #[test]
     fn the_window_floor_is_never_above_the_current_version() {
         assert!(MIN_COMPATIBLE_VERSION <= PROTOCOL_VERSION);
     }
@@ -1616,6 +1694,12 @@ mod tests {
             Request::ArchiveCard { path: "/p/t.md".into() },
             Request::UnarchiveCard { path: "/p/t.md".into() },
             Request::Shutdown,
+            // v15's group templates -- the first Request variants that
+            // genuinely need the version PROTOCOL_VERSION already carries
+            // for Stage.mode/name (see group_template_requests_are_v15).
+            Request::GetGroupTemplates { workspace_id: "w".into() },
+            Request::SaveGroupTemplate { template: a_group_template() },
+            Request::DeleteGroupTemplate { id: "g1".into() },
             Request::Unknown,
         ]
     }
@@ -1644,7 +1728,8 @@ mod tests {
     /// consider whether they owe a version bump instead. Counts below were
     /// derived by hand from `min_version_for`'s match arms on this branch,
     /// not copied from a plan: v1=21, v4=2, v5=2, v6=1, v7=1, v8=2, v10=8,
-    /// v11=4, v12=1 (Shutdown), v13=2 (the archive), plus Unknown.
+    /// v11=4, v12=1 (Shutdown), v13=2 (the archive), v15=3 (group
+    /// templates), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -1665,6 +1750,7 @@ mod tests {
         expected.insert(11, 4);
         expected.insert(12, 1);
         expected.insert(13, 2);
+        expected.insert(15, 3);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
