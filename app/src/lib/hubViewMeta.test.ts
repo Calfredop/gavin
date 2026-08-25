@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { HUB_VIEW_META, visibleHubViewIds, resolveHubView, hubViewBusy } from "./hubViewMeta";
+import {
+  HUB_VIEW_META,
+  visibleHubViewIds,
+  resolveHubView,
+  hubViewBusy,
+  hubViewAttention,
+} from "./hubViewMeta";
 import { SMOKETEST_WORKSPACE_ID, type Workspace } from "./workspace";
 
 describe("visibleHubViewIds", () => {
@@ -44,17 +50,42 @@ describe("resolveHubView", () => {
   });
 });
 
+const IDLE = { committing: false, railsWantingAttention: false };
+
 describe("hubViewBusy", () => {
   it("spins the Git tab, and only the Git tab, while a commit run is in flight", () => {
-    expect(hubViewBusy("git", { committing: true })).toBe(true);
+    expect(hubViewBusy("git", { ...IDLE, committing: true })).toBe(true);
     for (const other of HUB_VIEW_META.filter((v) => v.id !== "git")) {
-      expect(hubViewBusy(other.id, { committing: true })).toBe(false);
+      expect(hubViewBusy(other.id, { ...IDLE, committing: true })).toBe(false);
     }
   });
 
   it("leaves every tab alone when nothing is running", () => {
     for (const view of HUB_VIEW_META) {
-      expect(hubViewBusy(view.id, { committing: false })).toBe(false);
+      expect(hubViewBusy(view.id, IDLE)).toBe(false);
     }
+  });
+});
+
+describe("hubViewAttention", () => {
+  it("marks the Orchestration tab, and only it, when a rail wants a human", () => {
+    expect(hubViewAttention("orchestration", { ...IDLE, railsWantingAttention: true })).toBe(true);
+    for (const other of HUB_VIEW_META.filter((v) => v.id !== "orchestration")) {
+      expect(hubViewAttention(other.id, { ...IDLE, railsWantingAttention: true })).toBe(false);
+    }
+  });
+
+  it("leaves every tab alone when no rail wants anything", () => {
+    for (const view of HUB_VIEW_META) {
+      expect(hubViewAttention(view.id, IDLE)).toBe(false);
+    }
+  });
+
+  // The two axes are independent and must not be collapsed: a spinner
+  // says gavin is doing something, a mark says the human has to.
+  it("is separate from busy -- a committing Git tab wants nothing from you", () => {
+    const activity = { committing: true, railsWantingAttention: false };
+    expect(hubViewBusy("git", activity)).toBe(true);
+    expect(hubViewAttention("git", activity)).toBe(false);
   });
 });

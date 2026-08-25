@@ -12,13 +12,16 @@
     Terminal,
     FileCode2,
     Sliders,
+    CirclePause,
+    MessageCircleQuestionMark,
   } from "@lucide/svelte";
   import { tooltip } from "./tooltip";
   import { highlightedConflict } from "./orchestrationState";
   import IconButton from "./ui/IconButton.svelte";
   import { describeOverrides, toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
-  import type { CardEntry, StepState } from "./orchestration";
+  import { attentionTip } from "./orchestration";
+  import type { CardEntry, StepAttention, StepState } from "./orchestration";
 
   interface Props {
     /// Drives the drag engine's [data-orch-step] hook. On the chip's own
@@ -35,6 +38,15 @@
     toolParams: Record<string, string>;
     state: StepState;
     reason: string | null;
+    /// What this RUNNING step is waiting on a human for, or null when it
+    /// is simply working (see stepAttentions). Never a state of its own:
+    /// the step is still `running` and the rail is still going, which is
+    /// the whole point -- this only stops it looking busy when it isn't.
+    attention: StepAttention | null;
+    /// The board's done column, for the turn-ended tooltip. Null when the
+    /// board has no columns, in which case the rail header already says
+    /// nothing can complete.
+    doneColumnName: string | null;
     /// Badge numbers this step belongs to, and the highest severity
     /// among them. Empty/null when the step is in no conflict.
     badges: number[];
@@ -64,6 +76,8 @@
     toolParams,
     state,
     reason,
+    attention,
+    doneColumnName,
     badges,
     severity,
     onRetry,
@@ -97,6 +111,9 @@
             : FileText
   );
   const overrides = $derived(tool ? describeOverrides(tool, toolParams) : "");
+  const attentionTitle = $derived(
+    attention ? attentionTip(attention, doneColumnName ?? "the done column") : ""
+  );
   const iconTip = $derived(tool ? toolKindLabel(tool.kind) : undefined);
 </script>
 
@@ -108,7 +125,9 @@
   class:sev-potential={severity === "potential"}
   class:hit
   class:dimmed
-  use:tooltip={state === "stalled" && reason ? reason : iconTip}>
+  class:attention-asking={attention === "asking"}
+  class:attention-ended={attention === "turn-ended"}
+  use:tooltip={state === "stalled" && reason ? reason : attentionTitle || iconTip}>
   <Icon size={13} />
   <span class="title">{title}</span>
   {#if overrides}
@@ -126,6 +145,13 @@
       onmouseleave={() => highlightedConflict.set(null)}
     >{n}</span>
   {/each}
+  <!-- Beside the run state, not instead of it: the step really is still
+       running, and a mark that replaced the ring would read as a stop. -->
+  {#if attention === "asking"}
+    <MessageCircleQuestionMark size={13} />
+  {:else if attention === "turn-ended"}
+    <CirclePause size={13} />
+  {/if}
   {#if state === "done"}<Check size={13} />{/if}
   {#if state === "stalled"}
     <CircleAlert size={13} />
@@ -197,6 +223,16 @@
   .chip.running {
     border-color: var(--border-focus);
     box-shadow: 0 0 0 1px var(--border-focus);
+  }
+  /* A ring, like .running, in warning tone -- NOT .stalled's danger
+     fill. Stalled means the rail stopped; this means it is still going
+     and waiting on you, and the two must not look alike. Both marks
+     share the ring: what separates them is the icon and the tooltip,
+     because a second colour here would collide with severity's fill. */
+  .chip.running.attention-asking,
+  .chip.running.attention-ended {
+    border-color: var(--border-warning);
+    box-shadow: 0 0 0 1px var(--border-warning);
   }
   .chip.done {
     border-color: var(--border-success);

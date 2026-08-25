@@ -1,12 +1,21 @@
 <script lang="ts">
-  import { Check, CheckCheck, CircleAlert, RotateCw, X } from "@lucide/svelte";
+  import {
+    Check,
+    CheckCheck,
+    CircleAlert,
+    CirclePause,
+    MessageCircleQuestionMark,
+    RotateCw,
+    X,
+  } from "@lucide/svelte";
   import BoardCard from "./BoardCard.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { tooltip } from "./tooltip";
   import { highlightedConflict } from "./orchestrationState";
   import type { Label } from "./kanban";
   import type { CardView, PlacedCardView } from "./planBoard";
-  import type { StepState } from "./orchestration";
+  import { attentionTip } from "./orchestration";
+  import type { StepAttention, StepState } from "./orchestration";
 
   interface Props {
     /// Drives the drag engine's [data-orch-step] hook. It sits on the
@@ -21,6 +30,12 @@
     state: StepState;
     /// Why the step stalled; null otherwise.
     reason: string | null;
+    /// What this RUNNING step is waiting on a human for -- same contract
+    /// as the chip's. Never a state of its own: the step is still
+    /// running, and this only stops it looking busy when it isn't.
+    attention: StepAttention | null;
+    /// The board's done column, for the turn-ended tooltip.
+    doneColumnName: string | null;
     /// Badge numbers this step belongs to, and the highest severity among
     /// them. Empty/null when the step is in no conflict.
     badges: number[];
@@ -49,6 +64,8 @@
     placed,
     state,
     reason,
+    attention,
+    doneColumnName,
     badges,
     severity,
     onRetry,
@@ -64,11 +81,16 @@
     hit = false,
     dimmed = false,
   }: Props = $props();
+
+  const attentionTitle = $derived(
+    attention ? attentionTip(attention, doneColumnName ?? "the done column") : ""
+  );
 </script>
 
 <div
   data-orch-step={stepId}
   class="step {state}"
+  class:attention={attention !== null}
   class:sev-live={severity === "live"}
   class:sev-potential={severity === "potential"}
   class:hit
@@ -93,6 +115,18 @@
             {#if state === "done"}<Check size={11} />{/if}
             {#if state === "stalled"}<CircleAlert size={11} />{/if}
             {state}
+          </span>
+        {/if}
+        <!-- Beside the state word, never in place of it: the step really
+             is still running, and the rail really is still going. -->
+        {#if attention}
+          <span class="attention-tag" use:tooltip={attentionTitle}>
+            {#if attention === "asking"}
+              <MessageCircleQuestionMark size={11} />
+            {:else}
+              <CirclePause size={11} />
+            {/if}
+            needs you
           </span>
         {/if}
         {#each badges as n (n)}
@@ -133,6 +167,11 @@
   }
   .step.running {
     box-shadow: 0 0 0 2px var(--border-focus);
+  }
+  /* Warning tone, NOT .stalled's danger ring: stalled means the rail
+     stopped, this means it is still going and waiting on you. */
+  .step.running.attention {
+    box-shadow: 0 0 0 2px var(--border-warning);
   }
   .step.done {
     box-shadow: 0 0 0 2px var(--border-success);
@@ -178,6 +217,16 @@
   }
   .state.stalled {
     color: var(--danger-text);
+  }
+  /* Sits after .state, which holds the `margin-right: auto` -- so the
+     tag lands with the buttons on the right rather than beside the word
+     it qualifies, and the strip does not reflow when it appears. */
+  .attention-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--warning-text);
+    font-size: 0.8em;
   }
   .badge {
     flex: none;

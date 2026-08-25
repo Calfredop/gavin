@@ -66,6 +66,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("./notifications", () => ({
   maybeNotifyStatusChange: vi.fn(),
+  // bootstrap() starts the orchestration listeners, which register the
+  // rail's voice over this module (see setRailNotificationVoice).
+  setRailNotificationVoice: vi.fn(),
 }));
 
 import * as backend from "./backend";

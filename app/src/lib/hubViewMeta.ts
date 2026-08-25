@@ -39,6 +39,10 @@ export function visibleHubViewIds(workspaceId: string, isDev: boolean, hasRoot: 
 export interface HubViewActivity {
   /// A "Commit via agent" run in flight in this workspace.
   committing: boolean;
+  /// A rail in this workspace has a running step waiting on a HUMAN --
+  /// an agent asking a question, or one whose turn ended without its card
+  /// reaching the done column (see stepAttentions).
+  railsWantingAttention: boolean;
 }
 
 /// Whether this tab should say, from the tab strip, that something it
@@ -47,6 +51,14 @@ export interface HubViewActivity {
 /// admit it exists while the human is looking at some other tab.
 export function hubViewBusy(viewId: string, activity: HubViewActivity): boolean {
   return viewId === "git" && activity.committing;
+}
+
+/// Whether this tab should say, from the tab strip, that something it
+/// owns is waiting on the HUMAN. A separate axis from `hubViewBusy` on
+/// purpose, and never collapsed into it: a spinner says gavin is doing
+/// something, a mark says you have to. A rail can be both at once.
+export function hubViewAttention(viewId: string, activity: HubViewActivity): boolean {
+  return viewId === "orchestration" && activity.railsWantingAttention;
 }
 
 /// The hub tab to land on when a workspace's Hub button is clicked: the

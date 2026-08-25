@@ -138,6 +138,8 @@ import {
   dismissSaveError,
   moveRailCardsAction,
   clearDoneStepsAction,
+  stepAttentionsByWorkspace,
+  railStatusVoice,
   __resetForTesting,
 } from "./orchestrationState";
 import { emptyOrchestration, addStep } from "./orchestration";
@@ -1306,5 +1308,110 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
     await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+});
+
+// ---- What a running step says about itself ---------------------------------
+// A card step is done when its card reaches the done column, and stalled
+// when its session dies first. But an interactive agent does not die: it
+// finishes its turn and sits at its prompt. So an agent that answered,
+// got confused, or decided the work was not for it left the step
+// `running` with a LIVE session and the rail waiting on it forever --
+// no stall, no reason, and nothing on screen saying anything was wrong.
+// It looked busy.
+
+describe("stepAttentionsByWorkspace", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...boundRail(),
+      stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+    });
+    await fetchOrchestration("ws-1");
+  });
+
+  const status = (v: Record<string, string>) =>
+    layoutStore.update((s) => ({ ...s, sessionStatusById: v }));
+
+  // /x/a.md is stubbed To Do, so the card never reached Done.
+  it("marks the step whose agent stopped short of the done column", () => {
+    status({ "sess-1": "idle" });
+    expect(get(stepAttentionsByWorkspace)["ws-1"].get("t1")).toBe("turn-ended");
+  });
+
+  it("marks the step whose agent is asking the human something", () => {
+    status({ "sess-1": "waiting_for_input" });
+    expect(get(stepAttentionsByWorkspace)["ws-1"].get("t1")).toBe("asking");
+  });
+
+  it("says nothing while the agent is working", () => {
+    status({ "sess-1": "working" });
+    expect(get(stepAttentionsByWorkspace)["ws-1"].get("t1")).toBeUndefined();
+  });
+
+  // The map has to move with the session, not lag it: it is a live read
+  // of the same stores the scheduler ticks on, which is the whole reason
+  // it is derived rather than stored.
+  it("clears itself the moment the agent picks the work back up", () => {
+    status({ "sess-1": "idle" });
+    expect(get(stepAttentionsByWorkspace)["ws-1"].get("t1")).toBe("turn-ended");
+    status({ "sess-1": "working" });
+    expect(get(stepAttentionsByWorkspace)["ws-1"].get("t1")).toBeUndefined();
+  });
+
+  // A workspace whose board has not arrived cannot say what "done"
+  // means, so it says nothing at all rather than marking every step.
+  it("skips a workspace with no board", () => {
+    boardStore.set({});
+    status({ "sess-1": "idle" });
+    expect(get(stepAttentionsByWorkspace)["ws-1"]).toBeUndefined();
+  });
+});
+
+describe("railStatusVoice", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...boundRail(),
+      stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+    });
+    await fetchOrchestration("ws-1");
+  });
+
+  const status = (v: Record<string, string>) =>
+    layoutStore.update((s) => ({ ...s, sessionStatusById: v }));
+
+  // The correction this card is really about. Without it the human gets
+  // "Wire the API finished" for an agent that finished nothing -- worse
+  // than the silence, because it is confidently wrong.
+  it("names the card, and says it did NOT finish", () => {
+    status({ "sess-1": "idle" });
+    expect(railStatusVoice("sess-1", "idle")).toBe("Wire the API stopped without finishing its card");
+  });
+
+  it("says nothing about a session no rail step owns", () => {
+    status({ "sess-1": "idle", "sess-2": "idle" });
+    expect(railStatusVoice("sess-2", "idle")).toBeNull();
+  });
+
+  // waiting_for_input already notifies as "needs your input", which is
+  // right; and a non-idle transition is not this rule's business at all.
+  it("says nothing about a status other than idle", () => {
+    status({ "sess-1": "waiting_for_input" });
+    expect(railStatusVoice("sess-1", "waiting_for_input")).toBeNull();
+    expect(railStatusVoice("sess-1", "working")).toBeNull();
+  });
+
+  it("says nothing about a step that is merely working", () => {
+    status({ "sess-1": "working" });
+    expect(railStatusVoice("sess-1", "idle")).toBeNull();
   });
 });

@@ -12,7 +12,13 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { maybeNotifyStatusChange, maybeNotifyAgentCommit, agentCommitBody, __resetForTesting } from "./notifications";
+import {
+  maybeNotifyStatusChange,
+  maybeNotifyAgentCommit,
+  agentCommitBody,
+  setRailNotificationVoice,
+  __resetForTesting,
+} from "./notifications";
 
 /// Today's behaviour: both events enabled. The per-workspace toggles
 /// (D38) get their own test below; every pre-existing case asserts the
@@ -192,5 +198,54 @@ describe("maybeNotifyAgentCommit", () => {
     vi.mocked(requestPermission).mockResolvedValue("denied");
     await maybeNotifyAgentCommit("gavin", { kind: "committed" }, ALL_ON, ELSEWHERE);
     expect(sendNotification).not.toHaveBeenCalled();
+  });
+});
+
+// A rail's card step whose agent goes idle without its card ever
+// reaching the done column already notified -- as "<label> finished",
+// which is exactly the wrong word for work that stopped unfinished.
+describe("the rail's voice over a status notification", () => {
+  it("replaces the generic body when the rail has something truer to say", async () => {
+    setRailNotificationVoice((sessionId, status) =>
+      sessionId === "s-1" && status === "idle" ? "step-1 stopped without finishing its card" : null
+    );
+    await maybeNotifyStatusChange("s-1", "working", "idle", "my-project", ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { body: string };
+    expect(call.body).toBe("step-1 stopped without finishing its card");
+  });
+
+  it("leaves a session the rail says nothing about with the generic body", async () => {
+    setRailNotificationVoice(() => null);
+    await maybeNotifyStatusChange("s-2", "working", "idle", "my-project", ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { body: string };
+    expect(call.body).toBe("my-project finished");
+  });
+
+  // One notification, not two. The voice only ever rewords the line the
+  // transition was already going to send; it can never conjure one, so
+  // the per-workspace toggles and the focused-window suppression keep
+  // owning whether anything is sent at all.
+  it("cannot make a silenced workspace speak", async () => {
+    setRailNotificationVoice(() => "rail says something");
+    await maybeNotifyStatusChange("s-1", "working", "idle", "my-project", {
+      needsInput: true,
+      finished: false,
+    });
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("cannot make a transition that was never worth notifying speak", async () => {
+    setRailNotificationVoice(() => "rail says something");
+    await maybeNotifyStatusChange("s-1", "idle", "working", "my-project", ALL_ON);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("is cleared by teardown, so no stale rail speaks for the next app run", async () => {
+    setRailNotificationVoice(() => "rail says something");
+    await __resetForTesting();
+    vi.mocked(isPermissionGranted).mockResolvedValue(true);
+    await maybeNotifyStatusChange("s-1", "working", "idle", "my-project", ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { body: string };
+    expect(call.body).toBe("my-project finished");
   });
 });

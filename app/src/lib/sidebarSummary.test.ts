@@ -225,6 +225,27 @@ describe("railPhase", () => {
     expect(railPhase(orchestration({ rails: [withEmptyStage] }), withEmptyStage)).toBe("idle");
   });
 
+  // Attention outranks every other phase: it is the only one that means
+  // a human has to do something, and it is true of a running rail and a
+  // paused one alike.
+  it("reports a rail wanting a human as attention, whatever else it is", () => {
+    const r = rail("r1", [stage("s1", 0, [step("st1", 0)])]);
+    const orch = orchestration({
+      rails: [r],
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    });
+    expect(railPhase(orch, r, new Set(["r1"]))).toBe("attention");
+  });
+
+  it("leaves a rail nobody flagged in the phase it already had", () => {
+    const r = rail("r1", [stage("s1", 0, [step("st1", 0)])]);
+    const orch = orchestration({
+      rails: [r],
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    });
+    expect(railPhase(orch, r, new Set())).toBe("running");
+  });
+
   it("reports a finished rail as done once its run state falls back to idle", () => {
     const r = rail("r1", [stage("s1", 0, [step("st1", 0)])]);
     const orch = orchestration({
@@ -238,8 +259,8 @@ describe("railPhase", () => {
 
 describe("railsSummary", () => {
   it("counts nothing for an orchestration that has not loaded", () => {
-    expect(railsSummary(undefined)).toEqual({ running: 0, done: 0, idle: 0, total: 0 });
-    expect(railsSummary(null)).toEqual({ running: 0, done: 0, idle: 0, total: 0 });
+    expect(railsSummary(undefined)).toEqual({ running: 0, attention: 0, done: 0, idle: 0, total: 0 });
+    expect(railsSummary(null)).toEqual({ running: 0, attention: 0, done: 0, idle: 0, total: 0 });
   });
 
   it("tallies each rail into exactly one bucket", () => {
@@ -251,14 +272,47 @@ describe("railsSummary", () => {
       railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
       stepRuns: [{ stepId: "st2", state: "done", sessionId: null, reason: null }],
     });
-    expect(railsSummary(orch)).toEqual({ running: 1, done: 1, idle: 1, total: 3 });
+    expect(railsSummary(orch)).toEqual({ running: 1, attention: 0, done: 1, idle: 1, total: 3 });
+  });
+
+  // A rail waiting on a human is still running -- but "3 running" tells
+  // the human nothing about which of the three wants them, which is the
+  // entire reason this bucket exists. It takes the rail OUT of running so
+  // each rail is still counted exactly once and the two numbers sum.
+  it("counts a rail wanting a human under attention rather than running", () => {
+    const r = rail("r1", [stage("s1", 0, [step("st1", 0)])]);
+    const orch = orchestration({
+      rails: [r],
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    });
+    expect(railsSummary(orch, new Set(["r1"]))).toEqual({
+      running: 0, attention: 1, done: 0, idle: 0, total: 1,
+    });
+  });
+
+  // Attention beats every other phase, including idle: a paused rail
+  // holding a step stuck `running` with a live agent is exactly the wedge
+  // worth surfacing, since it is why the rail cannot be edited or deleted.
+  it("counts a paused rail wanting a human under attention too", () => {
+    const r = rail("r1", [stage("s1", 0, [step("st1", 0)])]);
+    const orch = orchestration({
+      rails: [r],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "s1" }],
+    });
+    expect(railsSummary(orch, new Set(["r1"])).attention).toBe(1);
+  });
+
+  it("ignores a rail id that wants attention but is not in this orchestration", () => {
+    const r = rail("r1", [stage("s1", 0, [step("st1", 0)])]);
+    const orch = orchestration({ rails: [r] });
+    expect(railsSummary(orch, new Set(["elsewhere"]))).toMatchObject({ attention: 0, idle: 1 });
   });
 });
 
 describe("hasRecap", () => {
   const noGit = { repoCount: 0, dirtyCount: 0, ahead: 0, behind: 0, committing: false };
   const noCards = { todo: 0, inProgress: 0, done: 0, total: 0, columns: [] };
-  const noRails = { running: 0, done: 0, idle: 0, total: 0 };
+  const noRails = { running: 0, attention: 0, done: 0, idle: 0, total: 0 };
 
   it("is false when there is no repo, no card and no rail", () => {
     expect(hasRecap(noGit, noCards, noRails)).toBe(false);
