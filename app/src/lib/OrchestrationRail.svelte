@@ -62,6 +62,7 @@
     onBind: () => void;
     onAddStep: () => void;
     onRetryStep: (stepId: string) => void;
+    onMarkStepDone: (stepId: string) => void;
     onRemoveStep: (stepId: string) => void;
     /// The tab's search box holds a query. A rail keeps its whole shape
     /// while filtered -- a pipeline with holes in it would read as a
@@ -102,6 +103,7 @@
     onBind,
     onAddStep,
     onRetryStep,
+    onMarkStepDone,
     onRemoveStep,
     onEditStepParams,
     onOpenCard,
@@ -241,7 +243,9 @@
     </div>
     <button type="button" class="bindings" onclick={onBind}>
       <span class="wt">{rail.worktreePath ?? "no worktree"}</span>
-      <span class="pg">{pageName ?? "Agents page"}</span>
+      <!-- Not "no page": an unbound rail is not page-less, it gets one
+           of its own the moment the human arms it (spec O16). -->
+      <span class="pg">{pageName ?? "page at Start"}</span>
     </button>
     {#if !doneColumnName}
       <p class="warn">This board has no columns — nothing can complete.</p>
@@ -276,6 +280,7 @@
               badges={numbersForStep(numbered, step.id)}
               severity={severityForStep(numbered, step.id)}
               onRetry={() => onRetryStep(step.id)}
+              onMarkDone={() => onMarkStepDone(step.id)}
               onRemove={() => onRemoveStep(step.id)}
               {labelDefs}
               {workspaceId}
@@ -300,6 +305,7 @@
               badges={numbersForStep(numbered, step.id)}
               severity={severityForStep(numbered, step.id)}
               onRetry={() => onRetryStep(step.id)}
+              onMarkDone={() => onMarkStepDone(step.id)}
               onRemove={() => onRemoveStep(step.id)}
               onEditParams={() => onEditStepParams(step.id)}
               dimmed={filtering && !stepLit(step.id)}

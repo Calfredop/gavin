@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, CircleAlert, RotateCw, X } from "@lucide/svelte";
+  import { Check, CheckCheck, CircleAlert, RotateCw, X } from "@lucide/svelte";
   import BoardCard from "./BoardCard.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { tooltip } from "./tooltip";
@@ -26,6 +26,8 @@
     badges: number[];
     severity: "live" | "potential" | null;
     onRetry: () => void;
+    /// Files a step done by hand -- same contract as the chip's.
+    onMarkDone: () => void;
     onRemove: () => void;
     // --- everything below is the board's own plumbing, passed straight
     // through so a card on a rail behaves like a card anywhere else.
@@ -50,6 +52,7 @@
     badges,
     severity,
     onRetry,
+    onMarkDone,
     onRemove,
     labelDefs,
     workspaceId,
@@ -103,6 +106,9 @@
         {/each}
         {#if state === "stalled"}
           <IconButton icon={RotateCw} label="Retry" size={13} onclick={onRetry} />
+        {/if}
+        {#if state === "running" || state === "stalled"}
+          <IconButton icon={CheckCheck} label="Mark done" size={13} onclick={onMarkDone} />
         {/if}
         <IconButton icon={X} label="Remove from rail" size={13} onclick={onRemove} />
       </div>

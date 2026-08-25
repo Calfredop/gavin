@@ -38,6 +38,7 @@ because of a detected conflict.
 | O12 | Per-worktree **dirty file paths** are evidence for the agent only. The app's own conflict detection never needs them. |
 | O13 | **Separate worktrees are never a conflict**, same rail or different rails — sharing a checkout is the whole criterion. There is no step-level worktree, so a parallel stage always shares its rail's checkout; the box flags it and offers **Make sequential**. |
 | O14 | A **card step renders the kanban card itself** — one `BoardCard`, with every board feature it has anywhere else. A **tool step keeps the chip**: a tool is not a card. On a rail the card wears the one fact the board leaves implicit — **which column it sits in**. |
+| O16 | **Starting a rail spawns its own page**, named after it, when the rail has none. An explicit binding is never overridden, and a page that still exists is reused — only an unbound or closed-page rail gets a fresh one. The page is made **without being switched to**: the human stays on the tab they pressed Start in. A failed creation is not a stall: the rail arms onto the Agents-page fallback. |
 
 ---
 
@@ -58,8 +59,10 @@ interface Rail {
   /// card's own contextFolder, and the rail raises a `rail-unbound`
   /// conflict (§5).
   worktreePath: string | null;
-  /// Workspace page its sessions land on. Absent → the Agents-page
-  /// posture handleAgentSessionSpawned already applies.
+  /// Workspace page its sessions land on. Absent until the rail is
+  /// armed: Start gives an unbound rail a page of its own, named after
+  /// it (O16). Still absent if that creation failed, and then the
+  /// Agents-page posture handleAgentSessionSpawned already applies.
   pageId: string | null;
   stages: Stage[];
 }
@@ -259,6 +262,26 @@ idle ──Start──▶ running ──all stages complete──▶ idle (rende
 - **Reset** clears every `StepRun` and `RailRun` for the rail. It never
   touches card statuses — the board is the human's record, not the
   scheduler's scratch space.
+
+**Arming spawns the rail's page (O16).** Both Start and Resume, before
+writing `running`, ask `pageToSpawnForRail(rail, pages)` for the page this
+rail should have: `null` when `rail.pageId` names a page that still
+exists, otherwise the rail's own name, deduped against the workspace's
+page names (`backend`, `backend 2`, …) so two same-named rails never
+produce two indistinguishable tabs. A name means `createPage(workspaceId,
+presetSingle, 1, name, { cwd, activate: false })` followed by
+`bindRail(railId, { pageId })` — so the very first launch of the very
+first tick already lands there. The page's own blank shell opens in the
+rail's checkout (`worktreePath ?? root`, spelled as §4.3 spells it), so
+the page is the rail's in the way that matters and not just by name. It
+is **not** switched to: the human pressed Start on the Orchestration tab
+and stays there, exactly as §4.3's own placement leaves the screen alone.
+The sidebar and the rail's page chip are where the new page announces
+itself. A rail whose page was
+closed while it sat paused gets a new one on Resume for the same reason.
+Creation failing is **not** a stall: the rail arms anyway and its launches
+take §4.3's Agents-page fallback. A page is where agents land, not a
+precondition for running them.
 
 ### 4.2 Per-tick rules, in order
 
@@ -560,7 +583,10 @@ exactly the rail-fork shape. Picking an existing worktree from
 `refs.worktrees` is the other mode.
 
 **Page.** `Bind page…` lists the workspace's pages and offers "New page
-named after the rail", created through the existing page actions.
+named after the rail", created through the existing page actions. Leaving
+it unbound is not "the Agents page" but "a page of its own, made at
+Start" (O16, §4.1) — which is what the option and the rail's page chip
+say.
 
 **Re-binding** rewrites the binding only. Sessions already running keep the
 cwd they were spawned with; their chips show the worktree they actually ran

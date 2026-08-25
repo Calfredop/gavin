@@ -4,6 +4,7 @@
     ListChecks,
     StickyNote,
     Check,
+    CheckCheck,
     CircleAlert,
     RotateCw,
     X,
@@ -39,6 +40,11 @@
     badges: number[];
     severity: "live" | "potential" | null;
     onRetry: () => void;
+    /// Files a step done by hand. Offered while it is running or
+    /// stalled: the human can see the work is finished when the step's
+    /// own signal says otherwise, and without this the only way past
+    /// such a step is to delete it (and the session holding it).
+    onMarkDone: () => void;
     onRemove: () => void;
     /// Search state (orchestrationSearch.ts). `hit` rings the chip the
     /// query found; `dimmed` fades the ones it did not, so a rail keeps
@@ -61,6 +67,7 @@
     badges,
     severity,
     onRetry,
+    onMarkDone,
     onRemove,
     hit = false,
     dimmed = false,
@@ -123,6 +130,9 @@
   {#if state === "stalled"}
     <CircleAlert size={13} />
     <IconButton icon={RotateCw} label="Retry" size={13} onclick={onRetry} />
+  {/if}
+  {#if state === "running" || state === "stalled"}
+    <IconButton icon={CheckCheck} label="Mark done" size={13} onclick={onMarkDone} />
   {/if}
   {#if tool && tool.params.length > 0}
     <IconButton icon={Sliders} label="Tool parameters" size={13} onclick={onEditParams} />

@@ -1037,6 +1037,32 @@ describe("createPage", () => {
 
     expect(backend.createSession).not.toHaveBeenCalled();
   });
+
+  it("opens the sessions in an explicit cwd instead of the workspace root", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("a");
+
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "backend", { cwd: "/repos/gavin-backend" });
+
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin-backend");
+  });
+
+  // A rail spawning its own page must not yank the human off whatever
+  // they are looking at -- the Orchestration tab they just pressed Start
+  // in, usually.
+  it("leaves the active page alone when the caller asks not to activate", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))])], "ws-1", "s1");
+    const before = get(layoutState).workspaces[0].activePageId;
+    vi.mocked(backend.createSession).mockResolvedValue("a");
+
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "backend", { activate: false });
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages).toHaveLength(2);
+    expect(state.workspaces[0].pages[1].name).toBe("backend");
+    expect(state.workspaces[0].activePageId).toBe(before);
+    expect(state.focusedSessionId).toBe("s1");
+  });
 });
 
 describe("createSessionForCard", () => {

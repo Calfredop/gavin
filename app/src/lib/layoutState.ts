@@ -1345,18 +1345,35 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
 /// Returns the new page's id, so a caller that must bind something to it
 /// (an orchestration rail) does not have to guess which page appeared.
 /// Null when the workspace is unknown or session creation failed.
+/// `cwd` is where the fresh shells open; omitted, the workspace's own
+/// root applies (freshSessionCwd), which is what the toolbar's "new
+/// page" buttons want. A rail passes its checkout, so the page it spawns
+/// for itself opens where that rail actually works rather than at the
+/// workspace root.
+///
+/// `activate: false` builds the page WITHOUT switching to it. A page the
+/// human asked for by name should come to the front; one the app made on
+/// their behalf must not take the screen they were using -- pressing
+/// Start on a rail would otherwise throw them off the Orchestration tab
+/// they pressed it in. Same posture createSessionOnPage already takes
+/// when it drops a rail's agent onto a page that is not on screen.
 export async function createPage(
   workspaceId: string,
   buildTree: (freshIds: string[]) => LayoutNode,
   sessionCount: number,
-  name: string
+  name: string,
+  opts: { cwd?: string; activate?: boolean } = {}
 ): Promise<string | null> {
   const state = get(layoutState);
-  if (!state.workspaces.some((w) => w.id === workspaceId)) return null;
+  const target = state.workspaces.find((w) => w.id === workspaceId);
+  if (!target) return null;
+  const previousPageId = target.activePageId;
   let freshIds: string[];
   try {
-    const cwd = freshSessionCwd(workspaceId);
-    freshIds = await Promise.all(Array.from({ length: sessionCount }, () => backend.createSession(cwd)));
+    const sessionCwd = opts.cwd || freshSessionCwd(workspaceId);
+    freshIds = await Promise.all(
+      Array.from({ length: sessionCount }, () => backend.createSession(sessionCwd))
+    );
   } catch (e) {
     setError(String(e));
     return null;
@@ -1366,13 +1383,19 @@ export async function createPage(
   const created = workspace.createPage(state, workspaceId, pageId, name, tree);
   const focusedSessionId = freshIds[0] ?? null;
   const data = workspace.setPageFocus(created, workspaceId, pageId, focusedSessionId);
+  const activate = opts.activate !== false;
+  // workspace.createPage always activates what it appends, so the
+  // non-activating case puts the workspace back on the page it was on.
+  const workspaces = activate
+    ? data.workspaces
+    : data.workspaces.map((w) => (w.id === workspaceId ? { ...w, activePageId: previousPageId } : w));
   layoutState.update((s) => ({
     ...s,
-    workspaces: data.workspaces,
-    activeWorkspaceId: workspaceId,
-    focusedSessionId,
+    workspaces,
+    activeWorkspaceId: activate ? workspaceId : s.activeWorkspaceId,
+    focusedSessionId: activate ? focusedSessionId : s.focusedSessionId,
   }));
-  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  await persistWorkspaces(workspaces, data.activeWorkspaceId);
   return pageId;
 }
 

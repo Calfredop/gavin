@@ -21,9 +21,10 @@ vi.mock("./layoutState", () => ({
   // A REAL store: tick() derives the set of LIVE session ids from it, so
   // a test that needs a running step's session to still exist has to be
   // able to put a page holding it in here.
-  layoutState: writable({ workspaces: [] as unknown[] }),
+  layoutState: writable({ workspaces: [] as unknown[], sessionStatusById: {} as Record<string, string> }),
   resolvedAgentFor: vi.fn(() => ({ command: "claude", file: "CLAUDE.md", profile: "claude-code" })),
   createSessionOnPage: vi.fn(),
+  createPage: vi.fn().mockResolvedValue(null),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   // tick() reads this through get(), so it has to be a real store.
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
@@ -114,6 +115,7 @@ import {
   pauseRail,
   resumeRail,
   retryStep,
+  markStepDone,
   executeActions,
   mutatePlan,
   setRailRunAction,
@@ -135,9 +137,23 @@ function withRails(...ids: string[]): Orchestration {
   return { ...emptyOrchestration(), rails: ids.map(rail) };
 }
 
+/// The two stores tick() reads that the rest of this file leaves empty:
+/// without a board it bails before the scheduler, and without a live page
+/// the running sibling's session reads as dead and stalls the rail.
+const boardStore = kanbanStateModule.kanbanState as unknown as Writable<Record<string, unknown>>;
+const layoutStore = layoutStateModule.layoutState as unknown as Writable<{
+  workspaces: unknown[];
+  sessionStatusById: Record<string, string>;
+}>;
+
 beforeEach(() => {
   vi.clearAllMocks();
   __resetForTesting();
+  // Both mocked stores are module-level and shared by every test in this
+  // file: a page one test puts in must not decide what the next one
+  // sees. `clearAllMocks` does nothing for them.
+  boardStore.set({});
+  layoutStore.set({ workspaces: [], sessionStatusById: {} });
 });
 
 describe("fetchOrchestration", () => {
@@ -273,6 +289,9 @@ function boundRail(): Orchestration {
 describe("rail controls", () => {
   beforeEach(async () => {
     vi.mocked(backend.getOrchestration).mockResolvedValue(boundRail());
+    // Explicit, because an earlier describe leaves this rejecting to
+    // exercise rollback and `clearAllMocks` keeps implementations.
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
     vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
     vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
     await fetchOrchestration("ws-1");
@@ -323,10 +342,69 @@ describe("rail controls", () => {
     expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", null);
   });
 
+  // Spec O16. `boundRail` names page "p1", and the mocked layoutState
+  // holds no workspaces at all, so the rail's binding is exactly the
+  // stale one an unbound rail and a closed page both look like.
+  it("Start gives the rail a page of its own, in the rail's checkout", async () => {
+    vi.mocked(layoutStateModule.createPage).mockResolvedValue("p-new");
+    await startRail("ws-1", "r1");
+    expect(layoutStateModule.createPage).toHaveBeenCalledWith(
+      "ws-1",
+      expect.any(Function),
+      1,
+      "backend",
+      // activate: false -- Start must not throw the human off the
+      // Orchestration tab they pressed it in.
+      { cwd: "/x/wt", activate: false }
+    );
+    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("p-new");
+  });
+
+  it("Start leaves a rail whose page still exists on it", async () => {
+    layoutStore.set({
+      workspaces: [{ id: "ws-1", pages: [{ id: "p1", name: "backend" }] }],
+      sessionStatusById: {},
+    });
+    await startRail("ws-1", "r1");
+    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
+  });
+
+  // A page is where agents land, not a precondition for running them:
+  // the rail arms onto the Agents-page fallback instead of stalling.
+  it("Start still arms the rail when the page cannot be created", async () => {
+    vi.mocked(layoutStateModule.createPage).mockResolvedValue(null);
+    await startRail("ws-1", "r1");
+    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("p1");
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1");
+  });
+
+  it("Resume spawns the page too — it may have been closed while paused", async () => {
+    vi.mocked(layoutStateModule.createPage).mockResolvedValue("p-new");
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await resumeRail("ws-1", "r1");
+    expect(layoutStateModule.createPage).toHaveBeenCalledTimes(1);
+    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("p-new");
+  });
+
   it("Retry returns a stalled step to pending and clears its reason", async () => {
     await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "card file is missing");
     await retryStep("ws-1", "t1");
     expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "pending", null, null);
+  });
+
+  // The escape hatch. A step whose completion signal never arrives used
+  // to cost the human the session AND the step -- the only way to get a
+  // `running` row out of the daemon's way.
+  it("Mark done files a running step done, keeping its session", async () => {
+    await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
+    await markStepDone("ws-1", "t1");
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", "sess-1", null);
+  });
+
+  it("Mark done clears a stalled step's reason with it", async () => {
+    await setStepRunAction("ws-1", "t1", "stalled", null, "Push branch exited with code 1");
+    await markStepDone("ws-1", "t1");
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", null, null);
   });
 });
 
@@ -822,12 +900,6 @@ describe("launching a tool step before the library has loaded", () => {
 // already in flight. It used to sit `pending` until some unrelated change
 // ticked the workspace, which made the drop look inert.
 
-/// The two stores tick() reads that the rest of this file leaves empty:
-/// without a board it bails before the scheduler, and without a live page
-/// the running sibling's session reads as dead and stalls the rail.
-const boardStore = kanbanStateModule.kanbanState as unknown as Writable<Record<string, unknown>>;
-const layoutStore = layoutStateModule.layoutState as unknown as Writable<{ workspaces: unknown[] }>;
-
 function armWorkspace(): void {
   boardStore.set({
     "ws-1": {
@@ -844,6 +916,9 @@ function armWorkspace(): void {
     // this tick launches has to read as LIVE on the next one, or rule 3
     // would call its session dead and stall the rail.
     workspaces: [{ pages: [{ layout: { type: "leaf", tabs: ["sess-1", "sess-9"] } }] }],
+    // No status reported for either: a session the daemon has said
+    // nothing about is not a finished one.
+    sessionStatusById: {},
   });
 }
 
@@ -1002,5 +1077,100 @@ describe("a tick requested while one is in flight", () => {
 
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledTimes(2);
     expect(backend.setStepRun).toHaveBeenCalledWith("late", "running", "sess-9", null);
+  });
+});
+
+// ---- An agent tool step's turn ---------------------------------------------
+// The bug this fixes end to end: an agent tool's session NEVER exits, so
+// the rail's only completion rule (T5's exit code) could never fire for
+// one. The step sat `running` for good, and since the daemon refuses
+// every plan write that drops a `running` step, the rail was wedged shut
+// until the human deleted the session and the step by hand.
+
+/// A rail parked on an agent tool (`builtin:commit`, running as sess-1)
+/// with a command tool queued behind it -- so a tick that completes the
+/// first has somewhere visible to go.
+function agentToolRail(): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "release",
+        position: 0,
+        worktreePath: "/x/wt",
+        pageId: "p1",
+        stages: [
+          {
+            id: "s1",
+            position: 0,
+            steps: [{ id: "t1", position: 0, cardPath: "", toolId: "builtin:commit", toolParams: {} }],
+          },
+          {
+            id: "s2",
+            position: 1,
+            steps: [{ id: "t2", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} }],
+          },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+  };
+}
+
+describe("an agent tool step whose turn has ended", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(backend.getOrchestration).mockResolvedValue(agentToolRail());
+    await fetchOrchestration("ws-1");
+  });
+
+  const status = (v: Record<string, string>) =>
+    layoutStore.update((s) => ({ ...s, sessionStatusById: v }));
+
+  it("is filed done and lets the rail move on, though its session is still live", async () => {
+    status({ "sess-1": "idle" });
+    await tick("ws-1");
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null);
+    // The next stage actually started: without that this is a green test
+    // over a rail that is still stuck.
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("git push -u origin HEAD")
+    );
+  });
+
+  it("keeps running while the agent is still working", async () => {
+    status({ "sess-1": "working" });
+    await tick("ws-1");
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  // The agent is asking the human something. Advancing past a question
+  // would answer it by walking away.
+  it("keeps running while the agent waits for input", async () => {
+    status({ "sess-1": "waiting_for_input" });
+    await tick("ws-1");
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+
+  // The daemon registers every new session `idle`, so an absent status
+  // is "nothing reported yet" -- believing it would file a step done the
+  // instant it launched.
+  it("keeps running while its session has reported nothing", async () => {
+    await tick("ws-1");
+    expect(backend.setStepRun).not.toHaveBeenCalled();
   });
 });

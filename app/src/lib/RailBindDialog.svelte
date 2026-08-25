@@ -2,6 +2,7 @@
   import Modal from "./Modal.svelte";
   import GitForkDialog from "./GitForkDialog.svelte";
   import { gitStore } from "./gitState";
+  import { gavinTrees } from "./gavinState";
   import { layoutState, createPage, resolvedAgentFor } from "./layoutState";
   import { bindRailAction } from "./orchestrationState";
   import { presetSingle } from "./layout";
@@ -19,8 +20,21 @@
   const worktrees = $derived($gitStore[workspaceId]?.refs?.worktrees ?? []);
   const pages = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.pages ?? []);
 
+  /// The checkout this rail's steps run in — its own worktree, or the
+  /// workspace root when it has none. Spelled exactly as
+  /// `executeToolLaunch` spells it, so a page made here opens where the
+  /// rail's own Start would have opened it.
+  const tree = $derived($gavinTrees[workspaceId]);
+  const railCheckout = $derived(
+    rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null)
+  );
+
+  /// The same page Start would spawn on its own (spec O16), made early:
+  /// named after the rail, opened in the rail's checkout.
   async function bindNewPage(): Promise<void> {
-    const pageId = await createPage(workspaceId, (ids) => presetSingle(ids[0]), 1, rail.name);
+    const pageId = await createPage(workspaceId, (ids) => presetSingle(ids[0]), 1, rail.name, {
+      cwd: railCheckout ?? undefined,
+    });
     if (pageId) await bindRailAction(workspaceId, rail.id, { pageId });
   }
 </script>
@@ -79,7 +93,10 @@
 
       <section>
         <h4>Page</h4>
-        <p class="note">Where this rail's agent sessions land.</p>
+        <p class="note">
+          Where this rail's agent sessions land. Unbound, Start gives the rail a page of its own,
+          named after it.
+        </p>
         <ul>
           <li>
             <button
@@ -87,7 +104,7 @@
               class:on={rail.pageId === null}
               onclick={() => void bindRailAction(workspaceId, rail.id, { pageId: null })}
             >
-              <span class="path">None — the Agents page</span>
+              <span class="path">None — a page of its own, made at Start</span>
             </button>
           </li>
           {#each pages as page (page.id)}

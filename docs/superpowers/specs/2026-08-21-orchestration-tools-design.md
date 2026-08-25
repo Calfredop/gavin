@@ -23,7 +23,7 @@ versioning, and sharing tools between machines.
 | T2 | A tool's **body is text**, and its `kind` says how to run it: `agent` (prompt for the workspace's agent), `command` (a shell command line), `script` (a multi-line bash script). |
 | T3 | Tools take **string parameters** substituted into the body as `{{name}}`. Substitution is **literal** — the tool author owns the quoting. Each step carries its own overrides. |
 | T4 | Tools live in **three scopes**: `builtin` (shipped, read-only, TypeScript constants), `global` (this machine, every workspace), `workspace` (this workspace only). A workspace tool wins a name clash. |
-| T5 | A tool step is **done when its session exits 0**, stalled on any other exit — including an exit gavin did not witness. There is no card and therefore no done column to reach. |
+| T5 | A tool step is **done when its session exits 0**, stalled on any other exit — including an exit gavin did not witness. There is no card and therefore no done column to reach. **Amended 2026-08-25:** true for `command` and `script` tools only. An `agent` tool's session never exits, so it is done when **its turn ends** — see §3.1. |
 | T6 | A tool step runs in **the rail's checkout** (`worktreePath ?? tree.rootPath`), so it participates in `same-worktree` conflicts exactly like a card step. `duplicate-card` never fires for tools — two `Push` steps are correct. |
 | T7 | Built-ins are **data, not code**: a `BUILTIN_TOOLS` array in `orchestrationTools.ts`, unit-tested like any other pure module. Nothing about running them is special-cased. |
 | T8 | The plan is still replaced **wholesale**; tools are a **separate, targeted store** (upsert/delete by id), because a tool outlives every arrangement that uses it. |
@@ -188,6 +188,44 @@ For a step whose session is no longer live:
 | tool, no code known | `stall` — `<tool>'s session ended while gavin was not watching` (the app restarted mid-run) |
 
 Rule 1 (card reached the done column) is skipped entirely for tool steps.
+
+### 3.1.1 Agent tools finish differently (amended 2026-08-25)
+
+The table above cannot describe an `agent` tool, and shipping it that way
+made all four agent built-ins — Commit, Merge, Browser test, Review this
+branch — **unfinishable**. §3's command table sends an agent tool through
+`buildRunCommand`, the interactive path, and an interactive agent never
+exits: it finishes its turn and sits at its prompt forever, which is the
+whole reason `buildHeadlessCommand` exists for the runs that must end. So
+"exits 0" never came, the step stayed `running`, and since the daemon
+refuses every plan write that drops a `running` step, the rail was wedged
+shut — uneditable and undeletable until the human killed the session and
+deleted the step by hand.
+
+An agent tool step is therefore done when **its session goes `idle`**, the
+same signal behind the "<label> finished" notification:
+
+| session status | outcome |
+|---|---|
+| `idle` | `markDone` — the turn ended |
+| `working` | keep running |
+| `waiting_for_input` | keep running — the agent is ASKING, and advancing past a question would answer it by walking away. `pty.rs` pins `TERM_PROGRAM`, so an agent that wants attention says so rather than merely going quiet, and the daemon refuses to let a quiet period downgrade this to `idle`. |
+| none reported | keep running — the daemon registers every new session `idle`, so an absent status is "nothing yet", not "finished" |
+
+Only `agent` tools: a `command` tool's verdict stays its exit code, because
+a quiet `npm run dev` is a server that started, not a step that finished.
+And never a card step, whose completion is rule 1 — an agent that stopped
+talking without finishing its card left the work undone, which is exactly
+what rule 1 is there to catch.
+
+Headless was the other candidate and was rejected: the only verified
+headless argv is claude's, deliberately scoped to `Bash(git *)`, which
+kills Browser test outright, stops Merge running the tests its own prompt
+demands, and stalls all four tools under codex, gemini and cursor.
+
+The scheduler gained a per-step escape hatch with it — **Mark done**, beside
+Retry on any running or stalled step — so a completion signal that never
+arrives costs one click rather than the session and the step.
 
 ---
 

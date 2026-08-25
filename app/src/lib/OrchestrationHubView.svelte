@@ -55,6 +55,7 @@
     resumeRail,
     resetRail,
     retryStep,
+    markStepDone,
     tick,
     makeStageSequentialAction,
     moveStepIntoStageAction,
@@ -311,6 +312,11 @@
   $effect(() => {
     void $gavinTrees[workspaceId];
     void $layoutState.workspaces;
+    // An agent tool step finishes without its session going anywhere, so
+    // nothing above changes when it does -- only its status does. Without
+    // this the rail would sit on a finished agent until some unrelated
+    // event happened to tick it.
+    void $layoutState.sessionStatusById;
     void $kanbanState[workspaceId];
     // A tool step launches only once the library has loaded, so the tick
     // has to re-run when it arrives -- otherwise an armed rail sitting
@@ -530,6 +536,7 @@
           onBind={() => (binding = rail.id)}
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
+          onMarkStepDone={(stepId) => void markStepDone(workspaceId, stepId)}
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
           filtering={lens.filtering}
           stepLit={lens.stepLit}

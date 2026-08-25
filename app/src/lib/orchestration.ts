@@ -6,6 +6,7 @@
 import type { Board, Column } from "./kanban";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 import type { WorktreeInfo } from "./git";
+import type { SessionStatus } from "./notifications";
 import { isArchivedCard, planKey, slugStatus } from "./planBoard";
 
 export interface Step {
@@ -52,8 +53,11 @@ export interface Rail {
   /// contextFolder (see effectiveWorktree) and raises a `rail-unbound`
   /// conflict in SP2.
   worktreePath: string | null;
-  /// Workspace page its sessions land on; null uses the Agents-page
-  /// posture handleAgentSessionSpawned already applies.
+  /// Workspace page its sessions land on. Null until the rail is armed:
+  /// Start gives an unbound rail a page of its own, named after it (spec
+  /// O16, pageToSpawnForRail). Still null if that creation failed, and
+  /// then the launch falls back to the Agents-page posture
+  /// handleAgentSessionSpawned already applies.
   pageId: string | null;
   stages: Stage[];
 }
@@ -64,13 +68,18 @@ export interface ConflictNote {
   note: string;
 }
 
-/// The only thing this module needs to know about a tool: that it
-/// exists, and what to call it in a stall reason or a conflict line. The
-/// tool's kind, body and params are orchestrationTools.ts's business,
-/// and keeping them out of here keeps the scheduler's inputs small.
+/// The little this module needs to know about a tool: that it exists,
+/// what to call it in a stall reason or a conflict line, and how it
+/// finishes. The body and the params stay orchestrationTools.ts's
+/// business, which keeps the scheduler's inputs small.
+///
+/// `kind` is here because it changes the COMPLETION RULE, not because
+/// the scheduler runs anything: an agent tool's session never exits (see
+/// agentTurnEnded), so T5's exit code can never be its verdict.
 export interface ToolSummary {
   id: string;
   name: string;
+  kind: "agent" | "command" | "script";
 }
 
 export type RailState = "idle" | "running" | "paused";
@@ -272,6 +281,52 @@ function toolStepOutcome(
   return { kind: "stall", reason: `${label} exited with code ${exitCode}` };
 }
 
+/// Whether a step is a finished AGENT tool step -- the one completion
+/// signal that is not an exit code.
+///
+/// An interactive agent never exits. It finishes its turn and sits at
+/// its prompt forever, which is the whole reason buildHeadlessCommand
+/// exists for the runs that must end (cardRun.ts). So T5's "done when
+/// its session exits 0" can never fire for an `agent` tool, and a rail
+/// carrying one sat `running` for good: the step could not complete, and
+/// the daemon refuses every plan write that drops a `running` step, so
+/// the rail was wedged shut until the human deleted the session and the
+/// step by hand.
+///
+/// The signal instead is the daemon's own status for that session, which
+/// is exactly the one behind the "<label> finished" notification:
+///
+/// - `idle` -- the turn ended. Done.
+/// - `working` -- still going.
+/// - `waiting_for_input` -- the agent is ASKING the human something.
+///   Not finished: pty.rs pins TERM_PROGRAM so an agent that wants
+///   attention says so rather than merely going quiet, and the daemon
+///   refuses to let a quiet period downgrade this to idle. Advancing the
+///   rail past a question would answer it by walking away.
+/// - no status at all -- not finished either. The daemon registers every
+///   new session `idle`, so an absent status is "nothing reported yet",
+///   and believing it would mark a step done the instant it launched.
+///
+/// Only `agent` tools. A `command` tool's verdict is its exit code and
+/// nothing else (T5): a quiet `npm run dev` is a server that started,
+/// not a step that finished. And never a CARD step, whose completion is
+/// its card reaching the done column (rule 1) -- an agent that stopped
+/// talking without finishing the card left the work undone, which is
+/// what rule 1 is there to catch.
+function agentTurnEnded(
+  step: Step,
+  sessionId: string | null,
+  toolKinds: Map<string, ToolSummary["kind"]>,
+  sessionStatuses: Map<string, SessionStatus>
+): boolean {
+  if (!sessionId || !isToolStep(step)) return false;
+  // An unknown tool cannot be known to be an agent -- a deleted one, or
+  // a library still loading. The step keeps running until its session
+  // ends rather than completing on a guess.
+  if (toolKinds.get(step.toolId as string) !== "agent") return false;
+  return sessionStatuses.get(sessionId) === "idle";
+}
+
 /// The verdict on a step whose session is over. One spelling, because
 /// two paths need it: rule 3 inside a running rail, and the
 /// reconciliation pass over a rail that is not running.
@@ -319,7 +374,11 @@ export function nextActions(
   tools: ToolSummary[] | null = null,
   /// Exit code by session id, for finished tool steps (tools spec T5).
   /// A session absent here has no witnessed outcome.
-  exitCodes: Map<string, number> = new Map()
+  exitCodes: Map<string, number> = new Map(),
+  /// The daemon's live status per session, for an AGENT tool step --
+  /// whose session never exits, so no exit code above will ever describe
+  /// it (see agentTurnEnded).
+  sessionStatuses: Map<string, SessionStatus> = new Map()
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
@@ -334,6 +393,7 @@ export function nextActions(
   const knownWorktrees = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
   const knownTools = tools ? new Set(tools.map((t) => t.id)) : null;
   const toolName = new Map((tools ?? []).map((t) => [t.id, t.name]));
+  const toolKind = new Map((tools ?? []).map((t) => [t.id, t.kind]));
   const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
 
   for (const rail of orch.rails) {
@@ -351,7 +411,17 @@ export function nextActions(
         for (const step of stage.steps) {
           if (stepStateOf(orch, step.id) !== "running") continue;
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
-          if (sessionId && liveSessionIds.has(sessionId)) continue;
+          if (sessionId && liveSessionIds.has(sessionId)) {
+            // A LIVE session is normally nothing to write about here --
+            // except an agent tool's, which is live precisely because it
+            // finished (agentTurnEnded). That is the same stale
+            // `running` row this pass exists for, and leaving it would
+            // keep the rail uneditable and undeletable.
+            if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses)) {
+              actions.push({ kind: "markDone", stepId: step.id });
+            }
+            continue;
+          }
           actions.push(
             deadSessionAction(
               step,
@@ -444,6 +514,14 @@ export function nextActions(
         // whole verdict (tools spec T5).
         if (state === "running") {
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
+          // Rule 3b -- an agent tool step whose session is still LIVE but
+          // whose turn is over. Checked first: its session will never
+          // die, so the dead-session branch below can never speak for it.
+          if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses)) {
+            actions.push({ kind: "markDone", stepId: step.id });
+            simulated.set(step.id, "done");
+            continue;
+          }
           if (sessionId && !liveSessionIds.has(sessionId)) {
             const action = deadSessionAction(
               step,
@@ -538,6 +616,29 @@ export function bindRail(
     ...orch,
     rails: orch.rails.map((r) => (r.id === railId ? { ...r, ...patch } : r)),
   };
+}
+
+/// The page a rail should get when the human arms it (spec O16): null
+/// when its sessions already have a home of their own -- a bound page
+/// that still exists -- otherwise the NAME to create one under. A rail
+/// whose page was closed gets a fresh one, the same degradation §2.2
+/// already grants a stale `pageId`, rather than quietly falling back to
+/// the shared Agents page.
+///
+/// Deduped against the pages the workspace already has, so two rails
+/// with the same name -- or a rail sharing a name with a page the human
+/// made -- never produce two tabs no one can tell apart. Only the pages'
+/// ids and names matter here; the layout tree is the app's business.
+export function pageToSpawnForRail(
+  rail: Rail,
+  pages: { id: string; name: string }[]
+): string | null {
+  if (pages.some((p) => p.id === rail.pageId)) return null;
+  const base = rail.name.trim() || "Rail";
+  const taken = new Set(pages.map((p) => p.name));
+  let name = base;
+  for (let n = 2; taken.has(name); n++) name = `${base} ${n}`;
+  return name;
 }
 
 /// Never removes a worktree or a page -- those outlive the plan that

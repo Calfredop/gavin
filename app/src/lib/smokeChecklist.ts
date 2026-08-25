@@ -115,6 +115,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Composer plan chip: body textarea + Rail picker; plan cards show n/m checklist progress",
       },
       {
+        id: "compose-body-enter",
+        text: "In the task/plan BODY textarea Enter makes a newline (a checklist types normally) and ⌘Enter files the card; the footer hint says so while the caret is there",
+        hint: "The title keeps bare Enter. Tab to a picker and ⌘Enter must still file. Back in the title the hint returns to “Enter adds and stays”, and the note chip (no body) always shows the title hint.",
+      },
+      {
         id: "kind-nested-display",
         text: "A task with parent: <plan file> and NO status renders inside the plan card's expandable area",
         hint: "Create via gavin_create_plan (kind task, parent set) or hand-author; chevron shows the child count.",
@@ -252,6 +257,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "run-names-its-tab",
         text: "A launched agent renames its own tab within the first few seconds — short and about the card, not “gavin”",
         hint: "Run two cards at once: both tabs should be tellable apart at a glance. Board Run, Resume and an orchestration launch all carry the instruction.",
+      },
+      {
+        id: "run-rail-spawns-its-page",
+        text: "Starting an unbound rail spawns a page named after it, and the rail's agents land there",
+        hint: "The page chip reads “page at Start” beforehand and the rail's name afterwards; a new blank shell on that page opens in the rail's checkout, not $HOME. Re-arming it, or pressing Resume, must not make a second page — close the page while it is paused and Resume is the one case that should.",
       },
       {
         id: "run-drop-on-running-stage",

@@ -33,6 +33,7 @@ import {
   stepParams,
   findCardPlacement,
   sendCardToRail,
+  pageToSpawnForRail,
   railCardsToMove,
   railDoneStepIds,
   removeSteps,
@@ -44,8 +45,15 @@ import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore } from "./gitState";
-import { layoutState, resolvedAgentFor, createSessionOnPage, sessionExits, setSessionName } from "./layoutState";
-import { allSessionIds } from "./layout";
+import {
+  layoutState,
+  resolvedAgentFor,
+  createSessionOnPage,
+  createPage,
+  sessionExits,
+  setSessionName,
+} from "./layoutState";
+import { allSessionIds, presetSingle } from "./layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
@@ -198,12 +206,62 @@ function railOwning(orch: Orchestration, stepId: string): Rail | null {
   return orch.rails.find((r) => r.stages.some((s) => s.steps.some((t) => t.id === stepId))) ?? null;
 }
 
+const spawningPages = new Set<string>();
+
+/// Arming a rail gives it a page of its OWN, named after it (spec O16):
+/// the human pressed Start, so this rail's agents get a home they can be
+/// found in rather than piling into the shared Agents page with everyone
+/// else's. Only when the rail has no live page binding -- an explicit
+/// one is never overridden, and re-arming returns to the page the rail
+/// already has.
+///
+/// Failing to create one is not fatal, and deliberately not a stall: the
+/// rail arms anyway and its launches fall back to the Agents-page
+/// posture (spec §4.3 step 4). A page is where agents land, not a
+/// precondition for running them.
+async function ensureRailPage(workspaceId: string, railId: string): Promise<void> {
+  // One page per rail even under a double-click: creating it is an await
+  // long enough for a second Start to arrive while the rail is still
+  // unbound, and two pages named after one rail is exactly what
+  // pageToSpawnForRail's deduping exists to prevent.
+  if (spawningPages.has(railId)) return;
+  const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
+  if (!rail) return;
+  const pages = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.pages ?? [];
+  const name = pageToSpawnForRail(rail, pages);
+  if (name === null) return;
+  // The page's own blank shell opens in the rail's checkout -- spelled
+  // exactly as executeToolLaunch spells it -- so the page is the rail's
+  // in the way that matters, not just by name. Undefined only when the
+  // workspace has no root at all, and then $HOME is as good a guess as
+  // any.
+  const tree = get(gavinTrees)[workspaceId];
+  const checkout = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
+  spawningPages.add(railId);
+  try {
+    const pageId = await createPage(workspaceId, (ids) => presetSingle(ids[0]), 1, name, {
+      cwd: checkout ?? undefined,
+      // The human is on the Orchestration tab -- they pressed Start
+      // there. The page appears in the sidebar and the rail's chip names
+      // it; taking the screen as well would be a jump they did not ask
+      // for, and unbearable when arming several rails in a row.
+      activate: false,
+    });
+    if (pageId) await mutatePlan(workspaceId, (orch) => bindRail(orch, railId, { pageId }));
+  } finally {
+    spawningPages.delete(railId);
+  }
+}
+
 export async function startRail(workspaceId: string, railId: string): Promise<void> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
   if (!rail) return;
   const stageId = firstUnfinishedStageId(rail, orch);
   if (!stageId) return;
+  // Before the rail is armed, so the first launch of the very first tick
+  // already lands on it.
+  await ensureRailPage(workspaceId, railId);
   await setRailRunAction(workspaceId, railId, "running", stageId);
   await tick(workspaceId);
 }
@@ -227,6 +285,9 @@ export async function resumeRail(workspaceId: string, railId: string): Promise<v
   const rail = orch?.rails.find((r) => r.id === railId);
   if (!rail) return;
   const current = orch.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
+  // Resume arms the rail too, and its page may well have been closed
+  // while it sat paused.
+  await ensureRailPage(workspaceId, railId);
   const stageId =
     current && rail.stages.some((s) => s.id === current)
       ? current
@@ -254,6 +315,22 @@ export async function resetRail(workspaceId: string, railId: string): Promise<vo
 /// replaying the old command (spec §6.2).
 export async function retryStep(workspaceId: string, stepId: string): Promise<void> {
   await setStepRunAction(workspaceId, stepId, "pending", null, null);
+  await tick(workspaceId);
+}
+
+/// The human's override for a step whose completion signal never
+/// arrives: file it done and let the rail move on, rather than deleting
+/// the session and the step to unwedge the rail (which is what this bug
+/// cost before there was a button for it).
+///
+/// The session id is kept, exactly as executeActions' own markDone keeps
+/// it: the step is finished, but its transcript stays reachable from the
+/// chip. Nothing is killed either -- a live session the human has judged
+/// finished is still theirs to read, and to keep using.
+export async function markStepDone(workspaceId: string, stepId: string): Promise<void> {
+  const sessionId =
+    get(orchestrations)[workspaceId]?.stepRuns.find((r) => r.stepId === stepId)?.sessionId ?? null;
+  await setStepRunAction(workspaceId, stepId, "done", sessionId, null);
   await tick(workspaceId);
 }
 
@@ -467,9 +544,13 @@ async function runTick(workspaceId: string): Promise<void> {
   // null, not [], for the same reason as worktrees above: an unloaded
   // tool library must not read as "every tool was deleted".
   const tools = libraryFor(get(toolRecords), workspaceId);
+  // An agent tool's session never exits, so its verdict is not in
+  // sessionExits and never will be -- the daemon's live status is the
+  // only thing that says its turn is over (see agentTurnEnded).
+  const statuses = new Map(Object.entries(get(layoutState).sessionStatusById));
   await executeActions(
     workspaceId,
-    nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits))
+    nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits), statuses)
   );
 }
 

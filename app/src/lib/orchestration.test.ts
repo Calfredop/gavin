@@ -38,6 +38,7 @@ import {
   cardRailBadge,
   sendCardToRail,
   findStep,
+  pageToSpawnForRail,
   railCardPaths,
   railCardsToMove,
   railDoneStepIds,
@@ -49,6 +50,7 @@ import {
   runningStageId,
 } from "./orchestration";
 import type { CardEntry, Conflict, ToolSummary, UnplacedGroup } from "./orchestration";
+import { BUILTIN_TOOLS } from "./orchestrationTools";
 import type { WorktreeInfo } from "./git";
 import type { Action, Orchestration, Rail, RailState, Step, StepState } from "./orchestration";
 import type { Board } from "./kanban";
@@ -1489,8 +1491,9 @@ describe("railCardsToMove", () => {
 // code, its own launch blocker, and its exemption from duplicate-card.
 
 const TOOLS: ToolSummary[] = [
-  { id: "builtin:push", name: "Push branch" },
-  { id: "builtin:notify", name: "Send a notification" },
+  { id: "builtin:push", name: "Push branch", kind: "command" },
+  { id: "builtin:notify", name: "Send a notification", kind: "command" },
+  { id: "builtin:commit", name: "Commit changes", kind: "agent" },
 ];
 
 /// A rail whose stages hold tool steps: [stepId, toolId] per step.
@@ -1626,6 +1629,107 @@ describe("nextActions — tool steps", () => {
     ];
     expect(nextActions(armed(runs), BOARD, CARDS, [], new Set(["s1"]), TOOLS)).toEqual([]);
   });
+
+// An AGENT tool's session never exits: an interactive agent finishes its
+// turn and sits at its prompt forever, which is the whole reason
+// buildHeadlessCommand exists for the runs that must end. So T5's "exits
+// 0" can never fire for one, and its completion signal is the daemon's
+// own -- the session going idle.
+describe("nextActions — an agent tool step's turn", () => {
+  const armed = (stepRuns: Orchestration["stepRuns"] = []) =>
+    running(toolRail("r1", [[["t1", "builtin:commit"]]]), "r1-s0", stepRuns);
+  const runs: Orchestration["stepRuns"] = [
+    { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+  ];
+  const live = new Set(["s1"]);
+  /// A rail the human paused (or never started) around a step the app
+  /// still has as `running` -- the reconciliation case.
+  const paused = (rail: Rail): Orchestration => ({
+    rails: [rail],
+    conflictNotes: [],
+    railRuns: [{ railId: rail.id, state: "paused", currentStageId: null }],
+    stepRuns: runs,
+  });
+
+  it("marks it done when its live session goes idle", () => {
+    const actions = nextActions(
+      armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]])
+    );
+    expect(actions).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+  });
+
+  it("leaves it running while the agent is still working", () => {
+    expect(
+      nextActions(armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "working" as const]]))
+    ).toEqual([]);
+  });
+
+  // The agent is asking the human something, not finishing. The daemon
+  // pins TERM_PROGRAM so this is reported rather than looking like
+  // silence, and refuses to let a quiet period downgrade it -- advancing
+  // the rail past a question would answer it by walking away.
+  it("leaves it running while the agent waits for input", () => {
+    expect(
+      nextActions(armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "waiting_for_input" as const]]))
+    ).toEqual([]);
+  });
+
+  // A session that has reported nothing yet is not a finished one: the
+  // daemon registers every new session idle, so believing an absent
+  // status would mark a step done the instant it launched.
+  it("leaves it running while its session has reported no status at all", () => {
+    expect(nextActions(armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map())).toEqual([]);
+  });
+
+  // A command tool's verdict is its exit code (T5) and nothing else: a
+  // quiet `npm run dev` is a server that started, not a step that
+  // finished.
+  it("never completes a COMMAND tool step from an idle session", () => {
+    const cmd = running(toolRail("r1", [[["t1", "builtin:push"]]]), "r1-s0", runs);
+    expect(
+      nextActions(cmd, BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]]))
+    ).toEqual([]);
+  });
+
+  // A CARD step is done when its card reaches the done column (rule 1),
+  // never when its agent stops talking -- an agent that quit early left
+  // the work unfinished, which is exactly what rule 1 is there to catch.
+  it("never completes a CARD step from an idle session", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    expect(
+      nextActions(running(r, "r1-s0", runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]]))
+    ).toEqual([]);
+  });
+
+  // The reconciliation pass, for the same reason it already writes the
+  // truth about dead sessions: a step left `running` on an idle or
+  // paused rail gets no tick that would correct it, and the daemon
+  // refuses every plan write that drops a `running` step -- so a
+  // finished agent tool step wedges the rail shut, uneditable and
+  // undeletable, which is precisely the bug this rule is here for.
+  it("marks it done on a rail that is not running", () => {
+    const orch = paused(toolRail("r1", [[["t1", "builtin:commit"]]]));
+    expect(
+      nextActions(orch, BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]]))
+    ).toEqual([{ kind: "markDone", stepId: "t1" }]);
+  });
+
+  it("leaves it alone on a rail that is not running while it still works", () => {
+    const orch = paused(toolRail("r1", [[["t1", "builtin:commit"]]]));
+    expect(
+      nextActions(orch, BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "working" as const]]))
+    ).toEqual([]);
+  });
+
+  // A tool the library no longer has cannot be known to be an agent, so
+  // the idle rule must not fire on a guess -- the step keeps running
+  // until its session ends, and the deleted-tool stall owns it there.
+  it("does not complete a step whose tool has been deleted", () => {
+    expect(
+      nextActions(armed(runs), BOARD, CARDS, [], live, [], new Map(), new Map([["s1", "idle" as const]]))
+    ).toEqual([]);
+  });
+});
 
   it("falls back to a generic label when the tool is gone by the time it exits", () => {
     const runs: Orchestration["stepRuns"] = [
@@ -1813,6 +1917,38 @@ describe("describeConflict — tool steps", () => {
       (x) => x.kind === "same-worktree" && x.scope === "stage"
     ) as Conflict;
     expect(describeConflict(c, cardIndex(CARDS), both, [])).toContain("builtin:push");
+  });
+});
+
+describe("pageToSpawnForRail", () => {
+  function railNamed(name: string, pageId: string | null): Rail {
+    return { id: "r1", name, position: 0, worktreePath: null, pageId, stages: [] };
+  }
+
+  it("names the page after the rail when it has no page", () => {
+    expect(pageToSpawnForRail(railNamed("backend", null), [])).toBe("backend");
+  });
+
+  it("spawns nothing when the rail's page still exists", () => {
+    const pages = [{ id: "p1", name: "backend" }];
+    expect(pageToSpawnForRail(railNamed("backend", "p1"), pages)).toBeNull();
+  });
+
+  it("spawns again when the bound page is gone", () => {
+    const pages = [{ id: "p9", name: "Agents" }];
+    expect(pageToSpawnForRail(railNamed("backend", "p1"), pages)).toBe("backend");
+  });
+
+  it("suffixes a name the workspace already uses", () => {
+    const pages = [
+      { id: "p1", name: "backend" },
+      { id: "p2", name: "backend 2" },
+    ];
+    expect(pageToSpawnForRail(railNamed("backend", null), pages)).toBe("backend 3");
+  });
+
+  it("falls back to a generic name for a blank rail name", () => {
+    expect(pageToSpawnForRail(railNamed("  ", null), [])).toBe("Rail");
   });
 });
 
@@ -2068,4 +2204,51 @@ describe("removeSteps", () => {
     const o = addStep(addStage(addRail(emptyOrchestration(), "r1", "backend"), "r1", "s1"), "s1", "t1", "/x/a.md");
     expect(removeSteps(o, [])).toEqual(o);
   });
+});
+
+// ---- Every built-in tool can actually finish -------------------------------
+// Over the REAL library, not a fixture: the bug was that four of the ten
+// built-ins could never complete at all, and hand-written tool fixtures
+// are exactly what hid it. A new built-in is covered here the day it is
+// added, and a tool whose kind changes has to state how it finishes.
+describe("every built-in tool can finish", () => {
+  const runs: Orchestration["stepRuns"] = [
+    { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+  ];
+  const armed = (toolId: string) =>
+    running(toolRail("r1", [[["t1", toolId]]]), "r1-s0", runs);
+
+  for (const tool of BUILTIN_TOOLS) {
+    const summary: ToolSummary[] = [{ id: tool.id, name: tool.name, kind: tool.kind }];
+
+    if (tool.kind === "agent") {
+      // Its session never exits, so the signal is the turn ending.
+      it(`${tool.id} finishes when its turn ends, with its session still live`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(["s1"]), summary,
+          new Map(), new Map([["s1", "idle" as const]])
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
+    } else {
+      // Its session really does exit, and the code is the whole verdict.
+      it(`${tool.id} finishes when its session exits 0`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 0]])
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
+
+      it(`${tool.id} stalls with the code when its session exits non-zero`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 3]])
+        );
+        expect(actions).toContainEqual({
+          kind: "stall",
+          stepId: "t1",
+          reason: `${tool.name} exited with code 3`,
+        });
+      });
+    }
+  }
 });
