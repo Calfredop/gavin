@@ -1712,6 +1712,8 @@ mod tests {
             stages: vec![protocol::Stage {
                 id: "s1".into(),
                 position: 0,
+                mode: protocol::default_stage_mode(),
+                name: None,
                 steps: vec![protocol::Step {
                     id: step_id.into(),
                     position: 0,
@@ -2744,6 +2746,8 @@ mod tests {
                     stages: vec![protocol::Stage {
                         id: "st1".into(),
                         position: 0,
+                        mode: protocol::default_stage_mode(),
+                        name: None,
                         steps: vec![protocol::Step {
                             id: "t1".into(),
                             position: 0,

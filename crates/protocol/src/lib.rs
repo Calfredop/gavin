@@ -13,11 +13,12 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
-/// 14 adds `model` to SetRootConfigField's allow-list. No Request variant
-/// changed, so `min_version_for` is untouched -- the gate that matters is
-/// the app's FEATURE_MIN_VERSION.agentModel, because a v13 daemon parses
-/// the request fine and then refuses the key.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// v15 widened `Stage` with `mode` and `name` (grouping spec G1). Both are
+/// `serde(default)`, so no Request variant changed and `min_version_for`
+/// is untouched -- the gate that matters is the app's
+/// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
+/// fine and then drops both fields on the floor.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -596,13 +597,34 @@ pub struct Rail {
     pub stages: Vec<Stage>,
 }
 
-/// Stages run one after another; a stage's steps run in parallel, in the
-/// SAME checkout, since they share the rail's worktree.
+/// How a stage's steps run: "sequence" (one at a time, in position
+/// order) or "parallel" (all at once, in the same checkout). A String
+/// rather than an enum for the same reason ToolKind is: the daemon only
+/// stores and returns it, and widening the vocabulary must not become a
+/// wire break.
+pub type StageMode = String;
+
+/// Serde's own String default is "", which reads as NEITHER mode. Every
+/// stage written before groups existed omits the field, and it must come
+/// back as the discipline it actually ran under.
+pub fn default_stage_mode() -> StageMode {
+    "parallel".into()
+}
+
+/// Stages run one after another. A `parallel` stage's steps run at the
+/// same time in the SAME checkout, since they share the rail's worktree;
+/// a `sequence` stage's run one at a time (grouping spec G4). A stage
+/// holding two or more steps is what the app calls a GROUP.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Stage {
     pub id: String,
     pub position: i64,
+    #[serde(default = "default_stage_mode")]
+    pub mode: StageMode,
+    /// The group's name. None renders as the positional label.
+    #[serde(default)]
+    pub name: Option<String>,
     pub steps: Vec<Step>,
 }
 
@@ -1429,6 +1451,8 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v15: Stage.mode/name (grouping spec G1), both serde(default),
+        // so no Request variant changed.
         // v12: Request::Unknown (tolerant parsing of a future request
         // type) + Request::Shutdown.
         // v11: the tool library -- ToolDef, Step.tool_id/tool_params,
@@ -1443,7 +1467,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 14);
+        assert_eq!(PROTOCOL_VERSION, 15);
     }
 
     #[test]
@@ -1882,6 +1906,8 @@ mod tests {
             stages: vec![Stage {
                 id: "s1".into(),
                 position: 0,
+                mode: default_stage_mode(),
+                name: None,
                 steps: vec![Step {
                     id: "t1".into(),
                     position: 0,
@@ -1899,7 +1925,7 @@ mod tests {
                 "position": 0,
                 "worktreePath": "/x/gavin-backend",
                 "pageId": null,
-                "stages": [{ "id": "s1", "position": 0,
+                "stages": [{ "id": "s1", "position": 0, "mode": "parallel", "name": null,
                              "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md",
                                          "toolId": null, "toolParams": {} }] }]
             })
@@ -1970,5 +1996,43 @@ mod tests {
                 "position": 0
             })
         );
+    }
+
+    #[test]
+    fn a_stage_without_a_mode_deserialises_as_parallel() {
+        // Every stage written before groups existed omits the field. It must
+        // read as the discipline it actually ran under, never as "".
+        let s: Stage = serde_json::from_str(
+            r#"{"id":"s1","position":0,"steps":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(s.mode, "parallel");
+        assert_eq!(s.name, None);
+    }
+
+    #[test]
+    fn a_stage_round_trips_its_mode_and_name() {
+        let s = Stage {
+            id: "s1".into(),
+            position: 0,
+            mode: "sequence".into(),
+            name: Some("Merge and push".into()),
+            steps: vec![],
+        };
+        let back: Stage = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn stage_mode_is_camel_case_on_the_wire() {
+        let json = serde_json::to_string(&Stage {
+            id: "s1".into(),
+            position: 0,
+            mode: "sequence".into(),
+            name: None,
+            steps: vec![],
+        })
+        .unwrap();
+        assert!(json.contains(r#""mode":"sequence""#), "{json}");
     }
 }

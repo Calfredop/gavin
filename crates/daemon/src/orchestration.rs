@@ -102,7 +102,13 @@ impl OrchestrationStore {
                 .conn
                 .prepare("SELECT id, position FROM orch_stages WHERE rail_id = ?1 ORDER BY position")?
                 .query_map(params![rail.id], |row| {
-                    Ok(Stage { id: row.get(0)?, position: row.get(1)?, steps: Vec::new() })
+                    Ok(Stage {
+                        id: row.get(0)?,
+                        position: row.get(1)?,
+                        mode: protocol::default_stage_mode(),
+                        name: None,
+                        steps: Vec::new(),
+                    })
                 })?
                 .collect::<Result<_, _>>()?;
             for stage in stages.iter_mut() {
@@ -558,6 +564,8 @@ mod tests {
             stages: vec![Stage {
                 id: format!("{id}-s1"),
                 position: 0,
+                mode: protocol::default_stage_mode(),
+                name: None,
                 steps: steps
                     .iter()
                     .enumerate()
@@ -749,6 +757,8 @@ mod tests {
             stages: vec![Stage {
                 id: "rt-s1".into(),
                 position: 0,
+                mode: protocol::default_stage_mode(),
+                name: None,
                 steps: vec![Step {
                     id: id.into(),
                     position: 0,
