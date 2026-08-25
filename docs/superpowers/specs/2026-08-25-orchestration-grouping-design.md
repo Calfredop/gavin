@@ -258,8 +258,7 @@ export type OrchDropTarget =
   stages: the pointer is past a member's midpoint or it is not. It obeys
   the same contract as `new-stage.index` — counted with the dragged step
   already removed, which is exactly what the glue measures, since the
-  dragged chip is excluded from measurement. `null`-free: a drop onto a
-  stage band with no member under the pointer appends.
+  dragged chip is excluded from measurement.
 - **`"stage"`** — dragging a group's handle moves the whole stage.
   `new-stage` targets mean "to this position in this rail";
   `into-stage` is refused, since nested groups are out of scope;
@@ -271,9 +270,25 @@ export type OrchDropTarget =
   into the target group at `index`, which is how *merge + push* is
   appended to a group that already exists.
 
-The stage bands keep meaning what they mean: outer thirds are
-before/after the whole stage, the middle band is "into it", and within
-that band the member midpoints pick the slot.
+### 4.2.1 Which band, and when
+
+A **single-step stage** keeps today's three bands: the outer thirds mean
+before/after, the middle band means "group with this", and within it the
+member's own midpoint picks slot 0 or 1.
+
+A **group** drops the bands and reads its whole rect by member. The three
+bands cannot serve a group: its members tile it, so the outer thirds
+would swallow the first and last slots and neither would have a gesture
+at all. Before and after a group stay reachable through the connector
+gaps between stages, and through the group's own header strip and
+padding — inside the stage rect, over no member, and therefore read as a
+gap.
+
+The measured member list is the one with the dragged chip already
+removed, which is what makes "is this a group" ask the right question: a
+two-member group with one member in flight measures as a single-step
+stage and correctly falls back to the bands, because that is what it is
+about to be.
 
 ### 4.3 The drawer
 
