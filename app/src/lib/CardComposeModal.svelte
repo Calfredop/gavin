@@ -17,7 +17,13 @@
   import type { PlanFileInfo } from "./gavin";
   import { gavinTrees, patchPlanCreated } from "./gavinState";
   import { orchestrations, sendCardToRailAction } from "./orchestrationState";
-  import { buildCreatePlanArgs, railToApply } from "./cardCompose";
+  import {
+    buildCreatePlanArgs,
+    composeHint,
+    composeKeyAction,
+    railToApply,
+    type ComposeField,
+  } from "./cardCompose";
   import { formatShortcut } from "./shortcuts";
   import { isMacSync } from "./platform";
   import * as backend from "./backend";
@@ -55,6 +61,9 @@
   let runNow = $state(false);
   let error = $state<string | null>(null);
   let titleEl = $state<HTMLTextAreaElement | null>(null);
+  // Drives the footer hint only: which key files a card depends on
+  // where the caret is, so the hint has to follow the caret.
+  let focusField = $state<ComposeField>("title");
   // Enter keeps the modal open for the next card, so the human needs to
   // see that the last one landed -- the fields clearing is otherwise
   // indistinguishable from the fields being cleared by a failure.
@@ -67,7 +76,11 @@
   const rails = $derived(
     [...($orchestrations[workspaceId]?.rails ?? [])].sort((a, b) => a.position - b.position)
   );
-  const newCardChord = formatShortcut("new-card", isMacSync());
+  const isMac = isMacSync();
+  const newCardChord = formatShortcut("new-card", isMac);
+  // A note has no body field, so the hint cannot be left describing
+  // one the kind chips just took off screen.
+  const hintField = $derived<ComposeField>(kind === "note" ? "title" : focusField);
 
   $effect(() => {
     titleEl?.focus();
@@ -167,11 +180,15 @@
     }
   }
 
-  function handleTitleKeydown(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void commit(true);
-    }
+  // Every field in the composer routes here. The title keeps the fast
+  // path (bare Enter files the card); everywhere else Enter belongs to
+  // the field -- a plan body is checklist lines, a task body is a
+  // prompt -- and the chord is what files it. Wired to the pickers too,
+  // so the chord does not stop working one Tab away from the textarea.
+  function handleKeydown(field: ComposeField, e: KeyboardEvent): void {
+    if (composeKeyAction(field, e, isMac) !== "commit") return;
+    e.preventDefault();
+    void commit(true);
   }
 </script>
 
@@ -205,7 +222,8 @@
     placeholder="Card title…"
     bind:value={title}
     bind:this={titleEl}
-    onkeydown={handleTitleKeydown}
+    onfocus={() => (focusField = "title")}
+    onkeydown={(e) => handleKeydown("title", e)}
   ></textarea>
 
   {#if kind !== "note"}
@@ -214,6 +232,8 @@
       rows="5"
       placeholder={kind === "task" ? "Agent prompt…" : "Plan body (use - [ ] for tasks)…"}
       bind:value={body}
+      onfocus={() => (focusField = "body")}
+      onkeydown={(e) => handleKeydown("body", e)}
     ></textarea>
   {/if}
 
@@ -221,7 +241,7 @@
     {#if columns.length > 1}
       <label class="field">
         <span>Column</span>
-        <select bind:value={status}>
+        <select bind:value={status} onfocus={() => (focusField = "body")} onkeydown={(e) => handleKeydown("body", e)}>
           {#each columns as column (column.id)}
             <option value={column.name}>{column.name}</option>
           {/each}
@@ -231,7 +251,7 @@
     {#if !pinnedContext && contexts.length > 1}
       <label class="field">
         <span>Context</span>
-        <select bind:value={context}>
+        <select bind:value={context} onfocus={() => (focusField = "body")} onkeydown={(e) => handleKeydown("body", e)}>
           {#each contexts as ctx (ctx.folderPath)}
             <option value={ctx.folderPath} selected={ctx.folderPath === defaultContext}>{ctx.name}</option>
           {/each}
@@ -243,6 +263,8 @@
         <span>Rail</span>
         <select
           bind:value={railId}
+          onfocus={() => (focusField = "body")}
+          onkeydown={(e) => handleKeydown("body", e)}
           onchange={() => {
             // The rail runs it when the human arms that rail; running it
             // now as well would put two agents on one card.
@@ -260,7 +282,12 @@
 
   {#if kind === "task" && !railId && onRunCard}
     <label class="run-now">
-      <input type="checkbox" bind:checked={runNow} />
+      <input
+        type="checkbox"
+        bind:checked={runNow}
+        onfocus={() => (focusField = "body")}
+        onkeydown={(e) => handleKeydown("body", e)}
+      />
       Run now with the agent
     </label>
   {/if}
@@ -274,7 +301,7 @@
       {#if added > 0}
         <span class="added">{added} added</span> ·
       {/if}
-      Enter adds and stays · ⇧Enter newline · Esc closes
+      {composeHint(hintField, isMac)}
     </span>
     <div class="actions">
       <button type="button" class="cancel" onclick={onClose}>Cancel</button>

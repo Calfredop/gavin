@@ -4,6 +4,7 @@
 // and forwards.
 
 import { slugFileName } from "./planExplorer";
+import { formatChord, matchesChord, type Chord, type ChordEvent } from "./shortcuts";
 
 export interface ComposeSpec {
   kind: "note" | "task" | "plan";
@@ -63,4 +64,49 @@ export function railToApply(
 ): string | null {
   if (kind === "note" || !railId) return null;
   return railIds.includes(railId) ? railId : null;
+}
+
+/// The composer's commit chord, as data so the keydown handler and the
+/// footer hint read it from one place and cannot drift apart. Enter is
+/// not a letter, so formatChord renders it "⌘Enter" / "Ctrl+Enter" and
+/// matchesChord matches it, with no Enter-specific modifier rules here.
+export const COMPOSE_COMMIT_CHORD: Chord = { key: "Enter" };
+
+/// Which field the key landed in -- named for the only thing that varies
+/// between them, what a BARE Enter means there. "title" is the fast path
+/// (type a title, Enter, card filed); "body" is every field where Enter
+/// belongs to the field itself: the plan/prompt textarea, whose whole
+/// point is `- [ ] step` lines and multi-paragraph prompts, and the
+/// pickers, where Enter closes an open dropdown.
+export type ComposeField = "title" | "body";
+
+/// "commit" -- file the card. "newline" -- the field keeps the key.
+/// null -- not ours; leave the event entirely alone.
+export type ComposeKeyAction = "commit" | "newline";
+
+export function composeKeyAction(
+  field: ComposeField,
+  e: ChordEvent & { isComposing?: boolean },
+  isMac: boolean
+): ComposeKeyAction | null {
+  if (e.key !== "Enter") return null;
+  // An IME candidate is confirmed with Enter. Filing a card on it would
+  // eat the keystroke that finishes the word being typed.
+  if (e.isComposing) return null;
+  if (matchesChord(e, COMPOSE_COMMIT_CHORD, isMac)) return "commit";
+  // Some other modifier combination: not the commit chord and not a
+  // plain keystroke either, so it is not the composer's to interpret.
+  if (e.metaKey || e.ctrlKey || e.altKey) return null;
+  if (e.shiftKey) return "newline";
+  return field === "title" ? "commit" : "newline";
+}
+
+/// The footer hint for the field that currently holds focus. It used to
+/// be one fixed string promising "Enter adds" everywhere, which was true
+/// of the title and a lie in the body -- the field where Enter has to
+/// stay a newline. A hint that names the wrong key is worse than none:
+/// it is what sends someone hunting for a bug in the field instead.
+export function composeHint(field: ComposeField, isMac: boolean): string {
+  if (field === "title") return "Enter adds and stays · ⇧Enter newline · Esc closes";
+  return `${formatChord(COMPOSE_COMMIT_CHORD, isMac)} adds and stays · Enter newline · Esc closes`;
 }

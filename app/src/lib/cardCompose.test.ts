@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { buildCreatePlanArgs, defaultComposeStatus, railToApply } from "./cardCompose";
+import {
+  buildCreatePlanArgs,
+  composeHint,
+  composeKeyAction,
+  defaultComposeStatus,
+  railToApply,
+} from "./cardCompose";
 
 describe("buildCreatePlanArgs", () => {
   it("slugs the title into a file name", () => {
@@ -60,5 +66,78 @@ describe("railToApply", () => {
 
   it("no pick, no placement", () => {
     expect(railToApply("task", null, ["r1"])).toBeNull();
+  });
+});
+
+describe("composeKeyAction", () => {
+  const press = (over: Partial<Record<string, unknown>> = {}) => ({
+    key: "Enter",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...over,
+  }) as Parameters<typeof composeKeyAction>[1];
+
+  it("keeps the fast path: bare Enter in the title files the card", () => {
+    expect(composeKeyAction("title", press(), true)).toBe("commit");
+    expect(composeKeyAction("title", press(), false)).toBe("commit");
+  });
+
+  it("leaves a bare Enter in the body to the body", () => {
+    // The reported bug is the OTHER half of this: the body had no
+    // handler, so the footer still promised "Enter adds" there.
+    expect(composeKeyAction("body", press(), true)).toBe("newline");
+    expect(composeKeyAction("body", press(), false)).toBe("newline");
+  });
+
+  it("commits on the chord from either field", () => {
+    expect(composeKeyAction("body", press({ metaKey: true }), true)).toBe("commit");
+    expect(composeKeyAction("title", press({ metaKey: true }), true)).toBe("commit");
+    expect(composeKeyAction("body", press({ ctrlKey: true }), false)).toBe("commit");
+    expect(composeKeyAction("title", press({ ctrlKey: true }), false)).toBe("commit");
+  });
+
+  it("wants the platform's own chord, not the other one", () => {
+    expect(composeKeyAction("body", press({ ctrlKey: true }), true)).toBeNull();
+    expect(composeKeyAction("body", press({ metaKey: true }), false)).toBeNull();
+  });
+
+  it("gives the title a newline on shift", () => {
+    expect(composeKeyAction("title", press({ shiftKey: true }), true)).toBe("newline");
+    expect(composeKeyAction("body", press({ shiftKey: true }), true)).toBe("newline");
+  });
+
+  it("does not steal the shifted or alted chord", () => {
+    expect(composeKeyAction("title", press({ metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(composeKeyAction("title", press({ altKey: true }), true)).toBeNull();
+  });
+
+  it("ignores every key that is not Enter", () => {
+    expect(composeKeyAction("title", press({ key: "a" }), true)).toBeNull();
+    expect(composeKeyAction("title", press({ key: "Escape" }), true)).toBeNull();
+  });
+
+  it("leaves an IME candidate's Enter alone", () => {
+    expect(composeKeyAction("title", press({ isComposing: true }), true)).toBeNull();
+    expect(composeKeyAction("title", press({ isComposing: true, metaKey: true }), true)).toBeNull();
+  });
+});
+
+describe("composeHint", () => {
+  it("names Enter in the title and the chord in the body", () => {
+    expect(composeHint("title", true)).toContain("Enter adds");
+    expect(composeHint("body", true)).toContain("\u2318Enter adds");
+    expect(composeHint("body", false)).toContain("Ctrl+Enter adds");
+  });
+
+  it("never promises a bare Enter files the card from the body", () => {
+    expect(composeHint("body", true).startsWith("Enter adds")).toBe(false);
+    expect(composeHint("body", false).startsWith("Enter adds")).toBe(false);
+  });
+
+  it("always says how to get out", () => {
+    for (const field of ["title", "body"] as const)
+      for (const mac of [true, false]) expect(composeHint(field, mac)).toContain("Esc closes");
   });
 });
