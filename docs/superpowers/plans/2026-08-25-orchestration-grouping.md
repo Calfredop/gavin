@@ -1045,10 +1045,14 @@ Close the labeled block and add the guard immediately before the loop's closing 
 
 ```ts
         }
-        // Rule 5 is checked here as well as below so a stalled member
-        // reads as a stall rather than as "not done yet" -- the guard
-        // that follows would otherwise be indistinguishable.
-        if (stalled) break;
+        // A member that is not done leaves nothing for its successors
+        // to start behind. That covers a stall too: both sites that set
+        // the rail-level `stalled` flag set this step's simulated state
+        // to "stalled" first, so rule 5 below still pauses the rail
+        // without a second break here. A second break would also not be
+        // gated on `sequential`, and would change what a PARALLEL stage
+        // emits -- a stalled member would abort the loop instead of
+        // letting rule 2 reach its launchable siblings.
         if (sequential && simulated.get(step.id) !== "done") break;
       }
 ```
@@ -1057,6 +1061,11 @@ Close the labeled block and add the guard immediately before the loop's closing 
 
 Run: `cd app && npx vitest run src/lib/orchestration.test.ts`
 Expected: PASS — including every pre-existing `nextActions` test, which all use parallel (mode-absent) stages.
+
+Green is not sufficient on the parallel path. `orchestration.test.ts:620` ("stops at
+the first stall") asserts with `toContainEqual`, so it stays green even if a parallel
+stage stops emitting the sibling `launch` it used to. Tighten it to assert the whole
+action array before trusting the suite here.
 
 - [ ] **Step 5: Commit**
 
@@ -1075,8 +1084,10 @@ that skips a card already sitting in the done column. Because the guard
 reads the simulated state, a member that completes on this pass lets the
 next one launch in the same tick -- the cascade stages already had.
 
-Rule 5 is checked ahead of it so a stalled member pauses the rail
-instead of reading as "not done yet", which would look identical.
+A stalled member needs no guard of its own: the flag that pauses the
+rail is always set alongside that step's simulated state, so one guard
+serves both -- and a second one, ungated by mode, would change what a
+parallel stage emits.
 MSG
 )"
 ```

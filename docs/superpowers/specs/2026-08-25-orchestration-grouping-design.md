@@ -165,10 +165,18 @@ for (const step of ordered) {
   stepBody: {
     // rules 1-3, unchanged; every `continue` becomes `break stepBody`
   }
-  if (stalled) break;                                       // rule 5
   if (sequential && simulated.get(step.id) !== "done") break;
 }
 ```
+
+One guard, not two. An earlier draft of this section also broke the loop
+on the rail-level `stalled` flag; that was wrong twice over. It is not
+gated on `sequential`, so it changed what a PARALLEL stage emits — a
+stalled member would abort the loop instead of letting rule 2 move on to
+its launchable siblings. And it is dead for the sequence case it was
+meant to serve: every site that sets `stalled` first sets that same
+step's simulated state to `"stalled"`, so the guard above already
+breaks.
 
 Three properties fall out of that shape rather than being coded:
 
@@ -178,8 +186,9 @@ Three properties fall out of that shape rather than being coded:
   leaves `simulated` at `done`, so the loop continues and the next
   member launches immediately — the same cascade rule 4 already gives
   stages.
-- **A stall still pauses the rail.** Rule 5 is checked first, so a
-  stalled member never reads as "just not done yet".
+- **A stall still pauses the rail.** A stalled member is not `done`, so
+  the guard breaks the step loop, rule 5 breaks the stage walk below it,
+  and the executor pauses the rail exactly as it does today.
 
 Rule 4 is untouched: a stage advances when `steps.every(done)`,
 whichever mode it ran in.
