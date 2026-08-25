@@ -619,7 +619,11 @@ export function nextActions(
       // (grouping spec G4). The guard at the bottom of this loop is the
       // whole of that rule: every existing rule is untouched, and a
       // member that completes on this pass lets the next one launch in
-      // the same tick -- the cascade rule 4 already gives stages.
+      // the same tick -- the cascade rule 4 already gives stages. Every
+      // rule inside `stepBody` below must end with `break stepBody`, never
+      // a bare `continue` -- `continue` would skip the guard entirely and
+      // let a sequence stage launch more than one member per tick. Nothing
+      // here is mechanical about that; there is no linter in this repo.
       const sequential = stageMode(stage) === "sequence";
       for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
         stepBody: {
@@ -709,10 +713,12 @@ export function nextActions(
           }
         }
         }
-        // Rule 5 is checked here as well as below so a stalled member
-        // reads as a stall rather than as "not done yet" -- the guard
-        // that follows would otherwise be indistinguishable.
-        if (stalled) break;
+        // A `sequence` stage stops here unless THIS step read "done" on
+        // this pass -- covering a launch (now "running"), a stall (every
+        // site that sets `stalled = true` for this step also leaves it at
+        // "stalled" first), and a step rule 1-3 had no reason to touch at
+        // all. Rule 5 below still reads `stalled` to pause the rail; that
+        // is a separate concern from stopping THIS stage's walk early.
         if (sequential && simulated.get(step.id) !== "done") break;
       }
 

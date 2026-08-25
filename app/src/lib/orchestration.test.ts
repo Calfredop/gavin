@@ -629,7 +629,10 @@ describe("nextActions", () => {
       [],
       new Set()
     );
-    expect(actions).toContainEqual({ kind: "stall", stepId: "t1", reason: "card file is missing" });
+    expect(actions).toEqual([
+      { kind: "stall", stepId: "t1", reason: "card file is missing" },
+      { kind: "launch", stepId: "t2" },
+    ]);
     expect(actions.some((a: Action) => a.kind === "advance")).toBe(false);
   });
 
