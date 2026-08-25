@@ -415,12 +415,14 @@
             <button
               type="button"
               class:on={stageMode(stage) === "sequence"}
+              aria-pressed={stageMode(stage) === "sequence" ? true : undefined}
               disabled={Boolean(groupsBlocked)}
               onclick={() => onSetStageMode(stage.id, "sequence")}>sequence</button
             >
             <button
               type="button"
               class:on={stageMode(stage) === "parallel"}
+              aria-pressed={stageMode(stage) === "parallel" ? true : undefined}
               disabled={Boolean(groupsBlocked)}
               onclick={() => onSetStageMode(stage.id, "parallel")}>parallel</button
             >

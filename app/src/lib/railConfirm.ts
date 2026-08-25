@@ -13,7 +13,11 @@ export interface RailConfirm {
   confirmLabel: string;
 }
 
-function count(n: number, noun: string): string {
+/// Singularizes a count for a plain noun (`1 card`, `2 cards`) -- the one
+/// place this codebase spells that pluralization, so callers outside this
+/// module (GroupTemplateSaveDialog's own "N tool steps" line included)
+/// reuse it rather than growing a second copy that drifts.
+export function count(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 

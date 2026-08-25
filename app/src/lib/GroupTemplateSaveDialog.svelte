@@ -8,6 +8,7 @@
   import type { Stage } from "./orchestration";
   import { findTool } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
+  import { count } from "./railConfirm";
 
   interface Props {
     stage: Stage;
@@ -136,8 +137,9 @@
          says plainly what it is saving. -->
     {#if dropped > 0}
       <p class="warn">
-        Saving {keeping} tool steps. {dropped} card steps are not saved: a card belongs to this
-        workspace, so it cannot travel in a template.
+        Saving {count(keeping, "tool step")}. {count(dropped, "card step")}
+        {dropped === 1 ? "is" : "are"} not saved: a card belongs to this workspace, so it cannot
+        travel in a template.
       </p>
     {/if}
 

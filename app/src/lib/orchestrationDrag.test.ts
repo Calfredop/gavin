@@ -36,7 +36,7 @@ describe("computeOrchDropTarget", () => {
     expect(computeOrchDropTarget({ x: 540, y: 40 }, RAILS, drawer)).toEqual({ kind: "unplace" });
   });
 
-  it("joins a stage from its middle band — parallel", () => {
+  it("joins a stage from its middle band — forms a sequence group", () => {
     expect(computeOrchDropTarget({ x: 100, y: 50 }, RAILS, null)).toEqual({
       kind: "into-stage",
       stageId: "s1",
@@ -257,7 +257,7 @@ describe("dragging an unplaced card in", () => {
 });
 
 describe("dragging a tool in", () => {
-  it("commits a tool drop onto a stage — parallel", () => {
+  it("commits a tool drop onto a stage — forms a sequence group", () => {
     const c = cbs();
     beginCandidate("tool", "builtin:push", null, null, { x: 100, y: 300 }, RECT, c);
     movePointer({ x: 100, y: 50 });
