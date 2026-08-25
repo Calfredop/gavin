@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { railDeleteConfirm, railClearDoneConfirm } from "./railConfirm";
-import type { CardEntry, Orchestration, Rail } from "./orchestration";
+import { railDeleteConfirm, railClearDoneConfirm, groupRemoveConfirm } from "./railConfirm";
+import type { CardEntry, Orchestration, Rail, Stage, Step } from "./orchestration";
 import type { PlanFileInfo } from "./gavin";
 
 function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
@@ -23,6 +23,10 @@ function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFile
 
 function cardIndexOf(plans: PlanFileInfo[]): Map<string, CardEntry> {
   return new Map(plans.map((p) => [p.path, { plan: p, contextFolder: "/ws/.gavin-root" }]));
+}
+
+function stage(steps: Step[], name: string | null = null): Stage {
+  return { id: "s1", position: 0, name, steps };
 }
 
 function rail(id: string, stages: Array<Array<[string, string]>>): Rail {
@@ -148,6 +152,70 @@ describe("railClearDoneConfirm", () => {
     });
     expect(railClearDoneConfirm(r, running, cards, "Done").lines).toContain(
       "The run picks up from the first unfinished stage that is left."
+    );
+  });
+});
+
+describe("groupRemoveConfirm", () => {
+  const cards = cardIndexOf([plan("a.md"), plan("b.md")]);
+
+  it("names the group and counts its steps", () => {
+    const s = stage(
+      [
+        { id: "t1", position: 0, cardPath: "/ws/.gavin-root/plans/a.md" },
+        { id: "t2", position: 1, cardPath: "/ws/.gavin-root/plans/b.md" },
+      ],
+      "Ship it"
+    );
+    const c = groupRemoveConfirm(s, cards);
+    expect(c.title).toBe('Remove group "Ship it"?');
+    expect(c.lines[0]).toBe("Removes 2 steps from the plan.");
+    expect(c.confirmLabel).toBe("Remove group");
+  });
+
+  it("falls back to a generic title when the group has no name", () => {
+    const s = stage([
+      { id: "t1", position: 0, cardPath: "/ws/.gavin-root/plans/a.md" },
+      { id: "t2", position: 1, cardPath: "/ws/.gavin-root/plans/b.md" },
+    ]);
+    expect(groupRemoveConfirm(s, cards).title).toBe("Remove this group?");
+  });
+
+  it("counts each card once, however many steps point at it", () => {
+    const s = stage([
+      { id: "t1", position: 0, cardPath: "/ws/.gavin-root/plans/a.md" },
+      { id: "t2", position: 1, cardPath: "/ws/.gavin-root/plans/a.md" },
+    ]);
+    expect(groupRemoveConfirm(s, cards).lines).toContain(
+      "1 card stays — a step is only a reference."
+    );
+  });
+
+  it("singularizes a two-step group with one card", () => {
+    const s = stage([
+      { id: "t1", position: 0, cardPath: "/ws/.gavin-root/plans/a.md" },
+      { id: "t2", position: 1, cardPath: "/ws/.gavin-root/plans/b.md" },
+    ]);
+    const c = groupRemoveConfirm(s, cards);
+    expect(c.lines[0]).toBe("Removes 2 steps from the plan.");
+    expect(c.lines[1]).toBe("2 cards stay — a step is only a reference.");
+  });
+
+  it("says nothing about cards when the group holds only tool steps", () => {
+    const s = stage([
+      { id: "t1", position: 0, cardPath: "", toolId: "tool-1" },
+      { id: "t2", position: 1, cardPath: "", toolId: "tool-2" },
+    ]);
+    expect(groupRemoveConfirm(s, cards).lines).toEqual(["Removes 2 steps from the plan."]);
+  });
+
+  it("does not count a card whose file no longer exists", () => {
+    const s = stage([
+      { id: "t1", position: 0, cardPath: "/ws/.gavin-root/plans/a.md" },
+      { id: "t2", position: 1, cardPath: "/ws/.gavin-root/plans/missing.md" },
+    ]);
+    expect(groupRemoveConfirm(s, cards).lines).toContain(
+      "1 card stays — a step is only a reference."
     );
   });
 });

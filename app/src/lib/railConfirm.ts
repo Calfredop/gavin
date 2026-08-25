@@ -1,5 +1,5 @@
-import { railCardPaths, railDoneStepIds, railStateOf, stepStateOf } from "./orchestration";
-import type { CardEntry, Orchestration, Rail } from "./orchestration";
+import { isToolStep, railCardPaths, railDoneStepIds, railStateOf, stepStateOf } from "./orchestration";
+import type { CardEntry, Orchestration, Rail, Stage } from "./orchestration";
 
 /// What a destructive rail action asks before it runs: the prompt's
 /// title, its consequence lines, and the word on the button. Built here
@@ -74,4 +74,26 @@ export function railClearDoneConfirm(
     lines,
     confirmLabel: `Clear ${count(ids.length, "step")}`,
   };
+}
+
+/// Dropping a group on the drawer removes it AND every step it holds --
+/// unlike every other unplace, which is one step -- so this asks first,
+/// the same discipline railDeleteConfirm uses. `cards` narrows the "N
+/// cards stay" count to files the tree still knows about, the same
+/// honesty a step chip already applies when its own card is gone: a
+/// count that includes a reference nothing backs any more would be a
+/// promise the app cannot keep.
+export function groupRemoveConfirm(stage: Stage, cards: Map<string, CardEntry>): RailConfirm {
+  const cardPaths = new Set(
+    stage.steps
+      .filter((s) => !isToolStep(s) && s.cardPath && cards.has(s.cardPath))
+      .map((s) => s.cardPath)
+  );
+  const title = stage.name ? `Remove group "${stage.name}"?` : "Remove this group?";
+  const lines = [`Removes ${count(stage.steps.length, "step")} from the plan.`];
+  if (cardPaths.size > 0)
+    lines.push(
+      `${count(cardPaths.size, "card")} ${cardPaths.size === 1 ? "stays" : "stay"} — a step is only a reference.`
+    );
+  return { title, lines, confirmLabel: "Remove group" };
 }

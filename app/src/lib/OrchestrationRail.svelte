@@ -9,6 +9,8 @@
     BrushCleaning,
     CirclePause,
     MessageCircleQuestionMark,
+    GripVertical,
+    Ellipsis,
   } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
@@ -20,6 +22,8 @@
     NumberedConflict,
     Orchestration,
     Rail,
+    Stage,
+    StageMode,
     StepAttention,
   } from "./orchestration";
   import { stepParams, attentionTip, railAttention } from "./orchestration";
@@ -34,10 +38,13 @@
     railDoneStepIds,
     severityForStep,
     severityForRail,
+    stageMode,
+    isGroup,
   } from "./orchestration";
   import { highlightedConflict } from "./orchestrationState";
   import { orchDragState } from "./orchestrationDrag";
   import { tooltip } from "./tooltip";
+  import { openContextMenuFromEvent } from "./contextMenu";
 
   interface Props {
     rail: Rail;
@@ -100,6 +107,19 @@
     onSendCardToAgent: (card: CardView) => void;
     agentAvailable: boolean;
     onCardContextMenu: (card: CardView, e: MouseEvent) => void;
+    /// A group's own controls. The parent owns persistence; this
+    /// component only says which stage and what to.
+    onSetStageMode: (stageId: string, mode: StageMode) => void;
+    onRenameStage: (stageId: string, name: string | null) => void;
+    onUngroupStage: (stageId: string) => void;
+    onSaveStageAsTemplate: (stageId: string) => void;
+    /// Why this daemon cannot carry groups, or null. A daemon older than
+    /// v15 has no `mode` column: it accepts a sequential group and hands
+    /// it back parallel, so the group would silently run its members at
+    /// once in one checkout. The header still renders -- the human should
+    /// see the group they built -- but its controls are inert with the
+    /// reason on hover.
+    groupsBlocked: string | null;
   }
   let {
     rail,
@@ -134,6 +154,11 @@
     onSendCardToAgent,
     agentAvailable,
     onCardContextMenu,
+    onSetStageMode,
+    onRenameStage,
+    onUngroupStage,
+    onSaveStageAsTemplate,
+    groupsBlocked,
     filtering = false,
     stepLit = () => false,
   }: Props = $props();
@@ -209,6 +234,43 @@
     drag?.target?.kind === "new-stage" && drag.target.railId === rail.id ? drag.target.index : null
   );
   const intoStage = $derived(drag?.target?.kind === "into-stage" ? drag.target.stageId : null);
+
+  // The group being renamed, and its in-progress text -- one stage at a
+  // time, the same shape the rail's own name edit uses.
+  let renamingStage = $state<string | null>(null);
+  let groupDraft = $state("");
+
+  function startGroupRename(stage: Stage): void {
+    renamingStage = stage.id;
+    groupDraft = stage.name ?? "";
+  }
+
+  function commitGroupName(stageId: string): void {
+    // "" becomes null, not "" -- an empty name must fall back to the
+    // positional label the header renders (stageMode's own doc: absent
+    // reads as the default), and a literal empty string would instead
+    // render as a blank button.
+    const name = groupDraft.trim();
+    onRenameStage(stageId, name || null);
+    renamingStage = null;
+  }
+
+  /// Save-as-template is disabled when the group carries no TOOL steps: a
+  /// template stores tool steps only (grouping spec G7), so there would
+  /// be nothing to save and a silent no-op is worse than a dead item that
+  /// says why. openContextMenuFromEvent's entries have no separate hint
+  /// field, so the reason goes straight into the label.
+  function openGroupMenu(stage: Stage, e: MouseEvent): void {
+    const toolSteps = stage.steps.filter((s) => Boolean(s.toolId)).length;
+    openContextMenuFromEvent(e, [
+      {
+        label: toolSteps === 0 ? "Save as template… — no tool steps" : "Save as template…",
+        disabled: toolSteps === 0,
+        onPick: () => onSaveStageAsTemplate(stage.id),
+      },
+      { label: "Ungroup", onPick: () => onUngroupStage(stage.id) },
+    ]);
+  }
 </script>
 
 <div class="rail" data-orch-rail={rail.id}>
@@ -299,13 +361,69 @@
     {#if i > 0 && newStageAt !== i}<div class="connector"></div>{/if}
     <section
       class="stage"
-      class:parallel={stage.steps.length > 1}
+      class:group={isGroup(stage)}
+      class:parallel={isGroup(stage) && stageMode(stage) === "parallel"}
+      class:sequence={isGroup(stage) && stageMode(stage) === "sequence"}
       class:drop-into={intoStage === stage.id}
       data-orch-stage={stage.id}
       data-orch-stage-pos={stage.position}
     >
-      {#if stage.steps.length > 1}
-        <span class="stage-label">stage {i + 1} — parallel</span>
+      {#if isGroup(stage)}
+        <div class="group-head">
+          <button
+            type="button"
+            class="grip"
+            data-orch-stage-handle={stage.id}
+            title={groupsBlocked ?? "Drag to move this group"}
+            aria-label="Move this group"
+          >
+            <GripVertical size={12} />
+          </button>
+          {#if renamingStage === stage.id}
+            <input
+              class="group-name-input"
+              bind:value={groupDraft}
+              use:focusAndSelect
+              onblur={() => commitGroupName(stage.id)}
+              onkeydown={(e) => {
+                if (e.key === "Enter") commitGroupName(stage.id);
+                if (e.key === "Escape") renamingStage = null;
+              }}
+            />
+          {:else}
+            <button
+              type="button"
+              class="group-name"
+              disabled={Boolean(groupsBlocked)}
+              title={groupsBlocked ?? "Rename this group"}
+              onclick={() => startGroupRename(stage)}
+            >
+              {stage.name ?? `stage ${i + 1}`}
+            </button>
+          {/if}
+          <div class="mode-toggle" title={groupsBlocked ?? undefined}>
+            <button
+              type="button"
+              class:on={stageMode(stage) === "sequence"}
+              disabled={Boolean(groupsBlocked)}
+              onclick={() => onSetStageMode(stage.id, "sequence")}>sequence</button
+            >
+            <button
+              type="button"
+              class:on={stageMode(stage) === "parallel"}
+              disabled={Boolean(groupsBlocked)}
+              onclick={() => onSetStageMode(stage.id, "parallel")}>parallel</button
+            >
+          </div>
+          <IconButton
+            icon={Ellipsis}
+            label="Group actions…"
+            size={13}
+            disabled={Boolean(groupsBlocked)}
+            tip={groupsBlocked ?? undefined}
+            onclick={(e) => openGroupMenu(stage, e)}
+          />
+        </div>
       {/if}
       <div class="steps">
         {#each [...stage.steps].sort((a, b) => a.position - b.position) as step (step.id)}
@@ -495,9 +613,10 @@
     font-size: 11px;
     color: var(--warning-text);
   }
-  /* A single-step stage draws bare; only a parallel one gets a band, so
-     "these run at the same time" is visible at a glance. */
-  .stage.parallel {
+  /* A single-step stage draws bare; only a GROUP gets a band and a head,
+     so "these are one unit" is visible before the human reads the mode
+     word underneath. */
+  .stage.group {
     border: 1px dashed var(--border-strong);
     border-radius: 8px;
     padding: 6px;
@@ -512,11 +631,89 @@
     border-radius: 8px;
     background: var(--surface-accent);
   }
-  .stage-label {
-    display: block;
-    margin-bottom: 4px;
+  .group-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 6px;
     font-size: 11px;
+    color: var(--text-muted);
+  }
+  .grip {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    background: none;
+    border: none;
+    border-radius: 4px;
     color: var(--text-subtle);
+    cursor: grab;
+  }
+  .grip:hover {
+    background: var(--surface-hover);
+    color: var(--text-muted);
+  }
+  .group-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 4px;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: inherit;
+    text-align: left;
+    cursor: text;
+  }
+  .group-name:hover:not(:disabled) {
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .group-name:disabled {
+    cursor: default;
+  }
+  .group-name-input {
+    flex: 1;
+    min-width: 0;
+    padding: 2px 4px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-focus);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: inherit;
+  }
+  /* A segmented pair, not two independent buttons: exactly one of the
+     two is ever "on", so the pressed look is what says which mode this
+     group actually runs in. */
+  .mode-toggle {
+    display: flex;
+    flex: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .mode-toggle button {
+    padding: 2px 6px;
+    background: none;
+    border: none;
+    color: var(--text-subtle);
+    font-size: inherit;
+    cursor: pointer;
+  }
+  .mode-toggle button:hover:not(:disabled) {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+  .mode-toggle button.on {
+    background: var(--surface-selected);
+    color: var(--text);
+  }
+  .mode-toggle button:disabled {
+    cursor: default;
   }
   .connector {
     align-self: center;
@@ -529,9 +726,24 @@
     flex-direction: column;
     gap: 6px;
   }
+  /* No gap: the group hit-test (computeOrchDropTarget in
+     orchestrationDrag.ts) reads any bare space between members as
+     "before/after the whole group", not "this slot" -- a CSS gap here
+     reproduces exactly the flicker Task 8's review called out. Every
+     member already draws its own border (BoardCard's kind border, the
+     tool chip's), so stacked flush they still read as separate steps in
+     order -- nothing extra is needed to carry that. */
+  .stage.sequence .steps {
+    gap: 0;
+  }
   .stage.parallel .steps {
     flex-direction: row;
     flex-wrap: wrap;
+    /* Column gap only: a parallel group can still wrap onto a second
+       row, and a ROW gap there would be the same bare-space bug as
+       above, just on the wrap axis instead of the stack axis. */
+    row-gap: 0;
+    column-gap: 6px;
   }
   /* Wide enough that a card keeps its shape: below this a parallel
      stage's cards wrap and stack, which the band still marks as

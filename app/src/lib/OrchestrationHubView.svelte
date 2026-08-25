@@ -35,9 +35,10 @@
     availableCards,
     stepParams,
     findStep,
+    findStage,
   } from "./orchestration";
   import type { Rail } from "./orchestration";
-  import { railDeleteConfirm, railClearDoneConfirm } from "./railConfirm";
+  import { railDeleteConfirm, railClearDoneConfirm, groupRemoveConfirm } from "./railConfirm";
   import { findTool, toolKindLabel } from "./orchestrationTools";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
@@ -70,6 +71,11 @@
     moveRailCardsAction,
     clearDoneStepsAction,
     stepAttentionsByWorkspace,
+    setStageModeAction,
+    renameStageAction,
+    moveStageToIndexAction,
+    removeStageAction,
+    ungroupStageAction,
   } from "./orchestrationState";
 
   interface Props {
@@ -156,6 +162,29 @@
     railPrompt = null;
     if (pending.kind === "delete") void deleteRailAction(workspaceId, pending.railId);
     else void clearDoneStepsAction(workspaceId, pending.railId);
+  }
+
+  // The group whose "Save as template…" dialog Task 12 owns -- set here,
+  // read there. Unread until that dialog lands, which is fine: nothing
+  // else in this file consumes it.
+  let savingTemplateFor = $state<string | null>(null);
+
+  // A group dropped on the drawer takes every step it holds off the plan
+  // with it, unlike every other unplace (one step) -- so it asks first,
+  // by stage id rather than a whole Stage so a plan that reloads under
+  // the open prompt re-derives a fresh count (or closes, if the group
+  // went some other way meanwhile).
+  let groupRemovePrompt = $state<string | null>(null);
+  const groupRemoveContent = $derived.by(() => {
+    const stageId = groupRemovePrompt;
+    if (!stageId || !orch) return null;
+    const stage = findStage(orch, stageId);
+    return stage ? groupRemoveConfirm(stage, cards) : null;
+  });
+
+  function confirmGroupRemove(stageId: string): void {
+    groupRemovePrompt = null;
+    void removeStageAction(workspaceId, stageId);
   }
 
   // --- the card surface -------------------------------------------------
@@ -341,8 +370,40 @@
       scrollEl: gridEl,
       commit: (drag) => {
         // `id` is a step id for a step drag, a card path for a card
-        // drag, and a tool id for a tool drag -- three sources, three
-        // sets of mutators, one drop-target vocabulary.
+        // drag, a tool id for a tool drag, and a STAGE id for a "stage"
+        // drag -- one more source, the same drop-target vocabulary.
+        //
+        // A drop that would FORM or reorder a group needs a daemon that
+        // can carry the `mode` column: every orchestration write is a
+        // full-plan save (see FEATURE_MIN_VERSION.groups), so a "stage"
+        // drag risks every group already on the plan, not just the one
+        // being dragged, and an "into-stage" target risks turning a
+        // single-step stage into one. Refusing here, before any mutator
+        // runs, keeps one message: the drawer rows, the header's own
+        // controls and a drag's drop all say the same thing. "template"
+        // is included on the same footing -- Task 12's drop also forms a
+        // group -- even though nothing places one yet.
+        const wouldGroup =
+          drag.target.kind === "into-stage" || drag.kind === "stage" || drag.kind === "template";
+        if (wouldGroup && groupsBlocked) {
+          saveErrors.update((e) => ({ ...e, [workspaceId]: groupsBlocked }));
+          return;
+        }
+        if (drag.kind === "stage") {
+          // Moving the whole group. `into-stage` never occurs for this
+          // kind -- computeOrchDropTarget skips the stage loop outright
+          // for a "stage" drag, since nested groups are out of scope --
+          // so only the remaining two targets need a branch.
+          if (drag.target.kind === "new-stage") {
+            void moveStageToIndexAction(workspaceId, drag.id, drag.target.railId, drag.target.index);
+          } else if (drag.target.kind === "unplace") {
+            // Unlike every other unplace, this one takes every step the
+            // group holds with it, so it asks first rather than running
+            // straight through, the same discipline a rail delete uses.
+            groupRemovePrompt = drag.id;
+          }
+          return;
+        }
         if (drag.kind === "card") {
           if (drag.target.kind === "into-stage") {
             void addStepToStageAction(workspaceId, drag.target.stageId, drag.id, drag.target.index);
@@ -359,6 +420,11 @@
           }
           return;
         }
+        // "template" is Task 12's to place -- until its mutator lands
+        // there is nothing to call here, so this returns rather than
+        // falling through to the step branch below, which would read
+        // `drag.id` (a template id) as a step id.
+        if (drag.kind === "template") return;
         if (drag.target.kind === "unplace") {
           void removeStepAction(workspaceId, drag.id);
         } else if (drag.target.kind === "into-stage") {
@@ -546,6 +612,11 @@
           onSendCardToAgent={(card) => void handleSendToAgent(card)}
           {agentAvailable}
           onCardContextMenu={handleCardContextMenu}
+          {groupsBlocked}
+          onSetStageMode={(stageId, mode) => void setStageModeAction(workspaceId, stageId, mode)}
+          onRenameStage={(stageId, name) => void renameStageAction(workspaceId, stageId, name)}
+          onUngroupStage={(stageId) => void ungroupStageAction(workspaceId, stageId)}
+          onSaveStageAsTemplate={(stageId) => (savingTemplateFor = stageId)}
         />
       {/each}
       </div>
@@ -624,6 +695,22 @@
       },
     ]}
     onCancel={() => (railPrompt = null)}
+  />
+{/if}
+
+{#if groupRemovePrompt && groupRemoveContent}
+  {@const pendingStageId = groupRemovePrompt}
+  <ConfirmPrompt
+    title={groupRemoveContent.title}
+    lines={groupRemoveContent.lines}
+    choices={[
+      {
+        label: groupRemoveContent.confirmLabel,
+        danger: true,
+        onPick: () => confirmGroupRemove(pendingStageId),
+      },
+    ]}
+    onCancel={() => (groupRemovePrompt = null)}
   />
 {/if}
 
