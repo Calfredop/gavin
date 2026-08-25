@@ -290,8 +290,13 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "run-drop-on-running-stage",
-        text: "Dropping a card onto the stage a RUNNING rail is currently on spawns its agent at once; every other drop still just queues",
-        hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage turns parallel and the second agent appears without touching Pause/Resume. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",
+        text: "Dropping a card onto the SINGLE-STEP stage a RUNNING rail is currently on forms a sequence group and the drop stays pending — it goes live on its own the moment the running member finishes",
+        hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage becomes a two-member sequence group and the new card sits queued, not started, without you touching Pause/Resume. Finish the running member (its card reaches Done, or its tool step's turn ends) and the second starts on its own, with no Play press needed. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",
+      },
+      {
+        id: "run-drop-on-running-parallel-stage",
+        text: "Dropping a card onto a RUNNING stage that already holds two or more steps in parallel spawns its agent at once; every other drop still just queues",
+        hint: "Start a rail on a stage that already runs two tool steps side by side, then drag a drawer card onto the running chip — the new agent appears at once, without touching Pause/Resume. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",
       },
       {
         id: "run-tab-card-link",
@@ -385,7 +390,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "group-gate-old-daemon",
-        text: "Against a pre-v15 daemon the group header controls and the drawer's Groups rows are inert, each saying which daemon version they need",
+        text: "Against a pre-v15 daemon the group header controls are inert and their tooltip says which daemon version they need; the drawer's Groups rows are inert too but stay silent on hover — the same as the Tools rows beside them",
         hint: "The trap this guards: a v14 daemon accepts a sequential group and hands it back parallel.",
       },
     ],
