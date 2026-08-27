@@ -1729,6 +1729,7 @@ mod tests {
             name: "backend".into(),
             position: 0,
             worktree_path: None,
+            branch: None,
             page_id: None,
             stages: vec![protocol::Stage {
                 id: "s1".into(),
@@ -2795,6 +2796,7 @@ mod tests {
                     name: "R1".into(),
                     position: 0,
                     worktree_path: None,
+                    branch: None,
                     page_id: None,
                     stages: vec![protocol::Stage {
                         id: "st1".into(),

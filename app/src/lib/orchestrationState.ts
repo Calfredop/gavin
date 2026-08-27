@@ -35,6 +35,7 @@ import {
   removeStage,
   isToolStep,
   stepParams,
+  stepStateOf,
   findCardPlacement,
   sendCardToRail,
   pageToSpawnForRail,
@@ -48,6 +49,7 @@ import {
 } from "./orchestration";
 import type {
   Action,
+  CardEntry,
   Orchestration,
   Rail,
   RailState,
@@ -55,14 +57,16 @@ import type {
   StepAttention,
   StepState,
   Step,
+  ToolSummary,
 } from "./orchestration";
+import { composeGeneratePrompt, composeRailPrompt } from "./orchestrationPrompts";
 import { findTool, resolveToolBody } from "./orchestrationTools";
 import { stepsFromTemplate } from "./orchestrationGroups";
 import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
-import { gitStore } from "./gitState";
+import { gitStore, refresh as refreshGit } from "./gitState";
 import {
   layoutState,
   resolvedAgentFor,
@@ -525,10 +529,79 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
   }
 }
 
-export async function executeActions(workspaceId: string, actions: Action[]): Promise<void> {
+/// Put a rail's checkout on its branch (spec O15). Three steps, and the
+/// first is a refusal gate.
+///
+/// A DIRTY checkout refuses -- deliberately stricter than git, which
+/// carries non-conflicting edits across a switch. Uncommitted work
+/// migrating into a rail's branch behind the human's back is worse than
+/// a stalled rail, and stashing is not gavin's to do: the stash stack is
+/// shared with every other checkout of this repo.
+///
+/// Every failure stalls the rail's current stage rather than throwing,
+/// exactly as a failed launch does, so the reason lands on the chips and
+/// rule 5 pauses the rail.
+///
+/// Returns whether the tick that ran it should run AGAIN: a switch only
+/// half-finishes here, since the rail becomes launchable through the
+/// refs snapshot this just moved.
+async function executeSwitchBranch(
+  workspaceId: string,
+  railId: string,
+  path: string,
+  branch: string
+): Promise<boolean> {
+  try {
+    const status = await backend.gitStatus(path);
+    if (status.staged.length > 0 || status.unstaged.length > 0) {
+      await stallStage(
+        workspaceId,
+        railId,
+        `${path} has uncommitted changes — commit or stash them before this rail can switch to ${branch}`
+      );
+      return false;
+    }
+    await backend.gitCheckout(path, branch, null);
+  } catch (e) {
+    await stallStage(workspaceId, railId, e instanceof Error ? e.message : String(e));
+    return false;
+  }
+  // Without this the refs snapshot still names the old branch, and the
+  // scheduler would ask for this same switch on every tick.
+  await refreshGit(workspaceId);
+  // Ask for the follow-up ONLY once the snapshot has actually caught up.
+  // A refresh that failed leaves the old one in place, and re-ticking on
+  // that would re-emit this very switch -- forever, since checking out a
+  // branch you are already on succeeds every time.
+  const now = get(gitStore)[workspaceId]?.refs?.worktrees.find((w) => w.path === path)?.branch;
+  return now === branch;
+}
+
+/// Stall every PENDING step of the rail's current stage and pause the
+/// rail -- the rail-level equivalent of a failed launch. Steps that are
+/// already running are left alone: a stale action must never mark a live
+/// agent's step as stalled.
+async function stallStage(workspaceId: string, railId: string, reason: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch?.rails.find((r) => r.id === railId);
+  if (!orch || !rail) return;
+  const current = orch.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
+  const stage = rail.stages.find((s) => s.id === current);
+  for (const step of stage?.steps ?? []) {
+    if (stepStateOf(get(orchestrations)[workspaceId], step.id) !== "pending") continue;
+    await setStepRunAction(workspaceId, step.id, "stalled", null, reason);
+  }
+  await setRailRunAction(workspaceId, railId, "paused", current);
+}
+
+/// Returns whether the tick should run again immediately -- see
+/// executeSwitchBranch, the one action that changes what the scheduler
+/// reads rather than only what it has already decided.
+export async function executeActions(workspaceId: string, actions: Action[]): Promise<boolean> {
+  let again = false;
   for (const action of actions) {
     const orch = get(orchestrations)[workspaceId];
-    if (!orch) return;
+    if (!orch) return again;
     if (action.kind === "launch") {
       await executeLaunch(workspaceId, action.stepId);
     } else if (action.kind === "markDone") {
@@ -547,12 +620,16 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
         const current = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
         await setRailRunAction(workspaceId, rail.id, "paused", current);
       }
+    } else if (action.kind === "switchBranch") {
+      again =
+        (await executeSwitchBranch(workspaceId, action.railId, action.path, action.branch)) || again;
     } else if (action.kind === "advance") {
       await setRailRunAction(workspaceId, action.railId, "running", action.stageId);
     } else {
       await setRailRunAction(workspaceId, action.railId, "idle", null);
     }
   }
+  return again;
 }
 
 /// The board's done column name, for the rail header's "nothing can
@@ -580,8 +657,9 @@ export async function tick(workspaceId: string): Promise<void> {
     return;
   }
   ticking.add(workspaceId);
+  let again = false;
   try {
-    await runTick(workspaceId);
+    again = await runTick(workspaceId);
   } finally {
     ticking.delete(workspaceId);
   }
@@ -589,13 +667,18 @@ export async function tick(workspaceId: string): Promise<void> {
   // terminates: the pass that just ran left every step it launched
   // `running`, so a replay that finds nothing new emits no actions and
   // asks for nothing further.
-  if (tickAgain.delete(workspaceId)) await tick(workspaceId);
+  // `again` is the branch-switch follow-up: switching a checkout changes
+  // what the scheduler READS, not just what it has already decided, so
+  // the rail becomes launchable one pass later. Bounded for the same
+  // reason the replay is -- a checkout already on its rail's branch asks
+  // for no further pass.
+  if (tickAgain.delete(workspaceId) || again) await tick(workspaceId);
 }
 
-async function runTick(workspaceId: string): Promise<void> {
+async function runTick(workspaceId: string): Promise<boolean> {
   const orch = get(orchestrations)[workspaceId];
   const board = get(kanbanState)[workspaceId];
-  if (!orch || !board) return;
+  if (!orch || !board) return false;
   const tree = get(gavinTrees)[workspaceId];
   // null, not [] -- an unloaded refs snapshot must not look like "every
   // worktree is gone" and stall every bound rail on a cold start.
@@ -611,7 +694,7 @@ async function runTick(workspaceId: string): Promise<void> {
   // sessionExits and never will be -- the daemon's live status is the
   // only thing that says its turn is over (see agentTurnEnded).
   const statuses = new Map(Object.entries(get(layoutState).sessionStatusById));
-  await executeActions(
+  return await executeActions(
     workspaceId,
     nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits), statuses)
   );
@@ -784,6 +867,7 @@ export function __resetForTesting(): void {
   // A scheduler left running would tick the next test's stores.
   stopScheduler?.();
   setRailNotificationVoice(null);
+  spawningPages.clear();
   highlightedConflict.set(null);
 }
 
@@ -804,7 +888,7 @@ export function renameRailAction(workspaceId: string, railId: string, name: stri
 export function bindRailAction(
   workspaceId: string,
   railId: string,
-  patch: { worktreePath?: string | null; pageId?: string | null }
+  patch: { worktreePath?: string | null; branch?: string | null; pageId?: string | null }
 ): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => bindRail(o, railId, patch));
 }
@@ -1142,34 +1226,35 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
   return mutatePlan(workspaceId, (o) => setStageMode(o, stageId, "sequence"));
 }
 
-/// Hand the reorganize request to the RUNNING workspace agent. A summary
-/// of what the tab currently shows rides along so the agent starts from
-/// the same picture the human is looking at -- it still calls
-/// gavin_get_orchestration for the authoritative read.
-export async function requestReorganize(
+/// Hand the GENERATE request to the RUNNING workspace agent: the cards
+/// nobody has placed, plus a summary of what the tab currently shows, so
+/// the agent starts from the same picture the human is looking at -- it
+/// still calls gavin_get_orchestration for the authoritative read.
+export function requestGenerate(
   workspaceId: string,
+  unplaced: CardEntry[],
+  conflictSummary: string[]
+): Promise<string | null> {
+  const orch = get(orchestrations)[workspaceId] ?? null;
+  return pasteToMainAgent(workspaceId, composeGeneratePrompt(orch, unplaced, conflictSummary));
+}
+
+/// The same agent, aimed at ONE rail (the button in its header). Reads
+/// the rail out of the store rather than taking it from the caller, so a
+/// rail deleted between render and click is caught here instead of
+/// pasting a prompt about work that no longer exists.
+export function requestRailReorganize(
+  workspaceId: string,
+  railId: string,
+  cards: Map<string, CardEntry>,
+  tools: ToolSummary[],
   conflictSummary: string[]
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId];
-  const railLine = (rail: Rail): string =>
-    `- ${rail.name} (${rail.worktreePath ?? "no worktree"}): ` +
-    `${rail.stages.length} stage${rail.stages.length === 1 ? "" : "s"}, ` +
-    `${rail.stages.reduce((n, s) => n + s.steps.length, 0)} steps`;
-
-  const prompt = [
-    "Use the gavin-orchestrate skill to reorganize this workspace's orchestration.",
-    "",
-    orch && orch.rails.length > 0
-      ? `The tab currently shows:\n${orch.rails.map(railLine).join("\n")}`
-      : "The tab has no rails yet — create them.",
-    conflictSummary.length > 0
-      ? `\nGavin currently flags:\n${conflictSummary.map((c) => `- ${c}`).join("\n")}`
-      : "\nGavin currently flags no conflicts.",
-    "",
-    "Read gavin_get_orchestration for the authoritative picture before writing anything.",
-    "It also lists this workspace's TOOLS — a step can run a tool (toolId) instead of a card,",
-    "and rewriting a rail must carry every existing step's toolId and toolParams through.",
-  ].join("\n");
-
-  return pasteToMainAgent(workspaceId, prompt);
+  const rail = orch?.rails.find((r) => r.id === railId);
+  if (!orch || !rail) return Promise.resolve("That rail is gone");
+  return pasteToMainAgent(
+    workspaceId,
+    composeRailPrompt(orch, rail, cards, tools, conflictSummary)
+  );
 }

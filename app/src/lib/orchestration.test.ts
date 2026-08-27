@@ -26,6 +26,7 @@ import {
   numberConflicts,
   numbersForStep,
   numbersForRail,
+  conflictsForRail,
   severityForStep,
   moveStepToNewStage,
   moveStepIntoStage,
@@ -600,6 +601,93 @@ describe("nextActions", () => {
     ]);
   });
 
+  // ---- The branch precondition (spec O15) ----------------------------------
+  // A rail's branch is checked BEFORE any step rule runs, and yields at
+  // most one switchBranch for the whole rail.
+
+  const ON_MAIN: WorktreeInfo[] = [
+    { path: "/ws", head: "abc", branch: "main", isMain: true, locked: false, prunable: false },
+    { path: "/x/wt-a", head: "def", branch: "wt-a", isMain: false, locked: false, prunable: false },
+  ];
+
+  it("switches the ROOT checkout for a branch-bound rail with no worktree", () => {
+    // The point of O15: a branch without a folder of its own.
+    const r = { ...rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]), branch: "feature/api" };
+    expect(nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md")]), ON_MAIN, new Set())).toEqual([
+      { kind: "switchBranch", railId: "r1", path: "/ws", branch: "feature/api" },
+    ]);
+  });
+
+  it("switches the rail's own worktree when it is bound to one", () => {
+    const r = {
+      ...rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]),
+      worktreePath: "/x/wt-a",
+      branch: "feature/api",
+    };
+    expect(nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md")]), ON_MAIN, new Set())).toEqual([
+      { kind: "switchBranch", railId: "r1", path: "/x/wt-a", branch: "feature/api" },
+    ]);
+  });
+
+  it("launches without switching once the checkout is already on the branch", () => {
+    const r = { ...rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]), branch: "main" };
+    expect(nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md")]), ON_MAIN, new Set())).toEqual([
+      { kind: "launch", stepId: "t1" },
+    ]);
+  });
+
+  it("never switches out from under a running step of that rail", () => {
+    // A human who switched the branch mid-run keeps it: rewriting the
+    // files under a working agent is worse than a rail on the wrong branch.
+    const r = { ...rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]), branch: "feature/api" };
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ]);
+    expect(
+      nextActions(orch, BOARD, tree([plan("a.md")]), ON_MAIN, new Set(["s1"]))
+    ).toEqual([]);
+  });
+
+  it("does not switch while the worktree list is unknown", () => {
+    // Cold start: unknown must never read as "on the wrong branch".
+    const r = { ...rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]), branch: "feature/api" };
+    expect(nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md")]), null, new Set())).toEqual([
+      { kind: "launch", stepId: "t1" },
+    ]);
+  });
+
+  it("does not switch a rail whose checkout is not in the worktree list", () => {
+    // worktree-missing already stalls this rail; a switch would just fail.
+    const r = {
+      ...rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]),
+      worktreePath: "/x/gone",
+      branch: "feature/api",
+    };
+    expect(nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md")]), ON_MAIN, new Set())).toEqual([
+      { kind: "stall", stepId: "t1", reason: "worktree /x/gone is gone" },
+    ]);
+  });
+
+  it("emits one switch for the whole rail, not one per pending step", () => {
+    const r = {
+      ...rail("r1", [[
+        ["t1", "/ws/.gavin-root/plans/a.md"],
+        ["t2", "/ws/.gavin-root/plans/b.md"],
+      ]]),
+      branch: "feature/api",
+    };
+    expect(
+      nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md"), plan("b.md")]), ON_MAIN, new Set())
+    ).toEqual([{ kind: "switchBranch", railId: "r1", path: "/ws", branch: "feature/api" }]);
+  });
+
+  it("leaves a rail with no branch bound entirely alone", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    expect(nextActions(running(r, "r1-s0"), BOARD, tree([plan("a.md")]), ON_MAIN, new Set())).toEqual([
+      { kind: "launch", stepId: "t1" },
+    ]);
+  });
+
   it("stalls a running step whose session is gone and whose card is not done", () => {
     const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
     const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
@@ -890,6 +978,8 @@ const WT: WorktreeInfo[] = [
   { path: "/x/wt-a", head: "b", branch: "a", isMain: false, locked: false, prunable: false },
 ];
 
+const BRANCHES = ["main", "a", "docs/rework", "feature/api"];
+
 function bound(id: string, worktreePath: string | null, stages: Array<Array<[string, string]>>): Rail {
   return { ...rail(id, stages), worktreePath };
 }
@@ -1036,6 +1126,43 @@ describe("detectConflicts — the other kinds", () => {
     expect(detectConflicts(o, CARDS, null).some((c) => c.kind === "worktree-missing")).toBe(false);
   });
 
+  it("flags a rail whose bound branch no longer exists", () => {
+    const o = orchOf([{ ...bound("r1", null, [[["t1", A]]]), branch: "feature/gone" }]);
+    expect(detectConflicts(o, CARDS, WT, BRANCHES)).toContainEqual({
+      kind: "branch-missing",
+      severity: "potential",
+      railId: "r1",
+      branch: "feature/gone",
+    });
+  });
+
+  it("stays quiet about a branch that does exist", () => {
+    const o = orchOf([{ ...bound("r1", "/x/wt-a", [[["t1", A]]]), branch: "main" }]);
+    expect(detectConflicts(o, CARDS, WT, BRANCHES).some((c) => c.kind === "branch-missing")).toBe(
+      false
+    );
+  });
+
+  it("suppresses branch-missing while the branch list is unknown", () => {
+    // Same cold-start principle as worktree-missing: unloaded is not gone.
+    const o = orchOf([{ ...bound("r1", "/x/wt-a", [[["t1", A]]]), branch: "feature/gone" }]);
+    expect(detectConflicts(o, CARDS, WT, null).some((c) => c.kind === "branch-missing")).toBe(false);
+  });
+
+  it("names both branches when two rails fight over one checkout", () => {
+    // No conflict kind of its own: sharing a checkout is already the
+    // criterion (O13). The branches only sharpen what the box says.
+    const o = orchOf([
+      { ...bound("r1", "/x/wt-a", [[["t1", A]]]), branch: "feature/api" },
+      { ...bound("r2", "/x/wt-a", [[["t2", B]]]), branch: "docs/rework" },
+    ]);
+    const found = detectConflicts(o, CARDS, WT, BRANCHES).filter((c) => c.kind === "same-worktree");
+    expect(found).toHaveLength(1);
+    const line = describeConflict(found[0], cardIndex(CARDS), o, []);
+    expect(line).toContain("feature/api");
+    expect(line).toContain("docs/rework");
+  });
+
   it("flags an unbound rail that has steps", () => {
     const o = orchOf([bound("r1", null, [[["t1", A]]])]);
     expect(detectConflicts(o, CARDS, WT)).toContainEqual({
@@ -1126,6 +1253,16 @@ describe("conflict lookups", () => {
     expect(severityForStep(numbered, "t2")).toBe("live");
     expect(severityForStep(numbered, "t3")).toBe("potential");
     expect(severityForStep(numbered, "t7")).toBeNull();
+  });
+
+  it("gathers a rail's own conflicts AND every one naming a step it holds", () => {
+    // r2 owns t2 and t3 but is also unbound: all three numbers concern it.
+    const r2 = { ...rail("r2", [[["t2", A]], [["t3", B]]]), name: "ui" };
+    expect(conflictsForRail(numbered, r2).map((x) => x.n)).toEqual([1, 2, 3]);
+  });
+
+  it("leaves out conflicts about steps on other rails", () => {
+    expect(conflictsForRail(numbered, rail("r9", [[["t7", A]]])).map((x) => x.n)).toEqual([]);
   });
 });
 

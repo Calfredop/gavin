@@ -9,8 +9,8 @@ orchestration home (`2026-08-19-agent-orchestration-home-design.md`).
 
 **Goal:** turn the board's cards into a temporal plan the workspace can
 execute. A rail is a vertical column of stages; a stage's steps run in
-parallel, stages run one after another. Rails bind to a git worktree and to
-a workspace page. A rail runs only once the human arms it. An agent skill
+parallel, stages run one after another. Rails bind to a git checkout — a
+worktree, a branch, or both — and to a workspace page. A rail runs only once the human arms it. An agent skill
 can author or re-author the whole arrangement.
 
 **Out of scope:** a general dependency DAG (`after: [stepId]`), cross-rail
@@ -37,8 +37,10 @@ because of a detected conflict.
 | O11 | Plan is replaced **wholesale** (like `replace_board`); run state is keyed by step id and survives. Deleting a step whose session is still **live** is refused (§2.2). |
 | O12 | Per-worktree **dirty file paths** are evidence for the agent only. The app's own conflict detection never needs them. |
 | O13 | **Separate worktrees are never a conflict**, same rail or different rails — sharing a checkout is the whole criterion. There is no step-level worktree, so a parallel stage always shares its rail's checkout; the box flags it and offers **Make sequential**. |
+| O15 | A rail binds to a **checkout and a branch, orthogonally**: `worktreePath` says *which* checkout, `branch` says which branch gavin puts it on before launching. A branch with no worktree is the root checkout on that branch — **branches are a first-class alternative to a folder each**. Gavin switches only when no step of that rail is running, refuses on a dirty checkout, and never switches back. |
 | O14 | A **card step renders the kanban card itself** — one `BoardCard`, with every board feature it has anywhere else. A **tool step keeps the chip**: a tool is not a card. On a rail the card wears the one fact the board leaves implicit — **which column it sits in**. |
 | O16 | **Starting a rail spawns its own page**, named after it, when the rail has none. An explicit binding is never overridden, and a page that still exists is reused — only an unbound or closed-page rail gets a fresh one. The page is made **without being switched to**: the human stays on the tab they pressed Start in. A failed creation is not a stall: the rail arms onto the Agents-page fallback. |
+| O17 | The tab's agent surface is **two scoped buttons, not one**. **Generate with agent…** in the tab header is about the cards *nobody has placed* — it hands the agent the unplaced list and asks for rails to hold it. A **wand in each rail header** is about *that rail's arrangement* — reorder, split, merge, and nothing else. Both drive the same `gavin-orchestrate` skill and both still write the WHOLE plan: the scope is what the agent may change, not what it sends. |
 
 ---
 
@@ -59,6 +61,11 @@ interface Rail {
   /// card's own contextFolder, and the rail raises a `rail-unbound`
   /// conflict (§5).
   worktreePath: string | null;
+  /// WHICH BRANCH that checkout sits on (O15). Orthogonal to
+  /// worktreePath: a branch with no worktree means the ROOT checkout on
+  /// that branch — a rail per branch, with no folder per rail. Absent →
+  /// whatever is checked out, which is the pre-O15 behaviour.
+  branch: string | null;
   /// Workspace page its sessions land on. Absent until the rail is
   /// armed: Start gives an unbound rail a page of its own, named after
   /// it (O16). Still absent if that creation failed, and then the
@@ -117,7 +124,7 @@ A new module beside `kanban.rs`, same `open()`-creates-tables shape, same
 ```sql
 CREATE TABLE IF NOT EXISTS orch_rails (
   id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL,
-  position INTEGER NOT NULL, worktree_path TEXT, page_id TEXT);
+  position INTEGER NOT NULL, worktree_path TEXT, branch TEXT, page_id TEXT);
 CREATE TABLE IF NOT EXISTS orch_stages (
   id TEXT PRIMARY KEY, rail_id TEXT NOT NULL, position INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS orch_steps (
@@ -224,7 +231,9 @@ type Action =
   | { kind: "markDone"; stepId: string }
   | { kind: "stall";    stepId: string; reason: string }
   | { kind: "advance";  railId: string; stageId: string }
-  | { kind: "complete"; railId: string };
+  | { kind: "complete"; railId: string }
+  /// Put `path` on `branch` before anything of this rail launches (O15).
+  | { kind: "switchBranch"; railId: string; path: string; branch: string };
 
 function nextActions(
   orch: Orchestration,
@@ -285,6 +294,28 @@ precondition for running them.
 
 ### 4.2 Per-tick rules, in order
 
+**Rail precondition — the branch (O15).** Before any step rule runs, a
+`running` rail whose `branch` is set is checked against the branch its
+checkout actually has (`WorktreeInfo.branch`, already in the refs
+snapshot). If they differ, the rail yields a single `switchBranch` and is
+scheduled no further this tick; the executor switches and the next tick
+proceeds. Three guards make this safe:
+
+- **Never under a live agent.** If any step of that rail is `running`, no
+  switch is emitted at all. A human who switches the branch mid-run has
+  their checkout left alone; yanking it would rewrite files under a
+  working agent.
+- **Unknown is not wrong.** `worktrees === null` — the refs snapshot has
+  not loaded — emits nothing, the same cold-start principle that keeps
+  `worktree-missing` quiet.
+- **Already there is a no-op.** Matching branches emit nothing, so this
+  costs one comparison per tick once a rail is settled.
+
+A branch the repo no longer has needs no rule of its own: the switch is
+always attempted, always fails, and stalls with git's own message. That
+is why `nextActions` keeps its signature — only `detectConflicts` needs
+the branch list, to warn *before* the human presses Start.
+
 For each rail in `running`, over its `currentStageId`:
 
 1. Each not-yet-`done` step whose card's status slug (`slugStatus`, as the
@@ -338,6 +369,9 @@ never disagree about what is running:
    card.contextFolder`.
 4. Place it: `switchToPage`-style insert into `rail.pageId` when that page
    still exists, otherwise `handleAgentSessionSpawned`'s Agents-page posture.
+   By the first launch `rail.pageId` normally names a page of the rail's
+   own — arming created it (§4.1) — so the fallback is for the rail whose
+   page creation failed, not the ordinary case.
 5. `linkCardSessionAction(...)` — the same `card_sessions` binding the
    board's Run button uses, so **Run** on the board jumps to the rail's
    session instead of double-spawning.
@@ -347,7 +381,43 @@ never disagree about what is running:
 
 Any failure in 1–3 is a `stall` with the error text, not a thrown exception.
 
-### 4.4 Restart reconciliation
+### 4.4 Executing `switchBranch`
+
+Three steps, and the first one is a refusal gate:
+
+1. `gitStatus(path)`. **Any staged or unstaged change refuses the
+   switch** — deliberately stricter than git, which would happily carry
+   non-conflicting edits across. Uncommitted work migrating into a rail's
+   branch behind the human's back is worse than a stalled rail, and
+   stashing is not gavin's to do: the stash stack is shared with every
+   other checkout of the repo.
+2. `gitCheckout(path, branch, null)`. Git's own refusals arrive here —
+   most usefully "already checked out at <other worktree>", which is the
+   one failure a bound branch hits routinely.
+3. `refresh(workspaceId)` so the refs snapshot carries the new branch and
+   the next tick sees the rail as settled. `git worktree list` reports
+   every checkout's branch from any cwd in the repo, so refreshing from
+   the Git tab's own cwd is enough.
+
+Then the tick runs **again**. A switch is the one action that changes
+what the scheduler *reads* rather than only what it has already decided,
+so the rail becomes launchable a pass later; `executeActions` returns
+that fact and `tick` re-enters once its own re-entrancy guard is
+released. The follow-up is asked for **only when the refreshed snapshot
+actually names the new branch** — a refresh that failed leaves the old
+one in place, and re-ticking on that would re-emit the same switch
+forever, since checking out a branch you are already on succeeds every
+time.
+
+A refusal at 1 or a failure at 2 `stall`s every `pending` step of the
+rail's current stage with the reason, which pauses the rail through rule
+5 — the same path a failed launch takes. **A completed rail is never
+switched back.** What the agent did stays checked out, in view, ready to
+diff and merge; restoring the previous branch would hide the work at the
+exact moment it became interesting, and could itself fail on the dirty
+tree the rail just created.
+
+### 4.5 Restart reconciliation
 
 Sessions are daemon-hosted and survive the app, so on mount the tab
 reconciles rather than assumes: every `running` step whose `sessionId` is
@@ -374,12 +444,15 @@ type Conflict =
   | { kind: "same-worktree";  scope: "stage" | "rails"; stageId: string | null; severity: "live" | "potential"; stepIds: string[]; worktreePath: string }
   | { kind: "duplicate-card"; severity: "potential"; stepIds: string[]; cardPath: string }
   | { kind: "worktree-missing"; severity: "potential"; railId: string; worktreePath: string }
+  | { kind: "branch-missing"; severity: "potential"; railId: string; branch: string }
   | { kind: "rail-unbound";   severity: "potential"; railId: string }
   | { kind: "declared";       severity: "potential"; id: string; stepIds: string[]; note: string };
 ```
 
-`detectConflicts(orch, tree, worktrees)` is pure and needs **no git file
-state** (O12) — dirty paths exist only as evidence for the agent (§8.1).
+`detectConflicts(orch, tree, worktrees, branches)` is pure and needs **no
+git file state** (O12) — dirty paths exist only as evidence for the agent
+(§8.1). `branches` is the repo's local branch names, `null` while the refs
+snapshot loads: unknown must not read as "every branch was deleted".
 
 **`same-worktree`** — the structural rule, and the only one that needed
 thought. **Sharing a checkout is the whole criterion: two steps on separate
@@ -416,8 +489,21 @@ one working tree is a real hazard; the honest options are "put them on
 different rails with different worktrees" or "run them one after another",
 and the box names the second one.
 
+**`branch-missing`** is `worktree-missing`'s twin for O15: the rail names a
+branch the repo no longer has. Rail-level, so it badges the header rather
+than any chip — the cause is the binding, not a step.
+
+**Two rails, one checkout, different branches** needs no kind of its own.
+Sharing a checkout is already the whole criterion (O13), so those rails are
+already a `same-worktree` conflict at `scope: "rails"`; differing branches
+only make it worse, and the box says which two branches are being fought
+over rather than opening a second row about the same pair.
+
 **`rail-unbound`** fires only for a rail that has steps; an empty rail being
-unbound is just a rail you have not finished setting up.
+unbound is just a rail you have not finished setting up. A `branch` does not
+clear it: `rail-unbound` is about *cwd* — where the agent's shell starts —
+and a branch says nothing about that. The two bindings answer different
+questions and are reported separately.
 
 Conflicts are sorted `live` first, then by the kind order above, then by
 first step id, and numbered `1..n`. That number is the badge (§6.3).
@@ -582,6 +668,14 @@ to `defaultWorktreePath(root, branch)` — `<repo>-<branch>` — which is
 exactly the rail-fork shape. Picking an existing worktree from
 `refs.worktrees` is the other mode.
 
+**Branch.** A second section in the same dialog, and the reason a rail
+needs no folder of its own: "whatever is checked out" (the default), every
+local branch with where it is currently checked out, and **New branch…** —
+name plus start point, validated by the existing `validateBranchName` and
+created with `createBranch(..., checkoutAfter: false)`. Creating the branch
+does not move the human's checkout; the rail's own Start does that, once,
+when it is armed.
+
 **Page.** `Bind page…` lists the workspace's pages and offers "New page
 named after the rail", created through the existing page actions. Leaving
 it unbound is not "the Agents page" but "a page of its own, made at
@@ -613,7 +707,7 @@ No arguments. Composed by the MCP server from three daemon calls —
 {
   "rails": [{
     "id": "r1", "name": "backend", "worktreePath": "/x/gavin-backend",
-    "pageId": "p2",
+    "branch": "feature/api", "pageId": "p2",
     "dirtyPaths": ["app/src/lib/git.ts", "…"], "dirtyTruncated": false,
     "stages": [{ "id": "s1", "steps": [
       { "id": "t1", "cardPath": "…/wire-api.md", "title": "Wire the API",
@@ -627,9 +721,11 @@ No arguments. Composed by the MCP server from three daemon calls —
 ```
 
 `dirtyPaths` is capped at 200 per worktree with `dirtyTruncated` telling the
-truth about it. The rail's *branch* is deliberately absent: naming it would
-cost another daemon request type, and the worktree path already identifies
-the checkout the agent is reasoning about.
+truth about it. `branch` is the rail's *binding* — a stored field, free to
+return. The branch the checkout is **actually on right now** is still
+deliberately absent: reading it would cost another daemon request type, and
+the agent reasons about the arrangement, not about the working tree's
+current head.
 
 The payload carries **facts, not gavin's computed conflict list**. That list
 is `detectConflicts` (§5), which is TypeScript in the app, while this server
@@ -666,8 +762,10 @@ Its substance:
 2. **Read first** — `gavin_get_orchestration` returns the current rails, the
    live run state, gavin's computed conflicts, each rail's worktree with its
    dirty files, and every card not yet placed. Never author from memory.
-3. **No rails yet?** Create one per natural workstream and propose a
-   worktree name for each; the human provisions them in the tab.
+3. **No rails yet?** Create one per natural workstream and propose an
+   isolation for each — a worktree where the work is long-lived or needs
+   its own files on disk, a plain branch where it is not; the human
+   provisions them in the tab.
 4. **The parallelism rule, stated plainly**: a stage's steps run *at the same
    time in the same checkout*. Co-stage only work that genuinely does not
    touch the same files. Weigh the card bodies and the rail's `dirtyPaths`.
@@ -683,14 +781,26 @@ Its substance:
    `run` is `running`.
 8. Write with `gavin_set_orchestration`, then say what changed and why.
 
-### 9.2 The button
+### 9.2 The two buttons
 
-`Reorganize with agent…` composes a request carrying the current rails and
-the current conflicts and bracketed-pastes it into the running workspace
-agent through the existing `sendToMainAgent` path, then switches to Home to
-watch. It never *starts* an agent — with none running it is disabled with
-"Start the workspace agent on Home first", holding the same line the card-run
-flow already holds.
+Both compose their request in `orchestrationPrompts.ts` — pure text, so the
+wording is testable without a terminal to paste into — and bracketed-paste it
+into the running workspace agent through the existing `pasteToMainAgent`
+path, then switch to Home to watch. Neither ever *starts* an agent: with none
+running both are disabled with "Start the workspace agent on Home first",
+holding the same line the card-run flow already holds.
+
+**`Generate with agent…`** (tab header) carries the **unplaced cards** —
+title, status and path each — plus the rails the tab currently shows and
+gavin's current conflicts. With every runnable card already on a rail it has
+nothing to ask for, and is disabled saying so.
+
+**The wand in a rail header** carries **that rail alone**: its binding
+(worktree and branch), its stages with each step named as the tab names it
+and marked with any live run state, and only the conflicts that concern it —
+its rail-level ones plus every step-level one naming a step it holds
+(`conflictsForRail`). It asks for a rearrangement of the steps already there,
+and for every other rail to come back untouched.
 
 ---
 
@@ -701,16 +811,23 @@ Everything load-bearing is pure, so nearly all of it is vitest:
 | Module | Covers |
 |---|---|
 | `orchestration.test.ts` | `nextActions`: arm, launch, markDone, advance through an all-done stage in one tick, stall on missing card / missing worktree / exited session, no-done-column, empty stage, bounded advance |
-| `orchestration.test.ts` | `detectConflicts`: same-stage pair, cross-rail pair sharing a worktree, different stages of one rail *not* conflicting, duplicate card, missing worktree, unbound rail with and without steps, numbering order |
-| `orchestrationState.test.ts` | optimistic mutate + rollback, push-vs-in-flight-save guard (mirrors `kanbanState.test.ts`) |
+| `orchestration.test.ts` | `detectConflicts`: same-stage pair, cross-rail pair sharing a worktree, different stages of one rail *not* conflicting, duplicate card, missing worktree, missing branch (and quiet while refs load), unbound rail with and without steps, numbering order |
+| `orchestration.test.ts` | `nextActions` branch precondition: `switchBranch` emitted for a mismatched checkout, suppressed while a step of that rail runs, suppressed on an unloaded refs snapshot, and silent once the branches match |
+| `orchestrationPrompts.test.ts` | both agent requests: Generate lists every unplaced card with status and path, says so when nothing is unplaced, summarises the rails with their bindings, asks for rails when there are none; a rail's own prompt names only that rail, lays its stages out in order, names card and tool steps as the tab does (falling back to the raw id for a deleted one), marks live run state, and carries only the conflicts it was handed |
+| `orchestrationState.test.ts` | optimistic mutate + rollback, push-vs-in-flight-save guard (mirrors `kanbanState.test.ts`); executing `switchBranch`: clean checkout switches and refreshes, dirty checkout refuses without calling git, a git failure stalls the stage's pending steps; the follow-up tick is asked for on a caught-up snapshot and refused on a stale one |
 | `orchestration.rs` (daemon) | `replace_plan` drops orphaned run state and keeps surviving ids; the running-step deletion guard; per-workspace isolation; survives reopen |
 | `gavin-mcp` | both tools' argument mapping and root resolution, per the existing `MockTransport` tests |
 
 Per this project's convention the Svelte components carry no unit tests;
 their logic lives in the two `.ts` modules above. Manual smoke: create two
 rails, bind worktrees, arm both, watch a parallel stage raise a live
-conflict, stall one by quitting its agent, Retry, Resume, then ask the agent
-to reorganize and confirm the tab updates from the push.
+conflict, stall one by quitting its agent, Retry, Resume, then press Generate
+with agent… and confirm the agent is handed the unplaced cards and the tab
+updates from the push, and the wand on one rail and confirm it rearranges
+that rail and leaves the others alone (O17). For O15: bind a
+third rail to a branch with no worktree, arm it on a clean root checkout and
+watch it switch; dirty the checkout and confirm the next rail stalls saying
+so rather than switching.
 
 ---
 

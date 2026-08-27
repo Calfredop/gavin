@@ -12,6 +12,8 @@ vi.mock("./backend", () => ({
   getTools: vi.fn(),
   saveTool: vi.fn(),
   deleteTool: vi.fn(),
+  gitStatus: vi.fn(),
+  gitCheckout: vi.fn(),
 }));
 
 // tick() reads four stores through get(), so each mock must expose a
@@ -109,13 +111,31 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => tauriEvents.handlers.delete(name);
   },
 }));
-vi.mock("./gitState", () => ({
-  gitStore: { subscribe: (fn: (v: unknown) => void) => (fn({}), () => {}) },
-  ensureGitView: vi.fn(),
-  refresh: vi.fn(),
-}));
+vi.mock("./gitState", () => {
+  // Settable, not a constant: executeSwitchBranch reads the REFRESHED
+  // refs back out of this store to decide whether the checkout actually
+  // caught up, so a test has to be able to move it.
+  let value: Record<string, unknown> = {};
+  const subs = new Set<(v: unknown) => void>();
+  return {
+    gitStore: {
+      subscribe: (fn: (v: unknown) => void) => {
+        subs.add(fn);
+        fn(value);
+        return () => subs.delete(fn);
+      },
+    },
+    ensureGitView: vi.fn(),
+    refresh: vi.fn(),
+    __setGitStore: (v: Record<string, unknown>) => {
+      value = v;
+      for (const fn of subs) fn(value);
+    },
+  };
+});
 
 import * as backend from "./backend";
+import * as gitStateModule from "./gitState";
 import * as gavinState from "./gavinState";
 import * as layoutStateModule from "./layoutState";
 import * as kanbanStateModule from "./kanbanState";
@@ -185,6 +205,10 @@ beforeEach(() => {
   boardStore.set({});
   layoutStore.set({ workspaces: [], sessionStatusById: {} });
 });
+
+function setLayoutState(value: { workspaces: unknown[] }): void {
+  layoutStore.set({ ...value, sessionStatusById: {} });
+}
 
 describe("fetchOrchestration", () => {
   it("loads once and caches", async () => {
@@ -316,6 +340,169 @@ function boundRail(): Orchestration {
   };
 }
 
+/// A rail bound to a branch, with two pending steps in one stage -- the
+/// shape that makes "stall the whole stage" observable.
+function branchRail(): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        branch: "feature/api",
+        pageId: "p1",
+        stages: [
+          {
+            id: "s1",
+            position: 0,
+            steps: [
+              { id: "t1", position: 0, cardPath: "/x/a.md" },
+              { id: "t2", position: 1, cardPath: "/x/b.md" },
+            ],
+          },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+  };
+}
+
+const SWITCH = {
+  kind: "switchBranch" as const,
+  railId: "r1",
+  path: "/x/wt",
+  branch: "feature/api",
+};
+
+describe("executeActions — switchBranch (spec O15)", () => {
+  beforeEach(async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue(branchRail());
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    await fetchOrchestration("ws-1");
+  });
+
+  /// Point the mocked refs snapshot at a branch for /x/wt.
+  function refsSay(branch: string): void {
+    (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({
+      "ws-1": {
+        refs: {
+          worktrees: [
+            { path: "/x/wt", head: "a", branch, isMain: false, locked: false, prunable: false },
+          ],
+        },
+      },
+    });
+  }
+
+  it("switches a clean checkout and refreshes the refs snapshot", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("feature/api"));
+
+    const again = await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.gitCheckout).toHaveBeenCalledWith("/x/wt", "feature/api", null);
+    // Without the refresh the refs snapshot still shows the old branch
+    // and the next tick would switch all over again.
+    expect(gitStateModule.refresh).toHaveBeenCalledWith("ws-1");
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+    // The switch half-finishes the tick: the rail is launchable only on
+    // the pass that reads the new snapshot.
+    expect(again).toBe(true);
+  });
+
+  it("asks for no follow-up when the refs snapshot did not catch up", async () => {
+    // A failed refresh leaves the OLD snapshot in place. Re-ticking on
+    // that would re-emit this very switch, and checking out a branch you
+    // are already on succeeds every time — an endless loop.
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("main"));
+
+    expect(await executeActions("ws-1", [SWITCH])).toBe(false);
+  });
+
+  it("asks for no follow-up when the switch was refused", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: "a.ts", status: "M", staged: false, untracked: false }],
+    } as never);
+
+    expect(await executeActions("ws-1", [SWITCH])).toBe(false);
+  });
+
+  it("refuses a dirty checkout without calling git at all", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: "app/src/lib/git.ts", status: "M", staged: false, untracked: false }],
+    } as never);
+
+    await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.gitCheckout).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("uncommitted")
+    );
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
+  });
+
+  it("counts STAGED changes as dirty too", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [{ path: "a.ts", status: "M", staged: true, untracked: false }],
+      unstaged: [],
+    } as never);
+
+    await executeActions("ws-1", [SWITCH]);
+    expect(backend.gitCheckout).not.toHaveBeenCalled();
+  });
+
+  it("surfaces git's own refusal — the branch is checked out elsewhere", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockRejectedValue(
+      new Error("fatal: 'feature/api' is already checked out at '/x/other'")
+    );
+
+    await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("already checked out")
+    );
+  });
+
+  it("stalls every pending step of the current stage, not just the first", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockRejectedValue(new Error("nope"));
+
+    await executeActions("ws-1", [SWITCH]);
+
+    const stalled = vi.mocked(backend.setStepRun).mock.calls.map((c) => c[0]);
+    expect(stalled).toEqual(["t1", "t2"]);
+  });
+
+  it("leaves a step that is not pending alone", async () => {
+    // Defensive: the scheduler never emits a switch while a step runs,
+    // but a stale tick must not stall a live agent's step.
+    await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
+    vi.mocked(backend.setStepRun).mockClear();
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockRejectedValue(new Error("nope"));
+
+    await executeActions("ws-1", [SWITCH]);
+
+    const stalled = vi.mocked(backend.setStepRun).mock.calls.map((c) => c[0]);
+    expect(stalled).toEqual(["t2"]);
+  });
+});
+
 describe("rail controls", () => {
   beforeEach(async () => {
     vi.mocked(backend.getOrchestration).mockResolvedValue(boundRail());
@@ -435,6 +622,44 @@ describe("rail controls", () => {
     await setStepRunAction("ws-1", "t1", "stalled", null, "Push branch exited with code 1");
     await markStepDone("ws-1", "t1");
     expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", null, null);
+  });
+});
+
+describe("a rail spawns its own page when armed (spec O16)", () => {
+  beforeEach(async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue(boundRail());
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createPage).mockResolvedValue("pg-new");
+    setLayoutState({ workspaces: [{ id: "ws-1", pages: [] }] });
+    await fetchOrchestration("ws-1");
+  });
+
+
+
+  // The Start button is still showing while the page is being created,
+  // so a second click lands on an unbound rail.
+  it("a double Start spawns one page, not two", async () => {
+    let finish: (id: string | null) => void = () => {};
+    vi.mocked(layoutStateModule.createPage).mockImplementation(
+      () => new Promise<string | null>((resolve) => (finish = resolve))
+    );
+    const first = startRail("ws-1", "r1");
+    const second = startRail("ws-1", "r1");
+    finish("pg-new");
+    await Promise.all([first, second]);
+    expect(layoutStateModule.createPage).toHaveBeenCalledTimes(1);
+  });
+
+
+
+
+  it("a rail with nothing left to run spawns no page", async () => {
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    await setStepRunAction("ws-1", "t1", "done", null, null);
+    vi.mocked(layoutStateModule.createPage).mockClear();
+    await startRail("ws-1", "r1");
+    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
   });
 });
 

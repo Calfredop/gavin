@@ -78,6 +78,13 @@ export interface Rail {
   /// contextFolder (see effectiveWorktree) and raises a `rail-unbound`
   /// conflict in SP2.
   worktreePath: string | null;
+  /// WHICH BRANCH that checkout sits on (spec O15). Orthogonal to
+  /// worktreePath, which says WHICH checkout: a branch with no worktree
+  /// means the ROOT checkout on that branch, which is the point -- a
+  /// rail per branch, without a folder per rail. Null means "whatever is
+  /// checked out", the behaviour that predates the field, so it is
+  /// optional on the wire and absent on plans written before it.
+  branch?: string | null;
   /// Workspace page its sessions land on. Null until the rail is armed:
   /// Start gives an unbound rail a page of its own, named after it (spec
   /// O16, pageToSpawnForRail). Still null if that creation failed, and
@@ -257,7 +264,10 @@ export type Action =
   | { kind: "markDone"; stepId: string }
   | { kind: "stall"; stepId: string; reason: string }
   | { kind: "advance"; railId: string; stageId: string }
-  | { kind: "complete"; railId: string };
+  | { kind: "complete"; railId: string }
+  /// Put `path` on `branch` before anything of this rail launches
+  /// (spec O15). orchestrationState owns the git call and the refusal.
+  | { kind: "switchBranch"; railId: string; path: string; branch: string };
 
 /// Why a pending step cannot be launched right now, or null.
 /// `knownWorktrees` is null when the worktree list has not loaded yet --
@@ -286,6 +296,44 @@ function launchBlocker(
     return `worktree ${rail.worktreePath} is gone`;
   }
   return null;
+}
+
+/// The branch a running rail's checkout must be put on before anything
+/// of that rail launches, or null (spec O15). At most ONE per rail: the
+/// checkout belongs to the rail, not to a step.
+///
+/// Four ways to answer null, and each is load-bearing:
+/// - the rail binds no branch, so there is nothing to enforce;
+/// - `worktrees` has not loaded, and unknown must never read as "on the
+///   wrong branch" -- the same cold-start rule launchBlocker follows;
+/// - the checkout is not a worktree of this repo, which is
+///   `worktree-missing`'s story to tell, not a switch to attempt;
+/// - a step of this rail is RUNNING, or none is pending. Switching under
+///   a live agent would rewrite files beneath it, and switching for a
+///   rail with nothing left to launch would move the human's checkout
+///   for no one's benefit.
+///
+/// Deliberately `conflictCheckout`, not `effectiveWorktree`: a branch is
+/// a property of a WORKING TREE, and an unbound rail's cards live in
+/// subdirectories of the root checkout rather than in checkouts of their
+/// own. The same distinction §5 draws for conflicts.
+function branchSwitchFor(
+  rail: Rail,
+  orch: Orchestration,
+  tree: GavinTree | undefined,
+  worktrees: WorktreeInfo[] | null
+): Action | null {
+  if (!rail.branch || !worktrees) return null;
+  const path = conflictCheckout(rail, tree);
+  if (!path) return null;
+  const checkout = worktrees.find((w) => w.path === path);
+  if (!checkout || checkout.branch === rail.branch) return null;
+
+  const steps = rail.stages.flatMap((s) => s.steps);
+  if (steps.some((t) => stepStateOf(orch, t.id) === "running")) return null;
+  if (!steps.some((t) => stepStateOf(orch, t.id) === "pending")) return null;
+
+  return { kind: "switchBranch", railId: rail.id, path, branch: rail.branch };
 }
 
 /// What a finished TOOL step's session says about it (tools spec T5).
@@ -598,6 +646,16 @@ export function nextActions(
       continue;
     }
 
+    // Rail precondition -- the branch (spec O15). Before any step rule,
+    // because the checkout is shared by every step of the rail. The rail
+    // is scheduled no further this tick: the executor switches, and the
+    // next tick finds the branches matching and proceeds.
+    const branchSwitch = branchSwitchFor(rail, orch, tree, worktrees);
+    if (branchSwitch) {
+      actions.push(branchSwitch);
+      continue;
+    }
+
     // Step states simulated forward within this tick, so an advance can
     // cascade without re-entering the function.
     const simulated = new Map<string, StepState>();
@@ -775,6 +833,7 @@ export function addRail(orch: Orchestration, railId: string, name: string): Orch
     name,
     position: orch.rails.length,
     worktreePath: null,
+    branch: null,
     pageId: null,
     stages: [],
   };
@@ -790,7 +849,7 @@ export function renameRail(orch: Orchestration, railId: string, name: string): O
 export function bindRail(
   orch: Orchestration,
   railId: string,
-  patch: { worktreePath?: string | null; pageId?: string | null }
+  patch: { worktreePath?: string | null; branch?: string | null; pageId?: string | null }
 ): Orchestration {
   return {
     ...orch,
@@ -1552,6 +1611,9 @@ export type Conflict =
     }
   | { kind: "duplicate-card"; severity: "potential"; stepIds: string[]; cardPath: string }
   | { kind: "worktree-missing"; severity: "potential"; railId: string; worktreePath: string }
+  /// worktree-missing's twin for spec O15: the rail names a branch this
+  /// repo no longer has, so its every switch would fail.
+  | { kind: "branch-missing"; severity: "potential"; railId: string; branch: string }
   | { kind: "rail-unbound"; severity: "potential"; railId: string }
   | { kind: "declared"; severity: "potential"; id: string; stepIds: string[]; note: string };
 
@@ -1566,16 +1628,25 @@ const KIND_ORDER: Conflict["kind"][] = [
   "same-worktree",
   "duplicate-card",
   "worktree-missing",
+  "branch-missing",
   "rail-unbound",
   "declared",
 ];
 
+/// The three RAIL-LEVEL kinds: their cause is the binding, not a step,
+/// so they carry no step ids and badge the rail header instead of a chip.
+function isRailLevel(
+  c: Conflict
+): c is Extract<Conflict, { kind: "worktree-missing" | "branch-missing" | "rail-unbound" }> {
+  return c.kind === "worktree-missing" || c.kind === "branch-missing" || c.kind === "rail-unbound";
+}
+
 export function conflictStepIds(c: Conflict): string[] {
-  return c.kind === "worktree-missing" || c.kind === "rail-unbound" ? [] : c.stepIds;
+  return isRailLevel(c) ? [] : c.stepIds;
 }
 
 export function conflictRailId(c: Conflict): string | null {
-  return c.kind === "worktree-missing" || c.kind === "rail-unbound" ? c.railId : null;
+  return isRailLevel(c) ? c.railId : null;
 }
 
 /// WHICH WORKING TREE a rail's steps edit -- the isolation question,
@@ -1632,13 +1703,15 @@ function severityOf(group: PlacedStep[]): ConflictSeverity {
   return group.filter((s) => s.state === "running").length >= 2 ? "live" : "potential";
 }
 
-/// `tree` supplies the root checkout for unbound rails; `worktrees` is
-/// null while the refs snapshot is still loading, which must suppress
-/// `worktree-missing` rather than read as "gone".
+/// `tree` supplies the root checkout for unbound rails; `worktrees` and
+/// `branches` are null while the refs snapshot is still loading, which
+/// must suppress `worktree-missing` and `branch-missing` rather than read
+/// as "gone".
 export function detectConflicts(
   orch: Orchestration,
   tree: GavinTree | undefined,
-  worktrees: WorktreeInfo[] | null
+  worktrees: WorktreeInfo[] | null,
+  branches: string[] | null = null
 ): Conflict[] {
   const steps = placedSteps(orch, tree).filter((s) => s.state !== "done");
   const conflicts: Conflict[] = [];
@@ -1717,6 +1790,7 @@ export function detectConflicts(
   // 4/5. Rail-level bindings. `worktrees === null` means the refs
   // snapshot has not loaded -- unknown must never read as "gone".
   const known = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
+  const knownBranches = branches ? new Set(branches) : null;
   for (const rail of orch.rails) {
     if (rail.worktreePath) {
       if (known && !known.has(rail.worktreePath)) {
@@ -1730,6 +1804,17 @@ export function detectConflicts(
     } else if (rail.stages.some((s) => s.steps.length > 0)) {
       // An EMPTY unbound rail is just setup you have not finished.
       conflicts.push({ kind: "rail-unbound", severity: "potential", railId: rail.id });
+    }
+    // Independent of the worktree binding, and deliberately not an
+    // `else`: a rail can name a live worktree and a dead branch. A
+    // branch says nothing about cwd, so it never clears `rail-unbound`.
+    if (rail.branch && knownBranches && !knownBranches.has(rail.branch)) {
+      conflicts.push({
+        kind: "branch-missing",
+        severity: "potential",
+        railId: rail.id,
+        branch: rail.branch,
+      });
     }
   }
 
@@ -1768,6 +1853,21 @@ export function numbersForStep(numbered: NumberedConflict[], stepId: string): nu
 
 export function numbersForRail(numbered: NumberedConflict[], railId: string): number[] {
   return numbered.filter((x) => conflictRailId(x.conflict) === railId).map((x) => x.n);
+}
+
+/// Everything that concerns ONE rail: its rail-level conflicts plus every
+/// step-level one naming a step it holds. Deliberately wider than
+/// numbersForRail, which answers the header BADGE and so stays rail-level
+/// -- a step's badge sits on the step. This answers "what does an agent
+/// reorganizing this rail need to know", and a same-worktree pair with
+/// another rail is exactly that.
+export function conflictsForRail(numbered: NumberedConflict[], rail: Rail): NumberedConflict[] {
+  const stepIds = new Set(rail.stages.flatMap((s) => s.steps.map((t) => t.id)));
+  return numbered.filter(
+    (x) =>
+      conflictRailId(x.conflict) === rail.id ||
+      conflictStepIds(x.conflict).some((id) => stepIds.has(id))
+  );
 }
 
 function highestSeverity(matches: NumberedConflict[]): ConflictSeverity | null {
@@ -1817,30 +1917,36 @@ export function describeConflict(
   const nameOfRail = (railId: string): string =>
     orch.rails.find((r) => r.id === railId)?.name ?? railId;
   const list = (ids: string[]): string => ids.map((id) => `“${titleOfStep(id)}”`).join(", ");
-  const railNamesFor = (stepIds: string[]): string[] => {
-    const names = new Set<string>();
-    for (const rail of orch.rails) {
-      for (const stage of rail.stages) {
-        for (const step of stage.steps) {
-          if (stepIds.includes(step.id)) names.add(rail.name);
-        }
-      }
-    }
-    return [...names];
-  };
+  const railsFor = (stepIds: string[]): Rail[] =>
+    orch.rails.filter((rail) =>
+      rail.stages.some((stage) => stage.steps.some((step) => stepIds.includes(step.id)))
+    );
 
   switch (c.kind) {
     case "same-worktree": {
       if (c.scope === "stage") {
         return `${list(c.stepIds)} run in parallel in one checkout (${c.worktreePath}) — run them one after another, or move one to a rail with its own worktree`;
       }
-      const rails = railNamesFor(c.stepIds);
-      return `rails ${rails.map((n) => `“${n}”`).join(" and ")} share ${c.worktreePath}: ${list(c.stepIds)}`;
+      const rails = railsFor(c.stepIds);
+      // Deduped by NAME: two rails sharing one is confusing enough
+      // without the line saying it twice.
+      const names = [...new Set(rails.map((r) => r.name))].map((n) => `“${n}”`).join(" and ");
+      // Two rails in one checkout are already a conflict (spec O13);
+      // wanting DIFFERENT branches there is the same conflict, worse, so
+      // it sharpens this line rather than opening a second row about the
+      // same pair. One checkout can only be on one branch.
+      const wanted = [...new Set(rails.map((r) => r.branch).filter((b): b is string => Boolean(b)))];
+      if (wanted.length >= 2) {
+        return `rails ${names} share ${c.worktreePath} but want different branches there (${wanted.join(" vs ")}) — a checkout can only be on one: ${list(c.stepIds)}`;
+      }
+      return `rails ${names} share ${c.worktreePath}: ${list(c.stepIds)}`;
     }
     case "duplicate-card":
       return `the same card is on two steps: ${list(c.stepIds)}`;
     case "worktree-missing":
       return `rail “${nameOfRail(c.railId)}” points at ${c.worktreePath}, which is not a worktree of this repo`;
+    case "branch-missing":
+      return `rail “${nameOfRail(c.railId)}” is bound to branch ${c.branch}, which this repo does not have`;
     case "rail-unbound":
       return `rail “${nameOfRail(c.railId)}” has steps but no worktree — they will run in each card's own folder`;
     case "declared":

@@ -32,6 +32,7 @@
     numberConflicts,
     describeConflict,
     groupUnplacedByStatus,
+    conflictsForRail,
     availableCards,
     stepParams,
     findStep,
@@ -70,7 +71,8 @@
     moveStepToNewStageAction,
     addCardAsStageAction,
     addStepToStageAction,
-    requestReorganize,
+    requestGenerate,
+    requestRailReorganize,
     renameRailAction,
     addToolAsStepAction,
     addToolAsStageAction,
@@ -118,7 +120,11 @@
   // null, not [], while the refs snapshot is still loading -- unknown
   // must not read as "every worktree is gone".
   const worktrees = $derived($gitStore[workspaceId]?.refs?.worktrees ?? null);
-  const numbered = $derived(orch ? numberConflicts(detectConflicts(orch, tree, worktrees)) : []);
+  // Null on the same principle, for `branch-missing` (spec O15).
+  const branchNames = $derived($gitStore[workspaceId]?.refs?.branches.map((b) => b.name) ?? null);
+  const numbered = $derived(
+    orch ? numberConflicts(detectConflicts(orch, tree, worktrees, branchNames)) : []
+  );
   // renderLibraryFor, not libraryFor: while the fetch is in flight the
   // drawer shows the ten built-ins rather than an empty panel. The
   // SCHEDULER uses libraryFor, which can tell loading from empty.
@@ -317,6 +323,18 @@
     new Set((orch?.rails ?? []).flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))))
   );
   const available = $derived(availableCards(cards, placed));
+  // Two ways Generate can be pointless, and the button says which: no
+  // agent to hand the request to, or nothing left for it to place.
+  // Measured over every unplaced card, never the search lens's view:
+  // Generate hands the agent the real set, so a filter that happens to
+  // hide them all must not claim there is nothing left to place.
+  const generateTip = $derived(
+    !agentAvailable
+      ? "Start the workspace agent on Home first"
+      : available.length === 0
+        ? "Every runnable card is already on a rail"
+        : "Hand the unplaced cards to the workspace agent"
+  );
   const allUnplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
 
   // The search lens (orchestrationSearch.ts): rails with no hit leave
@@ -518,13 +536,32 @@
       : []
   );
 
-  async function reorganize(): Promise<void> {
-    const err = await requestReorganize(workspaceId, conflictSummary);
+  // Both agent buttons end the same way: the request is bracketed-pasted
+  // into the running workspace agent and the view jumps to Home to watch
+  // it, exactly as sendToMainAgent does for a card.
+  async function handOff(err: string | null): Promise<void> {
     if (err) {
       saveErrors.update((e) => ({ ...e, [workspaceId]: err }));
       return;
     }
     await switchWorkspaceView(workspaceId, "home");
+  }
+
+  /// The header button: the unplaced cards are the job.
+  async function generate(): Promise<void> {
+    await handOff(await requestGenerate(workspaceId, available, conflictSummary));
+  }
+
+  /// A rail header's button: that one rail is the job, and it is handed
+  /// only the conflicts that concern it -- its own rail-level ones plus
+  /// every step-level one naming a step it holds.
+  async function reorganizeRail(railId: string): Promise<void> {
+    const rail = rails.find((r) => r.id === railId);
+    if (!orch || !rail) return;
+    const summary = conflictsForRail(numbered, rail).map(
+      ({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`
+    );
+    await handOff(await requestRailReorganize(workspaceId, railId, cards, tools, summary));
   }
 
   function onStart(railId: string): void {
@@ -553,11 +590,11 @@
     <button
       type="button"
       class="add-rail"
-      disabled={!agentAvailable || Boolean(orchestrationBlocked)}
-      title={orchestrationBlocked || (agentAvailable ? "" : "Start the workspace agent on Home first")}
-      onclick={() => void reorganize()}
+      disabled={!agentAvailable || available.length === 0 || Boolean(orchestrationBlocked)}
+      title={orchestrationBlocked || generateTip}
+      onclick={() => void generate()}
     >
-      Reorganize with agent…
+      Generate with agent…
     </button>
     <button
       type="button"
@@ -641,6 +678,7 @@
           }}
           onCancelEdit={() => (editingRailId = null)}
           onBind={() => (binding = rail.id)}
+          onReorganize={() => void reorganizeRail(rail.id)}
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onMarkStepDone={(stepId) => void markStepDone(workspaceId, stepId)}
