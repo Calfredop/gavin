@@ -7,9 +7,12 @@
   // the form no longer has to be spatially attached to answer "which
   // column?".
   //
-  // Fast path unchanged: type a title, Enter -> a kind:note file in the
-  // chosen column, field cleared and still open for the next one. The
-  // kind chips expand it in place: task adds a prompt, plan adds a body.
+  // Fast path unchanged: type a title, Enter -> a file in the chosen
+  // column, field cleared and still open for the next one. It opens on
+  // the task chip (DEFAULT_COMPOSE_KIND), so that file is runnable work
+  // by default -- a bare Enter simply leaves the prompt empty. The other
+  // chips reshape it in place: plan swaps the prompt for a body, note
+  // drops the body entirely.
   import { untrack } from "svelte";
   import Modal from "./Modal.svelte";
   import type { Column } from "./kanban";
@@ -22,7 +25,10 @@
     composeHint,
     composeKeyAction,
     railToApply,
+    COMPOSE_KINDS,
+    DEFAULT_COMPOSE_KIND,
     type ComposeField,
+    type ComposeKind,
   } from "./cardCompose";
   import { formatShortcut } from "./shortcuts";
   import { isMacSync } from "./platform";
@@ -49,7 +55,7 @@
     onClose,
   }: Props = $props();
 
-  let kind = $state<"note" | "task" | "plan">("note");
+  let kind = $state<ComposeKind>(DEFAULT_COMPOSE_KIND);
   let title = $state("");
   let body = $state("");
   // Seeded from the props ONCE, then owned by the pickers: untrack says
@@ -199,7 +205,7 @@
   </div>
 
   <div class="kind-chips">
-    {#each ["note", "task", "plan"] as k (k)}
+    {#each COMPOSE_KINDS as k (k)}
       <button
         type="button"
         class="kind-chip"
@@ -209,7 +215,7 @@
           : k === "task"
             ? "Task — a runnable agent prompt"
             : "Plan — multi-step work with a checklist"}
-        onclick={() => (kind = k as "note" | "task" | "plan")}
+        onclick={() => (kind = k)}
       >
         {k}
       </button>

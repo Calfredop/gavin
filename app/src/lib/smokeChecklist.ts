@@ -72,7 +72,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "column-reorder", text: "Dragging a column by its header lands it exactly at the placeholder, both directions" },
       {
         id: "composer-card",
-        text: "“+ Add card” opens the CENTRED composer modal: Enter adds a note FILE in that column and stays open, Esc closes, empty adds nothing",
+        text: "“+ Add card” opens the CENTRED composer modal: Enter adds a FILE in that column and stays open, Esc closes, empty adds nothing",
         hint: "The modal sits over the middle of the tab however far the board is scrolled; the Column picker starts on the column that was clicked.",
       },
       {
@@ -102,13 +102,13 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Card kinds",
     items: [
       {
-        id: "kind-compose-note",
-        text: "Composer fast path: type a title, Enter → a kind: note .md lands in plans/ with status: <column>",
-        hint: "cat the file — slugged name, note kind, the column's name as status.",
+        id: "kind-compose-task",
+        text: "Composer fast path: it opens on the TASK chip (prompt textarea already there) — type a title, Enter → a kind: task .md lands in plans/ with status: <column>, prompt included when one was typed",
+        hint: "cat the file — slugged name, task kind, the column's name as status. The chips read task · plan · note, in that order.",
       },
       {
-        id: "kind-compose-task",
-        text: "Composer task chip: prompt textarea appears; the created file's body IS the prompt (kind: task)",
+        id: "kind-compose-note",
+        text: "Composer note chip (the LAST of the three): the body textarea disappears; the created file is kind: note with no body",
       },
       {
         id: "kind-compose-plan",
