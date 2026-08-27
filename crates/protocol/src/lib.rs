@@ -18,7 +18,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1511,6 +1511,11 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v16: Rail.branch (spec O15), serde(default), so no Request
+        // variant changed -- which is exactly why it also needs a
+        // `railBranch` entry in app/src/lib/daemonCompat.ts: a v15
+        // daemon parses SetOrchestration happily and drops the field,
+        // and min_version_for gates request TYPES, not their payloads.
         // v15: Stage.mode/name (grouping spec G1), both serde(default),
         // so no Request variant changed.
         // v12: Request::Unknown (tolerant parsing of a future request
@@ -1527,7 +1532,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 15);
+        assert_eq!(PROTOCOL_VERSION, 16);
     }
 
     #[test]

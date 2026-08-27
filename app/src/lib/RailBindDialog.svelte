@@ -3,10 +3,11 @@
   import GitForkDialog from "./GitForkDialog.svelte";
   import { gitStore, createBranch } from "./gitState";
   import { gavinTrees } from "./gavinState";
-  import { layoutState, createPage, resolvedAgentFor } from "./layoutState";
+  import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "./layoutState";
   import { bindRailAction } from "./orchestrationState";
   import { presetSingle } from "./layout";
   import { validateBranchName } from "./git";
+  import { featureBlockedReason } from "./daemonCompat";
   import type { Rail } from "./orchestration";
 
   interface Props {
@@ -45,6 +46,13 @@
   const railCheckout = $derived(
     rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null)
   );
+
+  /// `branch` widens SetOrchestration, a request that has existed since
+  /// v10, so the wire gate is structurally blind to it: a v15 daemon
+  /// takes the write, drops the field and hands the rail back unbound.
+  /// Without this the human picks a branch, sees the list snap back to
+  /// "None" and is told nothing at all.
+  const branchBlocked = $derived(featureBlockedReason($daemonCompat, "railBranch"));
 
   let naming = $state(false);
   let draftBranch = $state("");
@@ -134,18 +142,22 @@
         <button type="button" class="secondary" onclick={() => (forking = true)}>New worktree…</button>
       </section>
 
-      <section>
+      <section title={branchBlocked ?? undefined}>
         <h4>Branch</h4>
         <p class="note">
           Which branch that checkout sits on. Gavin switches
           {railCheckout ?? "the checkout"} before the rail's first step, and refuses while it has
           uncommitted changes.
         </p>
+        {#if branchBlocked}
+          <p class="err">{branchBlocked}</p>
+        {/if}
         <ul>
           <li>
             <button
               type="button"
               class:on={!rail.branch}
+              disabled={Boolean(branchBlocked)}
               onclick={() => void bindRailAction(workspaceId, rail.id, { branch: null })}
             >
               <span class="path">None — whatever is checked out</span>
@@ -157,6 +169,7 @@
               <button
                 type="button"
                 class:on={rail.branch === b.name}
+                disabled={Boolean(branchBlocked)}
                 onclick={() => void bindRailAction(workspaceId, rail.id, { branch: b.name })}
               >
                 <span class="path">{b.name}</span>
@@ -189,14 +202,23 @@
             </select>
             <div class="row">
               <button type="button" class="secondary" onclick={() => (naming = false)}>Cancel</button>
-              <button type="submit" class="secondary" disabled={!!draftError || creating}>
+              <button
+                type="submit"
+                class="secondary"
+                disabled={!!draftError || creating || Boolean(branchBlocked)}
+              >
                 {creating ? "Creating…" : "Create and bind"}
               </button>
             </div>
             {#if draftError && draftBranch}<div class="err">{draftError}</div>{/if}
           </form>
         {:else}
-          <button type="button" class="secondary" onclick={() => (naming = true)}>New branch…</button>
+          <button
+            type="button"
+            class="secondary"
+            disabled={Boolean(branchBlocked)}
+            onclick={() => (naming = true)}>New branch…</button
+          >
         {/if}
       </section>
 

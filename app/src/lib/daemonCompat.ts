@@ -46,6 +46,15 @@ export const FEATURE_MIN_VERSION = {
   // entry is the only gate there is. Every surface that can form or
   // change a group reads it through featureBlockedReason.
   groups: 15,
+  // A rail's `branch` (spec O15). A v15 daemon has no `branch` column on
+  // orch_rails, so it accepts the binding, drops the field and hands the
+  // rail back unbound -- the human's choice vanishes with no error, and
+  // the rail then runs its steps on whatever happens to be checked out.
+  // Like `groups`, this widens an EXISTING request (SetOrchestration),
+  // which min_version_for gates by TYPE and so cannot see; this entry is
+  // the only gate there is, and the bind dialog's Branch section is the
+  // one surface that can form the payload.
+  railBranch: 16,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

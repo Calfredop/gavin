@@ -93,3 +93,27 @@ describe("the groups gate", () => {
     expect(featureBlockedReason({ daemonVersion: 15, appVersion: 15, degraded: false }, "groups")).toBeNull();
   });
 });
+
+describe("the rail-branch gate", () => {
+  // The same blind spot as `groups`, one version later: a v15 daemon
+  // parses SetOrchestration fine and has no `branch` column on
+  // orch_rails, so it takes the binding, drops the field and hands the
+  // rail back unbound. The human sees their choice snap back to "None"
+  // and the rail then runs on whatever is checked out.
+  it("blocks branch binding on a daemon that would drop the branch", () => {
+    const c = { daemonVersion: 15, appVersion: 16, degraded: true };
+    expect(featureBlockedReason(c, "railBranch")).toContain("v16");
+  });
+
+  // Groups still work on that same daemon -- the two gates are
+  // independent, and blocking one must not read as blocking the other.
+  it("leaves grouping alone on that daemon", () => {
+    const c = { daemonVersion: 15, appVersion: 16, degraded: true };
+    expect(featureBlockedReason(c, "groups")).toBeNull();
+  });
+
+  it("allows branch binding at exactly v16", () => {
+    const c = { daemonVersion: 16, appVersion: 16, degraded: false };
+    expect(featureBlockedReason(c, "railBranch")).toBeNull();
+  });
+});
