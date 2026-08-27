@@ -40,19 +40,24 @@
     </g>
   </g>
 
-  <!-- pixel-art ">" chevron: 1px stair-step, 7x12 cells -->
+  <!-- pixel-art ">" chevron: 6x12 cells. Each arm crosses 4 cells over its 6
+       rows, making a 77deg V rather than the 90deg a plain 45deg stair-step
+       gives. That is as narrow as this grid goes: take the arm across 3 cells
+       and its stair runs double up, bowing it until the glyph reads ")" rather
+       than ">". A narrower V needs more rows to resolve, which would mean
+       standing the chevron proud of the G instead of sharing its cap height.
+       Every edge stays on the 32px cell so it exports crisp at every size;
+       appIconGrid.test.ts holds that. -->
   <g fill="#8bc98b">
-    <rect x="192" y="384" width="64" height="32"/>
-    <rect x="224" y="416" width="64" height="32"/>
-    <rect x="256" y="448" width="64" height="32"/>
-    <rect x="288" y="480" width="64" height="32"/>
+    <rect x="224" y="384" width="64" height="32"/>
+    <rect x="256" y="416" width="64" height="32"/>
+    <rect x="288" y="448" width="64" height="64"/>
     <rect x="320" y="512" width="64" height="32"/>
     <rect x="352" y="544" width="64" height="64"/>
     <rect x="320" y="608" width="64" height="32"/>
-    <rect x="288" y="640" width="64" height="32"/>
-    <rect x="256" y="672" width="64" height="32"/>
-    <rect x="224" y="704" width="64" height="32"/>
-    <rect x="192" y="736" width="64" height="32"/>
+    <rect x="288" y="640" width="64" height="64"/>
+    <rect x="256" y="704" width="64" height="32"/>
+    <rect x="224" y="736" width="64" height="32"/>
   </g>
 
   <!-- pixel-art "G": 1px stroke, chamfered corners, 10x12 cells -->
