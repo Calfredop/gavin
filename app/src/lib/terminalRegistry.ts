@@ -4,7 +4,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import * as backend from "./backend";
-import { fileExtension } from "./fileTypes";
+import { isViewableInApp } from "./fileTypes";
 import { xtermTheme } from "./ui/terminalTheme";
 import type { EffectiveTheme } from "./ui/theme";
 
@@ -16,18 +16,6 @@ interface RegistryEntry {
 
 const registry = new Map<string, RegistryEntry>();
 const pendingUnlisten = new Map<string, () => void>();
-
-// Fetched once, lazily, and reused for every link hover/click -- the list
-// is a compile-time constant on the Rust side, so re-fetching per hover
-// would be pure overhead.
-let viewableExtensionsCache: string[] | null = null;
-
-async function isViewableInApp(path: string): Promise<boolean> {
-  if (viewableExtensionsCache === null) {
-    viewableExtensionsCache = await backend.viewableExtensions().catch(() => []);
-  }
-  return viewableExtensionsCache.includes(fileExtension(path));
-}
 
 // The session's own live cwd, mirrored here from layoutState's
 // cwdBySessionId (kept current by the existing OSC 7 plumbing) via

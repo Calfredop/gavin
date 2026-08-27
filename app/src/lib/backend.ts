@@ -43,6 +43,17 @@ export function viewableExtensions(): Promise<string[]> {
   return invoke("viewable_extensions");
 }
 
+/// One entry per requested path, in the order given. `absolutePath` is
+/// null for an entry gavin refuses to resolve (a `..` traversal); every
+/// other entry carries the path an agent would be handed, resolved
+/// against the WORKSPACE ROOT rather than any session's cwd.
+export function attachmentStatus(
+  root: string,
+  paths: string[]
+): Promise<{ path: string; absolutePath: string | null; exists: boolean }[]> {
+  return invoke("attachment_status", { root, paths });
+}
+
 export function watchFileForViewer(path: string): Promise<void> {
   return invoke("watch_file_for_viewer", { path });
 }
@@ -235,9 +246,20 @@ export function createPlan(
   priority?: string,
   body?: string,
   kind?: "note" | "task" | "plan",
-  parent?: string
+  parent?: string,
+  attachments?: string
 ): Promise<string> {
-  return invoke("create_plan", { contextFolder, fileName, title, status, priority, body, kind, parent });
+  return invoke("create_plan", {
+    contextFolder,
+    fileName,
+    title,
+    status,
+    priority,
+    body,
+    kind,
+    parent,
+    attachments,
+  });
 }
 
 /// Resolves to the card's path AFTER the write: a status write can archive
@@ -245,7 +267,7 @@ export function createPlan(
 /// to follow it.
 export function setPlanFrontmatterField(
   path: string,
-  key: "status" | "priority" | "order" | "title" | "kind" | "parent" | "labels",
+  key: "status" | "priority" | "order" | "title" | "kind" | "parent" | "labels" | "attachments",
   value: string
 ): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });

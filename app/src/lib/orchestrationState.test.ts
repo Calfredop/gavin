@@ -14,6 +14,7 @@ vi.mock("./backend", () => ({
   deleteTool: vi.fn(),
   gitStatus: vi.fn(),
   gitCheckout: vi.fn(),
+  attachmentStatus: vi.fn(),
 }));
 
 // tick() reads four stores through get(), so each mock must expose a
@@ -32,6 +33,9 @@ vi.mock("./layoutState", () => ({
   })),
   createSessionOnPage: vi.fn(),
   createPage: vi.fn().mockResolvedValue(null),
+  // The card-attachment run gate resolves relative paths against the
+  // workspace ROOT, so the scheduler reaches for this before it spawns.
+  workspaceRootPath: vi.fn(() => "/ws"),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   // tick() reads this through get(), so it has to be a real store.
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
@@ -44,6 +48,10 @@ vi.mock("./kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
 }));
+// /x/a.md's `attachments:` line, settable per test: every OTHER launch
+// test in this file must keep launching without the attachment gate
+// asking the host anything, so the default is none.
+const cardAttachments = vi.hoisted(() => ({ a: [] as string[] }));
 vi.mock("./gavinState", () => ({
   gavinTrees: {
     subscribe: (fn: (v: unknown) => void) => (
@@ -67,6 +75,7 @@ vi.mock("./gavinState", () => ({
                   kind: "task",
                   parent: null,
                   labels: [],
+                  attachments: cardAttachments.a,
                   checklistDone: 0,
                   checklistTotal: 0,
                   parseWarning: false,
@@ -204,6 +213,7 @@ beforeEach(() => {
   // sees. `clearAllMocks` does nothing for them.
   boardStore.set({});
   layoutStore.set({ workspaces: [], sessionStatusById: {} });
+  cardAttachments.a = [];
 });
 
 function setLayoutState(value: { workspaces: unknown[] }): void {
@@ -712,6 +722,48 @@ describe("executeActions", () => {
   it("complete returns the rail to idle", async () => {
     await executeActions("ws-1", [{ kind: "complete", railId: "r1" }]);
     expect(backend.setRailRun).toHaveBeenLastCalledWith("r1", "idle", null);
+  });
+
+  it("a step whose card has a missing attachment stalls with the file named, spawning nothing", async () => {
+    // The rail's half of the run gate. A stalled step is what rule 5
+    // pauses the rail on, so the reason reaches the chip -- launching
+    // with a dead path would carry the damage into every later stage.
+    cardAttachments.a = ["docs/spec.md"];
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: false },
+    ]);
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("docs/spec.md")
+    );
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  it("a step whose attachments resolve puts their absolute paths in the prompt", async () => {
+    cardAttachments.a = ["docs/spec.md"];
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: true },
+    ]);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    // Resolved against the workspace root, not the rail's worktree cwd:
+    // one card must hand every session the same bytes.
+    expect(backend.attachmentStatus).toHaveBeenCalledWith("/ws", ["docs/spec.md"]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("/ws/docs/spec.md");
   });
 
   it("a launch that cannot create a session stalls the step instead of throwing", async () => {

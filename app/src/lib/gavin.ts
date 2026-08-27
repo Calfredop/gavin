@@ -18,6 +18,12 @@ export interface PlanFileInfo {
   // archive grid orders by it. Optional so fixtures and older daemons
   // (which never send it) stay valid -- absent sorts last.
   modifiedAt?: number | null;
+  // The card's `attachments:` line, split on commas and trimmed: files
+  // the card points an agent at, relative to the workspace root or
+  // absolute. RAW, so a path that no longer resolves reaches the UI as a
+  // broken chip instead of vanishing. Optional for the same reason
+  // `modifiedAt` is -- fixtures, and a pre-v18 daemon never sends it.
+  attachments?: string[];
 }
 
 export interface MdFileInfo {

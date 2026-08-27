@@ -24,6 +24,12 @@ export interface CardView {
   // chip, the card stays visible (never hidden by a bad link).
   parentBroken: boolean;
   labels: string[];
+  // Files this card points an agent at, exactly as the frontmatter
+  // records them. Optional for the same reason `modifiedAt` is: a card
+  // view is built in a dozen fixtures with no opinion about
+  // attachments, and a pre-v18 daemon never sends the field. The
+  // projection itself always sets it.
+  attachments?: string[];
   checklistDone: number;
   checklistTotal: number;
   contextName: string;
@@ -98,6 +104,7 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
     parentTitle: null,
     parentBroken: false,
     labels: plan.labels,
+    attachments: plan.attachments ?? [],
     checklistDone: plan.checklistDone,
     checklistTotal: plan.checklistTotal,
     contextName: ctx.name,

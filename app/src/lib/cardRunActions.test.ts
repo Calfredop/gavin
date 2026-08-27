@@ -12,6 +12,7 @@ vi.mock("./backend", () => ({
   unlinkCardSession: vi.fn(),
   writeInput: vi.fn(),
   getBoard: vi.fn(),
+  attachmentStatus: vi.fn(),
 }));
 vi.mock("./layoutState", () => ({
   layoutState: writable({
@@ -37,6 +38,7 @@ vi.mock("./layoutState", () => ({
   setSessionName: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
+  workspaceRootPath: vi.fn(() => "/ws"),
   resolvedAgentFor: vi.fn(() => ({
     profileId: "claude-code",
     file: "CLAUDE.md",
@@ -50,7 +52,7 @@ vi.mock("./workspace", () => ({
 }));
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState } from "./layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, workspaceRootPath } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
@@ -437,5 +439,101 @@ describe("sendToMainAgent", () => {
     expect(await sendToMainAgent("ws-1", card("plan", null))).toContain("start it on the Home tab");
     expect(await sendToMainAgent("ws-1", card("note", null))).toContain("not runnable");
     expect(backend.writeInput).not.toHaveBeenCalled();
+  });
+});
+
+// --- the attachment run gate ----------------------------------------
+// One test per path a card can be launched down (spec: a missing
+// attachment blocks the run, naming the file). The rail-step path lives
+// in orchestrationState.test.ts, which owns the scheduler.
+describe("attachments gate the run", () => {
+  function attached(): CardView {
+    const c = card("task", "To Do");
+    c.attachments = ["docs/spec.md"];
+    return c;
+  }
+
+  beforeEach(() => {
+    vi.mocked(workspaceRootPath).mockReturnValue("/ws");
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+  });
+
+  it("runCard: an attachment that resolves reaches the prompt as an absolute path", async () => {
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: true },
+    ]);
+
+    const err = await runCard("ws-1", attached());
+
+    expect(err).toBeNull();
+    expect(backend.attachmentStatus).toHaveBeenCalledWith("/ws", ["docs/spec.md"]);
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("/ws/docs/spec.md");
+    expect(command).toContain("read them before you start");
+  });
+
+  it("runCard: a missing attachment refuses by name, spawns nothing, and leaves the status alone", async () => {
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: false },
+    ]);
+
+    const err = await runCard("ws-1", attached());
+
+    expect(err).toContain("docs/spec.md");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    // The gate runs BEFORE the status write: a refused run must not
+    // move the card on the board.
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("resumeCard: the same gate, so a resume cannot slip past it", async () => {
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      { path: "docs/spec.md", absolutePath: null, exists: false },
+    ]);
+
+    const err = await resumeCard("ws-1", attached());
+
+    expect(err).toContain("docs/spec.md");
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("sendToMainAgent: refuses before pasting anything into the agent", async () => {
+    layoutState.update((s) => ({
+      ...s,
+      workspaces: s.workspaces.map((w) => ({ ...w, mainSessionId: "s-main" })),
+    }));
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: false },
+    ]);
+
+    const err = await sendToMainAgent("ws-1", attached());
+
+    expect(err).toContain("docs/spec.md");
+    expect(backend.writeInput).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("a card with no attachments never asks the host at all", async () => {
+    const err = await runCard("ws-1", card("task", "To Do"));
+
+    expect(err).toBeNull();
+    expect(backend.attachmentStatus).not.toHaveBeenCalled();
+  });
+
+  it("a rootless workspace refuses rather than resolving against nothing", async () => {
+    vi.mocked(workspaceRootPath).mockReturnValue(null);
+
+    const err = await runCard("ws-1", attached());
+
+    expect(err).toContain("no root folder");
+    expect(backend.attachmentStatus).not.toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
   });
 });

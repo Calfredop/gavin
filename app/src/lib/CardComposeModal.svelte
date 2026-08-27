@@ -14,6 +14,7 @@
   // chips reshape it in place: plan swaps the prompt for a body, note
   // drops the body entirely.
   import { untrack } from "svelte";
+  import { open } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import type { Column } from "./kanban";
   import type { CardView } from "./planBoard";
@@ -30,6 +31,14 @@
     type ComposeField,
     type ComposeKind,
   } from "./cardCompose";
+  import {
+    addAttachment,
+    attachmentFromPick,
+    attachmentName,
+    removeAttachment,
+  } from "./attachments";
+  import { daemonCompat, workspaceRootPath } from "./layoutState";
+  import { featureBlockedReason } from "./daemonCompat";
   import { formatShortcut } from "./shortcuts";
   import { isMacSync } from "./platform";
   import * as backend from "./backend";
@@ -64,6 +73,14 @@
   let status = $state(untrack(() => initialStatus));
   let context = $state<string | null>(untrack(() => pinnedContext));
   let railId = $state<string | null>(null);
+  // Attached before the card exists: the whole point of doing it here is
+  // that picking a file, filing the card, then reopening it to attach
+  // the file is three gestures for one intention. Cleared with the rest
+  // of the fields after each commit -- the next card is a different
+  // card, and silently inheriting the last one's references is exactly
+  // the kind of stale path the run gate exists to catch.
+  let attachments = $state<string[]>([]);
+  let attachmentsError = $state<string | null>(null);
   let runNow = $state(false);
   let error = $state<string | null>(null);
   let titleEl = $state<HTMLTextAreaElement | null>(null);
@@ -82,7 +99,35 @@
   const rails = $derived(
     [...($orchestrations[workspaceId]?.rails ?? [])].sort((a, b) => a.position - b.position)
   );
+  // A v17 daemon parses CreatePlan happily and drops the new field on
+  // the floor, so the card would be filed looking exactly as asked for
+  // and carry none of these files. Nothing on the wire catches that --
+  // this gate is the only one there is.
+  const attachmentsBlocked = $derived(featureBlockedReason($daemonCompat, "attachments"));
   const isMac = isMacSync();
+
+  async function pickAttachment(): Promise<void> {
+    attachmentsError = null;
+    const root = workspaceRootPath(workspaceId);
+    if (root === null) {
+      attachmentsError = "This workspace has no root folder, so an attachment has nothing to be relative to.";
+      return;
+    }
+    try {
+      const picked = await open({
+        directory: false,
+        multiple: false,
+        defaultPath: root,
+        title: "Attach a file to this card",
+      });
+      // A cancelled dialog is not an error, and must not clear the
+      // message from the pick before it.
+      if (typeof picked !== "string") return;
+      attachments = addAttachment(attachments, attachmentFromPick(root, picked));
+    } catch (e) {
+      attachmentsError = String(e instanceof Error ? e.message : e);
+    }
+  }
   const newCardChord = formatShortcut("new-card", isMac);
   // A note has no body field, so the hint cannot be left describing
   // one the kind chips just took off screen.
@@ -95,6 +140,8 @@
   function reset(): void {
     title = "";
     body = "";
+    attachments = [];
+    attachmentsError = null;
     error = null;
   }
 
@@ -106,7 +153,7 @@
     }
     const ctx = contexts.find((c) => c.folderPath === contextFolder);
     const args = buildCreatePlanArgs(
-      { kind, title, body, status },
+      { kind, title, body, status, attachments },
       ctx?.plans.map((p) => p.fileName) ?? []
     );
     if ("error" in args) {
@@ -125,7 +172,9 @@
         args.status,
         undefined,
         args.body,
-        args.kind
+        args.kind,
+        undefined,
+        args.attachments
       );
       const created: PlanFileInfo = {
         path,
@@ -137,6 +186,7 @@
         kind: args.kind,
         parent: null,
         labels: [],
+        attachments: [...attachments],
         checklistDone: 0,
         checklistTotal: 0,
         parseWarning: false,
@@ -163,6 +213,7 @@
           parentTitle: null,
           parentBroken: false,
           labels: [],
+          attachments: [...attachments],
           checklistDone: 0,
           checklistTotal: 0,
           contextName: ctxName,
@@ -286,6 +337,41 @@
     {/if}
   </div>
 
+  <!-- The blocked reason rides the ROW, not the button: tooltip.ts binds
+       mouseenter, which a disabled element never fires. -->
+  <div class="attachments" title={attachmentsBlocked ?? undefined}>
+    <span class="attachments-label">Attachments</span>
+    {#each attachments as path (path)}
+      <span class="attachment">
+        <span class="attachment-name" title={path}>{attachmentName(path)}</span>
+        <button
+          type="button"
+          class="attachment-remove"
+          aria-label={`Remove ${attachmentName(path)}`}
+          onclick={() => (attachments = removeAttachment(attachments, path))}
+        >
+          ✕
+        </button>
+      </span>
+    {/each}
+    <button
+      type="button"
+      class="attachment-pick"
+      disabled={attachmentsBlocked !== null}
+      title={attachmentsBlocked ??
+        "Attach a file — inside the root it is stored relative, outside it absolute"}
+      onfocus={() => (focusField = "body")}
+      onkeydown={(e) => handleKeydown("body", e)}
+      onclick={() => void pickAttachment()}
+    >
+      + Attach…
+    </button>
+  </div>
+
+  {#if attachmentsError}
+    <div class="compose-error">{attachmentsError}</div>
+  {/if}
+
   {#if kind === "task" && !railId && onRunCard}
     <label class="run-now">
       <input
@@ -338,6 +424,50 @@
     display: flex;
     gap: 4px;
     margin-bottom: 8px;
+  }
+  .attachments {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .attachments-label {
+    color: var(--text-subtle);
+    font-family: monospace;
+    font-size: 0.75em;
+    margin-right: 4px;
+  }
+  .attachment {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .attachment-name {
+    color: var(--text);
+    font-family: monospace;
+    font-size: 0.75em;
+    padding: 2px 4px 2px 8px;
+  }
+  .attachment-remove,
+  .attachment-pick {
+    background: transparent;
+    border: none;
+    color: var(--text-subtle);
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.75em;
+    padding: 2px 8px;
+  }
+  .attachment-pick {
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+  }
+  .attachment-pick:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .kind-chip {
     background: transparent;

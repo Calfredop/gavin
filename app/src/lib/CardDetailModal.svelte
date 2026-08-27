@@ -4,6 +4,7 @@
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "./markdown";
   import { openPath } from "@tauri-apps/plugin-opener";
+  import { open } from "@tauri-apps/plugin-dialog";
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
   import { isArchivedCard, slugStatus } from "./planBoard";
@@ -11,7 +12,22 @@
   import { requestedExplorerPath, slugFileName } from "./planExplorer";
   import { patchPlanField, patchPlanCreated, patchPlanPath } from "./gavinState";
   import type { PlanFileInfo } from "./gavin";
-  import { switchWorkspaceView, layoutState, daemonCompat } from "./layoutState";
+  import {
+    switchWorkspaceView,
+    layoutState,
+    daemonCompat,
+    workspaceRootPath,
+    openFileInSplit,
+  } from "./layoutState";
+  import {
+    addAttachment,
+    attachmentFromPick,
+    attachmentName,
+    formatAttachments,
+    removeAttachment,
+    type AttachmentStatus,
+  } from "./attachments";
+  import { isViewableInApp } from "./fileTypes";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, relaunchCard, developCard } from "./cardRunActions";
   import { developAvailable } from "./cardRun";
@@ -137,7 +153,10 @@
   }
 
   // --- field writes (surgical, patch-on-success) -----------------------
-  async function writeField(key: "title" | "status" | "priority" | "labels", value: string): Promise<boolean> {
+  async function writeField(
+    key: "title" | "status" | "priority" | "labels" | "attachments",
+    value: string
+  ): Promise<boolean> {
     errorMessage = null;
     try {
       const moved = await backend.setPlanFrontmatterField(card.id, key, value);
@@ -190,6 +209,120 @@
       ? card.labels.filter((l) => slugStatus(l) !== slugStatus(name))
       : [...card.labels, name];
     await writeField("labels", next.join(", "));
+  }
+
+  // --- attachments (files the card points an agent at) ------------------
+  // Every kind, notes included: a note is a fine place to park a
+  // reference. Only task and plan cards put them in a prompt.
+  const attachments = $derived(card.attachments ?? []);
+  const attachmentsBlocked = $derived(featureBlockedReason($daemonCompat, "attachments"));
+  let attachmentStatuses = $state<AttachmentStatus[]>([]);
+  let attachmentsError = $state<string | null>(null);
+  let attachmentsBusy = $state(false);
+
+  // Stat'd HERE rather than on scan: the daemon never touches these
+  // paths, so the board card face can only show a count and this modal
+  // is the first place brokenness can be seen at all.
+  //
+  // The token counter is the supersession guard (a $state proxy makes
+  // identity comparison useless): removing a chip fires this again while
+  // the previous stat is still in flight, and the older answer must not
+  // land on top of the newer one.
+  let statToken = 0;
+  $effect(() => {
+    const paths = attachments;
+    const root = workspaceRootPath(workspaceId);
+    const mine = ++statToken;
+    if (paths.length === 0) {
+      attachmentStatuses = [];
+      return;
+    }
+    if (root === null) {
+      attachmentStatuses = paths.map((path) => ({ path, absolutePath: null, exists: false }));
+      return;
+    }
+    void backend
+      .attachmentStatus(root, [...paths])
+      .then((r) => {
+        if (mine === statToken) attachmentStatuses = r;
+      })
+      .catch(() => {
+        // Unknown beats a confident lie: an unresolved chip reads
+        // broken, which is also what the run gate will say.
+        if (mine === statToken) {
+          attachmentStatuses = paths.map((path) => ({ path, absolutePath: null, exists: false }));
+        }
+      });
+  });
+
+  async function writeAttachments(next: string[]): Promise<void> {
+    attachmentsError = null;
+    attachmentsBusy = true;
+    try {
+      // formatAttachments([]) is "", which is what clears the whole
+      // line -- an empty `attachments:` would leave a card still
+      // reading as though it references a file.
+      await writeField("attachments", formatAttachments(next));
+    } finally {
+      attachmentsBusy = false;
+    }
+  }
+
+  // The PRD/agent pickers' dialog -> validate -> commit shape
+  // (HubFilePicker), with one difference: a file OUTSIDE the root is a
+  // legal answer here rather than an error, and is stored absolute.
+  async function pickAttachment(): Promise<void> {
+    attachmentsError = null;
+    const root = workspaceRootPath(workspaceId);
+    if (root === null) {
+      attachmentsError = "This workspace has no root folder, so an attachment has nothing to be relative to.";
+      return;
+    }
+    attachmentsBusy = true;
+    try {
+      const picked = await open({
+        directory: false,
+        multiple: false,
+        defaultPath: root,
+        title: "Attach a file to this card",
+      });
+      // A cancelled dialog is not an error, and must not clear the
+      // message from the pick before it.
+      if (typeof picked !== "string") return;
+      await writeAttachments(addAttachment(attachments, attachmentFromPick(root, picked)));
+    } catch (e) {
+      attachmentsError = String(e instanceof Error ? e.message : e);
+    } finally {
+      attachmentsBusy = false;
+    }
+  }
+
+  // A split needs a terminal session to anchor to; file and board tabs
+  // are not sessions. Null means the app has no pane to split, and the
+  // chip falls back to the OS's default application -- an honest second
+  // choice, rather than a click that does nothing.
+  const anchorSessionId = $derived.by(() => {
+    const focused = $layoutState.focusedSessionId;
+    if (!focused) return null;
+    if ($layoutState.fileTabsById[focused] || $layoutState.boardTabsById[focused]) return null;
+    return focused;
+  });
+
+  async function openAttachment(status: AttachmentStatus): Promise<void> {
+    attachmentsError = null;
+    if (!status.exists || status.absolutePath === null) return;
+    const path = status.absolutePath;
+    try {
+      if (anchorSessionId && (await isViewableInApp(path))) {
+        await switchWorkspaceView(workspaceId, "terminal");
+        await openFileInSplit(anchorSessionId, path);
+        onClose();
+        return;
+      }
+      await openPath(path);
+    } catch (e) {
+      attachmentsError = `Couldn't open ${attachmentName(path)}: ${e instanceof Error ? e.message : e}`;
+    }
   }
 
   // --- children of a plan ---------------------------------------------
@@ -377,6 +510,62 @@
       </div>
     </div>
   {/if}
+  <!-- The blocked reason rides the SECTION, not the button: tooltip.ts
+       binds mouseenter, which a disabled element never fires, so a
+       reason hung on the disabled control alone can never be read. -->
+  <div class="section" title={attachmentsBlocked ?? undefined}>
+    <div class="section-title">
+      Attachments{attachments.length > 0 ? ` · ${attachments.length}` : ""}
+    </div>
+    {#if attachments.length === 0}
+      <p class="quiet">
+        No files attached. An attached file is handed to every agent this card launches.
+      </p>
+    {/if}
+    <div class="chips attachment-chips">
+      {#each attachments as path (path)}
+        {@const status = attachmentStatuses.find((s) => s.path === path) ?? null}
+        {@const broken = status !== null && !status.exists}
+        <span class="attachment" class:broken>
+          <button
+            type="button"
+            class="attachment-open"
+            disabled={status === null || broken}
+            title={broken
+              ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
+              : path}
+            onclick={() => status && void openAttachment(status)}
+          >
+            {broken ? "⚠ " : ""}{attachmentName(path)}
+          </button>
+          <button
+            type="button"
+            class="attachment-remove"
+            aria-label={`Remove ${attachmentName(path)}`}
+            disabled={attachmentsBusy || attachmentsBlocked !== null}
+            title={attachmentsBlocked ?? "Take this file off the card"}
+            onclick={() => void writeAttachments(removeAttachment(attachments, path))}
+          >
+            ✕
+          </button>
+        </span>
+      {/each}
+    </div>
+    <div class="session-actions">
+      <button
+        type="button"
+        disabled={attachmentsBusy || attachmentsBlocked !== null}
+        title={attachmentsBlocked ??
+          "Pick a file for this card — inside the root it is stored relative, outside it absolute"}
+        onclick={() => void pickAttachment()}
+      >
+        Pick…
+      </button>
+    </div>
+    {#if attachmentsError}
+      <p class="error">{attachmentsError}</p>
+    {/if}
+  </div>
   {#if card.kind === "plan" && checklist.length > 0}
     <div class="section">
       <div class="section-title">Checklist · {card.checklistDone}/{card.checklistTotal}</div>
@@ -528,6 +717,43 @@
 {/if}
 
 <style>
+  .attachment-chips {
+    margin-bottom: 6px;
+  }
+  .attachment {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .attachment.broken {
+    border-color: var(--border-warning);
+  }
+  .attachment-open,
+  .attachment-remove {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.75em;
+    padding: 2px 8px;
+  }
+  .attachment.broken .attachment-open {
+    color: var(--warning-text);
+  }
+  .attachment-open:disabled {
+    cursor: default;
+  }
+  .attachment-remove {
+    color: var(--text-subtle);
+    padding-left: 2px;
+  }
+  .attachment-remove:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
   .header {
     display: flex;
     align-items: center;

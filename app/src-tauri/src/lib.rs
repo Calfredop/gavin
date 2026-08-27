@@ -68,6 +68,7 @@ pub fn run() {
             session::set_session_name,
             session::get_file_tabs,
             session::set_file_tabs,
+            fileviewer::attachment_status,
             fileviewer::read_file_for_viewer,
             fileviewer::resolve_path_under_cursor,
             fileviewer::viewable_extensions,

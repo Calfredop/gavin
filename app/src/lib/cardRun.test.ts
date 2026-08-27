@@ -29,6 +29,33 @@ describe("composeTaskPrompt", () => {
   });
 });
 
+describe("attachments in the composed prompts", () => {
+  const files = ["/ws/docs/spec.md", "/Users/x/shot.png"];
+
+  it("a task prompt lists them before the body, told to be read first", () => {
+    const p = composeTaskPrompt("/p/t.md", "Fix login", "Do the thing.", files);
+    expect(p).toContain("- /ws/docs/spec.md");
+    expect(p).toContain("- /Users/x/shot.png");
+    // Context FOR the body, so it precedes it.
+    expect(p.indexOf("/ws/docs/spec.md")).toBeLessThan(p.indexOf("Do the thing."));
+  });
+
+  it("a plan prompt carries them too", () => {
+    expect(composePlanPrompt("/p/plan.md", files)).toContain("- /ws/docs/spec.md");
+  });
+
+  it("both resume prompts carry them — it is the same card", () => {
+    expect(composeResumeTaskPrompt("/p/t.md", "T", "b", files)).toContain("- /ws/docs/spec.md");
+    expect(composeResumePlanPrompt("/p/plan.md", files)).toContain("- /ws/docs/spec.md");
+  });
+
+  it("no attachments leaves every prompt byte-identical to before the field existed", () => {
+    expect(composeTaskPrompt("/p/t.md", "T", "b", [])).toBe(composeTaskPrompt("/p/t.md", "T", "b"));
+    expect(composePlanPrompt("/p/plan.md", [])).toBe(composePlanPrompt("/p/plan.md"));
+    expect(composeTaskPrompt("/p/t.md", "T", "b")).not.toContain("attached to this card");
+  });
+});
+
 describe("composePlanPrompt", () => {
   it("points at the file instead of inlining it", () => {
     const p = composePlanPrompt("/p/plan.md");

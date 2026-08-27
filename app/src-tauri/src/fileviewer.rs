@@ -214,10 +214,111 @@ pub fn unwatch_file_for_viewer(path: String, state: State<FileWatchers>) -> Resu
     Ok(())
 }
 
+/// One card attachment, resolved and stat'd. `path` echoes the raw
+/// frontmatter entry (the UI's identity for the chip and the string it
+/// removes); `absolute_path` is what an agent is handed and what a chip
+/// opens, and is None for an entry gavin refuses to resolve at all.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentStatus {
+    pub path: String,
+    pub absolute_path: Option<String>,
+    pub exists: bool,
+}
+
+/// Resolves a card's `attachments:` entries against the workspace root
+/// and says which ones are actually there.
+///
+/// The root, never the session's cwd: a card bound to a rail runs in a
+/// worktree, and resolving `docs/spec.md` against wherever the agent
+/// happens to start would hand two sessions two different files (or one
+/// of them nothing at all) from the same card.
+///
+/// A `..` entry is REFUSED rather than stat'd -- `usable_attachment_path`
+/// is the authority, shared with the daemon so both sides agree -- and
+/// comes back with no absolute path and `exists: false`. That is the
+/// same shape as a file that moved, which is what the caller wants: both
+/// are a broken chip and both block a run. Stat'ing it instead would
+/// make gavin read outside the root on behalf of a line in a card file.
+///
+/// Called on demand -- the modal opening, the run gate just before
+/// spawning -- never on scan: the daemon does not stat attachments, so
+/// the board card face can only ever show a count.
+#[tauri::command]
+pub fn attachment_status(root: String, paths: Vec<String>) -> Vec<AttachmentStatus> {
+    let root = PathBuf::from(root);
+    paths
+        .into_iter()
+        .map(|raw| {
+            let Some(usable) = protocol::usable_attachment_path(&raw) else {
+                return AttachmentStatus { path: raw, absolute_path: None, exists: false };
+            };
+            let candidate = PathBuf::from(&usable);
+            let absolute =
+                if candidate.is_absolute() { candidate } else { root.join(&candidate) };
+            // is_file, not exists: an attachment names a file to read.
+            // A directory that happens to sit at the path would pass
+            // `exists` and then hand the agent something it cannot read.
+            let exists = absolute.is_file();
+            AttachmentStatus {
+                path: raw,
+                absolute_path: Some(absolute.to_string_lossy().to_string()),
+                exists,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn attachment_status_resolves_against_the_root_and_refuses_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/spec.md"), "spec").unwrap();
+        // Deliberately REAL and reachable via `..` from the root, so the
+        // refusal below cannot be mistaken for "the file wasn't there".
+        std::fs::write(dir.path().join("outside.md"), "secret").unwrap();
+        let outside = dir.path().join("outside.md").to_string_lossy().to_string();
+
+        let got = attachment_status(
+            root.to_string_lossy().to_string(),
+            vec![
+                "docs/spec.md".to_string(),
+                "docs/gone.md".to_string(),
+                outside.clone(),
+                "../outside.md".to_string(),
+                "docs".to_string(),
+            ],
+        );
+
+        // Relative, present: resolved against the root.
+        assert_eq!(got[0].path, "docs/spec.md");
+        assert_eq!(got[0].absolute_path.as_deref(), Some(root.join("docs/spec.md").to_string_lossy().as_ref()));
+        assert!(got[0].exists);
+
+        // Relative, moved away: resolved, and honestly missing.
+        assert!(!got[1].exists);
+        assert!(got[1].absolute_path.is_some());
+
+        // Absolute outside the root is the COMMON case, not an escape --
+        // a screenshot on the Desktop, a spec on a shared volume.
+        assert_eq!(got[2].absolute_path.as_deref(), Some(outside.as_str()));
+        assert!(got[2].exists);
+
+        // `..` is refused, not stat'd: no absolute path comes back at
+        // all, even though the file it points at exists.
+        assert_eq!(got[3].path, "../outside.md");
+        assert_eq!(got[3].absolute_path, None);
+        assert!(!got[3].exists);
+
+        // A directory is not a file to read.
+        assert!(!got[4].exists);
+    }
 
     #[test]
     fn a_first_save_creates_the_parent_directory_it_needs() {
