@@ -38,6 +38,11 @@ anyhow = "1"
 notify = "8"
 notify-debouncer-mini = "0.7"
 protocol = { path = "../../crates/protocol" }
+# The OS Trash, not `rm`: the delete wizard removes somebody's cards, and
+# a card in plans/done/ that git never tracked is otherwise gone for good.
+# default-features off drops the `chrono` feature, which only exists to
+# read Trash timestamps back -- gavin only ever puts things in.
+trash = { version = "5", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
