@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage } from "./layoutState";
+import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
 import { patchPlanField, patchPlanPath } from "./gavinState";
@@ -21,7 +21,42 @@ import {
   runStatusNeeded,
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
+import { missingAttachmentReason, resolvedAttachmentPaths } from "./attachments";
 import type { CardView } from "./planBoard";
+
+/// The run gate for a card's attachments: the absolute paths to hand the
+/// agent, or the reason this launch must not happen.
+///
+/// Stat'd HERE, immediately before spawning, rather than trusted from
+/// the last scan: the daemon never stats attachments, and a file the
+/// human moved five minutes ago has to stop the run rather than reach
+/// the agent as a dead path. An agent handed one burns a whole session
+/// before anybody notices; the card is the cheap thing to fix.
+///
+/// Shared with the orchestration scheduler so a rail step and a board
+/// Run refuse on exactly the same evidence.
+export async function resolveAttachmentsForRun(
+  workspaceId: string,
+  attachments: string[]
+): Promise<{ paths: string[] } | { error: string }> {
+  if (attachments.length === 0) return { paths: [] };
+  const root = workspaceRootPath(workspaceId);
+  // Only reachable with attachments to resolve: a relative one has
+  // nothing to resolve against, and guessing a base is how a card ends
+  // up reading a file from whatever directory the app was launched in.
+  if (root === null) {
+    return { error: "This workspace has no root folder, so the card's attachments can't be resolved." };
+  }
+  let statuses;
+  try {
+    statuses = await backend.attachmentStatus(root, attachments);
+  } catch (e) {
+    return { error: `Couldn't check the card's attachments: ${e instanceof Error ? e.message : e}` };
+  }
+  const missing = missingAttachmentReason(statuses);
+  if (missing) return { error: missing };
+  return { paths: resolvedAttachmentPaths(statuses) };
+}
 
 // Focus a card's bound live session (card-model spec §3): "jumped" on
 // success, "exited" when the binding's session is gone (Re-launch lives
@@ -111,6 +146,13 @@ async function launchCard(
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
   if (binding && findSessionLocation(state, binding.sessionId)) return null;
 
+  // The attachment gate runs BEFORE the status write below. A refused
+  // launch must leave the card exactly as it was: writing In Progress
+  // and then refusing would move the card on the board for a run that
+  // never happened, and the human would have to put it back by hand.
+  const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
+  if ("error" in resolved) return resolved.error;
+
   // Status FIRST: running a Done card un-archives it out of `plans/done/`,
   // and the prompt has to name where the file ends up, not where it was.
   // A nested task gaining In Progress frees itself from its plan --
@@ -134,10 +176,13 @@ async function launchCard(
     const body = stripFrontmatter(file.content).trim();
     prompt =
       mode === "resume"
-        ? composeResumeTaskPrompt(path, card.title, body)
-        : composeTaskPrompt(path, card.title, body);
+        ? composeResumeTaskPrompt(path, card.title, body, resolved.paths)
+        : composeTaskPrompt(path, card.title, body, resolved.paths);
   } else {
-    prompt = mode === "resume" ? composeResumePlanPrompt(path) : composePlanPrompt(path);
+    prompt =
+      mode === "resume"
+        ? composeResumePlanPrompt(path, resolved.paths)
+        : composePlanPrompt(path, resolved.paths);
   }
 
   // The launch command lives in .gavin-root/config.toml now (D41), so it
@@ -204,6 +249,11 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // Checked before composing: composing reads the card file, and "no
   // agent" is the more useful message when both are true.
   if (!mainAgentSessionId(workspaceId)) return NO_MAIN_AGENT;
+  // Same gate, same reason, and again before the status write: handing
+  // the main agent a card whose attachments have gone is the same wasted
+  // session as spawning a dedicated one for it.
+  const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
+  if ("error" in resolved) return resolved.error;
   // Status FIRST, for the same reason as launchCard: sending a Done card
   // un-archives it, and the agent must be handed the path it lands on.
   let path = card.id;
@@ -220,9 +270,9 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   if (card.kind === "task") {
     const file = await backend.readFileForViewer(path);
     if (!file.exists) return `Card file not found: ${path}`;
-    prompt = composeTaskPrompt(path, card.title, stripFrontmatter(file.content).trim());
+    prompt = composeTaskPrompt(path, card.title, stripFrontmatter(file.content).trim(), resolved.paths);
   } else {
-    prompt = composePlanPrompt(path);
+    prompt = composePlanPrompt(path, resolved.paths);
   }
   const pasteError = await pasteToMainAgent(workspaceId, prompt);
   if (pasteError) return pasteError;

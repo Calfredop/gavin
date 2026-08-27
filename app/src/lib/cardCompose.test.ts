@@ -46,6 +46,29 @@ describe("buildCreatePlanArgs", () => {
     const r = buildCreatePlanArgs({ kind: "task", title: "T", body: "  do the thing  ", status: "To Do" }, []);
     expect(r).toMatchObject({ kind: "task", body: "do the thing" });
   });
+
+  it("turns attached files into the frontmatter line CreatePlan writes", () => {
+    const r = buildCreatePlanArgs(
+      {
+        kind: "task",
+        title: "Fix login",
+        body: "",
+        status: "To Do",
+        attachments: ["docs/spec.md", "/Users/x/shot.png"],
+      },
+      []
+    );
+    expect(r).toMatchObject({ attachments: "docs/spec.md, /Users/x/shot.png" });
+  });
+
+  it("gives a card with nothing attached no attachments line at all", () => {
+    expect(
+      buildCreatePlanArgs({ kind: "task", title: "T", body: "", status: "To Do" }, [])
+    ).toMatchObject({ attachments: undefined });
+    expect(
+      buildCreatePlanArgs({ kind: "task", title: "T", body: "", status: "To Do", attachments: [] }, [])
+    ).toMatchObject({ attachments: undefined });
+  });
 });
 
 describe("defaultComposeStatus", () => {

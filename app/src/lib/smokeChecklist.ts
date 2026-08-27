@@ -166,6 +166,63 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Card attachments",
+    items: [
+      {
+        id: "attach-pick-relative",
+        text: "Card detail → Attachments → Pick… a file inside the root writes a RELATIVE attachments: line and shows the chip",
+        hint: "cat the card file: `attachments: docs/spec.md`, not the absolute path the dialog returned.",
+      },
+      {
+        id: "attach-pick-absolute",
+        text: "Picking a file OUTSIDE the root (e.g. on the Desktop) is accepted and stored absolute",
+        hint: "That is the common case — a screenshot has no portable relative form.",
+      },
+      {
+        id: "attach-remove",
+        text: "The chip's ✕ removes it; taking the last one off removes the whole attachments: line, not just its value",
+      },
+      {
+        id: "attach-chip-opens",
+        text: "Clicking a .md/.ts chip opens it in a split file tab; clicking a .png chip hands it to the OS's app",
+        hint: "Needs a terminal pane focused to split beside — with none, both fall back to the OS app.",
+      },
+      {
+        id: "attach-broken-chip",
+        text: "Moving an attached file away renders the chip as ⚠ and unclickable, with the path in its tooltip",
+        hint: "Reopen the card — the host stats on open, not on scan.",
+      },
+      {
+        id: "attach-blocks-run",
+        text: "▶ session on a card with a missing attachment refuses by NAME and starts nothing — and the card stays in its column",
+        hint: "The status write happens after the gate, so a refused run must not leave the card in In Progress.",
+      },
+      {
+        id: "attach-blocks-step",
+        text: "A rail step on that same card stalls with the same reason on its chip instead of launching",
+      },
+      {
+        id: "attach-in-prompt",
+        text: "A card whose attachments resolve launches with their ABSOLUTE paths in the prompt, told to be read first",
+        hint: "Read the spawned tab's first screen, or ps the command.",
+      },
+      {
+        id: "attach-compose",
+        text: "⌘N → + Attach… attaches before the card exists; the filed card carries the line, and the fields clear for the next card",
+      },
+      {
+        id: "attach-board-count",
+        text: "The board card shows a paperclip with the count — and keeps showing it for an attachment that has gone missing",
+        hint: "Count only, on purpose: the daemon never stats these paths on scan.",
+      },
+      {
+        id: "attach-old-daemon",
+        text: "Against a pre-v18 daemon both Pick… buttons are disabled and hovering the SECTION (not the button) states why",
+        hint: "A disabled element never fires mouseenter — the reason has to live on a non-disabled ancestor.",
+      },
+    ],
+  },
+  {
     title: "Nesting & promotion",
     items: [
       {

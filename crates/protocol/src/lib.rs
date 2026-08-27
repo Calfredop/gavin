@@ -13,6 +13,16 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v19 taught cards an `attachments:` line: `PlanFileInfo` carries the
+/// parsed list, `SetPlanFrontmatterField` accepts the key, and
+/// `CreatePlan` carries the line to write. None of that is a new Request
+/// variant -- both widen EXISTING requests, which `min_version_for`
+/// gates by TYPE and therefore cannot see -- so the gate that matters is
+/// the app's FEATURE_MIN_VERSION.attachments. A v18 daemon refuses the
+/// `SetPlanFrontmatterField` key loudly but drops `CreatePlan`'s field
+/// silently, which is the worse half: the card would be filed with the
+/// human's attachments quietly missing.
+///
 /// v18 added `Request::Snapshot`: "send me this session's screen again",
 /// answered from the daemon's per-session terminal parser. A new request
 /// variant, so `min_version_for` gates it by type and an older daemon
@@ -32,7 +42,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -167,6 +177,13 @@ pub enum Request {
         kind: Option<String>,
         #[serde(default)]
         parent: Option<String>,
+        /// The `attachments:` line to write, comma-separated exactly as
+        /// it lands in the frontmatter -- one string rather than a list
+        /// so the daemon writes the line it was handed instead of
+        /// re-deriving a format the flat `key: value` parser then has to
+        /// agree with. None writes no line at all.
+        #[serde(default)]
+        attachments: Option<String>,
     },
     /// The SQLite board of the WATCHED workspace whose root matches.
     GetBoardByRoot {
@@ -870,6 +887,17 @@ pub struct PlanFileInfo {
     /// simply reads None and the grid falls back to path order.
     #[serde(default)]
     pub modified_at: Option<i64>,
+    /// The card's `attachments:` line, split on commas and trimmed --
+    /// files the card points an agent at. Kept RAW, exactly as written:
+    /// a path that no longer resolves has to reach the UI as a broken
+    /// chip and block the run, and a value filtered out here would
+    /// instead vanish silently and let the agent start blind.
+    ///
+    /// Parsed on any card kind (a note is a fine place to park a
+    /// reference); only task and plan cards put it in a prompt.
+    /// `serde(default)` so an older daemon's tree still parses.
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
 
 /// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
@@ -913,6 +941,39 @@ pub fn usable_prd_path(value: &str) -> Option<String> {
     // Rejects `..` anywhere, and the Windows prefixes/root-dir components
     // an absolute check on a foreign separator would miss.
     if !path.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// One `attachments:` entry, if it names a path gavin will actually
+/// resolve. Mirrors `usable_prd_path` with one deliberate difference: an
+/// ABSOLUTE path is kept as-is rather than refused. An attachment is a
+/// reference to a file the human picked, and the useful ones are
+/// routinely outside the repo -- a screenshot in ~/Desktop, a spec on a
+/// shared volume -- so refusing absolutes would refuse the common case.
+///
+/// A relative path stays relative here; resolving it is the caller's
+/// job, and it always resolves against the WORKSPACE ROOT rather than a
+/// session's cwd, so the same card hands every session -- worktree or
+/// not -- the same bytes.
+///
+/// `..` is still refused, absolute or not: gavin resolves these paths on
+/// the human's behalf and then hands them to an agent, and a traversal
+/// that reads as a tidy relative path is exactly the value nobody
+/// re-reads. Someone who genuinely means a file two directories up can
+/// say so with an absolute path.
+///
+/// Lives here, beside `usable_prd_path`, because both clients need the
+/// same answer: the Tauri host stats these paths and the daemon parses
+/// them out of the frontmatter.
+pub fn usable_attachment_path(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = std::path::Path::new(trimmed);
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return None;
     }
     Some(trimmed.to_string())
@@ -1418,6 +1479,7 @@ mod tests {
                     checklist_total: 0,
                     parse_warning: false,
                     modified_at: None,
+                    attachments: vec!["docs/spec.md".to_string()],
                 }],
                 docs: vec![MdFileInfo {
                     path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
@@ -1458,7 +1520,8 @@ mod tests {
                         "checklistDone": 0,
                         "checklistTotal": 0,
                         "parseWarning": false,
-                        "modifiedAt": null
+                        "modifiedAt": null,
+                        "attachments": ["docs/spec.md"]
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
@@ -1470,6 +1533,31 @@ mod tests {
                 }]
             })
         );
+    }
+
+    #[test]
+    fn usable_attachment_path_keeps_absolutes_and_refuses_traversal() {
+        // Relative stays relative -- resolving it against the workspace
+        // root is the caller's job, not this function's.
+        assert_eq!(usable_attachment_path("docs/spec.md"), Some("docs/spec.md".to_string()));
+        assert_eq!(usable_attachment_path("  README.md  "), Some("README.md".to_string()));
+        // Absolute is kept as-is: the useful attachments are routinely
+        // outside the repo, which is the whole difference from
+        // usable_prd_path.
+        assert_eq!(
+            usable_attachment_path("/Users/x/Desktop/shot.png"),
+            Some("/Users/x/Desktop/shot.png".to_string())
+        );
+        // Junk.
+        assert_eq!(usable_attachment_path(""), None);
+        assert_eq!(usable_attachment_path("   "), None);
+        assert_eq!(usable_attachment_path("../outside/spec.md"), None);
+        assert_eq!(usable_attachment_path("docs/../../spec.md"), None);
+        assert_eq!(usable_attachment_path("/Users/x/../../etc/passwd"), None);
+        // `.` is harmless here, unlike in usable_prd_path: nothing
+        // compares these strings for equality, so "./a.md" resolving to
+        // the same file as "a.md" costs nothing.
+        assert_eq!(usable_attachment_path("./a.md"), Some("./a.md".to_string()));
     }
 
     #[test]
@@ -1612,6 +1700,10 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v19: card attachments -- PlanFileInfo.attachments, a seventh
+        // SetPlanFrontmatterField key, and CreatePlan.attachments. No
+        // new variant, which is exactly why daemonCompat.ts owes it a
+        // FEATURE_MIN_VERSION entry with real consumers.
         // v18: Request::Snapshot -- "send me this session's screen
         // again", answered from the daemon's per-session terminal
         // parser. A new request TYPE, which is what min_version_for
@@ -1643,7 +1735,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
     }
 
     #[test]
@@ -1772,6 +1864,7 @@ mod tests {
                 body: None,
                 kind: None,
                 parent: None,
+                attachments: None,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
             Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },
@@ -1976,14 +2069,16 @@ mod tests {
             body: Some("Body text".to_string()),
             kind: Some("task".to_string()),
             parent: Some("auth-plan.md".to_string()),
+            attachments: Some("docs/spec.md, /Users/x/shot.png".to_string()),
         };
         write_message(&mut buf, &req).unwrap();
         let mut cursor = Cursor::new(buf);
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
         match decoded {
-            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent } => {
+            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent, attachments } => {
                 assert_eq!(kind.as_deref(), Some("task"));
                 assert_eq!(parent.as_deref(), Some("auth-plan.md"));
+                assert_eq!(attachments.as_deref(), Some("docs/spec.md, /Users/x/shot.png"));
                 assert_eq!(context_folder, "/ws/auth");
                 assert_eq!(file_name, "login.md");
                 assert_eq!(title, "Login flow");

@@ -181,7 +181,17 @@ function activateWorkspace(state: WorkspacesData, workspaceId: string): Workspac
 // through this, so they all land in the same place instead of dumping
 // the user in their home directory.
 function freshSessionCwd(workspaceId: string): string | undefined {
-  return get(layoutState).workspaces.find((w) => w.id === workspaceId)?.rootPath || undefined;
+  return workspaceRootPath(workspaceId) ?? undefined;
+}
+
+/// A workspace's bound root folder, or null when it has none (the
+/// Scratchpad, or one never pointed at a repo). Exported because a card
+/// attachment's relative path resolves against the ROOT and nothing
+/// else: a rail's step runs in a worktree and a board Run runs in the
+/// card's context folder, so resolving against a cwd would hand two
+/// sessions two different files from one card.
+export function workspaceRootPath(workspaceId: string): string | null {
+  return get(layoutState).workspaces.find((w) => w.id === workspaceId)?.rootPath || null;
 }
 
 // Every terminal/agent session id currently live anywhere in the app --

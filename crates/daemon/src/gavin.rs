@@ -152,6 +152,22 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
                 .collect()
         })
         .unwrap_or_default();
+    // Split exactly like labels, and kept RAW: an entry that does not
+    // resolve -- a moved file, a hand-typed `..` -- has to survive the
+    // scan so the card can show it as broken and the run gate can refuse
+    // to spawn on it. Validating here would drop it instead, and an
+    // attachment that silently disappears is the failure this whole
+    // field exists to prevent. Parsed on every card kind (a note is a
+    // fine place to park a reference); only task and plan cards put it
+    // in a prompt.
+    let attachments: Vec<String> = get("attachments")
+        .map(|raw| {
+            raw.split(',')
+                .map(|a| a.trim().to_string())
+                .filter(|a| !a.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: path.to_string_lossy().to_string(),
@@ -164,6 +180,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         kind,
         parent,
         labels,
+        attachments,
         checklist_done,
         checklist_total,
         parse_warning: warning,
@@ -305,6 +322,7 @@ pub fn create_plan_file(
     body: Option<&str>,
     kind: Option<&str>,
     parent: Option<&str>,
+    attachments: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     let kind = match kind {
         None => "plan",
@@ -361,6 +379,14 @@ pub fn create_plan_file(
             anyhow::bail!("invalid priority value: {p}");
         }
     }
+    // Same rule as set_plan_field's `attachments`: one line, entries not
+    // validated here. A card is allowed to record a path that is wrong;
+    // it is the run gate's job to refuse to spawn on one, not this
+    // function's job to refuse to file the card.
+    let attachments = attachments.map(str::trim).filter(|a| !a.is_empty());
+    if attachments.is_some_and(|a| a.contains('\n')) {
+        anyhow::bail!("attachments must be a single line");
+    }
 
     let plans = gavin_dir.join("plans");
     std::fs::create_dir_all(&plans)?;
@@ -399,6 +425,9 @@ pub fn create_plan_file(
     }
     if let Some(p) = priority {
         content.push_str(&format!("priority: {p}\n"));
+    }
+    if let Some(a) = attachments {
+        content.push_str(&format!("attachments: {a}\n"));
     }
     content.push_str("---\n");
     match body.map(str::trim).filter(|b| !b.is_empty()) {
@@ -697,10 +726,14 @@ pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
 /// and every caller that holds the path as an identity needs the new one.
 pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<PathBuf> {
     // Empty value removes the line -- permitted only where the card model
-    // needs it (status: nesting, parent: un-parenting, labels: clearing).
+    // needs it (status: nesting, parent: un-parenting, labels: clearing,
+    // attachments: removing the last one). Clearing matters more for
+    // attachments than for labels: an empty `attachments:` line would
+    // parse to nothing anyway, but leaving it behind is a card that
+    // still LOOKS like it references a file.
     if value.is_empty() {
         match key {
-            "status" | "parent" | "labels" => {
+            "status" | "parent" | "labels" | "attachments" => {
                 write_plan_field(path, key, value)?;
                 return relocate_for_status(path);
             }
@@ -740,6 +773,16 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<Pat
         "labels" => {
             if value.contains('\n') {
                 anyhow::bail!("labels must be a single line");
+            }
+        }
+        // Comma-separated, one line, and NOT validated per entry: the
+        // paths are the human's, they are stat'd at the moment they
+        // matter (the modal opening, the run gate), and a card that
+        // records a path which has since moved is a broken chip to fix,
+        // not a write to refuse.
+        "attachments" => {
+            if value.contains('\n') {
+                anyhow::bail!("attachments must be a single line");
             }
         }
         other => anyhow::bail!("field not allowed: {other}"),
@@ -889,6 +932,11 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
         Some(item),
         Some("task"),
         Some(&plan_file_name),
+        // No attachments inherited from the plan: the plan's references
+        // are the plan's, and a promoted step that silently acquired
+        // them would put a stale path in front of an agent nobody chose
+        // it for. The human attaches to the child if the child needs it.
+        None,
     )?;
 
     let line = lines[line_index];
@@ -1776,6 +1824,54 @@ mod tests {
     }
 
     #[test]
+    fn attachments_split_and_trim_on_every_kind_and_keep_junk_visible() {
+        assert_eq!(
+            plan("---\nattachments: docs/spec.md,  /Users/x/shot.png , \n---\n").attachments,
+            vec!["docs/spec.md", "/Users/x/shot.png"]
+        );
+        assert!(plan("---\ntitle: A\n---\n").attachments.is_empty());
+        // A note is a fine place to park a reference (card-model: the
+        // field parses on any kind; only task/plan put it in a prompt).
+        assert_eq!(
+            plan("---\nkind: note\nattachments: ref.md\n---\n").attachments,
+            vec!["ref.md"]
+        );
+        // Kept RAW. A `..` entry is refused later, by whoever resolves
+        // it -- dropping it here would leave the card looking clean
+        // while the agent it launches gets nothing.
+        assert_eq!(
+            plan("---\nattachments: ../outside.md\n---\n").attachments,
+            vec!["../outside.md"]
+        );
+        assert!(!plan("---\nattachments: ../outside.md\n---\n").parse_warning);
+    }
+
+    #[test]
+    fn set_plan_field_writes_clears_and_rejects_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
+
+        set_plan_field(&path, "attachments", "docs/spec.md, /Users/x/shot.png").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nattachments: docs/spec.md, /Users/x/shot.png\ntitle: T\n---\nbody\n"
+        );
+        assert_eq!(
+            plan_file_info(&path, &std::fs::read_to_string(&path).unwrap()).attachments,
+            vec!["docs/spec.md", "/Users/x/shot.png"]
+        );
+
+        // The fourth key an empty value may clear: taking the last
+        // attachment off has to remove the LINE, not leave a card that
+        // still reads as if it references a file.
+        set_plan_field(&path, "attachments", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\ntitle: T\n---\nbody\n");
+
+        assert!(set_plan_field(&path, "attachments", "a.md\nb.md").is_err());
+    }
+
+    #[test]
     fn checklist_counts_from_body() {
         let p = plan("---\nkind: plan\n---\n# P\n- [ ] one\n  - [x] nested\n- [x] two\nnot - [ ] a list\n");
         assert_eq!((p.checklist_done, p.checklist_total), (2, 3));
@@ -2485,7 +2581,7 @@ mod tests {
     fn create_plan_file_writes_canonical_content_with_defaults() {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
-        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None).unwrap();
+        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\ntitle: Auth flow\nstatus: To Do\n---\n# Auth flow\n"
@@ -2497,6 +2593,7 @@ mod tests {
             Some("In Progress"),
             Some("high"),
             Some("Body text"),
+            None,
             None,
             None,
         )
@@ -2512,20 +2609,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
         // A nested child: kind task + parent, no status line at all.
-        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md")).unwrap();
+        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md"), None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "---\nkind: task\ntitle: Child\nparent: parent-plan.md\n---\n# Child\n"
         );
         // A note keeps the default/explicit status.
-        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None).unwrap();
+        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None, None).unwrap();
         assert!(std::fs::read_to_string(&n).unwrap().starts_with("---\nkind: note\ntitle: Note\nstatus: Done\n"));
         // kind plan writes no kind line (backward-canonical).
-        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None).unwrap();
+        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None, None).unwrap();
         assert!(std::fs::read_to_string(&pl).unwrap().starts_with("---\ntitle: P\nstatus: To Do\n"));
-        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None).is_err());
-        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md")).is_err());
-        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md")).is_err());
+        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None, None).is_err());
+        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md"), None).is_err());
+        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md"), None).is_err());
     }
 
     #[test]
@@ -2533,17 +2630,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
         // Not a context:
-        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None).is_err());
+        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None, None).is_err());
         // Bad names ("../esc.md" doubles as the path-escape guard):
         for bad in ["", ".md", "no-extension", "sp ace.md", "../esc.md"] {
-            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None).is_err(), "{bad}");
+            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None, None).is_err(), "{bad}");
         }
         // Bad priority / bad title:
-        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None).is_err());
-        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None, None).is_err());
         // Never overwrites:
-        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None).unwrap();
-        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None);
+        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None, None).unwrap();
+        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None, None);
         assert!(dup.unwrap_err().to_string().contains("already exists"));
     }
 
@@ -3071,7 +3168,7 @@ mod tests {
         let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
 
         let done =
-            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None)
+            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None, None)
                 .unwrap();
         assert_eq!(done, plans.join("done").join("shipped.md"));
 
@@ -3085,13 +3182,14 @@ mod tests {
             None,
             Some("task"),
             Some("shipped.md"),
+            None,
         )
         .unwrap();
         assert_eq!(child, plans.join("done").join("sub.md"));
 
         // A file name already used anywhere in the tree is refused.
         assert!(
-            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None).is_err()
+            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None, None).is_err()
         );
     }
 

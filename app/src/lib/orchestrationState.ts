@@ -86,7 +86,7 @@ import {
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
 import { setRailNotificationVoice, type SessionStatus } from "./notifications";
-import { pasteToMainAgent } from "./cardRunActions";
+import { pasteToMainAgent, resolveAttachmentsForRun } from "./cardRunActions";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -483,6 +483,17 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
     return;
   }
 
+  // The same gate a board Run uses, and for the same reason -- but here
+  // the refusal STALLS the step instead of starting it. A rail that ran
+  // a card with a dead attachment would carry the damage into every
+  // stage after it, so the reason lands on the chip and rule 5 pauses
+  // the rail, exactly as a failed launch does.
+  const resolved = await resolveAttachmentsForRun(workspaceId, entry.plan.attachments ?? []);
+  if ("error" in resolved) {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, resolved.error);
+    return;
+  }
+
   let prompt: string;
   if (entry.plan.kind === "task") {
     const file = await backend.readFileForViewer(step.cardPath);
@@ -490,9 +501,14 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
       await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
       return;
     }
-    prompt = composeTaskPrompt(step.cardPath, entry.plan.title, stripFrontmatter(file.content).trim());
+    prompt = composeTaskPrompt(
+      step.cardPath,
+      entry.plan.title,
+      stripFrontmatter(file.content).trim(),
+      resolved.paths
+    );
   } else {
-    prompt = composePlanPrompt(step.cardPath);
+    prompt = composePlanPrompt(step.cardPath, resolved.paths);
   }
 
   const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);

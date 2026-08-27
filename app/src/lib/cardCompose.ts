@@ -3,6 +3,7 @@
 // names and "-2" collision suffixes. The Svelte composer only renders
 // and forwards.
 
+import { formatAttachments } from "./attachments";
 import { slugFileName } from "./planExplorer";
 import { formatChord, matchesChord, type Chord, type ChordEvent } from "./shortcuts";
 
@@ -25,6 +26,13 @@ export interface ComposeSpec {
   // a note.
   body: string;
   status: string; // the column's name
+  // Files to attach, as they will be STORED (relative inside the
+  // workspace root, absolute outside it). Carried through the composer
+  // so a card can be filed with its references already on it -- picking
+  // a file, filing the card, then reopening it to attach the file is
+  // three steps for one intention. Optional: every call site that
+  // predates the field means "none".
+  attachments?: string[];
 }
 
 export type ComposeArgs =
@@ -34,6 +42,11 @@ export type ComposeArgs =
       status: string;
       body: string | undefined;
       kind: ComposeKind;
+      // The `attachments:` frontmatter LINE, or undefined for a card
+      // that gets no such line at all -- CreatePlan takes the line
+      // rather than a list, so the daemon writes what it was handed
+      // instead of re-deriving a format its own parser has to match.
+      attachments: string | undefined;
     }
   | { error: string };
 
@@ -50,7 +63,15 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
     n += 1;
   }
   const body = spec.body.trim();
-  return { fileName, title, status: spec.status, body: body === "" ? undefined : body, kind: spec.kind };
+  const attachments = formatAttachments(spec.attachments ?? []);
+  return {
+    fileName,
+    title,
+    status: spec.status,
+    body: body === "" ? undefined : body,
+    kind: spec.kind,
+    attachments: attachments === "" ? undefined : attachments,
+  };
 }
 
 /// Which column a freshly opened composer starts in. The column that

@@ -2998,13 +2998,24 @@ pub fn create_plan(
     body: Option<String>,
     kind: Option<String>,
     parent: Option<String>,
+    attachments: Option<String>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
     let resp = send_command_reconnecting(
         &state.0,
         &current_compat(&compat),
-        &Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent },
+        &Request::CreatePlan {
+            context_folder,
+            file_name,
+            title,
+            status,
+            priority,
+            body,
+            kind,
+            parent,
+            attachments,
+        },
     )
     .map_err(|e| e.to_string())?;
     match resp {
@@ -3450,6 +3461,7 @@ mod gate_tests {
                 body: None,
                 kind: None,
                 parent: None,
+                attachments: None,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
             Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },

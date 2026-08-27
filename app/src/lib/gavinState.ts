@@ -1,4 +1,5 @@
 import { writable } from "svelte/store";
+import { parseAttachments } from "./attachments";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "./backend";
 import type { GavinTree, PlanFileInfo } from "./gavin";
@@ -108,7 +109,7 @@ export function patchPlanPath(workspaceId: string, oldPath: string, newPath: str
 export function patchPlanField(
   workspaceId: string,
   path: string,
-  key: "status" | "priority" | "order" | "title" | "parent" | "labels",
+  key: "status" | "priority" | "order" | "title" | "parent" | "labels" | "attachments",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -125,6 +126,10 @@ export function patchPlanField(
         if (key === "labels") {
           return { ...p, labels: value.split(",").map((l) => l.trim()).filter((l) => l.length > 0) };
         }
+        // Split the way the daemon's plan_file_info does, so the
+        // optimistic patch and the tree that lands a moment later agree
+        // about how many chips the card has.
+        if (key === "attachments") return { ...p, attachments: parseAttachments(value) };
         const n = Number(value);
         return Number.isFinite(n) ? { ...p, order: n } : p;
       }),

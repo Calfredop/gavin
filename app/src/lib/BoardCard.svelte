@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
-  import { FileText, TriangleAlert, StickyNote, Play, Route, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, ChevronRight, ChevronDown } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
@@ -112,6 +112,12 @@
     card.kind === "plan" ? buildNestedSlots(card.nestedChildren, (c) => c.id, slotDrag, card.id) : []
   );
 
+  // Count only, from the parsed frontmatter alone: the daemon never
+  // stats these paths on scan, so the card face genuinely cannot know
+  // whether any of them still resolve. Brokenness shows where the host
+  // has actually looked -- the detail modal, and the run gate's refusal.
+  const attachmentCount = $derived(card.attachments?.length ?? 0);
+
   const labelChips = $derived(
     card.labels.map((name) => ({
       name,
@@ -193,6 +199,17 @@
     {/if}
     {#if card.priority && card.priority !== "none"}
       <span class="priority priority-{card.priority}" use:tooltip={"Priority: " + card.priority}></span>
+    {/if}
+    {#if attachmentCount > 0}
+      <span
+        class="attachments"
+        use:tooltip={attachmentCount === 1
+          ? "1 attached file — open the card to see it"
+          : `${attachmentCount} attached files — open the card to see them`}
+      >
+        <Paperclip size={11} />
+        <span class="attachment-count">{attachmentCount}</span>
+      </span>
     {/if}
     {#if card.kind === "plan" && card.checklistTotal > 0}
       <span class="progress" use:tooltip={"Checklist: " + card.checklistDone + " of " + card.checklistTotal + " done"}>{card.checklistDone}/{card.checklistTotal}</span>
@@ -393,6 +410,19 @@
   }
   .card:hover .rail-glyph {
     color: var(--text);
+  }
+  .attachments {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    color: var(--text-muted);
+  }
+  .card:hover .attachments {
+    color: var(--text);
+  }
+  .attachment-count {
+    font-family: monospace;
+    font-size: 0.7em;
   }
   .priority {
     display: inline-block;

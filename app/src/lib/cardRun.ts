@@ -1,6 +1,7 @@
 // Pure prompt/command composition for executable cards (card-model spec
 // §3). The run flow (cardRunActions.ts) wires these to real sessions.
 
+import { attachmentPromptBlock } from "./attachments";
 import { slugStatus } from "./planBoard";
 
 // Every launched agent gets the same opening instruction, board Run and
@@ -36,22 +37,34 @@ export function provisionalSessionName(title: string): string | null {
     : collapsed;
 }
 
-export function composeTaskPrompt(path: string, title: string, body: string): string {
+// `attachments` is the card's resolved ABSOLUTE paths, and defaults to
+// none so the dozen call sites that predate the field keep compiling and
+// keep meaning what they meant. It sits between the framing line and the
+// body deliberately: the files are context FOR the body, and an agent
+// told to read them after the instructions has already started.
+export function composeTaskPrompt(
+  path: string,
+  title: string,
+  body: string,
+  attachments: string[] = []
+): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
-    `You are executing the task card at ${path} ("${title}").\n\n` +
+    `You are executing the task card at ${path} ("${title}").` +
+    `${attachmentPromptBlock(attachments)}\n\n` +
     `${body}\n\n` +
     `While you work, keep this card's status current with gavin_set_plan_field on ${path}; ` +
     `set it to the board's done column when finished.`
   );
 }
 
-export function composePlanPrompt(path: string): string {
+export function composePlanPrompt(path: string, attachments: string[] = []): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Read ${path} and execute that plan. Work its checklist top to bottom: ` +
     `tick items (- [x]) as you complete them, promote items that need their own agent ` +
-    `with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field.`
+    `with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field.` +
+    attachmentPromptBlock(attachments)
   );
 }
 
@@ -165,11 +178,21 @@ export function runStatusNeeded(currentStatus: string | null): boolean {
 // been worked on, so its prompt points at the gavin-resume skill --
 // which teaches an agent to find the work in flight before adding to
 // it -- instead of the from-scratch framing above.
-export function composeResumeTaskPrompt(path: string, title: string, body: string): string {
+// Resume carries the block too. It is the SAME card: an attachment the
+// card records is as much a part of resuming it as of starting it, and a
+// resume that quietly dropped the references would be the one run mode
+// where the agent works blind.
+export function composeResumeTaskPrompt(
+  path: string,
+  title: string,
+  body: string,
+  attachments: string[] = []
+): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Use the gavin-resume skill to resume the task card at ${path} ("${title}"). ` +
-    `Work on it already started and stopped.\n\n` +
+    `Work on it already started and stopped.` +
+    `${attachmentPromptBlock(attachments)}\n\n` +
     `${body}\n\n` +
     `Find what is already done before you write anything, then carry on from there. ` +
     `Keep this card's status current with gavin_set_plan_field on ${path}; ` +
@@ -177,13 +200,14 @@ export function composeResumeTaskPrompt(path: string, title: string, body: strin
   );
 }
 
-export function composeResumePlanPrompt(path: string): string {
+export function composeResumePlanPrompt(path: string, attachments: string[] = []): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Use the gavin-resume skill to resume the plan at ${path}. Work on it already started ` +
     `and stopped: find what is already done before you write anything — the checklist's ` +
     `ticks are the record, but not the whole of it. Then work it top to bottom from there, ` +
     `ticking items (- [x]) as you complete them, promoting items that need their own agent ` +
-    `with gavin_promote_task, and keeping the plan's status current with gavin_set_plan_field.`
+    `with gavin_promote_task, and keeping the plan's status current with gavin_set_plan_field.` +
+    attachmentPromptBlock(attachments)
   );
 }

@@ -172,7 +172,8 @@ fn tool_definitions() -> Value {
             "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
             "body": { "type": "string", "description": "For kind task this IS the agent prompt" },
             "kind": { "type": "string", "enum": ["note", "task", "plan"], "description": "Default plan" },
-            "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" }
+            "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" },
+            "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" }
         }, "required": ["context_folder", "file_name", "title"] } },
         { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte. Setting status to Done files the card under plans/done/ (and any status off Done brings it back); the reply carries the card's path afterwards.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
@@ -277,6 +278,7 @@ fn dispatch_tool(
             body: str_arg(args, "body"),
             kind: str_arg(args, "kind"),
             parent: str_arg(args, "parent"),
+            attachments: str_arg(args, "attachments"),
         },
         "gavin_set_plan_field" => Request::SetPlanFrontmatterField {
             path: resolve_against_root(root, &require_arg(args, "path")?)
@@ -896,6 +898,7 @@ mod tests {
             checklist_total: 0,
             parse_warning: false,
             modified_at: None,
+            attachments: vec![],
         };
         protocol::GavinTree {
             root_path: "/ws".into(),
