@@ -7,6 +7,7 @@ mod git;
 mod layout;
 mod mac_window;
 mod session;
+mod workspace_delete;
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -60,6 +61,7 @@ pub fn run() {
             session::create_session,
             session::kill_session,
             session::adopt_session,
+            session::snapshot_session,
             session::get_workspaces_state,
             session::set_workspaces_state,
             session::get_theme_pref,
@@ -122,6 +124,8 @@ pub fn run() {
             agent_setup::mcp_formats,
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt,
+            workspace_delete::scan_gavin_footprint,
+            workspace_delete::remove_gavin_footprint,
             git::git_repo_info,
             git::git_status,
             git::get_git_baselines,

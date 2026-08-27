@@ -33,6 +33,9 @@
   import ColourPicker from "./ColourPicker.svelte";
   import Modal from "./Modal.svelte";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import WorkspaceDeleteWizard from "./WorkspaceDeleteWizard.svelte";
+  import { tooltip } from "./tooltip";
+  import { UNFILED_WORKSPACE_ID } from "./workspace";
 
   interface Props {
     workspaceId: string;
@@ -62,6 +65,20 @@
   let mcpFileError = $state<string | null>(null);
   let prdError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
+
+  // --- danger zone -----------------------------------------------------
+  let deleting = $state(false);
+
+  // Why Delete is unavailable, or null when it is available. A wizard
+  // with no root has nothing to scan, and the Scratchpad is pinned --
+  // there is no such thing as removing it.
+  const deleteBlockedReason = $derived(
+    workspaceId === UNFILED_WORKSPACE_ID
+      ? "The Scratchpad is always here — it can't be deleted."
+      : !hasRoot
+        ? "Bind a root folder first — there is nothing on disk to delete until then."
+        : null
+  );
 
   // --- daemon ----------------------------------------------------------
   let confirmingRestart = $state(false);
@@ -571,7 +588,36 @@
         <p class="hint warn">{restartNote}</p>
       {/if}
     </section>
+
+    <section>
+      <h3>Danger zone</h3>
+      <p class="hint">
+        Remove gavin from this workspace's folder: its plans, skills, MCP entry and instructions
+        block, plus the board and rails the daemon holds. You are asked about each one, and nothing
+        is removed until you confirm.
+      </p>
+      <!-- The reason hangs on the wrapper, not the button: a disabled
+           element fires no mouseenter, so a tooltip on it can never open
+           and the control would refuse to explain itself. -->
+      <div class="row" use:tooltip={deleteBlockedReason ?? ""}>
+        <button
+          type="button"
+          class="danger"
+          disabled={deleteBlockedReason !== null}
+          onclick={() => (deleting = true)}
+        >
+          Delete workspace…
+        </button>
+        {#if deleteBlockedReason}
+          <span class="hint">{deleteBlockedReason}</span>
+        {/if}
+      </div>
+    </section>
   </div>
+
+  {#if deleting}
+    <WorkspaceDeleteWizard {workspaceId} onClose={() => (deleting = false)} />
+  {/if}
 
   {#if confirmingRestart}
     <ConfirmPrompt
@@ -694,6 +740,9 @@
   .row button:disabled {
     opacity: 0.55;
     cursor: default;
+  }
+  .row button.danger {
+    color: var(--warning-text);
   }
   .actions button {
     background: var(--surface-overlay);

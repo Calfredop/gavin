@@ -6,6 +6,15 @@ import { allSessionIds } from "./layout";
 import type { Page, Workspace } from "./workspace";
 import { getActiveView } from "./workspace";
 import { listen } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { kanbanState } from "./kanbanState";
+import { orchestrations } from "./orchestrationState";
+import { toolRecords } from "./toolsState";
+
+// setWorkspaceRoot's reclaim offer is the only dialog this module opens.
+// Defaults to "Start fresh" so every test that is not about the reclaim
+// takes the ordinary binding path.
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn().mockResolvedValue(false) }));
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
@@ -58,6 +67,12 @@ vi.mock("./backend", () => ({
   getGitBaselines: vi.fn().mockResolvedValue([]),
   // Resolved by default: pruneBoardTabs calls .catch() on this.
   setBoardTabs: vi.fn().mockResolvedValue(undefined),
+  // The three fetches a reclaim fires against the restored id. Empty but
+  // well-formed, so the orchestration tick that fetchOrchestration ends
+  // in finds nothing to do rather than tripping over a stub.
+  getBoard: vi.fn().mockResolvedValue({ columns: [], labels: [], cardSessions: [] }),
+  getOrchestration: vi.fn().mockResolvedValue({ rails: [], conflictNotes: [] }),
+  getTools: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("./terminalRegistry", () => ({
@@ -166,6 +181,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     restoredSessionIds: new Set(),
     fileTabsById: {},
     boardTabsById: {},
+    removedWorkspaces: [],
   });
 }
 
@@ -192,6 +208,7 @@ beforeEach(() => {
     restoredSessionIds: new Set(),
     fileTabsById: {},
     boardTabsById: {},
+    removedWorkspaces: [],
   });
 });
 
@@ -237,6 +254,115 @@ describe("setWorkspaceRoot", () => {
 
     expect(backend.unwatchGavinRoot).toHaveBeenCalledWith("ws-1");
     expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-1", "/tmp/new");
+  });
+});
+
+describe("reclaiming a removed workspace's rows", () => {
+  const tombstone = { id: "old-ws", name: "Gavin", rootPath: "/repo/gavin", removedAt: 100 };
+
+  // Module-level stores, and fetchBoard/fetchOrchestration/fetchTools
+  // each short-circuit on an id they already hold -- without this, only
+  // the first test in this block would see the fetches fire.
+  beforeEach(() => {
+    kanbanState.set({});
+    orchestrations.set({});
+    toolRecords.set({});
+  });
+
+  function withTombstone(w: Workspace[]): void {
+    setState(w, w[0]?.id ?? null, null);
+    layoutState.update((s) => ({ ...s, removedWorkspaces: [tombstone] }));
+  }
+
+  it("offers the reclaim when an empty workspace is bound to the removed folder", async () => {
+    withTombstone([ws("fresh", [])]);
+
+    await setWorkspaceRoot("fresh", "/repo/gavin");
+
+    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("Gavin");
+  });
+
+  it("does not offer it for a folder nothing was removed from", async () => {
+    withTombstone([ws("fresh", [])]);
+
+    await setWorkspaceRoot("fresh", "/repo/other");
+
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  // Re-pointing a workspace that already holds tabs and a watch is a
+  // different question from reclaiming onto an empty one.
+  it("does not offer it for a workspace that already has sessions", async () => {
+    withTombstone([ws("fresh", [page("p1", leaf(["a"]))])]);
+
+    await setWorkspaceRoot("fresh", "/repo/gavin");
+
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("does not offer it for a workspace that is already bound to a root", async () => {
+    withTombstone([{ ...ws("fresh", []), rootPath: "/somewhere" }]);
+
+    await setWorkspaceRoot("fresh", "/repo/gavin");
+
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("Start fresh binds normally and drops the record so it stops asking", async () => {
+    withTombstone([ws("fresh", [])]);
+    vi.mocked(confirm).mockResolvedValueOnce(false);
+
+    await setWorkspaceRoot("fresh", "/repo/gavin");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].id).toBe("fresh");
+    expect(state.workspaces[0].rootPath).toBe("/repo/gavin");
+    expect(state.removedWorkspaces).toEqual([]);
+    expect(backend.watchGavinRoot).toHaveBeenCalledWith("fresh", "/repo/gavin");
+  });
+
+  it("Restore re-keys the workspace, carrying its pages with it", async () => {
+    withTombstone([ws("fresh", [page("p1", leaf([]))])]);
+    vi.mocked(confirm).mockResolvedValueOnce(true);
+
+    await setWorkspaceRoot("fresh", "/repo/gavin");
+
+    const state = get(layoutState);
+    expect(state.workspaces.map((w) => w.id)).toEqual(["old-ws"]);
+    expect(state.workspaces[0].pages.map((p) => p.id)).toEqual(["p1"]);
+    expect(state.workspaces[0].rootPath).toBe("/repo/gavin");
+    expect(state.activeWorkspaceId).toBe("old-ws");
+    // Spent: the bridge has been crossed.
+    expect(state.removedWorkspaces).toEqual([]);
+  });
+
+  // The whole point of the re-key: the rows are keyed by the restored
+  // id, so every watch and fetch has to name THAT one, never the id the
+  // workspace was created with.
+  it("Restore unwatches the new id, then watches and fetches the restored one", async () => {
+    withTombstone([ws("fresh", [])]);
+    vi.mocked(confirm).mockResolvedValueOnce(true);
+
+    await setWorkspaceRoot("fresh", "/repo/gavin");
+
+    expect(backend.unwatchGavinRoot).toHaveBeenCalledWith("fresh");
+    expect(backend.watchGavinRoot).toHaveBeenCalledWith("old-ws", "/repo/gavin");
+    expect(backend.watchGavinRoot).not.toHaveBeenCalledWith("fresh", "/repo/gavin");
+    expect(backend.getBoard).toHaveBeenCalledWith("old-ws");
+    expect(backend.getOrchestration).toHaveBeenCalledWith("old-ws");
+    expect(backend.getTools).toHaveBeenCalledWith("old-ws");
+  });
+
+  it("Restore persists the restored id", async () => {
+    withTombstone([ws("fresh", [])]);
+    vi.mocked(confirm).mockResolvedValueOnce(true);
+
+    await setWorkspaceRoot("fresh", "/repo/gavin");
+
+    const [persisted, active, removed] = vi.mocked(backend.setWorkspacesState).mock.calls.at(-1)!;
+    expect(persisted.map((w: Workspace) => w.id)).toEqual(["old-ws"]);
+    expect(active).toBe("old-ws");
+    expect(removed).toEqual([]);
   });
 });
 
@@ -438,7 +564,7 @@ describe("splitPane", () => {
       children: [leaf(["a"]), leaf(["b"])],
     });
     expect(state.focusedSessionId).toBe("b");
-    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1", []);
   });
 
   it("starts the new session in the workspace's root directory", async () => {
@@ -499,7 +625,7 @@ describe("splitPane", () => {
     expect(state.workspaces[1].activePageId).toBe("page-3");
     expect(getActiveView(state.workspaces[1])).toBe("terminal");
     expect(state.focusedSessionId).toBe("d");
-    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-2");
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-2", []);
   });
 });
 
@@ -523,7 +649,7 @@ describe("setTabPinned", () => {
     // Pinning is bookkeeping -- it must not yank the view somewhere else.
     expect(state.workspaces[0].activePageId).toBe("page-1");
     expect(state.focusedSessionId).toBe("a");
-    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1", []);
   });
 
   it("unpins through the same lookup", async () => {
@@ -789,7 +915,7 @@ describe("closePane", () => {
     expect(backend.killSession).not.toHaveBeenCalledWith("c");
     const state = get(layoutState);
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["c"]));
-    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1", []);
   });
 
   it("removes the page (not just clears it) when closing its only pane, and still persists", async () => {
@@ -800,7 +926,7 @@ describe("closePane", () => {
 
     const state = get(layoutState);
     expect(state.workspaces).toEqual([ws("ws-1", [], null)]);
-    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1");
+    expect(backend.setWorkspacesState).toHaveBeenCalledWith(state.workspaces, "ws-1", []);
   });
 
   it("does not throw and does not mutate state when the session id isn't found", async () => {
@@ -1061,13 +1187,41 @@ describe("closeWorkspace", () => {
     expect(state.activeWorkspaceId).toBe("ws-2");
   });
 
-  it("deletes the workspace's kanban board", async () => {
+  // The daemon's rows for a workspace are keyed by its uuid and by
+  // nothing on disk, so without this record the X makes them
+  // permanently unreachable.
+  it("leaves a tombstone naming the workspace's root", async () => {
+    setState([{ ...ws("ws-1", [page("page-1", leaf(["a"]))]), rootPath: "/repo/one" }], "ws-1", "a");
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closeWorkspace("ws-1");
+
+    const [tombstone, ...rest] = get(layoutState).removedWorkspaces;
+    expect(rest).toEqual([]);
+    expect(tombstone).toMatchObject({ id: "ws-1", rootPath: "/repo/one" });
+    // Persisted with the workspaces, not left in memory only.
+    expect(vi.mocked(backend.setWorkspacesState).mock.calls.at(-1)?.[2]).toEqual([tombstone]);
+  });
+
+  it("leaves no tombstone for a workspace that was never bound to a root", async () => {
     setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
     vi.mocked(backend.killSession).mockResolvedValue(undefined);
 
     await closeWorkspace("ws-1");
 
-    expect(backend.deleteBoard).toHaveBeenCalledWith("ws-1");
+    expect(get(layoutState).removedWorkspaces).toEqual([]);
+  });
+
+  // The X is app-side and nothing else: it used to delete the board,
+  // which made closing a workspace destroy columns and labels with no
+  // warning that said so. Deleting data is the wizard's job now.
+  it("leaves the workspace's kanban board alone", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closeWorkspace("ws-1");
+
+    expect(backend.deleteBoard).not.toHaveBeenCalled();
   });
 });
 
@@ -1288,7 +1442,6 @@ describe("closing file tabs", () => {
     setState([ws("ws-1", [page("page-1", leaf(["a", "file-1"]))])], "ws-1", "a");
     layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/tmp/a.md" } } }));
     vi.mocked(backend.killSession).mockResolvedValue(undefined);
-    vi.mocked(backend.deleteBoard).mockResolvedValue(undefined);
 
     await closeWorkspace("ws-1");
 
@@ -2205,6 +2358,7 @@ describe("runningSessionCount", () => {
       restoredSessionIds: new Set(),
       fileTabsById: {},
       boardTabsById: {},
+      removedWorkspaces: [],
       ...overrides,
     };
   }

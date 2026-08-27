@@ -16,6 +16,16 @@ interface RegistryEntry {
 
 const registry = new Map<string, RegistryEntry>();
 const pendingUnlisten = new Map<string, () => void>();
+// Resolves once a session's `pty-output` listener is actually registered.
+// `listen` is a round trip to the Rust side, and an event emitted before it
+// lands is dropped rather than queued -- so anything that ASKS the daemon to
+// push output has to wait on this first or it can ask into the void.
+const pendingListen = new Map<string, Promise<void>>();
+// Sessions whose screen this frontend load has already asked the daemon to
+// repaint. A terminal outlives the panes that show it, so a pane remounting
+// (a tree-shape change elsewhere) must not trigger a second full repaint of a
+// terminal that is already correct.
+const restored = new Set<string>();
 
 // The session's own live cwd, mirrored here from layoutState's
 // cwdBySessionId (kept current by the existing OSC 7 plumbing) via
@@ -133,13 +143,16 @@ export function getOrCreateTerminal(sessionId: string): RegistryEntry {
   });
 
   let unlisten: UnlistenFn | undefined;
-  listen<[string, string]>("pty-output", (event) => {
-    const [id, data] = event.payload;
-    if (id !== sessionId) return;
-    term.write(data);
-  }).then((fn) => {
-    unlisten = fn;
-  });
+  pendingListen.set(
+    sessionId,
+    listen<[string, string]>("pty-output", (event) => {
+      const [id, data] = event.payload;
+      if (id !== sessionId) return;
+      term.write(data);
+    }).then((fn) => {
+      unlisten = fn;
+    })
+  );
   pendingUnlisten.set(sessionId, () => unlisten?.());
 
   const entry: RegistryEntry = { term, container, fitAddon };
@@ -165,6 +178,27 @@ export function getTerminal(sessionId: string): Terminal | undefined {
   return registry.get(sessionId)?.term;
 }
 
+/// Repaints a terminal from the daemon's screen model, once per session per
+/// frontend load.
+///
+/// A `Terminal` holds its contents in the webview and nothing else does, so a
+/// frontend reload -- every edit under `tauri dev` -- comes up with an empty
+/// one. The daemon does not re-send anything on its own: `Attach` happens once
+/// per app PROCESS. What arrives next is the running program's next repaint
+/// DELTA, which is only meaningful against the screen this terminal no longer
+/// has, and it paints a broken frame. Asking for the screen is what closes
+/// that gap.
+///
+/// Awaits the listener before asking, or the push it triggers would be emitted
+/// to nobody. Best-effort otherwise: a daemon too old to have a screen model
+/// refuses the request and the terminal is left exactly as it was found.
+export async function restoreScreen(sessionId: string): Promise<void> {
+  if (restored.has(sessionId)) return;
+  restored.add(sessionId);
+  await pendingListen.get(sessionId);
+  await backend.snapshotSession(sessionId).catch(() => {});
+}
+
 // Called only when a session is genuinely gone (killed or exited) -- never
 // on an ordinary tab-switch or tree-shape remount, which just re-parent the
 // existing entry instead of destroying it. Wired from layoutState.ts.
@@ -175,5 +209,7 @@ export function destroyTerminal(sessionId: string): void {
   pendingUnlisten.delete(sessionId);
   entry.term.dispose();
   registry.delete(sessionId);
+  pendingListen.delete(sessionId);
+  restored.delete(sessionId);
   cwdBySessionId.delete(sessionId);
 }

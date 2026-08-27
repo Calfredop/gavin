@@ -110,12 +110,20 @@ export async function confirmPageClose(workspaceId: string, pageId: string): Pro
 // Prompts before closing an entire workspace -- always, for the same
 // reason as confirmPageClose, just counted across every page it holds.
 // Returns whether the caller should proceed with closeWorkspace(workspaceId).
+//
+// The prompt says what closing does NOT do, because the gesture reads as
+// a delete and is not one: the workspace leaves the app, its sessions
+// end, and everything else -- the files on disk and the daemon's rows --
+// stays exactly where it is. Deleting those is a separate, deliberate
+// walk through Settings > Danger zone.
 export async function confirmWorkspaceClose(workspaceId: string): Promise<boolean> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return true;
   const count = sessionTabsOnly(allSessionIdsInWorkspace(ws), state.fileTabsById, state.boardTabsById).length;
-  return confirm(`Close this workspace? ${count} terminal session${count === 1 ? "" : "s"} will end.`, {
-    title: "gavin",
-  });
+  return confirm(
+    `Remove this workspace from gavin? ${count} terminal session${count === 1 ? "" : "s"} will end. ` +
+      `Nothing on disk is deleted and its board is kept — re-adding the folder offers to restore it.`,
+    { title: "gavin" }
+  );
 }

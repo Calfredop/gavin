@@ -150,6 +150,25 @@ fn default_true() -> bool {
     true
 }
 
+/// A workspace the sidebar X removed, kept only so its daemon rows can
+/// be found again. Every such row is keyed by the workspace's id -- a
+/// uuid minted at creation and written nowhere on disk -- so re-adding
+/// the same folder mints a new id and comes back to an empty board. This
+/// record is the only bridge back.
+///
+/// Written and read entirely by the frontend (which owns the clock and
+/// the reclaim prompt); Rust's job is to persist it and carry it through,
+/// hence camelCase and the `default` on the field that holds it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedWorkspace {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+    /// Epoch milliseconds.
+    pub removed_at: i64,
+}
+
 /// One persisted board tab: which workspace's board, filtered to which
 /// gavin context. Crosses to the frontend via get/set_board_tabs, hence
 /// camelCase (verified by the shape test below).
@@ -206,6 +225,13 @@ pub struct AppConfig {
     /// save.
     #[serde(default)]
     pub agent_models: HashMap<String, String>,
+    /// Tombstones for workspaces removed from the sidebar, newest first.
+    /// `default` so every config.json written before this field existed
+    /// still loads; like session_names/file_tabs/board_tabs/theme/
+    /// agent_models it must be carried through `persist_workspaces`, or
+    /// it silently resets on the next save.
+    #[serde(default)]
+    pub removed_workspaces: Vec<RemovedWorkspace>,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -310,6 +336,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -330,6 +357,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -364,6 +392,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -472,6 +501,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -509,6 +539,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -534,6 +565,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -576,6 +608,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -593,6 +626,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(&nested, &config).unwrap();
 
@@ -618,6 +652,7 @@ mod tests {
             board_tabs,
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -668,6 +703,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -718,6 +754,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

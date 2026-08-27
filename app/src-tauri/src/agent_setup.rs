@@ -722,6 +722,170 @@ fn run_integration(
     Ok(IntegrationResult { written, skipped })
 }
 
+// --- What a setup run installed, for the delete wizard to undo ---------
+//
+// Every function below resolves through the SAME profile table and the
+// SAME writers that put the files there. That is the point: a wizard
+// that hardcoded `.mcp.json` and `.claude/skills/gavin` would silently
+// miss a Codex workspace's `.codex/config.toml`, and a wizard with its
+// own TOML editor would reformat a file gavin was careful not to.
+
+/// Where this root's gavin files live, per the profile it is configured
+/// for. Paths are absolute and may not exist -- existence is the
+/// scanner's question, not this one's.
+pub struct GavinInstall {
+    /// The agent's instructions file, the one that carries the marker
+    /// block.
+    pub instructions: PathBuf,
+    /// The MCP config and the key gavin's entry hangs off. None for a
+    /// `custom` profile that has never been pointed at a file.
+    pub mcp: Option<(PathBuf, String)>,
+    /// The skill directories the profile's table lists.
+    pub skills: Vec<PathBuf>,
+    /// The parent those skills share, when the profile has one. Scanned
+    /// for gavin-prefixed siblings too: `compose_agent_prompt` installs
+    /// step skills (`gavin-write-prd`, `gavin-write-agent-file`) that
+    /// appear in no table, and a wizard that only read the table would
+    /// leave them behind.
+    pub skill_root: Option<PathBuf>,
+}
+
+pub fn gavin_install(root: &Path) -> GavinInstall {
+    let profile = profile_by_id(&read_profile_id(root));
+    let instructions = root.join(resolved_instructions_file(root, profile));
+    let mcp = resolved_mcp(root, profile);
+    let skills = mcp
+        .as_ref()
+        .map(|m| m.skills.iter().map(|s| root.join(s.dir)).collect())
+        .unwrap_or_default();
+    let skill_root = mcp.as_ref().and_then(|m| m.skill_slot()).map(|(dir, _)| root.join(dir));
+    GavinInstall {
+        instructions,
+        mcp: mcp.map(|m| (root.join(&m.config_file), m.server_key.to_string())),
+        skills,
+        skill_root,
+    }
+}
+
+/// Whether the root's MCP config actually carries gavin's server entry.
+/// A config file that never mentioned gavin is not the wizard's
+/// business, and neither is one that does not parse -- refusing to
+/// report an unreadable file is what keeps the remover from being handed
+/// a file it would have to clobber to edit.
+pub fn mcp_entry_present(root: &Path) -> bool {
+    let profile = profile_by_id(&read_profile_id(root));
+    let Some(layout) = resolved_mcp(root, profile) else { return false };
+    let path = root.join(&layout.config_file);
+    let Ok(content) = std::fs::read_to_string(&path) else { return false };
+    match layout.format {
+        McpFormat::TomlServers => content
+            .parse::<toml_edit::DocumentMut>()
+            .ok()
+            .and_then(|doc| {
+                Some(doc.get("mcp_servers")?.as_table_like()?.contains_key(layout.server_key))
+            })
+            .unwrap_or(false),
+        _ => serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|doc| {
+                Some(doc.get(layout.format.json_container())?.get(layout.server_key).is_some())
+            })
+            .unwrap_or(false),
+    }
+}
+
+/// Strips gavin's server entry, keeping every other server and the
+/// file's own formatting -- the exact inverse of `write_mcp_config`, and
+/// written with the same editors so a hand-tuned config survives being
+/// un-gavined. The file is only ever EDITED: it is shared with whatever
+/// else the agent talks to, so removing it is never gavin's call.
+///
+/// Returns whether anything changed. A file that does not parse errors
+/// out rather than being rewritten, the same promise the writer makes.
+pub fn remove_mcp_entry(root: &Path) -> anyhow::Result<bool> {
+    let profile = profile_by_id(&read_profile_id(root));
+    let Some(layout) = resolved_mcp(root, profile) else { return Ok(false) };
+    let path = root.join(&layout.config_file);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(&path)?;
+    match layout.format {
+        McpFormat::TomlServers => {
+            let mut doc = content.parse::<toml_edit::DocumentMut>().map_err(|_| {
+                anyhow::anyhow!("{} is not valid TOML — fix or remove it first", path.display())
+            })?;
+            let Some(table) = doc.get_mut("mcp_servers").and_then(|i| i.as_table_like_mut()) else {
+                return Ok(false);
+            };
+            if table.remove(layout.server_key).is_none() {
+                return Ok(false);
+            }
+            std::fs::write(&path, doc.to_string())?;
+        }
+        _ => {
+            let mut doc: serde_json::Value = serde_json::from_str(&content).map_err(|_| {
+                anyhow::anyhow!("{} is not valid JSON — fix or remove it first", path.display())
+            })?;
+            let container = layout.format.json_container();
+            let Some(servers) =
+                doc.get_mut(container).and_then(|c| c.as_object_mut())
+            else {
+                return Ok(false);
+            };
+            if servers.remove(layout.server_key).is_none() {
+                return Ok(false);
+            }
+            std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&doc)?))?;
+        }
+    }
+    Ok(true)
+}
+
+/// Whether a file carries the marker block. Both markers, in order --
+/// half a block is a file someone edited by hand, and cutting from a
+/// start marker to the end of the file would take their prose with it.
+pub fn instructions_block_present(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else { return false };
+    match (content.find(MARKER_START), content.find(MARKER_END)) {
+        (Some(start), Some(end)) => end >= start,
+        _ => false,
+    }
+}
+
+/// Cuts the marker block out, leaving the human's own prose byte for
+/// byte as it was. Only the block and the newlines that bracketed it go:
+/// the writer inserted a blank-line separator when it appended, so
+/// removing the block without it would leave the file one newline longer
+/// than the file gavin was first pointed at.
+///
+/// The file itself is never removed, even if the block was all it held.
+/// It is the agent's instructions file, not gavin's.
+pub fn remove_instructions_block(path: &Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(path)?;
+    let (Some(start), Some(end)) = (content.find(MARKER_START), content.find(MARKER_END)) else {
+        return Ok(false);
+    };
+    if end < start {
+        return Ok(false);
+    }
+    let before = content[..start].trim_end_matches('\n');
+    let after = content[end + MARKER_END.len()..].trim_start_matches('\n');
+    let mut out = String::from(before);
+    if !before.is_empty() {
+        out.push('\n');
+        if !after.is_empty() {
+            out.push('\n');
+        }
+    }
+    out.push_str(after);
+    std::fs::write(path, out)?;
+    Ok(true)
+}
+
 /// One authored document per agent-driven flow (W6), delivered two ways:
 /// installed as a real skill where the profile has a skill mechanism, and
 /// inlined into the prompt where it does not. One source either way, so

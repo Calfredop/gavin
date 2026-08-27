@@ -1,6 +1,6 @@
 ---
 title: Workspace delete
-status: To Do
+status: Done
 ---
 Make the current "X" button in the sidebar only remove the workspace from Gavin
 app. Then add a delete workspace option in workspace settings. This should walk
@@ -39,57 +39,57 @@ choice for final confirm.
 
 ## Steps
 
-- [ ] `closeWorkspace` stops calling `deleteBoard` and writes no daemon row; its
+- [x] `closeWorkspace` stops calling `deleteBoard` and writes no daemon row; its
       confirm says the files stay put. `layoutState.test.ts`'s assertion that
       `deleteBoard` was called flips to asserting it was not.
-- [ ] `WorkspacesData` gains `removedWorkspaces` (serde `default`, so existing
+- [x] `WorkspacesData` gains `removedWorkspaces` (serde `default`, so existing
       state files still load), and `workspace.ts` gains pure
       `rememberRemoved` / `matchTombstone` / `forgetTombstone` — newest first,
       capped, and written only for a workspace that had a root. Unit tested.
-- [ ] `setWorkspaceRoot` offers the reclaim: a pure
+- [x] `setWorkspaceRoot` offers the reclaim: a pure
       `reclaimable(state, workspaceId, rootPath)` returns a tombstone only for a
       workspace with no root and no sessions, and the prompt offers Restore or
       Start fresh — Start fresh drops the tombstone.
-- [ ] Restoring re-keys the workspace to the tombstone's id before anything binds
+- [x] Restoring re-keys the workspace to the tombstone's id before anything binds
       to the new one: unwatch the new id, watch the old, refetch board,
       orchestration and tools. A test proves the pages travel with it and the
       board that comes back is the old one.
-- [ ] `workspaceDelete.ts` — the pure step machine: the six steps, the answer
+- [x] `workspaceDelete.ts` — the pure step machine: the six steps, the answer
       record, and `plannedRemovals(footprint, answers)` returning the exact paths
       to trash and the exact file edits. It never touches the filesystem, and it
       is what the final screen renders. Unit tested.
-- [ ] Tauri `scan_gavin_footprint(root)` reports what actually exists:
+- [x] Tauri `scan_gavin_footprint(root)` reports what actually exists:
       `.gavin-root/` with its card and archive counts, which `.claude/skills/gavin*`
       dirs are present, whether the profile's MCP config carries the `gavin`
       server key, whether the instructions file carries the marker block, every
       nested `.gavin/` under the root, and the `extra_contexts` paths outside it.
       Reuses the `agent_setup` profile table rather than hardcoding file names.
-- [ ] Tauri `remove_gavin_footprint(root, plan)` executes it: chosen paths go to
+- [x] Tauri `remove_gavin_footprint(root, plan)` executes it: chosen paths go to
       the OS Trash, the `gavin` key is stripped from `.mcp.json` / `config.toml`
       with the same format-preserving writers that wrote it, and the
       `<!-- gavin:start -->…<!-- gavin:end -->` block is cut from the instructions
       file. A shared config file is only ever edited, never deleted; a path the
       scan did not report cannot be removed; one failure does not abort the rest.
-- [ ] Rust tests: trashing `.gavin-root` leaves the repo otherwise intact,
+- [x] Rust tests: trashing `.gavin-root` leaves the repo otherwise intact,
       stripping the MCP key preserves every other server and the file's
       formatting, cutting the marker block leaves the human's own prose
       byte-identical, and a declined category is untouched.
-- [ ] Settings grows a Danger zone section with **Delete workspace…**, disabled
+- [x] Settings grows a Danger zone section with **Delete workspace…**, disabled
       with its reason on a workspace that has no root — the reason hung on a
       non-disabled ancestor, since a disabled element fires no `mouseenter`.
-- [ ] `WorkspaceDeleteWizard.svelte` renders the machine: one screen per
+- [x] `WorkspaceDeleteWizard.svelte` renders the machine: one screen per
       category showing the exact paths and counts found, each declinable, a
       category the scan found nothing for skipped entirely, and the nested
       contexts screen carrying one checkbox per path — the ones outside the root
       grouped under a warning and unticked by default.
-- [ ] The sixth screen asks about the daemon's rows for this workspace — board
+- [x] The sixth screen asks about the daemon's rows for this workspace — board
       columns and labels, rails and run state, workspace-scoped tools and group
       templates, card↔session links — and says plainly that declining leaves rows
       nothing but a reclaim can reach again.
-- [ ] The final screen lists everything that will happen (paths to Trash, files to
+- [x] The final screen lists everything that will happen (paths to Trash, files to
       edit, rows to clear, sessions to end) and enables Delete only once the
       workspace's name is typed exactly.
-- [ ] Confirming runs the removal, then clears the daemon rows if chosen —
+- [x] Confirming runs the removal, then clears the daemon rows if chosen —
       `DeleteBoard`, `SetOrchestration` with empty rails, `DeleteTool` and
       `DeleteGroupTemplate` for workspace-scoped rows only (never the
       `workspace_id NULL` globals), and `UnlinkCardSession` per linked card,
@@ -97,9 +97,9 @@ choice for final confirm.
       workspace the way the X does, without a tombstone. Anything that failed is
       reported with its path and reason, and the workspace stays so the run can be
       repeated.
-- [ ] `smokeChecklist.ts` gains what the suites cannot cover: the wizard
+- [x] `smokeChecklist.ts` gains what the suites cannot cover: the wizard
       end to end on a scratch repo, a declined category surviving it, the Trash
       actually holding the files, and remove → re-add → reclaim bringing back the
       columns and the rails.
-- [ ] `cargo test --workspace`, `npm test`, `npm run check` and `npm run build`
+- [x] `cargo test --workspace`, `npm test`, `npm run check` and `npm run build`
       green in a detached worktree.

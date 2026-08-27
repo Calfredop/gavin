@@ -873,6 +873,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Terminal restore",
+    items: [
+      {
+        id: "restore-agent-restart",
+        text: "With a coding agent running in a tab, quit and relaunch the app: the agent's box, banner and prompt come back whole, not as a half-drawn frame",
+        hint: "This is the bug. The daemon now sends its own model of the screen instead of replaying a tail of the raw PTY bytes — a tail of an agent's output is repaint DELTAS with no frame under them.",
+      },
+      {
+        id: "restore-agent-hotreload",
+        text: "Under `npm run tauri dev`, edit any frontend file so the webview hot reloads: every terminal repaints itself instead of coming back blank or scrambled",
+        hint: "The reload builds brand-new empty Terminal objects and nothing used to re-send anything — Attach runs once per app PROCESS. Each pane now asks for a repaint on mount.",
+      },
+      {
+        id: "restore-shell-history",
+        text: "In a plain shell tab, scroll up after a restart: the output above the current screen is still there",
+        hint: "The screen model keeps 500 rows of scrollback and the snapshot prints them above the restored screen. Gone entirely = the history half regressed.",
+      },
+      {
+        id: "restore-no-duplicate-notification",
+        text: "Hot reload while an agent is waiting on you: NO duplicate “waiting for input” notification fires",
+        hint: "Exactly why the repaint is Request::Snapshot and not a second Attach — Attach re-sends the status baseline, and waiting_for_input notifies unconditionally.",
+      },
+      {
+        id: "restore-arrow-keys",
+        text: "After a restart, arrow keys still work inside a restored agent/TUI session (history recall, menu navigation)",
+        hint: "The snapshot re-establishes application-cursor mode, which decides whether an arrow sends \\eOA or \\e[A. Wrong keys = input_mode_formatted() stopped riding along.",
+      },
+      {
+        id: "restore-resize-then-restart",
+        text: "Resize the window, then restart: the restored screen fits the new width with no wrapped or truncated rows",
+        hint: "The parser follows the PTY through ResizeSession; a snapshot rendered at a stale size shows up as broken box-drawing.",
+      },
+    ],
+  },
+  {
     title: "Git tab",
     items: [
       {
@@ -1112,6 +1147,66 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "hub-scratchpad-renamed",
         text: "The pinned workspace reads “Scratchpad”, keeps its pages, and appears in the hub's recents like any other",
         hint: "Launch against an existing config.json — the id stays __unfiled__, so nothing may be orphaned by the rename.",
+      },
+    ],
+  },
+  {
+    // Everything here removes real files or depends on the OS Trash, so
+    // none of it is reachable from a unit test. Run the whole section on
+    // a SCRATCH repo you are willing to lose.
+    title: "Removing a workspace",
+    items: [
+      {
+        id: "delete-x-keeps-everything",
+        text: "The sidebar X warns that nothing on disk is deleted, and afterwards .gavin-root/ is still there and the board comes back on re-add",
+        hint: "The X used to delete the board silently. Re-adding the folder is the next item — do them together.",
+      },
+      {
+        id: "delete-reclaim-restores",
+        text: "Re-adding the removed folder to a NEW empty workspace offers Restore, and Restore brings back the old columns and rails",
+        hint: "The rows are keyed by the workspace's uuid — “the board is back” is the only proof the re-key landed.",
+      },
+      {
+        id: "delete-reclaim-start-fresh",
+        text: "Choosing Start fresh binds normally, and picking the same folder again does not ask a second time",
+      },
+      {
+        id: "delete-disabled-explains-itself",
+        text: "On a workspace with no root, Settings → Danger zone → Delete workspace… is disabled and hovering it says why",
+        hint: "A disabled element fires no mouseenter — the reason has to come from the row around it.",
+      },
+      {
+        id: "delete-wizard-walks",
+        text: "The wizard walks one screen per category found, Back works from every screen, and a category the scan found nothing for is skipped entirely",
+        hint: "Delete .claude/skills/gavin* by hand first — the skills screen should then not appear at all.",
+      },
+      {
+        id: "delete-outside-context-unticked",
+        text: "A context registered from outside the root appears under a warning and starts unticked",
+        hint: "Add one with the Plans tab's “Add outside context…” before starting.",
+      },
+      {
+        id: "delete-confirm-gated",
+        text: "Delete stays disabled until the workspace's name is typed exactly, and the summary lists every path, edit, row group and session",
+      },
+      {
+        id: "delete-declined-survives",
+        text: "A category answered No is still on disk afterwards, byte for byte",
+        hint: "Decline the instructions block: CLAUDE.md must still hold <!-- gavin:start -->.",
+      },
+      {
+        id: "delete-trash-holds-the-files",
+        text: "The trashed folders are actually in the Trash and can be dragged back out",
+        hint: "This is the whole reason it is not rm — check the Finder, not just that the folder is gone.",
+      },
+      {
+        id: "delete-shared-files-edited",
+        text: ".mcp.json keeps its other servers and CLAUDE.md keeps your own prose — both files still exist",
+      },
+      {
+        id: "delete-leaves-no-tombstone",
+        text: "After a delete, re-adding the same folder does NOT offer to restore anything",
+        hint: "The opposite of the X: a delete means it, so no record is kept.",
       },
     ],
   },

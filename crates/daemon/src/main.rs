@@ -5,6 +5,7 @@ mod orchestration;
 mod osc;
 mod pty;
 mod registry;
+mod screen;
 mod server;
 mod status;
 

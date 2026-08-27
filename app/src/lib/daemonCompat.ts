@@ -93,16 +93,16 @@ export const FEATURE_MIN_VERSION = {
   // the Settings row -- read it through featureBlockedReason.
   prdPath: 17,
   // Card attachments. Two separate holes, and only one of them is loud:
-  // a v17 daemon's set_plan_field allow-list has no `attachments`, so
+  // a v18 daemon's set_plan_field allow-list has no `attachments`, so
   // that write fails with a message -- but `CreatePlan` merely GAINED a
-  // field, which a v17 daemon parses fine and drops on the floor. The
+  // field, which a v18 daemon parses fine and drops on the floor. The
   // card would be filed looking exactly as asked for and carry none of
   // the human's attachments, and nothing on the wire would say so.
   // min_version_for gates request TYPES, not payloads, so this entry is
   // the only gate there is; every surface that can produce the payload
   // -- the card detail modal's Attachments section and the ⌘N composer's
   // -- reads it through featureBlockedReason.
-  attachments: 18,
+  attachments: 19,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

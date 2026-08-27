@@ -1,11 +1,12 @@
 import { writable, get } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
 import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
-import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs } from "./workspace";
+import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs, RemovedWorkspace } from "./workspace";
 import { sessionLabel } from "./paths";
 import { buildRunCommand } from "./cardRun";
 import { workspaceIdForSession } from "./workspace";
@@ -44,6 +45,10 @@ export interface LayoutState {
   restoredSessionIds: Set<string>;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
+  /// Workspaces the sidebar X removed, newest first. Persisted with the
+  /// workspaces themselves; see workspace.ts's RemovedWorkspace for why
+  /// removing a workspace has to leave a record at all.
+  removedWorkspaces: RemovedWorkspace[];
 }
 
 const initialState: LayoutState = {
@@ -59,6 +64,7 @@ const initialState: LayoutState = {
   restoredSessionIds: new Set(),
   fileTabsById: {},
   boardTabsById: {},
+  removedWorkspaces: [],
 };
 
 export const layoutState = writable<LayoutState>(initialState);
@@ -136,9 +142,21 @@ function setError(message: string): void {
 // Shared by every action below that ends in "mutate the active page's
 // tree, then persist the whole workspaces array" -- extracted so that
 // pattern exists exactly once instead of once per action.
+//
+// The tombstone list is read off the store rather than taken as a third
+// argument. Thirty-odd call sites pass whatever workspaces they just
+// computed; making each of them also remember an unrelated list is how a
+// carry-through field gets silently wiped by the one site that forgot
+// it. The store is where the list lives, so the two callers that CHANGE
+// it (closeWorkspace, and the reclaim prompt) write it there first and
+// then persist like everyone else.
 async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: string | null): Promise<void> {
   try {
-    await backend.setWorkspacesState(workspaces, activeWorkspaceId);
+    await backend.setWorkspacesState(
+      workspaces,
+      activeWorkspaceId,
+      get(layoutState).removedWorkspaces ?? []
+    );
   } catch (e) {
     setError(String(e));
   }
@@ -509,6 +527,7 @@ export async function bootstrap(): Promise<void> {
           workspaces: resolved.state.workspaces,
           activeWorkspaceId: resolved.state.activeWorkspaceId,
           focusedSessionId: resolved.focusedSessionId,
+          removedWorkspaces: event.payload.removedWorkspaces ?? [],
         };
       });
       watchRootedWorkspaces(event.payload.workspaces);
@@ -725,6 +744,7 @@ async function pollForStartupState(): Promise<void> {
           workspaces: resolved.state.workspaces,
           activeWorkspaceId: resolved.state.activeWorkspaceId,
           focusedSessionId: resolved.focusedSessionId,
+          removedWorkspaces: data.removedWorkspaces ?? [],
         };
       });
       watchRootedWorkspaces(data.workspaces);
@@ -738,12 +758,81 @@ async function pollForStartupState(): Promise<void> {
   }
 }
 
+/// Restores a removed workspace's daemon rows onto an empty workspace by
+/// giving it the removed one's id back.
+///
+/// Order is the whole point. The re-key happens BEFORE anything binds to
+/// the id the workspace is being given up: the watch under the new id is
+/// torn down first, the store and config.json are written next, and only
+/// then is the restored id watched and its rows fetched. Doing it the
+/// other way round leaves a watch pushing trees for an id no workspace
+/// holds, and fetches a board under the id that is about to disappear.
+async function restoreRemovedWorkspace(
+  state: LayoutState,
+  workspaceId: string,
+  tombstone: RemovedWorkspace,
+  rootPath: string
+): Promise<void> {
+  // reclaimable() insists the workspace is empty, so nothing is bound to
+  // this id -- except, possibly, a watch from an earlier root pick.
+  await backend.unwatchGavinRoot(workspaceId).catch(() => {});
+
+  const data = workspace.restoreWorkspaceId(state, workspaceId, tombstone.id, rootPath);
+  layoutState.update((s) => ({
+    ...s,
+    workspaces: data.workspaces,
+    activeWorkspaceId: data.activeWorkspaceId,
+    removedWorkspaces: data.removedWorkspaces ?? [],
+  }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+
+  void backend.watchGavinRoot(tombstone.id, rootPath).catch(() => {});
+
+  // Dynamically imported for the reason the bootstrap listener states:
+  // orchestrationState imports THIS module, so a static import would
+  // close a cycle. The other two ride along rather than being imported
+  // twice over.
+  const [{ fetchBoard }, { fetchOrchestration }, { fetchTools }] = await Promise.all([
+    import("./kanbanState"),
+    import("./orchestrationState"),
+    import("./toolsState"),
+  ]);
+  // These are the rows the tombstone existed to reach: the board with
+  // its columns and labels, the rails, and the workspace's own tools.
+  await Promise.all([
+    fetchBoard(tombstone.id),
+    fetchOrchestration(tombstone.id),
+    fetchTools(tombstone.id),
+  ]);
+}
+
 // Binds (or re-binds) a workspace to a root directory: persists the new
 // rootPath, tears down the old watch when the root actually changed, and
 // starts the new one. Init (scaffolding) happens BEFORE this is called --
 // see WorkspaceRootControl -- so the first push already sees the skeleton.
+//
+// A folder that a removed workspace used to be bound to offers a reclaim
+// first: its board, rails and tools are still in the daemon under an id
+// nothing else can name, and binding a fresh workspace here is the only
+// moment that record can be spent. Both answers consume the tombstone --
+// Restore because the bridge has been crossed, Start fresh because the
+// user has said no and the prompt must not return on the next pick.
 export async function setWorkspaceRoot(workspaceId: string, rootPath: string): Promise<void> {
   const state = get(layoutState);
+  const tombstone = workspace.reclaimable(state, workspaceId, rootPath);
+  if (tombstone) {
+    const restore = await confirm(
+      `gavin has a board, rails and tools saved for "${tombstone.name}", which was removed from ` +
+        `this folder. Restore them, or start this workspace fresh?`,
+      { title: "gavin", okLabel: "Restore", cancelLabel: "Start fresh" }
+    );
+    if (restore) {
+      await restoreRemovedWorkspace(state, workspaceId, tombstone, rootPath);
+      return;
+    }
+    const dropped = workspace.forgetTombstone(state, tombstone.id);
+    layoutState.update((s) => ({ ...s, removedWorkspaces: dropped.removedWorkspaces ?? [] }));
+  }
   const previous = state.workspaces.find((w) => w.id === workspaceId)?.rootPath;
   const workspaces = state.workspaces.map((w) => (w.id === workspaceId ? { ...w, rootPath } : w));
   layoutState.update((s) => ({ ...s, workspaces }));
@@ -1443,7 +1532,25 @@ export async function switchWorkspaceView(workspaceId: string, view: string): Pr
 // it -- the same escalation as closePane, one level up. Confirm-before
 // prompting is the caller's (Sidebar.svelte's) responsibility, matching
 // how confirmPaneClose/confirmTabClose already work.
-export async function closeWorkspace(workspaceId: string): Promise<void> {
+//
+// App-side ONLY: not one file on disk and not one daemon row is touched.
+// It used to delete the workspace's kanban board, which made the sidebar
+// X silently destroy columns and labels that took real work to arrange --
+// the same gesture that closes a tab. Removing a workspace's DATA is now
+// the delete wizard's job (Settings > Danger zone), and this leaves a
+// tombstone instead so those rows can be reclaimed: the workspace id is
+// a uuid minted at creation, so without one the rows are unreachable
+// forever.
+//
+// `remember: false` is the delete wizard's ending: it has just been
+// through six screens deciding what to remove, so leaving a record
+// offering to bring it all back would contradict the answer the user
+// gave. Every other caller wants the tombstone, which is why it is the
+// default rather than a flag each of them has to remember.
+export async function closeWorkspace(
+  workspaceId: string,
+  opts: { remember?: boolean } = {}
+): Promise<void> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return;
@@ -1455,14 +1562,12 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
     terminalRegistry.destroyTerminal(id);
   }
 
-  try {
-    await backend.deleteBoard(workspaceId);
-  } catch (e) {
-    setError(String(e));
-    return;
-  }
-
-  let updated = workspace.removeWorkspace(state, workspaceId);
+  // Stamped BEFORE the removal, because the tombstone's name and root
+  // are read off the workspace that is about to disappear. A rootless
+  // workspace produces none -- see rememberRemoved.
+  const remembered =
+    opts.remember === false ? state : workspace.rememberRemoved(state, workspaceId, Date.now());
+  let updated = workspace.removeWorkspace(remembered, workspaceId);
   let focusedSessionId = state.focusedSessionId;
   if (sessionIds.includes(state.focusedSessionId ?? "")) {
     const resolved = workspace.resolveActiveFocus(updated);
@@ -1475,9 +1580,20 @@ export async function closeWorkspace(workspaceId: string): Promise<void> {
     workspaces: updated.workspaces,
     activeWorkspaceId: updated.activeWorkspaceId,
     focusedSessionId,
+    // Into the store before the persist, which reads the list from
+    // there rather than taking it as an argument.
+    removedWorkspaces: updated.removedWorkspaces ?? [],
   }));
   await pruneClosedTabs(closed);
   await persistWorkspaces(updated.workspaces, updated.activeWorkspaceId);
+}
+
+/// The delete wizard's last act: the workspace leaves the app the way
+/// the sidebar X removes one, but with no tombstone behind it. Named
+/// rather than inlined so the one place that means "gone, and do not
+/// offer it back" says so at the call site.
+export function deleteWorkspaceFromApp(workspaceId: string): Promise<void> {
+  return closeWorkspace(workspaceId, { remember: false });
 }
 
 // Creates N fresh daemon sessions, builds a tree via buildTree (typically

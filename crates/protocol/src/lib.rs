@@ -13,15 +13,20 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
-/// v18 taught cards an `attachments:` line: `PlanFileInfo` carries the
+/// v19 taught cards an `attachments:` line: `PlanFileInfo` carries the
 /// parsed list, `SetPlanFrontmatterField` accepts the key, and
 /// `CreatePlan` carries the line to write. None of that is a new Request
 /// variant -- both widen EXISTING requests, which `min_version_for`
 /// gates by TYPE and therefore cannot see -- so the gate that matters is
-/// the app's FEATURE_MIN_VERSION.attachments. A v17 daemon refuses the
+/// the app's FEATURE_MIN_VERSION.attachments. A v18 daemon refuses the
 /// `SetPlanFrontmatterField` key loudly but drops `CreatePlan`'s field
 /// silently, which is the worse half: the card would be filed with the
 /// human's attachments quietly missing.
+///
+/// v18 added `Request::Snapshot`: "send me this session's screen again",
+/// answered from the daemon's per-session terminal parser. A new request
+/// variant, so `min_version_for` gates it by type and an older daemon
+/// simply never receives it.
 ///
 /// v17 taught the root config a top-level `prd` key: `SetRootConfigField`
 /// accepts a sixth key name and `GavinContext` carries `prd`. Neither is a
@@ -37,7 +42,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -70,6 +75,20 @@ pub enum Request {
         id: String,
     },
     Attach {
+        id: String,
+    },
+    /// "Send me this session's screen again." Rides the streaming
+    /// connection and is answered with a `Response::Output` carrying a byte
+    /// stream that reproduces the screen from scratch.
+    ///
+    /// Distinct from `Attach`, which also restores the screen, because
+    /// `Attach` re-sends the `CwdChanged` / `StatusChanged` /
+    /// `SessionRestored` baselines with it -- and a `waiting_for_input`
+    /// baseline notifies unconditionally on the app side. A frontend that
+    /// reloaded and wants its terminals repainted must not fire an OS
+    /// notification for every session that happens to be waiting on the
+    /// human.
+    Snapshot {
         id: String,
     },
     GetBoard {
@@ -404,6 +423,14 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::DeleteGroupTemplate { .. }
         | Request::GetGroupTemplates { .. }
         | Request::SaveGroupTemplate { .. } => 15,
+
+        // Repainting a reconnected terminal from the daemon's screen model.
+        // A new request TYPE, which is the case this match actually gates,
+        // so it needs no daemonCompat.ts mirror: a daemon older than 18 has
+        // no screen model to ask, the request never reaches the wire, and
+        // the frontend just leaves the terminal as it found it -- which is
+        // what it did before any of this existed.
+        Request::Snapshot { .. } => 18,
 
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
@@ -1673,6 +1700,15 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v19: card attachments -- PlanFileInfo.attachments, a seventh
+        // SetPlanFrontmatterField key, and CreatePlan.attachments. No
+        // new variant, which is exactly why daemonCompat.ts owes it a
+        // FEATURE_MIN_VERSION entry with real consumers.
+        // v18: Request::Snapshot -- "send me this session's screen
+        // again", answered from the daemon's per-session terminal
+        // parser. A new request TYPE, which is what min_version_for
+        // actually gates, so unlike v15/v16/v17 below it owes
+        // daemonCompat.ts nothing.
         // v17: a top-level `prd` in the root config -- a sixth key name
         // SetRootConfigField accepts, plus GavinContext.prd. The key
         // widens an EXISTING request, so min_version_for is blind to it
@@ -1699,13 +1735,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        // v17: the root config's top-level `prd` -- a sixth
-        // SetRootConfigField key and GavinContext.prd, no new variant.
-        // v18: card attachments -- PlanFileInfo.attachments, a seventh
-        // SetPlanFrontmatterField key, and CreatePlan.attachments. Again
-        // no new variant, which is exactly why daemonCompat.ts owes it a
-        // FEATURE_MIN_VERSION entry with real consumers.
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
     }
 
     #[test]
@@ -1720,6 +1750,14 @@ mod tests {
     #[test]
     fn malformed_json_is_still_an_error() {
         assert!(serde_json::from_str::<Request>("{not json").is_err());
+    }
+
+    #[test]
+    fn snapshot_is_a_v18_request() {
+        // The gate is the whole compatibility story for this one: a daemon
+        // with no screen model must never be sent the request, and the app
+        // must fall back to leaving the terminal as it found it.
+        assert_eq!(min_version_for(&Request::Snapshot { id: "s".into() }), 18);
     }
 
     #[test]

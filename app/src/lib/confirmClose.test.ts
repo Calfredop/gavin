@@ -51,6 +51,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     restoredSessionIds: new Set(),
     fileTabsById: {},
     boardTabsById: {},
+    removedWorkspaces: [],
   });
 }
 
@@ -223,9 +224,9 @@ describe("file tabs are not counted as terminal sessions", () => {
 
     await confirmWorkspaceClose("ws-1");
 
-    expect(confirm).toHaveBeenCalledWith("Close this workspace? 1 terminal session will end.", {
-      title: "gavin",
-    });
+    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("1 terminal session will end");
+    // Says what it does not do: the X is app-side only.
+    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("Nothing on disk is deleted");
   });
 });
 
