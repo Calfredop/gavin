@@ -1557,7 +1557,17 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }),
         Request::ReadPrd { root_path } => crate::gavin::read_prd(std::path::Path::new(&root_path))
             .map(|content| Response::PrdContent { content }),
-        Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent } => {
+        Request::CreatePlan {
+            context_folder,
+            file_name,
+            title,
+            status,
+            priority,
+            body,
+            kind,
+            parent,
+            attachments,
+        } => {
             crate::gavin::create_plan_file(
                 std::path::Path::new(&context_folder),
                 &file_name,
@@ -1567,6 +1577,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 body.as_deref(),
                 kind.as_deref(),
                 parent.as_deref(),
+                attachments.as_deref(),
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
@@ -2445,6 +2456,7 @@ mod tests {
                 kind: None,
                 parent: None,
                 body: None,
+                attachments: None,
             },
         );
         let created_path = match resp {
