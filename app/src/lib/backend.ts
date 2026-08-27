@@ -108,6 +108,13 @@ export function resizeSession(sessionId: string, cols: number, rows: number): Pr
   return invoke("resize_session", { sessionId, cols, rows });
 }
 
+/// Asks the daemon to repaint this session's terminal from its own model of
+/// the screen. See the Rust command for why a reloaded frontend needs it and
+/// why it isn't a second Attach.
+export function snapshotSession(sessionId: string): Promise<void> {
+  return invoke("snapshot_session", { sessionId });
+}
+
 export function getSessionNames(): Promise<Record<string, string>> {
   return invoke("get_session_names");
 }

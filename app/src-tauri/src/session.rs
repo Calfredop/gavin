@@ -2150,6 +2150,41 @@ pub fn create_session(
     Ok(id)
 }
 
+/// Asks the daemon to repaint this session's terminal.
+///
+/// The frontend learns a terminal's contents from `pty-output` pushes, and
+/// the screen those pushes build up lives only in the webview's `Terminal`
+/// object. A frontend reload throws that object away and builds a blank one
+/// -- and nothing re-sends anything, because `Attach` runs once per app
+/// PROCESS (`attach_and_relay`), not once per frontend load. Under
+/// `tauri dev` that is every frontend edit. What arrives next is the running
+/// program's next repaint DELTA, computed against a screen this terminal no
+/// longer has, so it paints a broken frame.
+///
+/// A second `Attach` would also repaint, but it re-sends the
+/// `CwdChanged` / `StatusChanged` / `SessionRestored` baselines with it, and
+/// a `waiting_for_input` baseline notifies unconditionally
+/// (`notifications.ts`) -- every hot reload would fire an OS notification for
+/// every session waiting on the human. This asks for the screen and nothing
+/// else.
+///
+/// Best-effort by design: against a daemon older than the screen model, the
+/// gate refuses the request and the terminal is simply left as it was found,
+/// which is what happened before any of this existed.
+#[tauri::command]
+pub fn snapshot_session(
+    session_id: String,
+    daemon_state: State<DaemonConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    send_request(
+        &daemon_state.writer,
+        &Request::Snapshot { id: session_id },
+        &current_compat(&compat),
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn kill_session(
     session_id: String,

@@ -3,9 +3,10 @@ use crate::kanban::KanbanStore;
 use crate::osc::OscCwdScanner;
 use crate::pty::PtySession;
 use crate::registry::{Registry, SessionRecord, SessionStatus};
+use crate::screen::SessionScreen;
 use crate::status::{StatusEvent, StatusScanner, HEURISTIC_QUIET_PERIOD};
 use notify_debouncer_mini::Debouncer;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -13,12 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-
-/// Cap on how much recent output is retained per session for replay to a
-/// client that reattaches after missing it (e.g. app closed, daemon still
-/// running). A rolling window, not a per-attach diff — every Attach replays
-/// whatever's currently buffered, regardless of what a previous Attach saw.
-const OUTPUT_BUFFER_CAP: usize = 64 * 1024;
 
 /// Sent as the exit_code of a Response::SessionExited that isn't really an
 /// exit at all -- it's spawn_pump's reader_for failing to find any live
@@ -598,7 +593,15 @@ pub struct SessionManager {
     orchestration: Mutex<crate::orchestration::OrchestrationStore>,
     sessions: Mutex<HashMap<String, PtySession>>,
     attached_writers: Mutex<HashMap<String, Arc<Mutex<UnixStream>>>>,
-    output_buffers: Mutex<HashMap<String, VecDeque<u8>>>,
+    /// What each live session's screen currently IS, so a client that
+    /// reconnects can be sent the screen rather than a tail of the bytes that
+    /// built it (see `screen.rs`). Each screen is behind its own mutex, held
+    /// by the pump across BOTH feeding a chunk in and forwarding that same
+    /// chunk on: a snapshot taken between those two steps would contain a
+    /// delta the client is about to receive a second time, and a TUI frame
+    /// survives a delta applied twice no better than one applied never.
+    /// Lock order everywhere is screen -> attached_writers -> writer.
+    screens: Mutex<HashMap<String, Arc<Mutex<SessionScreen>>>>,
     /// The daemon's first genuinely *shared* (not per-session) state:
     /// one entry per unique repo root any live session is currently
     /// mapped to. Not persisted -- see this plan's Global Constraints.
@@ -626,7 +629,7 @@ impl SessionManager {
             orchestration: Mutex::new(orchestration),
             sessions: Mutex::new(HashMap::new()),
             attached_writers: Mutex::new(HashMap::new()),
-            output_buffers: Mutex::new(HashMap::new()),
+            screens: Mutex::new(HashMap::new()),
             repo_pollers: Mutex::new(HashMap::new()),
             session_repo_root: Mutex::new(HashMap::new()),
             gavin_watchers: Mutex::new(HashMap::new()),
@@ -1040,11 +1043,29 @@ impl SessionManager {
     }
 
     pub fn resize_session(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(id)
-            .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
-        session.resize(cols, rows)
+        {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions
+                .get(id)
+                .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
+            session.resize(cols, rows)?;
+        }
+        // The screen model has to follow the PTY, or a snapshot is rendered at
+        // a size the session itself stopped believing in -- and the client that
+        // asked for it is the one that just changed the size.
+        //
+        // This runs on a connection's request loop and can wait on a lock the
+        // pump holds across a socket write, which reads like the stall this
+        // file works hard to avoid. It is bounded by the same condition that
+        // already bounds the pump: the pump's write goes to
+        // `attached_writers[id]` -- the very connection resizes arrive on --
+        // and a client drains that direction from its own reader thread. A
+        // client that stopped draining has already stopped receiving output,
+        // so there is nothing left for a resize to be late for.
+        if let Some(screen) = self.screens.lock().unwrap().get(id) {
+            screen.lock().unwrap().set_size(rows, cols);
+        }
+        Ok(())
     }
 
     pub fn kill_session(&self, id: &str) -> anyhow::Result<()> {
@@ -1201,23 +1222,10 @@ impl SessionManager {
             }
         }
 
-        // Replay buffered output BEFORE registering the writer, so a
+        // Restore the screen BEFORE registering the writer, so a
         // concurrently-running pump thread (this session may already be
-        // attached elsewhere) can't interleave live output ahead of history.
-        let buffered: Vec<u8> = {
-            let buffers = self.output_buffers.lock().unwrap();
-            buffers
-                .get(id)
-                .map(|b| b.iter().copied().collect())
-                .unwrap_or_default()
-        };
-        if !buffered.is_empty() {
-            let data = String::from_utf8_lossy(&buffered).into_owned();
-            let _ = write_message(
-                &mut *writer.lock().unwrap(),
-                &Response::Output { id: id.to_string(), data },
-            );
-        }
+        // attached elsewhere) can't interleave live output ahead of it.
+        self.write_snapshot(id, &writer);
 
         let already_running = {
             let mut writers = self.attached_writers.lock().unwrap();
@@ -1228,6 +1236,40 @@ impl SessionManager {
         if !already_running {
             self.spawn_pump(id.to_string());
         }
+    }
+
+    /// This session's screen (creating it on first use), so both the pump and
+    /// a snapshot request work through the same mutex.
+    fn screen_for(&self, id: &str) -> Arc<Mutex<SessionScreen>> {
+        Arc::clone(
+            self.screens
+                .lock()
+                .unwrap()
+                .entry(id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(SessionScreen::new()))),
+        )
+    }
+
+    /// Sends `writer` a byte stream that reproduces this session's screen in a
+    /// terminal that has seen none of its output.
+    ///
+    /// Nothing is sent for a session with no screen -- one that has never had
+    /// a pump, so has produced nothing to restore -- rather than a bare
+    /// clear-screen, which would blank a terminal for no reason.
+    ///
+    /// The render and the write both happen under the screen's own lock, which
+    /// is the lock the pump holds across feed-then-forward: that is what makes
+    /// "the screen as of exactly the last chunk this client was sent" a
+    /// meaningful thing to say.
+    pub fn write_snapshot(&self, id: &str, writer: &Arc<Mutex<UnixStream>>) {
+        let screen = { self.screens.lock().unwrap().get(id).cloned() };
+        let Some(screen) = screen else { return };
+        let mut screen = screen.lock().unwrap();
+        let data = String::from_utf8_lossy(&screen.snapshot()).into_owned();
+        let _ = write_message(
+            &mut *writer.lock().unwrap(),
+            &Response::Output { id: id.to_string(), data },
+        );
     }
 
     fn spawn_pump(self: &Arc<Self>, id: String) {
@@ -1246,7 +1288,7 @@ impl SessionManager {
                     // whatever is currently registered (possibly a writer from a
                     // concurrent Attach that raced in first), so the right writer
                     // always gets notified no matter how the race lands.
-                    manager.output_buffers.lock().unwrap().remove(&id);
+                    manager.screens.lock().unwrap().remove(&id);
                     let removed = manager.attached_writers.lock().unwrap().remove(&id);
                     if let Some(w) = removed {
                         let _ = write_message(
@@ -1275,6 +1317,7 @@ impl SessionManager {
             };
 
             let mut buf = [0u8; 4096];
+            let screen = manager.screen_for(&id);
             // Bytes read but not yet forwarded because they end mid-way
             // through a multi-byte UTF-8 character — carried to the next
             // read instead of being lossily corrupted at the chunk boundary.
@@ -1306,17 +1349,26 @@ impl SessionManager {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Scrollback buffer stores raw bytes — never affected by
-                        // the UTF-8 chunking concern below, since it isn't decoded
-                        // to a String until replay time (attach(), a rare event).
-                        {
-                            let mut buffers = manager.output_buffers.lock().unwrap();
-                            let ring = buffers.entry(id.clone()).or_insert_with(VecDeque::new);
-                            ring.extend(buf[..n].iter().copied());
-                            while ring.len() > OUTPUT_BUFFER_CAP {
-                                ring.pop_front();
-                            }
-                        }
+                        // Raw bytes, never the decoded String assembled below:
+                        // the parser is a byte state machine that carries a
+                        // partial UTF-8 character across calls itself.
+                        //
+                        // The guard is taken here and deliberately held for the
+                        // whole arm, so it is still held when this same chunk is
+                        // forwarded at the bottom. A snapshot rendered in
+                        // between would already contain a delta the client is
+                        // then sent again, and a TUI frame survives a delta
+                        // applied twice no better than one applied never.
+                        //
+                        // This is the one exception to the rule elsewhere in
+                        // this file about not holding a lock across blocking
+                        // I/O, and it is a narrow one: the lock is per session,
+                        // and its only other contender is a snapshot for that
+                        // SAME session, which would be writing to the same
+                        // socket this write is already blocked on. No other
+                        // session, and no shared state, waits behind it.
+                        let mut screen = screen.lock().unwrap();
+                        screen.feed(&buf[..n]);
 
                         for cwd in osc_scanner.feed(&buf[..n]) {
                             if let Err(e) = manager.registry.lock().unwrap().update_cwd(&id, &cwd) {
@@ -1421,13 +1473,14 @@ impl SessionManager {
             if let Some(w) = removed {
                 let _ = write_message(&mut *w.lock().unwrap(), &Response::SessionExited { id: id.clone(), exit_code });
             }
-            // The scrollback ring is per-session state like the writer above,
+            // The screen model is per-session state like the writer above,
             // and this is the one place that runs for BOTH a natural exit and
             // a kill_session (which makes the pump's read return 0). Dropping
-            // it here is what stops up to OUTPUT_BUFFER_CAP bytes per session
-            // leaking for the daemon's whole lifetime, and also stops a dead
-            // session's stale history replaying to a later Attach.
-            manager.output_buffers.lock().unwrap().remove(&id);
+            // it here is what stops a session's grid and scrollback -- by far
+            // the largest thing the daemon holds per session -- leaking for the
+            // daemon's whole lifetime, and also stops a dead session's stale
+            // screen being restored to a later Attach.
+            manager.screens.lock().unwrap().remove(&id);
         });
     }
 }
@@ -1509,6 +1562,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             manager.delete_group_template(&id).map(|_| Response::Ok)
         }
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
+        Request::Snapshot { .. } => {
+            unreachable!("Snapshot is intercepted in handle_connection")
+        }
         Request::WatchGavinRoot { .. } => {
             unreachable!("WatchGavinRoot is intercepted in handle_connection")
         }
@@ -1671,6 +1727,17 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
 
         if let Request::Attach { id } = req {
             manager.attach(&id, Arc::clone(&writer));
+            continue;
+        }
+
+        // Intercepted for the same reason as Attach: the answer is a push to
+        // THIS connection's writer, in line with that session's live output,
+        // not a reply value handle_request could return. Routing it through
+        // handle_request would put the snapshot behind the connection loop's
+        // own write instead of the pump's ordering, which is the one thing a
+        // repaint cannot afford to get wrong.
+        if let Request::Snapshot { id } = req {
+            manager.write_snapshot(&id, &writer);
             continue;
         }
 
@@ -2587,6 +2654,153 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    /// Drives a session until its output contains `marker`, returning every
+    /// Response seen on the way. Shared by the reconnect tests below, which
+    /// all need a session that has genuinely produced something before they
+    /// can ask for it back.
+    fn drive_until(
+        stream: &mut UnixStream,
+        id: &str,
+        input: &str,
+        marker: &str,
+    ) -> Vec<Response> {
+        write_message(stream, &Request::WriteInput { id: id.to_string(), data: input.to_string() })
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut seen = Vec::new();
+        let mut collected = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            if let Response::Output { data, .. } = &resp {
+                collected.push_str(data);
+            }
+            seen.push(resp);
+            if collected.contains(marker) {
+                return seen;
+            }
+            assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
+    }
+
+    #[test]
+    fn a_reconnecting_client_is_sent_the_screen_not_a_log_of_how_it_got_there() {
+        let (socket_path, _dir) = start_test_server();
+        let mut first = UnixStream::connect(&socket_path).unwrap();
+        let id = match request(
+            &mut first,
+            &Request::CreateSession {
+                workspace_path: "/tmp/ws".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        ) {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+        write_message(&mut first, &Request::Attach { id: id.clone() }).unwrap();
+        drive_until(&mut first, &id, "echo on_the_screen\n", "on_the_screen");
+
+        // A second client -- the app, restarted -- attaches and must be able
+        // to reconstruct the screen from what it is sent, with no access to
+        // anything that came before.
+        let mut second = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut second, &Request::Attach { id: id.clone() }).unwrap();
+        let mut reader = BufReader::new(second.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut restored = String::new();
+        while std::time::Instant::now() < deadline && !restored.contains("on_the_screen") {
+            if let Some(Response::Output { data, .. }) = read_message(&mut reader).unwrap() {
+                restored.push_str(&data);
+            }
+        }
+        assert!(
+            restored.contains("on_the_screen"),
+            "a fresh attach must restore what the session has on screen, got: {restored:?}"
+        );
+        assert!(
+            restored.contains("\u{1b}[H\u{1b}[J"),
+            "and it must be a repaint from a known state, not a byte log: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_repaints_without_re_sending_the_baselines_attach_does() {
+        // The hot-reload path. Attach re-sends CwdChanged / StatusChanged /
+        // SessionRestored, and a waiting_for_input status notifies
+        // unconditionally on the app side -- so a frontend that reloaded and
+        // wants its terminals back must have a way to ask for the screen ONLY.
+        let (socket_path, _dir) = start_test_server();
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let id = match request(
+            &mut stream,
+            &Request::CreateSession {
+                workspace_path: "/tmp/ws".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        ) {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+        write_message(&mut stream, &Request::Attach { id: id.clone() }).unwrap();
+        drive_until(&mut stream, &id, "echo still_here\n", "still_here");
+
+        // Drained to quiescence FIRST. The status heuristic pushes an `idle`
+        // StatusChanged a couple of seconds after output stops, and a live
+        // transition looks exactly like a re-sent baseline on the wire -- so
+        // without waiting it out, this test would be asserting on which of
+        // the two won a race.
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + HEURISTIC_QUIET_PERIOD * 4;
+        let mut settled = false;
+        while std::time::Instant::now() < deadline && !settled {
+            settled = matches!(
+                read_message(&mut reader).unwrap(),
+                Some(Response::StatusChanged { ref status, .. }) if status == "idle"
+            );
+        }
+        assert!(settled, "precondition: the session never went idle");
+
+        write_message(&mut stream, &Request::Snapshot { id: id.clone() }).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut repainted = String::new();
+        let mut baselines: Vec<Response> = Vec::new();
+        while std::time::Instant::now() < deadline && !repainted.contains("still_here") {
+            match read_message(&mut reader).unwrap() {
+                Some(Response::Output { data, .. }) => repainted.push_str(&data),
+                Some(other) => baselines.push(other),
+                None => break,
+            }
+        }
+        assert!(
+            repainted.contains("still_here"),
+            "Snapshot must repaint the screen, got: {repainted:?}"
+        );
+        assert!(
+            baselines.is_empty(),
+            "Snapshot must send the screen and nothing else, also got: {baselines:?}"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_for_a_session_with_no_screen_sends_nothing_rather_than_a_clear() {
+        // A blank Output would clear a terminal that may well have content in
+        // it -- for a session id the daemon has never pumped, silence is the
+        // only safe answer.
+        let (socket_path, _dir) = start_test_server();
+        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream, &Request::Snapshot { id: "never-existed".to_string() }).unwrap();
+        // Prove the connection is still live and simply had nothing to say,
+        // by putting a request behind it whose reply we know how to recognise.
+        let resp = request(&mut stream, &Request::ListSessions);
+        assert!(
+            matches!(resp, Response::SessionList { .. }),
+            "the next reply on this connection must be ListSessions', not a \
+             stray Output for a session with no screen: {resp:?}"
+        );
     }
 
     #[test]
@@ -4149,29 +4363,33 @@ mod tests {
     }
 
     #[test]
-    fn killing_a_session_frees_its_scrollback_buffer() {
+    fn killing_a_session_frees_its_screen() {
         let dir = tempfile::tempdir().unwrap();
         let manager = bare_manager(&dir);
         let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
 
-        // Attaching spawns the pump, which is what fills the ring buffer.
+        // Attaching spawns the pump, which is what creates the screen.
         let (client, server_side) = UnixStream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach(&id, Arc::new(Mutex::new(server_side)));
 
-        // Drive some output so the buffer is genuinely non-empty -- a test
-        // that passed against an always-empty map would prove nothing.
+        // Drive some output and wait for it to reach the SCREEN, not merely
+        // for the map key to appear -- the pump creates its entry before it
+        // reads a single byte, so a key-only precondition would hold even if
+        // nothing were ever fed in, and this test would prove nothing.
         manager.write_input(&id, b"echo hello\n").unwrap();
+        let painted = |id: &str| {
+            manager.screens.lock().unwrap().get(id).is_some_and(|s| {
+                String::from_utf8_lossy(&s.lock().unwrap().snapshot()).contains("hello")
+            })
+        };
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if manager.output_buffers.lock().unwrap().get(&id).is_some_and(|b| !b.is_empty()) {
-                break;
-            }
+        while Instant::now() < deadline && !painted(&id) {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            manager.output_buffers.lock().unwrap().get(&id).is_some_and(|b| !b.is_empty()),
-            "precondition: the pump should have buffered some output"
+            painted(&id),
+            "precondition: the pump should have painted this session's output onto its screen"
         );
 
         manager.kill_session(&id).unwrap();
@@ -4179,14 +4397,16 @@ mod tests {
         // The pump notices the closed pty and tears down asynchronously.
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if !manager.output_buffers.lock().unwrap().contains_key(&id) {
+            if !manager.screens.lock().unwrap().contains_key(&id) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            !manager.output_buffers.lock().unwrap().contains_key(&id),
-            "the scrollback ring must be dropped on teardown, not leaked for the daemon's lifetime"
+            !manager.screens.lock().unwrap().contains_key(&id),
+            "the screen model -- grid plus scrollback, the largest thing held \
+             per session -- must be dropped on teardown, not leaked for the \
+             daemon's lifetime"
         );
     }
 
