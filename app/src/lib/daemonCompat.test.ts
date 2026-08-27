@@ -55,6 +55,21 @@ describe("featureBlockedReason", () => {
     expect(featureBlockedReason(v10, "tools")).toContain("v11");
   });
 
+  // The pickable PRD path. Unlike `groups` and `railBranch`, a v16
+  // daemon refuses the write outright -- but it also keeps resolving the
+  // PRD against the hard-coded path, so a choice that somehow landed
+  // would split the tab from the board and from gavin_read_prd.
+  it("blocks the PRD path on a v16 daemon that allows rail branches", () => {
+    const v16 = { daemonVersion: 16, appVersion: 17, degraded: true };
+    expect(featureBlockedReason(v16, "railBranch")).toBeNull();
+    expect(featureBlockedReason(v16, "prdPath")).toContain("v17");
+  });
+
+  it("stops blocking the PRD path at exactly v17", () => {
+    const v17 = { daemonVersion: 17, appVersion: 17, degraded: false };
+    expect(featureBlockedReason(v17, "prdPath")).toBeNull();
+  });
+
   it("stops blocking tools at exactly v11", () => {
     const v11 = { daemonVersion: 11, appVersion: 12, degraded: true };
     expect(featureBlockedReason(v11, "tools")).toBeNull();

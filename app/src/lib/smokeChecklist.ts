@@ -72,7 +72,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "column-reorder", text: "Dragging a column by its header lands it exactly at the placeholder, both directions" },
       {
         id: "composer-card",
-        text: "“+ Add card” opens the CENTRED composer modal: Enter adds a note FILE in that column and stays open, Esc closes, empty adds nothing",
+        text: "“+ Add card” opens the CENTRED composer modal: Enter adds a FILE in that column and stays open, Esc closes, empty adds nothing",
         hint: "The modal sits over the middle of the tab however far the board is scrolled; the Column picker starts on the column that was clicked.",
       },
       {
@@ -102,13 +102,13 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Card kinds",
     items: [
       {
-        id: "kind-compose-note",
-        text: "Composer fast path: type a title, Enter → a kind: note .md lands in plans/ with status: <column>",
-        hint: "cat the file — slugged name, note kind, the column's name as status.",
+        id: "kind-compose-task",
+        text: "Composer fast path: it opens on the TASK chip (prompt textarea already there) — type a title, Enter → a kind: task .md lands in plans/ with status: <column>, prompt included when one was typed",
+        hint: "cat the file — slugged name, task kind, the column's name as status. The chips read task · plan · note, in that order.",
       },
       {
-        id: "kind-compose-task",
-        text: "Composer task chip: prompt textarea appears; the created file's body IS the prompt (kind: task)",
+        id: "kind-compose-note",
+        text: "Composer note chip (the LAST of the three): the body textarea disappears; the created file is kind: note with no body",
       },
       {
         id: "kind-compose-plan",
@@ -314,6 +314,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Click the arrow, not the row: the row must NOT also switch to the terminal. Then try it on a page belonging to a workspace you are NOT in — the jump has to activate that workspace, not flip its hub view behind your back.",
       },
       {
+        id: "run-clear-done-keeps-restarted",
+        text: "“Clear done steps” leaves behind every step the rail still has to run — including one restarted over a card that is still sitting in Done",
+        hint: "Run a rail to the end so every card sits in Done, then press Reset run state: the broom must go flat and its tooltip read “This rail has no done steps”, because every step is queued to run again. A stalled step is the same — move its card to Done by hand and it still stays on the rail, since Retry would run it. The fallback still has to work the other way round: on a rail that has NEVER run, moving one of its cards to Done by hand takes that step alone off.",
+      },
+      {
         id: "skill-updated",
         text: "Re-run “Set up agent integration”: SKILL.md teaches name-your-tab-first, kinds, nesting, promotion, tick-when-done; gavin-orchestrate, gavin-resume and gavin-develop land beside it",
       },
@@ -444,6 +449,20 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "edit-hidden-pane",
         text: "Open a file tab, switch to a sibling tab and back — the editor is full height, not collapsed",
       },
+      {
+        id: "prd-pick",
+        text: "The PRD tab's Pick… points the tab at another markdown file in the repo, and the strip shows the new path",
+        hint: "Make a docs/PRD.md first. The Home tile's excerpt and gavin_read_prd must follow it too.",
+      },
+      {
+        id: "prd-pick-outside",
+        text: "Picking a file outside the root is refused inline, and the tab keeps editing the old one",
+      },
+      {
+        id: "agent-file-pick",
+        text: "The agent-file tab's Pick… points it at an existing CLAUDE.md/AGENTS.md without offering to move anything",
+        hint: "A pick from a subfolder is refused — the CLI only reads this file from the root.",
+      },
     ],
   },
   {
@@ -523,8 +542,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "arch-drawer-count",
-        text: "Orchestration: “Unplaced (n)” counts only cards still waiting — a Done card stays listed in its collapsed group but is out of the number, and an archived card is in neither the drawer nor + Add step",
-        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one.",
+        text: "Orchestration: “Unplaced (n)” counts only cards still waiting — a Done card stays listed in the drawer’s collapsed group but is out of the number AND out of + Add step, and an archived card is in none of the three",
+        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one — then open + Add step on any rail: the Done card is not in the Cards list, and a nested task under that Done parent is gone too. With every remaining card finished the list reads “Every card left to place is finished.” and Generate with agent… goes inert.",
       },
       {
         id: "arch-agent-told",
@@ -630,6 +649,15 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "When the target already exists, no move is offered and the old file is left alone",
       },
       { id: "set-rename-invalid", text: "A name with a slash, or an empty one, shows an inline error and changes nothing" },
+      {
+        id: "set-prd-path",
+        text: "Settings' PRD file row writes a top-level prd = in config.toml, and the PRD tab follows it",
+        hint: "Clearing the box removes the key entirely and puts the tab back on .gavin-root/PRD.md.",
+      },
+      {
+        id: "set-prd-integration",
+        text: "After repointing the PRD, “Set up / update” rewrites the CLAUDE.md gavin block and the skill to name the new path",
+      },
       { id: "set-command", text: "Editing the command writes .gavin-root/config.toml and the next Start uses it" },
       {
         id: "set-model",

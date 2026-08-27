@@ -5,7 +5,23 @@ import {
   composeKeyAction,
   defaultComposeStatus,
   railToApply,
+  COMPOSE_KINDS,
+  DEFAULT_COMPOSE_KIND,
 } from "./cardCompose";
+
+describe("COMPOSE_KINDS", () => {
+  it("opens on task, so ⌘N files runnable work by default", () => {
+    expect(DEFAULT_COMPOSE_KIND).toBe("task");
+  });
+
+  it("offers the note chip last", () => {
+    expect(COMPOSE_KINDS).toEqual(["task", "plan", "note"]);
+  });
+
+  it("starts on the kind it offers first", () => {
+    expect(COMPOSE_KINDS[0]).toBe(DEFAULT_COMPOSE_KIND);
+  });
+});
 
 describe("buildCreatePlanArgs", () => {
   it("slugs the title into a file name", () => {

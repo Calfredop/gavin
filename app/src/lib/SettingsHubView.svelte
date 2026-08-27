@@ -5,6 +5,7 @@
     setWorkspaceColor,
     setWorkspaceFlag,
     setAgentField,
+    setPrdPath,
     agentProfilesStore,
     agentModelDefaultsStore,
     restartDaemonInPlace,
@@ -18,9 +19,15 @@
     resolveAgentConfig,
     validateAgentFileName,
     validateMcpConfigPath,
+    validatePrdPath,
+    resolvePrdPath,
+    DEFAULT_PRD_PATH,
+    relativeToRoot,
+    agentFileFromPick,
     renameDecision,
     DEFAULT_ACCENT,
   } from "./settings";
+  import { open } from "@tauri-apps/plugin-dialog";
   import * as backend from "./backend";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
@@ -49,9 +56,11 @@
   let commandDraft = $state("");
   let fileDraft = $state("");
   let mcpFileDraft = $state("");
+  let prdDraft = $state("");
   let focused = $state<string | null>(null);
   let fileError = $state<string | null>(null);
   let mcpFileError = $state<string | null>(null);
+  let prdError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
 
   // --- daemon ----------------------------------------------------------
@@ -113,6 +122,79 @@
   /// only surface that can produce a `model` payload -- the global panel
   /// writes config.json through Tauri and never asks the daemon.
   const modelBlocked = $derived(featureBlockedReason($daemonCompat, "agentModel"));
+
+  // --- the lead document ------------------------------------------------
+  /// Which file leads this workspace. Not an agent key: it lives at the
+  /// root of config.toml and survives a change of CLI.
+  const prdPath = $derived(resolvePrdPath(rootContext));
+  /// A v16 daemon's SetRootConfigField allow-list has no `prd`, and it
+  /// keeps resolving the PRD against the hard-coded path regardless of
+  /// what is written -- so the row is disabled with the reason rather
+  /// than accepting a choice nothing downstream would honour.
+  const prdBlocked = $derived(featureBlockedReason($daemonCompat, "prdPath"));
+  $effect(() => {
+    const prd = prdPath;
+    if (focused !== "prd") prdDraft = prd;
+  });
+
+  async function commitPrd(): Promise<void> {
+    prdError = null;
+    const next = prdDraft.trim();
+    // Emptied deliberately: that is how a workspace goes back to the
+    // scaffolded default, and the daemon removes the key rather than
+    // blanking it.
+    if (!next) {
+      if (rootContext?.prd) await setPrdPath(workspaceId, "");
+      return;
+    }
+    if (next === prdPath) return;
+    prdError = validatePrdPath(next);
+    if (prdError) return;
+    await setPrdPath(workspaceId, next);
+  }
+
+  async function pickPrd(): Promise<void> {
+    prdError = null;
+    if (!ws?.rootPath) return;
+    const picked = await open({
+      directory: false,
+      multiple: false,
+      defaultPath: ws.rootPath,
+      title: "Choose the PRD file",
+    });
+    if (typeof picked !== "string") return;
+    const result = relativeToRoot(ws.rootPath, picked);
+    if ("error" in result) {
+      prdError = result.error;
+      return;
+    }
+    prdError = validatePrdPath(result.path);
+    if (prdError) return;
+    prdDraft = result.path;
+    await setPrdPath(workspaceId, result.path);
+  }
+
+  /// Points the workspace at an instructions file it already has. The
+  /// rename flow below is a different intent -- it moves gavin's file to
+  /// a new name -- so a pick never offers to move anything.
+  async function pickAgentFile(): Promise<void> {
+    fileError = null;
+    if (!ws?.rootPath) return;
+    const picked = await open({
+      directory: false,
+      multiple: false,
+      defaultPath: ws.rootPath,
+      title: "Choose the agent instructions file",
+    });
+    if (typeof picked !== "string") return;
+    const result = agentFileFromPick(ws.rootPath, picked);
+    if ("error" in result) {
+      fileError = result.error;
+      return;
+    }
+    fileDraft = result.file;
+    if (result.file !== agent.file) await setAgentField(workspaceId, "file", result.file);
+  }
 
   let modelCustomOpen = $state(false);
   let modelDraft = $state("");
@@ -356,9 +438,10 @@
             Set the model in Command — gavin knows no model flag for {profileLabel}.
           </p>
         {/if}
-        <label class="row">
-          <span>Agent file</span>
+        <div class="row">
+          <label for="agent-file-{workspaceId}">Agent file</label>
           <input
+            id="agent-file-{workspaceId}"
             bind:value={fileDraft}
             spellcheck="false"
             onfocus={() => (focused = "file")}
@@ -370,9 +453,50 @@
               if (e.key === "Enter") e.currentTarget.blur();
             }}
           />
-        </label>
+          <button type="button" onclick={() => void pickAgentFile()}>Pick…</button>
+        </div>
         {#if fileError}
           <p class="hint warn">{fileError}</p>
+        {:else}
+          <p class="hint">
+            Typing a new name offers to rename gavin's file; Pick… points the workspace at one this
+            repo already has.
+          </p>
+        {/if}
+        <div class="row">
+          <label for="prd-file-{workspaceId}">PRD file</label>
+          <input
+            id="prd-file-{workspaceId}"
+            bind:value={prdDraft}
+            spellcheck="false"
+            disabled={Boolean(prdBlocked)}
+            title={prdBlocked ?? ""}
+            placeholder={DEFAULT_PRD_PATH}
+            onfocus={() => (focused = "prd")}
+            onblur={() => {
+              focused = null;
+              void commitPrd();
+            }}
+            onkeydown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+          <button
+            type="button"
+            disabled={Boolean(prdBlocked)}
+            title={prdBlocked ?? ""}
+            onclick={() => void pickPrd()}>Pick…</button
+          >
+        </div>
+        {#if prdBlocked}
+          <p class="hint warn">{prdBlocked}</p>
+        {:else if prdError}
+          <p class="hint warn">{prdError}</p>
+        {:else}
+          <p class="hint">
+            The lead document — the PRD tab edits it, and every file gavin writes for an agent names
+            it. Empty means <code>{DEFAULT_PRD_PATH}</code>.
+          </p>
         {/if}
         {#if isCustom}
           <label class="row">
@@ -495,7 +619,8 @@
     gap: 10px;
     margin-bottom: 8px;
   }
-  .row > span:first-child {
+  .row > span:first-child,
+  .row > label:first-child {
     width: 90px;
     flex: 0 0 auto;
     color: var(--text-muted);
@@ -544,6 +669,9 @@
     margin-top: 12px;
   }
   .row button {
+    /* Sits beside the input rather than stretching with it -- the two
+       Pick… rows are the ones with something to compete for. */
+    flex: 0 0 auto;
     background: var(--surface-overlay);
     border: none;
     color: var(--text);

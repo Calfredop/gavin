@@ -196,3 +196,26 @@ textarea,
 select {
   font-family: inherit;
 }
+
+/* ---- Chevrons --------------------------------------------------------
+   Lucide draws every icon with round caps and round joins, which suits
+   glyphs whose character comes from their curves. A chevron is not one
+   of those: it is a bare bent line, and the round join sands its point
+   off. At the 12px the disclosure toggles run at, the join's arc is a
+   quarter of the whole visible tip and the two arms end in bulbs, so the
+   “>” reads as a smudge rather than an arrow.
+
+   Miter puts the point back — the apex becomes a true corner reaching
+   ~1.4 units further out — and butt caps end the arms on a clean
+   diagonal cut instead of a half-round. Only the chevrons are re-cut,
+   and all four directions together: right/down are one control's two
+   states, so sharpening one would make a disclosure change character on
+   expand.
+
+   Lucide sets linecap/linejoin as presentation ATTRIBUTES, which any
+   rule outranks, so :where() — zero specificity — already wins here
+   while still yielding to a component that wants the round one back. */
+:where(.lucide-chevron-right, .lucide-chevron-down, .lucide-chevron-left, .lucide-chevron-up) {
+  stroke-linejoin: miter;
+  stroke-linecap: butt;
+}

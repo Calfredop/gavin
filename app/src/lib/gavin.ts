@@ -50,6 +50,12 @@ export interface GavinContext {
   hasPrd: boolean;
   configWarning: boolean;
   agent?: AgentConfig | null;
+  /// The root config's top-level `prd`, when it names a usable relative
+  /// path — the lead document this workspace points at. Optional because
+  /// a pre-v17 daemon does not send it; absent means the scaffolded
+  /// DEFAULT_PRD_PATH applies, which is also what "never chosen one"
+  /// looks like, so both land on the same fallback.
+  prd?: string | null;
   // True for contexts outside the workspace root, listed via the root
   // config's extra_contexts. Optional so old test fixtures stay valid.
   outside?: boolean;

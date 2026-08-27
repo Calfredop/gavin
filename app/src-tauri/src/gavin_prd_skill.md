@@ -1,11 +1,11 @@
 ---
 name: gavin-write-prd
-description: Use when the owner asks you to write or revise this workspace's PRD — interview them, then write .gavin-root/PRD.md.
+description: Use when the owner asks you to write or revise this workspace's PRD — interview them, then write {prd}.
 ---
 
 # Writing this workspace's PRD
 
-`.gavin-root/PRD.md` is the lead document for this repo. Every plan should
+`{prd}` is the lead document for this repo. Every plan should
 trace back to a line in it, so it has to say what is actually being built —
 not what sounds good.
 

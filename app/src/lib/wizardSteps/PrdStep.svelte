@@ -13,9 +13,13 @@
   interface Props {
     workspaceId: string;
     prdBody: string | null;
+    /// The workspace's PRD, relative to its root. Passed down rather than
+    /// re-derived so the step writes back to the same file the wizard
+    /// read from -- they must not resolve it independently.
+    prdPath: string;
     onDone: () => void;
   }
-  let { workspaceId, prdBody, onDone }: Props = $props();
+  let { workspaceId, prdBody, prdPath, onDone }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const tree = $derived($gavinTrees[workspaceId]);
@@ -42,7 +46,7 @@
     try {
       const next = applyPrdSections(prdBody, { vision, focus, outOfScope });
       if (next !== prdBody) {
-        await backend.writeFileForEditor(`${ws.rootPath}/.gavin-root/PRD.md`, next);
+        await backend.writeFileForEditor(`${ws.rootPath}/${prdPath}`, next);
       }
       onDone();
     } catch (e) {

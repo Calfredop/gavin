@@ -363,6 +363,23 @@ fn root_agent_key(root: &Path, key: &str) -> Option<String> {
     table.get("agent")?.as_table()?.get(key)?.as_str().map(|s| s.to_string())
 }
 
+/// Where this workspace's PRD lives, relative to the root. The same
+/// answer the daemon's `gavin::prd_relative_path` gives -- read here
+/// rather than fetched, because every caller below is writing a file for
+/// an agent to read and must not depend on a daemon round trip (the same
+/// reason `root_agent_key` exists beside the daemon's parse). The
+/// validator and the fallback both come from `protocol`, so the two
+/// readers cannot disagree about what the path IS.
+pub fn prd_relative_path(root: &Path) -> String {
+    let read = || -> Option<String> {
+        let path = root.join(".gavin-root").join("config.toml");
+        let content = std::fs::read_to_string(path).ok()?;
+        let table = content.parse::<toml::Table>().ok()?;
+        protocol::usable_prd_path(table.get("prd")?.as_str()?)
+    };
+    read().unwrap_or_else(|| protocol::DEFAULT_PRD_PATH.to_string())
+}
+
 /// Same allow-list and format-preserving write as the daemon's
 /// set_root_config_field, for app-side paths that must not depend on a
 /// daemon round trip (the D41 launch-command migration).
@@ -389,14 +406,14 @@ const MARKER_END: &str = "<!-- gavin:end -->";
 /// Pointer variant: for profiles with a skill mechanism, the block stays
 /// short and defers to the skill file.
 const BLOCK_WITH_SKILL: &str = "## Gavin workspace\n\n\
-This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all\n\
+This repo is a gavin workspace. Read `{prd}` first — it leads all\n\
 development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`\n\
 (plan before coding, keep plan statuses current, use the gavin_* MCP tools).\n";
 
 /// Inline variant: for agents with no skill mechanism, the same guidance
 /// has to live in the block itself -- there is no file to point at.
 const BLOCK_INLINE: &str = "## Gavin workspace\n\n\
-This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all\n\
+This repo is a gavin workspace. Read `{prd}` first — it leads all\n\
 development.\n\n\
 - Plans are markdown files in `.gavin-root/plans/` (and any `.gavin/plans/`).\n\
   Their frontmatter drives a kanban board the human watches: `status:` is the\n\
@@ -410,7 +427,7 @@ development.\n\n\
 /// tools, and an agent that edits frontmatter by hand when
 /// `gavin_set_plan_field` exists gets the format wrong.
 const BLOCK_INLINE_WITH_MCP: &str = "## Gavin workspace\n\n\
-This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all\n\
+This repo is a gavin workspace. Read `{prd}` first — it leads all\n\
 development.\n\n\
 - Plans are markdown files in `.gavin-root/plans/` (and any `.gavin/plans/`).\n\
   Their frontmatter drives a kanban board the human watches: `status:` is the\n\
@@ -426,12 +443,24 @@ development.\n\n\
 /// one can be installed, keeps the block short by pointing at it; without
 /// one the guidance is inline, and mentions the MCP tools only where a
 /// config was actually written for them.
-fn instructions_block_for(mcp: Option<&ResolvedMcp>) -> &'static str {
-    match mcp {
+///
+/// Every variant opens by naming the PRD, so all three are templates: a
+/// workspace pointed at its own `docs/PRD.md` must not hand its agents a
+/// block telling them to read a file gavin never wrote.
+fn instructions_block_for(mcp: Option<&ResolvedMcp>, prd: &str) -> String {
+    let template = match mcp {
         Some(layout) if !layout.skills.is_empty() => BLOCK_WITH_SKILL,
         Some(_) => BLOCK_INLINE_WITH_MCP,
         None => BLOCK_INLINE,
-    }
+    };
+    with_prd_path(template, prd)
+}
+
+/// The one substitution every authored document shares. Kept as a named
+/// function rather than an inline `.replace` at each site so that adding a
+/// document means writing `{prd}` in it and nothing else.
+pub fn with_prd_path(document: &str, prd: &str) -> String {
+    document.replace("{prd}", prd)
 }
 
 const PRD_SKILL_MD: &str = include_str!("gavin_prd_skill.md");
@@ -549,13 +578,16 @@ fn write_mcp_config_toml(path: &Path, layout: &ResolvedMcp, binary: &Path) -> an
 }
 
 /// Gavin-managed: every skill is overwritten wholesale on each setup run.
-fn write_skills(root: &Path, layout: &ResolvedMcp) -> anyhow::Result<Vec<PathBuf>> {
+fn write_skills(root: &Path, layout: &ResolvedMcp, prd: &str) -> anyhow::Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     for skill in layout.skills {
         let dir = root.join(skill.dir);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(skill.file);
-        std::fs::write(&path, skill.contents)?;
+        // Substituted for every skill, not just the ones that mention the
+        // PRD today: a document that grows a `{prd}` later needs no
+        // change here, and one that has none is unaffected.
+        std::fs::write(&path, with_prd_path(skill.contents, prd))?;
         written.push(path);
     }
     Ok(written)
@@ -626,16 +658,21 @@ fn run_integration(
     let profile = profile_by_id(&read_profile_id(root));
     let instructions_file = resolved_instructions_file(root, profile);
     let mcp = resolved_mcp(root, profile);
+    let prd = prd_relative_path(root);
     let mut written = Vec::new();
     let mut skipped = Vec::new();
 
     // Written for EVERY profile -- the change W4 makes. Before this, a
     // profile without an McpLayout errored out and got nothing at all.
     written.push(
-        write_instructions_block(root, &instructions_file, instructions_block_for(mcp.as_ref()))
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .to_string(),
+        write_instructions_block(
+            root,
+            &instructions_file,
+            &instructions_block_for(mcp.as_ref(), &prd),
+        )
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .to_string(),
     );
 
     // The two capabilities are reported separately: after sub-project B
@@ -658,7 +695,7 @@ fn run_integration(
                 skipped.push(no_skill_file());
             } else {
                 written.extend(
-                    write_skills(root, layout)
+                    write_skills(root, layout, &prd)
                         .map_err(|e| e.to_string())?
                         .into_iter()
                         .map(|p| p.to_string_lossy().to_string()),
@@ -718,10 +755,14 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
     let skill = step_skill(&flow).ok_or_else(|| format!("unknown flow: {flow}"))?;
     let profile = profile_by_id(&read_profile_id(root));
     let instructions_file = resolved_instructions_file(root, profile);
+    let prd = prd_relative_path(root);
     let target = match flow.as_str() {
-        "prd" => ".gavin-root/PRD.md".to_string(),
+        "prd" => prd.clone(),
         _ => instructions_file,
     };
+    // The document names the PRD too, and it is the same document whether
+    // it lands as a skill file or inline in the prompt.
+    let document = with_prd_path(skill.document, &prd);
 
     // Keyed on the skill slot, not on MCP: a profile can have an MCP
     // config and still have nowhere to put a skill file, which is true of
@@ -733,15 +774,14 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
             // profile.
             let dir = root.join(parent).join(skill.name);
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            std::fs::write(dir.join(file), skill.document).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(file), &document).map_err(|e| e.to_string())?;
             Ok(format!(
                 "Use the {} skill to write {target} for this repo. Interview me first.",
                 skill.name
             ))
         }
         None => Ok(format!(
-            "Write {target} for this repo, following these instructions exactly.\n\n{}",
-            skill.document
+            "Write {target} for this repo, following these instructions exactly.\n\n{document}"
         )),
     }
 }
@@ -1165,8 +1205,8 @@ mod tests {
     #[test]
     fn the_inline_block_names_the_tools_only_when_a_config_was_written() {
         let codex = ResolvedMcp::from(profile_by_id("codex").mcp.as_ref().unwrap());
-        let with_mcp = instructions_block_for(Some(&codex));
-        let without = instructions_block_for(None);
+        let with_mcp = instructions_block_for(Some(&codex), protocol::DEFAULT_PRD_PATH);
+        let without = instructions_block_for(None, protocol::DEFAULT_PRD_PATH);
         assert!(with_mcp.contains("gavin_set_plan_field"));
         assert!(!without.contains("gavin_"), "custom has no MCP config yet: {without}");
         assert!(without.contains("`.gavin-root/plans/`"), "the rest of the guidance is the same");
@@ -1176,10 +1216,77 @@ mod tests {
     fn claude_code_keeps_the_pointer_block_and_its_layout() {
         // resolve_mcp_binary_path needs the binary beside current_exe, which
         // is not true under cargo test -- so assert on what does not need it.
-        let block = instructions_block_for(Some(&claude_layout()));
+        let block = instructions_block_for(Some(&claude_layout()), protocol::DEFAULT_PRD_PATH);
         assert!(block.contains(".claude/skills/gavin/SKILL.md"));
         assert!(profile_by_id("claude-code").mcp.is_some());
-        assert!(instructions_block_for(Some(&layout("codex"))) != block);
+        assert!(instructions_block_for(Some(&layout("codex")), protocol::DEFAULT_PRD_PATH) != block);
+    }
+
+    #[test]
+    fn every_authored_document_names_the_configured_prd() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(
+            dir.path().join(".gavin-root/config.toml"),
+            "prd = \"docs/PRD.md\"\n\n[agent]\nprofile = \"claude-code\"\n",
+        )
+        .unwrap();
+        assert_eq!(prd_relative_path(dir.path()), "docs/PRD.md");
+
+        // The instructions block an agent reads first.
+        let block = instructions_block_for(Some(&claude_layout()), &prd_relative_path(dir.path()));
+        assert!(block.contains("`docs/PRD.md`"), "{block}");
+        assert!(!block.contains(".gavin-root/PRD.md"), "{block}");
+
+        // The workflow skill, which repeats the path for the agent that
+        // would rather read the file than call the tool.
+        let paths =
+            write_skills(dir.path(), &claude_layout(), &prd_relative_path(dir.path())).unwrap();
+        let workflow = std::fs::read_to_string(&paths[0]).unwrap();
+        assert!(workflow.contains("read `docs/PRD.md`"), "{workflow}");
+
+        // And the flow document, whether it lands as a file or a prompt.
+        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+        let skill =
+            std::fs::read_to_string(dir.path().join(".claude/skills/gavin-write-prd/SKILL.md"))
+                .unwrap();
+        assert!(skill.contains("`docs/PRD.md`"), "{skill}");
+        assert!(!skill.contains("{prd}"), "no placeholder survives into a written file: {skill}");
+        assert!(!prompt.contains("{prd}"), "{prompt}");
+    }
+
+    #[test]
+    fn compose_prompt_targets_the_configured_prd_when_the_document_is_inlined() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "codex");
+        std::fs::write(
+            dir.path().join(".gavin-root/config.toml"),
+            "prd = \"PRD.md\"\n\n[agent]\nprofile = \"codex\"\n",
+        )
+        .unwrap();
+
+        // Codex has no skill slot, so the target and the document both
+        // arrive in the prompt text -- the one place a stale path would
+        // send the agent to write a second PRD beside the real one.
+        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+        assert!(prompt.contains("Write PRD.md for this repo"), "{prompt}");
+        assert!(!prompt.contains(".gavin-root/PRD.md"), "{prompt}");
+        assert!(!prompt.contains("{prd}"), "{prompt}");
+    }
+
+    #[test]
+    fn a_prd_key_pointing_outside_the_root_falls_back_to_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(
+            dir.path().join(".gavin-root/config.toml"),
+            "prd = \"../elsewhere/PRD.md\"\n\n[agent]\nprofile = \"claude-code\"\n",
+        )
+        .unwrap();
+        // Same verdict the daemon reaches: both go through
+        // protocol::usable_prd_path, so a hand-edited escape cannot make
+        // the two disagree about which file is the PRD.
+        assert_eq!(prd_relative_path(dir.path()), protocol::DEFAULT_PRD_PATH);
     }
 
     #[test]
@@ -1419,7 +1526,7 @@ mod tests {
     #[test]
     fn every_skill_is_written_and_overwritten() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = write_skills(dir.path(), &claude_layout()).unwrap();
+        let paths = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
         assert_eq!(paths.len(), 4, "workflow skill plus orchestrate, resume and develop");
 
         let workflow = std::fs::read_to_string(&paths[0]).unwrap();
@@ -1451,7 +1558,7 @@ mod tests {
         for p in &paths {
             std::fs::write(p, "mangled").unwrap();
         }
-        write_skills(dir.path(), &claude_layout()).unwrap();
+        write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
         assert!(std::fs::read_to_string(&paths[0]).unwrap().contains("gavin_create_plan"));
         assert!(std::fs::read_to_string(&paths[1]).unwrap().contains("gavin_get_orchestration"));
         assert!(std::fs::read_to_string(&paths[2]).unwrap().contains("Finished work stays finished"));
@@ -1463,7 +1570,7 @@ mod tests {
     #[test]
     fn every_skill_lands_in_its_own_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = write_skills(dir.path(), &claude_layout()).unwrap();
+        let paths = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
         assert!(paths[0].ends_with(".claude/skills/gavin/SKILL.md"), "{:?}", paths[0]);
         assert!(paths[1].ends_with(".claude/skills/gavin-orchestrate/SKILL.md"), "{:?}", paths[1]);
         assert!(paths[2].ends_with(".claude/skills/gavin-resume/SKILL.md"), "{:?}", paths[2]);

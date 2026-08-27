@@ -8,6 +8,11 @@ import {
   renameDecision,
   accentVar,
   resolveAgentConfig,
+  DEFAULT_PRD_PATH,
+  validatePrdPath,
+  resolvePrdPath,
+  relativeToRoot,
+  agentFileFromPick,
   type AgentProfileInfo,
 } from "./settings";
 
@@ -49,6 +54,85 @@ describe("validateAgentFileName", () => {
     expect(validateAgentFileName("   ")).toBeTruthy();
     expect(validateAgentFileName("docs/AGENTS.md")).toBeTruthy();
     expect(validateAgentFileName("..\\AGENTS.md")).toBeTruthy();
+  });
+});
+
+describe("validatePrdPath", () => {
+  it("accepts a relative path with or without a directory", () => {
+    expect(validatePrdPath(DEFAULT_PRD_PATH)).toBeNull();
+    expect(validatePrdPath("docs/PRD.md")).toBeNull();
+    expect(validatePrdPath("  PRD.md  ")).toBeNull();
+  });
+
+  it("rejects anything that could leave the root", () => {
+    expect(validatePrdPath("")).toBeTruthy();
+    expect(validatePrdPath("   ")).toBeTruthy();
+    expect(validatePrdPath("/etc/passwd")).toBeTruthy();
+    expect(validatePrdPath("C:\\PRD.md")).toBeTruthy();
+    expect(validatePrdPath("../elsewhere/PRD.md")).toBeTruthy();
+    expect(validatePrdPath("docs/../../PRD.md")).toBeTruthy();
+    // Refused by protocol::usable_prd_path too — the two validators have
+    // to agree, or the picker offers a path the daemon then rejects.
+    expect(validatePrdPath("./PRD.md")).toBeTruthy();
+  });
+});
+
+describe("resolvePrdPath", () => {
+  it("falls back to the scaffolded path for a workspace that never chose one", () => {
+    expect(resolvePrdPath(null)).toBe(DEFAULT_PRD_PATH);
+    expect(resolvePrdPath(undefined)).toBe(DEFAULT_PRD_PATH);
+    expect(resolvePrdPath({})).toBe(DEFAULT_PRD_PATH);
+    expect(resolvePrdPath({ prd: null })).toBe(DEFAULT_PRD_PATH);
+    // Whitespace is not a choice.
+    expect(resolvePrdPath({ prd: "   " })).toBe(DEFAULT_PRD_PATH);
+  });
+
+  it("uses the configured path when there is one", () => {
+    expect(resolvePrdPath({ prd: "docs/PRD.md" })).toBe("docs/PRD.md");
+    expect(resolvePrdPath({ prd: "  docs/PRD.md  " })).toBe("docs/PRD.md");
+  });
+});
+
+describe("relativeToRoot", () => {
+  it("returns the path below the root", () => {
+    expect(relativeToRoot("/a/proj", "/a/proj/docs/PRD.md")).toEqual({ path: "docs/PRD.md" });
+    expect(relativeToRoot("/a/proj/", "/a/proj/PRD.md")).toEqual({ path: "PRD.md" });
+  });
+
+  it("refuses a sibling whose name merely starts with the root's", () => {
+    // The trap this function exists for: a plain startsWith would call
+    // /a/proj-old a child of /a/proj and store a path that resolves
+    // somewhere else entirely.
+    expect(relativeToRoot("/a/proj", "/a/proj-old/PRD.md")).toHaveProperty("error");
+  });
+
+  it("refuses the root itself, a parent, and an unrelated path", () => {
+    expect(relativeToRoot("/a/proj", "/a/proj")).toHaveProperty("error");
+    expect(relativeToRoot("/a/proj", "/a/PRD.md")).toHaveProperty("error");
+    expect(relativeToRoot("/a/proj", "/elsewhere/PRD.md")).toHaveProperty("error");
+    expect(relativeToRoot("", "/a/proj/PRD.md")).toHaveProperty("error");
+  });
+
+  it("treats a Windows pick as the same shape", () => {
+    expect(relativeToRoot("C:\\a\\proj", "C:\\a\\proj\\docs\\PRD.md")).toEqual({
+      path: "docs/PRD.md",
+    });
+  });
+});
+
+describe("agentFileFromPick", () => {
+  it("accepts a file sitting directly in the root", () => {
+    expect(agentFileFromPick("/a/proj", "/a/proj/AGENTS.md")).toEqual({ file: "AGENTS.md" });
+  });
+
+  it("refuses a subfolder, because the CLI would never read it there", () => {
+    const result = agentFileFromPick("/a/proj", "/a/proj/docs/AGENTS.md");
+    expect(result).toHaveProperty("error");
+    expect("error" in result && result.error).toMatch(/workspace root/);
+  });
+
+  it("refuses a file outside the root", () => {
+    expect(agentFileFromPick("/a/proj", "/elsewhere/AGENTS.md")).toHaveProperty("error");
   });
 });
 

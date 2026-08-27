@@ -6,8 +6,20 @@
 import { slugFileName } from "./planExplorer";
 import { formatChord, matchesChord, type Chord, type ChordEvent } from "./shortcuts";
 
+export type ComposeKind = "note" | "task" | "plan";
+
+/// The kind chips, in the order the composer offers them, and the one a
+/// fresh composer starts on. ⌘N is overwhelmingly used to file work --
+/// something an agent will pick up -- so the composer opens ready for
+/// that, with the prompt field already there; a note is the exception,
+/// a card with nothing to run, so it sits last. Kept here rather than
+/// inline in the template so the order and the default cannot drift
+/// apart from each other, or from the tests.
+export const COMPOSE_KINDS = ["task", "plan", "note"] as const;
+export const DEFAULT_COMPOSE_KIND: ComposeKind = COMPOSE_KINDS[0];
+
 export interface ComposeSpec {
-  kind: "note" | "task" | "plan";
+  kind: ComposeKind;
   title: string;
   // The prompt for a task, the body for a plan, ignored-when-empty for
   // a note.
@@ -21,7 +33,7 @@ export type ComposeArgs =
       title: string;
       status: string;
       body: string | undefined;
-      kind: "note" | "task" | "plan";
+      kind: ComposeKind;
     }
   | { error: string };
 
@@ -58,7 +70,7 @@ export function defaultComposeStatus(columnNames: string[], preferred: string | 
 /// rendered took its row off screen with it -- writing to it would be a
 /// placement nobody asked for.
 export function railToApply(
-  kind: ComposeSpec["kind"],
+  kind: ComposeKind,
   railId: string | null,
   railIds: string[]
 ): string | null {

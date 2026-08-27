@@ -918,6 +918,7 @@ mod tests {
                 config_warning: false,
                 agent: None,
                 outside: false,
+                prd: None,
             }],
         }
     }
