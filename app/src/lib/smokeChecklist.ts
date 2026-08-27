@@ -449,6 +449,20 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "edit-hidden-pane",
         text: "Open a file tab, switch to a sibling tab and back — the editor is full height, not collapsed",
       },
+      {
+        id: "prd-pick",
+        text: "The PRD tab's Pick… points the tab at another markdown file in the repo, and the strip shows the new path",
+        hint: "Make a docs/PRD.md first. The Home tile's excerpt and gavin_read_prd must follow it too.",
+      },
+      {
+        id: "prd-pick-outside",
+        text: "Picking a file outside the root is refused inline, and the tab keeps editing the old one",
+      },
+      {
+        id: "agent-file-pick",
+        text: "The agent-file tab's Pick… points it at an existing CLAUDE.md/AGENTS.md without offering to move anything",
+        hint: "A pick from a subfolder is refused — the CLI only reads this file from the root.",
+      },
     ],
   },
   {
@@ -635,6 +649,15 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "When the target already exists, no move is offered and the old file is left alone",
       },
       { id: "set-rename-invalid", text: "A name with a slash, or an empty one, shows an inline error and changes nothing" },
+      {
+        id: "set-prd-path",
+        text: "Settings' PRD file row writes a top-level prd = in config.toml, and the PRD tab follows it",
+        hint: "Clearing the box removes the key entirely and puts the tab back on .gavin-root/PRD.md.",
+      },
+      {
+        id: "set-prd-integration",
+        text: "After repointing the PRD, “Set up / update” rewrites the CLAUDE.md gavin block and the skill to name the new path",
+      },
       { id: "set-command", text: "Editing the command writes .gavin-root/config.toml and the next Start uses it" },
       {
         id: "set-model",

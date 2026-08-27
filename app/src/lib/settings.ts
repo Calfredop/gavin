@@ -36,6 +36,10 @@ export interface McpFormatInfo {
   label: string;
 }
 
+function nonEmpty(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export const DEFAULT_ACCENT = "#4a9eff";
 
 /// Eight presets chosen to stay legible against the #1e1e1e/#2a2a2a
@@ -87,6 +91,79 @@ export function validateMcpConfigPath(value: string): string | null {
   return null;
 }
 
+/// Mirrors protocol::DEFAULT_PRD_PATH. The path `init_gavin_root`
+/// scaffolds, and therefore the answer for every workspace gavin created
+/// itself; a project that already had a PRD points `prd` at its own.
+export const DEFAULT_PRD_PATH = ".gavin-root/PRD.md";
+
+/// Returns an error message, or null when the path is usable. Mirrors
+/// protocol::usable_prd_path, which is the authority -- without this the
+/// picker would offer a path the daemon then refuses, and the failure
+/// would surface as a request error rather than as a message beside the
+/// field. A subpath IS allowed, unlike the agent file: an existing
+/// project's PRD usually lives under `docs/`.
+export function validatePrdPath(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return "Enter a file path.";
+  if (trimmed.startsWith("/") || /^[a-z]:[\\/]/i.test(trimmed)) {
+    return "Must be inside the root, not an absolute path.";
+  }
+  if (trimmed.split(/[\\/]/).some((part) => part === ".." || part === ".")) {
+    return "Must stay inside the root — no “.” or “..” segments.";
+  }
+  return null;
+}
+
+/// Which file leads this workspace: the root context's configured `prd`,
+/// else the scaffolded default. Expressed once so the hub tab, the home
+/// excerpt, the wizard and the settings row can never disagree -- and so
+/// an older daemon, whose tree carries no `prd` at all, lands on the same
+/// branch as a workspace that never chose one.
+export function resolvePrdPath(context: { prd?: string | null } | null | undefined): string {
+  return nonEmpty(context?.prd) ?? DEFAULT_PRD_PATH;
+}
+
+/// A file the user picked in the OS dialog, as a path relative to the
+/// workspace root -- or the reason it cannot be used. Both pickers go
+/// through here: the dialog hands back an absolute path, and everything
+/// gavin stores about these two files is relative to the root so the
+/// config stays portable between machines and checkouts.
+export function relativeToRoot(
+  root: string,
+  picked: string
+): { path: string } | { error: string } {
+  // Windows accepts forward slashes, so normalising to them costs
+  // nothing and lets one comparison serve both platforms.
+  const slash = (v: string) => v.replace(/\\/g, "/");
+  const base = slash(root).replace(/\/+$/, "");
+  const target = slash(picked);
+  // The trailing slash is load-bearing: without it a sibling directory
+  // that merely starts with the root's name (/a/proj-old beside /a/proj)
+  // would read as inside it.
+  if (!base || !target.startsWith(`${base}/`)) {
+    return { error: "Pick a file inside the workspace root." };
+  }
+  const rest = target.slice(base.length + 1);
+  if (!rest) return { error: "Pick a file inside the workspace root." };
+  return { path: rest };
+}
+
+/// The agent instructions file a pick resolves to. Stricter than the PRD
+/// on purpose: the agent CLIs read this file from the repo root by name,
+/// so one in a subdirectory would be recorded, opened in the tab, and
+/// never actually read by the agent.
+export function agentFileFromPick(
+  root: string,
+  picked: string
+): { file: string } | { error: string } {
+  const relative = relativeToRoot(root, picked);
+  if ("error" in relative) return relative;
+  if (relative.path.includes("/")) {
+    return { error: "The agent file has to sit in the workspace root, not in a subfolder." };
+  }
+  return { file: relative.path };
+}
+
 export type RenameDecision = "prompt" | "point" | "error";
 
 /// The spec's §6 table, as a function. "prompt" means ask before moving;
@@ -124,10 +201,6 @@ export interface ResolvedAgent {
 }
 
 const FALLBACK_PROFILE = "claude-code";
-
-function nonEmpty(value: string | null | undefined): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 /// Explicit config beats the profile default beats claude-code's default
 /// (spec §4.2). Expressed once so the panel, the hub label, the home tile

@@ -20,7 +20,7 @@ unreadable. Re-name yourself if the work turns into something else.
 
 ## 1. Read the PRD first
 
-`gavin_read_prd` (or read `.gavin-root/PRD.md`). It is the lead document —
+`gavin_read_prd` (or read `{prd}`). It is the lead document —
 every piece of work should trace back to it.
 
 ## 2. Cards: note, task, plan

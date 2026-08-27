@@ -13,12 +13,21 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v17 taught the root config a top-level `prd` key: `SetRootConfigField`
+/// accepts a sixth key name and `GavinContext` carries `prd`. Neither is a
+/// new Request variant -- the key widens an EXISTING request, which
+/// `min_version_for` gates by TYPE and therefore cannot see -- so the gate
+/// that matters is the app's FEATURE_MIN_VERSION.prdPath. A v16 daemon
+/// refuses the key outright rather than dropping it, but it also keeps
+/// reading the PRD from the hard-coded path, so the picker must stay dark
+/// until the daemon is the one resolving it.
+///
 /// v15 widened `Stage` with `mode` and `name` (grouping spec G1). Both are
 /// `serde(default)`, so no Request variant changed and `min_version_for`
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -107,10 +116,13 @@ pub enum Request {
         key: String,
         value: String,
     },
-    /// Writes one key of `.gavin-root/config.toml`'s `[agent]` table.
-    /// Allow-listed to profile/file/command/mcp_file/mcp_format -- like
-    /// SetPlanFrontmatterField this must never become an arbitrary-key
-    /// writer into a file the user hand-edits.
+    /// Writes one key of `.gavin-root/config.toml`. Allow-listed to
+    /// profile/file/command/mcp_file/mcp_format inside the `[agent]`
+    /// table, plus the top-level `prd` -- like SetPlanFrontmatterField
+    /// this must never become an arbitrary-key writer into a file the
+    /// user hand-edits. `prd` sits OUTSIDE `[agent]` on purpose: the lead
+    /// document belongs to the workspace, not to whichever CLI is
+    /// configured to work on it.
     SetRootConfigField {
         root_path: String,
         key: String,
@@ -849,6 +861,36 @@ pub enum GavinContextKind {
     Context,
 }
 
+/// Where the PRD lives when the root config says nothing -- the path
+/// `init_gavin_root` scaffolds, and therefore the answer for every
+/// workspace gavin created itself. A workspace that already had a PRD of
+/// its own points `prd` at it instead.
+pub const DEFAULT_PRD_PATH: &str = ".gavin-root/PRD.md";
+
+/// The root config's `prd`, if it names a path gavin will actually use:
+/// relative to the workspace root, no `..`, no absolute prefix. Mirrors
+/// agent_setup's `usable_mcp_path` -- a subpath IS allowed, unlike the
+/// agent instructions file, because an existing project's PRD is usually
+/// under `docs/`.
+///
+/// Lives here rather than in either consumer because BOTH the daemon
+/// (which resolves the path for `read_prd` and `has_prd`) and the Tauri
+/// host (which names it in every file it writes for an agent) have to
+/// agree on it; a copy in each is a copy that can drift.
+pub fn usable_prd_path(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let path = std::path::Path::new(trimmed);
+    if trimmed.is_empty() || path.is_absolute() {
+        return None;
+    }
+    // Rejects `..` anywhere, and the Windows prefixes/root-dir components
+    // an absolute check on a foreign separator would miss.
+    if !path.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// The root context's `[agent]` block from `.gavin-root/config.toml`.
 /// Every field optional: a config.toml predating workspace settings
 /// parses cleanly with all of them `None`, and the profile defaults apply.
@@ -896,6 +938,13 @@ pub struct GavinContext {
     pub has_prd: bool,
     pub config_warning: bool,
     pub agent: Option<AgentConfig>,
+    /// The root config's top-level `prd`, when it names a usable relative
+    /// path. Only ever populated for the root context. `None` means the
+    /// workspace has never chosen one and `DEFAULT_PRD_PATH` applies --
+    /// which is also what an older daemon's tree looks like, so the
+    /// fallback covers both cases with the same branch.
+    #[serde(default)]
+    pub prd: Option<String>,
     /// True for contexts living outside the workspace root, pulled in via
     /// `extra_contexts` in the root config. Default keeps old daemons'
     /// trees parseable.
@@ -1352,6 +1401,7 @@ mod tests {
                 outside: false,
                 config_warning: false,
                 agent: None,
+                prd: None,
             }],
         }
     }
@@ -1388,10 +1438,30 @@ mod tests {
                     "hasPrd": true,
                     "configWarning": false,
                     "agent": null,
-                    "outside": false
+                    "outside": false,
+                    "prd": null
                 }]
             })
         );
+    }
+
+    #[test]
+    fn usable_prd_path_accepts_a_subpath_and_refuses_an_escape() {
+        // A subpath is the whole point: an existing project's PRD is
+        // usually `docs/PRD.md`, not something gavin scaffolded.
+        assert_eq!(usable_prd_path("docs/PRD.md"), Some("docs/PRD.md".to_string()));
+        assert_eq!(usable_prd_path("  PRD.md  "), Some("PRD.md".to_string()));
+        assert_eq!(usable_prd_path(DEFAULT_PRD_PATH), Some(DEFAULT_PRD_PATH.to_string()));
+
+        assert_eq!(usable_prd_path(""), None);
+        assert_eq!(usable_prd_path("   "), None);
+        assert_eq!(usable_prd_path("/etc/passwd"), None);
+        assert_eq!(usable_prd_path("../outside/PRD.md"), None);
+        assert_eq!(usable_prd_path("docs/../../PRD.md"), None);
+        // Not an escape, but refused all the same: the components check
+        // takes only Normal, and nothing that produces this value (the
+        // picker resolves against the root) can emit a `.` segment.
+        assert_eq!(usable_prd_path("./PRD.md"), None);
     }
 
     #[test]
@@ -1473,8 +1543,12 @@ mod tests {
                 model: Some("sonnet".to_string()),
             }),
             outside: false,
+            prd: Some("docs/PRD.md".to_string()),
         };
         let json = serde_json::to_value(&ctx).unwrap();
+        // The lead document's path rides beside the agent block, not
+        // inside it -- the frontend reads it off the context.
+        assert_eq!(json["prd"], serde_json::json!("docs/PRD.md"));
         assert_eq!(
             json["agent"],
             serde_json::json!({
@@ -1511,6 +1585,11 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v17: a top-level `prd` in the root config -- a sixth key name
+        // SetRootConfigField accepts, plus GavinContext.prd. The key
+        // widens an EXISTING request, so min_version_for is blind to it
+        // and daemonCompat.ts's `prdPath` is the only gate; the field is
+        // serde(default), so a v16 daemon's tree still parses.
         // v16: Rail.branch (spec O15), serde(default), so no Request
         // variant changed -- which is exactly why it also needs a
         // `railBranch` entry in app/src/lib/daemonCompat.ts: a v15
@@ -1532,7 +1611,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
     }
 
     #[test]

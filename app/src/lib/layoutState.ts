@@ -849,6 +849,21 @@ export async function setAgentField(
   }
 }
 
+/// The root config's `prd` — which document leads this workspace. Its own
+/// function rather than a sixth key on setAgentField because it is not an
+/// agent key: it lives at the document root, and it does not change when
+/// the workspace switches CLI. An empty value clears it, putting the
+/// workspace back on the scaffolded default.
+export async function setPrdPath(workspaceId: string, value: string): Promise<void> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!ws?.rootPath) return;
+  try {
+    await backend.setRootConfigField(ws.rootPath, "prd", value);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
 /// The app-wide default model for one profile. Machine-local, so it goes
 /// straight to config.json through Tauri and never touches the daemon --
 /// which is why it keeps working against a daemon too old for

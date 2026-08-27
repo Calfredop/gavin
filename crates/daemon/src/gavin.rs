@@ -264,8 +264,27 @@ fn write_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<()> {
 
 const MAX_PRD_BYTES: u64 = 1024 * 1024;
 
+/// The root config's top-level `prd`, when it names a usable path. One
+/// parse, shared by `prd_relative_path` and `build_context` -- the tree
+/// reports the CONFIGURED value (None where there is none) while every
+/// reader wants the RESOLVED one, and those are different answers.
+fn parse_prd_path(config_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(config_path).ok()?;
+    let table = content.parse::<toml::Table>().ok()?;
+    protocol::usable_prd_path(table.get("prd")?.as_str()?)
+}
+
+/// Where this workspace's PRD lives, relative to the root: its configured
+/// path, or the scaffolded default. Every daemon-side reader goes through
+/// here, so a workspace that pointed gavin at its own `docs/PRD.md` gets
+/// the same answer from `gavin_read_prd` and from the board's `has_prd`.
+pub fn prd_relative_path(root: &Path) -> String {
+    parse_prd_path(&root.join(GAVIN_ROOT_DIR).join("config.toml"))
+        .unwrap_or_else(|| protocol::DEFAULT_PRD_PATH.to_string())
+}
+
 pub fn read_prd(root: &Path) -> anyhow::Result<String> {
-    let prd = root.join(GAVIN_ROOT_DIR).join("PRD.md");
+    let prd = root.join(prd_relative_path(root));
     if !prd.is_file() {
         anyhow::bail!("no PRD found at {}", prd.display());
     }
@@ -941,22 +960,33 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
     }
 }
 
-/// Writes one `[agent]` key of `.gavin-root/config.toml`. Uses toml_edit
-/// so comments, key order and formatting survive -- this file is
-/// hand-edited by users and read by their agents. Allow-listed exactly
-/// like set_plan_field: never an arbitrary-key writer. mcp_file and
-/// mcp_format carry the `custom` profile's MCP layout, which cannot come
-/// from the static profile table.
+/// The keys an empty value CLEARS rather than being refused for. Each has
+/// a fallback underneath it -- the app-wide default model, the scaffolded
+/// PRD path -- which is what makes removing it meaningful; for the rest an
+/// empty value would mean nothing.
+///
+/// Removing rather than blanking is the point: a `model = ""` line reads
+/// as a deliberate empty model to whoever opens the file next, where an
+/// absent key reads as "gavin decides".
+const CLEARABLE_KEYS: &[&str] = &["model", "prd"];
+
+/// Writes one key of `.gavin-root/config.toml`. Uses toml_edit so
+/// comments, key order and formatting survive -- this file is hand-edited
+/// by users and read by their agents. Allow-listed exactly like
+/// set_plan_field: never an arbitrary-key writer. mcp_file and mcp_format
+/// carry the `custom` profile's MCP layout, which cannot come from the
+/// static profile table.
+///
+/// `prd` is the one key that is NOT part of `[agent]`: which document
+/// leads this workspace does not change when you switch CLI, so it sits
+/// at the document root beside `name` and `extra_contexts`.
 pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
-    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model") {
-        anyhow::bail!("not a settable agent key: {key}");
-    }
-    // `model` alone can be cleared. Every other key has a profile default
-    // underneath it, so an empty one would mean nothing; an empty model
-    // means "fall back to the app-wide default", which needs the key gone
-    // rather than blanked -- a `model = ""` line reads as a deliberate
-    // empty model to whoever opens the file next.
-    if key == "model" && value.trim().is_empty() {
+    let table = match key {
+        "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model" => Some("agent"),
+        "prd" => None,
+        _ => anyhow::bail!("not a settable config key: {key}"),
+    };
+    if value.trim().is_empty() && CLEARABLE_KEYS.contains(&key) {
         let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
         // No file means no key to remove. Returning early rather than
         // falling through keeps a clear from CREATING an empty
@@ -966,8 +996,15 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
         let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
             anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", path.display())
         })?;
-        if let Some(table) = doc.get_mut("agent").and_then(|a| a.as_table_mut()) {
-            table.remove("model");
+        match table {
+            Some(name) => {
+                if let Some(t) = doc.get_mut(name).and_then(|a| a.as_table_mut()) {
+                    t.remove(key);
+                }
+            }
+            None => {
+                doc.as_table_mut().remove(key);
+            }
         }
         std::fs::write(&path, doc.to_string())?;
         return Ok(());
@@ -975,16 +1012,33 @@ pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Res
     if value.trim().is_empty() || value.contains('\n') {
         anyhow::bail!("{key} must be a non-empty single line");
     }
+    // Validated here rather than trusted from the caller: the daemon is
+    // what resolves this path against the root, so the daemon is what has
+    // to refuse one pointing outside it.
+    let stored = if key == "prd" {
+        protocol::usable_prd_path(value)
+            .ok_or_else(|| anyhow::anyhow!("prd must be a path inside the root, with no `..`"))?
+    } else {
+        value.to_string()
+    };
     let path = root.join(GAVIN_ROOT_DIR).join("config.toml");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("{} is not valid TOML -- fix or remove it first", path.display())
     })?;
-    doc["agent"][key] = toml_edit::value(value);
-    // A freshly created [agent] arrives implicit; make it explicit so the
-    // file stays readable to whoever opens it next.
-    if let Some(t) = doc["agent"].as_table_mut() {
-        t.set_implicit(false);
+    match table {
+        Some(name) => {
+            doc[name][key] = toml_edit::value(stored);
+            // A freshly created [agent] arrives implicit; make it
+            // explicit so the file stays readable to whoever opens it next.
+            if let Some(t) = doc[name].as_table_mut() {
+                t.set_implicit(false);
+            }
+        }
+        // A bare root key. toml_edit renders the root table's own
+        // key-values above every header, so this lands where it parses as
+        // top-level rather than as a member of `[agent]`.
+        None => doc[key] = toml_edit::value(stored),
     }
     std::fs::write(&path, doc.to_string())?;
     Ok(())
@@ -1015,8 +1069,14 @@ pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> 
     if !config.exists() {
         std::fs::write(&config, ROOT_CONFIG_TEMPLATE)?;
     }
-    let prd = gavin_dir.join("PRD.md");
+    // Only scaffold a PRD where the workspace has not already named one:
+    // re-running init on a root pointing at its own `docs/PRD.md` would
+    // otherwise leave a second, unread PRD behind.
+    let prd = root.join(prd_relative_path(root));
     if !prd.exists() {
+        if let Some(parent) = prd.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         std::fs::write(&prd, PRD_TEMPLATE.replace("{workspace}", workspace_name))?;
     }
     Ok(())
@@ -1135,8 +1195,15 @@ fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
 }
 
 fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> GavinContext {
-    let (config_name, agent_config, config_warning) =
-        parse_context_config(&gavin_dir.join("config.toml"));
+    let config_path = gavin_dir.join("config.toml");
+    let (config_name, agent_config, config_warning) = parse_context_config(&config_path);
+    // Root-only, like the agent block: a `.gavin` sub-context scopes
+    // plans, and the lead document belongs to the workspace.
+    let prd = if matches!(kind, GavinContextKind::Root) {
+        parse_prd_path(&config_path)
+    } else {
+        None
+    };
     let folder_name =
         folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     let plans = list_md_files(&gavin_dir.join("plans"))
@@ -1154,12 +1221,19 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
         plans,
         docs: list_md_files(&gavin_dir.join("docs")),
         specs: list_md_files(&gavin_dir.join("specs")),
-        has_prd: matches!(kind, GavinContextKind::Root) && gavin_dir.join("PRD.md").is_file(),
+        // Resolved, not configured: "is there a PRD" has to answer for
+        // the file the workspace actually points at, or a project with
+        // its own docs/PRD.md reads as having none.
+        has_prd: matches!(kind, GavinContextKind::Root)
+            && folder
+                .join(prd.clone().unwrap_or_else(|| protocol::DEFAULT_PRD_PATH.to_string()))
+                .is_file(),
         config_warning,
         // Only the root context carries an agent block: `.gavin`
         // sub-contexts scope plans, not how the workspace is worked on.
         agent: if matches!(kind, GavinContextKind::Root) { agent_config } else { None },
         outside: false,
+        prd,
     }
 }
 
@@ -2213,6 +2287,72 @@ mod tests {
     }
 
     #[test]
+    fn the_prd_path_falls_back_to_the_scaffolded_one_and_follows_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        assert_eq!(prd_relative_path(dir.path()), protocol::DEFAULT_PRD_PATH);
+
+        // A project that already had its own PRD points gavin at it; the
+        // scaffolded one is left alone, and every reader follows.
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("docs/PRD.md"), "# theirs\n").unwrap();
+        set_root_config_field(dir.path(), "prd", "docs/PRD.md").unwrap();
+
+        assert_eq!(prd_relative_path(dir.path()), "docs/PRD.md");
+        assert_eq!(read_prd(dir.path()).unwrap(), "# theirs\n");
+        assert!(scan_root(dir.path()).contexts[0].has_prd);
+        assert_eq!(scan_root(dir.path()).contexts[0].prd.as_deref(), Some("docs/PRD.md"));
+
+        // Pointed at a file that is not there yet: the tree says so
+        // rather than answering for the scaffolded file behind it.
+        set_root_config_field(dir.path(), "prd", "docs/MISSING.md").unwrap();
+        assert!(!scan_root(dir.path()).contexts[0].has_prd);
+        assert!(read_prd(dir.path()).is_err());
+
+        // Cleared, and the default is back -- config and tree agree.
+        set_root_config_field(dir.path(), "prd", "").unwrap();
+        assert_eq!(prd_relative_path(dir.path()), protocol::DEFAULT_PRD_PATH);
+        let root = &scan_root(dir.path()).contexts[0];
+        assert!(root.has_prd);
+        assert_eq!(root.prd, None, "no key means the default applies, not an echoed default");
+    }
+
+    #[test]
+    fn a_prd_path_outside_the_root_is_refused_by_the_writer_and_ignored_by_the_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+
+        for bad in ["../elsewhere/PRD.md", "/etc/passwd"] {
+            assert!(set_root_config_field(dir.path(), "prd", bad).is_err(), "{bad}");
+        }
+
+        // Hand-edited past the writer, the reader still refuses it: an
+        // escape must not become a read just because it reached disk.
+        let path = dir.path().join(GAVIN_ROOT_DIR).join("config.toml");
+        let existing = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("prd = \"../outside/PRD.md\"\n{existing}")).unwrap();
+        assert_eq!(prd_relative_path(dir.path()), protocol::DEFAULT_PRD_PATH);
+    }
+
+    #[test]
+    fn a_root_level_key_stays_above_an_existing_table() {
+        // toml_edit appends new root keys at the end of the root table.
+        // If that renders BELOW `[agent]`, the reparse reads it as
+        // `agent.prd` and the key silently stops existing -- so this
+        // pins the render, not the write.
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        set_root_config_field(dir.path(), "profile", "codex").unwrap();
+        set_root_config_field(dir.path(), "prd", "docs/PRD.md").unwrap();
+
+        let path = dir.path().join(GAVIN_ROOT_DIR).join("config.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let table: toml::Table = text.parse().unwrap_or_else(|e| panic!("{e}: {text}"));
+        assert_eq!(table.get("prd").and_then(|v| v.as_str()), Some("docs/PRD.md"), "{text}");
+        assert!(table.get("agent").and_then(|a| a.get("prd")).is_none(), "{text}");
+    }
+
+    #[test]
     fn set_root_config_field_writes_each_allowed_key_and_rejects_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
@@ -2531,6 +2671,7 @@ mod tests {
                 has_prd: false,
                 config_warning: false,
                 agent: None,
+                prd: None,
                 plans: vec![],
                 docs: vec![],
                 specs: vec![],

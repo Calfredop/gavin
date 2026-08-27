@@ -1,7 +1,7 @@
 <script lang="ts">
   import { layoutState, closeWizard, agentProfilesStore, agentModelDefaultsStore} from "./layoutState";
   import { gavinTrees } from "./gavinState";
-  import { resolveAgentConfig } from "./settings";
+  import { resolveAgentConfig, resolvePrdPath } from "./settings";
   import { setupProgress, type SetupStep } from "./setupWizard";
   import * as backend from "./backend";
   import Modal from "./Modal.svelte";
@@ -26,6 +26,7 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agentCfg = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore));
+  const prdPath = $derived(resolvePrdPath(rootContext));
 
   // The two file bodies the derivation needs. Re-read on demand rather
   // than watched: the wizard is short-lived, so a watcher would be more
@@ -38,7 +39,7 @@
     if (!root) return;
     const [agentFile, prd] = await Promise.all([
       backend.readFileForViewer(`${root}/${agentCfg.file}`).catch(() => null),
-      backend.readFileForViewer(`${root}/.gavin-root/PRD.md`).catch(() => null),
+      backend.readFileForViewer(`${root}/${prdPath}`).catch(() => null),
     ]);
     agentFileBody = agentFile?.exists ? agentFile.content : null;
     prdBody = prd?.exists ? prd.content : null;
@@ -46,6 +47,7 @@
 
   $effect(() => {
     void agentCfg.file;
+    void prdPath;
     void ws?.rootPath;
     void reread();
   });
@@ -97,7 +99,7 @@
         {:else if current === "integration"}
           <IntegrationStep {workspaceId} onDone={advance} />
         {:else if current === "prd"}
-          <PrdStep {workspaceId} {prdBody} onDone={advance} />
+          <PrdStep {workspaceId} {prdBody} {prdPath} onDone={advance} />
         {:else}
           <LaunchStep {workspaceId} onDone={closeWizard} />
         {/if}

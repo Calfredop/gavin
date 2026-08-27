@@ -70,12 +70,23 @@ pub fn read_file_for_viewer(path: String) -> Result<FileContent, String> {
 /// Plain `fs::write`, matching `gavin::write_plan_field`'s convention
 /// rather than introducing temp-file-plus-rename in one place only.
 ///
+/// The parent directory is created when missing. Every path that reaches
+/// here names a file some surface already has open, so an absent parent
+/// is a folder the user just chose -- the PRD can be pointed at
+/// `docs/PRD.md` in a repo with no `docs/` yet, and the tab's first save
+/// is what creates it. Without this that save fails with a bare ENOENT.
+///
 /// Callers must never invoke this for a truncated read: only a prefix of
 /// an over-cap file was loaded, so writing it back would destroy the
 /// rest. `FileEditor` enforces that by refusing to offer Edit mode at all
 /// when `truncated` is true.
 #[tauri::command]
 pub fn write_file_for_editor(path: String, content: String) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
@@ -207,6 +218,24 @@ pub fn unwatch_file_for_viewer(path: String, state: State<FileWatchers>) -> Resu
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_first_save_creates_the_parent_directory_it_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        // What repointing the PRD at docs/PRD.md in a repo with no docs/
+        // looks like: the tab opens empty and the first save has to make
+        // the folder, not fail with ENOENT.
+        let path = dir.path().join("docs").join("PRD.md");
+        write_file_for_editor(path.to_string_lossy().to_string(), "# theirs\n".to_string())
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# theirs\n");
+
+        // An existing parent is untouched, and so is the rest of it.
+        std::fs::write(dir.path().join("docs").join("other.md"), "keep").unwrap();
+        write_file_for_editor(path.to_string_lossy().to_string(), "# again\n".to_string())
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("docs/other.md")).unwrap(), "keep");
+    }
 
     #[test]
     fn reads_a_small_utf8_file_whole() {

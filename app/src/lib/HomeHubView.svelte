@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { layoutState, switchWorkspaceView, agentProfilesStore, openWizard, agentModelDefaultsStore} from "./layoutState";
-  import { resolveAgentConfig } from "./settings";
+  import { resolveAgentConfig, resolvePrdPath } from "./settings";
   import { setupProgress } from "./setupWizard";
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
@@ -34,6 +34,10 @@
       $agentModelDefaultsStore
     )
   );
+  // The excerpt has to come from the file the workspace actually points
+  // at, or a project with its own docs/PRD.md shows an empty tile beside
+  // a PRD tab full of prose.
+  const prdPath = $derived(resolvePrdPath(tree?.contexts.find((c) => c.kind === "root")));
 
   let prdLines = $state<string[]>([]);
   let agentFileExists = $state<boolean | null>(null);
@@ -68,7 +72,7 @@
     const r = root;
     if (!r) return;
     void backend
-      .readFileForViewer(`${r}/.gavin-root/PRD.md`)
+      .readFileForViewer(`${r}/${prdPath}`)
       .then((res) => {
         prdLines = prdExcerpt(res.content, EXCERPT_LINES);
         // Kept whole as well: setupProgress needs the body to tell a

@@ -55,6 +55,16 @@ export const FEATURE_MIN_VERSION = {
   // the only gate there is, and the bind dialog's Branch section is the
   // one surface that can form the payload.
   railBranch: 16,
+  // The root config's top-level `prd` (the pickable PRD path). A v16
+  // daemon's SetRootConfigField allow-list has no `prd`, so it refuses
+  // the key -- loudly, unlike `groups` and `railBranch` above. It is
+  // gated anyway because refusing the WRITE is only half of it: a v16
+  // daemon also keeps resolving `read_prd` and `has_prd` against the
+  // hard-coded path, so a pick that somehow landed would leave the board
+  // and the MCP tool reading a different file from the tab. Both
+  // surfaces that can produce the payload -- the PRD tab's picker and
+  // the Settings row -- read it through featureBlockedReason.
+  prdPath: 17,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
