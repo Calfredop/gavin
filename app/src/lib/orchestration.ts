@@ -1587,6 +1587,33 @@ export function availableCards(
   );
 }
 
+/// `availableCards` with FINISHED work taken out -- what the "+ Add step"
+/// picker offers, and what Generate hands the agent.
+///
+/// The drawer can afford to keep the done cards: it buckets by status and
+/// starts the done bucket collapsed, so a rail that genuinely wants a
+/// finished card for its shape can still drag one out, and nobody else
+/// has to look at them. The picker is one flat, ungrouped list, so in a
+/// workspace with any history the two or three cards actually waiting sit
+/// buried among forty that are already finished -- and a step made from
+/// one of them is a step the scheduler marks done and cascades straight
+/// past, which is not what the human came to the picker to build.
+///
+/// Read through `effectiveStatus`, never `plan.status`: a nested task
+/// carries no status of its own, so read raw, every task under a Done
+/// plan comes back as work still waiting for a rail.
+export function unfinishedCards(
+  cards: CardEntry[],
+  plans: Map<string, CardEntry>,
+  board: Board | null
+): CardEntry[] {
+  // No columns means nothing can ever complete (doneColumn says so), so
+  // there is no finished work to take out -- not "all of it is finished".
+  const doneSlug = board ? slugStatus(doneColumn(board)?.name ?? "") : "";
+  if (!doneSlug) return cards;
+  return cards.filter((e) => slugStatus(effectiveStatus(e, plans) ?? "") !== doneSlug);
+}
+
 /// How many unplaced cards the tab REPORTS -- the drawer's header, and
 /// the search summary in the bar.
 ///

@@ -33,6 +33,7 @@ import {
   splitStageIntoSequence,
   groupUnplacedByStatus,
   availableCards,
+  unfinishedCards,
   unplacedCount,
   addCardAsStage,
   describeConflict,
@@ -1690,6 +1691,56 @@ describe("availableCards", () => {
     const roadmap = at("/ws/archive-rework/.gavin/plans/roadmap.md");
     const out = availableCards(index([roadmap]), new Set());
     expect(out.map((e) => e.plan.path)).toEqual([roadmap.plan.path]);
+  });
+});
+
+describe("unfinishedCards", () => {
+  const B3 = board(["To Do", "In Progress", "Done"]);
+  const at = (fileName: string, over: Partial<PlanFileInfo> = {}) => plan(fileName, over);
+  const index = (plans: PlanFileInfo[]) => cardIndex(tree(plans));
+  const run = (plans: PlanFileInfo[], b: Board = B3) => {
+    const cards = index(plans);
+    return unfinishedCards([...cards.values()], planIndex(cards), b).map((e) => e.plan.fileName);
+  };
+
+  // The whole point of the picker's list: what is left to DO. A finished
+  // card is not, and a workspace with any history has far more of them
+  // than of the two or three cards actually waiting.
+  it("leaves out a card sitting in the board's done column", () => {
+    expect(run([at("a.md", { status: "To Do" }), at("b.md", { status: "Done" })])).toEqual(["a.md"]);
+  });
+
+  it("matches the done column by slug, not by spelling", () => {
+    expect(run([at("a.md", { status: "done" })])).toEqual([]);
+  });
+
+  it("keeps a status the board has no column for", () => {
+    expect(run([at("a.md", { status: "Blocked" })])).toEqual(["a.md"]);
+  });
+
+  it("keeps a card with no status at all", () => {
+    expect(run([at("a.md", { status: null })])).toEqual(["a.md"]);
+  });
+
+  // A nested task has no status of its own -- it wears its parent's, on
+  // the board and on disk alike. Read raw, every task under a Done plan
+  // would be offered back as work still waiting for a rail.
+  it("reads a nested task through its parent", () => {
+    const parent = at("parent.md", { kind: "plan", status: "Done" });
+    const nested = at("child.md", { kind: "task", status: null, parent: "parent.md" });
+    expect(run([parent, nested])).toEqual([]);
+  });
+
+  it("keeps a nested task whose parent is unfinished", () => {
+    const parent = at("parent.md", { kind: "plan", status: "In Progress" });
+    const nested = at("child.md", { kind: "task", status: null, parent: "parent.md" });
+    expect(run([parent, nested])).toEqual(["parent.md", "child.md"]);
+  });
+
+  // No columns means nothing can ever complete (doneColumn says so), so
+  // there is no finished work to take out -- not "everything is finished".
+  it("keeps everything when the board has no columns", () => {
+    expect(run([at("a.md", { status: "Done" })], board([]))).toEqual(["a.md"]);
   });
 });
 

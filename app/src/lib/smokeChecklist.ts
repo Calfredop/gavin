@@ -528,8 +528,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "arch-drawer-count",
-        text: "Orchestration: “Unplaced (n)” counts only cards still waiting — a Done card stays listed in its collapsed group but is out of the number, and an archived card is in neither the drawer nor + Add step",
-        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one.",
+        text: "Orchestration: “Unplaced (n)” counts only cards still waiting — a Done card stays listed in the drawer’s collapsed group but is out of the number AND out of + Add step, and an archived card is in none of the three",
+        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one — then open + Add step on any rail: the Done card is not in the Cards list, and a nested task under that Done parent is gone too. With every remaining card finished the list reads “Every card left to place is finished.” and Generate with agent… goes inert.",
       },
       {
         id: "arch-agent-told",

@@ -34,6 +34,8 @@
     groupUnplacedByStatus,
     conflictsForRail,
     availableCards,
+    unfinishedCards,
+    planIndex,
     stepParams,
     findStep,
     findStage,
@@ -318,11 +320,18 @@
   }
 
   // The cards a rail can take on -- see availableCards for what is left
-  // out and why. Shared by the drawer and the "+ Add step" picker below.
+  // out and why. The DRAWER gets this full set: it buckets by status and
+  // starts the done bucket collapsed, so a finished card is reachable for
+  // the rail that wants one without being in anyone's way.
   const placed = $derived(
     new Set((orch?.rails ?? []).flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))))
   );
   const available = $derived(availableCards(cards, placed));
+  // The "+ Add step" picker and Generate get the set with finished work
+  // taken out -- neither has the drawer's bucket to put it in, so both
+  // would otherwise offer up (and Generate would instruct an agent to
+  // place) cards the scheduler marks done and cascades straight past.
+  const pickable = $derived(unfinishedCards(available, planIndex(cards), board));
   // Two ways Generate can be pointless, and the button says which: no
   // agent to hand the request to, or nothing left for it to place.
   // Measured over every unplaced card, never the search lens's view:
@@ -331,8 +340,8 @@
   const generateTip = $derived(
     !agentAvailable
       ? "Start the workspace agent on Home first"
-      : available.length === 0
-        ? "Every runnable card is already on a rail"
+      : pickable.length === 0
+        ? "Nothing is left to place — every unfinished card is already on a rail"
         : "Hand the unplaced cards to the workspace agent"
   );
   const allUnplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
@@ -549,7 +558,7 @@
 
   /// The header button: the unplaced cards are the job.
   async function generate(): Promise<void> {
-    await handOff(await requestGenerate(workspaceId, available, conflictSummary));
+    await handOff(await requestGenerate(workspaceId, pickable, conflictSummary));
   }
 
   /// A rail header's button: that one rail is the job, and it is handed
@@ -590,7 +599,7 @@
     <button
       type="button"
       class="add-rail"
-      disabled={!agentAvailable || available.length === 0 || Boolean(orchestrationBlocked)}
+      disabled={!agentAvailable || pickable.length === 0 || Boolean(orchestrationBlocked)}
       title={orchestrationBlocked || generateTip}
       onclick={() => void generate()}
     >
@@ -858,11 +867,19 @@
            reach the FIRST rail; this picker is how a card or a tool
            lands on a specific one without dragging. -->
       <p class="pick-head">Cards</p>
-      {#if available.length === 0}
-        <p class="empty">Every runnable card is already on a rail.</p>
+      {#if pickable.length === 0}
+        <!-- Two different nothings, and the human is owed the difference:
+             a board with work left that is all placed, versus one whose
+             every remaining card is finished. The second is reached from
+             the drawer's done bucket, not from here. -->
+        <p class="empty">
+          {available.length === 0
+            ? "Every runnable card is already on a rail."
+            : "Every card left to place is finished."}
+        </p>
       {:else}
         <ul class="picker">
-          {#each available as entry (entry.plan.path)}
+          {#each pickable as entry (entry.plan.path)}
             <li>
               <button
                 type="button"
