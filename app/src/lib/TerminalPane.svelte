@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as backend from "./backend";
-  import { getOrCreateTerminal } from "./terminalRegistry";
+  import { getOrCreateTerminal, restoreScreen } from "./terminalRegistry";
   import type { Terminal } from "@xterm/xterm";
   import type { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
@@ -19,11 +19,11 @@
   // Called by the parent Pane via bind:this whenever this tab's shared
   // pane rectangle changes size -- every tab in a pane gets resized
   // together, not just the active one (see Global Constraints).
-  export function fit(): void {
-    if (!ready) return;
+  export function fit(): Promise<void> {
+    if (!ready) return Promise.resolve();
     fitAddon.fit();
     const { cols, rows } = term;
-    backend.resizeSession(sessionId, cols, rows).catch(() => {});
+    return backend.resizeSession(sessionId, cols, rows).catch(() => {});
   }
 
   onMount(() => {
@@ -33,7 +33,11 @@
     mountPoint.appendChild(entry.container);
 
     ready = true;
-    fit();
+    // Awaited, not fired and forgotten: the daemon renders a snapshot at the
+    // size it believes the PTY is, so the resize has to reach it first. Both
+    // requests ride the streaming connection and the daemon reads it in
+    // order, so awaiting the resize's own write is enough to sequence them.
+    void fit().then(() => restoreScreen(sessionId));
     if (focused) term.focus();
   });
 

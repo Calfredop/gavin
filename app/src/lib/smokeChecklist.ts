@@ -816,6 +816,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Terminal restore",
+    items: [
+      {
+        id: "restore-agent-restart",
+        text: "With a coding agent running in a tab, quit and relaunch the app: the agent's box, banner and prompt come back whole, not as a half-drawn frame",
+        hint: "This is the bug. The daemon now sends its own model of the screen instead of replaying a tail of the raw PTY bytes — a tail of an agent's output is repaint DELTAS with no frame under them.",
+      },
+      {
+        id: "restore-agent-hotreload",
+        text: "Under `npm run tauri dev`, edit any frontend file so the webview hot reloads: every terminal repaints itself instead of coming back blank or scrambled",
+        hint: "The reload builds brand-new empty Terminal objects and nothing used to re-send anything — Attach runs once per app PROCESS. Each pane now asks for a repaint on mount.",
+      },
+      {
+        id: "restore-shell-history",
+        text: "In a plain shell tab, scroll up after a restart: the output above the current screen is still there",
+        hint: "The screen model keeps 500 rows of scrollback and the snapshot prints them above the restored screen. Gone entirely = the history half regressed.",
+      },
+      {
+        id: "restore-no-duplicate-notification",
+        text: "Hot reload while an agent is waiting on you: NO duplicate “waiting for input” notification fires",
+        hint: "Exactly why the repaint is Request::Snapshot and not a second Attach — Attach re-sends the status baseline, and waiting_for_input notifies unconditionally.",
+      },
+      {
+        id: "restore-arrow-keys",
+        text: "After a restart, arrow keys still work inside a restored agent/TUI session (history recall, menu navigation)",
+        hint: "The snapshot re-establishes application-cursor mode, which decides whether an arrow sends \\eOA or \\e[A. Wrong keys = input_mode_formatted() stopped riding along.",
+      },
+      {
+        id: "restore-resize-then-restart",
+        text: "Resize the window, then restart: the restored screen fits the new width with no wrapped or truncated rows",
+        hint: "The parser follows the PTY through ResizeSession; a snapshot rendered at a stale size shows up as broken box-drawing.",
+      },
+    ],
+  },
+  {
     title: "Git tab",
     items: [
       {
