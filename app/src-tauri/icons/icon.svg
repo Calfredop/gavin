@@ -40,33 +40,38 @@
     </g>
   </g>
 
-  <!-- pixel-art ">" chevron: 1px stair-step, 7x12 cells -->
+  <!-- pixel-art ">" chevron: 6x12 cells. Each arm crosses 4 cells over its 6
+       rows, making a 77deg V rather than the 90deg a plain 45deg stair-step
+       gives. That is as narrow as this grid goes: take the arm across 3 cells
+       and its stair runs double up, bowing it until the glyph reads ")" rather
+       than ">". A narrower V needs more rows to resolve, which would mean
+       standing the chevron proud of the G instead of sharing its cap height.
+       Every edge stays on the 32px cell so it exports crisp at every size;
+       appIconGrid.test.ts holds that. -->
   <g fill="#8bc98b">
-    <rect x="192" y="378" width="64" height="32"/>
-    <rect x="224" y="410" width="64" height="32"/>
-    <rect x="256" y="442" width="64" height="32"/>
-    <rect x="288" y="474" width="64" height="32"/>
-    <rect x="320" y="506" width="64" height="32"/>
-    <rect x="352" y="538" width="64" height="64"/>
-    <rect x="320" y="602" width="64" height="32"/>
-    <rect x="288" y="634" width="64" height="32"/>
-    <rect x="256" y="666" width="64" height="32"/>
-    <rect x="224" y="698" width="64" height="32"/>
-    <rect x="192" y="730" width="64" height="32"/>
+    <rect x="224" y="384" width="64" height="32"/>
+    <rect x="256" y="416" width="64" height="32"/>
+    <rect x="288" y="448" width="64" height="64"/>
+    <rect x="320" y="512" width="64" height="32"/>
+    <rect x="352" y="544" width="64" height="64"/>
+    <rect x="320" y="608" width="64" height="32"/>
+    <rect x="288" y="640" width="64" height="64"/>
+    <rect x="256" y="704" width="64" height="32"/>
+    <rect x="224" y="736" width="64" height="32"/>
   </g>
 
   <!-- pixel-art "G": 1px stroke, chamfered corners, 10x12 cells -->
   <g fill="#ececec">
-    <rect x="576" y="378" width="192" height="32"/>
-    <rect x="544" y="410" width="32" height="32"/>
-    <rect x="768" y="410" width="32" height="32"/>
-    <rect x="800" y="442" width="32" height="32"/>
-    <rect x="512" y="442" width="32" height="256"/>
-    <rect x="704" y="570" width="128" height="32"/>
-    <rect x="800" y="602" width="32" height="96"/>
-    <rect x="544" y="698" width="32" height="32"/>
-    <rect x="768" y="698" width="32" height="32"/>
-    <rect x="576" y="730" width="192" height="32"/>
+    <rect x="576" y="384" width="192" height="32"/>
+    <rect x="544" y="416" width="32" height="32"/>
+    <rect x="768" y="416" width="32" height="32"/>
+    <rect x="800" y="448" width="32" height="32"/>
+    <rect x="512" y="448" width="32" height="256"/>
+    <rect x="704" y="576" width="128" height="32"/>
+    <rect x="800" y="608" width="32" height="96"/>
+    <rect x="544" y="704" width="32" height="32"/>
+    <rect x="768" y="704" width="32" height="32"/>
+    <rect x="576" y="736" width="192" height="32"/>
   </g>
 
   <rect x="102" y="102" width="820" height="820" rx="182" fill="none"
