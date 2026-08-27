@@ -13,7 +13,7 @@
     daemonCompat,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
-  import { featureBlockedReason } from "./daemonCompat";
+  import { featureBlockedReason, restartOutcome } from "./daemonCompat";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
   import {
     resolveAgentConfig,
@@ -68,14 +68,22 @@
   let restarting = $state(false);
   let restartError = $state<string | null>(null);
   let restartedAt = $state<string | null>(null);
+  // "Restarted at 12:21" is true and useless when the daemon came back at
+  // the version it left at: the human reads a success line while every
+  // gated feature stays gated. This carries the same verdict the compat
+  // banner's note does, so both surfaces that offer the restart report
+  // what it actually achieved.
+  let restartNote = $state<string | null>(null);
 
   async function restartDaemon(): Promise<void> {
     confirmingRestart = false;
     restarting = true;
     restartError = null;
     restartedAt = null;
+    restartNote = null;
+    const before = $daemonCompat?.daemonVersion ?? null;
     try {
-      await restartDaemonInPlace();
+      restartNote = restartOutcome(before, await restartDaemonInPlace());
       restartedAt = new Date().toLocaleTimeString();
     } catch (e) {
       restartError = String(e instanceof Error ? e.message : e);
@@ -559,6 +567,8 @@
       </div>
       {#if restartError}
         <p class="hint warn">Couldn't restart the daemon: {restartError}</p>
+      {:else if restartNote}
+        <p class="hint warn">{restartNote}</p>
       {/if}
     </section>
   </div>

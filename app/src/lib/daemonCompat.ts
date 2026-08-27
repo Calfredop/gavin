@@ -18,6 +18,33 @@ export function compatMessage(c: DaemonCompat | null, runningAgents: number): st
   return `${base} Restarting it will end ${noun}.`;
 }
 
+/// What a "Restart daemon" press actually achieved, said in one line.
+///
+/// The CTA's silent failure mode, and the reason it reads as a dead
+/// button: a restart re-spawns the `gavin-daemon` binary sitting beside
+/// the app (session.rs `resolve_daemon_binary_path`), so when THAT binary
+/// is itself the stale one -- an app rebuilt past a protocol bump while
+/// the daemon binary was not -- the daemon comes back at exactly the
+/// version it left at, `compatMessage` re-renders identical text, and the
+/// press looks like nothing happened at all. It did happen; it just could
+/// never help. Naming that outcome is the difference between a broken
+/// button and an honest one.
+///
+/// Null means "nothing to add": the restart cleared the degradation, so
+/// the banner is on its way out and a note under it would only flash.
+export function restartOutcome(beforeVersion: number | null, after: DaemonCompat | null): string | null {
+  if (!after || !after.degraded) return null;
+  if (beforeVersion !== null && after.daemonVersion === beforeVersion) {
+    return (
+      `The daemon restarted and came back at v${after.daemonVersion} — the same version. ` +
+      `The gavin-daemon binary beside the app is that version too, so restarting cannot lift it: ` +
+      `rebuild or update gavin-daemon first, then restart it again.`
+    );
+  }
+  const from = beforeVersion === null ? "" : ` (it was v${beforeVersion})`;
+  return `The daemon restarted at v${after.daemonVersion}${from}, still older than this app's v${after.appVersion}.`;
+}
+
 /// Mirrors protocol::min_version_for for the UI's benefit. Only the
 /// versions the UI actually branches on need entries here.
 export const FEATURE_MIN_VERSION = {

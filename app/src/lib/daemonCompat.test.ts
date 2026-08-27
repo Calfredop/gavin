@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compatMessage, featureBlockedReason } from "./daemonCompat";
+import { compatMessage, featureBlockedReason, restartOutcome } from "./daemonCompat";
 
 describe("compatMessage", () => {
   it("says nothing when the daemon matches", () => {
@@ -25,6 +25,44 @@ describe("compatMessage", () => {
     const msg = compatMessage({ daemonVersion: 9, appVersion: 12, degraded: true }, 1)!;
     expect(msg).toContain("1 running agent");
     expect(msg).not.toContain("1 running agents");
+  });
+});
+
+// The reported bug: pressing "Restart daemon" on the compat banner looked
+// like it did nothing. It did restart the daemon -- and re-spawned the same
+// stale gavin-daemon binary, so the banner came back with byte-identical
+// text. These pin the wording that makes the difference visible.
+describe("restartOutcome", () => {
+  it("says nothing when the restart cleared the degradation", () => {
+    expect(restartOutcome(9, { daemonVersion: 12, appVersion: 12, degraded: false })).toBeNull();
+  });
+
+  it("says nothing when there is no verdict to report", () => {
+    expect(restartOutcome(9, null)).toBeNull();
+  });
+
+  it("names the no-op when the daemon comes back at the same version", () => {
+    const msg = restartOutcome(16, { daemonVersion: 16, appVersion: 17, degraded: true })!;
+    expect(msg).toContain("v16");
+    expect(msg).toContain("same version");
+    // The actionable half: the button is not broken, the binary is stale.
+    expect(msg).toContain("gavin-daemon");
+  });
+
+  it("reports a daemon that moved but is still behind", () => {
+    const msg = restartOutcome(15, { daemonVersion: 16, appVersion: 17, degraded: true })!;
+    expect(msg).toContain("v16");
+    expect(msg).toContain("v15");
+    expect(msg).toContain("v17");
+    expect(msg).not.toContain("same version");
+  });
+
+  it("still reports the versions when the pre-restart verdict is unknown", () => {
+    const msg = restartOutcome(null, { daemonVersion: 16, appVersion: 17, degraded: true })!;
+    expect(msg).toContain("v16");
+    expect(msg).toContain("v17");
+    // Nothing to compare against, so it must not claim the version held.
+    expect(msg).not.toContain("same version");
   });
 });
 

@@ -111,11 +111,21 @@ export function closeAppHub(): void {
 // Best-effort: a failed fetch (including, in tests, backend.daemonCompat
 // simply not being mocked) leaves the previous value in place rather than
 // blanking the banner over a transient IPC hiccup.
-async function refreshDaemonCompat(): Promise<void> {
+//
+// Returns the verdict now in force -- the fresh one, or the retained
+// previous one when the probe failed -- so a caller that restarted the
+// daemon can compare it against what it saw beforehand. Reading the store
+// after the call would work equally well; returning it keeps the "did this
+// restart change anything?" question answerable without a store read
+// racing the next refresh.
+async function refreshDaemonCompat(): Promise<DaemonCompat | null> {
   try {
-    daemonCompat.set(await backend.daemonCompat());
+    const compat = await backend.daemonCompat();
+    daemonCompat.set(compat);
+    return compat;
   } catch {
     // leave the previous verdict in place
+    return get(daemonCompat);
   }
 }
 
@@ -648,7 +658,7 @@ export async function retryConnect(): Promise<void> {
 // Throws on failure so the caller can render it beside the button --
 // silently swallowing it would leave the human with a dead daemon and no
 // sign of it.
-export async function restartDaemonInPlace(): Promise<void> {
+export async function restartDaemonInPlace(): Promise<DaemonCompat | null> {
   await backend.restartDaemon();
   // The workspaces payload is re-derived by the daemon on reconnect
   // (recover() spawns fresh shells and re-resolves ids), so pull the
@@ -664,7 +674,12 @@ export async function restartDaemonInPlace(): Promise<void> {
   // A restart can hand the app a differently-versioned daemon than the
   // one it started with (session::reconnect's own doc comment) -- refresh
   // the stored verdict so the banner/gating never keep serving a stale one.
-  void refreshDaemonCompat();
+  //
+  // Awaited, not fire-and-forget: the verdict is the only evidence a
+  // caller has of what the restart actually achieved, and the honest
+  // "restarted, and nothing moved" message depends on having it in hand
+  // before the button leaves its Restarting… state.
+  return await refreshDaemonCompat();
 }
 
 async function pollForStartupState(): Promise<void> {

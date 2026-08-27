@@ -15,6 +15,10 @@ vi.mock("./backend", () => ({
   setWorkspacesState: vi.fn(),
   getBootstrapError: vi.fn(),
   restartDaemon: vi.fn(),
+  // Resolved by default: every path that re-syncs against a (re)connected
+  // daemon refreshes the compat verdict, and restartDaemonInPlace now
+  // awaits it to report what the restart landed on.
+  daemonCompat: vi.fn().mockResolvedValue(null),
   writeInput: vi.fn(),
   setOnWriteInputHook: vi.fn(),
   resizeSession: vi.fn(),
@@ -2112,6 +2116,50 @@ describe("restartDaemonInPlace", () => {
 
     await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
     expect(get(layoutState).status).toBe("ready");
+  });
+
+  // The verdict is what the caller compares against the pre-restart one to
+  // tell "restarted onto a newer daemon" from "restarted onto the same
+  // stale binary" -- the whole difference between the banner's CTA looking
+  // dead and looking honest. Fire-and-forget refreshing would hand the
+  // caller nothing to compare.
+  it("hands back the verdict the restart landed on", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    layoutState.update((s) => ({ ...s, status: "ready" }));
+    daemonCompat.set({ daemonVersion: 16, appVersion: 17, degraded: true });
+    vi.mocked(backend.restartDaemon).mockResolvedValue(undefined);
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({
+      workspaces: [ws("ws-1", [])],
+      activeWorkspaceId: "ws-1",
+    });
+    vi.mocked(backend.daemonCompat).mockResolvedValue({
+      daemonVersion: 17,
+      appVersion: 17,
+      degraded: false,
+    });
+
+    const after = await restartDaemonInPlace();
+
+    expect(after).toEqual({ daemonVersion: 17, appVersion: 17, degraded: false });
+    expect(get(daemonCompat)).toEqual(after);
+  });
+
+  // A failed probe must not read as "the daemon changed": the retained
+  // verdict is the honest answer, and returning null instead would make
+  // the caller report an unknown version rather than the one it still has.
+  it("falls back to the retained verdict when the probe fails", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    layoutState.update((s) => ({ ...s, status: "ready" }));
+    const retained = { daemonVersion: 16, appVersion: 17, degraded: true };
+    daemonCompat.set(retained);
+    vi.mocked(backend.restartDaemon).mockResolvedValue(undefined);
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({
+      workspaces: [ws("ws-1", [])],
+      activeWorkspaceId: "ws-1",
+    });
+    vi.mocked(backend.daemonCompat).mockRejectedValue(new Error("ipc hiccup"));
+
+    expect(await restartDaemonInPlace()).toEqual(retained);
   });
 
   // The regression this guards: DaemonCompatBanner's "Restart daemon"

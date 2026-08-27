@@ -8,7 +8,7 @@
   // "something's off, here's what to do about it."
   import { TriangleAlert } from "@lucide/svelte";
   import { layoutState, daemonCompat, restartDaemonInPlace, runningSessionCount } from "./layoutState";
-  import { compatMessage } from "./daemonCompat";
+  import { compatMessage, restartOutcome } from "./daemonCompat";
 
   const message = $derived(compatMessage($daemonCompat, runningSessionCount($layoutState)));
 
@@ -28,16 +28,37 @@
   // the user exactly where they were, with an explanation.
   let restarting = $state(false);
   let restartError = $state<string | null>(null);
+  // What the last press achieved, when the banner is still here to say it.
+  // Without this the press has NO outcome the human can see: a restart
+  // that lands on the same too-old daemon binary re-renders this banner
+  // with byte-identical text, which is indistinguishable from a button
+  // that never fired. See restartOutcome for why that is the common case
+  // rather than an exotic one.
+  //
+  // Keyed by the message it was produced for -- the same idiom as
+  // dismissedMessage above, and for the same reason: a note explains one
+  // press against one verdict, so the moment the banner is describing a
+  // different daemon the note is about a state that no longer exists.
+  // Keying it beats clearing it from an $effect, which would race the
+  // assignment below whenever the restart itself changed the wording.
+  let restartNote = $state<{ forMessage: string; text: string } | null>(null);
+  const note = $derived(restartNote && restartNote.forMessage === message ? restartNote.text : null);
 
   async function restart(): Promise<void> {
     restarting = true;
     restartError = null;
+    restartNote = null;
+    const before = $daemonCompat?.daemonVersion ?? null;
     try {
-      await restartDaemonInPlace();
       // refreshDaemonCompat (called inside restartDaemonInPlace) updates
       // $daemonCompat; if the restart actually fixed things, `message`
-      // above goes null on its own and this banner disappears -- no
-      // separate "restarted" confirmation needed.
+      // above goes null on its own and this banner disappears -- and
+      // restartOutcome returns null to match, so the note never flashes
+      // on the way out.
+      const text = restartOutcome(before, await restartDaemonInPlace());
+      // `message` is re-derived from the refreshed verdict on read, so
+      // this keys the note to the wording it is standing under.
+      restartNote = text && message ? { forMessage: message, text } : null;
     } catch (e) {
       restartError = String(e instanceof Error ? e.message : e);
     } finally {
@@ -58,6 +79,8 @@
     </div>
     {#if restartError}
       <p class="error">Couldn't restart the daemon: {restartError}</p>
+    {:else if note}
+      <p class="note">{note}</p>
     {/if}
   </div>
 {/if}
@@ -102,5 +125,11 @@
     margin: 0;
     padding-left: 22px;
     color: var(--danger-text);
+  }
+  .note {
+    margin: 0;
+    padding-left: 22px;
+    color: inherit;
+    opacity: 0.85;
   }
 </style>
