@@ -1,6 +1,6 @@
 ---
 kind: task
 title: cmd+n default to task
-status: To Do
+status: Done
 ---
 Instead of note (put note as last)

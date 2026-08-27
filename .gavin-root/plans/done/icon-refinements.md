@@ -1,6 +1,6 @@
 ---
 kind: task
 title: icon refinements
-status: To Do
+status: Done
 ---
 make the icon “>” more sharp
