@@ -983,6 +983,48 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "search-git-commits", text: "The commit graph's search box behaves like the others (icon, ✕, Esc) and still filters subject/author/sha" },
     ],
   },
+  {
+    title: "App hub",
+    items: [
+      {
+        id: "hub-row-opens",
+        text: "The pinned “Gavin” row above Workspaces takes over the main pane and stays highlighted while it is showing",
+        hint: "It must work with a workspace open, not only from an empty one — gavin has no “nothing open” state.",
+      },
+      {
+        id: "hub-recents-order",
+        text: "Switching between two workspaces and reopening the hub puts the one you just left at the top",
+        hint: "A workspace never switched to since this build shipped sorts after every stamped one, in sidebar order.",
+      },
+      {
+        id: "hub-recap-agrees",
+        text: "A hub row's “n running · n pages” matches what the sidebar's own rows say for the same workspace",
+      },
+      {
+        id: "hub-row-switches",
+        text: "Clicking a hub row switches to that workspace and closes the hub; so does clicking any page or tab in the sidebar",
+      },
+      {
+        id: "hub-new-workspace",
+        text: "“+ New workspace…” names it, then reaches the setup modal and Continue → the wizard — the same path the sidebar's + takes",
+        hint: "The modal must survive the hub closing: it is mounted app-level, not inside the hub.",
+      },
+      {
+        id: "hub-links",
+        text: "The footer opens the repo and the issues page in the real browser, and shows no website link",
+        hint: "The website row is held back until APP_LINKS has a url for it — no dead link ships.",
+      },
+      {
+        id: "hub-not-persisted",
+        text: "Quitting with the hub open and relaunching lands back in the workspace, not on the hub",
+      },
+      {
+        id: "hub-scratchpad-renamed",
+        text: "The pinned workspace reads “Scratchpad”, keeps its pages, and appears in the hub's recents like any other",
+        hint: "Launch against an existing config.json — the id stays __unfiled__, so nothing may be orphaned by the rename.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

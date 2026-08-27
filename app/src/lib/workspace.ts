@@ -61,6 +61,11 @@ export interface Workspace {
   confirmTabClose?: boolean;
   /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
   gitView?: GitViewPrefs;
+  /// When this workspace was last switched to, epoch milliseconds.
+  /// Absent means never switched to since the field shipped -- which is
+  /// how the app hub orders its recents: stamped newest first, then the
+  /// never-stamped ones in their stored order.
+  lastActiveAt?: number;
 }
 
 export interface WorkspacesData {
@@ -117,8 +122,21 @@ export function renameWorkspace(state: WorkspacesData, workspaceId: string, name
   };
 }
 
-export function switchWorkspace(state: WorkspacesData, workspaceId: string): WorkspacesData {
-  return { ...state, activeWorkspaceId: workspaceId };
+/// Makes a workspace active and stamps it as last used. `now` is passed
+/// in rather than read from the clock so the stamp is testable and so
+/// every path that switches (a sidebar click, a jump-to-session, a page
+/// move) records the same kind of event -- the app hub's recents order
+/// is only as honest as the least careful of those callers.
+///
+/// An unknown workspaceId still becomes the active id, exactly as it did
+/// before the stamp existed: this module has never validated ids, and
+/// the callers all resolve them first.
+export function switchWorkspace(state: WorkspacesData, workspaceId: string, now: number): WorkspacesData {
+  return {
+    ...state,
+    activeWorkspaceId: workspaceId,
+    workspaces: state.workspaces.map((w) => (w.id === workspaceId ? { ...w, lastActiveAt: now } : w)),
+  };
 }
 
 // Removes the workspace and, if it was the active one, falls back to the
@@ -364,8 +382,9 @@ export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
 }
 
 /// The order the sidebar renders workspaces in: the Scratchpad pinned
-/// to the top, then the rest as stored. Shared with the ⌘⌥-number router so a
-/// hint badge and the shortcut can never point at different workspaces.
+/// to the top, then the rest as stored. Shared with the ⌘⌥-number
+/// router so a hint badge and the shortcut can never point at
+/// different workspaces.
 export function sidebarWorkspaceOrder(workspaces: Workspace[]): Workspace[] {
   const unfiled = workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID);
   const rest = workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID);

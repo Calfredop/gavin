@@ -9,6 +9,7 @@
     createWorkspace,
     switchWorkspaceView,
     retryConnect,
+    appHubOpen,
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
@@ -24,12 +25,15 @@
     wizardWorkspaceId,
   } from "$lib/layoutState";
   import SetupWizard from "$lib/SetupWizard.svelte";
+  import WorkspaceCreateModal from "$lib/WorkspaceCreateModal.svelte";
+  import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
+  import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
@@ -150,7 +154,16 @@
          drop marker inside (Pane.svelte's var(--ws-accent)). -->
     <div class="body" style:--ws-accent={accent}>
       <Sidebar />
-      {#if !activeWorkspace}
+      <!-- Ahead of every workspace branch, not inside one: the hub is
+           app-level -- it belongs to no workspace, and it must be
+           reachable with one open as well as with none. Switching to a
+           workspace clears the flag (layoutState's activateWorkspace),
+           so nothing here has to close it. -->
+      {#if $appHubOpen}
+        <div class="view">
+          <AppHubView />
+        </div>
+      {:else if !activeWorkspace}
         <div class="overlay">
           <button onclick={createFirstWorkspace}>New Workspace</button>
         </div>
@@ -222,6 +235,18 @@
        singleton, so a second mount would draw a duplicate menu. -->
   <ContextMenu />
 </div>
+
+<!-- App-level, beside the wizard it hands off to, rather than inside
+     whichever surface started the flow: the sidebar and the app hub both
+     create workspaces, and the modal has to outlive the one that opened
+     it (the hub closes the moment its new workspace becomes active). -->
+{#if $newWorkspaceFlow.pendingSetupId}
+  <WorkspaceCreateModal
+    workspaceId={$newWorkspaceFlow.pendingSetupId}
+    onSkip={skipSetup}
+    onDone={finishSetup}
+  />
+{/if}
 
 {#if $wizardWorkspaceId}
   <SetupWizard workspaceId={$wizardWorkspaceId} />

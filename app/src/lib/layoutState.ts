@@ -84,6 +84,25 @@ export const daemonCompat = writable<DaemonCompat | null>(null);
 /// app is still usable.
 export const daemonRequestError = writable<string | null>(null);
 
+/// Whether the app hub -- the fleet overview above every workspace -- has
+/// taken over the main pane.
+///
+/// Deliberately NOT persisted, and deliberately not a workspace
+/// `activeView`: it is app-level, it belongs to no workspace, and a
+/// relaunch should land where you left off working rather than on a
+/// launcher you happened to have open. It is also not a router: the app
+/// is a single page, and this is the flag +page.svelte branches on ahead
+/// of the workspace it would otherwise render.
+export const appHubOpen = writable(false);
+
+export function openAppHub(): void {
+  appHubOpen.set(true);
+}
+
+export function closeAppHub(): void {
+  appHubOpen.set(false);
+}
+
 // Pulls the current compat verdict from the Rust side. Called at every
 // point this module already re-syncs against a (re)connected daemon --
 // the workspaces-ready event, pollForStartupState's success path, and
@@ -115,10 +134,21 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
   }
 }
 
+/// Makes a workspace the active one: stamps it as last used, and takes
+/// the app hub down. Every path that puts a workspace on screen goes
+/// through here rather than calling workspace.switchWorkspace directly
+/// -- the stamp is what the hub's recents order is built on, and the
+/// hub must not survive underneath the workspace the user just chose,
+/// and both are far too easy to forget one call site at a time.
+function activateWorkspace(state: WorkspacesData, workspaceId: string): WorkspacesData {
+  closeAppHub();
+  return workspace.switchWorkspace(state, workspaceId, Date.now());
+}
+
 // The directory a blank terminal opened inside a workspace should start
 // in: that workspace's bound root. Undefined for a rootless workspace
-// (Unfiled, or one whose root has never been picked), which is how the
-// Rust side is told "no target" and falls back to $HOME. Every
+// (the Scratchpad, or one whose root has never been picked), which is
+// how the Rust side is told "no target" and falls back to $HOME. Every
 // spawn-a-blank-terminal path -- new page, split, new tab -- goes
 // through this, so they all land in the same place instead of dumping
 // the user in their home directory.
@@ -907,7 +937,7 @@ export async function splitPane(targetSessionId: string, direction: "row" | "col
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
   const withFocus = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, newId);
   const switchedPage = workspace.switchPage(withFocus, location.workspaceId, location.pageId);
-  const switchedWs = workspace.switchWorkspace(switchedPage, location.workspaceId);
+  const switchedWs = activateWorkspace(switchedPage, location.workspaceId);
   const data = workspace.switchWorkspaceView(switchedWs, location.workspaceId, "terminal");
   layoutState.update((s) => ({
     ...s,
@@ -1193,6 +1223,10 @@ export async function switchToTab(sessionId: string): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
   if (!location) return;
+  // The workspace is already the active one, so activateWorkspace never
+  // runs -- but this is reachable from the sidebar with the hub up, and
+  // choosing a tab plainly means "show me that tab".
+  closeAppHub();
   const newTree = layout.switchTab(location.tree, sessionId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
   const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, sessionId);
@@ -1224,7 +1258,7 @@ export async function switchToSessionInPage(workspaceId: string, pageId: string,
   const withTree = workspace.updatePageLayout(state, workspaceId, pageId, newTree);
   const withFocus = workspace.setPageFocus(withTree, workspaceId, pageId, sessionId);
   const switchedPage = workspace.switchPage(withFocus, workspaceId, pageId);
-  const switched = workspace.switchWorkspace(switchedPage, workspaceId);
+  const switched = activateWorkspace(switchedPage, workspaceId);
   const resolved = workspace.resolveActiveFocus(switched);
   layoutState.update((s) => ({
     ...s,
@@ -1318,6 +1352,10 @@ export async function closePane(anySessionId: string): Promise<void> {
 export async function createWorkspace(name: string): Promise<void> {
   const state = get(layoutState);
   const id = crypto.randomUUID();
+  // createWorkspace makes the new workspace active without going through
+  // switchWorkspace, so the hub is taken down here rather than there --
+  // the hub's own "+ New workspace…" must land you in what it created.
+  closeAppHub();
   const data = workspace.createWorkspace(state, id, name);
   const resolved = workspace.resolveActiveFocus(data);
   layoutState.update((s) => ({
@@ -1338,7 +1376,7 @@ export async function renameWorkspace(workspaceId: string, name: string): Promis
 
 export async function switchWorkspace(workspaceId: string): Promise<void> {
   const state = get(layoutState);
-  const switched = workspace.switchWorkspace(state, workspaceId);
+  const switched = activateWorkspace(state, workspaceId);
   const resolved = workspace.resolveActiveFocus(switched);
   layoutState.update((s) => ({
     ...s,
@@ -1351,6 +1389,11 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
 
 export async function switchWorkspaceView(workspaceId: string, view: string): Promise<void> {
   const state = get(layoutState);
+  // Same reason as switchToTab: the workspace is already active so
+  // activateWorkspace never runs, but ⌘2 (and the tab row, and Home's
+  // tiles) plainly mean "show me that tab" -- leaving the hub up would
+  // change the view underneath it and look like nothing happened.
+  closeAppHub();
   const data = workspace.switchWorkspaceView(state, workspaceId, view);
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
@@ -1559,7 +1602,7 @@ export async function renamePage(workspaceId: string, pageId: string, name: stri
 export async function switchPage(workspaceId: string, pageId: string): Promise<void> {
   const state = get(layoutState);
   const switchedPage = workspace.switchPage(state, workspaceId, pageId);
-  const switched = workspace.switchWorkspace(switchedPage, workspaceId);
+  const switched = activateWorkspace(switchedPage, workspaceId);
   const resolved = workspace.resolveActiveFocus(switched);
   layoutState.update((s) => ({
     ...s,
@@ -1760,7 +1803,7 @@ export async function movePageAction(pageId: string, targetWorkspaceId: string, 
   const wasActivePage = workspace.getActivePage(state)?.id === pageId;
   let data = workspace.movePage(state, pageId, targetWorkspaceId, targetIndex);
   if (wasActivePage) {
-    data = workspace.switchWorkspace(workspace.switchPage(data, targetWorkspaceId, pageId), targetWorkspaceId);
+    data = activateWorkspace(workspace.switchPage(data, targetWorkspaceId, pageId), targetWorkspaceId);
   }
   const resolved = workspace.resolveActiveFocus(data);
   layoutState.update((s) => ({

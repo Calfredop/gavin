@@ -1,23 +1,31 @@
 <script lang="ts">
-  import { get } from "svelte/store";
   import { accentVar } from "./settings";
-  import WorkspaceCreateModal from "./WorkspaceCreateModal.svelte";
   import GlobalSettingsModal from "./GlobalSettingsModal.svelte";
   import {
     layoutState,
     switchWorkspace,
     switchWorkspaceView,
     switchPage,
-    createWorkspace,
-    openWizard,
     renameWorkspace,
     createPage,
     renamePage,
     closeWorkspace,
     closePage,
     setSessionName,
+    appHubOpen,
+    openAppHub,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
+  // The creation flow itself lives in workspaceCreate.ts: the app hub's
+  // "+ New workspace…" drives the very same steps, and a second copy of
+  // the create → setup → wizard handoff is the shape that drifts.
+  import {
+    newWorkspaceFlow,
+    startCreatingWorkspace,
+    setNewWorkspaceName,
+    commitNewWorkspace,
+    cancelNewWorkspace,
+  } from "./workspaceCreate";
   import type { SessionStatus } from "./layoutState";
   import { presetSingle, allSessionIds, findLeafPath, getNodeAtPath } from "./layout";
   import {
@@ -36,6 +44,7 @@
     FileText,
     PanelsTopLeft,
     SquareArrowOutUpRight,
+    Boxes,
     MessageCircleQuestionMark,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
@@ -118,9 +127,10 @@
     expandedPages = next;
   }
 
-  let creatingWorkspace = $state(false);
-  let newWorkspaceName = $state("");
   let newWorkspaceInput: HTMLInputElement | null = $state(null);
+  // Only the box this surface opened: the hub renders one from the same
+  // store, and both showing at once would fight over focus and text.
+  const naming = $derived($newWorkspaceFlow.naming?.surface === "sidebar" ? $newWorkspaceFlow.naming : null);
 
   let editingWorkspaceId: string | null = $state(null);
   let workspaceEditValue = $state("");
@@ -427,32 +437,10 @@
     expanded = next;
   }
 
-  function startCreatingWorkspace(): void {
-    creatingWorkspace = true;
-    newWorkspaceName = "";
-  }
-
-  // The workspace whose creation modal is up, or null.
-  let pendingSetupId = $state<string | null>(null);
   /// The app-wide settings panel. A modal, not a hub tab: every hub tab
   /// renders inside one workspace, which is the wrong shape for a
   /// preference that spans all of them.
   let showGlobalSettings = $state(false);
-
-  function commitNewWorkspace(): void {
-    if (!creatingWorkspace) return;
-    const trimmed = newWorkspaceName.trim();
-    creatingWorkspace = false;
-    if (!trimmed) return;
-    void createWorkspace(trimmed).then(() => {
-      // createWorkspace makes the new workspace active, so this is it.
-      pendingSetupId = get(layoutState).activeWorkspaceId;
-    });
-  }
-
-  function cancelNewWorkspace(): void {
-    creatingWorkspace = false;
-  }
 
   function startEditingWorkspace(workspaceId: string, currentName: string): void {
     editingWorkspaceId = workspaceId;
@@ -716,7 +704,7 @@
   });
 
   $effect(() => {
-    if (creatingWorkspace && newWorkspaceInput) {
+    if (naming && newWorkspaceInput) {
       newWorkspaceInput.focus();
     }
   });
@@ -1049,20 +1037,36 @@
 {/snippet}
 
 <div class="sidebar">
+  <!-- Above the Workspaces header, not inside the list: the hub is the
+       app itself, one level up from any workspace. It stays reachable
+       with a workspace open -- gavin has one window and the pinned
+       workspace always exists, so there is no "nothing open" moment to
+       hang a welcome screen on. -->
+  <button
+    type="button"
+    class="app-row"
+    class:active={$appHubOpen}
+    aria-current={$appHubOpen ? "page" : undefined}
+    onclick={openAppHub}
+  >
+    <Boxes size={13} />
+    <span>Gavin</span>
+  </button>
   <div class="sidebar-header">
     <span>Workspaces</span>
-    <IconButton icon={Plus} label="New Workspace" size={14} onclick={startCreatingWorkspace} />
+    <IconButton icon={Plus} label="New Workspace" size={14} onclick={() => startCreatingWorkspace("sidebar")} />
   </div>
-  {#if creatingWorkspace}
+  {#if naming}
     <input
       class="new-workspace-input"
       bind:this={newWorkspaceInput}
-      bind:value={newWorkspaceName}
-      onblur={commitNewWorkspace}
+      value={naming.name}
+      oninput={(e) => setNewWorkspaceName(e.currentTarget.value)}
+      onblur={() => void commitNewWorkspace()}
       onkeydown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          commitNewWorkspace();
+          void commitNewWorkspace();
         } else if (e.key === "Escape") {
           e.preventDefault();
           cancelNewWorkspace();
@@ -1212,18 +1216,6 @@
   <GlobalSettingsModal onClose={() => (showGlobalSettings = false)} />
 {/if}
 
-{#if pendingSetupId}
-  <WorkspaceCreateModal
-    workspaceId={pendingSetupId}
-    onSkip={() => (pendingSetupId = null)}
-    onDone={() => {
-      const id = pendingSetupId;
-      pendingSetupId = null;
-      if (id) openWizard(id);
-    }}
-  />
-{/if}
-
 <style>
   .sidebar {
     width: 200px;
@@ -1244,6 +1236,33 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+  }
+  .app-row {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    box-sizing: border-box;
+    /* Matches .workspace-row's own padding so the app row and the rows
+       below it sit on one left edge. */
+    padding: 6px 8px 6px 5px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 1em;
+    text-align: left;
+    cursor: pointer;
+  }
+  .app-row:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+  .app-row.active {
+    background: var(--surface-selected);
+    color: var(--text);
   }
   .sidebar-header {
     /* Pinned now that .sidebar no longer scrolls -- without this it can

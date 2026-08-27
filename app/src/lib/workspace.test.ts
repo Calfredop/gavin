@@ -62,11 +62,33 @@ describe("renameWorkspace", () => {
 });
 
 describe("switchWorkspace", () => {
-  it("updates only activeWorkspaceId", () => {
+  it("makes the target active and stamps only it", () => {
     const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
-    const switched = switchWorkspace(state, "ws-1");
+    const switched = switchWorkspace(state, "ws-1", 1000);
     expect(switched.activeWorkspaceId).toBe("ws-1");
-    expect(switched.workspaces).toEqual(state.workspaces);
+    expect(switched.workspaces.map((w) => w.lastActiveAt)).toEqual([1000, undefined]);
+  });
+
+  it("leaves every other field of the switched-to workspace alone", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const switched = switchWorkspace(state, "ws-1", 1000);
+    expect({ ...switched.workspaces[0], lastActiveAt: undefined }).toEqual({
+      ...state.workspaces[0],
+      lastActiveAt: undefined,
+    });
+  });
+
+  it("overwrites an earlier stamp rather than keeping the first visit", () => {
+    const first = switchWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-1", 1000);
+    const second = switchWorkspace(first, "ws-1", 5000);
+    expect(second.workspaces[0].lastActiveAt).toBe(5000);
+  });
+
+  it("still sets an unknown id active, stamping nothing", () => {
+    const state = createWorkspace(empty, "ws-1", "A");
+    const switched = switchWorkspace(state, "gone", 1000);
+    expect(switched.activeWorkspaceId).toBe("gone");
+    expect(switched.workspaces[0].lastActiveAt).toBeUndefined();
   });
 });
 
@@ -102,7 +124,7 @@ describe("hubViewIsOnScreen", () => {
   };
 
   it("is true only for the active workspace's own current view", () => {
-    const state = switchWorkspaceView(switchWorkspace(twoRooted(), "ws-1"), "ws-1", "git");
+    const state = switchWorkspaceView(switchWorkspace(twoRooted(), "ws-1", 1000), "ws-1", "git");
     expect(hubViewIsOnScreen(state, "ws-1", "git")).toBe(true);
     expect(hubViewIsOnScreen(state, "ws-1", "kanban")).toBe(false);
   });
@@ -110,12 +132,12 @@ describe("hubViewIsOnScreen", () => {
   // The tab a background workspace is parked on is showing nothing at
   // all -- another workspace's tabs are what fill the window.
   it("is false for a workspace parked on that view while another is active", () => {
-    const state = switchWorkspace(switchWorkspaceView(twoRooted(), "ws-2", "git"), "ws-1");
+    const state = switchWorkspace(switchWorkspaceView(twoRooted(), "ws-2", "git"), "ws-1", 1000);
     expect(hubViewIsOnScreen(state, "ws-2", "git")).toBe(false);
   });
 
   it("honours the default view of a workspace that has never chosen one", () => {
-    const state = switchWorkspace(twoRooted(), "ws-1");
+    const state = switchWorkspace(twoRooted(), "ws-1", 1000);
     expect(hubViewIsOnScreen(state, "ws-1", "home")).toBe(true);
     expect(hubViewIsOnScreen(state, "ws-1", "git")).toBe(false);
   });
@@ -171,7 +193,7 @@ describe("removeWorkspace", () => {
 
   it("leaves activeWorkspaceId untouched when removing a non-active workspace", () => {
     const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
-    const switched = switchWorkspace(state, "ws-1");
+    const switched = switchWorkspace(state, "ws-1", 1000);
     const removed = removeWorkspace(switched, "ws-2");
     expect(removed.activeWorkspaceId).toBe("ws-1");
   });

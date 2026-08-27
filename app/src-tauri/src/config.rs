@@ -136,6 +136,14 @@ pub struct Workspace {
     /// Git tab preferences; None until the user changes something.
     #[serde(default)]
     pub git_view: Option<GitViewPrefs>,
+    /// When this workspace was last switched to, epoch milliseconds.
+    /// Absent means "never switched to since this field shipped", which
+    /// is exactly how the app hub orders it: stamped workspaces newest
+    /// first, then the never-stamped ones in their stored order. Written
+    /// by the frontend (which owns the clock) through the ordinary
+    /// workspaces save, so an older config simply loads with it absent.
+    #[serde(default)]
+    pub last_active_at: Option<i64>,
 }
 
 fn default_true() -> bool {
@@ -264,6 +272,7 @@ mod tests {
             notify_finished: true,
             confirm_tab_close: true,
             git_view: None,
+            last_active_at: None,
         }
     }
 
@@ -441,7 +450,8 @@ mod tests {
                 "notifyNeedsInput": true,
                 "notifyFinished": true,
                 "confirmTabClose": true,
-                "gitView": null
+                "gitView": null,
+                "lastActiveAt": null
             })
         );
     }
@@ -509,6 +519,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load(dir.path()).unwrap().workspaces[0].git_view, None);
+    }
+
+    #[test]
+    fn last_active_at_roundtrips_and_defaults_to_none_for_an_older_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.last_active_at = Some(1_724_500_000_000);
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+            theme: None,
+            agent_models: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+
+        // A config written before the app hub: no lastActiveAt key at
+        // all. It must load, not fall back to AppConfig::default() --
+        // that would silently drop every workspace the user has.
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.workspaces.len(), 1);
+        assert_eq!(loaded.workspaces[0].last_active_at, None);
     }
 
     #[test]

@@ -175,6 +175,7 @@ mod smoketest_tests {
             notify_finished: true,
             confirm_tab_close: true,
             git_view: None,
+            last_active_at: None,
         }
     }
 
@@ -219,6 +220,7 @@ mod smoketest_tests {
             notify_finished: true,
             confirm_tab_close: true,
             git_view: None,
+            last_active_at: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -1354,6 +1356,7 @@ mod resolve_workspaces_tests {
             notify_finished: true,
             confirm_tab_close: true,
             git_view: None,
+            last_active_at: None,
         }
     }
 
@@ -1656,6 +1659,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 notify_finished: true,
                 confirm_tab_close: true,
                 git_view: None,
+                last_active_at: None,
             });
         }
     } else {
@@ -1934,6 +1938,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 notify_finished: true,
                 confirm_tab_close: true,
                 git_view: None,
+                last_active_at: None,
             },
         );
     }
@@ -3138,6 +3143,7 @@ mod main_session_tests {
             notify_finished: true,
             confirm_tab_close: true,
             git_view: None,
+            last_active_at: None,
         }
     }
 
@@ -3605,6 +3611,7 @@ mod attach_target_tests {
             notify_finished: true,
             confirm_tab_close: true,
             git_view: None,
+            last_active_at: None,
         }
     }
 
