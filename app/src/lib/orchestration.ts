@@ -1426,14 +1426,26 @@ export function railCardsToMove(
 /// The steps a "Clear done" would take OFF the rail, in run order.
 ///
 /// Two facts make a step done, the same two rule 1 of the scheduler
-/// joins (§4.2): the scheduler marked it `done`, or -- for a card step
-/// on a rail that was never run, and so has no run state at all -- its
+/// joins (§4.2): the step's run state says `done`, or -- for a card step
+/// the rail has never run, and so holds no run row for it at all -- its
 /// card already sits in the board's done column. A TOOL step has no card
 /// and can only be finished by its run state.
 ///
-/// A `running` step is never listed, whatever its card says: the daemon
-/// refuses a plan write that drops one (replace_plan guard 3), and one
-/// refusal would lose the whole clear rather than that single step.
+/// Once a rail HAS a run row for a step, that row is the whole answer
+/// and the card is not consulted: `running`, `pending` and `stalled` all
+/// mean work still ahead. The gap between "no row" and a row reading
+/// `pending` is the point here, not an accident of storage -- Reset and
+/// Retry write an explicit `pending` row, and nothing moves the card
+/// back out of Done when they do. Read through `stepStateOf` alone, a
+/// restarted step is indistinguishable from one that never ran, and the
+/// clear swept away exactly the work the human had just queued to run
+/// again. A `stalled` step is the same story one rung down: rule 2
+/// retries it when the run reaches its stage.
+///
+/// A `running` step was never listed even before that, whatever its card
+/// says: the daemon refuses a plan write that drops one (replace_plan
+/// guard 3), and one refusal would lose the whole clear rather than that
+/// single step.
 ///
 /// Empty means the action has nothing to do, which is how the surfaces
 /// decide to disable it.
@@ -1445,13 +1457,12 @@ export function railDoneStepIds(
 ): string[] {
   const target = doneColumnName ? slugStatus(doneColumnName) : null;
   const plans = planIndex(cards);
+  const ran = new Set(orch.stepRuns.map((r) => r.stepId));
   const ids: string[] = [];
   for (const stage of [...rail.stages].sort((a, b) => a.position - b.position)) {
     for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
-      const state = stepStateOf(orch, step.id);
-      if (state === "running") continue;
-      if (state === "done") {
-        ids.push(step.id);
+      if (ran.has(step.id)) {
+        if (stepStateOf(orch, step.id) === "done") ids.push(step.id);
         continue;
       }
       if (isToolStep(step) || !target) continue;

@@ -2537,6 +2537,44 @@ describe("railDoneStepIds", () => {
     expect(railDoneStepIds(r, o, index([null, null, null]), "Done")).toEqual([]);
   });
 
+  // The bug this guards: Reset and Retry write an explicit `pending`
+  // row, and nothing moves the card back out of Done when they do. Read
+  // through stepStateOf, a restarted step is indistinguishable from one
+  // that never ran, so Clear done swept away exactly the work the human
+  // had just queued up to run again.
+  it("leaves a step restarted over a Done card alone", () => {
+    const o = runs([["t1", "pending"]]);
+    expect(railDoneStepIds(r, o, index(["Done", null, null]), "Done")).toEqual([]);
+  });
+
+  // Same rule for a stall: rule 2 retries it when the run reaches its
+  // stage, so it is work still ahead whatever its card says.
+  it("leaves a stalled step alone even when its card sits in the done column", () => {
+    const o = runs([["t1", "stalled"]]);
+    expect(railDoneStepIds(r, o, index(["Done", null, null]), "Done")).toEqual([]);
+  });
+
+  // Reset writes a pending row for EVERY step, which is the whole point:
+  // a rail the human has just re-armed has nothing finished on it, so
+  // the clear is a no-op and its button goes flat.
+  it("has nothing to clear on a rail whose run state was just reset", () => {
+    const o = runs([
+      ["t1", "pending"],
+      ["t2", "pending"],
+      ["t3", "pending"],
+    ]);
+    expect(railDoneStepIds(r, o, index(["Done", "Done", "Done"]), "Done")).toEqual([]);
+  });
+
+  // The fallback survives where it was meant to: a step the rail has
+  // never reached has no run row at all, so a card finished by hand
+  // still comes off. Only the steps the rail HAS a verdict on are read
+  // from run state alone.
+  it("still counts a never-reached step whose card was finished by hand", () => {
+    const o = runs([["t1", "done"]]);
+    expect(railDoneStepIds(r, o, index([null, "Done", null]), "Done")).toEqual(["t1", "t2"]);
+  });
+
   // A tool step has no card, so only its run state can finish it.
   it("takes a tool step only on its run state", () => {
     const t = toolRail("r1", [[["t1", "builtin:push"]]]);
