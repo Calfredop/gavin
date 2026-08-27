@@ -1058,6 +1058,66 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    // Everything here removes real files or depends on the OS Trash, so
+    // none of it is reachable from a unit test. Run the whole section on
+    // a SCRATCH repo you are willing to lose.
+    title: "Removing a workspace",
+    items: [
+      {
+        id: "delete-x-keeps-everything",
+        text: "The sidebar X warns that nothing on disk is deleted, and afterwards .gavin-root/ is still there and the board comes back on re-add",
+        hint: "The X used to delete the board silently. Re-adding the folder is the next item — do them together.",
+      },
+      {
+        id: "delete-reclaim-restores",
+        text: "Re-adding the removed folder to a NEW empty workspace offers Restore, and Restore brings back the old columns and rails",
+        hint: "The rows are keyed by the workspace's uuid — “the board is back” is the only proof the re-key landed.",
+      },
+      {
+        id: "delete-reclaim-start-fresh",
+        text: "Choosing Start fresh binds normally, and picking the same folder again does not ask a second time",
+      },
+      {
+        id: "delete-disabled-explains-itself",
+        text: "On a workspace with no root, Settings → Danger zone → Delete workspace… is disabled and hovering it says why",
+        hint: "A disabled element fires no mouseenter — the reason has to come from the row around it.",
+      },
+      {
+        id: "delete-wizard-walks",
+        text: "The wizard walks one screen per category found, Back works from every screen, and a category the scan found nothing for is skipped entirely",
+        hint: "Delete .claude/skills/gavin* by hand first — the skills screen should then not appear at all.",
+      },
+      {
+        id: "delete-outside-context-unticked",
+        text: "A context registered from outside the root appears under a warning and starts unticked",
+        hint: "Add one with the Plans tab's “Add outside context…” before starting.",
+      },
+      {
+        id: "delete-confirm-gated",
+        text: "Delete stays disabled until the workspace's name is typed exactly, and the summary lists every path, edit, row group and session",
+      },
+      {
+        id: "delete-declined-survives",
+        text: "A category answered No is still on disk afterwards, byte for byte",
+        hint: "Decline the instructions block: CLAUDE.md must still hold <!-- gavin:start -->.",
+      },
+      {
+        id: "delete-trash-holds-the-files",
+        text: "The trashed folders are actually in the Trash and can be dragged back out",
+        hint: "This is the whole reason it is not rm — check the Finder, not just that the folder is gone.",
+      },
+      {
+        id: "delete-shared-files-edited",
+        text: ".mcp.json keeps its other servers and CLAUDE.md keeps your own prose — both files still exist",
+      },
+      {
+        id: "delete-leaves-no-tombstone",
+        text: "After a delete, re-adding the same folder does NOT offer to restore anything",
+        hint: "The opposite of the X: a delete means it, so no record is kept.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {
