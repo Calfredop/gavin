@@ -1,6 +1,6 @@
 ---
 title: Workspace delete
-status: To Do
+status: In Progress
 ---
 Make the current "X" button in the sidebar only remove the workspace from Gavin
 app. Then add a delete workspace option in workspace settings. This should walk
