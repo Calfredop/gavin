@@ -33,6 +33,12 @@ import {
   type Page,
   hubLabel,
   workspaceIdForSession,
+  rememberRemoved,
+  matchTombstone,
+  forgetTombstone,
+  reclaimable,
+  restoreWorkspaceId,
+  REMOVED_WORKSPACES_LIMIT,
 } from "./workspace";
 
 function leaf(tabs: string[]): LayoutNode {
@@ -509,5 +515,226 @@ describe("sidebarWorkspaceOrder", () => {
 
   it("is a no-op when Unfiled is absent", () => {
     expect(sidebarWorkspaceOrder([w("a"), w("b")]).map((x) => x.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("tombstones for removed workspaces", () => {
+  const rooted = (id: string, rootPath?: string): Workspace => ({
+    id,
+    name: id.toUpperCase(),
+    pages: [],
+    activePageId: null,
+    rootPath,
+  });
+
+  const state = (workspaces: Workspace[], removed?: WorkspacesData["removedWorkspaces"]): WorkspacesData => ({
+    workspaces,
+    activeWorkspaceId: workspaces[0]?.id ?? null,
+    removedWorkspaces: removed,
+  });
+
+  describe("rememberRemoved", () => {
+    it("records the id, name, root and time of a rooted workspace", () => {
+      const next = rememberRemoved(state([rooted("a", "/repo/a")]), "a", 1000);
+      expect(next.removedWorkspaces).toEqual([
+        { id: "a", name: "A", rootPath: "/repo/a", removedAt: 1000 },
+      ]);
+    });
+
+    // A workspace that was never bound owns no files and can never be
+    // matched by a later folder pick, so a record for it is noise.
+    it("writes nothing for a workspace with no root", () => {
+      const next = rememberRemoved(state([rooted("a")]), "a", 1000);
+      expect(next.removedWorkspaces).toBeUndefined();
+    });
+
+    it("writes nothing for a root that is only whitespace", () => {
+      const next = rememberRemoved(state([rooted("a", "   ")]), "a", 1000);
+      expect(next.removedWorkspaces).toBeUndefined();
+    });
+
+    it("writes nothing for an unknown workspace", () => {
+      const next = rememberRemoved(state([rooted("a", "/repo/a")]), "nope", 1000);
+      expect(next.removedWorkspaces).toBeUndefined();
+    });
+
+    it("puts the newest record first", () => {
+      const first = rememberRemoved(state([rooted("a", "/repo/a"), rooted("b", "/repo/b")]), "a", 1000);
+      const second = rememberRemoved({ ...first, workspaces: [rooted("b", "/repo/b")] }, "b", 2000);
+      expect(second.removedWorkspaces?.map((t) => t.id)).toEqual(["b", "a"]);
+    });
+
+    // Two records for one folder would make "the newest match" a
+    // question about list order rather than about time.
+    it("replaces an earlier record for the same root", () => {
+      const first = rememberRemoved(state([rooted("a", "/repo/x")]), "a", 1000);
+      const second = rememberRemoved({ ...first, workspaces: [rooted("b", "/repo/x/")] }, "b", 2000);
+      expect(second.removedWorkspaces).toEqual([
+        { id: "b", name: "B", rootPath: "/repo/x/", removedAt: 2000 },
+      ]);
+    });
+
+    it("caps the list, dropping the oldest", () => {
+      let s: WorkspacesData = state([]);
+      for (let i = 0; i < REMOVED_WORKSPACES_LIMIT + 5; i++) {
+        s = rememberRemoved({ ...s, workspaces: [rooted(`w${i}`, `/repo/${i}`)] }, `w${i}`, i);
+      }
+      expect(s.removedWorkspaces).toHaveLength(REMOVED_WORKSPACES_LIMIT);
+      expect(s.removedWorkspaces?.[0].id).toBe(`w${REMOVED_WORKSPACES_LIMIT + 4}`);
+      expect(s.removedWorkspaces?.some((t) => t.id === "w0")).toBe(false);
+    });
+  });
+
+  describe("matchTombstone", () => {
+    const removed = [
+      { id: "old", name: "Old", rootPath: "/repo/x", removedAt: 1000 },
+      { id: "new", name: "New", rootPath: "/repo/x", removedAt: 3000 },
+      { id: "other", name: "Other", rootPath: "/repo/y", removedAt: 2000 },
+    ];
+
+    it("returns the newest record for the root", () => {
+      expect(matchTombstone(state([], removed), "/repo/x")?.id).toBe("new");
+    });
+
+    it("ignores a trailing separator on either side", () => {
+      expect(matchTombstone(state([], removed), "/repo/x/")?.id).toBe("new");
+      expect(matchTombstone(state([], [{ ...removed[2], rootPath: "/repo/y/" }]), "/repo/y")?.id).toBe(
+        "other"
+      );
+    });
+
+    it("returns null for a root nothing was removed from", () => {
+      expect(matchTombstone(state([], removed), "/repo/z")).toBeNull();
+    });
+
+    it("returns null when there are no records at all", () => {
+      expect(matchTombstone(state([]), "/repo/x")).toBeNull();
+    });
+
+    // Restoring onto an id a live workspace already holds would put two
+    // workspaces in the app under one id.
+    it("skips a record whose id is already in use", () => {
+      const live = state([rooted("new", "/somewhere/else")], removed);
+      expect(matchTombstone(live, "/repo/x")?.id).toBe("old");
+    });
+  });
+
+  describe("forgetTombstone", () => {
+    it("drops the named record and keeps the rest", () => {
+      const removed = [
+        { id: "a", name: "A", rootPath: "/repo/a", removedAt: 1 },
+        { id: "b", name: "B", rootPath: "/repo/b", removedAt: 2 },
+      ];
+      expect(forgetTombstone(state([], removed), "a").removedWorkspaces?.map((t) => t.id)).toEqual(["b"]);
+    });
+
+    it("is a no-op for an id that is not recorded", () => {
+      expect(forgetTombstone(state([]), "a").removedWorkspaces).toEqual([]);
+    });
+  });
+
+  // The list is a carry-through field: any function that rebuilds the
+  // record from a fresh literal instead of spreading would silently wipe
+  // every record it holds.
+  describe("the record survives the functions that rebuild it", () => {
+    const removed = [{ id: "a", name: "A", rootPath: "/repo/a", removedAt: 1 }];
+
+    it("survives removeWorkspace", () => {
+      const s = state([rooted("x", "/repo/x")], removed);
+      expect(removeWorkspace(s, "x").removedWorkspaces).toEqual(removed);
+    });
+
+    it("survives createWorkspace", () => {
+      expect(createWorkspace(state([], removed), "n", "N").removedWorkspaces).toEqual(removed);
+    });
+  });
+});
+
+describe("reclaimable", () => {
+  const tombstone = { id: "old", name: "Old", rootPath: "/repo/x", removedAt: 1 };
+  const state = (w: Workspace): WorkspacesData => ({
+    workspaces: [w],
+    activeWorkspaceId: w.id,
+    removedWorkspaces: [tombstone],
+  });
+  const empty = (over: Partial<Workspace> = {}): Workspace => ({
+    id: "fresh",
+    name: "Fresh",
+    pages: [],
+    activePageId: null,
+    ...over,
+  });
+
+  it("offers the record for an empty workspace bound to the removed root", () => {
+    expect(reclaimable(state(empty()), "fresh", "/repo/x")).toEqual(tombstone);
+  });
+
+  it("offers nothing for a different root", () => {
+    expect(reclaimable(state(empty()), "fresh", "/repo/y")).toBeNull();
+  });
+
+  // Out of scope by design: re-pointing a live workspace would have to
+  // migrate its tabs, board tabs and watch, not just swap an id.
+  it("offers nothing for a workspace already bound to a root", () => {
+    expect(reclaimable(state(empty({ rootPath: "/somewhere" })), "fresh", "/repo/x")).toBeNull();
+  });
+
+  it("offers nothing for a workspace that holds sessions", () => {
+    const withPage = empty({
+      pages: [{ id: "p1", name: "P", layout: leaf(["s-1"]), focusedSessionId: null }],
+      activePageId: "p1",
+    });
+    expect(reclaimable(state(withPage), "fresh", "/repo/x")).toBeNull();
+  });
+
+  it("offers nothing for a workspace running a main agent", () => {
+    expect(reclaimable(state(empty({ mainSessionId: "agent-1" })), "fresh", "/repo/x")).toBeNull();
+  });
+
+  it("offers nothing for an unknown workspace", () => {
+    expect(reclaimable(state(empty()), "nope", "/repo/x")).toBeNull();
+  });
+});
+
+describe("restoreWorkspaceId", () => {
+  const tombstone = { id: "old", name: "Old", rootPath: "/repo/x", removedAt: 1 };
+  const base: WorkspacesData = {
+    workspaces: [
+      {
+        id: "fresh",
+        name: "Fresh",
+        pages: [{ id: "p1", name: "P", layout: leaf([]), focusedSessionId: null }],
+        activePageId: "p1",
+        color: "#abcdef",
+      },
+      { id: "other", name: "Other", pages: [], activePageId: null },
+    ],
+    activeWorkspaceId: "fresh",
+    removedWorkspaces: [tombstone],
+  };
+
+  it("swaps the id, binds the root and carries the workspace over whole", () => {
+    const next = restoreWorkspaceId(base, "fresh", "old", "/repo/x");
+    expect(next.workspaces.map((w) => w.id)).toEqual(["old", "other"]);
+    expect(next.workspaces[0]).toMatchObject({
+      name: "Fresh",
+      rootPath: "/repo/x",
+      color: "#abcdef",
+      activePageId: "p1",
+    });
+    expect(next.workspaces[0].pages.map((p) => p.id)).toEqual(["p1"]);
+  });
+
+  it("re-points the active id when it was the restored workspace", () => {
+    expect(restoreWorkspaceId(base, "fresh", "old", "/repo/x").activeWorkspaceId).toBe("old");
+  });
+
+  it("leaves the active id alone when it was some other workspace", () => {
+    const elsewhere = { ...base, activeWorkspaceId: "other" };
+    expect(restoreWorkspaceId(elsewhere, "fresh", "old", "/repo/x").activeWorkspaceId).toBe("other");
+  });
+
+  it("spends the record", () => {
+    expect(restoreWorkspaceId(base, "fresh", "old", "/repo/x").removedWorkspaces).toEqual([]);
   });
 });

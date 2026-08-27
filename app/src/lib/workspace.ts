@@ -68,9 +68,160 @@ export interface Workspace {
   lastActiveAt?: number;
 }
 
+/// A workspace that left the app through the sidebar X, kept so its
+/// daemon rows can be found again.
+///
+/// Every row the daemon holds for a workspace -- board columns and
+/// labels, rails and their run state, workspace-scoped tools and group
+/// templates, card<->session links -- is keyed by the workspace's id,
+/// which is a uuid minted at creation and written nowhere on disk.
+/// Re-adding the same folder mints a NEW uuid, so without this record
+/// the old rows exist but nothing can ever name them again. The
+/// tombstone is the only bridge back, which is why the X writes one and
+/// the delete wizard (which means it) does not.
+export interface RemovedWorkspace {
+  id: string;
+  name: string;
+  /// The root the workspace was bound to -- the key a reclaim matches
+  /// on, since it is the only thing about a workspace that survives
+  /// outside the app.
+  rootPath: string;
+  /// Epoch milliseconds, so the newest match wins when a folder has been
+  /// added and removed more than once.
+  removedAt: number;
+}
+
+/// How many tombstones are kept. A cap rather than an expiry: the list
+/// costs nothing until it is long, and "I removed that months ago" is
+/// exactly the case a reclaim is for. Oldest fall off the end.
+export const REMOVED_WORKSPACES_LIMIT = 20;
+
 export interface WorkspacesData {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
+  /// Tombstones for workspaces the X removed, newest first. Optional so
+  /// every config.json written before this field loads unchanged.
+  removedWorkspaces?: RemovedWorkspace[];
+}
+
+/// Whether two root paths name the same directory as far as a reclaim is
+/// concerned. Only trailing separators are normalized: a path that came
+/// from the folder picker and one persisted months ago differ by a
+/// trailing slash often enough to matter, and nothing else about them can
+/// be compared without touching the filesystem, which this module never
+/// does.
+function sameRoot(a: string, b: string): boolean {
+  const trim = (p: string) => p.replace(/[/\\]+$/, "");
+  return trim(a) === trim(b) && trim(a) !== "";
+}
+
+/// Records that a workspace left the app. Called with the workspace
+/// still present in `state`, because the name and root it stores are
+/// read off it.
+///
+/// Written only for a workspace that had a root: a rootless one owns no
+/// files and, having never been bound, has nothing a later folder pick
+/// could match it against. An earlier tombstone for the same id or the
+/// same root is dropped rather than kept beside the new one -- two
+/// records for one folder would make "the newest match" a question about
+/// list order instead of about time.
+export function rememberRemoved(
+  state: WorkspacesData,
+  workspaceId: string,
+  now: number
+): WorkspacesData {
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  const rootPath = ws?.rootPath?.trim();
+  if (!ws || !rootPath) return state;
+  const kept = (state.removedWorkspaces ?? []).filter(
+    (t) => t.id !== ws.id && !sameRoot(t.rootPath, rootPath)
+  );
+  const tombstone: RemovedWorkspace = {
+    id: ws.id,
+    name: ws.name,
+    rootPath,
+    removedAt: now,
+  };
+  return {
+    ...state,
+    removedWorkspaces: [tombstone, ...kept].slice(0, REMOVED_WORKSPACES_LIMIT),
+  };
+}
+
+/// The newest tombstone for a root, or null. Newest by `removedAt`
+/// rather than by position: the list is kept newest-first, but a caller
+/// that trusts order alone would be wrong the first time anything writes
+/// to it out of band.
+///
+/// A tombstone whose id belongs to a workspace that is currently in the
+/// app is never returned -- that is a stale record for an id already in
+/// use, and restoring onto it would collide with a live workspace.
+export function matchTombstone(state: WorkspacesData, rootPath: string): RemovedWorkspace | null {
+  const live = new Set(state.workspaces.map((w) => w.id));
+  const matches = (state.removedWorkspaces ?? []).filter(
+    (t) => sameRoot(t.rootPath, rootPath) && !live.has(t.id)
+  );
+  if (matches.length === 0) return null;
+  return matches.reduce((best, t) => (t.removedAt > best.removedAt ? t : best));
+}
+
+/// Drops one tombstone by id -- what both answers to the reclaim prompt
+/// end in. Restore consumes it (the workspace is back, so the bridge has
+/// been crossed); Start fresh discards it deliberately, so the prompt
+/// does not return on the next folder pick.
+export function forgetTombstone(state: WorkspacesData, id: string): WorkspacesData {
+  return {
+    ...state,
+    removedWorkspaces: (state.removedWorkspaces ?? []).filter((t) => t.id !== id),
+  };
+}
+
+/// The tombstone a folder pick should offer to reclaim, or null.
+///
+/// Offered only on a workspace that has nothing in it yet: no root of its
+/// own, no sessions in any page, and no main agent. That restriction is
+/// what keeps the reclaim a simple id swap -- re-pointing a workspace
+/// that already holds tabs, board tabs and a watch would have to migrate
+/// all of them, and re-pointing one that is already bound is a different
+/// question entirely ("move this workspace's rows?", which is out of
+/// scope).
+export function reclaimable(
+  state: WorkspacesData,
+  workspaceId: string,
+  rootPath: string
+): RemovedWorkspace | null {
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return null;
+  if (ws.rootPath?.trim()) return null;
+  if (ws.mainSessionId) return null;
+  if (allSessionIdsInWorkspace(ws).length > 0) return null;
+  return matchTombstone(state, rootPath);
+}
+
+/// Re-keys a workspace to a removed one's id and binds it to the root,
+/// consuming the tombstone. The workspace object is carried over whole,
+/// so its pages, its colour and its per-workspace settings travel with
+/// it; only the id changes, which is what makes the daemon's rows --
+/// keyed by that id and nothing else -- reachable again.
+///
+/// The NAME is deliberately not restored. The id is the unreachable
+/// thing; the name is right there in the sidebar, and a user who has
+/// just typed one meant it.
+export function restoreWorkspaceId(
+  state: WorkspacesData,
+  workspaceId: string,
+  restoredId: string,
+  rootPath: string
+): WorkspacesData {
+  const forgotten = forgetTombstone(state, restoredId);
+  return {
+    ...forgotten,
+    workspaces: forgotten.workspaces.map((w) =>
+      w.id === workspaceId ? { ...w, id: restoredId, rootPath } : w
+    ),
+    activeWorkspaceId:
+      forgotten.activeWorkspaceId === workspaceId ? restoredId : forgotten.activeWorkspaceId,
+  };
 }
 
 // Well-known id for the always-present pinned pseudo-workspace -- a
@@ -112,7 +263,10 @@ export function hubViewIsVisible(
 
 export function createWorkspace(state: WorkspacesData, id: string, name: string): WorkspacesData {
   const workspace: Workspace = { id, name, pages: [], activePageId: null };
-  return { workspaces: [...state.workspaces, workspace], activeWorkspaceId: id };
+  // Spread, not a fresh literal: `removedWorkspaces` is a carry-through
+  // field, and rebuilding the record without it silently drops every
+  // tombstone the moment a workspace is created.
+  return { ...state, workspaces: [...state.workspaces, workspace], activeWorkspaceId: id };
 }
 
 export function renameWorkspace(state: WorkspacesData, workspaceId: string, name: string): WorkspacesData {
@@ -148,7 +302,10 @@ export function removeWorkspace(state: WorkspacesData, workspaceId: string): Wor
   const workspaces = state.workspaces.filter((w) => w.id !== workspaceId);
   const activeWorkspaceId =
     state.activeWorkspaceId === workspaceId ? (workspaces[0]?.id ?? null) : state.activeWorkspaceId;
-  return { workspaces, activeWorkspaceId };
+  // Spread for the same reason createWorkspace does: this is the one
+  // function a tombstone is written alongside, so dropping the list here
+  // would erase the record the very call that creates it depends on.
+  return { ...state, workspaces, activeWorkspaceId };
 }
 
 // Moves a workspace to a new index within the workspaces array. Clamped

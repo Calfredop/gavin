@@ -27,6 +27,13 @@ pub struct DaemonConnection {
 pub struct WorkspacesData {
     pub workspaces: Vec<Workspace>,
     pub active_workspace_id: Option<String>,
+    /// Tombstones for workspaces the sidebar X removed, newest first.
+    /// Carried HERE rather than as a seventh `persist_workspaces`
+    /// argument on purpose: the list crosses to the frontend with the
+    /// workspaces it belongs to, and a field on the record that is
+    /// already passed by reference cannot be forgotten at a save site the
+    /// way session_names/file_tabs/theme/agent_models each were in turn.
+    pub removed_workspaces: Vec<crate::config::RemovedWorkspace>,
 }
 
 pub struct WorkspacesState(pub Mutex<WorkspacesData>);
@@ -67,6 +74,7 @@ fn persist_workspaces(
             board_tabs,
             theme,
             agent_models,
+            removed_workspaces: data.removed_workspaces.clone(),
         },
     )
 }
@@ -90,9 +98,16 @@ mod workspaces_data_tests {
 
     #[test]
     fn workspaces_data_serializes_to_the_camel_case_shape_the_frontend_expects() {
-        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
         let json = serde_json::to_value(&data).unwrap();
-        assert_eq!(json, serde_json::json!({ "workspaces": [], "activeWorkspaceId": null }));
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "workspaces": [],
+                "activeWorkspaceId": null,
+                "removedWorkspaces": [],
+            })
+        );
     }
 
     /// The same hazard D48 named for `theme`: `agent_models` is a fifth
@@ -101,7 +116,7 @@ mod workspaces_data_tests {
     #[test]
     fn persist_workspaces_carries_agent_models_through() {
         let dir = tempfile::tempdir().unwrap();
-        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
         let mut models = HashMap::new();
         models.insert("claude-code".to_string(), "opus".to_string());
         persist_workspaces(
@@ -119,6 +134,49 @@ mod workspaces_data_tests {
         assert_eq!(loaded.theme, Some("light".to_string()));
     }
 
+    /// The sixth carry-through field, and the one whose loss is
+    /// unrecoverable: a wiped tombstone list means a removed workspace's
+    /// daemon rows can never be named again.
+    #[test]
+    fn persist_workspaces_carries_removed_workspaces_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let tombstone = crate::config::RemovedWorkspace {
+            id: "ws-1".to_string(),
+            name: "One".to_string(),
+            root_path: "/repo/one".to_string(),
+            removed_at: 1_700_000_000_000,
+        };
+        let data = WorkspacesData {
+            workspaces: vec![],
+            active_workspace_id: None,
+            removed_workspaces: vec![tombstone.clone()],
+        };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().removed_workspaces, vec![tombstone]);
+    }
+
+    /// A config.json written before the field existed must still load --
+    /// otherwise every user's workspaces vanish on the upgrade.
+    #[test]
+    fn a_config_without_the_field_loads_with_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            crate::config::config_path(dir.path()),
+            r#"{"workspaces":[],"activeWorkspaceId":null}"#,
+        )
+        .unwrap();
+        assert!(crate::config::load(dir.path()).unwrap().removed_workspaces.is_empty());
+    }
+
     /// The regression D48 exists to prevent: theme is a fourth field on
     /// AppConfig, so a save that reconstructs the struct without carrying
     /// it would silently reset it -- exactly what already bit
@@ -126,7 +184,7 @@ mod workspaces_data_tests {
     #[test]
     fn persist_workspaces_carries_theme_through() {
         let dir = tempfile::tempdir().unwrap();
-        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None };
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
         persist_workspaces(
             dir.path(),
             &data,
@@ -328,6 +386,10 @@ pub fn get_workspaces_state(state: State<WorkspacesState>) -> WorkspacesData {
 pub fn set_workspaces_state(
     workspaces: Vec<Workspace>,
     active_workspace_id: Option<String>,
+    // Required rather than Option: a caller that forgets it should fail
+    // loudly at the boundary, because the failure mode of a silent
+    // default here is every tombstone disappearing on the next save.
+    removed_workspaces: Vec<crate::config::RemovedWorkspace>,
     app_handle: AppHandle,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
@@ -336,7 +398,7 @@ pub fn set_workspaces_state(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
 ) -> Result<(), String> {
-    let data = WorkspacesData { workspaces, active_workspace_id };
+    let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
@@ -1961,7 +2023,11 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     } else {
         config.active_workspace_id
     };
-    let workspaces_data = WorkspacesData { workspaces, active_workspace_id };
+    let workspaces_data = WorkspacesData {
+        workspaces,
+        active_workspace_id,
+        removed_workspaces: config.removed_workspaces.clone(),
+    };
     persist_workspaces(
         &config_dir,
         &workspaces_data,
@@ -3616,7 +3682,7 @@ mod attach_target_tests {
     }
 
     fn data(workspaces: Vec<Workspace>) -> WorkspacesData {
-        WorkspacesData { workspaces, active_workspace_id: None }
+        WorkspacesData { workspaces, active_workspace_id: None, removed_workspaces: vec![] }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { GitStatus, Workspace, WorkspacesData } from "./workspace";
+import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
@@ -8,6 +8,7 @@ import type { ToolRecord } from "./orchestrationTools";
 import type { GroupTemplateRecord } from "./orchestrationGroups";
 import type { DaemonCompat } from "./daemonCompat";
 import type { SessionStatus } from "./notifications";
+import type { GavinFootprint, McpFootprint, RemovalReport } from "./workspaceDelete";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -55,8 +56,12 @@ export function getWorkspacesState(): Promise<WorkspacesData> {
   return invoke("get_workspaces_state");
 }
 
-export function setWorkspacesState(workspaces: Workspace[], activeWorkspaceId: string | null): Promise<void> {
-  return invoke("set_workspaces_state", { workspaces, activeWorkspaceId });
+export function setWorkspacesState(
+  workspaces: Workspace[],
+  activeWorkspaceId: string | null,
+  removedWorkspaces: RemovedWorkspace[]
+): Promise<void> {
+  return invoke("set_workspaces_state", { workspaces, activeWorkspaceId, removedWorkspaces });
 }
 
 /// The app-global light/dark preference. null means System -- the Rust
@@ -306,6 +311,25 @@ export function unlinkCardSession(workspaceId: string, path: string): Promise<vo
 
 export function deleteBoard(workspaceId: string): Promise<void> {
   return invoke("delete_board", { workspaceId });
+}
+
+// --- Removing gavin from a root (the delete wizard) -------------------------
+
+/// Reports what gavin actually put into a root. Reads only; the wizard
+/// walks six screens before anything is removed.
+export function scanGavinFootprint(rootPath: string): Promise<GavinFootprint> {
+  return invoke("scan_gavin_footprint", { rootPath });
+}
+
+/// Executes an approved plan: chosen paths to the OS Trash, gavin's
+/// server entry stripped from the MCP config, the marker block cut from
+/// the instructions file. Never rejects for one bad path -- the report
+/// names what did not land and why.
+export function removeGavinFootprint(
+  rootPath: string,
+  plan: { trash: string[]; stripMcpKey: McpFootprint[]; cutBlock: string[] }
+): Promise<RemovalReport> {
+  return invoke("remove_gavin_footprint", { rootPath, plan });
 }
 
 export function agentProfiles(): Promise<
