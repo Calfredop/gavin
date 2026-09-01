@@ -795,6 +795,10 @@ impl SessionManager {
             command: command.map(|c| c.to_string()),
             status: SessionStatus::Idle,
             restored: false,
+            // Stamped by the registry with the lifetime doing the
+            // inserting -- this one. See SessionRecord::generation.
+            generation: 0,
+            interrupted: false,
         })?;
 
         self.sessions.lock().unwrap().insert(id.clone(), pty);
@@ -811,6 +815,7 @@ impl SessionManager {
                 cwd: r.cwd,
                 status: r.status.as_str().to_string(),
                 restored: r.restored,
+                interrupted: r.interrupted,
             })
             .collect())
     }
@@ -1094,39 +1099,122 @@ impl SessionManager {
         session.try_wait()
     }
 
+    /// Where a recovered session should come back: its own `cwd` when that
+    /// still exists, else the workspace root, else nowhere.
+    ///
+    /// `create_session` has always spawned in `cwd` while `recover` spawned in
+    /// `workspace_path`, and the app happens to pass the same value for both --
+    /// so recovery landed in the right directory by coincidence. `Attach`
+    /// reports `record.cwd` either way, which is what a session that had cd'd
+    /// somewhere else would have contradicted.
+    fn recovery_cwd(record: &SessionRecord) -> Option<&str> {
+        for candidate in [record.cwd.as_str(), record.workspace_path.as_str()] {
+            if std::path::Path::new(candidate).is_dir() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Brings a previous daemon lifetime's sessions back.
+    ///
+    /// Two rules, and both of them are about what recovery must NOT
+    /// pretend to be:
+    ///
+    /// **A row this process inherited is not one it is hosting.** Every
+    /// row here is stamped with the lifetime that created it
+    /// (`Registry::open`), and a row below the current generation belongs
+    /// to a daemon that is gone -- along with every PTY master it held.
+    /// A row AT the current generation is one this very process created,
+    /// so it is left completely alone: recovery is for the inherited
+    /// ones. (In practice `recover` runs once, before the socket is
+    /// bound, so there are none -- the guard states the invariant rather
+    /// than defending against a caller.)
+    ///
+    /// **A command is not a shell.** For a plain terminal session
+    /// `record.command` is `None` and recovery is what it always was: the
+    /// user's shell, in the same directory. For every agent gavin starts
+    /// the command IS the task -- `buildRunCommand` bakes the whole
+    /// prompt into it -- so re-running it does not resume anything, it
+    /// starts a SECOND from-scratch attempt in a checkout that already
+    /// carries the first attempt's edits. Worse, the first attempt may
+    /// still be running: the old daemon's death only reaches its children
+    /// as the SIGHUP a closing PTY master sends, and a child that ignores
+    /// it survives, reparented to init (verified under a temp $HOME). Two
+    /// agents editing one worktree is the worst outcome in this family,
+    /// and it sits behind the "Restart daemon" button the app tells
+    /// people to press. So the command is dropped and the session comes
+    /// back as a bare shell in the same cwd -- the "fresh shell" the PRD
+    /// already promises after a device restart -- with the row marked
+    /// `interrupted` so every surface bound to that session id can say
+    /// what happened. Reattaching to the real process, or resuming the
+    /// agent's conversation, stays out of scope.
+    ///
+    /// The cwd is `record.cwd`, not `record.workspace_path`: cwd is where
+    /// the session actually was (OSC 7 keeps it current) and the one
+    /// `Attach` reports back. `workspace_path` is the fallback for a cwd
+    /// that has since been deleted -- losing a session because the human
+    /// removed a directory they had cd'd into would be a worse answer
+    /// than putting them back at the workspace root.
     pub fn recover(&self) -> anyhow::Result<()> {
+        let generation = self.registry.lock().unwrap().generation();
         let records = self.registry.lock().unwrap().list()?;
         let mut sessions = self.sessions.lock().unwrap();
         for record in records {
             if record.status == SessionStatus::Exited {
                 continue;
             }
-            if !std::path::Path::new(&record.workspace_path).is_dir() {
+            if record.generation >= generation {
+                continue;
+            }
+            let Some(cwd) = Self::recovery_cwd(&record) else {
                 eprintln!(
-                    "skipping recovery of session {} — workspace_path no longer exists: {}",
-                    record.id, record.workspace_path
+                    "skipping recovery of session {} — neither its cwd ({}) nor its workspace_path ({}) exists",
+                    record.id, record.cwd, record.workspace_path
                 );
                 if let Err(e) = self.registry.lock().unwrap().update_status(&record.id, SessionStatus::Exited) {
                     eprintln!("failed to mark session {} exited: {e}", record.id);
                 }
                 continue;
-            }
-            // A single bad leftover record (e.g. its workspace directory
-            // is no longer enterable) must not abort recovery of every
-            // session after it in the list. Log and move on instead of
-            // propagating with `?`.
-            match PtySession::spawn(&record.workspace_path, record.command.as_deref(), &record.id) {
+            };
+            // A row that carried a command was running a TASK, and the
+            // task is what recovery refuses to repeat.
+            let interrupted = record.command.is_some();
+            // `None` unconditionally -- a bare shell is what recovery
+            // gives every session now. For a plain terminal one that is
+            // byte-for-byte what it always did (its command was already
+            // None); for an agent one it is the whole fix.
+            //
+            // Matched rather than `?`d: a single bad leftover record
+            // (e.g. its directory is no longer enterable) must not abort
+            // recovery of every session after it in the list.
+            match PtySession::spawn(cwd, None, &record.id) {
                 Ok(pty) => {
                     sessions.insert(record.id.clone(), pty);
-                    if let Err(e) = self.registry.lock().unwrap().mark_restored(&record.id) {
+                    let registry = self.registry.lock().unwrap();
+                    if let Err(e) = registry.mark_restored(&record.id) {
                         eprintln!("failed to mark session {} restored: {e}", record.id);
+                    }
+                    if interrupted {
+                        if let Err(e) = registry.mark_interrupted(&record.id) {
+                            eprintln!("failed to mark session {} interrupted: {e}", record.id);
+                        }
+                        // The stored status describes the agent that was
+                        // working, and what is here now is a shell
+                        // sitting at a prompt. Attach replays this value
+                        // as its baseline, so leaving it would paint a
+                        // "working" dot over a session doing nothing --
+                        // the same lie in a second place. A plain
+                        // terminal session keeps its status untouched:
+                        // its recovery is unchanged, and its next prompt
+                        // corrects it anyway.
+                        if let Err(e) = registry.update_status(&record.id, SessionStatus::Idle) {
+                            eprintln!("failed to reset status for session {}: {e}", record.id);
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "failed to recover session {} (workspace_path {}): {e}",
-                        record.id, record.workspace_path
-                    );
+                    eprintln!("failed to recover session {} (cwd {cwd}): {e}", record.id);
                     if let Err(e) = self.registry.lock().unwrap().update_status(&record.id, SessionStatus::Exited) {
                         eprintln!("failed to mark session {} exited: {e}", record.id);
                     }
@@ -1174,6 +1262,20 @@ impl SessionManager {
                 let _ = write_message(
                     &mut *writer.lock().unwrap(),
                     &Response::SessionRestored { id: id.to_string() },
+                );
+            }
+            // Alongside SessionRestored, never instead of it: `restored`
+            // is what the ↻ badge and every existing consumer read, and
+            // this only ADDS the stronger fact that the command was not
+            // re-run. Unlike `restored` it is never cleared, so it keeps
+            // being sent on every later Attach -- a card, a rail step or
+            // a commit record bound to this session id is still
+            // describing work that nothing is doing, and a frontend
+            // reload must not lose that.
+            if record.interrupted {
+                let _ = write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::SessionInterrupted { id: id.to_string() },
                 );
             }
             // Git-status mapping/baseline is skipped for Exited sessions
@@ -4165,6 +4267,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }
@@ -4193,6 +4297,277 @@ mod tests {
             let n = reader.read(&mut buf).unwrap();
             collected.push_str(&String::from_utf8_lossy(&buf[..n]));
             assert!(std::time::Instant::now() < deadline, "got: {collected}");
+        }
+    }
+
+    /// A registry row exactly as a killed daemon would have left it: no
+    /// live PTY, at whatever status it was last seen in, and stamped with
+    /// a previous generation because the `Registry` that wrote it has
+    /// been closed.
+    fn leftover_row(
+        db_path: &std::path::Path,
+        id: &str,
+        cwd: &str,
+        command: Option<&str>,
+        status: SessionStatus,
+    ) {
+        let registry = Registry::open(db_path).unwrap();
+        registry
+            .insert(&SessionRecord {
+                id: id.to_string(),
+                workspace_path: "/tmp".to_string(),
+                cwd: cwd.to_string(),
+                command: command.map(|c| c.to_string()),
+                status,
+                restored: false,
+                generation: 0,
+                interrupted: false,
+            })
+            .unwrap();
+    }
+
+    fn recovered_manager(dir: &tempfile::TempDir) -> SessionManager {
+        let manager = SessionManager::new(
+            Registry::open(&dir.path().join("registry.sqlite")).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
+        );
+        manager.recover().unwrap();
+        manager
+    }
+
+    /// Reads from a recovered session until `needle` shows up, or gives
+    /// up. Proves there is a real interactive shell behind the id rather
+    /// than merely a registry row.
+    fn shell_echoes(manager: &SessionManager, id: &str, needle: &str) -> bool {
+        manager.write_input(id, format!("echo {needle}\n").as_bytes()).unwrap();
+        let mut reader = manager.reader_for(id).unwrap();
+        let mut collected = String::new();
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            let Ok(n) = reader.read(&mut buf) else { break };
+            if n == 0 {
+                break;
+            }
+            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
+            // The echo of the typed line contains the needle too, so the
+            // marker is assembled at runtime by the shell instead.
+            if collected.matches(needle).count() > 1 {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn recover_never_re_runs_an_agents_command_and_says_so_on_the_record() {
+        // The bug this whole epoch exists for. `command` is the entire
+        // task for every agent gavin starts, so re-running it is a
+        // second from-scratch attempt in a checkout that already carries
+        // the first attempt's edits -- and, since a child that ignores
+        // SIGHUP survives its daemon, possibly alongside the first agent
+        // still working. The marker file is the witness: if recovery ran
+        // the command, it exists.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("the-command-ran");
+        let command = format!("touch {}; sleep 30", marker.display());
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "agent-1",
+            "/tmp",
+            Some(&command),
+            SessionStatus::Working,
+        );
+
+        let manager = recovered_manager(&dir);
+
+        // Generous: the spawn is async, so give a re-run every chance to
+        // betray itself before concluding it did not happen.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !marker.exists(),
+            "recovery re-ran the agent's command — a second from-scratch attempt at the same work"
+        );
+        let summary = &manager.list_sessions().unwrap()[0];
+        assert_eq!(summary.id, "agent-1");
+        assert_eq!(summary.restored, true);
+        assert_eq!(summary.interrupted, true, "the record must say the run was killed, not merely restored");
+        assert!(
+            shell_echoes(&manager, "agent-1", "recovered_shell_ok"),
+            "an interrupted agent session must come back as a usable bare shell"
+        );
+    }
+
+    #[test]
+    fn recover_resets_an_interrupted_rows_status_so_a_bare_shell_never_reads_as_working() {
+        // Attach replays the stored status as its baseline. The stored
+        // one describes the agent that was working; what is here now is a
+        // shell at a prompt.
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "agent-2",
+            "/tmp",
+            Some("sleep 30"),
+            SessionStatus::WaitingForInput,
+        );
+
+        let manager = recovered_manager(&dir);
+
+        assert_eq!(
+            manager.registry.lock().unwrap().get("agent-2").unwrap().unwrap().status,
+            SessionStatus::Idle
+        );
+    }
+
+    #[test]
+    fn recover_brings_a_plain_terminal_session_back_exactly_as_it_always_did() {
+        // The other half of the rule: a session with no command has no
+        // run to have been interrupted, so nothing about it changes and
+        // nothing claims otherwise.
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "shell-1",
+            "/tmp",
+            None,
+            SessionStatus::Working,
+        );
+
+        let manager = recovered_manager(&dir);
+
+        let summary = &manager.list_sessions().unwrap()[0];
+        assert_eq!(summary.restored, true);
+        assert_eq!(summary.interrupted, false, "a plain terminal session was never running a task");
+        assert_eq!(summary.status, "working", "its status is left for its next prompt to correct");
+        assert!(shell_echoes(&manager, "shell-1", "plain_shell_ok"));
+    }
+
+    #[test]
+    fn recover_spawns_in_the_sessions_own_cwd_not_the_workspace_root() {
+        // create_session has always spawned in `cwd` while recover spawned
+        // in `workspace_path`; the app passes the same value for both, so
+        // this was right by coincidence. A session that had cd'd
+        // elsewhere came back at the workspace root while Attach kept
+        // reporting the cwd it no longer had.
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        // Symlinks (/tmp -> /private/tmp on macOS) make the shell's own
+        // $PWD the only reliable answer, so compare against what the
+        // shell reports for the same path.
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "moved-1",
+            elsewhere.to_str().unwrap(),
+            Some("sleep 30"),
+            SessionStatus::Working,
+        );
+
+        let manager = recovered_manager(&dir);
+
+        assert!(
+            shell_echoes(&manager, "moved-1", "$PWD"),
+            "the recovered shell should print a directory at all"
+        );
+        manager.write_input("moved-1", b"case \"$PWD\" in *elsewhere) echo CWDMARK_yes;; *) echo CWDMARK_no;; esac\n").unwrap();
+        let mut reader = manager.reader_for("moved-1").unwrap();
+        let mut collected = String::new();
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && collected.matches("CWDMARK_").count() < 2 {
+            let Ok(n) = reader.read(&mut buf) else { break };
+            if n == 0 {
+                break;
+            }
+            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(
+            collected.contains("CWDMARK_yes"),
+            "recovery must land in the session's own cwd, got: {collected}"
+        );
+    }
+
+    #[test]
+    fn recover_leaves_a_row_from_its_own_lifetime_completely_alone() {
+        // The epoch's whole point: a row at the current generation is one
+        // this very process is hosting. Recovering it would spawn a
+        // SECOND PTY over a live session.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(
+            Registry::open(&dir.path().join("registry.sqlite")).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
+        );
+        let id = manager.create_session("/tmp", "/tmp", Some("sleep 30")).unwrap();
+
+        manager.recover().unwrap();
+
+        let summary = &manager.list_sessions().unwrap()[0];
+        assert_eq!(summary.id, id);
+        assert_eq!(summary.restored, false, "a session this process is hosting was never restored");
+        assert_eq!(summary.interrupted, false);
+    }
+
+    #[test]
+    fn attach_announces_an_interrupted_session_alongside_the_restored_marker() {
+        // The signal every surface consults. It rides Attach, like
+        // SessionRestored, so a frontend that reloads gets it again.
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "agent-3",
+            "/tmp",
+            Some("sleep 30"),
+            SessionStatus::Working,
+        );
+        let manager = Arc::new(recovered_manager(&dir));
+
+        let (client, server_side) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        manager.attach("agent-3", Arc::new(Mutex::new(server_side)));
+
+        let mut reader = BufReader::new(client);
+        let mut saw_restored = false;
+        let mut saw_interrupted = false;
+        while let Ok(Some(msg)) = read_message::<_, Response>(&mut reader) {
+            match msg {
+                Response::SessionRestored { .. } => saw_restored = true,
+                Response::SessionInterrupted { id } => {
+                    assert_eq!(id, "agent-3");
+                    saw_interrupted = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(saw_restored, "SessionRestored must still be sent — every existing consumer reads it");
+        assert!(saw_interrupted, "an interrupted session must announce itself on Attach");
+    }
+
+    #[test]
+    fn attach_never_calls_a_merely_restored_session_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "shell-2",
+            "/tmp",
+            None,
+            SessionStatus::Idle,
+        );
+        let manager = Arc::new(recovered_manager(&dir));
+
+        let (client, server_side) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        manager.attach("shell-2", Arc::new(Mutex::new(server_side)));
+
+        let mut reader = BufReader::new(client);
+        while let Ok(Some(msg)) = read_message::<_, Response>(&mut reader) {
+            assert!(
+                !matches!(msg, Response::SessionInterrupted { .. }),
+                "a plain terminal session's recovery must not read as an interrupted run"
+            );
         }
     }
 
@@ -4528,6 +4903,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }
@@ -4624,6 +5001,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }
@@ -4661,6 +5040,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Working,
                     restored: false,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }
@@ -4701,6 +5082,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }
@@ -4764,6 +5147,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: true,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }
@@ -4801,6 +5186,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }
@@ -4858,14 +5245,15 @@ mod tests {
     }
 
     #[test]
-    fn recover_uses_workspace_path_not_the_live_tracked_cwd() {
+    fn recover_falls_back_to_workspace_path_when_the_live_tracked_cwd_is_gone() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("registry.sqlite");
 
-        // Simulate a session whose live-tracked cwd (via OSC 7) has drifted
-        // to a directory that no longer exists by the time the daemon
-        // restarts -- recovery must still succeed, using the stable
-        // workspace_path, not the (possibly stale/gone) live cwd.
+        // Recovery spawns in the session's OWN cwd now (recovery_cwd), so
+        // this is the fallback rather than the rule: a live-tracked cwd
+        // (via OSC 7) that drifted into a directory the human has since
+        // deleted must not cost them the session. The stable
+        // workspace_path takes over, exactly as it always did.
         {
             let registry = Registry::open(&db_path).unwrap();
             registry
@@ -4876,6 +5264,8 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     status: SessionStatus::Idle,
                     restored: false,
+                    generation: 0,
+                    interrupted: false,
                 })
                 .unwrap();
         }

@@ -13,6 +13,16 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v20 gave recovery an epoch. The daemon stamps every registry row with
+/// the lifetime that created it, so a row it INHERITED is provably one no
+/// process is hosting any more -- and an inherited row that carried a
+/// command comes back as a bare shell rather than a second run of the
+/// whole prompt. The fact travels as `SessionSummary.interrupted` and the
+/// `SessionInterrupted` push. Neither is a Request, so `min_version_for`
+/// is untouched; `interrupted` is `serde(default)` so a v19 daemon's
+/// `SessionList` still parses here, and false is the right reading of it
+/// -- a v19 daemon genuinely does not know, and never marks one.
+///
 /// v19 taught cards an `attachments:` line: `PlanFileInfo` carries the
 /// parsed list, `SetPlanFrontmatterField` accepts the key, and
 /// `CreatePlan` carries the line to write. None of that is a new Request
@@ -42,7 +52,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -523,6 +533,14 @@ pub enum Response {
     StatusChanged { id: String, status: String },
     GitStatusChanged { id: String, status: Option<GitStatus> },
     SessionRestored { id: String },
+    /// The stronger half of `SessionRestored`: this session came back
+    /// from a previous daemon lifetime AND the command it was launched
+    /// with was not re-run, so the tab holds a bare shell rather than the
+    /// agent that was working. Sent alongside `SessionRestored` on
+    /// Attach, never instead of it -- a plain terminal session is only
+    /// ever restored, and every surface that already reads `restored`
+    /// keeps working untouched.
+    SessionInterrupted { id: String },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
@@ -592,6 +610,17 @@ pub struct SessionSummary {
     pub cwd: String,
     pub status: String,
     pub restored: bool,
+    /// This session's process was killed underneath the app and what is
+    /// here now is a bare shell in the same cwd -- NOT the run that was
+    /// started (see `SessionManager::recover`). `restored` says a
+    /// previous lifetime's row came back; this says the command that row
+    /// carried was deliberately not re-run, so nothing is executing the
+    /// task any more.
+    ///
+    /// `serde(default)` because a v19 daemon does not send it, and false
+    /// is the honest reading there: it never marks one.
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1735,7 +1764,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 19);
+        assert_eq!(PROTOCOL_VERSION, 20);
     }
 
     #[test]
