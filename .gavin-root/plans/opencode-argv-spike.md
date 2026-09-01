@@ -35,6 +35,30 @@ checkout is shared with other agent sessions.
    callable.
 6. Whether `--model` always wants `provider/model`, and whether any stable alias
    exists that would justify filling the profile's empty `models` list.
+7. Conversation resume, which gavin now needs from every profile
+   (`.gavin-root/plans/bug-agent-connection-failure.md`, Root 3). Three things,
+   in order — each is useless without the one before it:
+   a. **Fixing the id at launch.** Claude Code takes `--session-id <uuid>`, so
+      gavin mints the id and always knows it. Ask the binary whether opencode
+      has an equivalent. If it does not, the fallback question is whether the id
+      can be learned deterministically right after launch — printed, or written
+      to a known path — because guessing it by scanning a session directory for
+      the newest entry races every other agent on this machine.
+   b. **Resuming by that id**, in the same cwd, for an INTERACTIVE session.
+      This is the case gavin actually has: rail steps and card runs are TUI
+      sessions, not `run` invocations, so a session flag that exists only on the
+      headless subcommand does not close this out. Check both and say which.
+   c. **Whether resuming extends the original conversation or forks a new one**,
+      and whether that is selectable (Claude Code has `--fork-session`).
+   Any cwd-keyed "continue the last conversation here" flag is unusable
+   regardless of what it is called: this checkout is shared, several agent
+   sessions run in one worktree, and gavin would resume the wrong one.
+   The failure to watch for is a resume that silently starts a FRESH
+   conversation instead of erroring. That is worse than having no resume at
+   all — it is the from-scratch second attempt that
+   `.gavin-root/plans/archive/bug-interrupted-agent-runs.md` exists to stop,
+   wearing a better name. Verify by resuming a session and asking it what it
+   already did, not by watching the command exit 0.
 
 Where something cannot be verified, say so explicitly rather than guessing. An
 unverified convention stays out of the profile table — that is the table's whole
