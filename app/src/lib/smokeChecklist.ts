@@ -120,6 +120,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The title keeps bare Enter. Tab to a picker and ⌘Enter must still file. Back in the title the hint returns to “Enter adds and stays”, and the note chip (no body) always shows the title hint.",
       },
       {
+        id: "compose-chord-anywhere",
+        text: "⌘Enter files the card with NOTHING focused: click a kind chip, or the modal's own padding, then press it",
+        hint: "One card per press, never two — the same chord typed in the title textarea must still file exactly one. Esc with a chip focused must still close.",
+      },
+      {
         id: "kind-nested-display",
         text: "A task with parent: <plan file> and NO status renders inside the plan card's expandable area",
         hint: "Create via gavin_create_plan (kind task, parent set) or hand-author; chevron shows the child count.",
@@ -782,9 +787,38 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Closing the wizard mid-way leaves the workspace usable; the Home tab offers “n of 4 done — continue”",
       },
       {
+        id: "wiz-no-flash",
+        text: "On a fully set-up workspace, entering the Home tab never shows “Finish setting up this workspace”, not even for an instant",
+        hint: "Switch away and back a few times, then relaunch the app onto that Home tab. The panel remounts each visit and re-reads the PRD and instructions file, and a cold start reaches it before the tree watcher has pushed anything; the banner must wait for both rather than assume the worst.",
+      },
+      {
+        id: "wiz-opens-settled",
+        text: "Reopening the wizard on a part-finished workspace lands on the genuinely first unfinished step, with no earlier step shown on the way",
+        hint: "Finish Agent + Integration + PRD by hand, then open the wizard: it must appear already on Launch.",
+      },
+      {
         id: "wiz-derived",
         text: "Doing a step by hand (bind a root, run Set up integration in Settings) marks it done without visiting the wizard",
         hint: "Progress is derived from disk, never stored — that's the property this checks.",
+      },
+      {
+        id: "wiz-agent-file-pick",
+        text: "The Agent step's Instructions row Pick… points the workspace at an existing CLAUDE.md, and Integration then merges the gavin block into THAT file",
+        hint: "The reason the row sits on step 1: pick after Integration ran and the repo ends up with two instructions files.",
+      },
+      {
+        id: "wiz-prd-pick",
+        text: "The PRD step's File row Pick… points the workspace at an existing docs/PRD.md and says so",
+        hint: "Make a docs/PRD.md with real prose first. Picking a file outside the root shows an inline error and changes nothing.",
+      },
+      {
+        id: "wiz-prd-pick-integration",
+        text: "Picking a PRD after Integration ran rewrites the CLAUDE.md gavin block to name the new path, and the note says it did",
+      },
+      {
+        id: "wiz-prd-authored",
+        text: "With an already-written PRD picked, the three section fields and “Ask the agent” are gone — the step says the document is already written",
+        hint: "The fields have no placeholder to replace there, so offering them would be a form that cannot act.",
       },
       { id: "wiz-prd-fields", text: "Filling only Vision writes it into PRD.md and leaves the other two placeholders" },
       {
@@ -882,8 +916,13 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "restore-agent-hotreload",
-        text: "Under `npm run tauri dev`, edit any frontend file so the webview hot reloads: every terminal repaints itself instead of coming back blank or scrambled",
-        hint: "The reload builds brand-new empty Terminal objects and nothing used to re-send anything — Attach runs once per app PROCESS. Each pane now asks for a repaint on mount.",
+        text: "Under `npm run tauri dev`, edit any frontend file so the webview hot reloads: every terminal — tab AND hub — keeps its screen, not just repaints it",
+        hint: "Hot reload used to hand every pane a brand-new blank Terminal, because Vite re-executes terminalRegistry.ts for an edit anywhere in its dependency cone. The registry now rides import.meta.hot.data, so the same Terminal survives. Blank = it stopped surviving; a visible repaint flicker = it is only being rescued by the snapshot.",
+      },
+      {
+        id: "restore-hotreload-keeps-scrollback",
+        text: "Scroll up in a shell tab, then hot reload: the scrollback above the screen is still there, and the terminal's colours still match the app's theme",
+        hint: "Both are things a snapshot repaint cannot give back — the daemon sends 500 rows, and a fresh registry starts at the dark theme regardless of what the app is using. Either one wrong means the terminal was rebuilt rather than adopted.",
       },
       {
         id: "restore-shell-history",
