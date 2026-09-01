@@ -22,7 +22,7 @@
     validatePrdPath,
     resolvePrdPath,
     DEFAULT_PRD_PATH,
-    relativeToRoot,
+    prdPathFromPick,
     agentFileFromPick,
     renameDecision,
     DEFAULT_ACCENT,
@@ -188,13 +188,11 @@
       title: "Choose the PRD file",
     });
     if (typeof picked !== "string") return;
-    const result = relativeToRoot(ws.rootPath, picked);
+    const result = prdPathFromPick(ws.rootPath, picked);
     if ("error" in result) {
       prdError = result.error;
       return;
     }
-    prdError = validatePrdPath(result.path);
-    if (prdError) return;
     prdDraft = result.path;
     await setPrdPath(workspaceId, result.path);
   }

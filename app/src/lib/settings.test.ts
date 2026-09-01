@@ -12,6 +12,7 @@ import {
   validatePrdPath,
   resolvePrdPath,
   relativeToRoot,
+  prdPathFromPick,
   agentFileFromPick,
   type AgentProfileInfo,
 } from "./settings";
@@ -133,6 +134,25 @@ describe("agentFileFromPick", () => {
 
   it("refuses a file outside the root", () => {
     expect(agentFileFromPick("/a/proj", "/elsewhere/AGENTS.md")).toHaveProperty("error");
+  });
+});
+
+describe("prdPathFromPick", () => {
+  it("accepts a file anywhere below the root", () => {
+    expect(prdPathFromPick("/a/proj", "/a/proj/docs/PRD.md")).toEqual({ path: "docs/PRD.md" });
+    expect(prdPathFromPick("/a/proj", "/a/proj/PRD.md")).toEqual({ path: "PRD.md" });
+  });
+
+  it("refuses a file outside the root", () => {
+    expect(prdPathFromPick("/a/proj", "/elsewhere/PRD.md")).toHaveProperty("error");
+  });
+
+  it("refuses a path the daemon would decline, not only one outside", () => {
+    // The half a bare relativeToRoot misses: a pick that lands inside the
+    // root through a symlinked parent still has to clear usable_prd_path,
+    // or the surface offers a write the daemon then refuses.
+    const result = prdPathFromPick("/a/proj", "/a/proj/./PRD.md");
+    expect(result).toHaveProperty("error");
   });
 });
 

@@ -164,6 +164,21 @@ export function agentFileFromPick(
   return { file: relative.path };
 }
 
+/// The PRD path a pick resolves to, or the reason it cannot be used. The
+/// pair -- inside the root, then a path the daemon will accept -- runs in
+/// the same order on every surface that can repoint the PRD, so it is
+/// expressed once here rather than re-sequenced beside each dialog: the
+/// PRD tab's strip, the Settings row, and the wizard's PRD step.
+export function prdPathFromPick(
+  root: string,
+  picked: string
+): { path: string } | { error: string } {
+  const relative = relativeToRoot(root, picked);
+  if ("error" in relative) return relative;
+  const problem = validatePrdPath(relative.path);
+  return problem ? { error: problem } : relative;
+}
+
 export type RenameDecision = "prompt" | "point" | "error";
 
 /// The spec's §6 table, as a function. "prompt" means ask before moving;

@@ -303,3 +303,44 @@ degradation for a profile without MCP or without `prompt_arg`.
 The four MCP writers remain their own sub-project. This design makes their
 absence *legible* — named in `skipped`, and gating the agent-driven option
 via `prompt_arg` — but does not implement them.
+
+---
+
+## 11. Addendum — pointing at files the repo already has (2026-09-01)
+
+The wizard was designed against a workspace gavin scaffolds from nothing.
+A repo that arrives with its own `CLAUDE.md` and `docs/PRD.md` had no way
+to say so inside the flow: it ended up with a second instructions file and
+a PRD nobody reads, and the fix lived in Settings, after the damage.
+
+Both file choices are now pickable in the wizard, using the same
+`relativeToRoot` / `agentFileFromPick` / `validatePrdPath` resolution the
+PRD tab, the agent-file tab and the Settings rows already share.
+
+- **The agent file is picked on the Agent step**, not the Integration one.
+  Integration merges gavin's block into *whichever file is configured when
+  it runs* (§6), so the choice has to be made strictly before it. That
+  ordering is the only reason the row is on step 1.
+- **The PRD is picked on the PRD step**, where the human is already looking
+  at the PRD — but the integration files name the PRD path, so a repoint
+  there would leave step 2's output pointing at a document that no longer
+  leads the workspace. The step therefore **re-runs
+  `setup_agent_integration` after a successful repoint, and only when
+  integration is already done**, reporting it in a note. The writer is
+  merge-aware and idempotent, so this is a rewrite of gavin's own block and
+  nothing else; the alternative — a hint telling the human to go and press
+  the button in Settings — leaves the workspace wrong in the meantime.
+- **An already-written PRD replaces the form.** The three section fields
+  write by replacing the template's placeholder lines, and a document that
+  has none of them would swallow every keystroke: `prdHasPlaceholders`
+  gates the fields, and "Ask the agent" with them — interviewing the owner
+  to write a PRD that exists is the opposite of what the pick asked for.
+  Unknown (unread, or absent) counts as "still has placeholders", so the
+  form stays the default and only a positively-authored body swaps it out.
+- **The PRD pick reads `featureBlockedReason(compat, "prdPath")`**, like
+  the two surfaces that could already produce that payload. The agent file
+  needs no gate: `[agent] file` predates the compat window.
+
+`prdPathFromPick` in `settings.ts` is the pair — inside the root, then a
+path the daemon accepts — expressed once; the PRD tab's strip and the
+Settings row now go through it too.

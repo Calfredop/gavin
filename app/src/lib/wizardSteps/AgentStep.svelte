@@ -1,7 +1,13 @@
 <script lang="ts">
-  import { agentProfilesStore, agentModelDefaultsStore, setAgentField } from "./../layoutState";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import {
+    layoutState,
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    setAgentField,
+  } from "./../layoutState";
   import { gavinTrees } from "./../gavinState";
-  import { resolveAgentConfig } from "./../settings";
+  import { resolveAgentConfig, agentFileFromPick } from "./../settings";
 
   interface Props {
     workspaceId: string;
@@ -9,6 +15,7 @@
   }
   let { workspaceId, onDone }: Props = $props();
 
+  const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
   const tree = $derived($gavinTrees[workspaceId]);
   const agentCfg = $derived(
     resolveAgentConfig(
@@ -26,6 +33,46 @@
       seeded = true;
     }
   });
+
+  let fileError = $state<string | null>(null);
+  let picking = $state(false);
+
+  /// Points the workspace at an instructions file the repo already has,
+  /// BEFORE the next step writes anything. That ordering is the whole
+  /// reason this row lives here and not beside the file in Settings: the
+  /// Integration step merges gavin's block into whichever file is
+  /// configured when it runs, so a repo with its own CLAUDE.md has to be
+  /// able to say so first, or it ends up with a second one.
+  ///
+  /// Deliberately NOT the Settings panel's rename flow: that exists to
+  /// move gavin's file to a new name, and picking an existing file is the
+  /// opposite intent -- the file to keep is the one that was picked.
+  async function pickAgentFile(): Promise<void> {
+    if (!root) return;
+    fileError = null;
+    picking = true;
+    try {
+      const picked = await open({
+        directory: false,
+        multiple: false,
+        defaultPath: root,
+        title: "Choose the agent instructions file",
+      });
+      // A cancelled dialog is not an error, and must not clear the
+      // message from the pick before it.
+      if (typeof picked !== "string") return;
+      const result = agentFileFromPick(root, picked);
+      if ("error" in result) {
+        fileError = result.error;
+        return;
+      }
+      if (result.file !== agentCfg.file) await setAgentField(workspaceId, "file", result.file);
+    } catch (e) {
+      fileError = String(e instanceof Error ? e.message : e);
+    } finally {
+      picking = false;
+    }
+  }
 
   async function continueStep(): Promise<void> {
     // Always written, even unchanged: the presence of [agent].command in
@@ -57,6 +104,25 @@
   <input bind:value={commandDraft} spellcheck="false" />
 </label>
 
+<div class="row">
+  <span>Instructions</span>
+  <!-- The &lrm; bookends are load-bearing — see .path below. -->
+  <span class="path" title={root ? `${root}/${agentCfg.file}` : agentCfg.file}
+    >&lrm;{agentCfg.file}&lrm;</span
+  >
+  <button type="button" class="pick" disabled={!root || picking} onclick={() => void pickAgentFile()}
+    >Pick…</button
+  >
+</div>
+{#if fileError}
+  <p class="warn">{fileError}</p>
+{:else}
+  <p class="hint indent">
+    The next step merges gavin's block into this file. Pick… points the workspace at the CLAUDE.md
+    or AGENTS.md this repo already has, instead of starting a second one.
+  </p>
+{/if}
+
 <div class="actions">
   <button type="button" onclick={() => void continueStep()}>Continue →</button>
 </div>
@@ -73,6 +139,43 @@
     color: #888;
     font-family: monospace;
     font-size: 0.8em;
+  }
+  /* Lines up under the control, not under the label, so it reads as
+     belonging to the row above it rather than to the step. */
+  .hint.indent {
+    margin: -4px 0 10px 90px;
+  }
+  .warn {
+    margin: -4px 0 10px 90px;
+    color: #e0b08a;
+    font-family: monospace;
+    font-size: 0.8em;
+  }
+  .path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* Ellipsis on the LEFT, as in HubFilePicker: a path's tail is its
+       informative end. The &lrm; bookends keep the slashes inside the
+       LTR run so a leading one doesn't detach and park on the right. */
+    direction: rtl;
+    color: #eee;
+  }
+  .pick {
+    background: #2f2f2f;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #eee;
+    font-family: monospace;
+    font-size: 1em;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  .pick:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .row {
     display: flex;

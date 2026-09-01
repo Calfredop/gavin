@@ -2,7 +2,7 @@
   import { layoutState, daemonCompat, setPrdPath } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { featureBlockedReason } from "./daemonCompat";
-  import { resolvePrdPath, relativeToRoot, validatePrdPath } from "./settings";
+  import { resolvePrdPath, prdPathFromPick } from "./settings";
   import FileEditor from "./FileEditor.svelte";
   import HubFilePicker from "./HubFilePicker.svelte";
 
@@ -22,10 +22,8 @@
 
   async function pick(absolutePath: string): Promise<string | null> {
     if (!root) return "No root folder set for this workspace.";
-    const result = relativeToRoot(root, absolutePath);
+    const result = prdPathFromPick(root, absolutePath);
     if ("error" in result) return result.error;
-    const problem = validatePrdPath(result.path);
-    if (problem) return problem;
     await setPrdPath(workspaceId, result.path);
     return null;
   }

@@ -99,7 +99,16 @@
         {:else if current === "integration"}
           <IntegrationStep {workspaceId} onDone={advance} />
         {:else if current === "prd"}
-          <PrdStep {workspaceId} {prdBody} {prdPath} onDone={advance} />
+          <!-- integrationDone comes from the same derivation the stepper
+               draws, so a PRD repointed here rewrites the integration
+               files exactly when there are files to rewrite. -->
+          <PrdStep
+            {workspaceId}
+            {prdBody}
+            {prdPath}
+            integrationDone={progress.done.includes("integration")}
+            onDone={advance}
+          />
         {:else}
           <LaunchStep {workspaceId} onDone={closeWizard} />
         {/if}

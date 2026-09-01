@@ -3,6 +3,7 @@ import {
   setupProgress,
   applyPrdSections,
   agentFlowAvailable,
+  prdHasPlaceholders,
   PRD_PLACEHOLDERS,
 } from "./setupWizard";
 
@@ -119,5 +120,31 @@ describe("agentFlowAvailable", () => {
     expect(agentFlowAvailable({ promptArg: true })).toBe(true);
     expect(agentFlowAvailable({ promptArg: false })).toBe(false);
     expect(agentFlowAvailable(undefined)).toBe(false);
+  });
+});
+
+describe("prdHasPlaceholders", () => {
+  it("is true for the untouched scaffold", () => {
+    expect(prdHasPlaceholders(TEMPLATE)).toBe(true);
+  });
+
+  it("stays true while any one placeholder is left", () => {
+    const twoFilled = TEMPLATE.replace(PRD_PLACEHOLDERS.vision, "V").replace(
+      PRD_PLACEHOLDERS.focus,
+      "F"
+    );
+    expect(prdHasPlaceholders(twoFilled)).toBe(true);
+  });
+
+  it("is false for a document somebody already wrote", () => {
+    // The case the whole predicate exists for: the human pointed the
+    // workspace at their own PRD, which never had the template's lines.
+    expect(prdHasPlaceholders("# Our PRD\n\nWe are building a thing.\n")).toBe(false);
+    expect(prdHasPlaceholders(applyPrdSections(TEMPLATE, { vision: "V", focus: "F", outOfScope: "O" }))).toBe(false);
+  });
+
+  it("treats an unread or absent body as still needing the form", () => {
+    expect(prdHasPlaceholders(null)).toBe(true);
+    expect(prdHasPlaceholders(undefined)).toBe(true);
   });
 });

@@ -87,3 +87,18 @@ export function applyPrdSections(body: string, sections: PrdSections): string {
 export function agentFlowAvailable(profile: { promptArg: boolean } | undefined): boolean {
   return Boolean(profile?.promptArg);
 }
+
+/// Whether the PRD still carries a placeholder for the three section
+/// fields to write into. A document the human pointed the workspace at --
+/// their own, already-written PRD -- has none, so those fields would
+/// replace nothing and Continue would save nothing; the step swaps them
+/// for a note instead of offering a form that cannot act.
+///
+/// Unknown counts as "yes", deliberately: absent (the file is not there)
+/// and undefined (the read is still in flight) are both states the form
+/// is the right default for, and a body that arrives already authored
+/// simply swaps it out then.
+export function prdHasPlaceholders(body: string | null | undefined): boolean {
+  if (typeof body !== "string") return true;
+  return Object.values(PRD_PLACEHOLDERS).some((p) => body.includes(p));
+}
