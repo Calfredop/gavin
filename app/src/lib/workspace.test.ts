@@ -21,6 +21,7 @@ import {
   allSessionIdsInWorkspace,
   findSessionLocation,
   sessionLiveness,
+  staleLayoutTabIds,
   resolveFocusForPage,
   setPageFocus,
   resolveActiveFocus,
@@ -359,6 +360,43 @@ describe("sessionLiveness", () => {
   it("calls a session no tree holds gone, interrupted or not", () => {
     expect(sessionLiveness(state(["s1"]), "s2")).toBe("gone");
     expect(sessionLiveness(state(["s1"], ["s2"]), "s2")).toBe("gone");
+  });
+});
+
+describe("staleLayoutTabIds", () => {
+  function state(tabs: string[]) {
+    return {
+      workspaces: [
+        { id: "ws-1", name: "A", pages: [page("page-1", leaf(tabs))], activePageId: "page-1" },
+      ],
+      activeWorkspaceId: "ws-1",
+    };
+  }
+
+  it("names a tab the daemon has no session for", () => {
+    expect(staleLayoutTabIds(state(["s1", "ghost"]), new Set(["s1"]), new Set())).toEqual(["ghost"]);
+  });
+
+  it("leaves file and board tabs alone — they were never sessions", () => {
+    expect(
+      staleLayoutTabIds(state(["s1", "file-7", "board-2"]), new Set(["s1"]), new Set(["file-7", "board-2"]))
+    ).toEqual([]);
+  });
+
+  // A read that failed or has not landed yet must not clear the app.
+  it("names nothing at all when the live set is empty", () => {
+    expect(staleLayoutTabIds(state(["s1", "s2"]), new Set(), new Set())).toEqual([]);
+  });
+
+  it("sweeps every page of every workspace, not just the active one", () => {
+    const twoWorkspaces = {
+      workspaces: [
+        { id: "ws-1", name: "A", pages: [page("p1", leaf(["s1"]))], activePageId: "p1" },
+        { id: "ws-2", name: "B", pages: [page("p2", leaf(["ghost"]))], activePageId: "p2" },
+      ],
+      activeWorkspaceId: "ws-1",
+    };
+    expect(staleLayoutTabIds(twoWorkspaces, new Set(["s1"]), new Set())).toEqual(["ghost"]);
   });
 });
 

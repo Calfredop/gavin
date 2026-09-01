@@ -111,6 +111,7 @@ import {
   handleGitStatusChanged,
   handleSessionRestored,
   handleSessionInterrupted,
+  reconcileLayoutSessions,
   restartDaemonInPlace,
   clearRestoredMarker,
   closePane,
@@ -911,6 +912,86 @@ describe("handleSessionInterrupted", () => {
 
     expect(get(layoutState).restoredSessionIds.has("a")).toBe(false);
     expect(get(layoutState).interruptedSessionIds.has("a")).toBe(true);
+  });
+});
+
+// Both liveness checks in the app read the persisted LAYOUT TREE, not
+// the daemon's session list -- so a tab id a failed recovery left behind
+// reads as a running agent forever, and its rail step can never be
+// corrected (the wedge spec §2.2 describes). Rust reconciles once per
+// app PROCESS; this is the same sweep on the two occasions that misses.
+describe("reconcileLayoutSessions", () => {
+  function pageWith(tabs: string[]): Workspace {
+    return {
+      id: "ws-1",
+      name: "A",
+      pages: [{ id: "p1", name: "Agents", focusedSessionId: null, layout: { type: "leaf", tabs, activeTabIndex: 0 } }],
+      activePageId: "p1",
+    };
+  }
+
+  it("clears a tab the daemon has no session for, and leaves the live ones", async () => {
+    setState([pageWith(["s-live", "ghost"])], "ws-1", "s-live");
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+    ]);
+
+    await reconcileLayoutSessions();
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toMatchObject({ tabs: ["s-live"] });
+  });
+
+  it("leaves file and board tabs alone — they are not sessions", async () => {
+    setState([pageWith(["s-live", "file-1"])], "ws-1", "s-live");
+    layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/ws/README.md" } } }));
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+    ]);
+
+    await reconcileLayoutSessions();
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toMatchObject({
+      tabs: ["s-live", "file-1"],
+    });
+  });
+
+  // The window this reads across: the layout can gain a session while the
+  // round trip is in flight, and "in a tree but not in the reply" is
+  // exactly the shape of a stale tab.
+  it("leaves a session that appeared while the read was in flight", async () => {
+    setState([pageWith(["s-live"])], "ws-1", "s-live");
+    vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
+      layoutState.update((s) => ({
+        ...s,
+        workspaces: s.workspaces.map((w) => ({
+          ...w,
+          pages: w.pages.map((p) => ({
+            ...p,
+            layout: { type: "leaf" as const, tabs: ["s-live", "s-brand-new"], activeTabIndex: 0 },
+          })),
+        })),
+      }));
+      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false }];
+    });
+
+    await reconcileLayoutSessions();
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toMatchObject({
+      tabs: ["s-live", "s-brand-new"],
+    });
+  });
+
+  // Clearing every tab in the app over a transient IPC failure would be
+  // far worse than leaving a stale one.
+  it("changes nothing when the read fails", async () => {
+    setState([pageWith(["s-live", "ghost"])], "ws-1", "s-live");
+    vi.mocked(backend.getSessionBaselines).mockRejectedValue(new Error("nope"));
+
+    await reconcileLayoutSessions();
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toMatchObject({
+      tabs: ["s-live", "ghost"],
+    });
   });
 });
 

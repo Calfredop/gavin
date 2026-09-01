@@ -597,6 +597,42 @@ export function sessionLiveness(
   return state.interruptedSessionIds.has(sessionId) ? "interrupted" : "live";
 }
 
+/// The layout tabs the daemon has no session for.
+///
+/// Both of the app's liveness checks read the persisted LAYOUT TREE
+/// rather than the daemon's session list, so a tab id left in a tree by a
+/// session that failed to recover reads as a running agent forever: the
+/// rail step stays `running` with no rule that can correct it (the wedge
+/// spec §2.2 describes), the board's card stays "busy", and the tab
+/// itself renders as a terminal for a session the daemon never had.
+///
+/// File and board tabs live in the same trees and are never sessions, so
+/// they are excluded by id rather than by guesswork.
+///
+/// `liveSessionIds` empty is NOT taken as "the daemon has nothing":
+/// clearing every tab on a read that failed or has not landed yet would
+/// be far worse than leaving a stale one, so an empty set returns an
+/// empty list. The daemon having genuinely zero sessions leaves nothing
+/// to reconcile anyway -- the ids in the trees would all be stale, and
+/// the next real read corrects them.
+export function staleLayoutTabIds(
+  state: WorkspacesData,
+  liveSessionIds: ReadonlySet<string>,
+  nonSessionTabIds: ReadonlySet<string>
+): string[] {
+  if (liveSessionIds.size === 0) return [];
+  const stale: string[] = [];
+  for (const ws of state.workspaces) {
+    for (const page of ws.pages) {
+      for (const id of allSessionIds(page.layout)) {
+        if (nonSessionTabIds.has(id) || liveSessionIds.has(id)) continue;
+        stale.push(id);
+      }
+    }
+  }
+  return stale;
+}
+
 // A single session's git status, mirroring crates/protocol's GitStatus
 // wire shape exactly (camelCase, per its own #[serde(rename_all =
 // "camelCase")]). repoRoot identifies the repo by canonical filesystem

@@ -467,6 +467,17 @@ reports `idle`, because a shell sitting at a prompt is idle, and
 `agentTurnEnded` would read that as a finished turn and mark the step
 done.
 
+**And the tab has to go when the session did not come back.** A record
+`recover` could not respawn is marked `Exited`, and `Attach` then sends
+neither a status nor an exit event for it — so the id sits in the layout
+tree, `liveSessionIds` still contains it, and no rule above can ever
+correct the step. `reconcileLayoutSessions` (`layoutState.ts`) closes
+that: it reads the daemon's own session list and clears every layout tab
+with no session behind it, at frontend startup and after a daemon
+restart. Rust does the same sweep once per app process
+(`session::resolve_workspaces`); this is the same reconciliation on the
+two occasions that one misses.
+
 ---
 
 ## 5. Conflicts

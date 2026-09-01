@@ -521,6 +521,51 @@ async function seedSessionBaselines(): Promise<void> {
   });
 }
 
+/// Clears every tab whose session the daemon does not have.
+///
+/// Both of the app's liveness checks read the persisted LAYOUT TREE, not
+/// the daemon's session list: `liveSessionIds` in the orchestration
+/// scheduler, and `findSessionLocation` behind every board check. So a
+/// tab id left in a tree by a session that failed to recover -- the
+/// daemon marks that record `Exited`, and Attach then sends no status and
+/// no exit event for it -- reads as a running agent forever. Its rail step
+/// sits `running` with no rule that can correct it, which the daemon's
+/// own guard turns into a rail nobody can edit or delete (orchestration
+/// spec §2.2). The tab itself renders as a terminal for a session that
+/// does not exist.
+///
+/// Rust reconciles once per app PROCESS (`session::resolve_workspaces`,
+/// which replaces a stale id with a fresh session rather than clearing
+/// it). This is the same reconciliation on the two occasions that one
+/// misses: a frontend that reloads without the host restarting, and a
+/// DAEMON restart under a live app -- which is the button the app itself
+/// tells people to press.
+///
+/// `handleSessionExited` rather than `closeSession`: there is no daemon
+/// session left to kill, and the exit path is exactly the "this session
+/// is gone, take its tab out of wherever it lives" this needs.
+export async function reconcileLayoutSessions(): Promise<void> {
+  // The tab maps decide which ids in a tree are NOT sessions. Reconciling
+  // before they land would clear every file and board tab in the app.
+  await tabMapsLoaded;
+  // Snapshotted BEFORE the round trip, and the answer is computed against
+  // the snapshot: a session created while the read was in flight is in
+  // the layout and not in the reply, which is exactly the shape of a
+  // stale tab. Judging it against the state the read actually describes
+  // is what keeps this from closing a tab the human just opened.
+  const before = get(layoutState);
+  const baselines = await backend.getSessionBaselines().catch(() => null);
+  if (!baselines) return;
+  const stale = workspace.staleLayoutTabIds(
+    before,
+    new Set(baselines.map((b) => b.id)),
+    new Set([...Object.keys(before.fileTabsById), ...Object.keys(before.boardTabsById)])
+  );
+  // handleSessionExited searches the CURRENT trees and is a no-op for an
+  // id no longer in one, so a tab closed in the meantime needs no guard.
+  for (const id of stale) handleSessionExited(id);
+}
+
 export async function bootstrap(): Promise<void> {
   // Ahead of the workspace listeners: the theme should be correct on the
   // first painted frame, and it has no dependency on workspace state.
@@ -549,6 +594,7 @@ export async function bootstrap(): Promise<void> {
       });
       watchRootedWorkspaces(event.payload.workspaces);
       void refreshDaemonCompat();
+      void reconcileLayoutSessions();
     })
   );
   unlisteners.push(
@@ -723,6 +769,12 @@ export async function restartDaemonInPlace(): Promise<DaemonCompat | null> {
     activeWorkspaceId: resolved.state.activeWorkspaceId,
     focusedSessionId: resolved.focusedSessionId,
   }));
+  // The daemon just came back, and a record it could not recover is now
+  // an id in a tree with no session behind it -- no status, no exit
+  // event, nothing that would ever correct it. Rust's own reconciliation
+  // runs at bootstrap only, and this path deliberately does not re-run
+  // startup.
+  await reconcileLayoutSessions();
   // A restart can hand the app a differently-versioned daemon than the
   // one it started with (session::reconnect's own doc comment) -- refresh
   // the stored verdict so the banner/gating never keep serving a stale one.
@@ -772,6 +824,7 @@ async function pollForStartupState(): Promise<void> {
       });
       watchRootedWorkspaces(data.workspaces);
       void refreshDaemonCompat();
+      void reconcileLayoutSessions();
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
