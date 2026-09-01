@@ -3,7 +3,7 @@
   import { layoutState, switchWorkspaceView, agentProfilesStore, openWizard, agentModelDefaultsStore} from "./layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "./settings";
   import { setupProgress } from "./setupWizard";
-  import { gavinTrees } from "./gavinState";
+  import { gavinTrees, refreshGavinTree } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "./homeSummary";
   import MainAgentPanel from "./MainAgentPanel.svelte";
@@ -45,9 +45,12 @@
   let gridEl = $state<HTMLElement | null>(null);
 
   // Whole bodies for the setup derivation; the summaries above are
-  // derived from the same two reads.
-  let prdBody = $state<string | null>(null);
-  let agentFileBody = $state<string | null>(null);
+  // derived from the same two reads. undefined until the read lands --
+  // null already means "no such file", and this panel remounts on every
+  // visit to the home tab, so starting them at null announced a
+  // half-finished setup for the length of two IPC round trips.
+  let prdBody = $state<string | null | undefined>(undefined);
+  let agentFileBody = $state<string | null | undefined>(undefined);
 
   const setup = $derived(
     setupProgress({
@@ -66,30 +69,66 @@
     void fetchOrchestration(workspaceId);
   });
 
+  // Both paths below are read off the tree, and bootstrap flips the app
+  // to "ready" BEFORE it starts the watcher -- so a cold start renders
+  // this panel with no tree at all and would read the fallback paths
+  // instead of the configured ones. Waiting for it is only safe because
+  // of the rescan: a watch that failed outright never produces a push,
+  // and without a second way to settle it this panel would wait forever.
+  let treeSettled = $state(false);
+  let treeToken = 0;
+  $effect(() => {
+    if (tree) {
+      treeSettled = true;
+      return;
+    }
+    treeSettled = false;
+    const mine = ++treeToken;
+    // Resolved either way: on success the store fills and the branch
+    // above settles it, on failure there is nothing left to wait for.
+    void refreshGavinTree(workspaceId).finally(() => {
+      if (mine === treeToken) treeSettled = true;
+    });
+  });
+
   // Read on mount and whenever the bound root changes -- these panels are
   // summaries, not live views (D31), so they deliberately hold no watcher.
+  let readToken = 0;
   $effect(() => {
     const r = root;
-    if (!r) return;
+    // Back to unknown FIRST, before any early return: a re-pointed root --
+    // or a switch to a workspace whose tree has not landed -- makes the
+    // last root's bodies say nothing about this one, and leaving them up
+    // would draw the previous workspace's setup answer on this one.
+    // Bumping the token in the same breath drops any read still in
+    // flight, whose answer belongs to the root we just left.
+    prdBody = undefined;
+    agentFileBody = undefined;
+    const mine = ++readToken;
+    if (!r || !treeSettled) return;
     void backend
       .readFileForViewer(`${r}/${prdPath}`)
       .then((res) => {
+        if (mine !== readToken) return;
         prdLines = prdExcerpt(res.content, EXCERPT_LINES);
         // Kept whole as well: setupProgress needs the body to tell a
         // written PRD from an untouched scaffold.
         prdBody = res.exists ? res.content : null;
       })
       .catch(() => {
+        if (mine !== readToken) return;
         prdLines = [];
         prdBody = null;
       });
     void backend
       .readFileForViewer(`${r}/${agentCfg.file}`)
       .then((res) => {
+        if (mine !== readToken) return;
         agentFileExists = res.exists;
         agentFileBody = res.exists ? res.content : null;
       })
       .catch(() => {
+        if (mine !== readToken) return;
         agentFileExists = null;
         agentFileBody = null;
       });
@@ -150,7 +189,10 @@
   <div class="empty">No root folder set for this workspace.</div>
 {:else}
   <div class="home">
-    {#if root && !setup.complete}
+    <!-- Not while pending: an unfinished setup and an unfinished read
+         look identical from here, and only one of them is worth a
+         banner. -->
+    {#if root && !setup.pending && !setup.complete}
       <button type="button" class="setup-card" onclick={() => openWizard(workspaceId)}>
         <b>Finish setting up this workspace</b>
         <span>{setup.done.length} of 4 done — continue</span>

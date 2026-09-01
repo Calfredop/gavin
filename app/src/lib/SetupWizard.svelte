@@ -30,9 +30,12 @@
 
   // The two file bodies the derivation needs. Re-read on demand rather
   // than watched: the wizard is short-lived, so a watcher would be more
-  // machinery than the case deserves.
-  let agentFileBody = $state<string | null>(null);
-  let prdBody = $state<string | null>(null);
+  // machinery than the case deserves. undefined until the first read
+  // lands -- null is already "no such file", and the step to open on is
+  // decided once, so reading an unfinished load as an unfinished step
+  // opened the wizard on the wrong one for good.
+  let agentFileBody = $state<string | null | undefined>(undefined);
+  let prdBody = $state<string | null | undefined>(undefined);
 
   async function reread(): Promise<void> {
     const root = ws?.rootPath;
@@ -65,12 +68,15 @@
   let current = $state<SetupStep>("agent");
   let started = $state(false);
   // Open at the first unfinished step -- once, so advancing through a
-  // step does not immediately bounce you somewhere else.
+  // step does not immediately bounce you somewhere else. That one shot
+  // has to wait for the reads: latching on a pending derivation is
+  // latching on "nothing is done yet".
   $effect(() => {
-    if (!started && progress.next) {
-      current = progress.next;
-      started = true;
-    }
+    if (started || progress.pending) return;
+    if (progress.next) current = progress.next;
+    // Latched even when everything is done: the answer is settled, and a
+    // reopened wizard on a complete workspace still has to land on a step.
+    started = true;
   });
 
   function advance(): void {
@@ -81,7 +87,9 @@
   }
 </script>
 
-{#if ws}
+<!-- Held until the reads settle: the modal's first frame is the one
+     that picks the step, so showing it early shows the wrong step. -->
+{#if ws && !progress.pending}
   <Modal onClose={closeWizard}>
     <div class="wizard">
       <ol class="steps">

@@ -82,6 +82,32 @@ describe("setupProgress", () => {
     expect(p.next).toBe("agent");
   });
 
+  // The two file bodies arrive from async reads, so every consumer sees a
+  // window where they are simply not back yet. Unknown must not read as
+  // absent -- that window is what made the hub's setup banner flash on
+  // every visit to the home tab.
+  it("is pending while a file body has not been read yet", () => {
+    expect(setupProgress({ ...NOTHING_DONE, agentFileBody: undefined }).pending).toBe(true);
+    expect(setupProgress({ ...NOTHING_DONE, prdBody: undefined }).pending).toBe(true);
+  });
+
+  it("is settled once both bodies are read, absent included", () => {
+    expect(setupProgress({ ...NOTHING_DONE, agentFileBody: null, prdBody: null }).pending).toBe(
+      false
+    );
+  });
+
+  it("is settled without a root, since no read can change the answer", () => {
+    const p = setupProgress({
+      ...NOTHING_DONE,
+      hasRoot: false,
+      agentFileBody: undefined,
+      prdBody: undefined,
+    });
+    expect(p.pending).toBe(false);
+    expect(p.next).toBe("agent");
+  });
+
   it("is never complete without a root", () => {
     const p = setupProgress({ ...NOTHING_DONE, hasRoot: false, configCommand: "claude" });
     expect(p.complete).toBe(false);

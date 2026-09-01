@@ -5,6 +5,11 @@ export interface SetupProgress {
   /// The first step not yet done, or null when everything is.
   next: SetupStep | null;
   complete: boolean;
+  /// True while an input the derivation needs has not been read yet.
+  /// The other three fields then describe only the evidence seen so far
+  /// and must not be acted on: a caller that renders "setup unfinished"
+  /// while this is true is really rendering "the reads are not back".
+  pending: boolean;
 }
 
 /// Verbatim from PRD_TEMPLATE in crates/daemon/src/gavin.rs. Matching
@@ -23,9 +28,12 @@ export interface SetupInput {
   /// config.toml's [agent].command. The scaffold writes only `profile`,
   /// so a command can only have come from a person.
   configCommand: string | null;
-  /// The resolved agent file's content; null when it does not exist.
-  agentFileBody: string | null;
-  prdBody: string | null;
+  /// The resolved agent file's content; null when it does not exist,
+  /// undefined while the read is still in flight. Those two are NOT the
+  /// same answer, and collapsing them is how "not read yet" turns into
+  /// "step not done" for the length of a round trip.
+  agentFileBody: string | null | undefined;
+  prdBody: string | null | undefined;
   mainSessionId: string | null;
 }
 
@@ -37,25 +45,25 @@ const ORDER: SetupStep[] = ["agent", "integration", "prd", "launch"];
 export function setupProgress(input: SetupInput): SetupProgress {
   if (!input.hasRoot) {
     // Every later step writes under the root, so without one nothing can
-    // be done yet -- whatever else happens to be true.
-    return { done: [], next: "agent", complete: false };
+    // be done yet -- whatever else happens to be true. Settled, not
+    // pending: no pending read could change this answer.
+    return { done: [], next: "agent", complete: false, pending: false };
   }
   const done: SetupStep[] = [];
   if (input.configCommand?.trim()) done.push("agent");
   if (input.agentFileBody?.includes(MARKER_START)) done.push("integration");
   // At least one placeholder replaced, not all three: filling only Vision
   // is a real PRD, and requiring all three would never complete.
-  if (
-    input.prdBody !== null &&
-    Object.values(PRD_PLACEHOLDERS).some((p) => !input.prdBody!.includes(p))
-  ) {
+  const prd = input.prdBody;
+  if (prd != null && Object.values(PRD_PLACEHOLDERS).some((p) => !prd.includes(p))) {
     done.push("prd");
   }
   if (input.mainSessionId) done.push("launch");
 
   const ordered = ORDER.filter((s) => done.includes(s));
   const next = ORDER.find((s) => !done.includes(s)) ?? null;
-  return { done: ordered, next, complete: next === null };
+  const pending = input.agentFileBody === undefined || input.prdBody === undefined;
+  return { done: ordered, next, complete: next === null, pending };
 }
 
 export interface PrdSections {
