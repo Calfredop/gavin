@@ -1,7 +1,7 @@
 ---
 kind: task
 title: "[bug] an interrupted agent run silently restarts from scratch"
-status: To Do
+status: Done
 priority: high
 ---
 Every agent gavin launches — a rail step, a card Run from the board, a hidden
