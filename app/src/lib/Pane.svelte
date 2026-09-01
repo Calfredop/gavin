@@ -415,10 +415,22 @@
             </span>
           </Tooltip>
         {/if}
+        <!-- `restored` still decides whether the badge is THERE, exactly
+             as it always did: it is a note about the screen, and typing
+             into the tab dismisses it (clearRestoredMarker). `interrupted`
+             only decides what it SAYS while it is up — that half is
+             sticky, because the run really is gone, and the card, rail
+             step or commit record bound to this session reads it there.
+             A tab the human has taken over as a plain shell does not need
+             a permanent warning on it. -->
         {#if $layoutState.restoredSessionIds.has(sessionId)}
+          {@const interrupted = $layoutState.interruptedSessionIds.has(sessionId)}
           <span
             class="restored-badge"
-            title="This session's shell was freshly restarted after the daemon restarted"
+            class:interrupted
+            title={interrupted
+              ? "The daemon restarted while an agent was working here. It was stopped and NOT restarted — this is a plain shell in the same folder."
+              : "This session's shell was freshly restarted after the daemon restarted"}
           >
             <RotateCw size={10} />
           </span>
@@ -597,6 +609,11 @@
     align-items: center;
     flex: 0 0 auto;
     color: var(--success);
+  }
+  /* Same glyph, different claim: green says "your shell came back",
+     amber says "your agent did not". */
+  .restored-badge.interrupted {
+    color: var(--warning);
   }
   .tab-label-input {
     max-width: 120px;

@@ -16,7 +16,13 @@ vi.mock("./backend", () => ({
   setOrchestration: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./layoutState", () => ({
-  layoutState: writable({ workspaces: [], sessionStatusById: {}, sessionNames: {}, cwdBySessionId: {} }),
+  layoutState: writable({
+    workspaces: [],
+    sessionStatusById: {},
+    sessionNames: {},
+    cwdBySessionId: {},
+    interruptedSessionIds: new Set<string>(),
+  }),
   // null = "not connected yet", which featureBlockedReason reads as "do
   // not pre-emptively grey anything out" -- so the archive entry is live
   // in these tests without pinning a daemon version.
@@ -33,10 +39,26 @@ vi.mock("./layoutState", () => ({
     mcpSupported: true,
   })),
 }));
-vi.mock("./workspace", () => ({ findSessionLocation: vi.fn() }));
+vi.mock("./workspace", () => {
+  const findSessionLocation = vi.fn();
+  return {
+    findSessionLocation,
+    // Built on the SAME mock the tests drive, so "in a layout tree" and
+    // "live" can never disagree about one session id in here.
+    sessionLiveness: (
+      state: { interruptedSessionIds?: ReadonlySet<string> },
+      sessionId: string
+    ) => {
+      const location = findSessionLocation(state, sessionId);
+      if (!location) return "gone";
+      return state.interruptedSessionIds?.has(sessionId) ? "interrupted" : "live";
+    },
+  };
+});
 
 import * as backend from "./backend";
 import { findSessionLocation } from "./workspace";
+import { layoutState } from "./layoutState";
 import { kanbanState } from "./kanbanState";
 import { orchestrations } from "./orchestrationState";
 import { emptyOrchestration, addRail, addStage, addStep } from "./orchestration";
@@ -111,6 +133,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   kanbanState.set({ "ws-1": board() });
   orchestrations.set({ "ws-1": emptyOrchestration() });
+  layoutState.update((s) => ({ ...s, interruptedSessionIds: new Set<string>() }));
   vi.mocked(findSessionLocation).mockReturnValue(null);
 });
 
@@ -192,6 +215,22 @@ describe("buildCardMenuEntries", () => {
 
     vi.mocked(findSessionLocation).mockReturnValue(null);
     expect(labels(buildCardMenuEntries(card("plan", null), hooks()))).toContain("Re-launch agent");
+  });
+
+  // An interrupted binding is neither: the tab is there, so "Jump to
+  // session" would land the human in a shell; and the run is dead, so
+  // "Re-launch" would replay the original command from scratch.
+  it("an interrupted binding offers Resume instead of Jump or Re-launch", () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
+    layoutState.update((s) => ({ ...s, interruptedSessionIds: new Set(["s-1"]) }));
+
+    const entries = labels(buildCardMenuEntries(card("plan", null), hooks()));
+    expect(entries).toContain("Resume — the agent was interrupted");
+    expect(entries).not.toContain("Jump to session");
+    expect(entries).not.toContain("Re-launch agent");
   });
 
   it("no rail block at all in a workspace with no rails", () => {

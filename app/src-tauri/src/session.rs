@@ -684,10 +684,20 @@ pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
 /// -- the Settings button, with a live app around it -- it reconnects in
 /// place; see `reconnect` for why that is not simply "bootstrap again".
 ///
-/// Restarting is destructive to sessions and callers must say so first:
-/// `SessionManager::recover` does not reattach to the old PTYs (they die
-/// with the daemon), it spawns a FRESH shell per surviving registry
-/// record. Every running agent is stopped.
+/// Restarting is destructive to sessions and callers must say so first.
+/// `SessionManager::recover` does not reattach to the old PTYs: it spawns
+/// a fresh BARE SHELL in each surviving record's cwd and marks the record
+/// `interrupted`. Every running agent is stopped, and none of them is
+/// restarted -- an agent's command carries its whole prompt, so re-running
+/// it would be a second from-scratch attempt at the same work rather than
+/// a recovery.
+///
+/// "They die with the daemon" is what this comment used to claim, and it
+/// is not enforced anywhere: killing the daemon reaches a child only as
+/// the SIGHUP a closing PTY master sends, and a child that ignores SIGHUP
+/// survives, reparented to init (verified under a temp $HOME). That is
+/// precisely why recovery must not re-run a command -- the alternative is
+/// two agents editing one checkout.
 #[tauri::command]
 pub fn restart_daemon(app_handle: AppHandle) -> Result<(), String> {
     if app_handle.try_state::<DaemonConnection>().is_some() {
@@ -1071,9 +1081,17 @@ pub struct SessionBaseline {
     pub cwd: String,
     pub status: String,
     pub restored: bool,
+    /// This session's run was killed with a previous daemon and its
+    /// command was deliberately not re-run (daemon `SessionManager::
+    /// recover`). Read back here for the same reason the other three are:
+    /// `session-interrupted` is baselined on Attach, which happens once
+    /// per app PROCESS, so a reloaded frontend would otherwise come up
+    /// believing every interrupted run is still going.
+    pub interrupted: bool,
 }
 
-/// Every live session's cwd, status and restored flag, in one read.
+/// Every live session's cwd, status, restored and interrupted flags, in
+/// one read.
 ///
 /// The frontend only ever learns these from pushes (`cwd-changed`,
 /// `session-status-changed`, `session-restored`), and their baseline is
@@ -1098,7 +1116,13 @@ pub fn get_session_baselines(
     Ok(sessions
         .into_values()
         .filter(|s| s.status != "exited")
-        .map(|s| SessionBaseline { id: s.id, cwd: s.cwd, status: s.status, restored: s.restored })
+        .map(|s| SessionBaseline {
+            id: s.id,
+            cwd: s.cwd,
+            status: s.status,
+            restored: s.restored,
+            interrupted: s.interrupted,
+        })
         .collect())
 }
 
@@ -1493,6 +1517,7 @@ mod resolve_workspaces_tests {
             cwd: "/tmp".to_string(),
             status: "idle".to_string(),
             restored: false,
+            interrupted: false,
         }
     }
 
@@ -1503,6 +1528,7 @@ mod resolve_workspaces_tests {
             cwd: cwd.to_string(),
             status: "exited".to_string(),
             restored: false,
+            interrupted: false,
         }
     }
 
@@ -1880,6 +1906,9 @@ fn attach_and_relay(
                 }
                 Response::SessionRestored { id } => {
                     let _ = reader_app_handle.emit("session-restored", id);
+                }
+                Response::SessionInterrupted { id } => {
+                    let _ = reader_app_handle.emit("session-interrupted", id);
                 }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
                     let _ = reader_app_handle
@@ -3121,6 +3150,7 @@ mod adopt_session_tests {
             cwd: "/r".to_string(),
             status: "working".to_string(),
             restored: false,
+            interrupted: false,
         }
     }
 
@@ -3131,6 +3161,7 @@ mod adopt_session_tests {
             cwd: "/r".to_string(),
             status: "exited".to_string(),
             restored: false,
+            interrupted: false,
         }
     }
 
@@ -3266,6 +3297,7 @@ mod main_session_tests {
             cwd: "/tmp/ws".to_string(),
             status: status.to_string(),
             restored: false,
+            interrupted: false,
         }
     }
 

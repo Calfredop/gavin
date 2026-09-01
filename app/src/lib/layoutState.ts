@@ -43,6 +43,18 @@ export interface LayoutState {
   sessionStatusById: Record<string, SessionStatus>;
   gitStatusById: Record<string, GitStatus | null>;
   restoredSessionIds: Set<string>;
+  /// The sessions whose RUN was killed with a previous daemon: the tab
+  /// holds a bare shell in the same cwd, not the agent that was working
+  /// (see the daemon's `SessionManager::recover`). A superset-in-meaning
+  /// of `restoredSessionIds`, not of it -- a plain terminal session is
+  /// restored and never interrupted, because it had no run to lose.
+  ///
+  /// This is the signal every surface that watches a run consults:
+  /// membership in a layout tree only says a session id exists, which a
+  /// restored bare shell satisfies exactly as well as the agent it
+  /// replaced. Never cleared by typing, unlike `restoredSessionIds` --
+  /// the run is still gone.
+  interruptedSessionIds: Set<string>;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
   /// Workspaces the sidebar X removed, newest first. Persisted with the
@@ -62,6 +74,7 @@ const initialState: LayoutState = {
   sessionStatusById: {},
   gitStatusById: {},
   restoredSessionIds: new Set(),
+  interruptedSessionIds: new Set(),
   fileTabsById: {},
   boardTabsById: {},
   removedWorkspaces: [],
@@ -439,20 +452,22 @@ async function loadTabMaps(): Promise<void> {
 
 /// Refills what the frontend only ever learns from daemon pushes.
 ///
-/// `cwdBySessionId`, `sessionStatusById`, `restoredSessionIds` and
-/// `gitStatusById` are fed by the `cwd-changed` /
-/// `session-status-changed` / `session-restored` / `git-status-changed`
-/// events, whose baseline the daemon sends in reply to `Attach` -- and
-/// `Attach` runs once per app PROCESS (session::attach_and_relay), not
-/// once per frontend load. So a reloaded frontend starts blank on all
-/// four and cannot refill them until the shell emits another OSC 7: the
-/// terminal's tab loses its cwd-derived label, its status dot, and its
-/// "open this context's board" button until the next prompt. Under
-/// `tauri dev` that is every frontend edit.
+/// `cwdBySessionId`, `sessionStatusById`, `restoredSessionIds`,
+/// `interruptedSessionIds` and `gitStatusById` are fed by the
+/// `cwd-changed` / `session-status-changed` / `session-restored` /
+/// `session-interrupted` / `git-status-changed` events, whose baseline
+/// the daemon sends in reply to `Attach` -- and `Attach` runs once per
+/// app PROCESS (session::attach_and_relay), not once per frontend load.
+/// So a reloaded frontend starts blank on all five and cannot refill them
+/// until the shell emits another OSC 7: the terminal's tab loses its
+/// cwd-derived label, its status dot, and its "open this context's
+/// board" button until the next prompt. Under `tauri dev` that is every
+/// frontend edit.
 ///
-/// Git is the worst of the four, and the reason this does two round
-/// trips instead of one. The other three come back on the session's next
-/// prompt; `git-status-changed` is change-only by design (see the
+/// Git is the worst of the five, and the reason this does two round
+/// trips instead of one. Three of the others come back on the session's
+/// next prompt, and `interrupted` never stops being true;
+/// `git-status-changed` is change-only by design (see the
 /// daemon's `trigger_recheck`), so once a repo root's poller has cached
 /// a status, NOTHING re-sends it until the repo itself changes -- and a
 /// checkout that is already dirty stays byte-identical through a day of
@@ -483,11 +498,13 @@ async function seedSessionBaselines(): Promise<void> {
   layoutState.update((s) => {
     const sessionStatusById = { ...s.sessionStatusById };
     const restoredSessionIds = new Set(s.restoredSessionIds);
+    const interruptedSessionIds = new Set(s.interruptedSessionIds);
     for (const b of baselines) {
       if (sessionStatusById[b.id] === undefined) sessionStatusById[b.id] = b.status;
       if (b.restored) restoredSessionIds.add(b.id);
+      if (b.interrupted) interruptedSessionIds.add(b.id);
     }
-    return { ...s, sessionStatusById, restoredSessionIds };
+    return { ...s, sessionStatusById, restoredSessionIds, interruptedSessionIds };
   });
   // Last, and awaited separately: this one shells out to git once per
   // distinct checkout, so it must never hold up the three maps above --
@@ -579,6 +596,11 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(
     await listen<string>("session-restored", (event) => {
       handleSessionRestored(event.payload);
+    })
+  );
+  unlisteners.push(
+    await listen<string>("session-interrupted", (event) => {
+      handleSessionInterrupted(event.payload);
     })
   );
   // An agent naming its own tab (gavin_name_session). Straight into
@@ -690,8 +712,9 @@ export async function retryConnect(): Promise<void> {
 export async function restartDaemonInPlace(): Promise<DaemonCompat | null> {
   await backend.restartDaemon();
   // The workspaces payload is re-derived by the daemon on reconnect
-  // (recover() spawns fresh shells and re-resolves ids), so pull the
-  // authoritative copy rather than trusting the pre-restart one.
+  // (recover() spawns a fresh BARE SHELL per surviving record -- never
+  // the command it carried, which for an agent is the whole task), so
+  // pull the authoritative copy rather than trusting the pre-restart one.
   const data = await backend.getWorkspacesState();
   const resolved = workspace.resolveActiveFocus(data);
   layoutState.update((s) => ({
@@ -1309,6 +1332,21 @@ export function handleGitStatusChanged(sessionId: string, status: GitStatus | nu
 // specific session.
 export function handleSessionRestored(sessionId: string): void {
   layoutState.update((s) => ({ ...s, restoredSessionIds: new Set(s.restoredSessionIds).add(sessionId) }));
+}
+
+// Shared by the "session-interrupted" listener in bootstrap() and this
+// file's own tests. Deliberately has no counterpart to
+// clearRestoredMarker below: the ↻ badge is a note about the SCREEN, and
+// typing dismisses it; this is a fact about the RUN, and typing into the
+// bare shell recovery left behind does not bring the agent back. The
+// card, rail step or commit record bound to this id stops reading as
+// interrupted when the human resumes it -- which is a new session, and a
+// new id.
+export function handleSessionInterrupted(sessionId: string): void {
+  layoutState.update((s) => ({
+    ...s,
+    interruptedSessionIds: new Set(s.interruptedSessionIds).add(sessionId),
+  }));
 }
 
 // Called via backend.ts's writeInput hook on every single keystroke and

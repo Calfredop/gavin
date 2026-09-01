@@ -947,6 +947,74 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "An interrupted run",
+    items: [
+      {
+        id: "interrupted-no-second-agent",
+        text: "Run a card from the board, wait until the agent is clearly working, then Settings → Restart daemon: the tab comes back as a PLAIN SHELL at the same folder — not the agent starting the same prompt over",
+        hint: "This is the bug. recover() used to re-run record.command, which for every agent gavin launches is the entire prompt — a second from-scratch attempt in a checkout that already carries the first one's edits.",
+      },
+      {
+        id: "interrupted-confirm-copy",
+        text: "The Restart-daemon confirmation says agents are “stopped, and not restarted”, and names resuming",
+        hint: "Against a daemon older than v20 it says the opposite instead, because that daemon really will re-run every command (restartConfirmLines).",
+      },
+      {
+        id: "interrupted-tab-badge",
+        text: "That tab's ↻ badge is AMBER, and its tooltip says the agent was stopped and not restarted",
+        hint: "Green ↻ = merely restored (a plain shell, which is all it ever meant). A plain terminal tab open at the same time must still show the green one.",
+      },
+      {
+        id: "interrupted-badge-dismisses",
+        text: "Typing in that tab dismisses the amber badge — but the card it was running still reads as interrupted",
+        hint: "The badge is a note about the SCREEN and always cleared on the first keystroke. The interruption is a fact about the RUN and does not stop being true because someone typed.",
+      },
+      {
+        id: "interrupted-board-card",
+        text: "The card's dot on the board is a hollow amber ring; clicking it OPENS THE CARD rather than jumping into the shell",
+        hint: "The bare shell carries the original session id, so every “is this card busy?” check used to say yes.",
+      },
+      {
+        id: "interrupted-card-modal",
+        text: "The card detail shows “interrupted”, explains what happened, and offers “Resume this card” beside Jump (disabled) and Re-launch",
+        hint: "Resume composes the gavin-resume prompt — find the work already done, then add to it. Re-launch would replay the original command from the beginning.",
+      },
+      {
+        id: "interrupted-card-menu",
+        text: "Right-clicking that card offers “Resume — the agent was interrupted”, and neither Jump nor Re-launch",
+      },
+      {
+        id: "interrupted-resume-relinks",
+        text: "Pressing Resume spawns a new session, binds the card to it, and the amber dot goes back to a live one",
+        hint: "The card's STATUS must not move on the board — that is the human's record.",
+      },
+      {
+        id: "interrupted-rail-pauses",
+        text: "With a rail running a step, restart the daemon: the step goes stalled with “interrupted — the daemon restarted…” and the rail pauses",
+        hint: "Rule 3c. The restored session is back in the layout under its old id, so the scheduler used to see a live session and wait on a shell forever. Play retries the stalled step — one attempt, asked for.",
+      },
+      {
+        id: "interrupted-rail-done-card-wins",
+        text: "A step whose card had already reached Done before the restart is marked done, not stalled",
+        hint: "Finished work must never be re-run. The card's column outranks the interruption, exactly as it does for a session that exited.",
+      },
+      {
+        id: "interrupted-commit-run",
+        text: "Start Commit via agent from the Git tab and restart the daemon mid-run: the tab drops the run silently — no “Committed”, no “failed”, no spinner left going",
+        hint: "Its exit code and output died with the daemon, so any verdict would be invented. The refresh afterwards shows whatever commits it did make.",
+      },
+      {
+        id: "interrupted-plain-shell-unchanged",
+        text: "A plain terminal tab (no command) restarts exactly as it always did: same folder, green ↻, nothing calling it interrupted",
+      },
+      {
+        id: "interrupted-cwd-followed",
+        text: "cd into a subfolder in a tab, then restart the daemon: the tab comes back in THAT subfolder, not at the workspace root",
+        hint: "recover() spawned in workspace_path while create_session spawned in cwd; the app passes the same value for both, so this was only ever right by coincidence.",
+      },
+    ],
+  },
+  {
     title: "Git tab",
     items: [
       {

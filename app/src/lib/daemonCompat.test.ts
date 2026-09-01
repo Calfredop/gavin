@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { compatMessage, featureBlockedReason, restartOutcome } from "./daemonCompat";
+import {
+  compatMessage,
+  featureBlockedReason,
+  restartConfirmLines,
+  restartOutcome,
+} from "./daemonCompat";
 
 describe("compatMessage", () => {
   it("says nothing when the daemon matches", () => {
@@ -168,5 +173,40 @@ describe("the rail-branch gate", () => {
   it("allows branch binding at exactly v16", () => {
     const c = { daemonVersion: 16, appVersion: 16, degraded: false };
     expect(featureBlockedReason(c, "railBranch")).toBeNull();
+  });
+});
+
+// The one screen whose COPY asserts v20's recovery behaviour. A
+// confirmation that promises "stopped, not restarted" and then hands the
+// work to a daemon that re-runs every command from scratch is worse than
+// no confirmation at all.
+describe("restartConfirmLines", () => {
+  const lines = (c: Parameters<typeof restartConfirmLines>[0]) => restartConfirmLines(c).join(" ");
+
+  it("promises the safe behaviour on a daemon that delivers it", () => {
+    expect(lines({ daemonVersion: 20, appVersion: 20, degraded: false })).toContain(
+      "stopped, and not restarted"
+    );
+  });
+
+  it("warns that an older daemon will re-run the command instead", () => {
+    const said = lines({ daemonVersion: 19, appVersion: 20, degraded: true });
+    expect(said).toContain("RE-RUN its command from the beginning");
+    expect(said).not.toContain("stopped, and not restarted");
+  });
+
+  // Not connected yet: the app's own behaviour is the honest default,
+  // matching featureBlockedReason's "don't pre-emptively grey things out".
+  it("uses the current behaviour when there is no verdict yet", () => {
+    expect(lines(null)).toContain("stopped, and not restarted");
+  });
+
+  it("always says the other three things, whichever daemon it is", () => {
+    for (const c of [null, { daemonVersion: 19, appVersion: 20, degraded: true }]) {
+      expect(restartConfirmLines(c)).toHaveLength(4);
+      expect(restartConfirmLines(c)[0]).toContain("fresh shell");
+      expect(restartConfirmLines(c)[2]).toContain("Scrollback");
+      expect(restartConfirmLines(c)[3]).toContain("window stays open");
+    }
   });
 });

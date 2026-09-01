@@ -20,6 +20,7 @@ import {
   switchWorkspaceView,
   allSessionIdsInWorkspace,
   findSessionLocation,
+  sessionLiveness,
   resolveFocusForPage,
   setPageFocus,
   resolveActiveFocus,
@@ -332,6 +333,32 @@ describe("findSessionLocation", () => {
       activeWorkspaceId: "ws-1",
     };
     expect(findSessionLocation(state, "gone")).toBeNull();
+  });
+});
+
+describe("sessionLiveness", () => {
+  function state(tabs: string[], interrupted: string[] = []) {
+    return {
+      workspaces: [{ id: "ws-1", name: "A", pages: [page("page-1", leaf(tabs))], activePageId: "page-1" }],
+      activeWorkspaceId: "ws-1",
+      interruptedSessionIds: new Set(interrupted),
+    };
+  }
+
+  it("calls a session in a tree with nothing against it live", () => {
+    expect(sessionLiveness(state(["s1"]), "s1")).toBe("live");
+  });
+
+  // The whole point: the bare shell the daemon puts back carries the
+  // ORIGINAL id, so being findable in a tree says nothing about whether
+  // the run is still the run.
+  it("calls a session in a tree interrupted when its run was killed", () => {
+    expect(sessionLiveness(state(["s1"], ["s1"]), "s1")).toBe("interrupted");
+  });
+
+  it("calls a session no tree holds gone, interrupted or not", () => {
+    expect(sessionLiveness(state(["s1"]), "s2")).toBe("gone");
+    expect(sessionLiveness(state(["s1"], ["s2"]), "s2")).toBe("gone");
   });
 });
 

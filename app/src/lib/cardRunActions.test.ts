@@ -33,6 +33,7 @@ vi.mock("./layoutState", () => ({
     sessionStatusById: {},
     sessionNames: {},
     cwdBySessionId: {},
+    interruptedSessionIds: new Set<string>(),
   }),
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
@@ -47,9 +48,22 @@ vi.mock("./layoutState", () => ({
     mcpSupported: true,
   })),
 }));
-vi.mock("./workspace", () => ({
-  findSessionLocation: vi.fn(),
-}));
+vi.mock("./workspace", () => {
+  const findSessionLocation = vi.fn();
+  return {
+    findSessionLocation,
+    // Built on the SAME mock the tests drive, so "in a layout tree" and
+    // "live" can never disagree about one session id in here.
+    sessionLiveness: (
+      state: { interruptedSessionIds?: ReadonlySet<string> },
+      sessionId: string
+    ) => {
+      const location = findSessionLocation(state, sessionId);
+      if (!location) return "gone";
+      return state.interruptedSessionIds?.has(sessionId) ? "interrupted" : "live";
+    },
+  };
+});
 
 import * as backend from "./backend";
 import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, workspaceRootPath } from "./layoutState";
@@ -97,6 +111,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   kanbanState.set({ "ws-1": board() });
   gavinTrees.set({});
+  layoutState.update((s) => ({ ...s, interruptedSessionIds: new Set<string>() }));
   vi.mocked(findSessionLocation).mockReturnValue(null);
 });
 
@@ -394,6 +409,62 @@ describe("jumpToBoundSession", () => {
     expect(await jumpToBoundSession("ws-1", "/p/t.md")).toBe("exited");
     expect(await jumpToBoundSession("ws-1", "/p/unbound.md")).toBe("none");
     expect(switchToSessionInPage).not.toHaveBeenCalled();
+  });
+});
+
+// A binding whose session the daemon put back as a bare shell. It IS in
+// a layout tree, and used to be indistinguishable from a live agent
+// everywhere: Run jumped into the shell, Resume jumped into the shell,
+// and Develop refused because "this card has a live agent".
+describe("an interrupted binding", () => {
+  function interrupt(sessionId: string): void {
+    layoutState.update((s) => ({ ...s, interruptedSessionIds: new Set([sessionId]) }));
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+  }
+
+  it("reports interrupted from jumpToBoundSession, and navigates nowhere", async () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+    });
+    interrupt("s-live");
+
+    expect(await jumpToBoundSession("ws-1", "/p/t.md")).toBe("interrupted");
+    expect(switchToSessionInPage).not.toHaveBeenCalled();
+  });
+
+  it("lets resumeCard spawn over it and re-link, instead of jumping into the shell", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+      ]),
+    });
+    interrupt("s-live");
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo it.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+
+    const err = await resumeCard("ws-1", card("task", "In Progress"));
+
+    expect(err).toBeNull();
+    expect(backend.createSession).toHaveBeenCalled();
+    expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-new");
+    // The resume prompt, not the from-scratch one: the killed agent's
+    // edits are still in the checkout.
+    expect(vi.mocked(backend.createSession).mock.calls[0][1]).toContain("gavin-resume");
+  });
+
+  it("lets developCard proceed — there is no live agent to edit under", async () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+    });
+    interrupt("s-live");
+    vi.mocked(backend.createSession).mockResolvedValue("s-dev");
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+    expect(backend.createSession).toHaveBeenCalled();
   });
 });
 

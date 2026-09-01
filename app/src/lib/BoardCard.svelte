@@ -8,10 +8,10 @@
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { orchestrations } from "./orchestrationState";
   import { cardRailBadge } from "./orchestration";
+  import { cardSessionState } from "./columnRunAction";
   import { boardSelection } from "./boardSelection";
   import { tooltip } from "./tooltip";
   import { layoutState } from "./layoutState";
-  import { findSessionLocation } from "./workspace";
   import { jumpToBoundSession } from "./cardRunActions";
   // Svelte 5 self-import for the nested-children recursion.
   import BoardCardSelf from "./BoardCard.svelte";
@@ -71,14 +71,24 @@
   );
   const sessionDot = $derived.by(() => {
     if (!binding) return null;
-    const location = findSessionLocation($layoutState, binding.sessionId);
-    const status = location ? $layoutState.sessionStatusById[binding.sessionId] : undefined;
+    const state = cardSessionState($layoutState, binding);
+    // Checked before any status: the daemon's status for an interrupted
+    // session describes the bare shell that replaced the agent, so
+    // reading it here would paint a working or idle dot over a run that
+    // is not happening.
+    if (state === "interrupted")
+      return {
+        cls: "status-interrupted",
+        tip: "Interrupted — the daemon restarted and this run was not resumed. Open the card to resume it.",
+      };
+    if (state === "exited")
+      return { cls: "status-exited", tip: "Session exited — open the card for Re-launch" };
+    const status = $layoutState.sessionStatusById[binding.sessionId];
     if (status === "working")
       return { cls: "status-working", tip: "Agent working — click to open the session" };
     if (status === "waiting_for_input")
       return { cls: "status-waiting", tip: "Waiting for input — click to open the session" };
-    if (location) return { cls: "status-idle", tip: "Agent idle — click to open the session" };
-    return { cls: "status-exited", tip: "Session exited — open the card for Re-launch" };
+    return { cls: "status-idle", tip: "Agent idle — click to open the session" };
   });
 
   // Which rail carries this card (orchestration spec O2). Read from the
@@ -91,8 +101,12 @@
 
   async function handleDotClick(): Promise<void> {
     if (workspaceId === null) return;
+    // "interrupted" opens the card for the same reason "exited" does:
+    // what to do about it (Resume) lives in the detail modal, and
+    // jumping into the bare shell the daemon left would say the run is
+    // still going.
     const result = await jumpToBoundSession(workspaceId, card.id);
-    if (result === "exited") onOpen(card.id);
+    if (result === "exited" || result === "interrupted") onOpen(card.id);
   }
   const runnable = $derived(card.kind !== "note" && binding === null && (onRun !== null || onSendToAgent !== null));
 
@@ -149,6 +163,7 @@
   class:session-working={sessionDot?.cls === "status-working"}
   class:session-waiting={sessionDot?.cls === "status-waiting"}
   class:session-idle={sessionDot?.cls === "status-idle"}
+  class:session-interrupted={sessionDot?.cls === "status-interrupted"}
   role="button"
   tabindex="0"
   onkeydown={handleKeydown}
@@ -516,6 +531,17 @@
   .status-dot.status-exited {
     background: transparent;
     border: 1px solid var(--border-strong);
+  }
+  /* Warning, not success or danger: an interrupted run is neither
+     finished nor failed -- it is unfinished work waiting on a decision.
+     Hollow like `exited`, because nothing is running in there either;
+     coloured, because unlike an exit this one nobody asked for. */
+  .card.session-interrupted {
+    border-left: 3px solid var(--warning);
+  }
+  .status-dot.status-interrupted {
+    background: transparent;
+    border: 1px solid var(--warning);
   }
   /* In flow, not overlaid: a compact nested card has no spare room, and
      an expanded plan's pills must sit with ITS content rather than below

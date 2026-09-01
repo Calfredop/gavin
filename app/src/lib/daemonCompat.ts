@@ -103,9 +103,47 @@ export const FEATURE_MIN_VERSION = {
   // -- the card detail modal's Attachments section and the ⌘N composer's
   // -- reads it through featureBlockedReason.
   attachments: 19,
+  // Interrupted runs. Not a request at all -- v20 changed what RECOVERY
+  // does (a killed agent comes back as a bare shell, marked
+  // `interrupted`, instead of having its whole prompt re-run) and added
+  // the `SessionInterrupted` push that says so. `min_version_for` gates
+  // request types and cannot see either half, and no UI surface produces
+  // a payload to gate.
+  //
+  // It earns an entry anyway because one piece of COPY asserts the new
+  // behaviour: the Restart-daemon confirmation tells the human their
+  // agents will be stopped and not restarted. On a v19 daemon that is
+  // the opposite of what happens, and it is the one screen where being
+  // wrong costs work. See `restartConfirmLines`.
+  interruptedRuns: 20,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
+
+/// What the Restart-daemon confirmation says will happen, which depends
+/// on which daemon is about to be restarted.
+///
+/// On v20+ a running agent is stopped and NOT restarted: its command
+/// carries the whole prompt, so re-running it would be a second
+/// from-scratch attempt rather than a recovery. The card, rail step or
+/// commit run bound to it is marked interrupted and offers Resume.
+///
+/// On an older daemon every command is re-run on the way back up, which
+/// is the failure this warning exists to describe -- so the copy has to
+/// say that instead. A confirmation that promises the safe behaviour and
+/// then delivers the destructive one is worse than no confirmation.
+export function restartConfirmLines(c: DaemonCompat | null): string[] {
+  const stopped =
+    c !== null && c.daemonVersion < FEATURE_MIN_VERSION.interruptedRuns
+      ? `Any agent that is running right now is stopped — and this daemon (v${c.daemonVersion}) will RE-RUN its command from the beginning, in a checkout that already carries its edits. Restart it only if you are willing to have that work repeated.`
+      : "Any agent that is running right now is stopped, and not restarted — its card, rail step or commit run is marked interrupted so you can resume it.";
+  return [
+    "Every terminal session restarts as a fresh shell at its current folder.",
+    stopped,
+    "Scrollback in open terminals is lost.",
+    "The window stays open — plans, boards and git keep working.",
+  ];
+}
 
 /// Null when available; otherwise the reason to show as a tooltip.
 export function featureBlockedReason(c: DaemonCompat | null, f: Feature): string | null {

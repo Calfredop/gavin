@@ -4,6 +4,7 @@ import {
   columnRunTargets,
   columnRunTip,
   columnRunMenuLabel,
+  cardSessionState,
   type CardSessionState,
 } from "./columnRunAction";
 import type { CardView } from "./planBoard";
@@ -54,20 +55,28 @@ describe("columnRunAction", () => {
 });
 
 describe("columnRunTargets", () => {
-  const cards = [card("note", "note"), card("free"), card("live"), card("exited"), card("plan", "plan")];
+  const cards = [
+    card("note", "note"),
+    card("free"),
+    card("live"),
+    card("exited"),
+    card("interrupted"),
+    card("plan", "plan"),
+  ];
   const state = (id: string): CardSessionState =>
-    id === "live" ? "live" : id === "exited" ? "exited" : "none";
+    id === "live" || id === "exited" || id === "interrupted" ? (id as CardSessionState) : "none";
 
-  it("start and run skip notes and every bound card, live or exited", () => {
+  it("start and run skip notes and every bound card, whatever became of its session", () => {
     for (const mode of ["start", "run"] as const) {
       expect(columnRunTargets(cards, mode, state).map((c) => c.id)).toEqual(["free", "plan"]);
     }
   });
 
-  it("resume adds the cards whose session exited — that is what it is for", () => {
+  it("resume adds the cards whose session exited OR was interrupted — that is what it is for", () => {
     expect(columnRunTargets(cards, "resume", state).map((c) => c.id)).toEqual([
       "free",
       "exited",
+      "interrupted",
       "plan",
     ]);
   });
@@ -76,6 +85,48 @@ describe("columnRunTargets", () => {
     for (const mode of ["start", "resume", "run"] as const) {
       expect(columnRunTargets(cards, mode, state).some((c) => c.id === "live")).toBe(false);
     }
+  });
+});
+
+describe("cardSessionState", () => {
+  function state(tabs: string[], interrupted: string[] = []) {
+    return {
+      workspaces: [
+        {
+          id: "ws-1",
+          name: "A",
+          pages: [
+            {
+              id: "p1",
+              name: "Agents",
+              focusedSessionId: null,
+              layout: { type: "leaf" as const, tabs, activeTabIndex: 0 },
+            },
+          ],
+          activePageId: "p1",
+        },
+      ],
+      activeWorkspaceId: "ws-1",
+      interruptedSessionIds: new Set(interrupted),
+    };
+  }
+
+  it("says none for a card nothing is bound to", () => {
+    expect(cardSessionState(state([]), null)).toBe("none");
+  });
+
+  it("says live for a binding whose session is in a tree and untouched", () => {
+    expect(cardSessionState(state(["s1"]), { sessionId: "s1" })).toBe("live");
+  });
+
+  // The bug: the tab is there and findSessionLocation finds it, so every
+  // "is this card busy?" check said yes for a plain shell.
+  it("says interrupted for a binding whose run was killed with the daemon", () => {
+    expect(cardSessionState(state(["s1"], ["s1"]), { sessionId: "s1" })).toBe("interrupted");
+  });
+
+  it("says exited for a binding whose session no tree holds", () => {
+    expect(cardSessionState(state([]), { sessionId: "s1" })).toBe("exited");
   });
 });
 

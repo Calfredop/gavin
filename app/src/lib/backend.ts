@@ -204,16 +204,22 @@ export function getBoardTabs(): Promise<Record<string, BoardTab>> {
   return invoke("get_board_tabs");
 }
 
-/// One live session's cwd/status/restored, as session::SessionBaseline.
+/// One live session's cwd/status/restored/interrupted, as
+/// session::SessionBaseline.
 export interface SessionBaseline {
   id: string;
   cwd: string;
   status: SessionStatus;
   restored: boolean;
+  /// The run this session held was killed with a previous daemon and its
+  /// command was not re-run: a bare shell occupies the tab now. Read back
+  /// here rather than only pushed, for the same reason the other three
+  /// are -- the push is baselined on Attach, once per app PROCESS.
+  interrupted: boolean;
 }
 
-// The frontend learns cwd/status/restored from pushes whose baseline the
-// daemon only sends in reply to Attach -- and Attach happens once per app
+// The frontend learns cwd/status/restored/interrupted from pushes whose
+// baseline the daemon only sends in reply to Attach -- and Attach happens once per app
 // PROCESS, not per frontend load. This is how a reloaded frontend gets
 // them back; see the Rust command's own doc comment.
 export function getSessionBaselines(): Promise<SessionBaseline[]> {

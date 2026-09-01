@@ -639,10 +639,11 @@ async function forgetAgentCommit(workspaceId: string, sessionId: string): Promis
 /// sidebar's git chip has to show a run for a workspace whose Git tab
 /// nobody has opened yet, and it reads this store.
 ///
-/// A run whose session is gone is dropped without a verdict: its exit
-/// code and its output died with the last window, so "Committed" would
-/// be a guess and "failed" would be a lie. The refresh that follows
-/// shows whatever commits it did make.
+/// A run whose session is gone -- or whose session was INTERRUPTED, and
+/// so is a bare shell wearing the run's old id -- is dropped without a
+/// verdict: its exit code and its output died with the last window, so
+/// "Committed" would be a guess and "failed" would be a lie. The refresh
+/// that follows shows whatever commits it did make.
 export async function adoptAgentCommits(): Promise<void> {
   await Promise.all(get(layoutState).workspaces.map((ws) => adoptAgentCommit(ws)));
 }
@@ -658,10 +659,21 @@ async function adoptAgentCommit(ws: Workspace): Promise<void> {
     await forgetAgentCommit(ws.id, record.sessionId);
     return;
   }
-  // A daemon restart respawns a session's command, so an adopted run may
-  // literally be a second `claude -p 'Commit ...'` rather than the first
-  // one still going. Same thing to this tab either way: a commit agent
-  // working on this tree, whose exit is worth waiting for.
+  // An INTERRUPTED session is dropped exactly like one that is gone: the
+  // daemon killed the run and put a bare shell in its place, and a shell
+  // never exits, so `watchAgentCommit` would sit on `awaitExit` for the
+  // life of the window. No verdict either -- the run's exit code and its
+  // output died with the daemon, so "Committed" would be a guess and
+  // "failed" a lie. The refresh below shows whatever commits it did make.
+  //
+  // This replaces, rather than contradicts, the old tolerance for a
+  // restart: adopting "a second `claude -p 'Commit ...'`" was fine
+  // because repeating THAT prompt is harmless, but recovery no longer
+  // respawns anything, so there is no second run to adopt.
+  if (get(layoutState).interruptedSessionIds.has(record.sessionId)) {
+    await forgetAgentCommit(ws.id, record.sessionId);
+    return;
+  }
   let alive = false;
   try {
     alive = await backend.adoptSession(record.sessionId);

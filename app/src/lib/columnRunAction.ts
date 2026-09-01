@@ -10,6 +10,7 @@
 // vocabulary, and gavin has no idea what it means.
 
 import { slugStatus, type CardView } from "./planBoard";
+import { sessionLiveness, type WorkspacesData } from "./workspace";
 
 /// "start" and "run" spawn the ordinary run prompt; "resume" spawns the
 /// gavin-resume one.
@@ -23,9 +24,33 @@ export interface ColumnRunAction {
   aria: string;
 }
 
-/// A card's binding as the board sees it: a live session, a session that
-/// has exited (the binding outlives it), or no binding at all.
-export type CardSessionState = "live" | "exited" | "none";
+/// A card's binding as the board sees it: a live session, a session whose
+/// run was killed with the daemon and replaced by a bare shell, a session
+/// that has exited (the binding outlives it), or no binding at all.
+export type CardSessionState = "live" | "interrupted" | "exited" | "none";
+
+/// The one place a card's binding is turned into that vocabulary, so
+/// every surface that asks "is this card busy?" answers identically.
+///
+/// `interrupted` used to be indistinguishable from `live`: the bare shell
+/// the daemon puts back carries the ORIGINAL session id, so the layout
+/// tree still holds it and `findSessionLocation` still finds it. Run and
+/// Resume both jumped to it, and Develop refused with "this card has a
+/// live agent" -- for a tab with nothing running in it at all.
+export function cardSessionState(
+  state: WorkspacesData & { interruptedSessionIds: ReadonlySet<string> },
+  binding: { sessionId: string } | null
+): CardSessionState {
+  if (!binding) return "none";
+  switch (sessionLiveness(state, binding.sessionId)) {
+    case "live":
+      return "live";
+    case "interrupted":
+      return "interrupted";
+    case "gone":
+      return "exited";
+  }
+}
 
 const TO_DO: ColumnRunAction = {
   mode: "start",
@@ -64,7 +89,10 @@ export function columnRunAction(columnName: string): ColumnRunAction | null {
 /// session is the work itself -- running would only jump to it. Resume
 /// parts company there: a card whose agent exited is the whole reason In
 /// Progress needs its own verb, so it counts as a target even though its
-/// binding is still on file. Start and Run stay unbound-only, the way
+/// binding is still on file. An INTERRUPTED one is the same case with a
+/// sharper claim on the verb -- its agent stopped mid-run, in a checkout
+/// that carries whatever it had already written, which is precisely what
+/// the resume prompt is for. Start and Run stay unbound-only, the way
 /// Run all always behaved.
 export function columnRunTargets(
   cards: CardView[],

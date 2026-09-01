@@ -8,6 +8,7 @@ import { get } from "svelte/store";
 import * as backend from "./backend";
 import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
 import { findSessionLocation } from "./workspace";
+import { cardSessionState } from "./columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
 import { patchPlanField, patchPlanPath } from "./gavinState";
 import {
@@ -60,13 +61,20 @@ export async function resolveAttachmentsForRun(
 
 // Focus a card's bound live session (card-model spec §3): "jumped" on
 // success, "exited" when the binding's session is gone (Re-launch lives
-// in the card detail), "none" when nothing is bound.
+// in the card detail), "interrupted" when the tab is there but holds the
+// bare shell a daemon restart left behind, "none" when nothing is bound.
+//
+// "interrupted" never jumps. Landing the human in a dead shell and
+// calling it their agent is the lie this whole change removes; the
+// answer there is Resume, which the caller routes to.
 export async function jumpToBoundSession(
   workspaceId: string,
   path: string
-): Promise<"jumped" | "exited" | "none"> {
+): Promise<"jumped" | "interrupted" | "exited" | "none"> {
   const binding = cardSessionFor(get(kanbanState)[workspaceId], path);
   if (!binding) return "none";
+  const state = cardSessionState(get(layoutState), binding);
+  if (state !== "live") return state === "none" ? "none" : state;
   const location = findSessionLocation(get(layoutState), binding.sessionId);
   if (!location) return "exited";
   await switchWorkspaceView(location.workspaceId, "terminal");
@@ -110,7 +118,11 @@ export async function developCard(
   if (card.kind === "note") return "Notes are not runnable";
 
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
-  if (binding && findSessionLocation(get(layoutState), binding.sessionId)) {
+  // Only a LIVE agent refuses. An interrupted binding names a bare shell
+  // -- rewriting the card under it destroys nothing, and refusing there
+  // left the card stuck: the binding never looked broken, so nothing
+  // else offered a way forward either.
+  if (cardSessionState(get(layoutState), binding) === "live") {
     return "This card has a live agent — jump to it instead of developing under it";
   }
 
@@ -144,7 +156,11 @@ async function launchCard(
   if ((await jumpToBoundSession(workspaceId, card.id)) === "jumped") return null;
   const state = get(layoutState);
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
-  if (binding && findSessionLocation(state, binding.sessionId)) return null;
+  // Re-checked rather than trusted from the jump above, which is async:
+  // a session that became live in between is still the work. An
+  // INTERRUPTED binding falls through on purpose -- launching replaces
+  // it, which is the only way a card gets un-stuck from a killed run.
+  if (cardSessionState(state, binding) === "live") return null;
 
   // The attachment gate runs BEFORE the status write below. A refused
   // launch must leave the card exactly as it was: writing In Progress

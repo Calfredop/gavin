@@ -13,7 +13,7 @@
     daemonCompat,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
-  import { featureBlockedReason, restartOutcome } from "./daemonCompat";
+  import { featureBlockedReason, restartOutcome, restartConfirmLines } from "./daemonCompat";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
   import {
     resolveAgentConfig,
@@ -620,12 +620,7 @@
   {#if confirmingRestart}
     <ConfirmPrompt
       title="Restart gavin-daemon?"
-      lines={[
-        "Every terminal session restarts as a fresh shell at its current folder.",
-        "Any agent that is running right now is stopped.",
-        "Scrollback in open terminals is lost.",
-        "The window stays open — plans, boards and git keep working.",
-      ]}
+      lines={restartConfirmLines($daemonCompat)}
       choices={[{ label: "Restart daemon", danger: true, onPick: () => void restartDaemon() }]}
       onCancel={() => (confirmingRestart = false)}
     />

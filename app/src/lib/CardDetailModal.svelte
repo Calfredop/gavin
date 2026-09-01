@@ -29,7 +29,8 @@
   } from "./attachments";
   import { isViewableInApp } from "./fileTypes";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
-  import { runCard, relaunchCard, developCard } from "./cardRunActions";
+  import { runCard, resumeCard, relaunchCard, developCard } from "./cardRunActions";
+  import { cardSessionState } from "./columnRunAction";
   import { developAvailable } from "./cardRun";
   import { findCardPlacement, stepStateOf } from "./orchestration";
   import {
@@ -41,7 +42,6 @@
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { findSessionLocation } from "./workspace";
   import * as backend from "./backend";
 
   interface Props {
@@ -336,11 +336,18 @@
 
   // --- session block (task/plan, card-model spec §3) -------------------
   const binding = $derived(cardSessionFor($kanbanState[workspaceId], card.id));
-  const bindingLive = $derived(
-    binding !== null && findSessionLocation($layoutState, binding.sessionId) !== null
-  );
+  const sessionState = $derived(cardSessionState($layoutState, binding));
+  const bindingLive = $derived(sessionState === "live");
+  const bindingInterrupted = $derived(sessionState === "interrupted");
+  // The daemon's status describes whatever occupies the session id NOW,
+  // which for an interrupted run is the bare shell that replaced the
+  // agent -- so it is not consulted at all there.
   const bindingStatus = $derived(
-    binding && bindingLive ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle") : "exited"
+    bindingInterrupted
+      ? "interrupted"
+      : binding && bindingLive
+        ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
+        : "exited"
   );
 
   async function handleRun(): Promise<void> {
@@ -348,6 +355,18 @@
     const err = await runCard(workspaceId, card);
     if (err) errorMessage = err;
     else if (!binding || bindingLive) onClose();
+  }
+
+  // The answer to an interrupted run, and the reason it gets its own
+  // button rather than reusing Re-launch: Re-launch replays the ORIGINAL
+  // command, which is the from-scratch second attempt this whole flow
+  // exists to prevent. Resume composes the gavin-resume prompt instead,
+  // which tells the new agent to find the work already done first.
+  async function handleResume(): Promise<void> {
+    errorMessage = null;
+    const err = await resumeCard(workspaceId, card);
+    if (err) errorMessage = err;
+    else onClose();
   }
 
   // Same rule as the board's context menu (developAvailable): a thin To
@@ -620,10 +639,25 @@
       <div class="section-title">Agent session</div>
       {#if binding}
         <div class="session-info">
-          <span class="session-status" class:exited={!bindingLive}>{bindingStatus}</span>
+          <span
+            class="session-status"
+            class:exited={!bindingLive && !bindingInterrupted}
+            class:interrupted={bindingInterrupted}>{bindingStatus}</span
+          >
           <span class="session-cwd">{binding.cwd}</span>
         </div>
+        {#if bindingInterrupted}
+          <p class="session-note">
+            The daemon restarted while this agent was working, so it was stopped and not
+            restarted — the tab now holds a plain shell. Whatever it had already written
+            is still in the checkout. Resume picks that work up; Re-launch would start the
+            card over from the beginning.
+          </p>
+        {/if}
         <div class="session-actions">
+          {#if bindingInterrupted}
+            <button type="button" onclick={() => void handleResume()}>Resume this card</button>
+          {/if}
           <button type="button" disabled={!bindingLive} onclick={() => void handleRun()}>Jump to session</button>
           <button type="button" disabled={bindingLive} onclick={() => void handleRelaunch()}>Re-launch</button>
           <button type="button" onclick={() => void handleUnlink()}>Unlink</button>
@@ -930,6 +964,14 @@
   }
   .session-status.exited {
     opacity: 0.6;
+  }
+  .session-status.interrupted {
+    color: var(--warning);
+  }
+  .session-note {
+    margin: 6px 0 8px;
+    color: var(--text-muted);
+    line-height: 1.45;
   }
   .session-cwd {
     overflow: hidden;

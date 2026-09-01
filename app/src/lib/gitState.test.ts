@@ -135,7 +135,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   gitStore.set({});
   sessionExits.set(new Map());
-  layoutState.set({ workspaces: [], activeWorkspaceId: null } as never);
+  layoutState.set({ workspaces: [], activeWorkspaceId: null, interruptedSessionIds: new Set() } as never);
   ptyListeners.length = 0;
   vi.mocked(backend.gitRepoInfo).mockResolvedValue(repo);
   vi.mocked(backend.gitStatus).mockResolvedValue(status);
@@ -658,6 +658,7 @@ describe("commit via agent", () => {
     const { done } = await launch();
     layoutState.set({
       workspaces: [{ id: "ws", pages: [{ id: "p1", layout: { type: "leaf", tabs: ["agent-1"], activeTabIndex: 0 } }] }],
+      interruptedSessionIds: new Set(),
     } as never);
     await revealAgentCommit("ws");
     expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws", "agent-1");
@@ -680,6 +681,7 @@ describe("commit via agent", () => {
       layoutState.set({
         workspaces: [{ id: "ws", name: "gavin", rootPath: "/r", pages: [], ...patch }],
         activeWorkspaceId,
+        interruptedSessionIds: new Set(),
       } as never);
     }
 
@@ -780,8 +782,11 @@ describe("adoptAgentCommits", () => {
     for (let i = 0; i < 20; i++) await Promise.resolve();
   };
 
-  function workspaceWith(gitView: Record<string, unknown>): void {
-    layoutState.set({ workspaces: [{ id: "ws", rootPath: "/r", pages: [], gitView }] } as never);
+  function workspaceWith(gitView: Record<string, unknown>, interrupted: string[] = []): void {
+    layoutState.set({
+      workspaces: [{ id: "ws", rootPath: "/r", pages: [], gitView }],
+      interruptedSessionIds: new Set(interrupted),
+    } as never);
   }
 
   // Written down before the wait, cleared by the verdict: the record has
@@ -848,6 +853,22 @@ describe("adoptAgentCommits", () => {
     await flush();
 
     expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { agentCommit: undefined });
+    expect(agentCommitPhase(get(gitStore)["ws"] ?? null)).toBe("idle");
+    expect(get(gitStore)["ws"]?.error ?? null).toBeNull();
+  });
+
+  // Once recovery stopped re-running commands, an adopted commit session
+  // is a bare shell that will never exit -- so waiting on it would hang
+  // the record for the life of the window. Dropped exactly like a session
+  // that is gone: no verdict, because there is nothing left to judge.
+  it("drops an INTERRUPTED run without adopting it or judging it", async () => {
+    workspaceWith({ agentCommit: { sessionId: "agent-1", cwd: "/r" } }, ["agent-1"]);
+    await adoptAgentCommits();
+    await flush();
+
+    expect(backend.adoptSession).not.toHaveBeenCalled();
+    expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { agentCommit: undefined });
+    expect(maybeNotifyAgentCommit).not.toHaveBeenCalled();
     expect(agentCommitPhase(get(gitStore)["ws"] ?? null)).toBe("idle");
     expect(get(gitStore)["ws"]?.error ?? null).toBeNull();
   });

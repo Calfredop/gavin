@@ -8,12 +8,12 @@
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
   import { layoutState } from "./layoutState";
-  import { findSessionLocation } from "./workspace";
   import {
     columnRunAction,
     columnRunTargets,
     columnRunTip,
     columnRunMenuLabel,
+    cardSessionState,
     type CardSessionState,
   } from "./columnRunAction";
   import { Play, RotateCcw, Archive } from "@lucide/svelte";
@@ -193,9 +193,7 @@
   const runAction = $derived(onRunCard === null ? null : columnRunAction(column.name));
 
   function sessionStateFor(path: string): CardSessionState {
-    const binding = cardSessionFor($kanbanState[workspaceId], path);
-    if (!binding) return "none";
-    return findSessionLocation($layoutState, binding.sessionId) ? "live" : "exited";
+    return cardSessionState($layoutState, cardSessionFor($kanbanState[workspaceId], path));
   }
 
   const runnable = $derived(

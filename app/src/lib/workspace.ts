@@ -567,6 +567,36 @@ export function findSessionLocation(
   return null;
 }
 
+/// What a session id bound to a run names now.
+///
+/// - `live` -- the id is in a layout tree and nothing says its run was
+///   killed.
+/// - `interrupted` -- the tab is there, but what is in it is a shell the
+///   daemon spawned in place of the run (`SessionManager::recover`).
+/// - `gone` -- no tree holds this id at all; the session exited, or the
+///   startup reconciliation cleared its tab.
+export type SessionLiveness = "live" | "interrupted" | "gone";
+
+/// Resolves a bound session id into that vocabulary.
+///
+/// `findSessionLocation` alone answers a narrower question -- "is this id
+/// somewhere in a layout tree" -- and a bare shell the daemon put back
+/// after a restart satisfies it exactly as well as the agent that used to
+/// be there. That is how an interrupted run kept reading as a live one on
+/// every surface: the board's dot, the card menu, Develop's refusal, and
+/// the orchestration scheduler's `liveSessionIds`.
+///
+/// Order matters: `gone` is checked first, so a session that both
+/// vanished and was interrupted reads as gone. Nothing is offered to
+/// resume a tab that is not there.
+export function sessionLiveness(
+  state: WorkspacesData & { interruptedSessionIds: ReadonlySet<string> },
+  sessionId: string
+): SessionLiveness {
+  if (!findSessionLocation(state, sessionId)) return "gone";
+  return state.interruptedSessionIds.has(sessionId) ? "interrupted" : "live";
+}
+
 // A single session's git status, mirroring crates/protocol's GitStatus
 // wire shape exactly (camelCase, per its own #[serde(rename_all =
 // "camelCase")]). repoRoot identifies the repo by canonical filesystem

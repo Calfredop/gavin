@@ -110,6 +110,7 @@ import {
   handleSessionStatusChanged,
   handleGitStatusChanged,
   handleSessionRestored,
+  handleSessionInterrupted,
   restartDaemonInPlace,
   clearRestoredMarker,
   closePane,
@@ -179,6 +180,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     sessionStatusById: {},
     gitStatusById: {},
     restoredSessionIds: new Set(),
+    interruptedSessionIds: new Set(),
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -206,6 +208,7 @@ beforeEach(() => {
     sessionStatusById: {},
     gitStatusById: {},
     restoredSessionIds: new Set(),
+    interruptedSessionIds: new Set(),
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -884,6 +887,30 @@ describe("handleSessionRestored and clearRestoredMarker", () => {
   it("clearRestoredMarker on a session that was never restored is a harmless no-op", () => {
     clearRestoredMarker("never-restored");
     expect(get(layoutState).restoredSessionIds).toEqual(new Set());
+  });
+});
+
+// The signal every surface that watches a run consults. Deliberately has
+// no counterpart to clearRestoredMarker: the ↻ badge is a note about the
+// screen and typing dismisses it; this is a fact about the RUN, and
+// typing into the shell recovery left behind does not bring the agent
+// back.
+describe("handleSessionInterrupted", () => {
+  it("adds a session id, idempotently", () => {
+    handleSessionInterrupted("a");
+    handleSessionInterrupted("a");
+    handleSessionInterrupted("b");
+    expect(get(layoutState).interruptedSessionIds).toEqual(new Set(["a", "b"]));
+  });
+
+  it("survives the write that clears the restored marker", () => {
+    handleSessionRestored("a");
+    handleSessionInterrupted("a");
+
+    clearRestoredMarker("a");
+
+    expect(get(layoutState).restoredSessionIds.has("a")).toBe(false);
+    expect(get(layoutState).interruptedSessionIds.has("a")).toBe(true);
   });
 });
 
@@ -1990,8 +2017,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
   it("fills cwd, status and the restored badge from the daemon", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true },
-      { id: "s-2", cwd: "/ws", status: "idle", restored: false },
+      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false },
+      { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false },
     ]);
 
     await bootstrapReady();
@@ -2006,12 +2033,27 @@ describe("bootstrap seeds the push-fed session maps", () => {
     // re-reading a status the human has already seen is not a transition.
     expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
   });
+  it("fills the interrupted set, which the restored one does not speak for", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true },
+      { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).interruptedSessionIds.has("s-agent")).toBe(true));
+    const state = get(layoutState);
+    // Both were restored; only one of them lost a run.
+    expect(state.restoredSessionIds).toEqual(new Set(["s-agent", "s-shell"]));
+    expect(state.interruptedSessionIds.has("s-shell")).toBe(false);
+  });
+
 
   it("never overwrites a push that already landed", async () => {
     vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
       // A live push beats the snapshot this call is about to return.
       handleCwdChanged("s-1", "/ws/live");
-      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false }];
+      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false }];
     });
 
     await bootstrapReady();
@@ -2036,8 +2078,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // when the status actually CHANGES.
   it("fills the git status the sidebar's repo chip reads", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false },
-      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false },
+      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false },
+      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false },
     ]);
     vi.mocked(backend.getGitBaselines).mockResolvedValue([
       { repoRoot: "/ws", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
@@ -2066,7 +2108,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   it("never overwrites a git push that already landed", async () => {
     const live = { repoRoot: "/ws", branch: "live", dirty: false, ahead: 0, behind: 0, hasUpstream: false };
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false },
     ]);
     vi.mocked(backend.getGitBaselines).mockImplementation(async () => {
       handleGitStatusChanged("s-1", live);
@@ -2082,7 +2124,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // git can be missing, slow, or refuse a repo outright.
   it("keeps the cwd seed when the git half fails", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false },
     ]);
     vi.mocked(backend.getGitBaselines).mockRejectedValue(new Error("git was not found on PATH"));
 
@@ -2356,6 +2398,7 @@ describe("runningSessionCount", () => {
       sessionStatusById: {},
       gitStatusById: {},
       restoredSessionIds: new Set(),
+      interruptedSessionIds: new Set(),
       fileTabsById: {},
       boardTabsById: {},
       removedWorkspaces: [],

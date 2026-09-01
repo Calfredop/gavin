@@ -7,11 +7,11 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import * as backend from "./backend";
 import { kanbanState, cardSessionFor } from "./kanbanState";
 import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
-import { findSessionLocation } from "./workspace";
 import { patchPlanField } from "./gavinState";
 import { requestedExplorerPath } from "./planExplorer";
-import { jumpToBoundSession, relaunchCard, developCard } from "./cardRunActions";
+import { jumpToBoundSession, relaunchCard, developCard, resumeCard } from "./cardRunActions";
 import { developAvailable } from "./cardRun";
+import { cardSessionState } from "./columnRunAction";
 import { findCardPlacement } from "./orchestration";
 import {
   orchestrations,
@@ -57,11 +57,25 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
   if (card.kind !== "note") {
     entries.push({ separator: true });
     const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
-    const live = binding !== null && findSessionLocation(get(layoutState), binding.sessionId) !== null;
-    if (binding && live) {
+    const sessionState = cardSessionState(get(layoutState), binding);
+    if (sessionState === "live") {
       entries.push({
         label: "Jump to session",
         onPick: () => void jumpToBoundSession(workspaceId, card.id),
+      });
+    } else if (sessionState === "interrupted") {
+      // Resume, not Re-launch: the killed agent left its edits in the
+      // checkout, and the resume prompt (gavin-resume) is the one that
+      // tells its replacement to find that work before adding to it.
+      // Re-launch would replay the ORIGINAL command -- the whole
+      // from-scratch second attempt this card exists to stop.
+      entries.push({
+        label: "Resume — the agent was interrupted",
+        onPick: () => {
+          void resumeCard(workspaceId, card).then((err) => {
+            if (err) hooks.reportError(err);
+          });
+        },
       });
     } else if (binding) {
       entries.push({
