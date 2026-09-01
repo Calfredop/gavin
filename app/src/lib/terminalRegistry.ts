@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import * as backend from "./backend";
 import { isViewableInApp } from "./fileTypes";
+import { hotState } from "./hotState";
 import { xtermTheme } from "./ui/terminalTheme";
 import type { EffectiveTheme } from "./ui/theme";
 
@@ -14,27 +15,67 @@ interface RegistryEntry {
   fitAddon: FitAddon;
 }
 
-const registry = new Map<string, RegistryEntry>();
-const pendingUnlisten = new Map<string, () => void>();
-// Resolves once a session's `pty-output` listener is actually registered.
-// `listen` is a round trip to the Rust side, and an event emitted before it
-// lands is dropped rather than queued -- so anything that ASKS the daemon to
-// push output has to wait on this first or it can ask into the void.
-const pendingListen = new Map<string, Promise<void>>();
-// Sessions whose screen this frontend load has already asked the daemon to
-// repaint. A terminal outlives the panes that show it, so a pane remounting
-// (a tree-shape change elsewhere) must not trigger a second full repaint of a
-// terminal that is already correct.
-const restored = new Set<string>();
+interface LiveState {
+  registry: Map<string, RegistryEntry>;
+  pendingUnlisten: Map<string, () => void>;
+  // Resolves once a session's `pty-output` listener is actually registered.
+  // `listen` is a round trip to the Rust side, and an event emitted before it
+  // lands is dropped rather than queued -- so anything that ASKS the daemon to
+  // push output has to wait on this first or it can ask into the void.
+  pendingListen: Map<string, Promise<void>>;
+  // Sessions whose screen this frontend load has already asked the daemon to
+  // repaint. A terminal outlives the panes that show it, so a pane remounting
+  // (a tree-shape change elsewhere) must not trigger a second full repaint of
+  // a terminal that is already correct.
+  restored: Set<string>;
+  // The session's own live cwd, mirrored here from layoutState's
+  // cwdBySessionId (kept current by the existing OSC 7 plumbing) via
+  // setCwdForLinks below. A local mirror rather than reading the store
+  // directly for two reasons: provideLinks is called synchronously per
+  // rendered line and cannot await, and this module must never statically
+  // import layoutState.ts, which already imports THIS module (a static
+  // import back would be circular).
+  cwdBySessionId: Map<string, string>;
+  // Terminals outlive the components that show them (see
+  // getOrCreateTerminal), so a theme flip has to reach every terminal already
+  // in the registry -- not just ones created afterwards. Held beside them so
+  // newly created terminals start in the right theme too.
+  theme: EffectiveTheme;
+}
 
-// The session's own live cwd, mirrored here from layoutState's
-// cwdBySessionId (kept current by the existing OSC 7 plumbing) via
-// setCwdForLinks below. A local mirror rather than reading the store
-// directly for two reasons: provideLinks is called synchronously per
-// rendered line and cannot await, and this module must never statically
-// import layoutState.ts, which already imports THIS module (a static
-// import back would be circular).
-const cwdBySessionId = new Map<string, string>();
+/// Every live terminal in the window, held where a hot reload cannot reach it.
+///
+/// A `Terminal` is not reconstructible from anything the frontend keeps: its
+/// scrollback exists only inside it. Vite re-executes this module for an edit
+/// anywhere in its dependency cone -- `backend.ts`, `layoutState.ts`,
+/// `ui/theme.ts` -- which under plain module-level `const`s handed every pane a
+/// BLANK terminal, left the old one detached, leaked its `pty-output` listener
+/// and reset the theme to dark. `hotState` parks the whole set on
+/// `import.meta.hot.data`, so the re-executed module adopts the terminals the
+/// previous one built and the panes never notice.
+///
+/// Deliberately not reached by a real page load: `import.meta.hot` is
+/// undefined in the bundled app, and a reload gets a fresh realm and an empty
+/// `data` bag either way. A reload genuinely HAS no terminals to adopt -- that
+/// is what `restoreScreen` is for.
+const live = hotState<LiveState>(
+  "terminalRegistry",
+  () => ({
+    registry: new Map(),
+    pendingUnlisten: new Map(),
+    pendingListen: new Map(),
+    restored: new Set(),
+    cwdBySessionId: new Map(),
+    theme: "dark",
+  }),
+  import.meta.hot?.data
+);
+
+const registry = live.registry;
+const pendingUnlisten = live.pendingUnlisten;
+const pendingListen = live.pendingListen;
+const restored = live.restored;
+const cwdBySessionId = live.cwdBySessionId;
 
 function cwdForSession(sessionId: string): string {
   return cwdBySessionId.get(sessionId) ?? "";
@@ -121,7 +162,7 @@ export function getOrCreateTerminal(sessionId: string): RegistryEntry {
   const existing = registry.get(sessionId);
   if (existing) return existing;
 
-  const term = new Terminal({ convertEol: false, theme: xtermTheme(currentTheme) });
+  const term = new Terminal({ convertEol: false, theme: xtermTheme(live.theme) });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(
@@ -160,14 +201,8 @@ export function getOrCreateTerminal(sessionId: string): RegistryEntry {
   return entry;
 }
 
-/// Terminals outlive the components that show them (see
-/// getOrCreateTerminal), so a theme flip has to reach every terminal
-/// already in the registry -- not just ones created afterwards. Held at
-/// module level so newly created terminals start in the right theme too.
-let currentTheme: EffectiveTheme = "dark";
-
 export function applyTerminalTheme(theme: EffectiveTheme): void {
-  currentTheme = theme;
+  live.theme = theme;
   const next = xtermTheme(theme);
   for (const entry of registry.values()) {
     entry.term.options.theme = next;
@@ -182,12 +217,16 @@ export function getTerminal(sessionId: string): Terminal | undefined {
 /// frontend load.
 ///
 /// A `Terminal` holds its contents in the webview and nothing else does, so a
-/// frontend reload -- every edit under `tauri dev` -- comes up with an empty
-/// one. The daemon does not re-send anything on its own: `Attach` happens once
-/// per app PROCESS. What arrives next is the running program's next repaint
-/// DELTA, which is only meaningful against the screen this terminal no longer
-/// has, and it paints a broken frame. Asking for the screen is what closes
-/// that gap.
+/// frontend reload -- a window reload, or relaunching the app -- comes up with
+/// an empty one. The daemon does not re-send anything on its own: `Attach`
+/// happens once per app PROCESS. What arrives next is the running program's
+/// next repaint DELTA, which is only meaningful against the screen this
+/// terminal no longer has, and it paints a broken frame. Asking for the screen
+/// is what closes that gap.
+///
+/// A hot reload under `tauri dev` is NOT one of those events any more: `live`
+/// carries the terminals across the module's re-execution, so the entry this
+/// runs beside is already painted and `restored` already holds the id.
 ///
 /// Awaits the listener before asking, or the push it triggers would be emitted
 /// to nobody. Best-effort otherwise: a daemon too old to have a screen model
