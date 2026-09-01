@@ -710,9 +710,13 @@ async function runTick(workspaceId: string): Promise<boolean> {
   // sessionExits and never will be -- the daemon's live status is the
   // only thing that says its turn is over (see agentTurnEnded).
   const statuses = new Map(Object.entries(get(layoutState).sessionStatusById));
+  // A session the daemon put back as a bare shell is IN `live` above --
+  // same id, back in the layout -- so without this the scheduler waits on
+  // a shell that will never finish a card. See nextActions rule 3c.
+  const interrupted = get(layoutState).interruptedSessionIds;
   return await executeActions(
     workspaceId,
-    nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits), statuses)
+    nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits), statuses, interrupted)
   );
 }
 

@@ -435,6 +435,38 @@ this sweep such a step has no tick that would ever correct it, and §2.2's
 guard then refuses every plan write that drops it: the rail becomes
 impossible to edit or delete.
 
+**When the DAEMON died too.** §4.5 as written covers the app dying while
+the daemon lived — sessions survive, so absence from `liveSessionIds` is
+the whole signal. A daemon that was killed (a power cut, an OS restart,
+or the Restart daemon button the app itself tells people to press after a
+protocol bump) leaves a strictly harder case: the daemon puts every
+session back under its ORIGINAL id, so the step's session IS in
+`liveSessionIds`, and rule 3 can never speak for it.
+
+What comes back is not the run. `SessionManager::recover` stamps every
+registry row with the daemon lifetime that created it, and a row it
+inherited is one no process is hosting any more; if that row carried a
+command — which for every agent gavin launches is the entire prompt — the
+command is NOT re-run. The session returns as a bare shell in the same
+cwd, marked `interrupted`, and that fact reaches the app as
+`SessionSummary.interrupted` and the `SessionInterrupted` push
+(`layoutState.interruptedSessionIds`).
+
+So `nextActions` takes that set as its last argument and gains **rule
+3c**: a `running` step whose session was interrupted takes a `stall` with
+its own reason — *interrupted — the daemon restarted, so this step's
+agent is gone* — unless its card already reached the done column, which
+outranks it exactly as it does for a dead session. Rule 5 turns the stall
+into a paused rail, which is the point: the decision goes to the human
+rather than gavin silently re-running work in a checkout that already
+carries the first attempt's edits. Whoever does want exactly that presses
+Resume, which retries a stalled step (rule 2) — one attempt, asked for.
+
+3c is checked **before** 3b. An interrupted agent-tool step's session
+reports `idle`, because a shell sitting at a prompt is idle, and
+`agentTurnEnded` would read that as a finished turn and mark the step
+done.
+
 ---
 
 ## 5. Conflicts

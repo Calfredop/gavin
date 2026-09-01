@@ -400,34 +400,52 @@ function agentTurnEnded(
   return sessionStatuses.get(sessionId) === "idle";
 }
 
+/// The stall reason for a step whose session was interrupted. A distinct
+/// sentence rather than a reuse of rule 3's, because it names a
+/// different fact: the agent did not exit and did not stop talking, it
+/// was killed with the daemon, and what holds its session id now is a
+/// bare shell.
+const INTERRUPTED_STEP_REASON = "interrupted — the daemon restarted, so this step's agent is gone";
+
 /// The verdict on a step whose session is over. One spelling, because
 /// two paths need it: rule 3 inside a running rail, and the
 /// reconciliation pass over a rail that is not running.
 ///
 /// A card that reached the done column outranks the exit -- an agent
-/// that finished the card and then quit counts as done, not stalled.
+/// that finished the card and then quit counts as done, not stalled. That
+/// holds for an interrupted session too: work that reached the done
+/// column before the daemon died is finished work, and re-running it is
+/// exactly what this whole change exists to stop.
+///
+/// `interrupted` replaces the REASON on any stall this produces, and
+/// nothing else. The killed session witnessed no exit code and reported
+/// no status, so every route through here would otherwise describe it as
+/// something it was not -- "exited", or "ended while gavin was not
+/// watching", when in fact it was killed underneath a watching app.
 function deadSessionAction(
   step: Step,
   cardStatus: string | null,
   doneSlug: string | null,
   doneName: string,
   toolLabel: string,
-  exitCode: number | undefined
+  exitCode: number | undefined,
+  interrupted = false
 ): Action {
+  const stall = (reason: string): Action => ({
+    kind: "stall",
+    stepId: step.id,
+    reason: interrupted ? INTERRUPTED_STEP_REASON : reason,
+  });
   if (isToolStep(step)) {
     const outcome = toolStepOutcome(exitCode, toolLabel);
     return outcome.kind === "markDone"
       ? { kind: "markDone", stepId: step.id }
-      : { kind: "stall", stepId: step.id, reason: outcome.reason };
+      : stall(outcome.reason);
   }
   if (doneSlug && cardStatus !== null && slugStatus(cardStatus) === doneSlug) {
     return { kind: "markDone", stepId: step.id };
   }
-  return {
-    kind: "stall",
-    stepId: step.id,
-    reason: `agent exited before the card reached ${doneName}`,
-  };
+  return stall(`agent exited before the card reached ${doneName}`);
 }
 
 /// What a RUNNING step is waiting on, when it is waiting on a HUMAN
@@ -587,7 +605,14 @@ export function nextActions(
   /// The daemon's live status per session, for an AGENT tool step --
   /// whose session never exits, so no exit code above will ever describe
   /// it (see agentTurnEnded).
-  sessionStatuses: Map<string, SessionStatus> = new Map()
+  sessionStatuses: Map<string, SessionStatus> = new Map(),
+  /// The sessions whose run was killed with a previous daemon
+  /// (`layoutState.interruptedSessionIds`). Such a session is still in
+  /// `liveSessionIds` -- it is back in the layout, with its old id -- so
+  /// without this the scheduler sees a live session and waits forever on
+  /// a bare shell. Empty by default: a caller that does not know reads
+  /// as "nothing was interrupted", which is the pre-v20 behaviour.
+  interruptedSessionIds: ReadonlySet<string> = new Set()
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
@@ -620,7 +645,8 @@ export function nextActions(
         for (const step of stage.steps) {
           if (stepStateOf(orch, step.id) !== "running") continue;
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
-          if (sessionId && liveSessionIds.has(sessionId)) {
+          const wasInterrupted = sessionId !== null && interruptedSessionIds.has(sessionId);
+          if (sessionId && liveSessionIds.has(sessionId) && !wasInterrupted) {
             // A LIVE session is normally nothing to write about here --
             // except an agent tool's, which is live precisely because it
             // finished (agentTurnEnded). That is the same stale
@@ -638,7 +664,8 @@ export function nextActions(
               doneSlug,
               done?.name ?? "the done column",
               toolName.get(step.toolId as string) ?? "the tool",
-              sessionId ? exitCodes.get(sessionId) : undefined
+              sessionId ? exitCodes.get(sessionId) : undefined,
+              wasInterrupted
             )
           );
         }
@@ -744,6 +771,42 @@ export function nextActions(
         // whole verdict (tools spec T5).
         if (state === "running") {
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
+          // Rule 3c -- the session was INTERRUPTED: killed with a
+          // previous daemon, and back in the layout as a bare shell with
+          // the same id. It is therefore in `liveSessionIds` and the two
+          // branches below can never speak for it -- the scheduler saw a
+          // live session and waited on a shell that will never finish
+          // anything. Checked before 3b for the same reason 3b is checked
+          // before 3: an interrupted agent tool's session reads `idle`
+          // (it IS a shell at a prompt), which agentTurnEnded would call
+          // a finished turn and mark the step DONE.
+          //
+          // A stall rather than a relaunch, deliberately: rule 5 turns it
+          // into a paused rail, which puts the decision in front of the
+          // human instead of silently re-running work in a checkout that
+          // already carries the first attempt's edits. Whoever does want
+          // exactly that presses Resume, which retries a stalled step
+          // (rule 2) -- one attempt, asked for.
+          const wasInterrupted = sessionId !== null && interruptedSessionIds.has(sessionId);
+          if (wasInterrupted) {
+            const action = deadSessionAction(
+              step,
+              cardStatus,
+              doneSlug,
+              done?.name ?? "the done column",
+              toolName.get(step.toolId as string) ?? "the tool",
+              undefined,
+              true
+            );
+            actions.push(action);
+            if (action.kind === "markDone") {
+              simulated.set(step.id, "done");
+              break stepBody;
+            }
+            simulated.set(step.id, "stalled");
+            stalled = true;
+            break stepBody;
+          }
           // Rule 3b -- an agent tool step whose session is still LIVE but
           // whose turn is over. Checked first: its session will never
           // die, so the dead-session branch below can never speak for it.

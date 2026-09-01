@@ -797,6 +797,89 @@ describe("nextActions", () => {
     const actions = nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" }), plan("b.md")]), [], new Set());
     expect(actions).toEqual([{ kind: "markDone", stepId: "t1" }]);
   });
+  // ---- An INTERRUPTED session (spec §4.5, extended) -------------------
+  // The daemon puts a killed session back as a bare shell under its
+  // ORIGINAL id, so the step's session is in `liveSessionIds` and every
+  // rule above reads it as an agent still working. Without rule 3c the
+  // rail waits on a shell forever.
+
+  const INTERRUPTED_REASON = "interrupted — the daemon restarted, so this step's agent is gone";
+
+  it("stalls a running step whose session was interrupted, even though it is still live", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set(["s1"]), null, new Map(), new Map(), new Set(["s1"]))
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: INTERRUPTED_REASON }]);
+  });
+
+  it("marks an interrupted step done when its card reached the done column first", () => {
+    // The agent finished the card and THEN the daemon died. Re-running
+    // finished work is the whole thing this change exists to stop.
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([plan("a.md", { status: "Done" })]),
+        [],
+        new Set(["s1"]),
+        null,
+        new Map(),
+        new Map(),
+        new Set(["s1"])
+      )
+    ).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+  });
+
+  it("stalls an interrupted AGENT tool step instead of calling its idle shell a finished turn", () => {
+    // agentTurnEnded reads `idle` as "the turn is over" -- and a bare
+    // shell sitting at a prompt is idle. Rule 3c is checked first
+    // precisely so an interrupted agent tool is not marked DONE.
+    const r = toolRail("r1", [[["t1", "builtin:commit"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([]),
+        [],
+        new Set(["s1"]),
+        TOOLS,
+        new Map(),
+        new Map([["s1", "idle" as SessionStatus]]),
+        new Set(["s1"])
+      )
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: INTERRUPTED_REASON }]);
+  });
+
+  it("stalls an interrupted step on a rail that is not running, so the rail stays editable", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = notRunning(r, [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set(["s1"]), null, new Map(), new Map(), new Set(["s1"]))
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: INTERRUPTED_REASON }]);
+  });
+
+  it("says nothing about a step whose session is live and was never interrupted", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([plan("a.md")]),
+        [],
+        new Set(["s1"]),
+        null,
+        new Map(),
+        new Map(),
+        new Set(["some-other-session"])
+      )
+    ).toEqual([]);
+  });
+
 
   it("judges a dead tool step on a paused rail by its exit code", () => {
     const r = toolRail("r1", [[["t1", "builtin:push"]]]);
