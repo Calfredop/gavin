@@ -134,6 +134,29 @@ export function composeKeyAction(
   return field === "title" ? "commit" : "newline";
 }
 
+/// The same chord, heard at the WINDOW instead of in a field. Only the
+/// fields can each be given a handler, and focus in this modal is just
+/// as often somewhere that has none: a kind chip, Attach, Cancel, Add
+/// card -- or nowhere at all, since clicking the panel's own padding
+/// blurs the textarea and sends the keystroke to the document. The
+/// chord is the composer's, not the focused control's, so it is bound
+/// at the window too (the layer Modal already listens on for Escape)
+/// and this decides whether that listener may act.
+///
+/// A field that has already filed the card called preventDefault, and
+/// the very same event reaches the window a moment later on its way up:
+/// acting on it again would file two cards from one keystroke. A bare
+/// Enter is never the window's -- on a button it is that button's click,
+/// in a textarea it is a newline.
+export function composeWindowKeyAction(
+  e: ChordEvent & { isComposing?: boolean; defaultPrevented?: boolean },
+  isMac: boolean
+): "commit" | null {
+  if (e.defaultPrevented) return null;
+  if (e.key !== "Enter" || e.isComposing) return null;
+  return matchesChord(e, COMPOSE_COMMIT_CHORD, isMac) ? "commit" : null;
+}
+
 /// The footer hint for the field that currently holds focus. It used to
 /// be one fixed string promising "Enter adds" everywhere, which was true
 /// of the title and a lie in the body -- the field where Enter has to

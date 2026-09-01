@@ -3,6 +3,7 @@ import {
   buildCreatePlanArgs,
   composeHint,
   composeKeyAction,
+  composeWindowKeyAction,
   defaultComposeStatus,
   railToApply,
   COMPOSE_KINDS,
@@ -160,6 +161,56 @@ describe("composeKeyAction", () => {
   it("leaves an IME candidate's Enter alone", () => {
     expect(composeKeyAction("title", press({ isComposing: true }), true)).toBeNull();
     expect(composeKeyAction("title", press({ isComposing: true, metaKey: true }), true)).toBeNull();
+  });
+});
+
+describe("composeWindowKeyAction", () => {
+  const press = (over: Partial<Record<string, unknown>> = {}) => ({
+    key: "Enter",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...over,
+  }) as Parameters<typeof composeWindowKeyAction>[0];
+
+  it("files the card from wherever focus is -- a chip, a button, nowhere", () => {
+    // The reported bug: only the fields carried a handler, so the chord
+    // did nothing while a kind chip, Add card, or the document held focus.
+    expect(composeWindowKeyAction(press({ metaKey: true }), true)).toBe("commit");
+    expect(composeWindowKeyAction(press({ ctrlKey: true }), false)).toBe("commit");
+  });
+
+  it("does not file it twice when a field already did", () => {
+    // The field handler calls preventDefault, then the same event
+    // reaches the window on its way up.
+    expect(composeWindowKeyAction(press({ metaKey: true, defaultPrevented: true }), true)).toBeNull();
+  });
+
+  it("leaves a bare Enter alone -- that belongs to whatever has focus", () => {
+    // Enter on the Add card button is a click, and in a textarea a
+    // newline; neither is the window's to take.
+    expect(composeWindowKeyAction(press(), true)).toBeNull();
+    expect(composeWindowKeyAction(press({ shiftKey: true }), true)).toBeNull();
+  });
+
+  it("wants the platform's own chord, not the other one", () => {
+    expect(composeWindowKeyAction(press({ ctrlKey: true }), true)).toBeNull();
+    expect(composeWindowKeyAction(press({ metaKey: true }), false)).toBeNull();
+  });
+
+  it("does not steal the shifted or alted chord", () => {
+    expect(composeWindowKeyAction(press({ metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(composeWindowKeyAction(press({ metaKey: true, altKey: true }), true)).toBeNull();
+  });
+
+  it("ignores every key that is not Enter", () => {
+    expect(composeWindowKeyAction(press({ key: "n", metaKey: true }), true)).toBeNull();
+    expect(composeWindowKeyAction(press({ key: "Escape" }), true)).toBeNull();
+  });
+
+  it("leaves an IME candidate's Enter alone", () => {
+    expect(composeWindowKeyAction(press({ isComposing: true, metaKey: true }), true)).toBeNull();
   });
 });
 

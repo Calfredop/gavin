@@ -25,6 +25,7 @@
     buildCreatePlanArgs,
     composeHint,
     composeKeyAction,
+    composeWindowKeyAction,
     railToApply,
     COMPOSE_KINDS,
     DEFAULT_COMPOSE_KIND,
@@ -247,7 +248,24 @@
     e.preventDefault();
     void commit(true);
   }
+
+  // ...and the same chord once more at the window, because a handler per
+  // field only covers the controls that have one. Focus lands on a kind
+  // chip, on Add card, or on nothing at all -- clicking the panel's own
+  // padding blurs the textarea -- and the chord has to file the card
+  // from any of them. Escape already works this way (Modal listens at
+  // the window for it); the modal is the thing holding the keys, not
+  // whichever control the caret happens to sit in. The handlers above
+  // preventDefault, which is what keeps the same keystroke from being
+  // filed a second time here on its way up.
+  function handleWindowKeydown(e: KeyboardEvent): void {
+    if (composeWindowKeyAction(e, isMac) !== "commit") return;
+    e.preventDefault();
+    void commit(true);
+  }
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <Modal {onClose}>
   <div class="head">
