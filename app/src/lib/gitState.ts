@@ -193,6 +193,24 @@ export function currentBranch(state: GitViewState) {
   return state.refs?.branches.find((b) => b.current) ?? null;
 }
 
+/// The button always names how many staged files it is about to fold in.
+/// Amend used to print bare "Amend", hiding the count in the one mode that
+/// also rewrites HEAD's tree -- so in a shared checkout anything another
+/// session had staged rode along unannounced.
+export function commitButtonLabel(state: GitViewState): string {
+  const staged = state.status?.staged.length ?? 0;
+  return `${state.commit.amend ? "Amend" : "Commit"} (${staged})`;
+}
+
+/// True when amending would rewrite a commit that is already on the remote:
+/// an upstream exists and nothing local sits ahead of it. Legal, but it
+/// guarantees a diverged branch and a refused push, so the box says so.
+export function amendRewritesPushed(state: GitViewState): boolean {
+  if (!state.commit.amend) return false;
+  const branch = currentBranch(state);
+  return !!branch?.upstream && branch.ahead === 0;
+}
+
 /// Which remote Fetch/Push target: the session override, else the current
 /// branch's upstream remote, else `origin`, else the first remote.
 export function effectiveRemote(state: GitViewState): string | null {

@@ -977,6 +977,16 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Amend pre-fills HEAD's message when the draft is empty and restores the draft when unticked",
       },
       {
+        id: "git-amend-count",
+        text: "Ticking Amend keeps the staged count on the button — “Amend (N)”, not bare “Amend”",
+        hint: "Stage two files, tick Amend: the button must read Amend (2). The count is what reveals files another session left staged.",
+      },
+      {
+        id: "git-amend-pushed-warn",
+        text: "Amending a commit already on the remote shows the “rewrites pushed history” warning, and still allows it",
+        hint: "On a branch with ahead=0 vs its upstream, tick Amend: the warning names the upstream. Commit one local commit first and it must disappear.",
+      },
+      {
         id: "git-not-a-repo",
         text: "A rooted non-repo workspace shows “Initialize repository”; clicking it turns the tab live",
       },

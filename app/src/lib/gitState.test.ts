@@ -102,6 +102,7 @@ import {
 } from "./layoutState";
 import {
   gitStore, initialState, applyStatus, followSelection, splitMessage, joinMessage, canCommit,
+  commitButtonLabel, amendRewritesPushed,
   ensureGitView, refresh, select, run, stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
   effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
   switchWorktree, mergeBack, rootPathOf, removeWorktree,
@@ -186,6 +187,39 @@ describe("commit message helpers", () => {
     expect(canCommit({ ...base, status: { unstaged: [], staged: [] } })).toBe(false);
     expect(canCommit({ ...base, status: { unstaged: [], staged: [] }, commit: { ...base.commit, amend: true } })).toBe(true);
     expect(canCommit({ ...base, busy: "Commit" })).toBe(false);
+  });
+});
+
+describe("amend safety", () => {
+  const base = { ...initialState("/r"), repo, status, refs: snapshot, commit: { summary: "x", description: "", amend: false } };
+
+  it("shows the staged count on the amend button, not just on commit", () => {
+    expect(commitButtonLabel(base)).toBe("Commit (2)");
+    expect(commitButtonLabel({ ...base, commit: { ...base.commit, amend: true } })).toBe("Amend (2)");
+  });
+
+  it("counts zero staged files on a message-only amend", () => {
+    const empty = { ...base, status: { unstaged: [], staged: [] }, commit: { ...base.commit, amend: true } };
+    expect(commitButtonLabel(empty)).toBe("Amend (0)");
+  });
+
+  it("flags an amend that would rewrite a commit already on the remote", () => {
+    const pushed = { ...snapshot, branches: [{ ...snapshot.branches[0], ahead: 0 }] };
+    expect(amendRewritesPushed({ ...base, refs: pushed, commit: { ...base.commit, amend: true } })).toBe(true);
+  });
+
+  it("stays quiet when the commit is local-only, unpushed, or amend is off", () => {
+    const pushed = { ...snapshot, branches: [{ ...snapshot.branches[0], ahead: 0 }] };
+    const amend = { ...base.commit, amend: true };
+    // ahead: 2 in the fixture -- HEAD is local-only, safe to amend
+    expect(amendRewritesPushed({ ...base, commit: amend })).toBe(false);
+    // no upstream at all -- nothing published to rewrite
+    const noUpstream = { ...snapshot, branches: [{ ...snapshot.branches[0], upstream: null, ahead: 0 }] };
+    expect(amendRewritesPushed({ ...base, refs: noUpstream, commit: amend })).toBe(false);
+    // amend unticked -- a normal commit adds, never rewrites
+    expect(amendRewritesPushed({ ...base, refs: pushed })).toBe(false);
+    // refs not loaded yet
+    expect(amendRewritesPushed({ ...base, refs: null, commit: amend })).toBe(false);
   });
 });
 
