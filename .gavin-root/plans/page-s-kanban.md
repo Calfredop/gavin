@@ -1,4 +1,5 @@
 ---
+order: 11264
 kind: task
 title: Page’s kanban
 status: To Do

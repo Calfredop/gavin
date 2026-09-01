@@ -1,4 +1,5 @@
 ---
+order: 12288
 kind: task
 title: App home optimizations
 status: To Do

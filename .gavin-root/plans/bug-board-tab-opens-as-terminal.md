@@ -1,4 +1,5 @@
 ---
+order: 1024
 kind: task
 title: [bug] a new board tab opens as a terminal
 status: To Do

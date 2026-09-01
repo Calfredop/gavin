@@ -1,4 +1,5 @@
 ---
+order: 7168
 kind: task
 title: Kanban new card
 status: To Do
