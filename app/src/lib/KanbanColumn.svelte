@@ -510,7 +510,9 @@
     font-size: 0.75em;
     padding: 4px 2px;
   }
-  :global(.run-all) {
+  /* Scoped ancestor first -- see BoardCard's .chevron for why a bare
+     :global class rule is an app-wide rule. */
+  .header :global(.run-all) {
     flex: 0 0 auto;
   }
   .run-all-count,

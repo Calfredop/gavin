@@ -453,7 +453,10 @@
     color: var(--warning-text);
     margin-left: auto;
   }
-  :global(.chevron) {
+  /* Scoped ancestor first: `.chevron` reaches IconButton's own element and
+     needs :global, but bare it would style every .chevron in the app (see
+     PlanTree for what that costs). */
+  .header :global(.chevron) {
     margin-left: auto;
   }
   .warning + :global(.chevron) {

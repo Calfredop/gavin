@@ -311,8 +311,17 @@
   .group-row:hover {
     background: var(--surface-raised);
   }
-  :global(.add),
-  :global(.split) {
+  /* Anchored to this tree's own rows, not left bare. `.add`/`.split` are
+     handed to IconButton as a prop, so they land on ITS element and the
+     scoping class never reaches them -- only :global can. But a bare
+     `:global(.split)` is an app-wide rule: it matched every .split in the
+     window, LayoutTree's own split container included, and rendered it at
+     opacity 0. A page with a split (or a board tab, which opens one) then
+     drew nothing at all -- correct geometry, invisible -- leaving only the
+     sidebar and the title bar on screen. `.file-row`/`.context-row` are
+     scoped, so prefixing them confines each rule to this component. */
+  .context-row :global(.add),
+  .file-row :global(.split) {
     margin-left: auto;
     opacity: 0;
   }
