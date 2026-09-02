@@ -6,6 +6,8 @@ import {
   touchesDisk,
   confirmationMatches,
   summaryLines,
+  stepTitle,
+  stepQuestion,
   DELETE_STEPS,
   type GavinFootprint,
   type DeleteAnswers,
@@ -15,6 +17,7 @@ const full: GavinFootprint = {
   root: "/repo",
   gavinRoot: { path: "/repo/.gavin-root", cards: 12, archived: 4 },
   skills: ["/repo/.claude/skills/gavin", "/repo/.claude/skills/gavin-orchestrate"],
+  agentFile: null,
   mcp: { path: "/repo/.mcp.json", serverKey: "gavin" },
   instructions: "/repo/CLAUDE.md",
   contexts: [
@@ -27,9 +30,21 @@ const bare: GavinFootprint = {
   root: "/repo",
   gavinRoot: null,
   skills: [],
+  agentFile: null,
   mcp: null,
   instructions: null,
   contexts: [],
+};
+
+/// The same workspace on the opencode profile: the skills live under a
+/// different root, and the profile installs an agent definition the
+/// hidden commit run launches against.
+const opencode: GavinFootprint = {
+  ...full,
+  skills: ["/repo/.opencode/skills/gavin", "/repo/.opencode/skills/gavin-orchestrate"],
+  agentFile: "/repo/.opencode/agent/gavin-commit.md",
+  mcp: { path: "/repo/opencode.json", serverKey: "gavin" },
+  instructions: "/repo/AGENTS.md",
 };
 
 describe("applicableSteps", () => {
@@ -51,11 +66,37 @@ describe("applicableSteps", () => {
     ]);
   });
 
+  // The screen answers for skills AND the agent definition, so either
+  // half on its own has to keep it: a profile could install one and not
+  // the other, and a scanned file with no screen is a file the wizard
+  // silently leaves behind.
+  it("keeps the skills screen for an agent file with no skills beside it", () => {
+    expect(
+      applicableSteps({ ...bare, agentFile: "/repo/.opencode/agent/gavin-commit.md" })
+    ).toEqual(["skills", "rows", "confirm"]);
+  });
+
   // Neither is a question about the filesystem, so neither can be
   // scanned away.
   it("always keeps the daemon-rows and confirmation screens", () => {
     expect(applicableSteps(bare)).toContain("rows");
     expect(applicableSteps(bare)).toContain("confirm");
+  });
+});
+
+describe("the skills screen's copy", () => {
+  // The heading and the question have to describe the list the screen
+  // actually renders. "Agent skills" over a permission-grant file is a
+  // heading that does not match its own contents.
+  it("names only skills where that is all there is", () => {
+    expect(stepTitle("skills", full)).toBe("Agent skills");
+    expect(stepQuestion("skills", full)).toContain("skill files");
+    expect(stepQuestion("skills", full)).not.toContain("agent definition");
+  });
+
+  it("names the agent definition too where the profile installs one", () => {
+    expect(stepTitle("skills", opencode)).toBe("Agent files");
+    expect(stepQuestion("skills", opencode)).toContain("agent definition");
   });
 });
 
@@ -92,6 +133,26 @@ describe("plannedRemovals", () => {
       "/repo/api/.gavin",
       "/elsewhere/lib/.gavin",
     ]);
+  });
+
+  // One answer, because one screen asked. The agent file goes last,
+  // matching the order that screen listed it in.
+  it("trashes the agent definition with the skills that share its screen", () => {
+    const answers = { ...defaultAnswers(opencode), contexts: [] };
+    expect(plannedRemovals(opencode, answers).trash).toEqual([
+      "/repo/.gavin-root",
+      "/repo/.opencode/skills/gavin",
+      "/repo/.opencode/skills/gavin-orchestrate",
+      "/repo/.opencode/agent/gavin-commit.md",
+    ]);
+  });
+
+  // Declining is the whole point of the screen: a workspace that keeps
+  // its agent file keeps a definition that still names gavin's grant,
+  // which is the user's call to make.
+  it("keeps the agent definition when the skills screen was declined", () => {
+    const answers = { ...defaultAnswers(opencode), skills: false, contexts: [] };
+    expect(plannedRemovals(opencode, answers).trash).toEqual(["/repo/.gavin-root"]);
   });
 
   // A shared config file is somebody else's too: gavin's entry comes

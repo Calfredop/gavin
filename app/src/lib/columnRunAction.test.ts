@@ -61,10 +61,13 @@ describe("columnRunTargets", () => {
     card("live"),
     card("exited"),
     card("interrupted"),
+    card("failed"),
     card("plan", "plan"),
   ];
   const state = (id: string): CardSessionState =>
-    id === "live" || id === "exited" || id === "interrupted" ? (id as CardSessionState) : "none";
+    id === "live" || id === "exited" || id === "interrupted" || id === "failed"
+      ? (id as CardSessionState)
+      : "none";
 
   it("start and run skip notes and every bound card, whatever became of its session", () => {
     for (const mode of ["start", "run"] as const) {
@@ -72,11 +75,12 @@ describe("columnRunTargets", () => {
     }
   });
 
-  it("resume adds the cards whose session exited OR was interrupted — that is what it is for", () => {
+  it("resume adds the cards whose session exited, was interrupted, or broke — that is what it is for", () => {
     expect(columnRunTargets(cards, "resume", state).map((c) => c.id)).toEqual([
       "free",
       "exited",
       "interrupted",
+      "failed",
       "plan",
     ]);
   });
@@ -89,7 +93,7 @@ describe("columnRunTargets", () => {
 });
 
 describe("cardSessionState", () => {
-  function state(tabs: string[], interrupted: string[] = []) {
+  function state(tabs: string[], interrupted: string[] = [], failed: Record<string, string> = {}) {
     return {
       workspaces: [
         {
@@ -108,6 +112,7 @@ describe("cardSessionState", () => {
       ],
       activeWorkspaceId: "ws-1",
       interruptedSessionIds: new Set(interrupted),
+      failureReasonById: failed,
     };
   }
 
@@ -127,6 +132,30 @@ describe("cardSessionState", () => {
 
   it("says exited for a binding whose session no tree holds", () => {
     expect(cardSessionState(state([]), { sessionId: "s1" })).toBe("exited");
+  });
+
+  // The same bug with a different cause of death: the process is still
+  // there and still at its prompt, so every check said "live" for a run
+  // that had broken. Jumping to it would present it as work in progress.
+  it("says failed for a binding whose agent broke", () => {
+    expect(
+      cardSessionState(state(["s1"], [], { s1: "API Error: x" }), { sessionId: "s1" })
+    ).toBe("failed");
+  });
+
+  // Both can only happen if the daemon restarted and then the shell's
+  // replacement broke; the failure is the newer fact, and the only one
+  // of the two with a resumable conversation behind it.
+  it("prefers failed over interrupted when a session is both", () => {
+    expect(
+      cardSessionState(state(["s1"], ["s1"], { s1: "API Error: x" }), { sessionId: "s1" })
+    ).toBe("failed");
+  });
+
+  // `gone` first, unchanged: nothing is offered to resume a tab that is
+  // not there.
+  it("still says exited for a failed session whose tab has gone", () => {
+    expect(cardSessionState(state([], [], { s1: "API Error: x" }), { sessionId: "s1" })).toBe("exited");
   });
 });
 

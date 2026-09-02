@@ -3,9 +3,7 @@
     FileText,
     ListChecks,
     StickyNote,
-    Check,
     CheckCheck,
-    CircleAlert,
     RotateCw,
     X,
     Bot,
@@ -13,12 +11,12 @@
     FileCode2,
     Zap,
     Sliders,
-    CirclePause,
-    MessageCircleQuestionMark,
   } from "@lucide/svelte";
   import { tooltip } from "./tooltip";
   import { highlightedConflict } from "./orchestrationState";
   import IconButton from "./ui/IconButton.svelte";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { attentionIndicator, stepIndicator } from "./ui/indicators";
   import { describeOverrides, toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
   import { attentionTip } from "./orchestration";
@@ -39,6 +37,10 @@
     toolParams: Record<string, string>;
     state: StepState;
     reason: string | null;
+    /// What gavin did to this run without being asked, or null. Shown on
+    /// a step that is RUNNING again after a break, which would otherwise
+    /// be indistinguishable from one that never broke.
+    resumeNote?: string | null;
     /// What this RUNNING step is waiting on a human for, or null when it
     /// is simply working (see stepAttentions). Never a state of its own:
     /// the step is still `running` and the rail is still going, which is
@@ -77,6 +79,7 @@
     toolParams,
     state,
     reason,
+    resumeNote = null,
     attention,
     doneColumnName,
     badges,
@@ -120,6 +123,9 @@
   const iconTip = $derived(tool ? toolKindLabel(tool.kind) : undefined);
 </script>
 
+<!-- The chip's own bubble says only what the chip IS: the stall reason
+     and the attention text now live on the badges that state those
+     facts, rather than being repeated by the row around them. -->
 <div
   data-orch-step={stepId}
   class="chip {state}"
@@ -130,7 +136,7 @@
   class:dimmed
   class:attention-asking={attention === "asking"}
   class:attention-ended={attention === "turn-ended"}
-  use:tooltip={state === "stalled" && reason ? reason : attentionTitle || iconTip}>
+  use:tooltip={resumeNote ?? iconTip}>
   <Icon size={13} />
   <span class="title">{title}</span>
   {#if overrides}
@@ -149,15 +155,25 @@
     >{n}</span>
   {/each}
   <!-- Beside the run state, not instead of it: the step really is still
-       running, and a mark that replaced the ring would read as a stop. -->
-  {#if attention === "asking"}
-    <MessageCircleQuestionMark size={13} />
-  {:else if attention === "turn-ended"}
-    <CirclePause size={13} />
+       running, and a mark that replaced it would read as a stop. The two
+       are different axes -- what the RAIL is doing with this step, and
+       what the AGENT in it wants -- so they are two badges, and each is
+       the same badge that fact wears everywhere else in the app. -->
+  {#if attention}
+    <StatusBadge indicator={attentionIndicator(attention)} size={13} tip={attentionTitle} />
   {/if}
-  {#if state === "done"}<Check size={13} />{/if}
+  <!-- Every state, including the two that used to draw nothing at all.
+       `running` was an accent ring and no glyph, so the state a rail
+       exists to show was the one carried by colour alone; `pending` was
+       blank, which is indistinguishable from a chip that simply has no
+       state. A muted square per queued step also gives the whole rail a
+       progress column to read down. -->
+  <StatusBadge
+    indicator={stepIndicator(state)}
+    size={13}
+    tip={state === "stalled" && reason ? `Step · stalled: ${reason}` : undefined}
+  />
   {#if state === "stalled"}
-    <CircleAlert size={13} />
     <IconButton icon={RotateCw} label="Retry" size={13} onclick={onRetry} />
   {/if}
   {#if state === "running" || state === "stalled"}

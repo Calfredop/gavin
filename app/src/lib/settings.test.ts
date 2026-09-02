@@ -18,9 +18,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"] },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "", modelFlag: "--model", models: [] },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "", modelFlag: "", models: [] },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: "codex-rollout" },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArgs: null, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: null },
 ];
 
 describe("normalizeColor", () => {
@@ -200,13 +200,19 @@ describe("resolveAgentConfig", () => {
     const r = resolveAgentConfig({ profile: "codex", file: "NOTES.md", command: "codex --x" }, PROFILES, {});
     expect(r).toEqual({
       profileId: "codex",
+      label: "Codex CLI",
       file: "NOTES.md",
       command: "codex --x",
       mcpSupported: true,
       mcpConfigFile: ".codex/config.toml",
       headlessArgs: "",
+      promptArgs: "",
       model: "",
       launchCommand: "codex --x",
+      failurePatterns: [],
+      failureCauses: [],
+      sessionIdArgs: "",
+      resumeArgs: "",
     });
   });
 
@@ -218,10 +224,13 @@ describe("resolveAgentConfig", () => {
 
   it("falls back to claude-code for a missing or unknown profile", () => {
     expect(resolveAgentConfig(null, PROFILES, {})).toEqual({
-      profileId: "claude-code", file: "CLAUDE.md", command: "claude",
+      profileId: "claude-code", label: "Claude Code", file: "CLAUDE.md", command: "claude",
       mcpSupported: true, mcpConfigFile: ".mcp.json",
-      headlessArgs: '-p --allowedTools "Bash(git *)" --',
+      headlessArgs: '-p --allowedTools "Bash(git *)" --', promptArgs: "",
       model: "", launchCommand: "claude",
+      failurePatterns: ["API Error:"],
+      failureCauses: [{ pattern: "/login", cause: "auth" }],
+      sessionIdArgs: "--session-id", resumeArgs: "--resume",
     });
     expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES, {}).profileId).toBe(
       "claude-code"
@@ -288,17 +297,44 @@ describe("resolveAgentConfig", () => {
     expect(r.model).toBe("opus");
   });
 
+  // The profile table is fetched asynchronously and its failure is
+  // swallowed, so an empty one is a state the app really reaches. Every
+  // other field already answers it by falling back to claude-code's
+  // literals; the prompt convention has to fall back WITH the command,
+  // or the resolver hands back `claude` and denies it takes a prompt --
+  // which would block every card run in the app.
+  it("falls back to the bare positional when the table has not loaded", () => {
+    const r = resolveAgentConfig(null, [], {});
+    expect(r.command).toBe("claude");
+    expect(r.promptArgs).toBe("");
+  });
+
+  // A row that is THERE and says null keeps its null: the fallback is
+  // for an absent table, never between two rows.
+  it("never lends one profile's prompt convention to another", () => {
+    const r = resolveAgentConfig({ profile: "custom", file: null, command: "my-agent" }, PROFILES, {});
+    expect(r.promptArgs).toBeNull();
+  });
+
   it("keeps custom usable only through its explicit values", () => {
     const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES, {});
     expect(r).toEqual({
       profileId: "custom",
+      label: "Custom…",
       file: "RULES.md",
       command: "my-agent",
       mcpSupported: false,
       mcpConfigFile: "",
       headlessArgs: "",
+      // Null, not "": an unfilled custom profile takes no prompt, which
+      // is a different answer from "its prompt is the bare positional".
+      promptArgs: null,
       model: "",
       launchCommand: "my-agent",
+      failurePatterns: [],
+      failureCauses: [],
+      sessionIdArgs: "",
+      resumeArgs: "",
     });
     // Custom with nothing filled in still resolves to something safe.
     const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
@@ -316,6 +352,39 @@ describe("resolveAgentConfig", () => {
     const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
     expect(bare.command).toBe("claude");
     expect(bare.headlessArgs).toBe("");
+  });
+
+  // Same posture as the headless argv above, and the same reason: these
+  // three describe the BINARY. Claude Code's `--session-id` on somebody
+  // else's agent is garbage in its argv, and its error text on somebody
+  // else's screen would paint healthy sessions as broken.
+  it("takes the failure and resume argv from the effective profile only", () => {
+    const claude = resolveAgentConfig(null, PROFILES, {});
+    expect(claude.failurePatterns).toEqual(["API Error:"]);
+    expect(claude.sessionIdArgs).toBe("--session-id");
+    expect(claude.resumeArgs).toBe("--resume");
+    const codex = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {});
+    expect(codex.failurePatterns).toEqual([]);
+    expect(codex.resumeArgs).toBe("");
+    // A bare `custom` borrows claude's COMMAND and none of its argv.
+    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
+    expect(bare.command).toBe("claude");
+    expect(bare.failurePatterns).toEqual([]);
+    expect(bare.sessionIdArgs).toBe("");
+  });
+
+  // An overridden `command` is nearly always a wrapper or an absolute
+  // path to the SAME binary, so it keeps the profile's argv -- losing
+  // failure detection for everyone who pins a path would be the worse
+  // failure of the two.
+  it("keeps the profile's argv when only the command is overridden", () => {
+    const r = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: "/opt/bin/claude" },
+      PROFILES,
+      {}
+    );
+    expect(r.failurePatterns).toEqual(["API Error:"]);
+    expect(r.sessionIdArgs).toBe("--session-id");
   });
 
   it("gives custom MCP support the moment a config file is named for it", () => {

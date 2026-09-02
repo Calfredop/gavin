@@ -134,7 +134,13 @@ describe("closablesForArchive", () => {
 
 describe("archiveClosePrompt", () => {
   it("names the card count and the sessions it costs", () => {
-    expect(archiveClosePrompt(1, 1)).toBe("Archive this card? 1 running agent session will end.");
-    expect(archiveClosePrompt(3, 2)).toBe("Archive these 3 cards? 2 running agent sessions will end.");
+    expect(archiveClosePrompt(1, 1)).toEqual({
+      title: "Archive this card?",
+      lines: ["1 running agent session will end."],
+    });
+    expect(archiveClosePrompt(3, 2)).toEqual({
+      title: "Archive these 3 cards?",
+      lines: ["2 running agent sessions will end."],
+    });
   });
 });

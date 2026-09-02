@@ -4,6 +4,7 @@
     renameWorkspace,
     setWorkspaceColor,
     setWorkspaceFlag,
+    setWorkspacePause,
     setAgentField,
     setPrdPath,
     agentProfilesStore,
@@ -40,12 +41,16 @@
   } from "./settings";
   import { open } from "@tauri-apps/plugin-dialog";
   import * as backend from "./backend";
+  import SuperpowersControls from "./SuperpowersControls.svelte";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
   import Modal from "./Modal.svelte";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import WorkspaceDeleteWizard from "./WorkspaceDeleteWizard.svelte";
   import { tooltip } from "./tooltip";
+  import { MIN_PERIOD_MINUTES, validateCycle } from "./agentPause";
+  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "./agentPauseState";
+  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
   import { UNFILED_WORKSPACE_ID } from "./workspace";
 
   interface Props {
@@ -54,6 +59,13 @@
   let { workspaceId }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+
+  /// What this workspace would inherit, and what an override starts from.
+  const appCycle = $derived($agentPauseStore);
+  const inheritedCycle = $derived(editableCycle(null));
+  /// Recomputed on every clock tick, so the "right now" line below is a
+  /// live countdown rather than whatever was true when the tab mounted.
+  const pauseNow = $derived(pauseFor(workspaceId, $nowStore));
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agent = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore));
@@ -62,6 +74,40 @@
   const profileLabel = $derived(
     $agentProfilesStore.find((p) => p.id === agent.profileId)?.label ?? agent.profileId
   );
+
+  // The Superpowers row's two inputs. Re-read on demand rather than
+  // watched: this is a settings panel, not a live view, and the only
+  // things that change either value are the controls right below.
+  // undefined until the first read lands, so the row can say "checking"
+  // instead of drawing an Install button for an unknown state.
+  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
+  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let spToken = 0;
+  async function readSuperpowers(): Promise<void> {
+    const root = ws?.rootPath;
+    // Cleared first, and the token bumped in the same breath: a switch to
+    // another workspace must not leave the previous one's answer on
+    // screen, nor let its in-flight read land here.
+    superpowers = undefined;
+    superpowersMark = undefined;
+    const mine = ++spToken;
+    if (!root) return;
+    const [status, marks] = await Promise.all([
+      backend.superpowersStatus(root).catch(() => undefined),
+      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+    ]);
+    if (mine !== spToken) return;
+    superpowers = status;
+    superpowersMark = marks[root];
+  }
+  $effect(() => {
+    void ws?.rootPath;
+    // The profile decides which detector runs, so a profile switch has to
+    // re-ask -- otherwise the row keeps answering for the agent that was
+    // selected a moment ago.
+    void agent.profileId;
+    void readSuperpowers();
+  });
 
   // Drafts exist so a watcher push cannot overwrite a field mid-type
   // (spec §5.2): a focused input keeps its draft, everything else follows
@@ -183,6 +229,14 @@
   /// what is written -- so the row is disabled with the reason rather
   /// than accepting a choice nothing downstream would honour.
   const prdBlocked = $derived(featureBlockedReason($daemonCompat, "prdPath"));
+
+  /// A v21 daemon parses the widened LinkCardSession perfectly well and
+  /// drops `resumeAttempts` on the floor -- so every automatic resume
+  /// would read the budget back as absent, decide the run had never been
+  /// resumed, and resume it again. An unbounded loop wearing the costume
+  /// of a limit is worse than no feature, so the switch is dark rather
+  /// than merely unreliable.
+  const autoResumeBlocked = $derived(featureBlockedReason($daemonCompat, "autoResume"));
   $effect(() => {
     const prd = prdPath;
     if (focused !== "prd") prdDraft = prd;
@@ -455,6 +509,142 @@
     </section>
 
     <section>
+      <h3>Unattended recovery</h3>
+      <!-- Off by default, and the only setting on this screen that is.
+           The others are habits; this one is consent -- a run that
+           restarts itself hours after you walked away made a decision
+           that was yours unless you made it in advance. -->
+      <span use:tooltip={autoResumeBlocked ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={autoResumeBlocked !== null}
+            checked={ws.autoResumeRuns ?? false}
+            onchange={(e) => void setWorkspaceFlag(workspaceId, "autoResumeRuns", e.currentTarget.checked)}
+          />
+          Resume a broken card run by itself
+        </label>
+      </span>
+      <p class="hint">
+        When an agent you started from a card stops because its connection died, the machine slept or the
+        API was down, gavin reopens that same conversation once — never after a login prompt, a usage
+        limit or a crash, and never for a run it did not launch. A rail has its own switch, on the rail.
+      </p>
+    </section>
+
+    <section>
+      <h3>Agent pause</h3>
+      <!-- Absent means INHERIT, which is not the same as off: a
+           workspace that wants no pause while the app has one stores a
+           cycle with enabled:false, so clearing and disabling are two
+           different controls. -->
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={ws.agentPause != null}
+          onchange={(e) =>
+            void setWorkspacePause(
+              workspaceId,
+              e.currentTarget.checked ? { ...inheritedCycle } : null
+            )}
+        />
+        Give this workspace its own pause settings
+      </label>
+      {#if ws.agentPause == null}
+        <p class="hint">
+          {#if appCycle?.enabled}
+            Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
+            {appCycle.periodMinutes} minutes.
+          {:else}
+            Following the app-wide setting, which is off. Settings → Agent pause
+            changes it for every workspace.
+          {/if}
+        </p>
+      {:else}
+        {@const own = ws.agentPause}
+        <div class="pause-row">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={own.enabled}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
+            />
+            Pause on a cycle
+          </label>
+        </div>
+        <div class="pause-row">
+          <span>Pause for</span>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            disabled={!own.enabled}
+            value={own.pauseMinutes}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                pauseMinutes: Number(e.currentTarget.value),
+              })}
+          />
+          <span>minutes every</span>
+          <input
+            class="num"
+            type="number"
+            min={MIN_PERIOD_MINUTES}
+            disabled={!own.enabled}
+            value={own.periodMinutes}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                periodMinutes: Number(e.currentTarget.value),
+              })}
+          />
+          <span>minutes</span>
+        </div>
+        <div class="pause-row">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={own.limitEnabled}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, {
+                  ...own,
+                  limitEnabled: e.currentTarget.checked,
+                })}
+            />
+            Hold when a window is
+          </label>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            max="100"
+            disabled={!own.limitEnabled}
+            value={own.limitPercent}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                limitPercent: Number(e.currentTarget.value),
+              })}
+          />
+          <span>% used</span>
+        </div>
+        {#if own.enabled && validateCycle(own)}
+          <p class="hint error">{validateCycle(own)}</p>
+        {/if}
+      {/if}
+      <p class="hint">
+        A pause stops gavin STARTING work — a rail's next step, a card run, an
+        automatic resume. An agent already mid-turn finishes, and your own Run
+        button always works.
+        {#if pauseNow.paused}
+          Right now: {pauseNow.why}.
+        {/if}
+      </p>
+    </section>
+
+    <section>
       <h3>Agent</h3>
       {#if !hasRoot}
         <p class="hint">Bind a root folder to configure the agent.</p>
@@ -632,6 +822,28 @@
             Name the file {profileLabel} reads MCP config from, and gavin can write itself into it.
           </p>
         {/if}
+
+        <div class="sp-row">
+          <span class="sp-title">
+            {superpowers ? superpowersLabel(superpowers.state) : "Superpowers plugin"}
+          </span>
+          {#if superpowers}
+            <SuperpowersControls
+              rootPath={ws?.rootPath ?? null}
+              status={superpowers}
+              mark={superpowersMark}
+              onChanged={() => void readSuperpowers()}
+              allowClear
+            />
+          {:else}
+            <p class="hint">Checking…</p>
+          {/if}
+          <p class="hint">
+            Process skills for {profileLabel} — brainstorm before building, plan before coding,
+            debug by narrowing. It is what makes gavin's plan and debug flows deep rather than
+            nominal.
+          </p>
+        </div>
       {/if}
     </section>
 
@@ -773,6 +985,18 @@
     color: var(--text-subtle);
     margin: 6px 0 0;
   }
+  /* Set off from the fields above it: the rows above are all "edit this
+     value", and this one is "gavin checked something". */
+  .sp-row {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle, #333);
+  }
+  .sp-title {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-normal, #ddd);
+  }
   .hint.warn {
     color: var(--warning-text);
   }
@@ -814,5 +1038,26 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
+  }
+  .pause-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+    color: var(--text-muted);
+  }
+  .pause-row input.num {
+    width: 56px;
+    text-align: right;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 1em;
+    padding: 3px 8px;
+  }
+  .hint.error {
+    color: var(--danger-text);
   }
 </style>

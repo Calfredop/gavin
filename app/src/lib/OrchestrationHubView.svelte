@@ -74,6 +74,7 @@
     pauseRail,
     resumeRail,
     resetRail,
+    setRailAutoResumeAction,
     retryStep,
     markStepDone,
     makeStageSequentialAction,
@@ -569,6 +570,12 @@
   // silently dropped -- the badge would never clear, and the human would
   // retry the same button forever with no explanation.
   const groupsBlocked = $derived(featureBlockedReason($daemonCompat, "groups"));
+
+  /// A v21 daemon drops the rail's `autoResume` AND the run's
+  /// `resumeAttempts` -- so the consent would vanish and the budget with
+  /// it, turning one attempt into an unbounded loop. The switch is dark
+  /// rather than merely unreliable.
+  const autoResumeBlocked = $derived(featureBlockedReason($daemonCompat, "autoResume"));
   const conflictSummary = $derived(
     orch
       ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
@@ -748,6 +755,8 @@
           onStart={() => onStart(rail.id)}
           onPause={() => void pauseRail(workspaceId, rail.id)}
           onReset={() => void resetRail(workspaceId, rail.id)}
+          onToggleAutoResume={(on) => void setRailAutoResumeAction(workspaceId, rail.id, on)}
+          {autoResumeBlocked}
           onDelete={() => (railPrompt = { kind: "delete", railId: rail.id })}
           onMoveAll={(e) => handleMoveAll(rail, e)}
           onClearDone={() => (railPrompt = { kind: "clear", railId: rail.id })}

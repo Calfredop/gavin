@@ -63,6 +63,21 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
         label: "Jump to session",
         onPick: () => void jumpToBoundSession(workspaceId, card.id),
       });
+    } else if (sessionState === "failed") {
+      // The agent is still sitting there at its prompt -- so a jump
+      // would land the human in a live tab and tell them nothing --
+      // but it stopped because something broke. Where the profile
+      // verified a resume argv this reopens the SAME conversation
+      // (`claude --resume <uuid>`); everywhere else it falls back to
+      // the written reconstruction, which is what Resume always did.
+      entries.push({
+        label: "Resume — the agent stopped because something broke",
+        onPick: () => {
+          void resumeCard(workspaceId, card).then((err) => {
+            if (err) hooks.reportError(err);
+          });
+        },
+      });
     } else if (sessionState === "interrupted") {
       // Resume, not Re-launch: the killed agent left its edits in the
       // checkout, and the resume prompt (gavin-resume) is the one that

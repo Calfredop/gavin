@@ -122,8 +122,14 @@ describe("appLinks", () => {
 
 describe("workspaceRecapLine", () => {
   function summary(over: Partial<WorkspaceAgentsSummary> = {}): WorkspaceAgentsSummary {
-    return { pages: 0, tabs: 0, agents: 0, running: 0, waiting: 0, idle: 0, ...over };
+    return { pages: 0, tabs: 0, agents: 0, running: 0, waiting: 0, failed: 0, idle: 0, ...over };
   }
+
+  it("leads with a broken agent, which is the one bucket nobody can leave alone", () => {
+    expect(workspaceRecapLine(summary({ failed: 1, running: 2, pages: 4 }))).toBe(
+      "1 stopped · 2 running · 4 pages"
+    );
+  });
 
   it("leads with what is happening, then how big the workspace is", () => {
     expect(workspaceRecapLine(summary({ running: 2, pages: 4 }))).toBe("2 running · 4 pages");
@@ -455,7 +461,7 @@ describe("fleetSummary", () => {
       { sessionStatusById: { s1: "working", s2: "waiting_for_input", s3: "idle" } }
     );
     const summary = fleetSummary(input(state));
-    expect(summary.agents).toEqual({ pages: 3, tabs: 3, agents: 3, running: 1, waiting: 1, idle: 1 });
+    expect(summary.agents).toEqual({ pages: 3, tabs: 3, agents: 3, running: 1, waiting: 1, failed: 0, idle: 1 });
   });
 
   it("counts one checkout shared by two workspaces once", () => {

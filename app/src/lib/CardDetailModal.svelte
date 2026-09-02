@@ -19,6 +19,7 @@
     daemonCompat,
     workspaceRootPath,
     openFileInSplit,
+    resolvedAgents,
   } from "./layoutState";
   import {
     addAttachment,
@@ -30,10 +31,19 @@
   } from "./attachments";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
   import { isViewableInApp } from "./fileTypes";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import {
+    agentExitedIndicator,
+    agentFailedIndicator,
+    agentIndicator,
+    agentInterruptedIndicator,
+  } from "./ui/indicators";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, resumeCard, relaunchCard, developCard } from "./cardRunActions";
   import { cardSessionState } from "./columnRunAction";
-  import { developAvailable } from "./cardRun";
+  import { developAvailable, agentPromptBlocker } from "./cardRun";
+  import { resumeNoteFor } from "./autoResume";
+  import { resumeTrail } from "./autoResumeState";
   import { findCardPlacement, stepStateOf } from "./orchestration";
   import {
     orchestrations,
@@ -418,15 +428,44 @@
   const bindingOrphan = $derived(
     binding ? ($layoutState.orphanBySessionId[binding.sessionId] ?? null) : null
   );
+  const bindingFailed = $derived(sessionState === "failed");
+  /// The agent's own account of what broke, when something did.
+  const failureReason = $derived(
+    binding ? ($layoutState.failureReasonById[binding.sessionId] ?? null) : null
+  );
+
+  /// What gavin did to this run without being asked. The detail comes
+  /// from the in-memory trail while the window that watched it is open;
+  /// the persisted attempt count keeps the FACT after a reload.
+  const resumeNote = $derived(
+    binding ? resumeNoteFor($resumeTrail[binding.path], binding.resumeAttempts) : null
+  );
   // The daemon's status describes whatever occupies the session id NOW,
   // which for an interrupted run is the bare shell that replaced the
   // agent -- so it is not consulted at all there.
   const bindingStatus = $derived(
     bindingInterrupted
       ? "interrupted"
-      : binding && bindingLive
-        ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
-        : "exited"
+      : bindingFailed
+        ? "stopped — something broke"
+        : binding && bindingLive
+          ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
+          : "exited"
+  );
+  // The same badge the board card, the terminal tab and the sidebar row
+  // draw for this very session -- the detail modal used to say the state
+  // in a bare word, which is accurate but shares nothing with the three
+  // surfaces the human just came from.
+  // Interrupted and failed come first for the same reason bindingStatus
+  // puts them first: the daemon's status is not the run's.
+  const bindingBadge = $derived(
+    bindingInterrupted
+      ? agentInterruptedIndicator()
+      : bindingFailed
+        ? agentFailedIndicator(failureReason)
+        : binding && bindingLive
+          ? agentIndicator($layoutState.sessionStatusById[binding.sessionId])
+          : agentExitedIndicator()
   );
 
   async function handleRun(): Promise<void> {
@@ -451,6 +490,15 @@
   // Same rule as the board's context menu (developAvailable): a thin To
   // Do card gets an interview before it gets an agent.
   const canDevelop = $derived(developAvailable(card.kind, card.status, binding !== null));
+
+  // Both buttons below build the agent's command line, so both are
+  // blocked by an agent that takes no prompt -- and for a reason that is
+  // about the WORKSPACE, not this card. Re-launch is deliberately not
+  // gated: it replays the command the first launch stored, and never
+  // builds one.
+  const runBlocked = $derived(
+    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+  );
 
   async function handleDevelop(): Promise<void> {
     errorMessage = null;
@@ -750,14 +798,30 @@
       <div class="section-title">Agent session</div>
       {#if binding}
         <div class="session-info">
-          <span
-            class="session-status"
-            class:exited={!bindingLive && !bindingInterrupted}
-            class:interrupted={bindingInterrupted}>{bindingStatus}</span
-          >
+          <StatusBadge indicator={bindingBadge} size={12} text={bindingStatus} class="session-status" />
           <span class="session-cwd">{binding.cwd}</span>
         </div>
+        {#if bindingFailed}
+          <p class="session-note">
+            This agent stopped because something broke, not because it finished{failureReason
+              ? ` — ${failureReason}`
+              : ""}. The process is still sitting at its prompt and whatever it had
+            already written is still in the checkout. Resume picks the work up — where
+            this agent supports it, by reopening the same conversation rather than
+            starting a new one.
+          </p>
+        {/if}
+        {#if resumeNote}
+          <!-- A run gavin put back by itself. Without this the card
+               reads as one that never broke -- which is the whole point
+               of the trail: coming back to finished work, you have to be
+               able to find out it was not finished all along. -->
+          <p class="session-note">Recovered on its own: {resumeNote}.</p>
+        {/if}
         {#if bindingInterrupted || bindingOrphan}
+          <!-- One paragraph for both, from orphan.ts: the interrupted
+               wording splits on whether the daemon PROBED, and the orphan
+               case says the agent did not stop at all. -->
           <p class="session-note" class:orphaned={bindingOrphan !== null}>
             {interruptedCardNote({ orphan: bindingOrphan, compat: $daemonCompat })}
           </p>
@@ -775,7 +839,7 @@
               >End the running process</button
             >
           {/if}
-          {#if bindingInterrupted}
+          {#if bindingInterrupted || bindingFailed}
             <button type="button" onclick={() => void handleResume()}>Resume this card</button>
           {/if}
           <button type="button" disabled={!bindingLive} onclick={() => void handleRun()}>Jump to session</button>
@@ -785,14 +849,23 @@
       {:else}
         <div class="session-actions">
           {#if canDevelop}
-            <button type="button" onclick={() => void handleDevelop()}>
+            <button
+              type="button"
+              disabled={runBlocked !== null}
+              onclick={() => void handleDevelop()}
+            >
               Develop into a plan…
             </button>
           {/if}
-          <button type="button" onclick={() => void handleRun()}>
+          <button type="button" disabled={runBlocked !== null} onclick={() => void handleRun()}>
             ▶ Run {card.kind === "plan" ? "this plan" : "this task"} with the agent
           </button>
         </div>
+        <!-- Inline rather than a tooltip: a disabled button fires no
+             mouseenter, and this modal has the room to just say it. -->
+        {#if runBlocked}
+          <p class="quiet">{runBlocked}</p>
+        {/if}
       {/if}
     </div>
     <div class="section">
@@ -1156,8 +1229,10 @@
     opacity: 0.85;
     margin-bottom: 6px;
   }
-  .session-status.exited {
-    opacity: 0.6;
+  /* Positioning only -- the badge owns its own tone, exited included
+     (a neutral, struck-through circle). */
+  .session-info :global(.session-status) {
+    flex: 0 0 auto;
   }
   .session-note.orphaned {
     color: var(--danger-text);
@@ -1165,9 +1240,6 @@
   .session-actions button.danger {
     border-color: var(--danger);
     color: var(--danger-text);
-  }
-  .session-status.interrupted {
-    color: var(--warning);
   }
   .session-note {
     margin: 6px 0 8px;

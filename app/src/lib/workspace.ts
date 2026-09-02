@@ -1,3 +1,4 @@
+import type { PauseCycle } from "./agentPause";
 import type { LayoutNode } from "./layout";
 import { allSessionIds, findLeafPath } from "./layout";
 
@@ -35,6 +36,17 @@ export interface GitViewPrefs {
 export interface AgentCommitRecord {
   sessionId: string;
   cwd: string;
+  /// How many times gavin has RE-RUN this commit prompt by itself after
+  /// a transient failure. A retry, not a resume: a headless run exits and
+  /// holds no conversation, and "commit pending changes" is harmless to
+  /// repeat -- which is why it gets a retry where every other run gets a
+  /// reopened conversation.
+  ///
+  /// On the record rather than in memory because a hidden run outlives
+  /// the window that started it (`adoptAgentCommits`), so a counter in
+  /// the window would reset on the very event the record exists for.
+  /// Absent reads as zero.
+  retries?: number;
 }
 
 /// An orchestration agent run: the session doing it, what it is, and the
@@ -100,6 +112,17 @@ export interface Workspace {
   /// colour -- how wide a terminal wants to be on this screen is not a
   /// fact about the project.
   homeAgentShare?: number;
+  /// Whether gavin may resume this workspace's standalone CARD runs by
+  /// itself when their agent breaks. Absent means NO -- the opposite of
+  /// every other toggle here, because this one is consent rather than a
+  /// habit: a run that restarts itself hours after the human walked away
+  /// made a decision that was theirs unless they made it in advance.
+  ///
+  /// A rail's own opt-in lives on the rail (`Rail.autoResume`), not here:
+  /// a rail is a durable object the human designed, shared with every
+  /// agent that reads the plan, while a card run is an ad-hoc launch from
+  /// this machine.
+  autoResumeRuns?: boolean;
   /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
   gitView?: GitViewPrefs;
   /// When this workspace was last switched to, epoch milliseconds.
@@ -107,6 +130,10 @@ export interface Workspace {
   /// how the app hub orders its recents: stamped newest first, then the
   /// never-stamped ones in their stored order.
   lastActiveAt?: number;
+  /// This workspace's own agent pause cycle. Absent means INHERIT the
+  /// app-wide one, which is not the same as off: a workspace that wants
+  /// no pause while the app has one stores a cycle with `enabled: false`.
+  agentPause?: PauseCycle;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its
@@ -616,7 +643,12 @@ export function findSessionLocation(
 ///   daemon spawned in place of the run (`SessionManager::recover`).
 /// - `gone` -- no tree holds this id at all; the session exited, or the
 ///   startup reconciliation cleared its tab.
-export type SessionLiveness = "live" | "interrupted" | "gone";
+/// - `failed` -- the process is still there and still at its prompt, but
+///   its agent stopped because something BROKE: the daemon matched the
+///   profile's error text on the rendered screen, or watched the machine
+///   sleep through the conversation. Unlike `interrupted` there is a
+///   resumable conversation behind it.
+export type SessionLiveness = "live" | "interrupted" | "failed" | "gone";
 
 /// Resolves a bound session id into that vocabulary.
 ///
@@ -631,10 +663,18 @@ export type SessionLiveness = "live" | "interrupted" | "gone";
 /// vanished and was interrupted reads as gone. Nothing is offered to
 /// resume a tab that is not there.
 export function sessionLiveness(
-  state: WorkspacesData & { interruptedSessionIds: ReadonlySet<string> },
+  state: WorkspacesData & {
+    interruptedSessionIds: ReadonlySet<string>;
+    failureReasonById?: Record<string, string>;
+  },
   sessionId: string
 ): SessionLiveness {
   if (!findSessionLocation(state, sessionId)) return "gone";
+  // `failed` before `interrupted`: a session can be both only if the
+  // daemon restarted and then the bare shell's replacement broke, and
+  // the failure is both the newer fact and the one with a resumable
+  // conversation behind it.
+  if (state.failureReasonById?.[sessionId] !== undefined) return "failed";
   return state.interruptedSessionIds.has(sessionId) ? "interrupted" : "live";
 }
 

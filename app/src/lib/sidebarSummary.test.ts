@@ -525,6 +525,7 @@ describe("pageAgentsSummary", () => {
       agents: 0,
       running: 0,
       waiting: 0,
+      failed: 0,
       idle: 0,
     });
   });
@@ -535,6 +536,7 @@ describe("pageAgentsSummary", () => {
       agents: 3,
       running: 0,
       waiting: 0,
+      failed: 0,
       idle: 3,
     });
   });
@@ -548,6 +550,22 @@ describe("pageAgentsSummary", () => {
       agents: 4,
       running: 2,
       waiting: 1,
+      failed: 0,
+      idle: 1,
+    });
+  });
+
+  // Before v21 this counted as idle, so the sidebar's recap told the
+  // human a workspace was quietly finished when what it actually was,
+  // was broken.
+  it("keeps a broken agent out of the idle bucket", () => {
+    const state = tabState({ sessionStatusById: { a: "failed", b: "idle" } });
+    expect(pageAgentsSummary(page("p1", leaf(["a", "b"])), state)).toEqual({
+      tabs: 2,
+      agents: 2,
+      running: 0,
+      waiting: 0,
+      failed: 1,
       idle: 1,
     });
   });
@@ -568,6 +586,7 @@ describe("pageAgentsSummary", () => {
       agents: 1,
       running: 1,
       waiting: 0,
+      failed: 0,
       idle: 0,
     });
   });
@@ -582,6 +601,7 @@ describe("pageAgentsSummary", () => {
       agents: 0,
       running: 0,
       waiting: 0,
+      failed: 0,
       idle: 0,
     });
   });
@@ -594,6 +614,7 @@ describe("pageAgentsSummary", () => {
       agents: 4,
       running: 1,
       waiting: 1,
+      failed: 0,
       idle: 2,
     });
   });
@@ -617,6 +638,7 @@ describe("workspaceAgentsSummary", () => {
       agents: 0,
       running: 0,
       waiting: 0,
+      failed: 0,
       idle: 0,
     });
   });
@@ -632,6 +654,7 @@ describe("workspaceAgentsSummary", () => {
       agents: 4,
       running: 2,
       waiting: 1,
+      failed: 0,
       idle: 1,
     });
   });
@@ -658,6 +681,7 @@ describe("workspaceAgentsSummary", () => {
       agents: 2,
       running: 1,
       waiting: 0,
+      failed: 0,
       idle: 1,
     });
   });
@@ -682,6 +706,7 @@ describe("workspaceAgentsSummary", () => {
       agents: 1,
       running: 1,
       waiting: 0,
+      failed: 0,
       idle: 0,
     });
   });

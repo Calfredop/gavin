@@ -4,8 +4,8 @@ import { writable } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  confirm: vi.fn().mockResolvedValue(true),
+vi.mock("./dialog", () => ({
+  askConfirm: vi.fn().mockResolvedValue(true),
 }));
 vi.mock("./backend", () => ({
   archiveCard: vi.fn(),
@@ -35,7 +35,7 @@ vi.mock("./layoutState", () => ({
 }));
 
 import { get } from "svelte/store";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { askConfirm } from "./dialog";
 import * as backend from "./backend";
 import { layoutState, closeSession } from "./layoutState";
 import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive, isDoneColumn } from "./archiveActions";
@@ -210,7 +210,7 @@ describe("executeArchive — closing what the card was using", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(confirm).mockResolvedValue(true);
+    vi.mocked(askConfirm).mockResolvedValue(true);
     gavinTrees.set({});
     kanbanState.set({});
     layoutState.update((st) => ({ ...st, fileTabsById: {} }));
@@ -225,17 +225,20 @@ describe("executeArchive — closing what the card was using", () => {
     const err = await executeArchive("ws", [view("a.md")]);
 
     expect(err).toBeNull();
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(confirm).mock.calls[0][0]).toBe(
-      "Archive this card? 1 running agent session will end."
-    );
+    expect(askConfirm).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(askConfirm).mock.calls[0][0]).toMatchObject({
+      title: "Archive this card?",
+      lines: ["1 running agent session will end."],
+      confirmLabel: "Archive card",
+      danger: true,
+    });
     expect(vi.mocked(closeSession).mock.calls.map((c) => c[0])).toEqual(["s-live", "tab-file"]);
   });
 
   it("cancelling archives nothing and closes nothing", async () => {
     seedTree([[`${PLANS}/a.md`, "a.md"]]);
     bind(`${PLANS}/a.md`, "s-live");
-    vi.mocked(confirm).mockResolvedValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
 
     const err = await executeArchive("ws", [view("a.md")]);
 
@@ -256,7 +259,7 @@ describe("executeArchive — closing what the card was using", () => {
 
     await executeArchive("ws", [view("a.md")]);
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
     expect(vi.mocked(closeSession).mock.calls.map((c) => c[0])).toEqual(["tab-file"]);
   });
 
@@ -267,7 +270,7 @@ describe("executeArchive — closing what the card was using", () => {
 
     await executeArchive("ws", [view("a.md")]);
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
     expect(closeSession).not.toHaveBeenCalled();
   });
 
@@ -304,7 +307,7 @@ describe("executeArchive — closing what the card was using", () => {
 
     await executeUnarchive("ws", [view("a.md", { id: `${PLANS}/archive/a.md` })]);
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
     expect(closeSession).not.toHaveBeenCalled();
   });
 });

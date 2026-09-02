@@ -1,16 +1,9 @@
 <script lang="ts">
-  import {
-    Check,
-    CheckCheck,
-    CircleAlert,
-    CirclePause,
-    MessageCircleQuestionMark,
-    RotateCw,
-    X,
-  } from "@lucide/svelte";
+  import { CheckCheck, RotateCw, X } from "@lucide/svelte";
   import BoardCard from "./BoardCard.svelte";
   import IconButton from "./ui/IconButton.svelte";
-  import { tooltip } from "./tooltip";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { attentionIndicator, stepIndicator } from "./ui/indicators";
   import { highlightedConflict } from "./orchestrationState";
   import type { Label } from "./kanban";
   import type { CardView, PlacedCardView } from "./planBoard";
@@ -30,6 +23,10 @@
     state: StepState;
     /// Why the step stalled; null otherwise.
     reason: string | null;
+    /// What gavin did to this run without being asked, or null. Same
+    /// contract as the chip's: a step that is running again after a
+    /// break is otherwise indistinguishable from one that never broke.
+    resumeNote?: string | null;
     /// What this RUNNING step is waiting on a human for -- same contract
     /// as the chip's. Never a state of its own: the step is still
     /// running, and this only stops it looking busy when it isn't.
@@ -64,6 +61,7 @@
     placed,
     state,
     reason,
+    resumeNote = null,
     attention,
     doneColumnName,
     badges,
@@ -110,24 +108,28 @@
   >
     {#snippet adornment()}
       <div class="rail-strip">
-        {#if state !== "pending"}
-          <span class="state {state}" use:tooltip={state === "stalled" && reason ? reason : undefined}>
-            {#if state === "done"}<Check size={11} />{/if}
-            {#if state === "stalled"}<CircleAlert size={11} />{/if}
-            {state}
-          </span>
-        {/if}
-        <!-- Beside the state word, never in place of it: the step really
-             is still running, and the rail really is still going. -->
+        <!-- The same badge the chip draws for the same step, now that
+             the two agree on what a state looks like: the card used to
+             spell `running` as an accent word with no glyph while the
+             chip spelt it as an accent ring with no word. The word stays
+             as the badge's text -- there is room for it here, and it is
+             what makes the ramp of squares readable the first time. A
+             stalled step's reason, or the note on a run gavin put back
+             by itself, rides in the bubble. -->
+        <StatusBadge
+          indicator={stepIndicator(state)}
+          text={state}
+          class="state"
+          tip={state === "stalled" && reason ? `Step · stalled: ${reason}` : (resumeNote ?? undefined)}
+        />
+        <!-- Beside the state, never in place of it: the step really is
+             still running, and the rail really is still going. -->
         {#if attention}
-          <span class="attention-tag" use:tooltip={attentionTitle}>
-            {#if attention === "asking"}
-              <MessageCircleQuestionMark size={11} />
-            {:else}
-              <CirclePause size={11} />
-            {/if}
-            needs you
-          </span>
+          <StatusBadge
+            indicator={attentionIndicator(attention)}
+            text="needs you"
+            tip={attentionTitle}
+          />
         {/if}
         {#each badges as n (n)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -199,34 +201,18 @@
     padding-top: 4px;
     border-top: 1px solid var(--border);
   }
-  /* The state names itself in words -- on a card there is room for it,
-     and "stalled" said outright beats a ring the human has to decode. */
-  .state {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
+  /* Positioning only -- the state names itself in words here because a
+     card has room for it, but what those words LOOK like is the badge's
+     business now. This rule used to hold a private copy of the tone
+     table, and it disagreed with the chip's. `margin-right: auto` keeps
+     the buttons on the right, so the strip does not reflow when the
+     attention badge appears beside it.
+
+     Descendant :global(), never a leading one: a leading `:global(.state)`
+     would restyle every .state in the app, which is how PlanTree's
+     `.split` once dimmed LayoutTree. */
+  .rail-strip :global(.state) {
     margin-right: auto;
-    color: var(--text-muted);
-    font-size: 0.8em;
-  }
-  .state.running {
-    color: var(--accent-text);
-  }
-  .state.done {
-    color: var(--success-text);
-  }
-  .state.stalled {
-    color: var(--danger-text);
-  }
-  /* Sits after .state, which holds the `margin-right: auto` -- so the
-     tag lands with the buttons on the right rather than beside the word
-     it qualifies, and the strip does not reflow when it appears. */
-  .attention-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    color: var(--warning-text);
-    font-size: 0.8em;
   }
   .badge {
     flex: none;

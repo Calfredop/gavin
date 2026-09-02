@@ -122,14 +122,14 @@ export const FEATURE_MIN_VERSION = {
   // (EndOrphan); this entry exists for the other half, and it gates
   // something sharper than a disabled button.
   //
-  // `SessionSummary.orphan` is absent from a v21 daemon because that
+  // `SessionSummary.orphan` is absent from a v23 daemon because that
   // daemon never looked -- not because nothing survived. Reading the
   // absence as "no orphan" would let the app assert a clean stop nobody
   // measured, next to a Resume button, which is exactly how a second
   // agent ends up in a checkout that already has one. Every consumer
   // goes through `orphanDetectionAvailable` in orphan.ts, which turns
   // this number into "did anyone check".
-  orphanDetection: 22,
+  orphanDetection: 24,
   // The task manager's two figure columns. `SessionProcesses` is a new
   // request TYPE, so min_version_for is the real gate and nothing is
   // silently dropped -- this entry exists because the panel still has to
@@ -138,7 +138,44 @@ export const FEATURE_MIN_VERSION = {
   // measurement nobody took. The list itself needs no gate: ListSessions
   // has been in the protocol since v1, so jumping and killing work all
   // the way down.
-  sessionMetrics: 23,
+  sessionMetrics: 25,
+  // Conversation resume. v21 widened SetStepRun and LinkCardSession with
+  // `conversation_id` and `launch_cwd` -- the agent CLI's own id for the
+  // conversation a run IS, and the directory it was launched in. A v20
+  // daemon parses both requests perfectly well and drops both fields on
+  // the floor, so `min_version_for` (which gates request TYPES) is
+  // structurally blind to it and this entry is the only gate there is.
+  //
+  // Its consumer is the LAUNCH, not a disabled control: against an older
+  // daemon gavin does not mint a conversation id at all
+  // (`conversationIdForLaunch`), because an id that cannot be persisted
+  // is an id no Resume can ever use -- and the card detail modal's
+  // Resume copy, which promises the same conversation back, would be
+  // promising something the daemon threw away.
+  conversationResume: 21,
+  // Failure detection. Unlike the entry above this half IS a new request
+  // type (`SetFailurePatterns`), so the wire gate catches it and
+  // `armFailureDetection` swallows the refusal -- a quiet agent then
+  // reads as idle exactly as it did before v21. The entry exists for the
+  // COPY: the card detail modal and the sidebar recap both name a
+  // failure as a thing gavin can see, and on an older daemon it cannot.
+  failureDetection: 21,
+  // Unattended auto-resume. v22 widened three EXISTING requests --
+  // `SetOrchestration` with a rail's `autoResume`, `SetStepRun` and
+  // `LinkCardSession` with the run's `resumeAttempts` -- so
+  // `min_version_for` (which gates request TYPES) is structurally blind
+  // to all three, and this entry is the only gate there is.
+  //
+  // What a v21 daemon would do with them is the reason it must be a hard
+  // gate rather than a warning. It parses each request perfectly well and
+  // drops the new field on the floor: the rail's opt-in vanishes, and --
+  // far worse -- the BUDGET vanishes with it. Every resume would then
+  // read `resumeAttempts` back as absent, which means "never resumed",
+  // which means resume again: an unbounded loop wearing the costume of a
+  // limit. So both consent surfaces (the rail header's toggle and the
+  // workspace setting for card runs) are disabled with the reason, and
+  // the driver itself refuses to arm.
+  autoResume: 22,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

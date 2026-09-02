@@ -145,7 +145,21 @@ export function linkCardSessionAction(workspaceId: string, binding: CardSession)
   return mutateBindings(
     workspaceId,
     (sessions) => [...sessions.filter((cs) => cs.path !== binding.path), binding],
-    () => backend.linkCardSession(workspaceId, binding.path, binding.sessionId, binding.cwd, binding.command)
+    () =>
+      backend.linkCardSession(
+        workspaceId,
+        binding.path,
+        binding.sessionId,
+        binding.cwd,
+        binding.command,
+        binding.conversationId ?? null,
+        binding.launchCwd ?? null,
+        // The binding is upserted WHOLE, so an absent count writes
+        // zero rather than preserving what was there -- which is right:
+        // every call site builds the binding it means, and the sites
+        // that mean "a fresh run" are the majority.
+        binding.resumeAttempts ?? null
+      )
   );
 }
 

@@ -1,4 +1,5 @@
 mod agent_setup;
+mod agent_usage;
 mod config;
 mod daemon;
 mod edge_expand;
@@ -7,6 +8,7 @@ mod git;
 mod layout;
 mod mac_window;
 mod session;
+mod superpowers;
 mod workspace_delete;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -38,6 +40,7 @@ pub fn run() {
         .manage(fileviewer::FileWatchers::default())
         .manage(git::GitWatchers::default())
         .manage(git::GitOps::default())
+        .manage(agent_usage::UsageCache::new())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -62,6 +65,7 @@ pub fn run() {
             session::kill_session,
             session::adopt_session,
             session::snapshot_session,
+            session::set_failure_patterns,
             session::get_workspaces_state,
             session::set_workspaces_state,
             session::get_theme_pref,
@@ -125,8 +129,15 @@ pub fn run() {
             session::set_root_config_field,
             session::get_agent_model_defaults,
             session::set_agent_model_default,
+            session::get_superpowers_marks,
+            session::set_superpowers_mark,
+            superpowers::superpowers_status,
+            superpowers::superpowers_install,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
+            agent_usage::agent_usage,
+            session::get_agent_pause,
+            session::set_agent_pause,
             agent_setup::mcp_formats,
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt,

@@ -203,7 +203,21 @@ describe("card session bindings", () => {
     await linkCardSessionAction("ws-1", binding);
 
     expect(get(kanbanState)["ws-1"].cardSessions).toEqual([binding]);
-    expect(backend.linkCardSession).toHaveBeenCalledWith("ws-1", "/p/t.md", "s-1", "/p", "claude 'x'");
+    // The last three are the conversation this run IS, where it was
+    // launched, and how many times gavin has resumed it by itself --
+    // null on a binding that predates them, and explicitly passed rather
+    // than omitted so a daemon that HAS the columns clears them instead
+    // of keeping a previous run's.
+    expect(backend.linkCardSession).toHaveBeenCalledWith(
+      "ws-1",
+      "/p/t.md",
+      "s-1",
+      "/p",
+      "claude 'x'",
+      null,
+      null,
+      null
+    );
     expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual(binding);
 
     // Upsert replaces:

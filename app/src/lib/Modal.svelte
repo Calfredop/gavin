@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { pushModal, popModal, isTopModal } from "./modalStack";
+
   interface Props {
     onClose: () => void;
     // Identity of what the panel is showing. A modal that can be
@@ -23,12 +25,24 @@
     if (panel) panel.scrollTop = 0;
   });
 
+  // Registered for as long as this modal is on screen, so an Escape
+  // reaches only the topmost one -- see modalStack.ts for why the
+  // window-level listener needs it.
+  let token = $state<symbol | null>(null);
+  $effect(() => {
+    const mine = pushModal();
+    token = mine;
+    return () => popModal(mine);
+  });
+
   function handleBackdropClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) onClose();
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape") onClose();
+    if (event.key !== "Escape") return;
+    if (token && !isTopModal(token)) return;
+    onClose();
   }
 </script>
 

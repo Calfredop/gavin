@@ -13,7 +13,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
-/// v23 added `Request::SessionProcesses`: one sample of what each live
+/// v25 added `Request::SessionProcesses`: one sample of what each live
 /// session is costing, as a cumulative CPU counter, a resident-memory
 /// total and the instant they were read. A new request variant, so
 /// `min_version_for` gates it by type and nothing is silently dropped;
@@ -21,7 +21,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// explain two empty columns rather than render them blank. Deliberately
 /// NOT a widening of `SessionSummary`, which the gate cannot see.
 ///
-/// v22 taught recovery to PROBE instead of infer. The daemon records the
+/// v24 taught recovery to PROBE instead of infer. The daemon records the
 /// pid and start time of every process it spawns, and on recovery asks
 /// the OS whether a previous lifetime's process is still alive -- because
 /// killing a daemon reaches its children only as a SIGHUP, and one that
@@ -32,19 +32,50 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// `EndOrphan` is a new Request variant, so `min_version_for` gates it by
 /// type. The REPORTING half is invisible to that gate -- it widens what
 /// is said about a session -- and it is worse than the usual silent-drop
-/// case: `orphan: None` from a v21 daemon does not mean "no orphan", it
+/// case: `orphan: None` from a v23 daemon does not mean "no orphan", it
 /// means the daemon never looked. Only the app's
 /// FEATURE_MIN_VERSION.orphanDetection can tell those apart, which is why
-/// the interrupted copy softens below v22 instead of asserting the
+/// the interrupted copy softens below v24 instead of asserting the
 /// process is gone.
 ///
-/// v21 added `Request::ClaimCardForSession`: an agent telling the daemon
+/// v23 added `Request::ClaimCardForSession`: an agent telling the daemon
 /// it is working the card it just wrote, so a card the workspace agent
 /// picked up on the Home tab stops looking startable on the board. A new
 /// request variant, so `min_version_for` gates it by type and an older
 /// daemon simply never receives it -- and no `daemonCompat.ts` entry is
 /// owed, because gavin-mcp is the only sender and a claim that never
-/// happens leaves exactly the unbound card v20 always produced.
+/// happens leaves exactly the unbound card every daemon before 23 produced.
+/// v22 gave an interrupted run a way back on its own. v21 could tell a
+/// broken agent from a finished one and hand the human a Resume button;
+/// this version lets a rail the human walked away from take that press
+/// itself, and the three fields it adds are what make that bounded and
+/// consented rather than a loop. `Rail.auto_resume` is the per-rail
+/// opt-in, defaulting OFF -- a rail resuming itself six hours later has
+/// made a decision that was the human's unless they made it in advance.
+/// `StepRun.resume_attempts` and `CardSession.resume_attempts` are the
+/// BUDGET, and they are persisted rather than counted in memory because
+/// an app reload and a daemon restart are precisely the conditions this
+/// runs under: an in-memory counter is an unbounded loop wearing the
+/// costume of a limit. All three widen EXISTING requests
+/// (`SetOrchestration`, `SetStepRun`, `LinkCardSession`), which
+/// `min_version_for` gates by TYPE and therefore cannot see, so the gate
+/// that matters is the app's FEATURE_MIN_VERSION.autoResume.
+///
+/// v21 taught gavin what a FAILED agent is. An agent session's `idle` is
+/// only two quiet seconds (`HEURISTIC_QUIET_PERIOD`), so an agent whose
+/// API connection died and one that finished its turn were byte-identical
+/// -- and the rail advanced on both. Three parts: `SessionStatus` gained
+/// `failed`, carried as the same plain status string; the new
+/// `SetFailurePatterns` request hands the daemon the agent profile's own
+/// error text so the daemon can read the RENDERED screen rather than
+/// guess from silence; and `SessionFailed` pushes the reason, which
+/// `SessionSummary.failure_reason` re-baselines on Attach. The run
+/// records (`StepRun`, `CardSession`) also gained `conversation_id` and
+/// `launch_cwd`, so a failed agent can be resumed as the conversation it
+/// was rather than reconstructed from a written account -- those two
+/// widen EXISTING requests, which `min_version_for` gates by TYPE and
+/// therefore cannot see, so the gate that matters is the app's
+/// FEATURE_MIN_VERSION.conversationResume.
 ///
 /// v20 gave recovery an epoch. The daemon stamps every registry row with
 /// the lifetime that created it, so a row it INHERITED is provably one no
@@ -85,7 +116,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -152,6 +183,22 @@ pub enum Request {
     /// human.
     Snapshot {
         id: String,
+    },
+    /// The text this session's agent prints when it has STOPPED because
+    /// something broke, as opposed to because it finished. Matched
+    /// against the daemon's rendered screen model, not the raw byte
+    /// stream: an error banner is plain text painted by a TUI, so a raw
+    /// substring match would straddle cursor moves and redraws.
+    ///
+    /// Per SESSION, and supplied by the caller, because the patterns
+    /// belong to the agent PROFILE (`agent_setup.rs`'s `AGENT_PROFILES`)
+    /// and the daemon hosts whatever it is told to. A daemon that is
+    /// never sent any has no failure detection at all -- which is the
+    /// honest reading of a profile whose error text nobody has verified,
+    /// and never "nothing failed".
+    SetFailurePatterns {
+        id: String,
+        patterns: Vec<String>,
     },
     GetBoard {
         workspace_id: String,
@@ -315,6 +362,27 @@ pub enum Request {
         session_id: String,
         cwd: String,
         command: Option<String>,
+        /// The agent CLI's OWN id for the conversation this run is, minted
+        /// by gavin at launch (`--session-id <uuid>` and its per-profile
+        /// equivalents). What makes a failed run resumable as the
+        /// conversation it was rather than reconstructed from a written
+        /// account. `serde(default)` so a caller that predates v21 -- or a
+        /// profile with no verified argv -- still links a run.
+        #[serde(default)]
+        conversation_id: Option<String>,
+        /// The directory the agent was LAUNCHED in, which is not `cwd`:
+        /// `cwd` follows the session's OSC 7 reports and drifts the moment
+        /// the agent `cd`s (a repo root, then a worktree). A resume has to
+        /// run where the work is, so the launch directory is recorded
+        /// separately and never rewritten.
+        #[serde(default)]
+        launch_cwd: Option<String>,
+        /// See `CardSession::resume_attempts`. Unlike `SetStepRun`'s, this
+        /// one OVERWRITES: a card binding is written whole by every call
+        /// site (the row is one upsert of the run as it now stands), so
+        /// None here means zero rather than "leave it alone".
+        #[serde(default)]
+        resume_attempts: Option<u32>,
     },
     UnlinkCardSession {
         workspace_id: String,
@@ -344,6 +412,22 @@ pub enum Request {
         state: String,
         session_id: Option<String>,
         reason: Option<String>,
+        /// See `LinkCardSession::conversation_id`. On the RUN rather than
+        /// the session deliberately: the session that failed is closed or
+        /// replaced long before the human decides what to do about it, and
+        /// the conversation has to outlive it.
+        #[serde(default)]
+        conversation_id: Option<String>,
+        /// See `LinkCardSession::launch_cwd`.
+        #[serde(default)]
+        launch_cwd: Option<String>,
+        /// See `StepRun::resume_attempts`. None LEAVES the stored count
+        /// alone, the same way `conversation_id` does, so the dozen
+        /// transitions that have nothing to say about the budget do not
+        /// have to carry it. A launch writes 0 explicitly, because a new
+        /// conversation is a new run and its budget is fresh.
+        #[serde(default)]
+        resume_attempts: Option<u32>,
     },
     /// Paths with uncommitted changes in `cwd`, capped at `limit` --
     /// evidence for the reorganize skill (spec §8.1), never used by the
@@ -518,24 +602,32 @@ pub fn min_version_for(req: &Request) -> u32 {
         // `SessionSummary`. daemonCompat.ts still carries a mirror, not
         // to catch a silent drop but because the task manager has to say
         // WHY its two columns are empty rather than showing them blank.
-        Request::SessionProcesses => 23,
+        Request::SessionProcesses => 25,
 
         // Ending a surviving orphan. A new request TYPE, so this match
         // does gate it -- but it is only half the feature: the REPORTING
         // side widens SessionSummary and adds a push, neither of which
         // this match can see. daemonCompat.ts owes the other half an
-        // `orphanDetection: 22` entry, and for a sharper reason than
+        // `orphanDetection: 24` entry, and for a sharper reason than
         // usual: absence of an orphan from an older daemon is unknown,
         // not negative.
-        Request::EndOrphan { .. } => 22,
+        Request::EndOrphan { .. } => 24,
 
         // An agent claiming the card it just put In Progress. A new
         // request TYPE, so this match is the whole gate and no
         // daemonCompat.ts mirror is owed: the app never sends it (only
         // gavin-mcp does), and against an older daemon it simply never
         // reaches the wire -- leaving the card unbound, which is exactly
-        // what every daemon before 21 did anyway.
-        Request::ClaimCardForSession { .. } => 21,
+        // what every daemon before 23 did anyway.
+        Request::ClaimCardForSession { .. } => 23,
+        // Failure detection (v21). A new request TYPE, so this match is
+        // the whole gate: a daemon older than 21 never receives the
+        // patterns, matches nothing, and calls a quiet agent idle exactly
+        // as it did before. The app's FEATURE_MIN_VERSION.conversationResume
+        // covers the OTHER half of v21 -- the widened SetStepRun /
+        // LinkCardSession payloads, which this match structurally cannot
+        // see.
+        Request::SetFailurePatterns { .. } => 21,
 
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
@@ -662,6 +754,19 @@ pub enum Response {
     /// and "not in the list" are different answers, and only the first
     /// lets a task manager say a row is idle instead of dropping it.
     SessionProcessList { processes: Vec<SessionProcess> },
+    /// This session's agent stopped because something BROKE, not because
+    /// its turn ended -- the daemon either matched the profile's own
+    /// error text on the rendered screen, or watched the machine sleep
+    /// through the conversation this session was mid-way through.
+    ///
+    /// Sent alongside `StatusChanged { status: "failed" }`, never instead
+    /// of it, for the same reason `SessionInterrupted` rides beside
+    /// `SessionRestored`: every surface that already reads a status keeps
+    /// working, and only the ones that want the REASON have to learn a
+    /// new message. The reason is the part downstream work needs -- an
+    /// auto-resume that cannot tell a dead network from an expired token
+    /// would retry into both.
+    SessionFailed { id: String, reason: String },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
@@ -742,6 +847,14 @@ pub struct SessionSummary {
     /// is the honest reading there: it never marks one.
     #[serde(default)]
     pub interrupted: bool,
+    /// Why this session is `failed`, in one sentence, or None. Persisted
+    /// with the status so Attach can re-baseline it: the reason arrives
+    /// as a push, and a frontend reload that lost it would leave a red
+    /// session with nothing to say for itself.
+    ///
+    /// `serde(default)` because a v20 daemon does not send it.
+    #[serde(default)]
+    pub failure_reason: Option<String>,
     /// A process from a previous daemon lifetime that this session's
     /// command was launched as, which the daemon probed and found STILL
     /// RUNNING -- reparented to init, with no tab in front of it and
@@ -882,6 +995,20 @@ pub struct CardSession {
     pub session_id: String,
     pub cwd: String,
     pub command: Option<String>,
+    /// The agent CLI's own conversation id for this run (see
+    /// `Request::LinkCardSession::conversation_id`).
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// The directory this run was LAUNCHED in (see
+    /// `Request::LinkCardSession::launch_cwd`). `cwd` above follows OSC 7
+    /// and drifts; this one does not.
+    #[serde(default)]
+    pub launch_cwd: Option<String>,
+    /// How many times gavin resumed this card's run by itself (v22). The
+    /// card-run half of `StepRun::resume_attempts`, persisted for the
+    /// same reason: the budget has to outlive the reload.
+    #[serde(default)]
+    pub resume_attempts: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -912,6 +1039,13 @@ pub struct Rail {
     /// this field, so it is defaulted rather than required.
     #[serde(default)]
     pub branch: Option<String>,
+    /// Whether this rail may resume its OWN interrupted steps, without
+    /// being asked (v22). None and false both mean no, which is the
+    /// behaviour that predates the field and the only safe default: an
+    /// automatic resume is a decision the human has to have made in
+    /// advance, for this rail, or it is a decision gavin took for them.
+    #[serde(default)]
+    pub auto_resume: Option<bool>,
     pub page_id: Option<String>,
     pub stages: Vec<Stage>,
 }
@@ -1066,6 +1200,26 @@ pub struct StepRun {
     pub session_id: Option<String>,
     /// Human-readable stall cause; None otherwise.
     pub reason: Option<String>,
+    /// The agent CLI's own conversation id for this run (see
+    /// `Request::LinkCardSession::conversation_id`), so a stalled step can
+    /// be resumed as the conversation it was.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// The directory this run was LAUNCHED in (see
+    /// `Request::LinkCardSession::launch_cwd`).
+    #[serde(default)]
+    pub launch_cwd: Option<String>,
+    /// How many times gavin has resumed this run BY ITSELF (v22). The
+    /// budget for unattended recovery, and it lives on the row rather
+    /// than in the app's memory for one reason: an app reload and a
+    /// daemon restart are exactly the conditions auto-resume runs under,
+    /// so a counter that resets on either is not a limit at all.
+    ///
+    /// None reads as zero. A manual Resume does not spend it -- the human
+    /// pressing a button as often as they like is not the thing this
+    /// bounds.
+    #[serde(default)]
+    pub resume_attempts: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1955,6 +2109,15 @@ mod tests {
         // SetPlanFrontmatterField key, and CreatePlan.attachments. No
         // new variant, which is exactly why daemonCompat.ts owes it a
         // FEATURE_MIN_VERSION entry with real consumers.
+        // v21: Request::SetFailurePatterns -- the agent profile's own
+        // error text, matched against the daemon's RENDERED screen so a
+        // broken agent stops reading as a finished one. A new request
+        // TYPE, so min_version_for is the whole gate for it. v21 also
+        // widened SetStepRun and LinkCardSession with conversation_id /
+        // launch_cwd (conversation resume), which this match structurally
+        // cannot see -- daemonCompat.ts's `conversationResume` is that
+        // half's only gate. SessionStatus gained `failed`, and
+        // SessionSummary a `failure_reason`, both serde-tolerant.
         // v18: Request::Snapshot -- "send me this session's screen
         // again", answered from the daemon's per-session terminal
         // parser. A new request TYPE, which is what min_version_for
@@ -1986,7 +2149,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 23);
+        assert_eq!(PROTOCOL_VERSION, 25);
     }
 
     #[test]
@@ -2097,6 +2260,10 @@ mod tests {
             Request::DeleteBoard { workspace_id: "w".into() },
             Request::WatchGavinRoot { workspace_id: "w".into(), root_path: "r".into() },
             Request::UnwatchGavinRoot { workspace_id: "w".into() },
+            Request::Snapshot { id: "s".into() },
+            Request::SessionProcesses,
+            Request::EndOrphan { id: "s".into() },
+            Request::SetFailurePatterns { id: "s".into(), patterns: vec!["API Error:".into()] },
             Request::GetGavinTree { workspace_id: "w".into() },
             Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
             Request::CreateGavinContext { parent_folder: "p".into() },
@@ -2138,12 +2305,15 @@ mod tests {
                 session_id: "s".into(),
                 cwd: "c".into(),
                 command: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
-            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None },
+            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None, conversation_id: None, launch_cwd: None, resume_attempts: None },
             Request::GetOrchestrationByRoot { root_path: "r".into() },
             Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
             Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
@@ -2210,7 +2380,9 @@ mod tests {
     /// derived by hand from `min_version_for`'s match arms on this branch,
     /// not copied from a plan: v1=21, v4=2, v5=2, v6=1, v7=1, v8=2, v10=8,
     /// v11=4, v12=1 (Shutdown), v13=2 (the archive), v15=3 (group
-    /// templates), v21=1 (ClaimCardForSession), plus Unknown.
+    /// templates), v18=1 (Snapshot), v21=1 (SetFailurePatterns), v23=1
+    /// (ClaimCardForSession), v24=1 (EndOrphan), v25=1 (SessionProcesses),
+    /// plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -2232,7 +2404,11 @@ mod tests {
         expected.insert(12, 1);
         expected.insert(13, 2);
         expected.insert(15, 3);
+        expected.insert(18, 1);
         expected.insert(21, 1);
+        expected.insert(23, 1);
+        expected.insert(24, 1);
+        expected.insert(25, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -2250,10 +2426,15 @@ mod tests {
             session_id: "s-1".to_string(),
             cwd: "/p".to_string(),
             command: None,
+            conversation_id: Some("conv-1".to_string()),
+            launch_cwd: Some("/p/worktrees/a".to_string()),
+            resume_attempts: Some(1),
         };
         assert_eq!(
             serde_json::to_value(&cs).unwrap(),
-            serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p", "command": null })
+            serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p", "command": null,
+                                "conversationId": "conv-1", "launchCwd": "/p/worktrees/a",
+                                "resumeAttempts": 1 })
         );
         let mut buf = Vec::new();
         write_message(&mut buf, &Request::LinkCardSession {
@@ -2262,6 +2443,9 @@ mod tests {
             session_id: "s-1".to_string(),
             cwd: "/p".to_string(),
             command: Some("claude 'x'".to_string()),
+            conversation_id: None,
+            launch_cwd: None,
+            resume_attempts: None,
         }).unwrap();
         write_message(&mut buf, &Request::UnlinkCardSession {
             workspace_id: "ws".to_string(),
@@ -2473,6 +2657,7 @@ mod tests {
             position: 0,
             worktree_path: Some("/x/gavin-backend".into()),
             branch: Some("feature/api".into()),
+            auto_resume: Some(true),
             page_id: None,
             stages: vec![Stage {
                 id: "s1".into(),
@@ -2496,6 +2681,7 @@ mod tests {
                 "position": 0,
                 "worktreePath": "/x/gavin-backend",
                 "branch": "feature/api",
+                "autoResume": true,
                 "pageId": null,
                 "stages": [{ "id": "s1", "position": 0, "mode": "parallel", "name": null,
                              "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md",
@@ -2508,10 +2694,14 @@ mod tests {
             state: "running".into(),
             session_id: Some("sess-1".into()),
             reason: None,
+            conversation_id: Some("conv-1".into()),
+            launch_cwd: Some("/x/wt".into()),
+            resume_attempts: Some(1),
         };
         assert_eq!(
             serde_json::to_value(&run).unwrap(),
-            serde_json::json!({ "stepId": "t1", "state": "running", "sessionId": "sess-1", "reason": null })
+            serde_json::json!({ "stepId": "t1", "state": "running", "sessionId": "sess-1", "reason": null,
+                                "conversationId": "conv-1", "launchCwd": "/x/wt", "resumeAttempts": 1 })
         );
     }
 
@@ -2526,6 +2716,9 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(rail.branch, None);
+        // And the same rail has never opted into resuming itself, which
+        // is the only safe reading of a field it does not carry.
+        assert_eq!(rail.auto_resume, None);
     }
 
     /// The old shape must still parse: an agent that has never heard of

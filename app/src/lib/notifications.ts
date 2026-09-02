@@ -1,7 +1,41 @@
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export type SessionStatus = "idle" | "working" | "waiting_for_input";
+/// What the daemon says a session is doing.
+///
+/// `failed` (v21) is a live process at a prompt, exactly like `idle` --
+/// the agent stopped because something BROKE rather than because its
+/// turn ended, and those two used to be byte-identical two seconds of
+/// silence. `unknown` is a status this build does not recognise, written
+/// by a NEWER daemon into the same registry.
+export type SessionStatus = "idle" | "working" | "waiting_for_input" | "failed" | "unknown";
+
+const KNOWN_STATUSES: readonly SessionStatus[] = [
+  "idle",
+  "working",
+  "waiting_for_input",
+  "failed",
+  "unknown",
+];
+
+/// Every status string that crosses from Rust, run through one door.
+///
+/// The daemon's `SessionStatus::from_str` used to map anything it did
+/// not recognise to `idle`, and that default is exactly backwards here:
+/// `idle` is the ONE value orchestration reads as "the turn ended, mark
+/// the step done and advance the rail". A future "the agent broke"
+/// status invented by a v22 daemon would, on that default, advance a
+/// rail on the strength of not being understood. Unknown means unknown,
+/// and every consumer has to say what it does with that.
+///
+/// Not gated by daemon version: `StatusChanged` carries the status as a
+/// plain string, so `min_version_for` -- which gates request TYPES --
+/// is structurally blind to it. This function is the whole protection
+/// on the app's side of the wire.
+export function parseSessionStatus(raw: string): SessionStatus {
+  return (KNOWN_STATUSES as readonly string[]).includes(raw) ? (raw as SessionStatus) : "unknown";
+}
+
 
 // Requested at most once per app run -- after a denied (or not-yet-decided)
 // result, this stays true so a later notification-worthy transition
@@ -47,6 +81,13 @@ async function ensurePermission(): Promise<boolean> {
 
 function isNotificationWorthy(previousStatus: SessionStatus | undefined, newStatus: SessionStatus): boolean {
   if (newStatus === "waiting_for_input") return true;
+  // A run that ended BADLY is at least as worth interrupting for as one
+  // that ended well -- and until v21 this was the same transition as the
+  // one below, so a network-killed agent sent the human a notification
+  // saying it had finished. Notified from any previous status, not only
+  // `working`: a failure is news whatever the session was doing, and
+  // the daemon only ever writes it at the end of a turn.
+  if (newStatus === "failed") return true;
   return previousStatus === "working" && newStatus === "idle";
 }
 
@@ -67,12 +108,19 @@ export async function maybeNotifyStatusChange(
   previousStatus: SessionStatus | undefined,
   newStatus: SessionStatus,
   label: string,
-  prefs: NotifyPrefs
+  prefs: NotifyPrefs,
+  /// Why the session failed, when it did (`layoutState.failureReasonById`).
+  /// The body of a failure notification is the agent's own sentence:
+  /// "stopped" alone tells the human nothing they can act on, and a dead
+  /// network and an expired token want opposite responses.
+  failureReason?: string
 ): Promise<void> {
   if (!isNotificationWorthy(previousStatus, newStatus)) return;
 
   // Per-workspace toggles (D38), checked before permission so a silenced
-  // workspace never prompts for OS permission either.
+  // workspace never prompts for OS permission either. A failure rides
+  // the `finished` toggle rather than a third one: both say "this run
+  // reached an end", which is the thing that toggle answers for.
   const enabled = newStatus === "waiting_for_input" ? prefs.needsInput : prefs.finished;
   if (!enabled) return;
 
@@ -93,8 +141,21 @@ export async function maybeNotifyStatusChange(
   // beside it: two lines contradicting each other in the same tray is
   // worse than the silence this card was filed about.
   const generic =
-    newStatus === "waiting_for_input" ? `${label} needs your input` : `${label} finished`;
+    newStatus === "waiting_for_input"
+      ? `${label} needs your input`
+      : newStatus === "failed"
+        ? failureBody(label, failureReason)
+        : `${label} finished`;
   sendNotification({ title: "gavin", body: railVoice?.(sessionId, newStatus) ?? generic });
+}
+
+/// A failure notification's body. Separate so the tray and the surfaces
+/// that show the same fact cannot drift apart, and so the no-reason case
+/// -- a v21 daemon that pushed the status and lost the reason -- still
+/// says something true rather than an empty tail.
+export function failureBody(label: string, reason: string | undefined): string {
+  const said = reason?.trim();
+  return said ? `${label} stopped — ${said}` : `${label} stopped: its agent did not finish`;
 }
 
 // ---- the Git tab's hidden commit run ---------------------------------------

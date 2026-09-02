@@ -65,6 +65,15 @@ fn persist_workspaces(
     agent_models: HashMap<String, String>,
     terminal_font_size: Option<u16>,
     auto_commit: Option<bool>,
+    // Safe as a positional despite the warning above: `Option<AgentPauseConfig>`
+    // shares a shape with nothing else here, so a transposition is a type
+    // error rather than a silent swap.
+    agent_pause: Option<crate::config::AgentPauseConfig>,
+    // Safe to sit beside them only because its value type is not String:
+    // transposing it with any of the three above is a type error, which
+    // is the guarantee the comment on `agent_models` had to ask for in
+    // prose.
+    superpowers: HashMap<String, crate::config::SuperpowersMark>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -79,6 +88,8 @@ fn persist_workspaces(
             terminal_font_size,
             auto_commit,
             removed_workspaces: data.removed_workspaces.clone(),
+            agent_pause,
+            superpowers,
         },
     )
 }
@@ -95,6 +106,73 @@ pub struct FileTabs(pub Mutex<HashMap<String, String>>);
 /// command that saves must carry it along, exactly as `SessionNames`
 /// describes.
 pub struct AgentModels(pub Mutex<HashMap<String, String>>);
+
+/// The app-wide agent pause cycle, `None` for no cycle at all.
+/// Tauri-managed and persisted into the same `AppConfig` as the rest --
+/// the seventh field a save site can silently wipe, and carried through
+/// `persist_workspaces` for exactly that reason.
+pub struct AgentPause(pub Mutex<Option<crate::config::AgentPauseConfig>>);
+
+#[tauri::command]
+pub fn get_agent_pause(state: State<AgentPause>) -> Option<crate::config::AgentPauseConfig> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Replaces the app-wide cycle. `None` clears it back to no cycle at
+/// all, the same "there is no separate clear command" shape as
+/// `set_theme_pref`.
+///
+/// The ANCHOR is the caller's to supply and gavin never rewrites it here:
+/// the frontend stamps one when the cycle is first switched on, and every
+/// later edit carries the same value through. Stamping `now` on each save
+/// would slide the pause forward every time somebody nudged a field, so
+/// the cycle would never actually fire for anyone who kept adjusting it.
+#[tauri::command]
+pub fn set_agent_pause(
+    agent_pause: Option<crate::config::AgentPauseConfig>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
+) -> Result<(), String> {
+    *agent_pause_state.0.lock().unwrap() = agent_pause.clone();
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+        auto_commit,
+        agent_pause,
+        superpowers,
+    )
+    .map_err(|e| e.to_string())
+}
+/// The human's Superpowers word per workspace root. Same carry-through
+/// contract as `AgentModels` above; the value type differs from the
+/// String maps so a transposed argument is a compile error rather than a
+/// silently wiped field.
+pub struct SuperpowersMarks(pub Mutex<HashMap<String, crate::config::SuperpowersMark>>);
 
 #[cfg(test)]
 mod workspaces_data_tests {
@@ -133,6 +211,8 @@ mod workspaces_data_tests {
             models.clone(),
             None,
             None,
+            None,
+            HashMap::new(),
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
@@ -158,6 +238,8 @@ mod workspaces_data_tests {
             HashMap::new(),
             Some(11),
             None,
+            None,
+            HashMap::new(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().terminal_font_size, Some(11));
@@ -182,6 +264,8 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             Some(true),
+            None,
+            HashMap::new(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(true));
@@ -205,6 +289,8 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             Some(false),
+            None,
+            HashMap::new(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(false));
@@ -237,9 +323,66 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             None,
+            None,
+            HashMap::new(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().removed_workspaces, vec![tombstone]);
+    }
+
+    /// The seventh carry-through field. Its loss is quiet rather than
+    /// loud: a wiped marker does not break anything, it just starts the
+    /// Home banner nagging again about a step the human already declined.
+    #[test]
+    fn persist_workspaces_carries_superpowers_marks_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let mut marks = HashMap::new();
+        marks.insert("/repo/one".to_string(), crate::config::SuperpowersMark::Skipped);
+        marks.insert("/repo/two".to_string(), crate::config::SuperpowersMark::Installed);
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            marks.clone(),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().superpowers, marks);
+    }
+
+    /// The marker is the human's word, so it has to survive a round trip
+    /// through JSON by NAME -- a config.json hand-edited to say
+    /// "installed" must load, and a renamed variant must not silently
+    /// become the other one.
+    #[test]
+    fn superpowers_marks_serialize_as_lowercase_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let mut marks = HashMap::new();
+        marks.insert("/repo".to_string(), crate::config::SuperpowersMark::Installed);
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            marks,
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(crate::config::config_path(dir.path())).unwrap();
+        assert!(raw.contains("\"installed\""), "{raw}");
     }
 
     /// A config.json written before the field existed must still load --
@@ -253,6 +396,29 @@ mod workspaces_data_tests {
         )
         .unwrap();
         assert!(crate::config::load(dir.path()).unwrap().removed_workspaces.is_empty());
+    }
+
+    /// Every config.json on every machine was written before this field
+    /// existed. An absent map must load as empty rather than failing the
+    /// whole parse -- `config::load` swallows a parse error into
+    /// `AppConfig::default()`, so the failure mode here is not an error
+    /// message, it is every workspace silently vanishing.
+    #[test]
+    fn a_config_written_before_superpowers_existed_still_loads_its_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            crate::config::config_path(dir.path()),
+            // snake_case, because that is what AppConfig actually writes:
+            // it carries no `rename_all`, unlike the structs that cross to
+            // the frontend. A camelCase key here would silently parse as
+            // absent and the test would pass for the wrong reason.
+            r#"{"workspaces":[],"active_workspace_id":"ws-1","theme":"dark"}"#,
+        )
+        .unwrap();
+        let loaded = crate::config::load(dir.path()).unwrap();
+        assert!(loaded.superpowers.is_empty());
+        assert_eq!(loaded.active_workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(loaded.theme.as_deref(), Some("dark"));
     }
 
     /// The regression D48 exists to prevent: theme is a fourth field on
@@ -273,9 +439,61 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             None,
+            None,
+            HashMap::new(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
+    }
+
+    /// The seventh field, and the seventh chance to make the same
+    /// mistake: session_names, file_tabs, board_tabs, theme, agent_models
+    /// and removed_workspaces were each silently reset by a save site
+    /// that reconstructed AppConfig without carrying them. A wiped pause
+    /// cycle would be quieter than any of those -- nothing looks wrong
+    /// until a rail runs straight through a window it was told to sit out.
+    #[test]
+    fn persist_workspaces_carries_the_agent_pause_cycle_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let cycle = crate::config::AgentPauseConfig {
+            enabled: true,
+            period_minutes: 300,
+            pause_minutes: 10,
+            anchor_ms: 1_700_000_000_000,
+            limit_percent: 95.0,
+            limit_enabled: true,
+        };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            Some(cycle.clone()),
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, Some(cycle));
+    }
+
+    /// The anchor is what makes the cycle survive a restart, so it has to
+    /// come back off disk byte-identical. A config written before this
+    /// field existed loads with no cycle -- which is off, and is the
+    /// shipped default.
+    #[test]
+    fn a_config_without_a_cycle_loads_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            crate::config::config_path(dir.path()),
+            r#"{"workspaces":[],"activeWorkspaceId":null}"#,
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, None);
     }
 }
 
@@ -318,6 +536,8 @@ mod smoketest_tests {
             last_active_at: None,
             terminal_font_size: None,
             auto_commit: None,
+            auto_resume_runs: false,
+            agent_pause: None,
         }
     }
 
@@ -367,6 +587,8 @@ mod smoketest_tests {
             last_active_at: None,
             terminal_font_size: None,
             auto_commit: None,
+            auto_resume_runs: false,
+            agent_pause: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -487,6 +709,8 @@ pub fn set_workspaces_state(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
@@ -498,6 +722,8 @@ pub fn set_workspaces_state(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -508,6 +734,8 @@ pub fn set_workspaces_state(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -530,6 +758,8 @@ pub fn set_agent_model_default(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     // An empty model removes the entry rather than storing "": the
     // picker's unset row must be able to UNDO a default, not just
@@ -551,6 +781,8 @@ pub fn set_agent_model_default(
     let theme = theme_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -562,6 +794,77 @@ pub fn set_agent_model_default(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// What the human has told gavin about Superpowers, keyed by workspace
+/// root path. Machine-local, so it answers only for this machine -- see
+/// `AppConfig::superpowers`.
+#[tauri::command]
+pub fn get_superpowers_marks(
+    state: State<SuperpowersMarks>,
+) -> HashMap<String, crate::config::SuperpowersMark> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Records "I've installed it" / "Not now" for one workspace root, or --
+/// with `mark: None` -- forgets what was said. Forgetting matters: a
+/// human who asserted an install and then removed it needs a way back to
+/// the honest "absent", and overwriting with the other marker would say
+/// something they did not mean.
+#[tauri::command]
+pub fn set_superpowers_mark(
+    root_path: String,
+    mark: Option<crate::config::SuperpowersMark>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
+) -> Result<(), String> {
+    let superpowers = {
+        let mut current = superpowers_state.0.lock().unwrap();
+        match mark {
+            Some(m) => {
+                current.insert(root_path, m);
+            }
+            None => {
+                current.remove(&root_path);
+            }
+        }
+        current.clone()
+    };
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+        auto_commit,
+        agent_pause,
+        superpowers,
     )
     .map_err(|e| e.to_string())
 }
@@ -583,6 +886,8 @@ pub fn set_theme_pref(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -600,6 +905,8 @@ pub fn set_theme_pref(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -610,6 +917,8 @@ pub fn set_theme_pref(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -639,6 +948,8 @@ pub fn set_terminal_font_size(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     let terminal_font_size = {
         let mut current = font_size_state.0.lock().unwrap();
@@ -655,6 +966,8 @@ pub fn set_terminal_font_size(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -666,6 +979,8 @@ pub fn set_terminal_font_size(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
     )
     .map_err(|e| e.to_string())
 }
@@ -692,6 +1007,8 @@ pub fn set_auto_commit(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     let auto_commit = {
         let mut current = auto_commit_state.0.lock().unwrap();
@@ -705,6 +1022,8 @@ pub fn set_auto_commit(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -716,6 +1035,8 @@ pub fn set_auto_commit(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
     )
     .map_err(|e| e.to_string())
 }
@@ -738,6 +1059,8 @@ pub fn set_session_name(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -760,6 +1083,8 @@ pub fn set_session_name(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -770,6 +1095,8 @@ pub fn set_session_name(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -796,6 +1123,8 @@ pub fn set_file_tabs(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -806,6 +1135,8 @@ pub fn set_file_tabs(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -816,6 +1147,8 @@ pub fn set_file_tabs(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -863,6 +1196,8 @@ pub fn set_board_tabs(
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
     auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -873,6 +1208,8 @@ pub fn set_board_tabs(
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -883,6 +1220,8 @@ pub fn set_board_tabs(
         agent_models,
         terminal_font_size,
         auto_commit,
+        agent_pause,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -1344,10 +1683,16 @@ pub struct SessionBaseline {
     /// (orphan.ts's `orphanDetectionAvailable`), never on this field
     /// alone.
     pub orphan: Option<protocol::OrphanProcess>,
+    /// Why this session is `failed`, or None. Baselined for the same
+    /// reason `interrupted` is -- the reason arrives only as the
+    /// `session-failed` push, whose baseline rides on Attach -- and it
+    /// matters more here than there: a red session with nothing to say
+    /// for itself is exactly the state this feature exists to replace.
+    pub failure_reason: Option<String>,
 }
 
-/// Every live session's cwd, status, restored and interrupted flags, in
-/// one read.
+/// Every live session's cwd, status, restored, interrupted flags and
+/// failure reason, in one read.
 ///
 /// The frontend only ever learns these from pushes (`cwd-changed`,
 /// `session-status-changed`, `session-restored`), and their baseline is
@@ -1379,6 +1724,7 @@ pub fn get_session_baselines(
             restored: s.restored,
             interrupted: s.interrupted,
             orphan: s.orphan,
+            failure_reason: s.failure_reason,
         })
         .collect())
 }
@@ -1861,6 +2207,8 @@ mod resolve_workspaces_tests {
             last_active_at: None,
             terminal_font_size: None,
             auto_commit: None,
+            auto_resume_runs: false,
+            agent_pause: None,
         }
     }
 
@@ -1937,6 +2285,7 @@ mod resolve_workspaces_tests {
             restored: false,
             interrupted: false,
             orphan: None,
+            failure_reason: None,
         }
     }
 
@@ -1949,6 +2298,7 @@ mod resolve_workspaces_tests {
             restored: false,
             interrupted: false,
             orphan: None,
+            failure_reason: None,
         }
     }
 
@@ -2172,6 +2522,8 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 last_active_at: None,
                 terminal_font_size: None,
                 auto_commit: None,
+                auto_resume_runs: false,
+                agent_pause: None,
             });
         }
     } else {
@@ -2337,6 +2689,9 @@ fn attach_and_relay(
                 Response::SessionOrphaned { id, orphan } => {
                     let _ = reader_app_handle.emit("session-orphaned", (id, orphan));
                 }
+                Response::SessionFailed { id, reason } => {
+                    let _ = reader_app_handle.emit("session-failed", (id, reason));
+                }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
                     let _ = reader_app_handle
                         .emit("orchestration-changed", (workspace_id, orchestration));
@@ -2461,6 +2816,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 last_active_at: None,
                 terminal_font_size: None,
                 auto_commit: None,
+                auto_resume_runs: false,
+                agent_pause: None,
             },
         );
     }
@@ -2498,6 +2855,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.agent_models.clone(),
         config.terminal_font_size,
         config.auto_commit,
+        config.agent_pause.clone(),
+        config.superpowers.clone(),
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -2512,6 +2871,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(AgentModels(Mutex::new(config.agent_models)));
     app_handle.manage(TerminalFontSize(Mutex::new(config.terminal_font_size)));
     app_handle.manage(AutoCommit(Mutex::new(config.auto_commit)));
+    app_handle.manage(AgentPause(Mutex::new(config.agent_pause)));
+    app_handle.manage(SuperpowersMarks(Mutex::new(config.superpowers)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
@@ -2647,6 +3008,38 @@ pub fn snapshot_session(
         &current_compat(&compat),
     )
     .map_err(|e| e.to_string())
+}
+
+/// Tells the daemon what THIS session's agent prints when it has stopped
+/// because something broke.
+///
+/// Sent once, right after the session is created, by whichever surface
+/// launched an agent. The patterns come from the agent profile
+/// (`agent_setup::AGENT_PROFILES`) and never from the daemon: the daemon
+/// hosts every workspace's agents at once and has no idea which CLI any
+/// of them is, while a hard-coded pattern would be a silent regression
+/// the day a CLI reworks its messages -- and opencode's error text is
+/// still unverified.
+///
+/// Best-effort, exactly like `snapshot_session`: against a daemon older
+/// than v21 the gate refuses the request, nothing is sent, and a quiet
+/// agent reads as idle the way it always did. A profile with no verified
+/// patterns sends none, which the daemon reads as "no failure detection
+/// for this session" -- never as "nothing failed".
+#[tauri::command]
+pub fn set_failure_patterns(
+    session_id: String,
+    patterns: Vec<String>,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetFailurePatterns { id: session_id, patterns },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
 }
 
 #[tauri::command]
@@ -2840,13 +3233,24 @@ pub fn set_step_run(
     state_value: String,
     session_id: Option<String>,
     reason: Option<String>,
+    conversation_id: Option<String>,
+    launch_cwd: Option<String>,
+    resume_attempts: Option<u32>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
         &current_compat(&compat),
-        &Request::SetStepRun { step_id, state: state_value, session_id, reason },
+        &Request::SetStepRun {
+            step_id,
+            state: state_value,
+            session_id,
+            reason,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        },
     )
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
@@ -3373,13 +3777,25 @@ pub fn link_card_session(
     session_id: String,
     cwd: String,
     command: Option<String>,
+    conversation_id: Option<String>,
+    launch_cwd: Option<String>,
+    resume_attempts: Option<u32>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
         &current_compat(&compat),
-        &Request::LinkCardSession { workspace_id, path, session_id, cwd, command },
+        &Request::LinkCardSession {
+            workspace_id,
+            path,
+            session_id,
+            cwd,
+            command,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        },
     )
     .map_err(|e| e.to_string())?;
     match resp {
@@ -3587,6 +4003,7 @@ mod adopt_session_tests {
             restored: false,
             interrupted: false,
             orphan: None,
+            failure_reason: None,
         }
     }
 
@@ -3599,6 +4016,7 @@ mod adopt_session_tests {
             restored: false,
             interrupted: false,
             orphan: None,
+            failure_reason: None,
         }
     }
 
@@ -3728,6 +4146,8 @@ mod main_session_tests {
             last_active_at: None,
             terminal_font_size: None,
             auto_commit: None,
+            auto_resume_runs: false,
+            agent_pause: None,
         }
     }
 
@@ -3740,6 +4160,7 @@ mod main_session_tests {
             restored: false,
             interrupted: false,
             orphan: None,
+            failure_reason: None,
         }
     }
 
@@ -3953,12 +4374,23 @@ mod gate_tests {
                 session_id: "s".into(),
                 cwd: "c".into(),
                 command: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
-            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None },
+            Request::SetStepRun {
+                step_id: "s".into(),
+                state: "pending".into(),
+                session_id: None,
+                reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
+            },
             Request::GetOrchestrationByRoot { root_path: "r".into() },
             Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
             Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
@@ -4203,6 +4635,8 @@ mod attach_target_tests {
             last_active_at: None,
             terminal_font_size: None,
             auto_commit: None,
+            auto_resume_runs: false,
+            agent_pause: None,
         }
     }
 

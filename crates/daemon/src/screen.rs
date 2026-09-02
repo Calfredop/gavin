@@ -53,6 +53,22 @@ impl SessionScreen {
         self.parser.screen_mut().set_size(rows, cols);
     }
 
+    /// The visible grid as plain text, one line per row, with no escape
+    /// sequences at all.
+    ///
+    /// The point of the parser, used for something other than repainting:
+    /// an agent's error banner ("API Error: Connection dropped") arrives
+    /// as a stream of fragments interleaved with cursor moves, so it is
+    /// contiguous text HERE and nowhere else. `server.rs`'s
+    /// `failure_on_screen` is the caller.
+    ///
+    /// Visible rows only, deliberately -- not the scrollback. A verdict
+    /// is about the turn that just ended, and history is exactly what
+    /// must not condemn it.
+    pub fn contents(&self) -> String {
+        self.parser.screen().contents()
+    }
+
     /// A byte stream that reproduces this screen in a terminal that has never
     /// seen any of the session's output.
     ///

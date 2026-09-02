@@ -125,6 +125,10 @@ export function appLinks(links: AppLink[] = APP_LINKS): AppLink[] {
 /// resting workspace showing only its size.
 export function workspaceRecapLine(summary: WorkspaceAgentsSummary): string {
   const parts: string[] = [];
+  // Broken first: it is the one bucket the human cannot leave alone, and
+  // before v21 it was counted as idle -- so a hub row said "3 pages" for
+  // a workspace whose whole rail had stopped.
+  if (summary.failed > 0) parts.push(`${summary.failed} stopped`);
   if (summary.running > 0) parts.push(`${summary.running} running`);
   if (summary.waiting > 0) parts.push(`${summary.waiting} waiting`);
   parts.push(summary.pages === 0 ? "no pages" : plural(summary.pages, "page"));
@@ -152,13 +156,14 @@ function plural(n: number, noun: string): string {
 /// agent asking a question, the other a run the daemon replaced with a
 /// bare shell after a restart. They lead for that reason -- the same
 /// rule railPhase follows when it puts attention ahead of running.
-export type TaskPhase = "waiting" | "interrupted" | "working" | "idle";
+export type TaskPhase = "waiting" | "failed" | "interrupted" | "working" | "idle";
 
 const PHASE_RANK: Record<TaskPhase, number> = {
   waiting: 0,
-  interrupted: 1,
-  working: 2,
-  idle: 3,
+  failed: 1,
+  interrupted: 2,
+  working: 3,
+  idle: 4,
 };
 
 /// The word each phase goes by on screen and in a label. Here rather
@@ -166,6 +171,7 @@ const PHASE_RANK: Record<TaskPhase, number> = {
 /// and the group's own tally.
 export const PHASE_LABEL: Record<TaskPhase, string> = {
   waiting: "Waiting for you",
+  failed: "Stopped — something broke",
   interrupted: "Interrupted",
   working: "Working",
   idle: "Idle",
@@ -298,6 +304,9 @@ function taskPhase(liveness: CardSessionState, status: SessionStatus | undefined
   // that replaced the agent, so reading it would report a run that is
   // not happening as working or idle.
   if (liveness === "interrupted") return "interrupted";
+  // Same precedence, sharper reason: a failed agent's status IS `failed`,
+  // but every surface used to read the quiet seconds behind it as idle.
+  if (liveness === "failed") return "failed";
   if (status === "waiting_for_input") return "waiting";
   if (status === "working") return "working";
   return "idle";
@@ -372,7 +381,15 @@ export interface FleetSummary {
 /// arithmetics for one number is the shape that drifts.
 export function fleetSummary(input: FleetInput): FleetSummary {
   const workspaces = input.state.workspaces;
-  const agents: WorkspaceAgentsSummary = { pages: 0, tabs: 0, agents: 0, running: 0, waiting: 0, idle: 0 };
+  const agents: WorkspaceAgentsSummary = {
+    pages: 0,
+    tabs: 0,
+    agents: 0,
+    running: 0,
+    waiting: 0,
+    failed: 0,
+    idle: 0,
+  };
   const rails: RailsSummary = { running: 0, attention: 0, done: 0, idle: 0, total: 0 };
   const boards: KanbanSummary[] = [];
   const sessionIds: string[] = [];
@@ -383,6 +400,7 @@ export function fleetSummary(input: FleetInput): FleetSummary {
     agents.agents += ownAgents.agents;
     agents.running += ownAgents.running;
     agents.waiting += ownAgents.waiting;
+    agents.failed += ownAgents.failed;
     agents.idle += ownAgents.idle;
     const ownRails = railsSummary(input.orchestrations[ws.id], input.attention?.[ws.id]);
     rails.running += ownRails.running;

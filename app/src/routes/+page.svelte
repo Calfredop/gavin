@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { confirm } from "@tauri-apps/plugin-dialog";
   import {
     layoutState,
     bootstrap,
@@ -17,6 +16,8 @@
   import { hintDigitFor } from "$lib/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import ContextMenu from "$lib/ContextMenu.svelte";
+  import AppDialog from "$lib/AppDialog.svelte";
+  import { askConfirm } from "$lib/dialog";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
   import {
@@ -44,6 +45,10 @@
   import { tooltip } from "$lib/tooltip";
 
   let closeConfirmed = false;
+  // The prompt is a DOM modal now, so the window can keep sending close
+  // requests while it is up (⌘Q, the Dock). Without this, each one
+  // queues another identical question behind the first.
+  let closePromptOpen = false;
   let uninstallShortcuts: (() => void) | null = null;
   let uninstallHints: (() => void) | null = null;
   let unlistenClose: (() => void) | null = null;
@@ -95,10 +100,19 @@
     unlistenClose = await getCurrentWindow().onCloseRequested(async (event) => {
       if (closeConfirmed) return;
       event.preventDefault();
-      const shouldClose = await confirm(
-        "Close this window? Your terminal sessions will keep running — reopen the app to resume them.",
-        { title: "gavin" }
-      );
+      if (closePromptOpen) return;
+      closePromptOpen = true;
+      let shouldClose = false;
+      try {
+        shouldClose = await askConfirm({
+          title: "Close this window?",
+          lines: ["Your terminal sessions keep running — reopen the app to resume them."],
+          confirmLabel: "Close window",
+          cancelLabel: "Keep open",
+        });
+      } finally {
+        closePromptOpen = false;
+      }
       if (shouldClose) {
         await quitApp();
       }
@@ -252,6 +266,13 @@
   <SetupWizard workspaceId={$wizardWorkspaceId} />
 {/if}
 
+<!-- The app's alerts and confirms, drawn once, here. Last in the
+     document on purpose: every other modal is a fixed layer at the same
+     z-index, so tree order is what decides, and a question raised from
+     inside one of them (archiving a card from its detail modal) has to
+     land on top of it rather than behind it. -->
+<AppDialog />
+
 <style>
   /* App chrome is not selectable, like a native window. WKWebView only
      honors the -webkit- prefixed property, so the unprefixed one alone
@@ -328,9 +349,13 @@
       transform: rotate(360deg);
     }
   }
-  /* Warning tone, matching the rail header, the chip ring and the
-     sidebar count it stands in for. Positioned off .tab, which is
-     already `position: relative` for the hold-⌘ hint. */
+  /* Amber, the app's one colour for "this wants a human"
+     (ui/indicators.ts) -- the same tone the rail header, the chip ring
+     and the sidebar count it stands in for now wear. A corner pip rather
+     than an inline badge because the tab already carries a label and an
+     icon of its own, and its aria-label and tooltip both name the fact,
+     so nothing here rests on the colour alone. Positioned off .tab,
+     which is already `position: relative` for the hold-⌘ hint. */
   .tab-attention {
     position: absolute;
     top: 4px;

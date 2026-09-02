@@ -32,6 +32,26 @@ const ATTACH_FAILURE_EXIT_CODE: i32 = -2;
 /// real-time guarantee.
 const HEURISTIC_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How often the suspend watchdog compares its two clocks.
+///
+/// **Must stay below `HEURISTIC_QUIET_PERIOD`**, and that is the whole
+/// reason it is not the sparse ten seconds two clock reads would
+/// otherwise deserve. On wake, a session that was mid-turn is silent and
+/// its quiet timer fires `Idle` HEURISTIC_QUIET_PERIOD later -- measured
+/// on the same `Instant` clock, which excluded the sleep, so the timer
+/// starts counting from the wake. The mark this watchdog leaves is read
+/// at exactly that transition (`failure_verdict`), so a watchdog that
+/// polled less often than the quiet period would usually publish its
+/// mark AFTER the rail had already advanced on the silence. See
+/// `the_suspend_watchdog_must_outrun_the_quiet_timer`.
+const SUSPEND_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How far the two clocks must diverge before the gap is called a
+/// suspend. Comfortably above what ordinary scheduling delay, a heavily
+/// loaded machine or a one-second NTP slew can produce, and far below the
+/// shortest sleep anyone closes a lid for.
+const SUSPEND_GAP_THRESHOLD: Duration = Duration::from_secs(30);
+
 /// Shared between a session's pump thread and its heuristic idle-timeout
 /// companion thread (spawn_heuristic_idle_timer). last_activity,
 /// heuristic_working, and running all live behind one lock so a
@@ -174,6 +194,215 @@ fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: Sess
     }
 }
 
+/// How the daemon decides that a quiet agent stopped because something
+/// BROKE rather than because its turn ended -- the one distinction the
+/// whole v21 change exists to make.
+///
+/// Two independent signals, because they catch different deaths and
+/// neither alone is enough:
+///
+/// - the agent SAID so (`failure_on_screen`): the profile's own error
+///   text, matched against the rendered screen. Catches an API error, a
+///   usage limit, an expired token, a connection that died mid-stream.
+/// - the machine SLEPT (`slept_mid_turn`): a fact about this process's
+///   own clock, owing nothing to the agent's output at all.
+///
+/// Consulted at exactly one moment: the transition a quiet session would
+/// otherwise make to `Idle`. That is deliberate. A failure is a verdict
+/// on a TURN, and a session that is still painting frames has not
+/// finished one -- an agent retrying a dropped connection prints
+/// "Retrying in 39s · attempt 8/10" once a second for minutes, and
+/// pausing its rail for that would be exactly the false alarm this whole
+/// design is trying not to raise.
+fn failure_verdict(manager: &Arc<SessionManager>, id: &str) -> Option<String> {
+    if let Some(gap) = manager.slept_mid_turn.lock().unwrap().get(id).copied() {
+        return Some(slept_reason(gap));
+    }
+    let matched = failure_on_screen(manager, id)?;
+    // Already on screen when the human last typed here: they have seen
+    // it, answered at the prompt below it, and this is the verdict on
+    // THAT turn rather than a re-run of the last one.
+    if manager.acknowledged_failures.lock().unwrap().get(id) == Some(&matched) {
+        return None;
+    }
+    Some(matched)
+}
+
+/// The first line of this session's RENDERED screen that matches one of
+/// its profile's failure patterns.
+///
+/// The screen model, not the byte stream. `StatusScanner` is the
+/// established seam for deriving a status from PTY output, but it is an
+/// OSC scanner and an agent's error banner is plain text painted by a
+/// TUI: the bytes that produce `API Error: Connection dropped` arrive
+/// interleaved with cursor moves and repaints, so a raw substring match
+/// would straddle them and find nothing. In the vt100 model that gavin
+/// already keeps per session, the same text is one contiguous row.
+fn failure_on_screen(manager: &Arc<SessionManager>, id: &str) -> Option<String> {
+    let patterns = manager.failure_patterns.lock().unwrap().get(id).cloned()?;
+    if patterns.is_empty() {
+        return None;
+    }
+    let screen = manager.screens.lock().unwrap().get(id).cloned()?;
+    let contents = screen.lock().unwrap().contents();
+    for line in contents.lines() {
+        if patterns.iter().any(|p| line.contains(p.as_str())) {
+            return Some(strip_tui_decoration(line));
+        }
+    }
+    None
+}
+
+/// The agent's line without the glyph its TUI painted in front of it.
+///
+/// Measured, not imagined: Claude Code prefixes its error line with
+/// `\u{23fa} ` and its status lines with `\u{273b} `, and a reason that
+/// starts with a bullet reads as a rendering artefact in every surface
+/// that shows it. Everything from the first alphanumeric character on is
+/// the agent's own sentence.
+fn strip_tui_decoration(line: &str) -> String {
+    let trimmed = line.trim();
+    match trimmed.char_indices().find(|(_, c)| c.is_alphanumeric()) {
+        Some((i, _)) => trimmed[i..].trim_end().to_string(),
+        None => trimmed.to_string(),
+    }
+}
+
+/// The opening of the one failure reason gavin writes ITSELF rather than
+/// quoting from an agent's screen.
+///
+/// It is a fixed prefix because the app has to recognise it: the
+/// auto-resume trigger table classifies a failure by its reason, and
+/// every OTHER reason is the agent's own sentence, matched against the
+/// profile's `failure_causes`. A suspend has no profile behind it, so
+/// `app/src/lib/autoResume.ts` matches this prefix instead, and
+/// `the_slept_reason_keeps_the_prefix_the_app_classifies_on` below is
+/// what stops a copy-edit here from silently turning every wake-up
+/// failure into an unclassifiable one.
+pub const SLEPT_REASON_PREFIX: &str = "the machine slept for";
+
+fn slept_reason(gap: u64) -> String {
+    format!("{SLEPT_REASON_PREFIX} {} and this agent has not spoken since", humanize_gap(gap))
+}
+
+/// "2h 14m", "45m", "90s" -- for a human reading one sentence about why
+/// their rail stopped, not for arithmetic.
+fn humanize_gap(seconds: u64) -> String {
+    if seconds >= 3600 {
+        let h = seconds / 3600;
+        let m = (seconds % 3600) / 60;
+        if m == 0 { format!("{h}h") } else { format!("{h}h {m}m") }
+    } else if seconds >= 60 {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// The `Failed` counterpart of `persist_and_emit_status`: status and
+/// reason are written together and pushed together, so no consumer can
+/// ever see a red session with nothing to say for itself.
+fn persist_and_emit_failure(manager: &Arc<SessionManager>, id: &str, reason: &str) {
+    if let Err(e) = manager.registry.lock().unwrap().update_status_failed(id, reason) {
+        eprintln!("failed to persist failure for session {id}: {e}");
+    }
+    let target = manager.attached_writers.lock().unwrap().get(id).cloned();
+    if let Some(w) = target {
+        let mut w = w.lock().unwrap();
+        // StatusChanged first, so a consumer that only reads statuses is
+        // never briefly told a reason for a session it still believes is
+        // idle. Same ordering rule SessionRestored/SessionInterrupted use.
+        let _ = write_message(
+            &mut *w,
+            &Response::StatusChanged { id: id.to_string(), status: "failed".to_string() },
+        );
+        let _ = write_message(
+            &mut *w,
+            &Response::SessionFailed { id: id.to_string(), reason: reason.to_string() },
+        );
+    }
+}
+
+/// Watches for time this process did not observe -- a machine suspend,
+/// which is the originating case of the whole connection-failure family:
+/// a laptop leaves the office mid-rail and comes back on a different
+/// network, with every agent's TCP connection dead and every agent
+/// process still alive.
+///
+/// Pairs a monotonic reading with a wall-clock one and compares their
+/// deltas. WHICH of the two runs ahead was measured, not assumed, before
+/// this was written: on macOS `Instant` is `CLOCK_UPTIME_RAW`, which
+/// EXCLUDES suspended time (verified against `kern.boottime` on a machine
+/// with 17h of accumulated sleep -- wall-clock-since-boot 419,736s vs
+/// `Instant` 357,712s, and `Instant`'s own debug timespec matched
+/// `CLOCK_UPTIME_RAW` to the second). So the `SystemTime` delta is the
+/// one that runs ahead, and a watchdog that read only `Instant` would
+/// detect nothing at all and pass its own tests doing it.
+///
+/// That same measurement decides the poll interval. `HeuristicInner::
+/// last_activity` is an `Instant` too, so a suspend is invisible to it:
+/// on wake it has not "elapsed" the sleep, which is good news twice and
+/// bad news once.
+///
+/// Good: no burst of spurious `Idle` transitions fires for the sessions
+/// that were already quiet before the lid closed, because from their
+/// timer's point of view no time passed.
+///
+/// Bad: the session that was mid-TURN is silent from the wake onward, so
+/// its timer reaches HEURISTIC_QUIET_PERIOD two seconds after the wake
+/// and calls it `Idle` -- which is the rail-advancing verdict this whole
+/// change exists to prevent. The mark below is read at exactly that
+/// transition (`failure_verdict`), so it has to be published FIRST. That
+/// is why SUSPEND_POLL_INTERVAL is a second rather than the ten a gap
+/// measured in hours would otherwise deserve.
+fn spawn_suspend_watchdog(manager: &Arc<SessionManager>) {
+    let manager = Arc::clone(manager);
+    std::thread::spawn(move || {
+        let mut last = (Instant::now(), std::time::SystemTime::now());
+        loop {
+            std::thread::sleep(SUSPEND_POLL_INTERVAL);
+            let now = (Instant::now(), std::time::SystemTime::now());
+            let mono = now.0.duration_since(last.0);
+            // Saturating: a wall clock that went BACKWARDS (an NTP step,
+            // a manual clock change) is not a suspend, and must not be
+            // read as one.
+            let wall = now.1.duration_since(last.1).unwrap_or(Duration::ZERO);
+            last = now;
+            let gap = wall.saturating_sub(mono);
+            if gap < SUSPEND_GAP_THRESHOLD {
+                continue;
+            }
+            // Every session the registry says was Working. Read from the
+            // registry rather than from per-session heuristic state
+            // because that is where the status already lives, and it is
+            // the same value every other consumer sees.
+            let working: Vec<String> = match manager.registry.lock().unwrap().list() {
+                Ok(rows) => rows
+                    .into_iter()
+                    .filter(|r| r.status == SessionStatus::Working)
+                    .map(|r| r.id)
+                    .collect(),
+                Err(e) => {
+                    eprintln!("suspend watchdog could not read the registry: {e}");
+                    continue;
+                }
+            };
+            if working.is_empty() {
+                continue;
+            }
+            let secs = gap.as_secs();
+            eprintln!(
+                "gavin-daemon: {secs}s of unobserved time -- {} session(s) were mid-turn",
+                working.len()
+            );
+            let mut marks = manager.slept_mid_turn.lock().unwrap();
+            for id in working {
+                marks.insert(id, secs);
+            }
+        }
+    });
+}
+
 /// Spawned once per session pump (see spawn_pump), alongside it. Polls
 /// `heuristic.inner` every HEURISTIC_POLL_INTERVAL; once
 /// HEURISTIC_QUIET_PERIOD has elapsed with no new output AND this session
@@ -189,7 +418,10 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
             // left for this thread to ever do for this session again.
             return;
         }
-        let mut inner = heuristic.inner.lock().unwrap();
+        // Not `mut`: this binding only ever READS, and is dropped before
+        // the failure verdict is taken. The mutation moved to the second
+        // binding below, which is re-taken after the screen is read.
+        let inner = heuristic.inner.lock().unwrap();
         if !inner.running {
             return;
         }
@@ -201,11 +433,45 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
             // alone must never silently downgrade it to idle.
             continue;
         }
-        if inner.last_activity.elapsed() >= HEURISTIC_QUIET_PERIOD {
-            inner.heuristic_working = false;
-            // Emitted while still holding `inner` so this can never be
-            // reordered relative to a concurrent pump-thread decision.
-            persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+        if inner.last_activity.elapsed() < HEURISTIC_QUIET_PERIOD {
+            continue;
+        }
+        // The quiet period is up, and this is the one moment a failure is
+        // judged: an agent that stopped because something broke and one
+        // that stopped because it finished produce byte-identical
+        // silence, and this is the line where the two used to become the
+        // same word -- `idle`, which orchestration reads as "the turn
+        // ended. Done." and acts on by advancing the rail.
+        //
+        // `inner` is DROPPED before the verdict is taken, and that is not
+        // a detail. The verdict reads the session's rendered screen, and
+        // the pump holds the screen's lock across feed-then-forward and
+        // takes `inner` inside it -- so a verdict computed while holding
+        // `inner` inverts that order and the two threads deadlock. It
+        // does not merely race: the timer stops firing for that session
+        // altogether, which is every status this feature depends on.
+        let quiet_since = inner.last_activity;
+        drop(inner);
+        let verdict = failure_verdict(&manager, &id);
+
+        // Re-taken, and re-validated: anything could have happened while
+        // the screen was being read. New output means this verdict
+        // describes a turn that is no longer over, and the next poll will
+        // judge the next silence on its own.
+        let mut inner = heuristic.inner.lock().unwrap();
+        if !inner.running
+            || !inner.heuristic_working
+            || inner.waiting_for_input
+            || inner.last_activity != quiet_since
+        {
+            continue;
+        }
+        inner.heuristic_working = false;
+        // Emitted while still holding `inner` so this can never be
+        // reordered relative to a concurrent pump-thread decision.
+        match verdict {
+            Some(reason) => persist_and_emit_failure(&manager, &id, &reason),
+            None => persist_and_emit_status(&manager, &id, SessionStatus::Idle),
         }
     });
 }
@@ -616,6 +882,7 @@ fn session_summary(r: SessionRecord) -> SessionSummary {
         cwd: r.cwd,
         status: r.status.as_str().to_string(),
         restored: r.restored,
+        failure_reason: r.failure_reason,
         interrupted: r.interrupted,
     }
 }
@@ -635,6 +902,34 @@ pub struct SessionManager {
     /// survives a delta applied twice no better than one applied never.
     /// Lock order everywhere is screen -> attached_writers -> writer.
     screens: Mutex<HashMap<String, Arc<Mutex<SessionScreen>>>>,
+    /// The text each session's agent prints when it has STOPPED because
+    /// something broke (`Request::SetFailurePatterns`). Empty for a
+    /// session nobody has told the daemon about -- a plain shell, or an
+    /// agent profile whose error text nobody has verified -- and an empty
+    /// list means NO failure detection, never "nothing failed".
+    ///
+    /// Per session rather than daemon-wide because the patterns belong to
+    /// the agent profile, and one daemon hosts every workspace's agents
+    /// at once.
+    failure_patterns: Mutex<HashMap<String, Vec<String>>>,
+    /// The failure line that was already on a session's screen when the
+    /// human last typed into it. A failure is only ever a verdict on the
+    /// turn that just ended, so an error the human has already seen --
+    /// still painted in the transcript above the prompt they answered at
+    /// -- must not condemn the NEXT turn. Compared by text, so a genuinely
+    /// new error still reads as new.
+    acknowledged_failures: Mutex<HashMap<String, String>>,
+    /// Sessions that were `Working` when this process stopped observing
+    /// time (see `spawn_suspend_watchdog`) and have not produced a single
+    /// byte since. Value is how long the gap was, in seconds.
+    ///
+    /// Removed by the pump on the first chunk after the wake: an agent
+    /// that is painting again woke up and is talking, and whether THAT
+    /// turn ends well is the screen's business, not the clock's. What
+    /// stays in here is the session that never spoke again -- which
+    /// cannot have finished its turn, because it was frozen in the middle
+    /// of one.
+    slept_mid_turn: Mutex<HashMap<String, u64>>,
     /// The daemon's first genuinely *shared* (not per-session) state:
     /// one entry per unique repo root any live session is currently
     /// mapped to. Not persisted -- see this plan's Global Constraints.
@@ -663,6 +958,9 @@ impl SessionManager {
             sessions: Mutex::new(HashMap::new()),
             attached_writers: Mutex::new(HashMap::new()),
             screens: Mutex::new(HashMap::new()),
+            failure_patterns: Mutex::new(HashMap::new()),
+            acknowledged_failures: Mutex::new(HashMap::new()),
+            slept_mid_turn: Mutex::new(HashMap::new()),
             repo_pollers: Mutex::new(HashMap::new()),
             session_repo_root: Mutex::new(HashMap::new()),
             gavin_watchers: Mutex::new(HashMap::new()),
@@ -841,6 +1139,7 @@ impl SessionManager {
             // Only recovery can find one, and this is a session being
             // created, not recovered.
             orphan: None,
+            failure_reason: None,
         })?;
 
         self.sessions.lock().unwrap().insert(id.clone(), pty);
@@ -1067,17 +1366,26 @@ impl SessionManager {
         self.orchestration.lock().unwrap().set_rail_run(rail_id, state, current_stage_id.as_deref())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn set_step_run(
         &self,
         step_id: &str,
         state: &str,
         session_id: Option<String>,
         reason: Option<String>,
+        conversation_id: Option<String>,
+        launch_cwd: Option<String>,
+        resume_attempts: Option<u32>,
     ) -> anyhow::Result<()> {
-        self.orchestration
-            .lock()
-            .unwrap()
-            .set_step_run(step_id, state, session_id.as_deref(), reason.as_deref())
+        self.orchestration.lock().unwrap().set_step_run(
+            step_id,
+            state,
+            session_id.as_deref(),
+            reason.as_deref(),
+            conversation_id.as_deref(),
+            launch_cwd.as_deref(),
+            resume_attempts,
+        )
     }
 
     pub fn link_card_session(
@@ -1087,8 +1395,20 @@ impl SessionManager {
         session_id: &str,
         cwd: &str,
         command: Option<&str>,
+        conversation_id: Option<&str>,
+        launch_cwd: Option<&str>,
+        resume_attempts: Option<u32>,
     ) -> anyhow::Result<()> {
-        self.kanban.lock().unwrap().link_card_session(workspace_id, path, session_id, cwd, command)
+        self.kanban.lock().unwrap().link_card_session(
+            workspace_id,
+            path,
+            session_id,
+            cwd,
+            command,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        )
     }
 
     pub fn unlink_card_session(&self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
@@ -1183,6 +1503,11 @@ impl SessionManager {
             session_id,
             &record.cwd,
             record.command.as_deref(),
+            // The agent's own session, not one gavin launched: there is no
+            // conversation id or launch cwd to carry, and no budget to touch.
+            None,
+            None,
+            None,
         )?;
         Ok(true)
     }
@@ -1265,10 +1590,58 @@ impl SessionManager {
                 .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
             session.writer_handle()
         };
+        // BEFORE the bytes reach the PTY, and that ordering is the whole
+        // correctness of it. Whatever failure is on screen at the moment
+        // the human types, they have read -- they are typing at the
+        // prompt underneath it -- so it is history from here and must not
+        // be the verdict on the turn they are starting. Acknowledging
+        // AFTER the write reads a screen the agent may already have
+        // repainted: the shell echoes and runs within milliseconds, so a
+        // failure produced BY this very input would be acknowledged
+        // before it had ever been seen, and the turn it belongs to would
+        // read as a clean finish. A genuinely new error compares
+        // different and still lands (see failure_verdict).
+        {
+            let mut acked = self.acknowledged_failures.lock().unwrap();
+            // Taken WITHOUT the failure_on_screen helper's Arc<Self>: this
+            // is a &self method, and the lookup it does is the same two
+            // map reads inlined here rather than a signature change on a
+            // helper every other caller has an Arc for.
+            let matched = self
+                .failure_patterns
+                .lock()
+                .unwrap()
+                .get(id)
+                .filter(|p| !p.is_empty())
+                .cloned()
+                .and_then(|patterns| {
+                    let screen = self.screens.lock().unwrap().get(id).cloned()?;
+                    let contents = screen.lock().unwrap().contents();
+                    contents
+                        .lines()
+                        .find(|line| patterns.iter().any(|p| line.contains(p.as_str())))
+                        .map(strip_tui_decoration)
+                });
+            match matched {
+                Some(line) => acked.insert(id.to_string(), line),
+                None => acked.remove(id),
+            };
+        }
         writer.lock().unwrap().write_all(data)?;
         if let Err(e) = self.registry.lock().unwrap().clear_restored(id) {
             eprintln!("failed to clear restored flag for session {id}: {e}");
         }
+        Ok(())
+    }
+
+    /// What this session's agent prints when it has stopped because
+    /// something broke (`Request::SetFailurePatterns`).
+    ///
+    /// Replaces rather than merges: the caller owns the whole list, and
+    /// an empty one is a legitimate instruction meaning "this profile has
+    /// no verified error text, so do not detect failures for it".
+    pub fn set_failure_patterns(&self, id: &str, patterns: Vec<String>) -> anyhow::Result<()> {
+        self.failure_patterns.lock().unwrap().insert(id.to_string(), patterns);
         Ok(())
     }
 
@@ -1627,6 +2000,18 @@ impl SessionManager {
                     &mut *writer.lock().unwrap(),
                     &Response::StatusChanged { id: id.to_string(), status: record.status.as_str().to_string() },
                 );
+                // Beside the status, never instead of it -- the same
+                // shape SessionInterrupted takes above. The reason
+                // travels as a push, so without this baseline a frontend
+                // reload would leave a red session with nothing to say
+                // for itself, which is precisely the hole cwd, status and
+                // the git chip each had to have closed in turn.
+                if let Some(reason) = record.failure_reason.clone() {
+                    let _ = write_message(
+                        &mut *writer.lock().unwrap(),
+                        &Response::SessionFailed { id: id.to_string(), reason },
+                    );
+                }
                 // Establishes this session's repo mapping even if it never
                 // emits a single OSC 7 cwd report (Task 4's own wiring is
                 // purely reactive to *live* changes) -- runs synchronously
@@ -1818,6 +2203,15 @@ impl SessionManager {
                             }
                         }
 
+                        // This session woke up and is painting again, so
+                        // the clock has nothing left to say about it --
+                        // whether THIS turn ends well is the screen's
+                        // business (see failure_verdict). Cheap: the map
+                        // is empty except in the seconds after a suspend.
+                        if !manager.slept_mid_turn.lock().unwrap().is_empty() {
+                            manager.slept_mid_turn.lock().unwrap().remove(&id);
+                        }
+
                         {
                             let mut inner = heuristic.inner.lock().unwrap();
                             inner.last_activity = Instant::now();
@@ -1912,6 +2306,12 @@ impl SessionManager {
             // daemon's whole lifetime, and also stops a dead session's stale
             // screen being restored to a later Attach.
             manager.screens.lock().unwrap().remove(&id);
+            // Same reason as the screen above: per-session state that
+            // would otherwise leak for the daemon's whole lifetime, and
+            // would answer for a session id the daemon no longer hosts.
+            manager.failure_patterns.lock().unwrap().remove(&id);
+            manager.acknowledged_failures.lock().unwrap().remove(&id);
+            manager.slept_mid_turn.lock().unwrap().remove(&id);
         });
     }
 }
@@ -1976,8 +2376,27 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetRailRun { rail_id, state, current_stage_id } => manager
             .set_rail_run(&rail_id, &state, current_stage_id)
             .map(|_| Response::Ok),
-        Request::SetStepRun { step_id, state, session_id, reason } => manager
-            .set_step_run(&step_id, &state, session_id, reason)
+        Request::SetFailurePatterns { id, patterns } => {
+            manager.set_failure_patterns(&id, patterns).map(|_| Response::Ok)
+        }
+        Request::SetStepRun {
+            step_id,
+            state,
+            session_id,
+            reason,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        } => manager
+            .set_step_run(
+                &step_id,
+                &state,
+                session_id,
+                reason,
+                conversation_id,
+                launch_cwd,
+                resume_attempts,
+            )
             .map(|_| Response::Ok),
         Request::GetTools { workspace_id } => {
             manager.tools(&workspace_id).map(|tools| Response::Tools { tools })
@@ -2072,8 +2491,26 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
-        Request::LinkCardSession { workspace_id, path, session_id, cwd, command } => manager
-            .link_card_session(&workspace_id, &path, &session_id, &cwd, command.as_deref())
+        Request::LinkCardSession {
+            workspace_id,
+            path,
+            session_id,
+            cwd,
+            command,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        } => manager
+            .link_card_session(
+                &workspace_id,
+                &path,
+                &session_id,
+                &cwd,
+                command.as_deref(),
+                conversation_id.as_deref(),
+                launch_cwd.as_deref(),
+                resume_attempts,
+            )
             .map(|_| Response::Ok),
         Request::ClaimCardForSession { root_path, path, session_id } => manager
             .claim_card_for_session(&root_path, &path, &session_id)
@@ -2144,6 +2581,10 @@ pub fn run_server(socket_path: &std::path::Path, manager: Arc<SessionManager>) -
     }
     let listener = UnixListener::bind(socket_path)?;
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    // After recover(), before the first connection: the watchdog's first
+    // reading has to be taken while the daemon is definitely awake, and
+    // it must be running before any session it might have to speak for.
+    spawn_suspend_watchdog(&manager);
 
     for stream in listener.incoming() {
         let stream = match stream {
@@ -2246,6 +2687,7 @@ mod tests {
             position: 0,
             worktree_path: None,
             branch: None,
+            auto_resume: None,
             page_id: None,
             stages: vec![protocol::Stage {
                 id: "s1".into(),
@@ -2312,6 +2754,9 @@ mod tests {
                 state: "running".into(),
                 session_id: Some("sess-1".into()),
                 reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
             },
         );
         match handle_request(&manager, Request::GetOrchestration { workspace_id: "ws-1".into() }) {
@@ -2455,6 +2900,9 @@ mod tests {
                 state: "running".into(),
                 session_id: Some(session_id),
                 reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
             },
         );
     }
@@ -2611,6 +3059,9 @@ mod tests {
                 state: "running".into(),
                 session_id: Some("a-session-that-ended".into()),
                 reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
             },
         );
         // Deleting the whole rail, which is what the human was doing.
@@ -3450,7 +3901,7 @@ mod tests {
         let before = card.to_string_lossy().to_string();
         let after = plans.join("done").join("ship.md").to_string_lossy().to_string();
 
-        manager.link_card_session("ws-1", &before, "s-1", "/p", None).unwrap();
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None).unwrap();
         // The rail's one step points at the card about to move.
         manager
             .set_orchestration(
@@ -3461,6 +3912,7 @@ mod tests {
                     position: 0,
                     worktree_path: None,
                     branch: None,
+                    auto_resume: None,
                     page_id: None,
                     stages: vec![protocol::Stage {
                         id: "st1".into(),
@@ -3570,7 +4022,7 @@ mod tests {
         let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
         let owner = live_session(&manager);
         let bystander = live_session(&manager);
-        manager.link_card_session("ws-1", &card, &owner, "/p", None).unwrap();
+        manager.link_card_session("ws-1", &card, &owner, "/p", None, None, None, None).unwrap();
 
         assert!(!manager.claim_card_for_session(&root, &card, &bystander).unwrap());
         assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].session_id, owner);
@@ -3585,7 +4037,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
         let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
-        manager.link_card_session("ws-1", &card, "s-long-gone", "/p", None).unwrap();
+        manager.link_card_session("ws-1", &card, "s-long-gone", "/p", None, None, None, None).unwrap();
         let session = live_session(&manager);
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
@@ -3640,7 +4092,7 @@ mod tests {
         std::fs::write(&card, "---\ntitle: Ship\nstatus: Done\n---\n").unwrap();
         let before = card.to_string_lossy().to_string();
 
-        manager.link_card_session("ws-1", &before, "s-1", "/p", None).unwrap();
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None).unwrap();
         manager
             .set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &before)], vec![])
             .unwrap();
@@ -3828,6 +4280,273 @@ mod tests {
             }
             other => panic!("expected Board, got {other:?}"),
         }
+    }
+
+    // ---- v21: a quiet agent that BROKE is not a finished one ----------
+    //
+    // The whole family this exists for was measured, not assumed, under a
+    // temp $HOME with the real Claude Code CLI pointed at a fake API:
+    //
+    //   connection reset before a response   retries visibly, then
+    //                                        "API Error: Connection dropped
+    //                                        (ECONNRESET)" and goes quiet
+    //   connection killed MID-STREAM         "API Error: API returned an
+    //                                        empty or malformed response",
+    //                                        quiet within ~11s
+    //   529 overloaded / 401 expired token   retries visibly, then API Error:
+    //   429 usage limit                      "API Error: ... You have
+    //                                        exceeded your usage limit.",
+    //                                        quiet within ~11s
+    //   server accepts and never answers     spinner forever; never quiet
+    //
+    // In EVERY terminal case the process stayed alive, the session went
+    // quiet, and the scanner saw no OSC 133 and no bell -- so the daemon
+    // called it `idle` and the rail marked the step done. The one thing
+    // they all share is a screen line containing "API Error:".
+
+    /// Waits for this session to report `status`, returning the reason
+    /// that came with it (SessionFailed rides beside StatusChanged).
+    ///
+    /// Takes the reader rather than making one, and that is the whole
+    /// point: an attached connection carries PTY output between the
+    /// messages this is looking for, so a fresh `BufReader` per call
+    /// throws away everything the previous one had already pulled off
+    /// the socket. A test that waited twice would then block for good on
+    /// a status that had already arrived and been discarded.
+    fn await_status(
+        reader: &mut BufReader<UnixStream>,
+        id: &str,
+        status: &str,
+    ) -> Option<String> {
+        let deadline = std::time::Instant::now() + HEURISTIC_QUIET_PERIOD * 8;
+        let mut hit = false;
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            // The read half is shut down by failure_test_session's
+            // watchdog, so a status that never comes fails the test
+            // instead of hanging it for ever.
+            let resp: Response = match read_message(reader) {
+                Ok(Some(r)) => r,
+                // The watchdog in failure_test_session shut the read half
+                // down: nothing more is coming, so say what WAS seen.
+                Ok(None) => break,
+                Err(e) => panic!("reading while waiting for {status:?}: {e}"),
+            };
+            match &resp {
+                Response::StatusChanged { id: rid, status: s } if rid == id => {
+                    seen.push(s.clone());
+                    if s == status {
+                        // `failed` is always followed by its reason; every
+                        // other status has none to wait for.
+                        if status != "failed" {
+                            return None;
+                        }
+                        hit = true;
+                    }
+                }
+                Response::SessionFailed { id: rid, reason } if rid == id && hit => {
+                    return Some(reason.clone());
+                }
+                _ => {}
+            }
+        }
+        panic!("never saw status {status:?} for {id}; saw {seen:?}");
+    }
+
+    /// A session with its patterns already set, then attached.
+    ///
+    /// That ORDER is not incidental. `request` reads the next message off
+    /// the socket, and an attached connection carries PTY output and
+    /// status pushes on the same wire -- so a reply read after Attach is
+    /// whatever arrived first, not the reply. In the app these never
+    /// share a socket at all: patterns go over the COMMAND connection
+    /// (`session::set_failure_patterns`) and pushes over the streaming
+    /// one.
+    fn failure_test_session(
+        socket_path: &std::path::Path,
+        patterns: Option<&[&str]>,
+    ) -> (UnixStream, BufReader<UnixStream>, String) {
+        let mut stream = UnixStream::connect(socket_path).unwrap();
+        let created = request(
+            &mut stream,
+            &Request::CreateSession {
+                workspace_path: "/tmp/ws".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        );
+        let id = match created {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+        if let Some(patterns) = patterns {
+            let resp = request(
+                &mut stream,
+                &Request::SetFailurePatterns {
+                    id: id.clone(),
+                    patterns: patterns.iter().map(|p| p.to_string()).collect(),
+                },
+            );
+            assert!(matches!(resp, Response::Ok), "SetFailurePatterns: {resp:?}");
+        }
+        write_message(&mut stream, &Request::Attach { id: id.clone() }).unwrap();
+        // ONE reader for the whole test, and one that cannot block for
+        // ever. NOT a socket read timeout: these messages arrive in
+        // fragments, so a timeout that lands mid-message consumes half a
+        // line and desynchronises everything after it. Shutting the read
+        // half down from a watchdog thread ends the wait at a clean EOF
+        // instead, and only ever after every deadline in here has passed.
+        let reader = BufReader::new(stream.try_clone().unwrap());
+        let guard = stream.try_clone().unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(HEURISTIC_QUIET_PERIOD * 20);
+            let _ = guard.shutdown(std::net::Shutdown::Read);
+        });
+        (stream, reader, id)
+    }
+
+    /// `printf 'API Error%s ...' :` rather than the literal text: the
+    /// shell ECHOES what is typed, so a command line containing the
+    /// pattern would make this pass whether or not the printf ever ran.
+    /// Only the produced output carries "API Error:".
+    const PRINT_FAILURE: &str =
+        "printf 'API Error%s Connection dropped (ECONNRESET)\\n' :\n";
+
+    #[test]
+    fn a_quiet_session_whose_screen_shows_the_profiles_error_text_goes_failed_not_idle() {
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, Some(&["API Error:"]));
+
+        write_message(
+            &mut stream,
+            &Request::WriteInput { id: id.clone(), data: PRINT_FAILURE.to_string() },
+        )
+        .unwrap();
+
+        let reason = await_status(&mut reader, &id, "failed");
+        assert_eq!(
+            reason.as_deref(),
+            Some("API Error: Connection dropped (ECONNRESET)"),
+            "the reason must be the agent's OWN line, which is what tells a human \
+             a dead network from an expired token"
+        );
+    }
+
+    #[test]
+    fn the_same_screen_with_no_patterns_set_still_goes_idle() {
+        // A profile whose error text nobody has verified gets NO failure
+        // detection -- never a guess. This is the control for the test
+        // above, and the reason the patterns are supplied per session
+        // rather than hard-coded in the daemon.
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, None);
+
+        write_message(
+            &mut stream,
+            &Request::WriteInput { id: id.clone(), data: PRINT_FAILURE.to_string() },
+        )
+        .unwrap();
+
+        await_status(&mut reader, &id, "idle");
+    }
+
+    #[test]
+    fn an_empty_pattern_list_means_no_detection_rather_than_matching_everything() {
+        let (socket_path, _dir) = start_test_server();
+        // An empty list SENT, not the absence of a call: the daemon has
+        // an entry for this session and it matches nothing. That is the
+        // honest reading of a profile whose error text nobody has
+        // verified, and it must not read as "match everything".
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, Some(&[]));
+        write_message(
+            &mut stream,
+            &Request::WriteInput { id: id.clone(), data: PRINT_FAILURE.to_string() },
+        )
+        .unwrap();
+        await_status(&mut reader, &id, "idle");
+    }
+
+    #[test]
+    fn typing_after_a_failure_means_the_next_turn_is_judged_on_its_own() {
+        // The error stays painted in the transcript above the prompt the
+        // human answers at. Without this, every later turn in that
+        // session would be condemned by a line the human has already
+        // read and acted on.
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, Some(&["API Error:"]));
+        write_message(
+            &mut stream,
+            &Request::WriteInput { id: id.clone(), data: PRINT_FAILURE.to_string() },
+        )
+        .unwrap();
+        await_status(&mut reader, &id, "failed");
+
+        write_message(
+            &mut stream,
+            &Request::WriteInput { id: id.clone(), data: "printf 'carrying on\n'\n".to_string() },
+        )
+        .unwrap();
+        await_status(&mut reader, &id, "idle");
+    }
+
+    /// The reason is shown to a human on four surfaces, so it must be
+    /// the agent's SENTENCE and not the bullet its TUI drew in front of
+    /// it. Both glyphs here were taken off a real Claude Code screen.
+    #[test]
+    fn the_reason_drops_the_glyph_the_tui_painted_in_front_of_it() {
+        assert_eq!(
+            strip_tui_decoration("\u{23fa} API Error: 529 Overloaded."),
+            "API Error: 529 Overloaded."
+        );
+        assert_eq!(
+            strip_tui_decoration("  \u{23fa} Please run /login \u{b7} API Error: 401 expired  "),
+            "Please run /login \u{b7} API Error: 401 expired"
+        );
+        // Nothing to strip, and nothing lost.
+        assert_eq!(strip_tui_decoration("API Error: x"), "API Error: x");
+    }
+
+    /// The ordering this whole detector depends on, as an assertion
+    /// rather than a comment.
+    ///
+    /// On wake a mid-turn session is silent, and its quiet timer is
+    /// measured on `Instant` -- which on macOS is CLOCK_UPTIME_RAW and
+    /// therefore did NOT advance through the suspend (measured: 371,638s
+    /// of `Instant` against 433,667s of wall clock since boot on a
+    /// machine with 17h of accumulated sleep). So the timer starts
+    /// counting from the wake and fires `Idle` two seconds later. The
+    /// watchdog has to have published its mark by then, or the rail
+    /// advances on the silence and the mark arrives too late to matter.
+    #[test]
+    fn the_suspend_watchdog_must_outrun_the_quiet_timer() {
+        assert!(
+            SUSPEND_POLL_INTERVAL < HEURISTIC_QUIET_PERIOD,
+            "a suspend mark published after the quiet timer has already called the \
+             session idle is a mark nothing will ever read"
+        );
+    }
+
+    /// The app classifies a failure by reading its reason, and a suspend
+    /// is the one reason gavin writes rather than quotes. `autoResume.ts`
+    /// holds this same prefix; a reword here without one there turns
+    /// every wake-up failure into an unknown cause, which never
+    /// auto-resumes -- the feature would go quiet with every test green.
+    #[test]
+    fn the_slept_reason_keeps_the_prefix_the_app_classifies_on() {
+        assert_eq!(SLEPT_REASON_PREFIX, "the machine slept for");
+        assert!(
+            slept_reason(8040).starts_with(SLEPT_REASON_PREFIX),
+            "the sentence and the prefix the app matches on have to be the same string"
+        );
+        assert_eq!(slept_reason(8040), "the machine slept for 2h 14m and this agent has not spoken since");
+    }
+
+    #[test]
+    fn a_gap_measured_in_seconds_is_said_the_way_a_human_reads_it() {
+        assert_eq!(humanize_gap(45), "45s");
+        assert_eq!(humanize_gap(90), "1m");
+        assert_eq!(humanize_gap(3600), "1h");
+        assert_eq!(humanize_gap(8040), "2h 14m");
     }
 
     #[test]
@@ -4732,6 +5451,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }
@@ -4802,6 +5522,7 @@ mod tests {
                 interrupted: false,
                 process,
                 orphan: None,
+                failure_reason: None,
             })
             .unwrap();
     }
@@ -5838,6 +6559,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }
@@ -5938,6 +6660,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }
@@ -5979,6 +6702,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }
@@ -6023,6 +6747,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }
@@ -6090,6 +6815,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }
@@ -6131,6 +6857,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }
@@ -6211,6 +6938,7 @@ mod tests {
                     interrupted: false,
                     process: None,
                     orphan: None,
+                    failure_reason: None,
                 })
                 .unwrap();
         }

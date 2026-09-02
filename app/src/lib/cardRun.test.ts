@@ -8,6 +8,11 @@ import {
   composeDevelopPrompt,
   shellQuote,
   buildRunCommand,
+  buildResumeCommand,
+  mintConversationId,
+  withFreshConversationId,
+  noPromptReason,
+  agentPromptBlocker,
   buildHeadlessCommand,
   COMMIT_PROMPT,
   buildToolCommand,
@@ -178,8 +183,168 @@ describe("shellQuote", () => {
 
 describe("buildRunCommand", () => {
   it("appends the quoted prompt to the agent command", () => {
-    expect(buildRunCommand("claude", "do it")).toBe("claude 'do it'");
-    expect(buildRunCommand("claude --model x", "a'b")).toBe("claude --model x 'a'\\''b'");
+    expect(buildRunCommand("claude", "", "do it")).toBe("claude 'do it'");
+    expect(buildRunCommand("claude --model x", "", "a'b")).toBe("claude --model x 'a'\\''b'");
+  });
+
+  // opencode's shape. The `=` lives in the prefix, so the flag and its
+  // value come out ATTACHED -- `--prompt 'x'` is parsed by yargs, which
+  // reads a value beginning with `-` as the next flag and prints its
+  // usage banner instead of starting a session.
+  it("attaches the prompt to a flagged profile's prefix", () => {
+    expect(buildRunCommand("opencode", "--prompt=", "do it")).toBe("opencode --prompt='do it'");
+    expect(buildRunCommand("opencode --model a/b", "--prompt=", "-x")).toBe(
+      "opencode --model a/b --prompt='-x'"
+    );
+  });
+
+  // The quoting is the same either way: one concatenation, one quoter.
+  it("quotes a flagged prompt exactly as it quotes a positional one", () => {
+    const prompt = "O'Brien said \"hi\"\nand left";
+    expect(buildRunCommand("opencode", "--prompt=", prompt)).toBe(
+      `opencode --prompt=${shellQuote(prompt)}`
+    );
+    expect(buildRunCommand("claude", "", prompt)).toBe(`claude ${shellQuote(prompt)}`);
+  });
+
+  // The case this signature exists for. `cursor 'Fix the login flow'`
+  // and `opencode 'Fix the login flow'` both read the prompt as a PATH:
+  // cursor opens a file that is not there, opencode dies with "Failed to
+  // change directory to …". Neither reports anything a card run could
+  // catch, so the refusal has to happen before the launch.
+  it("refuses to build a line for a profile that takes no prompt", () => {
+    expect(buildRunCommand("cursor", null, "Fix the login flow")).toBeNull();
+    expect(buildRunCommand("my-agent", null, "")).toBeNull();
+  });
+});
+
+describe("noPromptReason", () => {
+  // It names the agent and where to change it: the block is never about
+  // the card, and a sentence that only says "cannot start" sends the
+  // human looking at the wrong thing.
+  it("names the agent and points at Settings", () => {
+    const reason = noPromptReason("Cursor");
+    expect(reason).toContain("Cursor");
+    expect(reason).toContain("Settings");
+  });
+});
+
+describe("agentPromptBlocker", () => {
+  it("is null while the profile can carry a prompt, and the reason when it cannot", () => {
+    expect(agentPromptBlocker("", "Claude Code")).toBeNull();
+    expect(agentPromptBlocker("--prompt=", "opencode")).toBeNull();
+    expect(agentPromptBlocker(null, "Cursor")).toBe(noPromptReason("Cursor"));
+  });
+});
+
+describe("buildRunCommand with a conversation id", () => {
+  // Ahead of the prompt, because the prompt is a positional: anything
+  // after it would be read as a second one.
+  it("fixes the conversation id at launch, before the prompt", () => {
+    expect(buildRunCommand("claude", "", "do it", "--session-id", "abc-123")).toBe(
+      "claude --session-id abc-123 'do it'"
+    );
+  });
+
+  // Dropped TOGETHER: an id with no argv to carry it, or argv with no
+  // id, would each put a stray token in front of the prompt.
+  it("drops both halves unless it has both", () => {
+    expect(buildRunCommand("claude", "", "do it", "--session-id", null)).toBe("claude 'do it'");
+    expect(buildRunCommand("claude", "", "do it", "", "abc-123")).toBe("claude 'do it'");
+    expect(buildRunCommand("claude", "", "do it", "   ", "abc-123")).toBe("claude 'do it'");
+  });
+
+  it("composes with the model flag the launch command already carries", () => {
+    expect(buildRunCommand("claude --model opus", "", "go", "--session-id", "u1")).toBe(
+      "claude --model opus --session-id u1 'go'"
+    );
+  });
+
+  // The id and the prompt prefix are two different conventions on the
+  // same line: the id sits ahead, the prefix stays glued to the prompt.
+  it("keeps the prompt prefix attached when an id is fixed as well", () => {
+    expect(buildRunCommand("opencode", "--prompt=", "go", "--session-id", "u1")).toBe(
+      "opencode --session-id u1 --prompt='go'"
+    );
+  });
+
+  // A profile that takes no prompt is refused whatever else it verified.
+  it("still refuses a no-prompt profile", () => {
+    expect(buildRunCommand("cursor", null, "go", "--session-id", "u1")).toBeNull();
+  });
+});
+
+describe("mintConversationId", () => {
+  it("mints a real UUID, which is what the CLI validates", () => {
+    const id = mintConversationId("--session-id");
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(mintConversationId("--session-id")).not.toBe(id);
+  });
+
+  // A profile whose argv nobody has verified gets no id, and falls back
+  // to the written reconstruction. Guessing a flag here would put
+  // garbage in somebody's argv.
+  it("mints nothing for a profile with no verified argv", () => {
+    expect(mintConversationId("")).toBeNull();
+    expect(mintConversationId("  ")).toBeNull();
+  });
+});
+
+describe("buildResumeCommand", () => {
+  // No prompt. Resume puts the agent back at the end of its OWN
+  // transcript; a prompt here would be a fresh instruction on top of a
+  // conversation that already holds the whole task.
+  it("reopens the conversation and hands the agent nothing else", () => {
+    expect(buildResumeCommand("claude --model opus", "--resume", "u1")).toBe(
+      "claude --model opus --resume u1"
+    );
+  });
+
+  it("returns null without both a verified argv and an id", () => {
+    expect(buildResumeCommand("claude", "", "u1")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", null)).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", undefined)).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "  ")).toBeNull();
+  });
+});
+
+describe("withFreshConversationId", () => {
+  // Measured against the real binary: re-running a command that carries
+  // `--session-id <uuid>` does not repeat the conversation, it FAILS --
+  // "Session ID <uuid> is already in use" -- so a re-launch that replayed
+  // the stored command would never start at all.
+  it("swaps the baked-in id for a new one", () => {
+    const { command, conversationId } = withFreshConversationId(
+      "claude --session-id 11111111-1111-1111-1111-111111111111 'do it'",
+      "--session-id"
+    );
+    expect(conversationId).not.toBe("11111111-1111-1111-1111-111111111111");
+    expect(command).toBe(`claude --session-id ${conversationId} 'do it'`);
+  });
+
+  it("leaves a command with no id in it exactly as it was", () => {
+    expect(withFreshConversationId("claude 'do it'", "--session-id")).toEqual({
+      command: "claude 'do it'",
+      conversationId: null,
+    });
+    expect(withFreshConversationId("claude --session-id x 'do it'", "")).toEqual({
+      command: "claude --session-id x 'do it'",
+      conversationId: null,
+    });
+    expect(withFreshConversationId(null, "--session-id")).toEqual({
+      command: null,
+      conversationId: null,
+    });
+  });
+
+  // The argv always sits AHEAD of the quoted prompt, so the first
+  // occurrence is the id even when the prompt quotes the same flag.
+  it("swaps the launch flag, not a mention of it inside the prompt", () => {
+    const { command } = withFreshConversationId(
+      "claude --session-id 11111111-1111-1111-1111-111111111111 'run --session-id 9 for me'",
+      "--session-id"
+    );
+    expect(command).toContain("'run --session-id 9 for me'");
   });
 });
 

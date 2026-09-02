@@ -4,6 +4,14 @@
   import { slugStatus, type CardView } from "./planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, ChevronRight, ChevronDown } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import {
+    agentExitedIndicator,
+    agentFailedIndicator,
+    agentIndicator,
+    agentInterruptedIndicator,
+    priorityIndicator,
+  } from "./ui/indicators";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { orchestrations } from "./orchestrationState";
@@ -11,7 +19,8 @@
   import { cardSessionState } from "./columnRunAction";
   import { boardSelection } from "./boardSelection";
   import { tooltip } from "./tooltip";
-  import { layoutState } from "./layoutState";
+  import { layoutState, resolvedAgents } from "./layoutState";
+  import { agentPromptBlocker } from "./cardRun";
   import { jumpToBoundSession } from "./cardRunActions";
   // Svelte 5 self-import for the nested-children recursion.
   import BoardCardSelf from "./BoardCard.svelte";
@@ -63,32 +72,50 @@
     adornment,
   }: Props = $props();
 
-  // Live session binding (card-model spec §3) -- same dot vocabulary the
-  // terminal tabs use, plus a distinct exited ring since a card can stay
-  // bound to a long-gone session.
+  // Why this workspace's agent cannot start a card at all, or null.
+  // Not about this card: the agent the workspace chose takes no prompt
+  // on its command line, so a launch would hand it a prompt it reads as
+  // a path and open nothing. Read reactively -- the profile table is
+  // fetched asynchronously, and a card mounted before it lands would
+  // otherwise keep the empty table's answer.
+  const runBlocked = $derived(
+    workspaceId === null
+      ? null
+      : agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+  );
+
+  // Live session binding (card-model spec §3) -- the shared agent
+  // vocabulary from ui/indicators, so the badge here, the one on the
+  // terminal tab and the one on the sidebar row are the same glyph in the
+  // same tone. Exited is the state only a CARD can be in: the binding
+  // outlives the session it points at.
   const binding = $derived(
     workspaceId !== null ? cardSessionFor($kanbanState[workspaceId], card.id) : null
   );
-  const sessionDot = $derived.by(() => {
+  const priorityBadge = $derived(priorityIndicator(card.priority));
+  const sessionBadge = $derived.by(() => {
     if (!binding) return null;
     const state = cardSessionState($layoutState, binding);
     // Checked before any status: the daemon's status for an interrupted
     // session describes the bare shell that replaced the agent, so
-    // reading it here would paint a working or idle dot over a run that
+    // reading it here would paint a working or idle badge over a run that
     // is not happening.
     if (state === "interrupted")
+      return { indicator: agentInterruptedIndicator(), action: "open the card to resume it" };
+    // Also before any status, and for a sharper version of the same
+    // reason: a failed agent's daemon status IS `failed`, but every
+    // surface used to read the two quiet seconds behind it as `idle` --
+    // an idle badge over a run that broke. Open the card to resume it,
+    // never jump into it.
+    if (state === "failed")
       return {
-        cls: "status-interrupted",
-        tip: "Interrupted — the daemon restarted and this run was not resumed. Open the card to resume it.",
+        indicator: agentFailedIndicator($layoutState.failureReasonById[binding.sessionId]),
+        action: "open the card to resume it",
       };
     if (state === "exited")
-      return { cls: "status-exited", tip: "Session exited — open the card for Re-launch" };
-    const status = $layoutState.sessionStatusById[binding.sessionId];
-    if (status === "working")
-      return { cls: "status-working", tip: "Agent working — click to open the session" };
-    if (status === "waiting_for_input")
-      return { cls: "status-waiting", tip: "Waiting for input — click to open the session" };
-    return { cls: "status-idle", tip: "Agent idle — click to open the session" };
+      return { indicator: agentExitedIndicator(), action: "open the card for Re-launch" };
+    const indicator = agentIndicator($layoutState.sessionStatusById[binding.sessionId]);
+    return { indicator, action: "click to open the session" };
   });
 
   // Which rail carries this card (orchestration spec O2). Read from the
@@ -106,7 +133,7 @@
     // jumping into the bare shell the daemon left would say the run is
     // still going.
     const result = await jumpToBoundSession(workspaceId, card.id);
-    if (result === "exited" || result === "interrupted") onOpen(card.id);
+    if (result === "exited" || result === "interrupted" || result === "failed") onOpen(card.id);
   }
   const runnable = $derived(card.kind !== "note" && binding === null && (onRun !== null || onSendToAgent !== null));
 
@@ -160,10 +187,11 @@
   class:deletable={onDelete !== null}
   class:selected
   class:nested
-  class:session-working={sessionDot?.cls === "status-working"}
-  class:session-waiting={sessionDot?.cls === "status-waiting"}
-  class:session-idle={sessionDot?.cls === "status-idle"}
-  class:session-interrupted={sessionDot?.cls === "status-interrupted"}
+  class:session-working={sessionBadge?.indicator.state === "working"}
+  class:session-waiting={sessionBadge?.indicator.state === "waiting_for_input"}
+  class:session-idle={sessionBadge?.indicator.state === "idle"}
+  class:session-interrupted={sessionBadge?.indicator.state === "interrupted"}
+  class:session-failed={sessionBadge?.indicator.state === "failed"}
   role="button"
   tabindex="0"
   onkeydown={handleKeydown}
@@ -212,8 +240,8 @@
         <Route size={11} />
       </span>
     {/if}
-    {#if card.priority && card.priority !== "none"}
-      <span class="priority priority-{card.priority}" use:tooltip={"Priority: " + card.priority}></span>
+    {#if priorityBadge}
+      <StatusBadge indicator={priorityBadge} size={12} />
     {/if}
     {#if attachmentCount > 0}
       <span
@@ -229,19 +257,25 @@
     {#if card.kind === "plan" && card.checklistTotal > 0}
       <span class="progress" use:tooltip={"Checklist: " + card.checklistDone + " of " + card.checklistTotal + " done"}>{card.checklistDone}/{card.checklistTotal}</span>
     {/if}
-    {#if sessionDot}
+    {#if sessionBadge}
       <button
         type="button"
-        class="status-dot-btn"
+        class="session-button"
         aria-label="Open the bound agent session"
-        use:tooltip={sessionDot.tip}
         onpointerdown={shield}
         onclick={(e) => {
           e.stopPropagation();
           void handleDotClick();
         }}
       >
-        <span class="status-dot {sessionDot.cls}" class:pulse={sessionDot.cls === "status-waiting"}></span>
+        <!-- The badge's own tooltip is replaced rather than suppressed:
+             on this surface the state is also a control, and the bubble
+             is the only place that can say so. -->
+        <StatusBadge
+          indicator={sessionBadge.indicator}
+          size={12}
+          tip={`${sessionBadge.indicator.tip} — ${sessionBadge.action}`}
+        />
       </button>
     {/if}
     {#if card.parseWarning}
@@ -285,16 +319,24 @@
     </div>
   {/if}
   {#if runnable}
-    <div class="run-pills">
+    <!-- The block's reason hangs HERE, on the row, not on the button it
+         disables: a disabled element fires no mouseenter, so a tooltip
+         bound to one can never appear. The row is never disabled.
+         "▶ agent" is deliberately NOT gated -- it pastes into a session
+         that is already running, and builds no argv at all. -->
+    <div class="run-pills" use:tooltip={runBlocked}>
       {#if onRun}
         <button
           type="button"
           class="pill pill-session"
-          use:tooltip={"Run in a dedicated agent session, bound to this card"}
+          disabled={runBlocked !== null}
+          use:tooltip={runBlocked === null
+            ? "Run in a dedicated agent session, bound to this card"
+            : null}
           onpointerdown={shield}
           onclick={(e) => {
             e.stopPropagation();
-            onRun?.(card);
+            if (runBlocked === null) onRun?.(card);
           }}
         >
           ▶ session
@@ -439,25 +481,6 @@
     font-family: monospace;
     font-size: 0.7em;
   }
-  .priority {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-  }
-  .priority-low {
-    background: var(--surface-success);
-  }
-  .priority-medium {
-    background: var(--warning);
-  }
-  .priority-high {
-    background: var(--warning);
-  }
-  .priority-urgent {
-    background: var(--danger);
-  }
   .progress {
     color: var(--text-muted);
     font-size: 0.85em;
@@ -480,7 +503,7 @@
   .child-count {
     font-size: 0.8em;
   }
-  .status-dot-btn {
+  .session-button {
     background: transparent;
     border: none;
     cursor: pointer;
@@ -490,58 +513,30 @@
     padding: 3px;
     flex: 0 0 auto;
   }
-  .status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-  }
-  .status-dot.pulse {
-    animation: dot-pulse 1.2s ease-in-out infinite;
-  }
-  @keyframes dot-pulse {
-    0%,
-    100% {
-      transform: scale(1);
-      opacity: 1;
-    }
-    50% {
-      transform: scale(1.5);
-      opacity: 0.55;
-    }
-  }
+  /* The spine repeats the badge's own tone so a card can be read from
+     across the board, before any glyph is legible. Amber for waiting,
+     not red: red is reserved for broken and for urgent (see
+     ui/indicators.ts), and an agent politely asking a question is
+     neither. */
   .card.session-working {
     border-left: 3px solid var(--border-focus);
   }
   .card.session-waiting {
-    border-left: 3px solid var(--border-danger);
+    border-left: 3px solid var(--border-warning);
   }
   .card.session-idle {
     border-left: 3px solid var(--border-success);
   }
-  .status-dot.status-working {
-    background: var(--accent);
-  }
-  .status-dot.status-waiting {
-    background: var(--danger);
-  }
-  .status-dot.status-idle {
-    background: var(--surface-success);
-  }
-  .status-dot.status-exited {
-    background: transparent;
-    border: 1px solid var(--border-strong);
-  }
   /* Warning, not success or danger: an interrupted run is neither
      finished nor failed -- it is unfinished work waiting on a decision.
-     Hollow like `exited`, because nothing is running in there either;
-     coloured, because unlike an exit this one nobody asked for. */
+     The spine only; the badge in the header carries the glyph. */
   .card.session-interrupted {
     border-left: 3px solid var(--warning);
   }
-  .status-dot.status-interrupted {
-    background: transparent;
-    border: 1px solid var(--warning);
+  /* Danger, where interrupted takes warning: a restart is something the
+     human did, and this is something that happened TO the run. */
+  .card.session-failed {
+    border-left: 3px solid var(--danger);
   }
   /* In flow, not overlaid: a compact nested card has no spare room, and
      an expanded plan's pills must sit with ITS content rather than below

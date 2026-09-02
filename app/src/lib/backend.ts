@@ -1,6 +1,9 @@
+import type { PauseCycle } from "./agentPause";
+import type { AgentUsageReport } from "./agentUsage";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
+import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
 import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
@@ -125,6 +128,52 @@ export function setAutoCommit(enabled: boolean | null): Promise<void> {
   return invoke("set_auto_commit", { enabled });
 }
 
+/// The app-wide agent pause cycle, machine-local beside the theme.
+/// `null` is no cycle at all, which is the shipped default.
+export function getAgentPause(): Promise<PauseCycle | null> {
+  return invoke("get_agent_pause");
+}
+
+/// Replaces it; `null` clears it. The ANCHOR is the caller's to supply
+/// and the host never rewrites it -- stamping `now` on every save would
+/// slide the pause forward each time somebody nudged a field, so the
+/// cycle would never fire for anyone who kept adjusting it.
+export function setAgentPause(agentPause: PauseCycle | null): Promise<void> {
+  return invoke("set_agent_pause", { agentPause });
+}
+
+/// Superpowers plugin status for one workspace root. Straight to Tauri,
+/// like the model defaults above: the detector reads the local checkout
+/// and the marker lives in the app's own config.json, so none of this
+/// needs a daemon request and all of it keeps working across a version
+/// skew that has every gavin_* tool failing closed.
+export function superpowersStatus(rootPath: string): Promise<SuperpowersStatus> {
+  return invoke("superpowers_status", { rootPath });
+}
+
+/// Runs the install and returns the status that follows it. A failed
+/// install is not a rejection -- the returned status carries the run's
+/// stdout and stderr for the drawer, and its state is what the detector
+/// says afterwards. Rejects only when no install was attempted: a profile
+/// gavin must not install into, or a binary it could not spawn.
+export function superpowersInstall(rootPath: string): Promise<SuperpowersStatus> {
+  return invoke("superpowers_install", { rootPath });
+}
+
+/// What the human has told gavin, keyed by workspace root path.
+export function getSuperpowersMarks(): Promise<Record<string, SuperpowersMark>> {
+  return invoke("get_superpowers_marks");
+}
+
+/// `null` forgets what was said, so someone who asserted an install and
+/// then removed it has a way back to the honest answer.
+export function setSuperpowersMark(
+  rootPath: string,
+  mark: SuperpowersMark | null
+): Promise<void> {
+  return invoke("set_superpowers_mark", { rootPath, mark });
+}
+
 // Set once by layoutState.ts's bootstrap() -- both real input paths in
 // this app (terminalRegistry.ts's per-keystroke term.onData, and
 // clipboard.ts's paste action) already call writeInput directly, so
@@ -236,7 +285,10 @@ export function getBoardTabs(): Promise<Record<string, BoardTab>> {
 export interface SessionBaseline {
   id: string;
   cwd: string;
-  status: SessionStatus;
+  /// The daemon's own word for it, unparsed. Run through
+  /// `parseSessionStatus` before it reaches the store: a status this
+  /// build does not recognise must not read as `idle`.
+  status: string;
   restored: boolean;
   /// The run this session held was killed with a previous daemon and its
   /// command was not re-run: a bare shell occupies the tab now. Read back
@@ -249,6 +301,11 @@ export interface SessionBaseline {
   /// orphanDetectionAvailable, which is the only thing allowed to tell
   /// those apart.
   orphan: OrphanProcess | null;
+  /// Why this session is `failed`, in the agent's own words, or null.
+  /// Baselined for the same reason as the rest -- the `session-failed`
+  /// push arrives once per app PROCESS -- and it matters more: a red
+  /// session with nothing to say for itself is the state this replaces.
+  failureReason: string | null;
 }
 
 // The frontend learns cwd/status/restored/interrupted from pushes whose
@@ -278,6 +335,18 @@ export function endOrphan(sessionId: string): Promise<{ ended: boolean; stillRun
 /// are exactly what this list is for. See session::list_managed_sessions.
 export function listManagedSessions(): Promise<ManagedSessions> {
   return invoke("list_managed_sessions");
+}
+
+/// Hands the daemon what THIS session's agent prints when it has stopped
+/// because something broke, so a quiet agent that BROKE stops reading as
+/// one that finished (`session::set_failure_patterns`).
+///
+/// Called once per agent session, right after it is created. Best-effort
+/// on purpose: against a daemon older than v21 the request is refused
+/// and a quiet agent reads as idle exactly as it always did, so no
+/// caller has to branch on the daemon version to launch an agent.
+export function setFailurePatterns(sessionId: string, patterns: string[]): Promise<void> {
+  return invoke("set_failure_patterns", { sessionId, patterns });
 }
 
 /// The git half of the same read-back, one answer per cwd in the order
@@ -389,9 +458,31 @@ export function linkCardSession(
   path: string,
   sessionId: string,
   cwd: string,
-  command: string | null
+  command: string | null,
+  /// The agent CLI's own conversation id for this run, and the directory
+  /// it was LAUNCHED in -- not `cwd` above, which follows OSC 7 and
+  /// drifts the moment the agent moves into a worktree. Both null for a
+  /// profile with no verified resume argv, which falls back to a written
+  /// reconstruction instead.
+  conversationId: string | null = null,
+  launchCwd: string | null = null,
+  /// How many times gavin has resumed this run BY ITSELF. Unlike
+  /// setStepRun's, this one OVERWRITES: a card binding is upserted whole
+  /// by every call site, so null here means zero rather than "leave it
+  /// alone" -- and zero is right for the fresh launches, which are most
+  /// of them.
+  resumeAttempts: number | null = null
 ): Promise<void> {
-  return invoke("link_card_session", { workspaceId, path, sessionId, cwd, command });
+  return invoke("link_card_session", {
+    workspaceId,
+    path,
+    sessionId,
+    cwd,
+    command,
+    conversationId,
+    launchCwd,
+    resumeAttempts,
+  });
 }
 
 export function unlinkCardSession(workspaceId: string, path: string): Promise<void> {
@@ -429,13 +520,26 @@ export function agentProfiles(): Promise<
     command: string;
     mcpSupported: boolean;
     mcpConfigFile: string;
-    promptArg: boolean;
+    promptArgs: string | null;
     headlessArgs: string;
     modelFlag: string;
     models: string[];
+    failurePatterns: string[];
+    failureCauses: Array<{ pattern: string; cause: string }>;
+    sessionIdArgs: string;
+    resumeArgs: string;
+    usageProbe: string | null;
   }>
 > {
   return invoke("agent_profiles");
+}
+
+/// One agent's subscription-limit windows, or a named reason there are
+/// none to show. `force` is the panel's explicit refresh: it skips the
+/// host's freshness floor but not its 429 backoff, because a human
+/// pressing refresh cannot un-anger the endpoint.
+export function agentUsage(profileId: string, force = false): Promise<AgentUsageReport> {
+  return invoke("agent_usage", { profileId, force });
 }
 
 export function mcpFormats(): Promise<Array<{ id: string; label: string }>> {
@@ -687,9 +791,28 @@ export function setStepRun(
   stepId: string,
   state: StepState,
   sessionId: string | null,
-  reason: string | null
+  reason: string | null,
+  /// See linkCardSession: the conversation this run IS, and where it was
+  /// launched, so a stalled step can be resumed as that conversation
+  /// rather than reconstructed from an account of it.
+  conversationId: string | null = null,
+  launchCwd: string | null = null,
+  /// How many times gavin has resumed this run by itself. null LEAVES
+  /// the stored count alone, the way conversationId does, so the dozen
+  /// transitions with nothing to say about the budget -- a stall, a
+  /// done, a rail reset -- do not have to carry it. A launch passes 0
+  /// explicitly: a new conversation is a new run with a fresh budget.
+  resumeAttempts: number | null = null
 ): Promise<void> {
-  return invoke("set_step_run", { stepId, stateValue: state, sessionId, reason });
+  return invoke("set_step_run", {
+    stepId,
+    stateValue: state,
+    sessionId,
+    reason,
+    conversationId,
+    launchCwd,
+    resumeAttempts,
+  });
 }
 
 // --- The tool library -------------------------------------------------------

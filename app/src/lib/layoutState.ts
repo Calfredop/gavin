@@ -1,9 +1,10 @@
 import { writable, derived, get, type Writable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { askConfirm } from "./dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
+import type { PauseCycle } from "./agentPause";
 import * as terminalRegistry from "./terminalRegistry";
 import { hotState } from "./hotState";
 import * as workspace from "./workspace";
@@ -16,9 +17,9 @@ import type {
   RemovedWorkspace,
 } from "./workspace";
 import { sessionLabel } from "./paths";
-import { buildRunCommand } from "./cardRun";
+import { buildRunCommand, mintConversationId, noPromptReason } from "./cardRun";
 import { workspaceIdForSession } from "./workspace";
-import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
+import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
 import { followRenamedContext } from "./planExplorer";
 import {
@@ -31,7 +32,7 @@ import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFo
 import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
 import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
-import type { DaemonCompat } from "./daemonCompat";
+import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
 
 export type { SessionStatus };
@@ -81,6 +82,17 @@ export interface LayoutState {
   /// confirmation that says "end the orphaned process?" is not a
   /// confirmation.
   orphanBySessionId: Record<string, OrphanProcess>;
+  /// Why a session is `failed`, in the agent's own words -- the line its
+  /// TUI painted ("API Error: 529 Overloaded…"), or the sleep the daemon
+  /// watched it through. Keyed by session id, and present only while
+  /// that session's status is `failed`: the daemon clears the reason
+  /// with the status, and a stale reason on a live session is worse than
+  /// none, because it is the text every surface would show.
+  ///
+  /// A separate map rather than a richer status value: `sessionStatusById`
+  /// is read by a dozen surfaces that only ever compare it, and widening
+  /// it into an object would make every one of those comparisons wrong.
+  failureReasonById: Record<string, string>;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
   /// Workspaces the sidebar X removed, newest first. Persisted with the
@@ -102,6 +114,7 @@ const initialState: LayoutState = {
   restoredSessionIds: new Set(),
   interruptedSessionIds: new Set(),
   orphanBySessionId: {},
+  failureReasonById: {},
   fileTabsById: {},
   boardTabsById: {},
   removedWorkspaces: [],
@@ -658,8 +671,9 @@ async function seedSessionBaselines(): Promise<void> {
     const restoredSessionIds = new Set(s.restoredSessionIds);
     const interruptedSessionIds = new Set(s.interruptedSessionIds);
     const orphanBySessionId = { ...s.orphanBySessionId };
+    const failureReasonById = { ...s.failureReasonById };
     for (const b of baselines) {
-      if (sessionStatusById[b.id] === undefined) sessionStatusById[b.id] = b.status;
+      if (sessionStatusById[b.id] === undefined) sessionStatusById[b.id] = parseSessionStatus(b.status);
       if (b.restored) restoredSessionIds.add(b.id);
       if (b.interrupted) interruptedSessionIds.add(b.id);
       // Written positively only, like the two above: a baseline that
@@ -667,8 +681,23 @@ async function seedSessionBaselines(): Promise<void> {
       // The only things that clear one are the daemon confirming it
       // exited (handleOrphanEnded) and the session going away.
       if (b.orphan) orphanBySessionId[b.id] = b.orphan;
+      // The reason is a push like the other four, so a reloaded frontend
+      // would otherwise come up with a red session and nothing to say
+      // for itself. Written straight in, never through
+      // handleSessionFailed -- re-reading a failure the human has
+      // already seen is not a new failure and must not notify.
+      if (b.failureReason && failureReasonById[b.id] === undefined) {
+        failureReasonById[b.id] = b.failureReason;
+      }
     }
-    return { ...s, sessionStatusById, restoredSessionIds, interruptedSessionIds, orphanBySessionId };
+    return {
+      ...s,
+      sessionStatusById,
+      restoredSessionIds,
+      interruptedSessionIds,
+      orphanBySessionId,
+      failureReasonById,
+    };
   });
   // Last, and awaited separately: this one shells out to git once per
   // distinct checkout, so it must never hold up the three maps above --
@@ -794,7 +823,7 @@ export async function bootstrap(): Promise<void> {
     })
   );
   unlisteners.push(
-    await listen<[string, SessionStatus]>("session-status-changed", (event) => {
+    await listen<[string, string]>("session-status-changed", (event) => {
       handleSessionStatusChanged(event.payload[0], event.payload[1]);
     })
   );
@@ -816,6 +845,11 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(
     await listen<[string, OrphanProcess]>("session-orphaned", (event) => {
       handleSessionOrphaned(event.payload[0], event.payload[1]);
+    })
+  );
+  unlisteners.push(
+    await listen<[string, string]>("session-failed", (event) => {
+      handleSessionFailed(event.payload[0], event.payload[1]);
     })
   );
   // An agent naming its own tab (gavin_name_session). Straight into
@@ -851,6 +885,12 @@ export async function bootstrap(): Promise<void> {
   // module is fully evaluated and the load is safe.
   const { initOrchestrationListeners } = await import("./orchestrationState");
   unlisteners.push(await initOrchestrationListeners());
+  // Same dynamic-import reason as above: agentPauseState reads
+  // resolvedAgentFor from this module. Started here rather than from a
+  // component, because a pause whose clock only advances while one tab is
+  // mounted is the bug that made rails tick only on their own tab.
+  const { startPauseClock } = await import("./agentPauseState");
+  unlisteners.push(startPauseClock());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);
@@ -1082,11 +1122,17 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
   const state = get(layoutState);
   const tombstone = workspace.reclaimable(state, workspaceId, rootPath);
   if (tombstone) {
-    const restore = await confirm(
-      `gavin has a board, rails and tools saved for "${tombstone.name}", which was removed from ` +
-        `this folder. Restore them, or start this workspace fresh?`,
-      { title: "gavin", okLabel: "Restore", cancelLabel: "Start fresh" }
-    );
+    const restore = await askConfirm({
+      title: `Restore the saved workspace "${tombstone.name}"?`,
+      lines: [
+        "gavin still has its board, rails and tools from before this folder was removed.",
+        "Start fresh forgets them for good — this is the only moment that record can be spent.",
+      ],
+      confirmLabel: "Restore",
+      // Neither answer is a cancel: both consume the tombstone, so the
+      // dismissing button has to say what dismissing does.
+      cancelLabel: "Start fresh",
+    });
     if (restore) {
       await restoreRemovedWorkspace(state, workspaceId, tombstone, rootPath);
       return;
@@ -1167,6 +1213,50 @@ export const newCardAutoCommit = derived(
   ([$layout, $default]) =>
     resolveAutoCommit(workspace.getActiveWorkspace($layout)?.autoCommit, $default)
 );
+/// Tells the daemon what THIS agent prints when it has stopped because
+/// something broke, so a quiet agent that BROKE stops reading as one
+/// that finished. Called once per agent session gavin launches, right
+/// after it is created.
+///
+/// Best-effort and silent on failure, like the provisional tab rename
+/// every launcher does beside it: the agent is already running, and a
+/// daemon too old to take the patterns simply keeps the pre-v21
+/// behaviour. A profile with no verified patterns sends nothing, which
+/// the daemon reads as "no failure detection for this session" -- never
+/// as "nothing failed".
+///
+/// Agent sessions only. A `command` tool step is a shell whose verdict is
+/// its exit code (tools spec T5), and arming it would let a build log
+/// that happens to print an agent's error text stall a rail.
+export async function armFailureDetection(
+  sessionId: string,
+  patterns: string[]
+): Promise<void> {
+  if (patterns.length === 0) return;
+  try {
+    await backend.setFailurePatterns(sessionId, patterns);
+  } catch {
+    // A daemon older than v21 refuses the request; a quiet agent then
+    // reads as idle exactly as it did before any of this existed.
+  }
+}
+
+/// A conversation id for a run about to be launched, or null.
+///
+/// Two gates, and both have to pass. The PROFILE has to have a verified
+/// `--session-id` argv (`mintConversationId`), and the DAEMON has to be
+/// new enough to persist the id on the run record. A v20 daemon parses
+/// the widened SetStepRun / LinkCardSession fine and drops both fields,
+/// so an id minted against one would ride in the agent's argv and then
+/// vanish -- leaving a conversation nobody can name and a Resume button
+/// promising to reopen it.
+///
+/// So: no daemon, no id. The launch is exactly the pre-v21 launch, and
+/// Resume falls back to the written reconstruction, which still works.
+export function conversationIdForLaunch(agent: { sessionIdArgs: string }): string | null {
+  if (featureBlockedReason(get(daemonCompat), "conversationResume")) return null;
+  return mintConversationId(agent.sessionIdArgs);
+}
 
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
@@ -1180,6 +1270,30 @@ export function resolvedAgentFor(workspaceId: string) {
   );
 }
 
+/// The same answer, reactively: `$resolvedAgents(workspaceId)`.
+///
+/// `resolvedAgentFor` above is three `get()`s, which is right for an
+/// action -- it runs once, at the moment of the click -- and wrong for a
+/// component, which would keep whatever the table said at mount. The
+/// table is fetched asynchronously at bootstrap, so at mount it is
+/// usually still empty: a control derived from the one-shot helper shows
+/// claude-code's answer for the whole session, whatever the workspace
+/// actually chose.
+///
+/// A store OF a function rather than one store per workspace, because
+/// the workspace id is a prop the component already has and the three
+/// inputs are app-wide.
+export const resolvedAgents = derived(
+  [gavinTrees, agentProfilesStore, agentModelDefaultsStore],
+  ([$trees, $profiles, $models]) =>
+    (workspaceId: string) =>
+      resolveAgentConfig(
+        $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+        $profiles,
+        $models
+      )
+);
+
 // Starts the workspace's main agent: a normal daemon session at the
 // workspace root, remembered on the workspace rather than placed in a
 // page tree (D12). Never called automatically.
@@ -1187,16 +1301,15 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws?.rootPath || ws.mainSessionId) return;
+  const agent = resolvedAgentFor(workspaceId);
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(
-      ws.rootPath,
-      resolvedAgentFor(workspaceId).launchCommand
-    );
+    sessionId = await backend.createSession(ws.rootPath, agent.launchCommand);
   } catch (e) {
     setError(String(e));
     return;
   }
+  void armFailureDetection(sessionId, agent.failurePatterns);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
   );
@@ -1232,7 +1345,16 @@ export async function startMainAgentWithPrompt(
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws?.rootPath || ws.mainSessionId) return;
-  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
+  const agent = resolvedAgentFor(workspaceId);
+  const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
+  // The wizard gates this button on agentFlowAvailable, so reaching here
+  // means the profile changed under an open wizard. Say why rather than
+  // launching `cursor '<a whole prompt>'`, which opens a file picker on
+  // a path nobody named.
+  if (command === null) {
+    setError(noPromptReason(agent.label));
+    return;
+  }
   let sessionId: string;
   try {
     sessionId = await backend.createSession(ws.rootPath, command);
@@ -1240,6 +1362,7 @@ export async function startMainAgentWithPrompt(
     setError(String(e));
     return;
   }
+  void armFailureDetection(sessionId, agent.failurePatterns);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, mainSessionId: sessionId } : w
   );
@@ -1392,7 +1515,7 @@ export async function setWorkspaceColor(workspaceId: string, color: string): Pro
 /// and so no two of them can disagree about how they persist.
 export async function setWorkspaceFlag(
   workspaceId: string,
-  key: "notifyNeedsInput" | "notifyFinished" | "confirmTabClose",
+  key: "notifyNeedsInput" | "notifyFinished" | "confirmTabClose" | "autoResumeRuns",
   value: boolean
 ): Promise<void> {
   const state = get(layoutState);
@@ -1415,6 +1538,28 @@ export async function setHomeAgentShare(
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, homeAgentShare: share } : w
   );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// This workspace's own pause cycle. `null` REMOVES the override, which
+/// puts the workspace back to inheriting the app-wide one -- not to no
+/// pause at all. Turning the cycle off here while the app has one stores
+/// a cycle with `enabled: false`, which is why clearing and disabling are
+/// two different calls.
+export async function setWorkspacePause(
+  workspaceId: string,
+  cycle: PauseCycle | null
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) => {
+    if (w.id !== workspaceId) return w;
+    if (cycle === null) {
+      const { agentPause: _dropped, ...rest } = w;
+      return rest;
+    }
+    return { ...w, agentPause: cycle };
+  });
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
@@ -1694,19 +1839,126 @@ export function handleCwdChanged(sessionId: string, cwd: string): void {
 // which decides whether the specific transition is worth an OS
 // notification. Like handleCwdChanged, entries are never removed on
 // session exit.
-export function handleSessionStatusChanged(sessionId: string, status: SessionStatus): void {
+export function handleSessionStatusChanged(sessionId: string, rawStatus: string): void {
+  // Through one door: a status this build cannot read must never be
+  // mistaken for `idle`, which is the value orchestration acts on by
+  // marking a step done (see parseSessionStatus).
+  const status = parseSessionStatus(rawStatus);
   const state = get(layoutState);
   const previousStatus = state.sessionStatusById[sessionId];
-  layoutState.update((s) => ({ ...s, sessionStatusById: { ...s.sessionStatusById, [sessionId]: status } }));
+  layoutState.update((s) => {
+    // Any status but `failed` clears the reason with it, matching what
+    // the daemon does to the row: a session that started talking again,
+    // exited or asked a question is no longer described by the last
+    // thing that broke.
+    const failureReasonById = { ...s.failureReasonById };
+    if (status !== "failed") delete failureReasonById[sessionId];
+    return {
+      ...s,
+      sessionStatusById: { ...s.sessionStatusById, [sessionId]: status },
+      failureReasonById,
+    };
+  });
+  if (status === "failed") {
+    // Held for the reason, which the daemon sends immediately after this
+    // (`persist_and_emit_failure` writes StatusChanged first, so every
+    // consumer that only reads statuses is never briefly told a reason
+    // for a session it still believes is idle). Notifying here would
+    // announce a failure with nothing to say about it, and the agent's
+    // own sentence is the whole value: a dead network and an expired
+    // token want opposite responses from the human.
+    pendingFailureNotice.set(sessionId, previousStatus);
+    return;
+  }
+  pendingFailureNotice.delete(sessionId);
+  notifyStatus(state, sessionId, previousStatus, status);
+}
+
+/// The status a session held just before it went `failed`, kept only
+/// until the reason arrives. See handleSessionStatusChanged.
+const pendingFailureNotice = new Map<string, SessionStatus | undefined>();
+
+/// Told about a failure the moment its reason lands, so the unattended
+/// half of recovery can decide what to do about it.
+///
+/// Registered rather than imported, the same direction and for the same
+/// reason as `setRailNotificationVoice`: auto-resume reads this module
+/// (and orchestration, and card runs), so importing it from here would
+/// close a cycle.
+///
+/// Called only for a LIVE transition -- a failure this app run watched
+/// happen. A failure re-baselined on Attach (a reload finding a session
+/// that broke while the window was gone) deliberately does not fire it:
+/// the previous status is unknown there, so the "never resume a session
+/// that was asking a human something" rule could not be honoured, and
+/// the human is looking at the window anyway.
+export type SessionFailureHook = (
+  sessionId: string,
+  reason: string,
+  previousStatus: SessionStatus | undefined
+) => void;
+
+let sessionFailureHook: SessionFailureHook | null = null;
+
+export function setSessionFailureHook(hook: SessionFailureHook | null): void {
+  sessionFailureHook = hook;
+}
+
+/// @internal - for testing only
+export function __resetFailureNotices(): void {
+  pendingFailureNotice.clear();
+  sessionFailureHook = null;
+}
+
+function notifyStatus(
+  state: LayoutState,
+  sessionId: string,
+  previousStatus: SessionStatus | undefined,
+  status: SessionStatus,
+  failureReason?: string
+): void {
   const label = sessionLabel(state.sessionNames, state.cwdBySessionId, sessionId);
   const owner = workspaceIdForSession(state, sessionId);
   const owningWs = owner ? state.workspaces.find((w) => w.id === owner) : undefined;
   // A session owned by no workspace (spawned but not yet landed) keeps
   // today's behaviour rather than going silent.
-  void maybeNotifyStatusChange(sessionId, previousStatus, status, label, {
-    needsInput: owningWs?.notifyNeedsInput ?? true,
-    finished: owningWs?.notifyFinished ?? true,
-  });
+  void maybeNotifyStatusChange(
+    sessionId,
+    previousStatus,
+    status,
+    label,
+    {
+      needsInput: owningWs?.notifyNeedsInput ?? true,
+      finished: owningWs?.notifyFinished ?? true,
+    },
+    failureReason
+  );
+}
+
+/// Shared by the "session-failed" listener in bootstrap() and this
+/// file's own tests. Rides BESIDE the status the way SessionInterrupted
+/// rides beside SessionRestored: the status has already landed, and this
+/// carries the one thing a human can act on.
+///
+/// It also owns the notification for the transition, because it is the
+/// only call that holds the reason -- see handleSessionStatusChanged.
+/// A push with no pending transition behind it (the same failure read
+/// twice, or a reason arriving for a session already known failed)
+/// updates the text and stays silent.
+export function handleSessionFailed(sessionId: string, reason: string): void {
+  const state = get(layoutState);
+  layoutState.update((s) => ({
+    ...s,
+    failureReasonById: { ...s.failureReasonById, [sessionId]: reason },
+  }));
+  if (!pendingFailureNotice.has(sessionId)) return;
+  const previousStatus = pendingFailureNotice.get(sessionId);
+  pendingFailureNotice.delete(sessionId);
+  notifyStatus(state, sessionId, previousStatus, "failed", reason);
+  // After the notification, not before: the tray line is the human's
+  // record that something broke, and it has to go out whether or not
+  // anything can be done about it automatically.
+  sessionFailureHook?.(sessionId, reason, previousStatus);
 }
 
 // Shared by the "git-status-changed" event listener in bootstrap() and

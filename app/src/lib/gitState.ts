@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as backend from "./backend";
 import {
   layoutState,
+  daemonCompat,
   setGitViewPrefs,
   createSessionForCard,
   resolvedAgentFor,
@@ -20,6 +21,13 @@ import type { AgentCommitRecord, Workspace } from "./workspace";
 import { folderName } from "./paths";
 import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "./notifications";
 import { buildHeadlessCommand, COMMIT_PROMPT } from "./cardRun";
+import {
+  MAX_AUTO_RESUME_ATTEMPTS,
+  autoResumePolicy,
+  classifyFailure,
+  resumeDelayMs,
+} from "./autoResume";
+import { featureBlockedReason } from "./daemonCompat";
 import type {
   ApplyMode,
   Area,
@@ -506,7 +514,14 @@ function awaitExit(sessionId: string): Promise<number> {
 /// prompt forever, and an invisible session that never returns is a
 /// spinner with no end. Its verdict is the exit code AND the working
 /// tree afterwards -- see below for why the code alone is not enough.
-export async function commitViaAgent(workspaceId: string): Promise<boolean> {
+export async function commitViaAgent(
+  workspaceId: string,
+  /// How many automatic retries this run already carries. Non-zero only
+  /// on the one gavin starts itself after a transient failure (see
+  /// retryCommitRun); a human's press always begins at zero, because it
+  /// is a new run and a new budget.
+  retries = 0
+): Promise<boolean> {
   const s = current(workspaceId);
   if (!s || s.busy || s.op || s.agentCommit) return false;
   const agent = resolvedAgentFor(workspaceId);
@@ -530,7 +545,7 @@ export async function commitViaAgent(workspaceId: string): Promise<boolean> {
   await backend.setSessionName(sessionId, "commit").catch(() => {});
   update(workspaceId, (st) => (st.agentCommit?.sessionId === null ? { ...st, agentCommit: { sessionId } } : st));
   // Written down BEFORE the wait, because the window may not survive it.
-  await rememberAgentCommit(workspaceId, { sessionId, cwd: s.cwd });
+  await rememberAgentCommit(workspaceId, { sessionId, cwd: s.cwd, retries });
 
   return watchAgentCommit(workspaceId, sessionId, tail);
 }
@@ -544,6 +559,16 @@ async function watchAgentCommit(
   sessionId: string,
   tail: { text: () => string; stop: () => void }
 ): Promise<boolean> {
+  // Read BEFORE the record is forgotten below, and before the wait for
+  // the same reason `adoptAgentCommits` exists: this window may not be
+  // the one that started the run, so the budget it already spent is only
+  // knowable from the record.
+  const spent =
+    get(layoutState).workspaces.find((w) => w.id === workspaceId)?.gitView?.agentCommit
+      ?.sessionId === sessionId
+      ? (get(layoutState).workspaces.find((w) => w.id === workspaceId)?.gitView?.agentCommit
+          ?.retries ?? 0)
+      : 0;
   const code = await awaitExit(sessionId);
   tail.stop();
   // A worktree switch replaces this view wholesale (ensureGitView), and
@@ -572,6 +597,13 @@ async function watchAgentCommit(
   if (code !== 0) {
     noteError(workspaceId, `Commit via agent failed (exit ${code})${quoted}`);
     void announceVerdict(workspaceId, { kind: "failed", exitCode: code });
+    // A RETRY, not a resume. A headless run exits on exactly the failures
+    // an interactive one survives (measured: `-p` returns 1 and prints
+    // the same `API Error:` line), so there is no live session and no
+    // conversation to reopen -- and none is wanted: the prompt is "commit
+    // pending changes", which `adoptAgentCommits` already tolerates
+    // repeating because repeating it is harmless.
+    void maybeRetryCommitRun(workspaceId, spent, said);
     return false;
   }
   if (left > 0) {
@@ -585,6 +617,50 @@ async function watchAgentCommit(
     update(workspaceId, (st) => (st.agentCommitDone ? { ...st, agentCommitDone: false } : st));
   }, AGENT_COMMIT_FLASH_MS);
   return true;
+}
+
+/// Re-run a commit prompt that failed for a reason worth another try.
+///
+/// The whole trigger table applies -- an expired token, a usage limit or
+/// a crash are as pointless to retry here as anywhere else -- but the
+/// evidence is different: a headless run has no session status and no
+/// screen, only its captured output, so the agent's own error line is
+/// read out of the tail instead. Everything the tail cannot classify is
+/// `unknown`, which never retries, and that covers the ordinary case
+/// this must not touch: an agent that simply decided it could not commit.
+///
+/// One retry, on the persisted count -- the same budget as everywhere
+/// else -- and only where the human opted in for this workspace.
+///
+/// No reachability wait and no stagger: a commit run is a single
+/// short-lived process the human started deliberately, not a wave of
+/// rails coming back at once, and the delay before trying is the whole
+/// of the policy's backoff.
+async function maybeRetryCommitRun(
+  workspaceId: string,
+  spent: number,
+  said: string
+): Promise<void> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (ws?.autoResumeRuns !== true) return;
+  if (featureBlockedReason(get(daemonCompat), "autoResume")) return;
+  if (spent >= MAX_AUTO_RESUME_ATTEMPTS) return;
+  const agent = resolvedAgentFor(workspaceId);
+  const policy = autoResumePolicy(classifyFailure(said, agent.failureCauses));
+  if (policy.kind !== "resume") return;
+  const delay = resumeDelayMs(policy.on);
+  setTimeout(() => {
+    // Re-checked at the last moment: the human may have started their
+    // own run in the meantime, and `commitViaAgent` refuses anyway --
+    // but refusing quietly here keeps the notification honest.
+    if (current(workspaceId)?.agentCommit) return;
+    void commitViaAgent(workspaceId, spent + 1).then((ok) => {
+      if (!ok) return;
+      void import("./autoResumeNotify").then(({ sendAutoResumeNotice }) =>
+        sendAutoResumeNotice(`Commit via agent broke and was retried automatically — ${said}`)
+      );
+    });
+  }, delay);
 }
 
 /// Sends the verdict out of the Git tab. Everything else this run

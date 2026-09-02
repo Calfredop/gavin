@@ -98,6 +98,18 @@ pub struct GitViewPrefs {
 pub struct AgentCommitRecord {
     pub session_id: String,
     pub cwd: String,
+    /// How many times gavin has RE-RUN this commit prompt by itself after
+    /// a transient failure (v22). A retry, not a resume: a headless run
+    /// exits, holds no conversation, and "commit pending changes" is
+    /// harmless to repeat -- which is exactly why the same budget rule
+    /// applies, bounded at one.
+    ///
+    /// Here rather than in memory because a hidden run is the one piece
+    /// of work in this app that survives the window that started it
+    /// (`adoptAgentCommits`), so a counter in the window would reset on
+    /// the very event the record exists for.
+    #[serde(default)]
+    pub retries: u32,
 }
 
 /// The orchestration agent run (a Generate, or one rail's Reorganize)
@@ -203,6 +215,20 @@ pub struct Workspace {
     /// fact about the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_agent_share: Option<f64>,
+    /// Whether gavin may resume this workspace's standalone CARD runs by
+    /// itself when their agent breaks (v22). Defaults OFF -- the opposite
+    /// of every other toggle here -- because it is CONSENT, not a habit:
+    /// a run that restarts itself hours after the human walked away made
+    /// a decision that was theirs unless they made it in advance.
+    ///
+    /// Machine-local, like the notification toggles and the close
+    /// confirm, and for the same reason: it says what this human wants
+    /// gavin doing while they are away from this machine. A rail's own
+    /// opt-in lives on the rail instead (`Rail::auto_resume`), because a
+    /// rail is a durable object the human designed and its steps are
+    /// shared with every agent that reads the plan.
+    #[serde(default)]
+    pub auto_resume_runs: bool,
     /// Git tab preferences; None until the user changes something.
     #[serde(default)]
     pub git_view: Option<GitViewPrefs>,
@@ -214,6 +240,13 @@ pub struct Workspace {
     /// workspaces save, so an older config simply loads with it absent.
     #[serde(default)]
     pub last_active_at: Option<i64>,
+    /// This workspace's own pause cycle, overriding the app-wide one.
+    /// Absent means INHERIT, which is not the same as off -- a workspace
+    /// that wants no pause while the app has one stores a cycle with
+    /// `enabled: false`, and `skip_serializing_if` keeps the key out of
+    /// config.json entirely for the ordinary inheriting case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pause: Option<AgentPauseConfig>,
 }
 
 fn default_true() -> bool {
@@ -247,6 +280,59 @@ pub struct RemovedWorkspace {
 pub struct BoardTabRecord {
     pub workspace_id: String,
     pub context_folder: String,
+}
+
+/// A duty cycle: sit out `pause_minutes` of every `period_minutes`, and
+/// hold when a probe says a limit window is `limit_percent` full.
+///
+/// Mirrors `PauseCycle` in `agentPause.ts`, which owns every judgement
+/// made from it -- this is storage. Machine-local, like the notification
+/// toggles and `auto_resume_runs`: it says what this human wants gavin
+/// doing while they are away from THIS machine.
+///
+/// `anchor_ms` is why the cycle survives everything the card asks it to.
+/// It is fixed when the cycle is switched on and never rewritten, so the
+/// phase is a pure function of it and the wall clock: a machine that
+/// slept for two days, an app that was closed overnight and a frontend
+/// that reloaded all resolve to the same answer, because none of them are
+/// inputs. Re-anchoring on load would slide the pause forward every
+/// launch; re-anchoring on wake would mean a laptop that sleeps often
+/// never pauses at all.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPauseConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_period_minutes")]
+    pub period_minutes: u32,
+    #[serde(default = "default_pause_minutes")]
+    pub pause_minutes: u32,
+    #[serde(default)]
+    pub anchor_ms: i64,
+    #[serde(default = "default_limit_percent")]
+    pub limit_percent: f64,
+    /// Whether a probe's limits may pause work at all. Separate switch
+    /// from `enabled`, because the blunt gate and the precise one are
+    /// wanted independently: an agent with no probe can only have the
+    /// cycle, and somebody who trusts the numbers may want only the
+    /// limits.
+    #[serde(default = "default_true")]
+    pub limit_enabled: bool,
+}
+
+/// Five hours, matching the window Claude Code and Codex both meter
+/// against, so a pause lands at the end of one window rather than
+/// straddling two.
+fn default_period_minutes() -> u32 {
+    300
+}
+
+fn default_pause_minutes() -> u32 {
+    10
+}
+
+fn default_limit_percent() -> f64 {
+    95.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -321,6 +407,43 @@ pub struct AppConfig {
     /// it silently resets on the next save.
     #[serde(default)]
     pub removed_workspaces: Vec<RemovedWorkspace>,
+    /// The app-wide agent pause cycle. `None` -- the shipped default --
+    /// means no cycle at all, so no existing workspace changes behaviour
+    /// on update. A workspace with no cycle of its own inherits this one.
+    /// Like session_names/file_tabs/board_tabs/theme/agent_models/
+    /// removed_workspaces it must be carried through `persist_workspaces`,
+    /// or it silently resets on the next save.
+    #[serde(default)]
+    pub agent_pause: Option<AgentPauseConfig>,
+    /// What the human told gavin about Superpowers, keyed by workspace
+    /// root path. The seventh carry-through field.
+    ///
+    /// Machine-local on purpose (spec S9): a repo can travel to a machine
+    /// that has no Superpowers, so an assertion made here must not vouch
+    /// for a checkout somewhere else. That is also why this is not an
+    /// `[agent].superpowers` key in `.gavin-root/config.toml` -- besides
+    /// travelling, a new root-config key widens `SetRootConfigField`,
+    /// which `min_version_for` gates by request TYPE and therefore cannot
+    /// see, so it would have cost a protocol bump to store a fact that
+    /// should never have left this machine.
+    #[serde(default)]
+    pub superpowers: HashMap<String, SuperpowersMark>,
+}
+
+/// The human's word about Superpowers for one workspace. A distinct type
+/// rather than a `String` so it cannot be transposed with the three
+/// same-shaped `HashMap<String, String>` fields it travels beside through
+/// `persist_workspaces` -- that argument list is already long enough to
+/// swap silently, and the comment there says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuperpowersMark {
+    /// "I've installed it" -- taken on trust where gavin cannot check.
+    Installed,
+    /// "Not now". Finishes the setup step without claiming anything is
+    /// installed, so declining once stops the Home banner nagging for
+    /// ever (spec S6).
+    Skipped,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -392,6 +515,8 @@ mod tests {
             last_active_at: None,
             terminal_font_size: None,
             auto_commit: None,
+            auto_resume_runs: false,
+            agent_pause: None,
         }
     }
 
@@ -461,6 +586,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -484,6 +611,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -521,6 +650,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -607,6 +738,7 @@ mod tests {
                 "notifyNeedsInput": true,
                 "notifyFinished": true,
                 "confirmTabClose": true,
+                "autoResumeRuns": false,
                 "gitView": null,
                 "lastActiveAt": null
             })
@@ -632,6 +764,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -660,6 +794,7 @@ mod tests {
             agent_commit: Some(AgentCommitRecord {
                 session_id: "commit-1".to_string(),
                 cwd: "/r/repo-feature".to_string(),
+                retries: 1,
             }),
         });
         let config = AppConfig {
@@ -673,6 +808,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -701,6 +838,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -732,6 +871,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -777,6 +918,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -797,6 +940,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(&nested, &config).unwrap();
 
@@ -825,6 +970,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -884,6 +1031,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -917,6 +1066,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -950,6 +1101,10 @@ mod tests {
         assert!(ws.notify_needs_input, "notifications default on");
         assert!(ws.notify_finished, "notifications default on");
         assert!(ws.confirm_tab_close, "close confirm defaults on");
+        // The one toggle that defaults the other way, because it is
+        // consent rather than a habit: nothing resumes itself unless
+        // this human said in advance that it may.
+        assert!(!ws.auto_resume_runs, "auto-resume defaults OFF");
     }
 
     #[test]
@@ -959,6 +1114,7 @@ mod tests {
         ws.color = Some("#a78bfa".to_string());
         ws.notify_finished = false;
         ws.confirm_tab_close = false;
+        ws.auto_resume_runs = true;
         let config = AppConfig {
             workspaces: vec![ws],
             active_workspace_id: Some("workspace-1".to_string()),
@@ -970,6 +1126,8 @@ mod tests {
             terminal_font_size: None,
             auto_commit: None,
             removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

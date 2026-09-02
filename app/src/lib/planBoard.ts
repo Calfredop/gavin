@@ -115,6 +115,27 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
   };
 }
 
+/// One card, by its file path, as the run actions want it.
+///
+/// `runCard`/`resumeCard` take a CardView because that is what every
+/// surface holding one has, and until auto-resume there was always a
+/// surface: a click on a board card, a menu entry, a column action. The
+/// unattended path starts from a session id instead and has to build the
+/// same view from the tree, and it must be the SAME projection -- a
+/// second hand-rolled one would drift from the board's in exactly the
+/// fields a run depends on (the attachments it gates on, the status it
+/// writes past).
+///
+/// Null when no context holds that path: a card deleted or archived
+/// between the failure and the decision, which is a reason not to run it.
+export function cardViewForPath(tree: GavinTree | undefined, path: string): CardView | null {
+  for (const ctx of tree?.contexts ?? []) {
+    const plan = ctx.plans.find((p) => p.path === path);
+    if (plan) return cardView(ctx, plan);
+  }
+  return null;
+}
+
 // The board's plan-card projection (spec §1). With `filter`, only that
 // context's plans appear AND free-form cards are dropped (the per-session
 // board shows the columns for structure only). Statuses whose slug is

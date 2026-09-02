@@ -1,4 +1,5 @@
 import { composeLaunchCommand } from "./agentModel";
+import type { FailureCausePattern } from "./autoResume";
 import type { AgentConfig } from "./gavin";
 import type { EffectiveTheme } from "./ui/theme";
 
@@ -14,9 +15,15 @@ export interface AgentProfileInfo {
   /// The file this profile's agent reads MCP config from, so copy can name
   /// it. Empty for `custom`, whose path comes from config.toml.
   mcpConfigFile: string;
-  /// Whether the agent takes a positional prompt argument; gates the
-  /// wizard's agent-driven flows (spec §7.2).
-  promptArg: boolean;
+  /// The argv prefix that carries a prompt into a launched session,
+  /// concatenated with the shell-quoted prompt: "" is the bare
+  /// positional, "--prompt=" a flag whose value is attached. Null where
+  /// the agent takes no prompt at all, which is what gates every
+  /// agent-driven flow (spec §7.2).
+  ///
+  /// Null and "" are opposite answers, so nothing here may test it for
+  /// truthiness -- "" is a working profile.
+  promptArgs: string | null;
   /// The argv for a one-shot run with no TUI, empty where unverified;
   /// gates every hidden background run (agent_setup.rs's headless_args).
   headlessArgs: string;
@@ -27,6 +34,27 @@ export interface AgentProfileInfo {
   /// Stable model aliases offered as picks; empty where the CLI has none
   /// worth pinning, and the user types their own instead.
   models: string[];
+  /// What this agent prints when it has STOPPED because something broke.
+  /// Empty where nobody has verified the text -- which reads as no
+  /// failure detection, never as "nothing failed"
+  /// (agent_setup.rs's failure_patterns).
+  failurePatterns: string[];
+  /// What each of those failures MEANS, in the profile's own order (see
+  /// agent_setup.rs's failure_causes). Read only by the auto-resume
+  /// trigger table, which needs "broke HOW" rather than "broke": a dead
+  /// network and an expired token want opposite answers. Empty means
+  /// every failure of this profile classifies as unknown, which never
+  /// resumes itself.
+  failureCauses: FailureCausePattern[];
+  /// Conversation resume: the argv that fixes a session id at launch and
+  /// the one that reopens it. Both empty unless BOTH are verified.
+  sessionIdArgs: string;
+  resumeArgs: string;
+  /// How gavin reads this agent's subscription limits ("anthropic-oauth",
+  /// "codex-rollout"), or null where it cannot -- which is three of the
+  /// five profiles and is a sentence the usage panel prints, not a bar it
+  /// leaves empty. See agent_setup.rs's usage_probe for what was checked.
+  usageProbe: string | null;
 }
 
 /// Mirrors McpFormatDto from agent_setup.rs, for the `custom` profile's
@@ -197,10 +225,20 @@ export function renameDecision(
 
 export interface ResolvedAgent {
   profileId: string;
+  /// The profile's display name, for copy that has to NAME the agent --
+  /// "Cursor takes no prompt", not "cursor takes no prompt". Resolved
+  /// here rather than looked up again at each call site, so a launcher
+  /// that already has the agent never has to reach for the table too.
+  label: string;
   file: string;
   command: string;
   mcpSupported: boolean;
   headlessArgs: string;
+  /// The launched-session prompt argv, or null where this agent takes no
+  /// prompt. Same no-fallback-chain rule as headlessArgs below: this
+  /// describes the BINARY, and claude-code's argv on somebody else's
+  /// agent would be garbage.
+  promptArgs: string | null;
   /// The MCP config file gavin would write for this workspace, or "" when
   /// there is none to write -- which is only ever an unconfigured
   /// `custom` profile.
@@ -213,6 +251,23 @@ export interface ResolvedAgent {
   /// is what the settings box edits and writes back to config.toml -- a
   /// flag folded into it would be persisted and then appended again.
   launchCommand: string;
+  /// What this agent prints when it has stopped because something BROKE.
+  /// Handed to the daemon per session, which matches them against the
+  /// rendered screen. Empty means NO failure detection for this
+  /// workspace's agent -- never "nothing failed".
+  failurePatterns: string[];
+  /// What each of those failures means, for the auto-resume trigger
+  /// table. Travels with the patterns and under the same posture: a
+  /// profile that verified neither classifies every failure as unknown,
+  /// and unknown never resumes itself.
+  failureCauses: FailureCausePattern[];
+  /// The argv that fixes a conversation id at launch, and the one that
+  /// reopens it. Both empty unless the profile verified BOTH, because
+  /// resuming by an id gavin never fixed is a fresh conversation wearing
+  /// a better name. Empty leaves conversation resume off and the written
+  /// reconstruction (`composeResumeTaskPrompt`) in its place.
+  sessionIdArgs: string;
+  resumeArgs: string;
 }
 
 const FALLBACK_PROFILE = "claude-code";
@@ -246,6 +301,7 @@ export function resolveAgentConfig(
   const model = nonEmpty(config?.model) ?? nonEmpty(globalModels[profileId]) ?? "";
   return {
     profileId,
+    label: effective?.label ?? profileId,
     model,
     launchCommand: composeLaunchCommand(command, effective?.modelFlag ?? "", model),
     // `custom` carries empty defaults, so an unfilled custom profile still
@@ -268,6 +324,29 @@ export function resolveAgentConfig(
     // garbage in its argv. Empty means "no headless run offered", the
     // same posture mcpSupported takes.
     headlessArgs: effective?.headlessArgs ?? "",
+    // Same posture as headlessArgs, and for the same reason: these three
+    // describe the BINARY. Claude Code's `--session-id` on somebody
+    // else's agent is garbage in its argv, and its error text on
+    // somebody else's screen would paint healthy sessions as broken. A
+    // config that OVERRIDES `command` keeps them, deliberately -- the
+    // override is nearly always a wrapper or an absolute path to the
+    // same binary, and the alternative is losing failure detection for
+    // everyone who pins a path.
+    failurePatterns: effective?.failurePatterns ?? [],
+    failureCauses: effective?.failureCauses ?? [],
+    sessionIdArgs: effective?.sessionIdArgs ?? "",
+    resumeArgs: effective?.resumeArgs ?? "",
+    // Same no-fallback-BETWEEN-rows rule: a row that takes no prompt
+    // gets null, and cursor's null never becomes claude-code's "".
+    //
+    // But an ABSENT table is a different case, and it has to answer the
+    // way `command` two fields up already answered it: the table is
+    // fetched asynchronously and its failure is swallowed, so an empty
+    // one is a state the app really reaches -- and there `command` falls
+    // back to the literal "claude". Handing back claude's command while
+    // denying that claude takes a prompt would block every card run in
+    // the app with a sentence naming an agent nobody chose.
+    promptArgs: effective ? effective.promptArgs : "",
   };
 }
 

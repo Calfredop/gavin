@@ -83,12 +83,17 @@ describe("the running-tasks column", () => {
     expect(hub.match(/PHASE_LABEL\[task\.phase\]/g)?.length).toBe(2);
   });
 
-  it("draws a dot per phase, including the hollow one for an interrupted run", () => {
+  it("draws every phase through the shared agent badge, the interrupted and failed ones by name", () => {
     const hub = source(HUB);
-    expect(hub).toContain('class="dot {task.phase}"');
-    for (const phase of ["working", "waiting", "idle", "interrupted"]) {
-      expect(hub).toContain(`.dot.${phase}`);
-    }
+    // The same StatusBadge the board card draws for the same session,
+    // from ui/indicators.ts -- not a private dot per phase.
+    expect(hub).toContain("indicator={phaseIndicator(task.phase)}");
+    expect(hub).toContain('import StatusBadge from "./ui/StatusBadge.svelte"');
+    // The two phases that are not daemon statuses get their own entries;
+    // the rest map onto the agent states by name.
+    expect(hub).toContain('if (phase === "interrupted") return agentInterruptedIndicator();');
+    expect(hub).toContain('if (phase === "failed") return agentIndicator("failed");');
+    expect(hub).not.toContain('class="dot');
   });
 
   it("says so when a workspace has busy agents but no cards behind them", () => {

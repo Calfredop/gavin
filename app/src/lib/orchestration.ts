@@ -101,6 +101,16 @@ export interface Rail {
   /// checked out", the behaviour that predates the field, so it is
   /// optional on the wire and absent on plans written before it.
   branch?: string | null;
+  /// Whether this rail may resume its OWN interrupted steps, without
+  /// being asked (auto-resume, v22). Absent and false both mean no.
+  ///
+  /// Optional on the wire and absent on plans written before it, exactly
+  /// as `branch` is -- and default-OFF for a reason `branch` did not
+  /// need: this is CONSENT. The standing objection to auto-resume is
+  /// that a rail resuming itself six hours after the human walked away
+  /// has made a decision that was theirs; a per-rail opt-in dissolves it
+  /// only if the human actually made it, in advance, for this rail.
+  autoResume?: boolean;
   /// Workspace page its sessions land on. Null until the rail is armed:
   /// Start gives an unbound rail a page of its own, named after it (spec
   /// O16, pageToSpawnForRail). Still null if that creation failed, and
@@ -148,6 +158,26 @@ export interface StepRun {
   sessionId: string | null;
   /// Human-readable stall cause; null otherwise.
   reason: string | null;
+  /// The agent CLI's own id for the conversation this run IS, minted by
+  /// gavin at launch, so a stalled step can be resumed as that
+  /// conversation rather than reconstructed from a written account of
+  /// it. Null for a profile with no verified resume argv, and null on
+  /// every run recorded before v21.
+  conversationId?: string | null;
+  /// The directory this run was LAUNCHED in. Not the session's cwd,
+  /// which follows OSC 7 and drifts the moment the agent moves into a
+  /// worktree -- and a resume has to run where the work is.
+  launchCwd?: string | null;
+  /// How many times gavin has resumed this run BY ITSELF -- the budget
+  /// for unattended recovery (v22), bounded at
+  /// `MAX_AUTO_RESUME_ATTEMPTS`. Absent reads as zero, which is what
+  /// every run recorded before v22 is.
+  ///
+  /// On the ROW rather than in memory, deliberately: an app reload and a
+  /// daemon restart are precisely the conditions auto-resume runs under,
+  /// so a counter that resets on either is an unbounded loop wearing the
+  /// costume of a limit. A manual Resume does not spend it.
+  resumeAttempts?: number | null;
 }
 
 export interface Orchestration {
@@ -479,6 +509,15 @@ function toolStepOutcome(
 ///
 /// - `idle` -- the turn ended. Done.
 /// - `working` -- still going.
+/// - `failed` -- the agent stopped because something BROKE. Not
+///   finished, and not even reached here: rule 3d stalls the step
+///   before this is consulted. The daemon began telling `failed` and
+///   `idle` apart in v21 precisely because this function could not --
+///   two quiet seconds is all an agent session's `idle` ever was.
+/// - `unknown` -- a status this build cannot read, written by a newer
+///   daemon. Never finished: the whole point of the value is that the
+///   old "anything I do not recognise is idle" default would have
+///   marked a step done on the strength of not being understood.
 /// - `waiting_for_input` -- the agent is ASKING the human something.
 ///   Not finished: pty.rs pins TERM_PROGRAM so an agent that wants
 ///   attention says so rather than merely going quiet, and the daemon
@@ -515,6 +554,23 @@ function agentTurnEnded(
 /// bare shell.
 const INTERRUPTED_STEP_REASON = "interrupted — the daemon restarted, so this step's agent is gone";
 
+/// The stall reason for a step whose agent BROKE. Carries the agent's own
+/// sentence, because that is the part the human acts on: a dead network
+/// is a Resume in ten minutes, an expired token is a `/login` first, and
+/// an exhausted usage limit is neither.
+///
+/// A distinct sentence from the interrupted one for the same reason that
+/// one exists: it names a different fact. Nothing was killed here. The
+/// process is still alive at its prompt, having stopped mid-conversation,
+/// which is why the recovery is a resumed conversation rather than a
+/// fresh one.
+export function failedStepReason(reason: string | undefined): string {
+  const said = reason?.trim();
+  return said
+    ? `the agent stopped because something broke — ${said}`
+    : "the agent stopped because something broke, not because it finished";
+}
+
 /// The verdict on a step whose session is over. One spelling, because
 /// two paths need it: rule 3 inside a running rail, and the
 /// reconciliation pass over a rail that is not running.
@@ -537,12 +593,23 @@ function deadSessionAction(
   doneName: string,
   toolLabel: string,
   exitCode: number | undefined,
-  interrupted = false
+  interrupted = false,
+  /// The agent's own words when this session went `failed`, or null when
+  /// it did not. Replaces the REASON on any stall this produces, exactly
+  /// as `interrupted` does and for the same reason: every route through
+  /// here would otherwise describe a broken agent as something it was
+  /// not -- "exited", or "the turn ended".
+  failureReason: string | null = null
 ): Action {
   const stall = (reason: string): Action => ({
     kind: "stall",
     stepId: step.id,
-    reason: interrupted ? INTERRUPTED_STEP_REASON : reason,
+    reason:
+      failureReason !== null
+        ? failedStepReason(failureReason)
+        : interrupted
+          ? INTERRUPTED_STEP_REASON
+          : reason,
   });
   if (isToolStep(step)) {
     const outcome = toolStepOutcome(exitCode, toolLabel);
@@ -572,12 +639,23 @@ function deadSessionAction(
 /// - `turn-ended` -- the agent stopped talking and the card never
 ///   reached the done column. The work is not finished and nothing is
 ///   going to finish it.
-export type StepAttention = "asking" | "turn-ended";
+/// - `failed` -- the agent stopped because something BROKE: the daemon
+///   matched the profile's own error text on the rendered screen, or
+///   watched the machine sleep through the conversation. "The agent
+///   stopped talking" is true of this too and useless; the human needs
+///   to know it broke, and a dead network and an expired token want
+///   opposite responses.
+export type StepAttention = "asking" | "turn-ended" | "failed";
 
-/// `asking` outranks `turn-ended` when a rail rolls its steps up: one is
-/// a question with a human on the other end of it, the other is work
-/// that quietly stopped.
-const ATTENTION_RANK: Record<StepAttention, number> = { asking: 2, "turn-ended": 1 };
+/// `failed` outranks both: a question and a quiet agent are states a
+/// rail can legitimately be in, and a broken one is not. `asking`
+/// outranks `turn-ended` in turn -- one is a question with a human on
+/// the other end of it, the other is work that quietly stopped.
+const ATTENTION_RANK: Record<StepAttention, number> = {
+  failed: 3,
+  asking: 2,
+  "turn-ended": 1,
+};
 
 /// Every running step that wants a human, by step id. Derived, never
 /// stored: this is a live read of the same inputs the scheduler takes,
@@ -628,6 +706,18 @@ export function stepAttentions(
         // No status at all is "nothing reported yet", not "finished":
         // the daemon registers every new session idle, so believing an
         // absent status would mark a step the instant it launched.
+        //
+        // `failed` first, and for EVERY step kind including a tool's:
+        // this is the one mark that outranks the step's own rules,
+        // because rule 3d has stalled the step on this very tick and the
+        // human is about to be shown a paused rail that owes them a
+        // reason. `turn-ended` skips tool steps below precisely because
+        // their rules speak for them; here the rule and the mark say the
+        // same thing.
+        if (status === "failed") {
+          marks.set(step.id, "failed");
+          continue;
+        }
         if (status === "waiting_for_input") {
           marks.set(step.id, "asking");
           continue;
@@ -658,9 +748,18 @@ export function stepAttentions(
 /// header, the sidebar recap and the OS notification cannot drift into
 /// describing the same state three different ways.
 export function attentionTip(attention: StepAttention, doneName: string): string {
-  return attention === "asking"
-    ? "the agent is asking you something"
-    : `the agent's turn ended but the card is not in ${doneName}`;
+  switch (attention) {
+    case "asking":
+      return "the agent is asking you something";
+    // No reason here, deliberately. The mark lasts one tick: rule 3d
+    // stalls the step on the same pass, and the STALL carries the
+    // agent's own line (failedStepReason), which is the durable place
+    // for it. A parameter nothing could usefully pass would be dead API.
+    case "failed":
+      return "the agent stopped because something broke, not because it finished";
+    case "turn-ended":
+      return `the agent's turn ended but the card is not in ${doneName}`;
+  }
 }
 
 /// The most urgent mark among a rail's steps, or null. What the rail
@@ -720,7 +819,17 @@ export function nextActions(
   /// without this the scheduler sees a live session and waits forever on
   /// a bare shell. Empty by default: a caller that does not know reads
   /// as "nothing was interrupted", which is the pre-v20 behaviour.
-  interruptedSessionIds: ReadonlySet<string> = new Set()
+  interruptedSessionIds: ReadonlySet<string> = new Set(),
+  /// Why a session is `failed`, by session id
+  /// (`layoutState.failureReasonById`). Present only while that session
+  /// holds the status, and the value is the agent's own sentence.
+  ///
+  /// Membership is what rule 3d keys on rather than the status map,
+  /// because the two say the same thing and only this one carries the
+  /// reason the stall has to record. Empty by default: a caller that
+  /// does not know reads as "nothing broke", which is the pre-v21
+  /// behaviour.
+  failureReasonById: ReadonlyMap<string, string> = new Map()
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
@@ -754,7 +863,13 @@ export function nextActions(
           if (stepStateOf(orch, step.id) !== "running") continue;
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
           const wasInterrupted = sessionId !== null && interruptedSessionIds.has(sessionId);
-          if (sessionId && liveSessionIds.has(sessionId) && !wasInterrupted) {
+          // A failed agent is LIVE -- the process is still at its prompt
+          // -- so like an interrupted one it slips past the branch
+          // below. Unlike an interrupted one it is not a bare shell:
+          // its conversation is on disk and resumable, which is what the
+          // stall's reason has to say.
+          const failedReason = sessionId !== null ? failureReasonById.get(sessionId) : undefined;
+          if (sessionId && liveSessionIds.has(sessionId) && !wasInterrupted && failedReason === undefined) {
             // A LIVE session is normally nothing to write about here --
             // except an agent tool's, which is live precisely because it
             // finished (agentTurnEnded). That is the same stale
@@ -773,7 +888,8 @@ export function nextActions(
               done?.name ?? "the done column",
               toolName.get(step.toolId as string) ?? "the tool",
               sessionId ? exitCodes.get(sessionId) : undefined,
-              wasInterrupted
+              wasInterrupted,
+              failedReason ?? null
             )
           );
         }
@@ -895,6 +1011,50 @@ export function nextActions(
           // already carries the first attempt's edits. Whoever does want
           // exactly that presses Resume, which retries a stalled step
           // (rule 2) -- one attempt, asked for.
+          // Rule 3d -- the agent BROKE. Its API connection died, its
+          // token expired, its usage ran out, or the machine slept
+          // through the conversation. The process is still alive at its
+          // prompt, so this session is in `liveSessionIds` and it goes
+          // quiet within two seconds of the failure -- which is exactly
+          // `idle`, which rule 3b calls a finished turn and marks the
+          // step DONE. The rail then advanced to the next stage against
+          // a checkout where the previous step did nothing, and no
+          // surface in the app said so. That is the defect this whole
+          // change exists for, and this is the line that fixes it.
+          //
+          // Checked BEFORE 3c as well as 3b: a session can be both
+          // interrupted and failed only if the daemon restarted and then
+          // the replacement broke, in which case the failure is the
+          // newer and more actionable fact -- and it is the one with a
+          // resumable conversation behind it.
+          //
+          // A stall, not a relaunch and not a retry: rule 5 turns it into
+          // a paused rail, which puts the decision in front of the human.
+          // Resuming into a network that is still down burns a rail's
+          // steps for nothing, and a rail that resumed itself six hours
+          // after the human walked away would have made a decision that
+          // was theirs. Resume already retries a stalled step (rule 2).
+          const failedReason = sessionId !== null ? failureReasonById.get(sessionId) : undefined;
+          if (failedReason !== undefined) {
+            const action = deadSessionAction(
+              step,
+              cardStatus,
+              doneSlug,
+              done?.name ?? "the done column",
+              toolName.get(step.toolId as string) ?? "the tool",
+              undefined,
+              false,
+              failedReason
+            );
+            actions.push(action);
+            if (action.kind === "markDone") {
+              simulated.set(step.id, "done");
+              break stepBody;
+            }
+            simulated.set(step.id, "stalled");
+            stalled = true;
+            break stepBody;
+          }
           const wasInterrupted = sessionId !== null && interruptedSessionIds.has(sessionId);
           if (wasInterrupted) {
             const action = deadSessionAction(
@@ -1013,6 +1173,24 @@ export function addRail(orch: Orchestration, railId: string, name: string): Orch
 
 export function renameRail(orch: Orchestration, railId: string, name: string): Orchestration {
   return { ...orch, rails: orch.rails.map((r) => (r.id === railId ? { ...r, name } : r)) };
+}
+
+/// The rail's consent to resuming its own broken steps (auto-resume).
+///
+/// A plan mutator like any other, which is the point: the opt-in is part
+/// of the PLAN, so it is written by the same wholesale save, survives the
+/// same way, and is visible to an agent reading the rails over MCP. It is
+/// a decision about this rail, not a preference of whoever is looking at
+/// it.
+export function setRailAutoResume(
+  orch: Orchestration,
+  railId: string,
+  autoResume: boolean
+): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => (r.id === railId ? { ...r, autoResume } : r)),
+  };
 }
 
 /// Re-binding affects steps launched from now on; sessions already

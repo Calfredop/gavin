@@ -106,8 +106,144 @@ export function shellQuote(s: string): string {
   return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
-export function buildRunCommand(agentCommand: string, prompt: string): string {
-  return `${agentCommand} ${shellQuote(prompt)}`;
+/// A conversation id for a run about to be launched, or null when this
+/// profile cannot take one.
+///
+/// Minted by GAVIN rather than read back from the agent afterwards, which
+/// is the whole design: `claude --session-id <uuid>` lets the CALLER fix
+/// the id, so gavin holds it from the first byte and never has to scrape
+/// `~/.claude/projects` or guess by mtime. An agent whose CLI has no such
+/// flag gets null and falls back to a written reconstruction of what the
+/// last agent was doing (`composeResumeTaskPrompt`).
+///
+/// A real UUID because the CLI validates it: `--session-id` refuses
+/// anything else.
+export function mintConversationId(sessionIdArgs: string): string | null {
+  return sessionIdArgs.trim() ? crypto.randomUUID() : null;
+}
+
+/// `<command> [--session-id <uuid>] <promptArgs><quoted prompt>`: the
+/// launched, VISIBLE session, seeded with what it was asked to do.
+///
+/// `promptArgs` is a prefix concatenated with the quoted prompt rather
+/// than a flag joined by a space, because the two conventions in the
+/// table need different spellings and one concatenation covers both:
+///
+///   ""          -> `claude 'do it'`            (the bare positional)
+///   "--prompt=" -> `opencode --prompt='do it'` (a flag with its value ATTACHED)
+///
+/// The attached form is not cosmetic. opencode parses `--prompt <value>`
+/// with yargs, which reads a value beginning with `-` as the next flag
+/// and prints its usage banner instead of starting; `--prompt=<value>`
+/// takes the same bytes and keeps them.
+///
+/// Null for a profile that takes NO prompt, so a mangled argv can never
+/// be launched. That is the case this function exists to refuse: `cursor`
+/// and bare `opencode` read their positional as a PATH, so handing either
+/// a prompt starts nothing and reports nothing -- the session opens on a
+/// directory that does not exist, or dies before there is a session at
+/// all. Every caller must handle the null; there is nothing safe to fall
+/// back to.
+///
+/// The conversation id goes BEFORE the prompt, because the prompt is a
+/// positional and anything after it would be read as another one. Both
+/// id arguments are dropped together: an id with no argv to carry it, or
+/// argv with no id, would each put a stray token in front of the prompt.
+export function buildRunCommand(
+  agentCommand: string,
+  promptArgs: string | null,
+  prompt: string,
+  sessionIdArgs = "",
+  conversationId: string | null = null
+): string | null {
+  if (promptArgs === null) return null;
+  const args = sessionIdArgs.trim();
+  const fixId = args && conversationId ? ` ${args} ${conversationId}` : "";
+  return `${agentCommand}${fixId} ${promptArgs}${shellQuote(prompt)}`;
+}
+
+/// A remembered launch command with a NEW conversation id in place of
+/// the one baked into it, for a re-launch.
+///
+/// Replaying a command that carries `--session-id <uuid>` does not
+/// merely repeat the conversation -- it fails: the CLI refuses with
+/// "Session ID <uuid> is already in use" and nothing starts. Measured
+/// against the real binary, not deduced from the help text.
+///
+/// The id is the first token after the profile's own argv, which always
+/// sits ahead of the quoted prompt (see buildRunCommand), so the first
+/// occurrence is the right one even for a prompt that happens to contain
+/// the same flag. A command with no id in it comes back untouched and
+/// with a null id -- which is what an older binding, or a profile with
+/// no verified argv, looks like.
+export function withFreshConversationId(
+  command: string | null,
+  sessionIdArgs: string
+): { command: string | null; conversationId: string | null } {
+  const args = sessionIdArgs.trim();
+  if (!command || !args) return { command, conversationId: null };
+  const marker = ` ${args} `;
+  const at = command.indexOf(marker);
+  if (at === -1) return { command, conversationId: null };
+  const start = at + marker.length;
+  const end = command.indexOf(" ", start);
+  const conversationId = crypto.randomUUID();
+  const tail = end === -1 ? "" : command.slice(end);
+  return { command: command.slice(0, start) + conversationId + tail, conversationId };
+}
+
+/// `<command> <resume_args> <uuid>` -- the agent reopening the
+/// conversation it was having, rather than a new agent reading an
+/// account of it.
+///
+/// No prompt. Resume puts the agent back at the end of its own
+/// transcript, and a prompt appended here would be a fresh instruction
+/// on top of a conversation that already holds the whole task -- which
+/// is the from-scratch second attempt this whole family of cards exists
+/// to prevent, wearing a better name.
+///
+/// The id is REUSED, not forked (`--fork-session`). Measured: resuming
+/// appends to the same `<uuid>.jsonl` transcript rather than rotating
+/// it, so the failed attempt stays readable either way -- and the one
+/// argument for forking was that it might not. One conversation per
+/// step is simpler to display and simpler to reason about.
+///
+/// Null when the profile verified no resume argv, which is the signal to
+/// fall back to `composeResumeTaskPrompt`.
+export function buildResumeCommand(
+  agentCommand: string,
+  resumeArgs: string,
+  conversationId: string | null | undefined
+): string | null {
+  const args = resumeArgs.trim();
+  if (!args || !conversationId?.trim()) return null;
+  return `${agentCommand} ${args} ${conversationId.trim()}`;
+}
+
+// Why this workspace's agent cannot be started on a card. Never about
+// the card: it is about the agent the workspace CHOSE, which is a thing
+// the human can go and change, so the sentence says where.
+//
+// A plain string rather than string|null, because every caller reaches
+// it having already found out it is blocked -- buildRunCommand handed
+// back null, or the surface is deciding whether to offer the action at
+// all -- and needs the words, not a second verdict.
+export function noPromptReason(agentLabel: string): string {
+  return (
+    `${agentLabel} takes no prompt on its command line, so gavin cannot start a card ` +
+    `with it. Pick a different agent in Settings.`
+  );
+}
+
+// The same answer in gitState's agentCommitBlocker shape, for the
+// surfaces that bind a reason to a control rather than react to a failed
+// launch. Hang it on a NON-disabled ancestor: a disabled element never
+// fires mouseenter, so a tooltip bound to one can never appear.
+export function agentPromptBlocker(
+  promptArgs: string | null,
+  agentLabel: string
+): string | null {
+  return promptArgs === null ? noPromptReason(agentLabel) : null;
 }
 
 /// The one instruction behind the Git tab's "Commit via agent". Fixed

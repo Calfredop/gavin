@@ -27,7 +27,7 @@ export interface ColumnRunAction {
 /// A card's binding as the board sees it: a live session, a session whose
 /// run was killed with the daemon and replaced by a bare shell, a session
 /// that has exited (the binding outlives it), or no binding at all.
-export type CardSessionState = "live" | "interrupted" | "exited" | "none";
+export type CardSessionState = "live" | "interrupted" | "failed" | "exited" | "none";
 
 /// The one place a card's binding is turned into that vocabulary, so
 /// every surface that asks "is this card busy?" answers identically.
@@ -38,7 +38,10 @@ export type CardSessionState = "live" | "interrupted" | "exited" | "none";
 /// Resume both jumped to it, and Develop refused with "this card has a
 /// live agent" -- for a tab with nothing running in it at all.
 export function cardSessionState(
-  state: WorkspacesData & { interruptedSessionIds: ReadonlySet<string> },
+  state: WorkspacesData & {
+    interruptedSessionIds: ReadonlySet<string>;
+    failureReasonById?: Record<string, string>;
+  },
   binding: { sessionId: string } | null
 ): CardSessionState {
   if (!binding) return "none";
@@ -47,6 +50,8 @@ export function cardSessionState(
       return "live";
     case "interrupted":
       return "interrupted";
+    case "failed":
+      return "failed";
     case "gone":
       return "exited";
   }

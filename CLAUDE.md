@@ -76,6 +76,14 @@ fires); any `dragover` that accepts a drop must also set `dropEffect`.
 **Svelte 5 `$state` proxies objects**, so `stateVar !== rawObject` is always
 true. Never gate on identity; guard async supersession with a token counter.
 
+**No native dialogs.** `@tauri-apps/plugin-dialog` is capability-narrowed to
+`dialog:allow-open` — its `open` file picker is the only OS dialog left, and
+`confirm`/`message`/`ask` fail at the permission layer. Ask with
+`askConfirm`/`showAlert` from `dialog.ts` (module-level, promise-returning) or
+mount `ConfirmPrompt` directly; both draw the same modal. Buttons name the
+action, never "OK", and a `danger` choice keeps focus on the dismissing button
+so Enter cannot fire it.
+
 ## How UI work is structured
 
 Logic goes in a plain `.ts` module with unit tests (`orchestration.ts`,

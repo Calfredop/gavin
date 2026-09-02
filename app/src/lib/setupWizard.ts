@@ -1,4 +1,7 @@
-export type SetupStep = "agent" | "integration" | "prd" | "launch";
+import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
+import { superpowersDone } from "./superpowers";
+
+export type SetupStep = "agent" | "integration" | "superpowers" | "prd" | "launch";
 
 export interface SetupProgress {
   done: SetupStep[];
@@ -44,9 +47,30 @@ export interface SetupInput {
   agentFileBody: string | null | undefined;
   prdBody: string | null | undefined;
   mainSessionId: string | null;
+  /// The Superpowers detector's answer, `undefined` while the check is
+  /// still running. Same distinction the two file bodies draw, and for
+  /// the same reason: a check in flight is not a check that found
+  /// nothing, and reading it as one opens the wizard on a finished step.
+  superpowers: SuperpowersStatus | undefined;
+  /// What the human has said about Superpowers for this root, if
+  /// anything. `undefined` is "not asked yet", never "not now" -- the
+  /// step's second completion route depends on telling those apart.
+  superpowersMark: SuperpowersMark | undefined;
 }
 
-const ORDER: SetupStep[] = ["agent", "integration", "prd", "launch"];
+/// Superpowers sits third (spec S2): it is agent tooling, so it belongs
+/// beside Integration, and PRD and Launch stay last. Exported because
+/// every surface that counts steps must count THIS list -- the Home hub's
+/// banner said "of 4" as a literal and would have gone on saying it.
+export const SETUP_STEPS: SetupStep[] = [
+  "agent",
+  "integration",
+  "superpowers",
+  "prd",
+  "launch",
+];
+
+const ORDER: SetupStep[] = SETUP_STEPS;
 
 /// Derived, never stored (W1): a step configured by hand -- or by an
 /// agent -- counts the moment its evidence lands on disk, so no progress
@@ -61,6 +85,9 @@ export function setupProgress(input: SetupInput): SetupProgress {
   const done: SetupStep[] = [];
   if (input.configCommand?.trim()) done.push("agent");
   if (input.agentFileBody?.includes(MARKER_START)) done.push("integration");
+  // S6: a check that found it, the human's word, or their "not now".
+  // The third route is why declining once stops the nagging.
+  if (superpowersDone(input.superpowers, input.superpowersMark)) done.push("superpowers");
   // At least one placeholder replaced, not all three: filling only Vision
   // is a real PRD, and requiring all three would never complete.
   const prd = input.prdBody;
@@ -71,7 +98,19 @@ export function setupProgress(input: SetupInput): SetupProgress {
 
   const ordered = ORDER.filter((s) => done.includes(s));
   const next = ORDER.find((s) => !done.includes(s)) ?? null;
-  const pending = input.agentFileBody === undefined || input.prdBody === undefined;
+  // The Superpowers check joins the same rule the two file reads follow.
+  // A settled marker answers on its own, though: once the human has said
+  // "not now", no in-flight detector can change whether the step is done,
+  // and waiting on one would hold the whole wizard for a round trip that
+  // cannot matter.
+  const superpowersSettled = Boolean(input.superpowersMark) || input.superpowers !== undefined;
+  const pending =
+    input.agentFileBody === undefined || input.prdBody === undefined || !superpowersSettled;
+  // Launch is the one step whose evidence is a live process rather than
+  // a file or a marker, so it is the one step that can un-happen -- and
+  // it is optional besides (W2). `configured` is every durable step, and
+  // it is what the Home banner is allowed to read; `complete` still
+  // means all of them.
   const configured = ORDER.every((s) => s === "launch" || done.includes(s));
   return { done: ordered, next, complete: next === null, configured, pending };
 }
@@ -102,8 +141,14 @@ export function applyPrdSections(body: string, sections: PrdSections): string {
 /// The agent-driven option is offered only where the positional-prompt
 /// convention is verified (spec §7.2); elsewhere the step says so rather
 /// than risking a launch with garbage in the agent's argv.
-export function agentFlowAvailable(profile: { promptArg: boolean } | undefined): boolean {
-  return Boolean(profile?.promptArg);
+export function agentFlowAvailable(
+  profile: { promptArgs: string | null } | undefined
+): boolean {
+  // `promptArgs` is a PREFIX, and "" is the bare positional -- a working
+  // profile, not an absent one. Only null means the agent takes no
+  // prompt, so this compares rather than coerces: `Boolean("")` would
+  // hide the flow from claude-code, codex and gemini alike.
+  return profile !== undefined && profile.promptArgs !== null;
 }
 
 /// Whether the PRD still carries a placeholder for the three section

@@ -850,6 +850,25 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Run a card; the terminal's first line should read `claude --model <what you typed>`.",
       },
       {
+        id: "set-sp-row",
+        text: "The Agent section ends with a Superpowers row: an Install button only when it is genuinely absent, otherwise the LED and its sentence",
+        hint: "The card's rule literally — a button that only shows when there is something to install.",
+      },
+      {
+        id: "set-sp-profile-switch",
+        text: "Switching profile re-asks: with Cursor the row explains gavin cannot check and offers the slash command instead of a button",
+        hint: "The detector is per profile, so the row must not keep answering for the agent selected a moment ago.",
+      },
+      {
+        id: "set-sp-take-back",
+        text: "After “I've installed it”, Settings offers “Take that back”, and using it returns the row to the honest not-installed state",
+        hint: "Only Settings offers this; the wizard's own step does not, where “Not now” already covers changing your mind.",
+      },
+      {
+        id: "set-sp-no-root",
+        text: "On a workspace with no root bound, the whole Agent section — Superpowers row included — is replaced by the bind-a-root hint",
+      },
+      {
         id: "global-settings-modal",
         text: "The sidebar footer's Settings opens the global panel, and its Theme control still flips the theme",
         hint: "The footer no longer has a theme toggle of its own — the panel's is the only one.",
@@ -913,10 +932,10 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       { id: "wiz-create", text: "Creating a workspace opens the setup modal; Continue is disabled until a folder is bound" },
       { id: "wiz-skip-create", text: "Skip setup leaves a usable, unrooted workspace — exactly as before" },
-      { id: "wiz-steps", text: "The wizard opens on the first unfinished step and walks Agent → Integration → PRD → Launch" },
+      { id: "wiz-steps", text: "The wizard opens on the first unfinished step and walks Agent → Integration → Superpowers → PRD → Launch" },
       {
         id: "wiz-resume",
-        text: "Closing the wizard mid-way leaves the workspace usable; the Home tab offers “n of 4 done — continue”",
+        text: "Closing the wizard mid-way leaves the workspace usable; the Home tab offers “n of 5 done — continue”",
       },
       {
         id: "wiz-no-flash",
@@ -959,8 +978,42 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "wiz-agent-gate",
-        text: "With Cursor or opencode, “Ask the agent” is absent and the step says why; with Codex or Gemini it is offered",
-        hint: "Those two take a path, not a prompt, in their bare positional — the other three take a prompt.",
+        text: "With Cursor, “Ask the agent” is absent and the step says why; with Codex, Gemini or opencode it is offered",
+        hint: "Cursor is now the only profile with nowhere to put a prompt — opencode has one, it is just a flag (--prompt=) rather than the bare positional.",
+      },
+      {
+        id: "wiz-sp-verified",
+        text: "On a Claude Code workspace that already has Superpowers, the step shows a filled green LED and says it is active — with no Install button",
+        hint: "Detection runs `claude plugin list --json` with cwd = the root, because `enabled` is answered relative to it. A user-scope install counts from anywhere.",
+      },
+      {
+        id: "wiz-sp-install",
+        text: "On a workspace without it, Install runs hidden and the LED turns green without a reload; Show output holds the CLI's own lines",
+        hint: "Uninstall first: `claude plugin uninstall superpowers@claude-plugins-official --scope project` in the root. A second Install is a no-op success, not an error.",
+      },
+      {
+        id: "wiz-sp-install-fails",
+        text: "With `claude` unreachable, Install shows the failure and opens the output drawer by itself, and the LED stays off",
+        hint: "Launch the app from Finder rather than a shell to get the stripped PATH, or point [agent] command at a name that does not exist. The message must name the missing binary.",
+      },
+      {
+        id: "wiz-sp-copy",
+        text: "With Cursor or Codex selected, there is no Install button — the step names why gavin cannot check, shows the slash command, and Copy puts it on the clipboard",
+      },
+      {
+        id: "wiz-sp-asserted",
+        text: "“I've installed it” turns the LED into a hollow green ring, and the wording says gavin has not confirmed it",
+        hint: "Hollow vs filled is the whole point: one is a check, the other is your word. They must not look the same.",
+      },
+      {
+        id: "wiz-sp-not-now",
+        text: "“Not now” finishes the step, and the Home banner never asks about Superpowers again for that workspace",
+        hint: "Relaunch the app to confirm it stuck — the marker is in the app's config.json, keyed by root path.",
+      },
+      {
+        id: "wiz-sp-machine-local",
+        text: "The marker does not travel: a second checkout of the same repo at another path starts with the step unanswered",
+        hint: "Keyed by root path on purpose — a repo can reach a machine that has no Superpowers, and an assertion made here must not vouch for it.",
       },
       {
         id: "wiz-integration-degrades",
@@ -1052,6 +1105,46 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "It reads GAVIN_SESSION_ID from its PTY; run it from a terminal outside gavin and it says so instead of renaming something random.",
       },
       { id: "mcp-board", text: "gavin_get_board returns the columns and your free-form cards" },
+    ],
+  },
+  {
+    // The second profile that gets everything: skills, a seeded card
+    // run, and a hidden commit run. Its argv conventions differ from
+    // Claude Code's at every one of those points, and argv is precisely
+    // what no suite here can exercise -- a wrong flag is green in Node
+    // and dead in a terminal.
+    title: "opencode profile",
+    items: [
+      {
+        id: "oc-integration-writes",
+        text: "On the opencode profile, Integration writes AGENTS.md, the four skills under .opencode/skills/, opencode.json and .opencode/agent/gavin-commit.md — and no .claude/ or .mcp.json appears",
+        hint: "Set profile = \"opencode\" in .gavin-root/config.toml first. The wizard's Integration step lists every path it wrote; read that list.",
+      },
+      {
+        id: "oc-card-run-seeded",
+        text: "Running a card opens the opencode TUI with the card's prompt ALREADY posted as a user message and the agent working on it",
+        hint: "This is the whole bug: before the fix the session died with “Failed to change directory to …”, because the bare positional is a project folder. If you see a directory error, the flag did not survive.",
+      },
+      {
+        id: "oc-skills-load",
+        text: "Inside that session the gavin skill is available and the agent follows it (it names its own tab within the first move)",
+        hint: "opencode discovers skills at process start, so a session opened BEFORE the write will not see them — start a fresh one.",
+      },
+      {
+        id: "oc-mcp-tools-callable",
+        text: "The gavin_* tools work from inside an opencode session — ask it to read the PRD and create a card",
+        hint: "opencode namespaces MCP tools by server key, so they appear as gavin_gavin_read_prd. The card landing on the board is the proof.",
+      },
+      {
+        id: "oc-commit-via-agent",
+        text: "Git tab → “Commit via agent” on a dirty repo commits in chunks, leaves the tree clean, and ends on its own",
+        hint: "The run is hidden and has no way to ask permission: its grant is .opencode/agent/gavin-commit.md. Delete that file and the run should fail loudly rather than hang.",
+      },
+      {
+        id: "oc-cursor-still-blocked",
+        text: "Switch the profile to Cursor: the card's ▶ session pill is disabled and hovering the row says the agent takes no prompt",
+        hint: "Hover the ROW, not the greyed pill — a disabled element fires no mouseenter. Same sentence on the card modal, inline.",
+      },
     ],
   },
   {
@@ -1992,6 +2085,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Delete .claude/skills/gavin* by hand first — the skills screen should then not appear at all.",
       },
       {
+        id: "delete-lists-the-agent-file",
+        text: "On an opencode workspace the skills screen is headed “Agent files” and lists .opencode/agent/gavin-commit.md alongside the four skills; answering Yes trashes it too",
+        hint: "It is a whole file gavin wrote. Leaving it behind leaves the repo claiming a permission grant for a tool that is gone.",
+      },
+      {
         id: "delete-outside-context-unticked",
         text: "A context registered from outside the root appears under a warning and starts unticked",
         hint: "Add one with the Plans tab's “Add outside context…” before starting.",
@@ -2018,6 +2116,273 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "delete-leaves-no-tombstone",
         text: "After a delete, re-adding the same folder does NOT offer to restore anything",
         hint: "The opposite of the X: a delete means it, so no record is kept.",
+      },
+    ],
+  },
+  {
+    // The suites cannot reach any of this: it needs a real agent, a real
+    // network and a real machine suspend. The trigger table and the
+    // budget ARE unit-tested (autoResume.test.ts) -- what is unverified
+    // is everything downstream of a genuine interruption.
+    title: "Auto-resume an interrupted run",
+    items: [
+      {
+        id: "auto-resume-off-by-default",
+        text: "A brand-new rail's Auto-resume button reads 'off', and Settings' 'Resume a broken card run by itself' is unchecked",
+        hint: "Consent is given in advance or not at all. Every other toggle in Settings defaults ON; this one must not.",
+      },
+      {
+        id: "auto-resume-card-run",
+        text: "With the workspace setting on, break a card run's connection and watch it come back by itself within a minute",
+        hint: "Point the agent at an unreachable ANTHROPIC_BASE_URL mid-turn — the reproducible version of pulling the network.",
+      },
+      {
+        id: "auto-resume-keeps-context",
+        text: "The resumed agent CARRIES ON — it knows what it was doing, rather than starting the card over",
+        hint: "This is the whole point. A resume that silently begins again is the from-scratch second attempt wearing a better name.",
+      },
+      {
+        id: "auto-resume-notifies",
+        text: "An OS notification says it broke and was resumed, naming the agent's own error line",
+        hint: "A resume that leaves no trace is indistinguishable from a run that never failed.",
+      },
+      {
+        id: "auto-resume-trail-on-card",
+        text: "The card detail modal shows 'Recovered on its own: …' with the times, and still says something after a window reload",
+        hint: "The times live in memory; the COUNT is persisted, so after a reload the line is shorter but still there.",
+      },
+      {
+        id: "auto-resume-only-once",
+        text: "Break the SAME run a second time — gavin does not resume it again, and says why",
+        hint: "One automatic attempt per run. If it resumes twice, the budget is not surviving the write.",
+      },
+      {
+        id: "auto-resume-never-on-login",
+        text: "An expired token (an agent asking for /login) is NOT resumed; the notification says so",
+        hint: "Resuming loops against a wall. This is the case a naive 'retry when something broke' gets wrong.",
+      },
+      {
+        id: "auto-resume-rail-sequence",
+        text: "Turn a rail's Auto-resume on, break its running step in a SEQUENCE stage, and watch the step and the rail both come back",
+        hint: "The rail is paused by the stall; a resumed step on a paused rail would finish and advance nothing.",
+      },
+      {
+        id: "auto-resume-parallel-stalls",
+        text: "A two-step PARALLEL stage broken by ONE interruption stays stalled, and says both steps broke together",
+        hint: "This is the deliberate refusal. Putting both back returns each agent to a checkout its sibling had moved on from.",
+      },
+      {
+        id: "auto-resume-lid-closed",
+        text: "Start a two-step parallel stage, close the lid mid-run, reopen on a DIFFERENT network — and check what happened to both steps and to the checkout they share",
+        hint: "The originating case, and the one thing no test can stand in for. Report what actually happened, including anything the design did not predict.",
+      },
+      {
+        id: "auto-resume-commit-retry",
+        text: "Break a 'Commit via agent' run's connection: it re-runs once by itself, and an ordinary refusal ('no user.email') does not",
+        hint: "A retry, not a resume — a headless run exits and holds no conversation.",
+      },
+    ],
+  },
+  {
+    title: "Alerts & confirms",
+    items: [
+      {
+        id: "dialog-not-native",
+        text: "Closing a terminal tab asks in a gavin modal — themed panel, monospace, dimmed backdrop — not a macOS sheet",
+        hint: "The whole section: no prompt in the app should be drawn by the OS any more.",
+      },
+      {
+        id: "dialog-says-the-verb",
+        text: "Every prompt's buttons name the action: Close tab / Close pane / Close page / Close tabs / Remove workspace / Archive card — never OK",
+      },
+      {
+        id: "dialog-enter-and-escape",
+        text: "Enter takes the harmless answer and Escape always dismisses: Enter closes the tab, but on “Remove this workspace” and “Archive this card” Enter cancels instead",
+        hint: "Destructive prompts keep focus on the dismissing button on purpose.",
+      },
+      {
+        id: "dialog-stacked-escape",
+        text: "Deleting a card from its detail modal: one Escape closes only the confirm, and the card detail is still open behind it",
+        hint: "Both are window-level Escape listeners — this is the one that used to close both.",
+      },
+      {
+        id: "dialog-alert-one-button",
+        text: "A failing menu action (rename a page to something the daemon rejects, or Show in Finder on a deleted folder) shows a one-button gavin modal, not a red macOS alert",
+      },
+      {
+        id: "dialog-window-close",
+        text: "The red traffic light asks “Close this window?” with Close window / Keep open, and Keep open really keeps it",
+        hint: "⌘W closes a tab, not the window — use the button, or ⌘Q.",
+      },
+      {
+        id: "dialog-reclaim-two-actions",
+        text: "The removed-folder reclaim offers Restore / Start fresh — neither says Cancel, because both spend the saved board",
+      },
+      {
+        id: "dialog-queue",
+        text: "Two failures in a row show one modal at a time: dismissing the first reveals the second rather than losing it",
+      },
+    ],
+  },
+  {
+    // Everything here needs a real subscription, a real clock and a real
+    // machine suspend. The phase arithmetic, the bands and the gate ARE
+    // unit-tested (agentPause.test.ts, agentUsage.test.ts); what no suite
+    // can reach is whether the numbers on screen match the ones the agent
+    // itself reports, and whether a lid closing does what the module
+    // claims it does.
+    title: "Agent limits & usage",
+    items: [
+      {
+        id: "usage-panel-matches-agent",
+        text: "Sidebar → Usage shows Claude Code's 5-hour and weekly bars, and the percentages match what /usage says inside Claude Code",
+        hint: "The one check that matters. A bar that disagrees with the agent is worse than no bar — if they differ, note both numbers.",
+      },
+      {
+        id: "usage-unsupported-is-a-sentence",
+        text: "A workspace on Gemini, Cursor or opencode gets a sentence saying gavin cannot read its limits — not an empty bar or a 0%",
+        hint: "Absence is never zero. 'gavin cannot see' must never render like 'plenty left'.",
+      },
+      {
+        id: "usage-refresh-and-backoff",
+        text: "The refresh button re-reads; hammering it does not produce a wall of errors",
+        hint: "The host caches for two minutes and parks itself for fifteen on a 429. If you can get it into a persistent 429, say so — that endpoint is known to be touchy.",
+      },
+      {
+        id: "usage-codex-age",
+        text: "With Codex in use, the panel shows its windows AND says how old the reading is",
+        hint: "Codex's numbers come from its last turn, not from now. A number with no age on it would read as live.",
+      },
+      {
+        id: "pause-off-by-default",
+        text: "An existing workspace shows Agent pause OFF in Settings, and nothing pauses after the update",
+        hint: "Stored as absence. A workspace that starts pausing because it was updated is the failure this default exists to prevent.",
+      },
+      {
+        id: "pause-cycle-holds-a-rail",
+        text: "Set a short cycle (period 15, pause 7), start a rail, and watch the next step NOT launch during the pause window",
+        hint: "The pause is the TAIL of each period. The sidebar Usage row should read 'Paused' with the reason in its tooltip.",
+      },
+      {
+        id: "pause-leaves-running-work-alone",
+        text: "An agent already mid-turn when the pause begins finishes normally — it is not interrupted or killed",
+        hint: "A pause that kills work in flight is not a pause. This is the decision the feature was built around.",
+      },
+      {
+        id: "pause-manual-run-still-works",
+        text: "While paused, your own Run on a card still starts an agent",
+        hint: "The gate is on gavin starting work, not on you. The human keeps the wheel.",
+      },
+      {
+        id: "pause-lifts-and-rail-continues",
+        text: "When the pause window ends, the held step launches by itself within a minute or so",
+        hint: "This IS 'resume'. Nothing is armed for it — the next tick recomputes the phase from the wall clock.",
+      },
+      {
+        id: "pause-survives-sleep",
+        text: "With a cycle running, close the lid for longer than a whole period and reopen: the phase is right for the CURRENT time, not shifted by however long it slept",
+        hint: "The originating requirement. A wrong answer here means something is counting down instead of reading the clock.",
+      },
+      {
+        id: "pause-survives-restart",
+        text: "Quit and relaunch the app mid-cycle: the pause window falls at the same wall-clock times as before",
+        hint: "The anchor is persisted and never rewritten. If the pause moved, a save site is re-stamping it.",
+      },
+      {
+        id: "pause-workspace-override",
+        text: "A workspace with its own settings ignores the app-wide cycle; unticking 'own settings' puts it back to inheriting",
+        hint: "Absent means INHERIT, not off. A workspace switched off stores enabled:false — check config.json if in doubt.",
+      },
+      {
+        id: "pause-limit-hold",
+        text: "Set the limit threshold below your current usage and confirm rails hold with 'At limit' and the real reset time",
+        hint: "Easiest with the weekly window. The reason should name the window and its reset, not just say 'paused'.",
+      },
+      {
+        id: "pause-defers-auto-resume",
+        text: "With auto-resume on, break a run DURING a pause window: the resume waits for the pause instead of being cancelled",
+        hint: "A pause defers a resume. If the run is skipped outright and never comes back, the deferral is not re-arming.",
+      },
+      {
+        id: "wizard-offers-pause",
+        text: "The init wizard's agent step offers the pause, unticked, and ticking it makes Settings show the same cycle",
+        hint: "The wizard writes the APP-wide cycle, not a workspace override.",
+      },
+    ],
+  },
+  {
+    title: "Badges & indicators",
+    items: [
+      {
+        id: "badge-no-bare-dots",
+        text: "No coloured dot anywhere carries a meaning on its own: every badge is a glyph, and hovering it names its axis first (“Agent · …”, “Priority · …”, “Git · …”)",
+        hint: "The point of the whole section. If you meet a dot you have to guess about, that is the bug.",
+      },
+      {
+        id: "badge-priority-ramp",
+        text: "A card's priority is a signal-bar ramp, and medium and high are visibly different",
+        hint: "They used to be the SAME amber dot. Set four cards to low / medium / high / urgent and look at them side by side.",
+      },
+      {
+        id: "badge-priority-low-visible",
+        text: "A low-priority card's badge is actually visible on the card, in both themes",
+        hint: "It used to be painted in --surface-success, a near-black tint, so it simply was not there.",
+      },
+      {
+        id: "badge-agent-one-vocabulary",
+        text: "One running agent looks the same in all four places at once: its board card, its terminal tab, its sidebar row, and the card's detail modal",
+        hint: "Run a card, then put the board and the terminal side by side. Working spins; waiting is an amber question mark; idle is a dashed ring.",
+      },
+      {
+        id: "badge-waiting-is-amber",
+        text: "An agent waiting on you is amber everywhere — badge, card spine, the sidebar's page and workspace counts, the hub tab's corner pip",
+        hint: "The counts used to be filled red while the row below them was amber for the same fact. Red is now only for broken and for urgent.",
+      },
+      {
+        id: "badge-tab-bar-three-axes",
+        text: "A terminal tab can show three badges at once and each is readable: a spinning agent, a branch glyph for the checkout, a pencil for unsaved edits",
+        hint: "Open a file tab with an unsaved edit beside a running agent in a dirty repo. These were three near-identical dots.",
+      },
+      {
+        id: "badge-git-clean-is-quiet",
+        text: "A clean checkout's branch glyph is muted, not an amber ring — on the tab bar and in the sidebar's expanded tab rows",
+      },
+      {
+        id: "badge-sidebar-one-branch-glyph",
+        text: "An expanded page's tab row shows ONE branch glyph, toned with the branch name beside it, not a glyph plus a separate dot",
+      },
+      {
+        id: "badge-reduced-motion",
+        text: "With System Settings → Accessibility → Display → Reduce motion on, the working badge stops spinning but stays blue and readable",
+      },
+      {
+        id: "badge-step-states-visible",
+        text: "On a rail, every step chip shows a square saying where the rail has got to — empty for pending, a filled centre for the one running now, a tick for done, a cross for stalled",
+        hint: "Pending and running used to draw NO glyph at all: running was an accent ring and nothing else. Look down a part-run rail — the squares should read as a progress column.",
+      },
+      {
+        id: "badge-step-chip-matches-card",
+        text: "The same step says the same thing on its chip and on its board card — same square, same colour, the card just spells the word out too",
+        hint: "Switch the rail between chip and card view with one step running. The card used to say “running” in blue text with no glyph while the chip said it with a blue ring and no word.",
+      },
+      {
+        id: "badge-step-vs-agent",
+        text: "A running step whose agent is waiting on you shows BOTH marks side by side: the accent square for the rail, the amber question mark for the agent — and only one of them, the agent's, is a spinner's neighbour",
+        hint: "Two different questions. The step is still running, which is why the rail has not stopped; the agent is the thing standing still.",
+      },
+      {
+        id: "badge-rail-state",
+        text: "A rail's own state badge matches in its header and in the Home hub's rail list — a dash for idle, a doubled chevron for running, a pause for paused",
+        hint: "The two surfaces kept private copies of the same three colours. Start and pause a rail with Home open beside it.",
+      },
+      {
+        id: "badge-chevrons-sharp",
+        text: "The running rail's doubled chevron keeps its points at 11px — not two blunt smudges",
+        hint: "It is cut with the same miter join theme.css gives the disclosure chevrons. Compare it against a sidebar disclosure arrow.",
+      },
+      {
+        id: "badge-both-themes",
+        text: "Every badge above still reads in the light theme — especially amber-on-white, the priority ramp, and the step squares against a chip's severity fill",
       },
     ],
   },

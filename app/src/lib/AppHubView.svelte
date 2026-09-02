@@ -13,11 +13,8 @@
     GitBranch,
     Kanban,
     Route,
-    Play,
     Check,
-    CircleDashed,
     PanelsTopLeft,
-    MessageCircleQuestionMark,
     SquareTerminal,
   } from "@lucide/svelte";
   import {
@@ -27,7 +24,15 @@
     daemonCompat,
   } from "./layoutState";
   import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "./sidebarSummary";
-  import type { FleetSummary, RunningTask, WorkspaceRunning } from "./appHub";
+  import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "./appHub";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import {
+    agentIndicator,
+    agentIndicatorByState,
+    agentInterruptedIndicator,
+    gitIndicator,
+    type Indicator,
+  } from "./ui/indicators";
   import {
     recentWorkspaces,
     relativeTime,
@@ -54,6 +59,17 @@
   import { tooltip } from "./tooltip";
   import { accentVar } from "./settings";
   import { themeState } from "./ui/themeState.svelte";
+
+  /// The row's badge is the board card's badge for the same session --
+  /// one agent vocabulary (ui/indicators.ts) rather than the private dot
+  /// set this column used to keep. `waiting` is the hub's word for the
+  /// daemon's waiting_for_input; the other phases are the agent states
+  /// by name.
+  function phaseIndicator(phase: TaskPhase): Indicator {
+    if (phase === "interrupted") return agentInterruptedIndicator();
+    if (phase === "failed") return agentIndicator("failed");
+    return agentIndicatorByState(phase === "waiting" ? "waiting_for_input" : phase);
+  }
 
   // Sampled once per render of the hub rather than ticked: the ages here
   // are "2m ago"-coarse, and a timer redrawing the whole list every
@@ -225,16 +241,22 @@
            reads as a rendering fault rather than as an empty fleet. -->
       {#if stats.agents.agents > 0}
         <span class="divider" aria-hidden="true"></span>
+        <!-- The agent badge from ui/indicators.ts, as the sidebar's own
+             strip draws it: these count the very sessions the column
+             below lists, and the two must not disagree about what
+             "running" looks like. The group has one bubble, so the
+             badges take none. -->
         {#if stats.agents.running > 0}
-          <span class="stat running"><Play size={10} /><span class="count">{stats.agents.running}</span></span>
+          <StatusBadge indicator={agentIndicatorByState("working")} size={10} tip={null} text={stats.agents.running} />
         {/if}
         {#if stats.agents.waiting > 0}
-          <span class="stat attention">
-            <MessageCircleQuestionMark size={10} /><span class="count">{stats.agents.waiting}</span>
-          </span>
+          <StatusBadge indicator={agentIndicatorByState("waiting_for_input")} size={10} tip={null} text={stats.agents.waiting} />
+        {/if}
+        {#if stats.agents.failed > 0}
+          <StatusBadge indicator={agentIndicatorByState("failed")} size={10} tip={null} text={stats.agents.failed} />
         {/if}
         {#if stats.agents.idle > 0}
-          <span class="stat"><CircleDashed size={10} /><span class="count">{stats.agents.idle}</span></span>
+          <StatusBadge indicator={agentIndicatorByState("idle")} size={10} tip={null} text={stats.agents.idle} />
         {/if}
       {/if}
     </span>
@@ -249,7 +271,7 @@
         <span class="count">{stats.git.repoCount}</span>
         <span class="stat-label">{stats.git.repoCount === 1 ? "repo" : "repos"}</span>
         {#if stats.git.dirtyCount > 0}
-          <span class="git-dot" aria-hidden="true"></span>
+          <StatusBadge indicator={gitIndicator(true)} size={10} tip={null} />
           <span class="count">{stats.git.dirtyCount}</span>
         {/if}
         {#if stats.git.ahead > 0}<span class="delta">&uarr;{stats.git.ahead}</span>{/if}
@@ -284,18 +306,16 @@
         <span class="stat-label">{stats.rails.total === 1 ? "rail" : "rails"}</span>
         <span class="divider" aria-hidden="true"></span>
         {#each railStripStats(stats.rails) as key (key)}
-          <span class="stat {key}">
-            {#if key === "running"}
-              <Play size={10} />
-            {:else if key === "attention"}
-              <MessageCircleQuestionMark size={10} />
-            {:else if key === "done"}
-              <Check size={10} />
-            {:else}
-              <CircleDashed size={10} />
-            {/if}
-            <span class="count">{stats.rails[key]}</span>
-          </span>
+          {#if key === "done"}
+            <span class="stat done"><Check size={10} /><span class="count">{stats.rails[key]}</span></span>
+          {:else}
+            <StatusBadge
+              indicator={agentIndicatorByState(key === "running" ? "working" : key === "attention" ? "waiting_for_input" : "idle")}
+              size={10}
+              tip={null}
+              text={stats.rails[key]}
+            />
+          {/if}
         {/each}
       </span>
     {/if}
@@ -380,7 +400,7 @@
               {#each group.tasks as task (task.sessionId)}
                 <div class="task" class:waiting={task.phase === "waiting"} class:interrupted={task.phase === "interrupted"}>
                   <button type="button" class="task-main" onclick={() => openCard(task)} use:tooltip={taskTip(task)}>
-                    <span class="dot {task.phase}" aria-hidden="true"></span>
+                    <StatusBadge indicator={phaseIndicator(task.phase)} size={10} tip={null} />
                     <span class="task-text">
                       <span class="task-title">{task.title}</span>
                       <span class="task-meta">
@@ -586,14 +606,6 @@
   .col-initials {
     opacity: 0.65;
     margin-right: 2px;
-  }
-  .git-dot {
-    width: 6px;
-    height: 6px;
-    flex: 0 0 auto;
-    box-sizing: border-box;
-    border-radius: 50%;
-    background: var(--warning);
   }
   /* Takes the branch glyph's place rather than sitting beside it, so the
      group keeps its width while a run is in flight. */
@@ -885,46 +897,6 @@
   .sep {
     flex: 0 0 auto;
     color: var(--border-strong);
-  }
-  /* The board's own session-dot vocabulary (BoardCard.svelte): filled
-     accent while working, danger while it waits on you, a pale ring when
-     idle, and a hollow warning ring for a run the daemon replaced --
-     nothing is running in there either, but unlike an exit, nobody asked
-     for it. */
-  .dot {
-    flex: 0 0 auto;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-  }
-  .dot.working {
-    background: var(--accent);
-    animation: hub-pulse 1.2s ease-in-out infinite;
-  }
-  .dot.waiting {
-    background: var(--danger);
-  }
-  /* Grey and FILLED, which is where this parts company with the board's
-     own idle dot: that one is --surface-success, and on the light
-     theme's --surface-sunken row fill it is very nearly the same colour,
-     so the row would read as having no dot at all. Filled still means "a
-     session is there"; grey means nothing is happening in it. Hollow
-     stays reserved for the run that is not there (interrupted). */
-  .dot.idle {
-    background: var(--text-subtle);
-  }
-  .dot.interrupted {
-    background: transparent;
-    border: 1px solid var(--warning);
-  }
-  @keyframes hub-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
   }
   /* Which rail carries this card, in the same Route glyph the board's
      own cards use for it. */

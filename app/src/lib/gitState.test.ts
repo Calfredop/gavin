@@ -72,15 +72,24 @@ vi.mock("./layoutState", async () => {
   return {
     setGitViewPrefs: vi.fn().mockResolvedValue(undefined),
     layoutState: writable({ workspaces: [] }),
+    // The commit run's automatic retry consults both: the workspace's
+    // consent, and whether this daemon can persist the budget at all.
+    daemonCompat: writable({ daemonVersion: 22, appVersion: 22, degraded: false }),
     createSessionForCard: vi.fn().mockResolvedValue("sess-1"),
     resolvedAgentFor: vi.fn(() => ({
       profileId: "claude-code",
+      label: "Claude Code",
       file: "CLAUDE.md",
       command: "claude",
       launchCommand: "claude",
       mcpSupported: true,
       mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --',
+      failureCauses: [
+        { pattern: "/login", cause: "auth" },
+        { pattern: "Connection dropped", cause: "network" },
+      ],
+      promptArgs: "",
     })),
     sessionExits: writable(new Map<string, number>()),
     handleAgentSessionSpawned: vi.fn(),
@@ -632,9 +641,10 @@ describe("commit via agent", () => {
 
   it("refuses an agent with no headless mode, saying so", async () => {
     vi.mocked(resolvedAgentFor).mockReturnValueOnce({
-      profileId: "codex", file: "AGENTS.md", command: "codex",
+      profileId: "codex", label: "Codex CLI", file: "AGENTS.md", command: "codex",
       mcpSupported: false, mcpConfigFile: "", headlessArgs: "",
-      model: "", launchCommand: "codex",
+      promptArgs: "", model: "", launchCommand: "codex",
+      failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "",
     });
     ensureGitView("ws", "/r");
     await refresh("ws");
@@ -797,7 +807,9 @@ describe("adoptAgentCommits", () => {
     const done = commitViaAgent("ws");
     for (let i = 0; i < 20; i++) await Promise.resolve();
     expect(setGitViewPrefs).toHaveBeenCalledWith("ws", {
-      agentCommit: { sessionId: "agent-1", cwd: "/r" },
+      // `retries: 0` because a human's press is always a NEW run with a
+      // fresh budget -- only gavin's own retry starts one above zero.
+      agentCommit: { sessionId: "agent-1", cwd: "/r", retries: 0 },
     });
     // What that write persists, which the clear below checks itself
     // against before erasing anything.
@@ -905,6 +917,110 @@ describe("adoptAgentCommits", () => {
     await adoptAgentCommits();
     expect(backend.adoptSession).not.toHaveBeenCalled();
     expect(setGitViewPrefs).not.toHaveBeenCalled();
+  });
+});
+
+// A hidden commit run gets a plain RETRY where every other run gets a
+// reopened conversation. Measured: a headless (`-p`) run EXITS non-zero
+// on exactly the failures an interactive one survives, so there is no
+// live session and no conversation to reopen -- and none is wanted,
+// because the prompt is "commit pending changes" and re-running it is
+// harmless, which is why adoptAgentCommits already tolerates a repeat.
+describe("the commit run's automatic retry", () => {
+  function opted(inWorkspace: boolean): void {
+    layoutState.set({
+      workspaces: [{ id: "ws", rootPath: "/r", pages: [], autoResumeRuns: inWorkspace }],
+      activeWorkspaceId: "ws",
+      interruptedSessionIds: new Set(),
+    } as never);
+  }
+
+  /// One failed run: launch, print `said`, exit 1.
+  async function failedRun(said: string): Promise<void> {
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    const done = commitViaAgent("ws");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    for (const l of ptyListeners) l({ payload: ["agent-1", said] });
+    sessionExits.set(new Map([["agent-1", 1]]));
+    await done;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("re-runs a commit prompt whose connection died", async () => {
+    opted(true);
+    await failedRun("API Error: Connection dropped (ECONNRESET)");
+    vi.mocked(backend.createSession).mockClear();
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  // The ordinary case this must not touch: an agent that simply decided
+  // it could not commit says so in prose, and prose classifies as
+  // unknown, which never retries.
+  it("leaves an ordinary refusal alone", async () => {
+    opted(true);
+    await failedRun("I could not commit: no user.email is configured.");
+    vi.mocked(backend.createSession).mockClear();
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(backend.createSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("never retries into a login prompt", async () => {
+    opted(true);
+    await failedRun("Please run /login \u00b7 API Error: 401 OAuth token has expired");
+    vi.mocked(backend.createSession).mockClear();
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(backend.createSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  // One retry, on the PERSISTED count -- so a window that adopts a run
+  // it did not start still knows the budget is spent. A counter in the
+  // window would reset on exactly the event the record exists for.
+  it("stops at one, reading the count off the record", async () => {
+    layoutState.set({
+      workspaces: [
+        {
+          id: "ws",
+          rootPath: "/r",
+          pages: [],
+          autoResumeRuns: true,
+          gitView: { agentCommit: { sessionId: "agent-1", cwd: "/r", retries: 1 } },
+        },
+      ],
+      activeWorkspaceId: "ws",
+      interruptedSessionIds: new Set(),
+    } as never);
+    await adoptAgentCommits();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    for (const l of ptyListeners) l({ payload: ["agent-1", "API Error: Connection dropped"] });
+    sessionExits.set(new Map([["agent-1", 1]]));
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    vi.mocked(backend.createSession).mockClear();
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(backend.createSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("does nothing without the workspace's consent", async () => {
+    opted(false);
+    await failedRun("API Error: Connection dropped (ECONNRESET)");
+    vi.mocked(backend.createSession).mockClear();
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(backend.createSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });
 

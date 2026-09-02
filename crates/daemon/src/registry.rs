@@ -24,6 +24,23 @@ pub enum SessionStatus {
     Working,
     WaitingForInput,
     Exited,
+    /// The agent stopped because something BROKE, not because its turn
+    /// ended. A live process at a prompt, exactly like `Idle` -- and the
+    /// whole reason this variant exists is that those two were
+    /// indistinguishable, so a rail marked a step done on work that never
+    /// happened. See `server.rs`'s failure detection.
+    Failed,
+    /// A status string this build does not recognise -- written by a
+    /// NEWER daemon into the same registry, and read back here.
+    ///
+    /// Deliberately not `Idle`, which is what the old fallback did. For
+    /// this feature that default was exactly backwards: `idle` is the one
+    /// value that marks rail steps DONE, so a future "the agent broke"
+    /// status persisted by a v22 daemon and read by this one would
+    /// advance a rail on the strength of not being understood. Unknown
+    /// means unknown, and every consumer that treats it as anything else
+    /// has to say so.
+    Unknown,
 }
 
 impl SessionStatus {
@@ -33,15 +50,23 @@ impl SessionStatus {
             SessionStatus::Working => "working",
             SessionStatus::WaitingForInput => "waiting_for_input",
             SessionStatus::Exited => "exited",
+            SessionStatus::Failed => "failed",
+            // Round-trips as itself rather than as any real status: a row
+            // this build could not read must not be REWRITTEN as one it
+            // invented, or the newer daemon that wrote it loses the fact
+            // on the way back.
+            SessionStatus::Unknown => "unknown",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
+            "idle" => SessionStatus::Idle,
             "working" => SessionStatus::Working,
             "waiting_for_input" => SessionStatus::WaitingForInput,
             "exited" => SessionStatus::Exited,
-            _ => SessionStatus::Idle,
+            "failed" => SessionStatus::Failed,
+            _ => SessionStatus::Unknown,
         }
     }
 }
@@ -113,6 +138,16 @@ pub struct SessionRecord {
     /// `recover` re-probes an existing value instead of overwriting it
     /// blind.
     pub orphan: Option<ProcessHandle>,
+    /// Why this session is `Failed`, in one sentence -- the profile's own
+    /// error line, or the sleep the daemon watched it through. Persisted
+    /// beside the status because the reason travels as a PUSH, and a
+    /// frontend reload that lost it would leave a red session with
+    /// nothing to say for itself (the same baseline hole cwd and status
+    /// were already fixed for).
+    ///
+    /// Written and cleared together with the status by
+    /// `update_status_with_reason`, so the two can never disagree.
+    pub failure_reason: Option<String>,
 }
 
 pub struct Registry {
@@ -170,6 +205,9 @@ impl Registry {
             "ALTER TABLE sessions ADD COLUMN started_at_us INTEGER",
             "ALTER TABLE sessions ADD COLUMN orphan_pid INTEGER",
             "ALTER TABLE sessions ADD COLUMN orphan_started_at_us INTEGER",
+            // v21. Nullable rather than defaulted: no reason is exactly
+            // what a session that has not failed has.
+            "ALTER TABLE sessions ADD COLUMN failure_reason TEXT",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -197,8 +235,8 @@ impl Registry {
 
     pub fn insert(&self, record: &SessionRecord) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO sessions (id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, failure_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 record.id,
                 record.workspace_path,
@@ -213,6 +251,7 @@ impl Registry {
                 // is the one holding the Child it just spawned.
                 record.process.map(|p| p.pid as i64),
                 record.process.map(|p| p.started_at_us),
+                record.failure_reason,
             ],
         )?;
         Ok(())
@@ -267,10 +306,25 @@ impl Registry {
         Ok(())
     }
 
+    /// Any status OTHER than `Failed` clears the failure reason with it.
+    /// A session that started talking again, exited, or was asked a
+    /// question is no longer describable by the last thing that broke,
+    /// and a stale reason on a live session is worse than none: it is the
+    /// text every surface would show.
     pub fn update_status(&self, id: &str, status: SessionStatus) -> anyhow::Result<()> {
         self.conn.execute(
-            "UPDATE sessions SET status = ?1 WHERE id = ?2",
+            "UPDATE sessions SET status = ?1, failure_reason = NULL WHERE id = ?2",
             params![status.as_str(), id],
+        )?;
+        Ok(())
+    }
+
+    /// The `Failed` counterpart: status and reason written together, so
+    /// no reader can ever see one without the other.
+    pub fn update_status_failed(&self, id: &str, reason: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET status = ?1, failure_reason = ?2 WHERE id = ?3",
+            params![SessionStatus::Failed.as_str(), reason, id],
         )?;
         Ok(())
     }
@@ -294,7 +348,7 @@ impl Registry {
 
     pub fn list(&self) -> anyhow::Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us FROM sessions",
+            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason FROM sessions",
         )?;
         let rows = stmt.query_map([], |row| {
             let status_str: String = row.get(4)?;
@@ -311,6 +365,7 @@ impl Registry {
                 interrupted: interrupted != 0,
                 process: handle_from(row.get(8)?, row.get(9)?),
                 orphan: handle_from(row.get(10)?, row.get(11)?),
+                failure_reason: row.get(12)?,
             })
         })?;
         let mut result = Vec::new();
@@ -330,7 +385,7 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> anyhow::Result<Option<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us FROM sessions WHERE id = ?1",
+            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             let status_str: String = row.get(4)?;
@@ -347,6 +402,7 @@ impl Registry {
                 interrupted: interrupted != 0,
                 process: handle_from(row.get(8)?, row.get(9)?),
                 orphan: handle_from(row.get(10)?, row.get(11)?),
+                failure_reason: row.get(12)?,
             })
         })?;
         match rows.next() {
@@ -374,6 +430,7 @@ mod tests {
             interrupted: false,
             process: None,
             orphan: None,
+            failure_reason: None,
         }
     }
 

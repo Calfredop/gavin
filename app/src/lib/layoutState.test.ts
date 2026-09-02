@@ -6,7 +6,7 @@ import { allSessionIds } from "./layout";
 import type { Page, Workspace } from "./workspace";
 import { getActiveView } from "./workspace";
 import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { askConfirm } from "./dialog";
 import { kanbanState } from "./kanbanState";
 import { orchestrations } from "./orchestrationState";
 import { toolRecords } from "./toolsState";
@@ -14,7 +14,7 @@ import { toolRecords } from "./toolsState";
 // setWorkspaceRoot's reclaim offer is the only dialog this module opens.
 // Defaults to "Start fresh" so every test that is not about the reclaim
 // takes the ordinary binding path.
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn().mockResolvedValue(false) }));
+vi.mock("./dialog", () => ({ askConfirm: vi.fn().mockResolvedValue(false) }));
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
@@ -96,6 +96,14 @@ vi.mock("./notifications", () => ({
   // bootstrap() starts the orchestration listeners, which register the
   // rail's voice over this module (see setRailNotificationVoice).
   setRailNotificationVoice: vi.fn(),
+  // NOT a vi.fn(): this is a pure parser and every status that reaches
+  // the store goes through it, so a mock returning undefined would empty
+  // the map these tests are about. The real one is the behaviour under
+  // test as much as the store write is.
+  parseSessionStatus: (raw: string) =>
+    ["idle", "working", "waiting_for_input", "failed", "unknown"].includes(raw)
+      ? raw
+      : "unknown",
 }));
 
 import * as backend from "./backend";
@@ -118,6 +126,8 @@ import {
   handleSessionInterrupted,
   handleSessionOrphaned,
   handleOrphanEnded,
+  handleSessionFailed,
+  __resetFailureNotices,
   reconcileLayoutSessions,
   restartDaemonInPlace,
   clearRestoredMarker,
@@ -199,6 +209,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
     orphanBySessionId: {},
+    failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -228,6 +239,7 @@ beforeEach(() => {
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
     orphanBySessionId: {},
+    failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -301,7 +313,12 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
-    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("Gavin");
+    expect(vi.mocked(askConfirm).mock.calls[0][0].title).toContain("Gavin");
+    // Neither button is a "Cancel": both answers spend the tombstone.
+    expect(vi.mocked(askConfirm).mock.calls[0][0]).toMatchObject({
+      confirmLabel: "Restore",
+      cancelLabel: "Start fresh",
+    });
   });
 
   it("does not offer it for a folder nothing was removed from", async () => {
@@ -309,7 +326,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/other");
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
   });
 
   // Re-pointing a workspace that already holds tabs and a watch is a
@@ -319,7 +336,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
   });
 
   it("does not offer it for a workspace that is already bound to a root", async () => {
@@ -327,12 +344,12 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
   });
 
   it("Start fresh binds normally and drops the record so it stops asking", async () => {
     withTombstone([ws("fresh", [])]);
-    vi.mocked(confirm).mockResolvedValueOnce(false);
+    vi.mocked(askConfirm).mockResolvedValueOnce(false);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
@@ -345,7 +362,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
   it("Restore re-keys the workspace, carrying its pages with it", async () => {
     withTombstone([ws("fresh", [page("p1", leaf([]))])]);
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    vi.mocked(askConfirm).mockResolvedValueOnce(true);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
@@ -363,7 +380,7 @@ describe("reclaiming a removed workspace's rows", () => {
   // workspace was created with.
   it("Restore unwatches the new id, then watches and fetches the restored one", async () => {
     withTombstone([ws("fresh", [])]);
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    vi.mocked(askConfirm).mockResolvedValueOnce(true);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
@@ -377,7 +394,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
   it("Restore persists the restored id", async () => {
     withTombstone([ws("fresh", [])]);
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    vi.mocked(askConfirm).mockResolvedValueOnce(true);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
@@ -1023,8 +1040,11 @@ describe("handleSessionStatusChanged", () => {
     // The fifth argument is the owning workspace's toggles (D38); a
     // session in no workspace defaults to both on.
     const bothOn = { needsInput: true, finished: true };
-    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a", bothOn);
-    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a", bothOn);
+    // The sixth argument is the failure reason, undefined for every
+    // status but `failed` -- which notifies from handleSessionFailed
+    // instead, because that is the only call that holds one.
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a", bothOn, undefined);
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a", bothOn, undefined);
   });
 
   it("resolves the notification label via sessionNames, falling back the same way tab labels do", () => {
@@ -1036,7 +1056,8 @@ describe("handleSessionStatusChanged", () => {
       undefined,
       "waiting_for_input",
       "my-session",
-      { needsInput: true, finished: true }
+      { needsInput: true, finished: true },
+      undefined
     );
   });
 });
@@ -1167,6 +1188,62 @@ describe("handleSessionOrphaned", () => {
   });
 });
 
+// The daemon writes StatusChanged("failed") and SessionFailed together
+// and in that order, so the status lands first and the REASON -- the
+// only part a human can act on -- lands a beat later. These are the two
+// halves meeting.
+describe("handleSessionFailed", () => {
+  beforeEach(() => __resetFailureNotices());
+
+  it("keeps the agent's own sentence against the session id", () => {
+    handleSessionStatusChanged("a", "failed");
+    handleSessionFailed("a", "API Error: 529 Overloaded.");
+    expect(get(layoutState).failureReasonById["a"]).toBe("API Error: 529 Overloaded.");
+  });
+
+  // Any other status clears the reason with it, matching what the daemon
+  // does to the row: a session that started talking again is no longer
+  // described by the last thing that broke, and a stale reason on a live
+  // session is worse than none -- it is the text every surface shows.
+  it("drops the reason the moment the session says anything else", () => {
+    handleSessionStatusChanged("a", "failed");
+    handleSessionFailed("a", "API Error: x");
+    handleSessionStatusChanged("a", "working");
+    expect(get(layoutState).failureReasonById["a"]).toBeUndefined();
+  });
+
+  // The notification is owned HERE, not by the status handler, because
+  // this is the only call that holds the reason. Announcing a failure
+  // with nothing to say about it would be the same uselessness the old
+  // "<label> finished" had.
+  it("fires the one notification for the transition, carrying the reason", () => {
+    handleSessionStatusChanged("a", "working");
+    vi.mocked(notifications.maybeNotifyStatusChange).mockClear();
+
+    handleSessionStatusChanged("a", "failed");
+    expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+
+    handleSessionFailed("a", "API Error: x");
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledWith(
+      "a",
+      "working",
+      "failed",
+      "a",
+      { needsInput: true, finished: true },
+      "API Error: x"
+    );
+  });
+
+  // A reason arriving for a session already known to be failed is the
+  // same failure read twice -- an Attach baseline, a re-read -- and must
+  // not interrupt the human again.
+  it("stays silent for a reason with no transition behind it", () => {
+    handleSessionFailed("a", "API Error: x");
+    expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+    expect(get(layoutState).failureReasonById["a"]).toBe("API Error: x");
+  });
+});
+
 // Both liveness checks in the app read the persisted LAYOUT TREE, not
 // the daemon's session list -- so a tab id a failed recovery left behind
 // reads as a running agent forever, and its rail step can never be
@@ -1185,7 +1262,7 @@ describe("reconcileLayoutSessions", () => {
   it("clears a tab the daemon has no session for, and leaves the live ones", async () => {
     setState([pageWith(["s-live", "ghost"])], "ws-1", "s-live");
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
     ]);
 
     await reconcileLayoutSessions();
@@ -1197,7 +1274,7 @@ describe("reconcileLayoutSessions", () => {
     setState([pageWith(["s-live", "file-1"])], "ws-1", "s-live");
     layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/ws/README.md" } } }));
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
     ]);
 
     await reconcileLayoutSessions();
@@ -1223,7 +1300,7 @@ describe("reconcileLayoutSessions", () => {
           })),
         })),
       }));
-      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null }];
+      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null }];
     });
 
     await reconcileLayoutSessions();
@@ -2350,8 +2427,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
   it("fills cwd, status and the restored badge from the daemon", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false, orphan: null },
-      { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
+      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false, orphan: null, failureReason: null },
+      { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
     ]);
 
     await bootstrapReady();
@@ -2368,8 +2445,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
   });
   it("fills the interrupted set, which the restored one does not speak for", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null },
-      { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false, orphan: null },
+      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null },
+      { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false, orphan: null, failureReason: null },
     ]);
 
     await bootstrapReady();
@@ -2394,8 +2471,9 @@ describe("bootstrap seeds the push-fed session maps", () => {
         restored: true,
         interrupted: true,
         orphan: { pid: 4172, command: "claude" },
+        failureReason: null,
       },
-      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null },
+      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null },
     ]);
 
     await bootstrapReady();
@@ -2411,13 +2489,13 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
   it("never lets a silent baseline delete an orphan a push already landed", async () => {
     // Positive-only, like restored and interrupted. A daemon too old to
-    // probe reports `orphan: null` for everything, and treating that as
+    // probe reports `orphan: null, failureReason: null` for everything, and treating that as
     // "nothing survived" would erase a warning the app had already been
     // given -- the exact absent-vs-unknown confusion this feature is
     // about.
     vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
       handleSessionOrphaned("s-1", { pid: 4172, command: "claude" });
-      return [{ id: "s-1", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null }];
+      return [{ id: "s-1", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null }];
     });
 
     await bootstrapReady();
@@ -2427,11 +2505,32 @@ describe("bootstrap seeds the push-fed session maps", () => {
   });
 
 
+  // The reason is a push like the other four, and its baseline rides on
+  // Attach -- which happens once per app PROCESS. Without this a
+  // reloaded frontend comes up with a red session and nothing to say for
+  // itself, which is the exact state this feature exists to replace.
+  it("fills the failure reason, so a reload does not leave a red session mute", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-broke", cwd: "/ws", status: "failed", restored: false, interrupted: false, orphan: null, failureReason: "API Error: x" },
+      { id: "s-fine", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).failureReasonById["s-broke"]).toBe("API Error: x"));
+    const state = get(layoutState);
+    expect(state.sessionStatusById["s-broke"]).toBe("failed");
+    expect(state.failureReasonById["s-fine"]).toBeUndefined();
+    // Read straight into the map, never through handleSessionFailed:
+    // re-reading a failure the human has already seen is not a new one.
+    expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+  });
+
   it("never overwrites a push that already landed", async () => {
     vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
       // A live push beats the snapshot this call is about to return.
       handleCwdChanged("s-1", "/ws/live");
-      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false, orphan: null }];
+      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null }];
     });
 
     await bootstrapReady();
@@ -2456,8 +2555,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // when the status actually CHANGES.
   it("fills the git status the sidebar's repo chip reads", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false, orphan: null },
-      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false, orphan: null },
+      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
+      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockResolvedValue([
       { repoRoot: "/ws", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
@@ -2486,7 +2585,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   it("never overwrites a git push that already landed", async () => {
     const live = { repoRoot: "/ws", branch: "live", dirty: false, ahead: 0, behind: 0, hasUpstream: false };
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockImplementation(async () => {
       handleGitStatusChanged("s-1", live);
@@ -2502,7 +2601,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // git can be missing, slow, or refuse a repo outright.
   it("keeps the cwd seed when the git half fails", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockRejectedValue(new Error("git was not found on PATH"));
 
@@ -2875,6 +2974,7 @@ describe("runningSessionCount", () => {
       restoredSessionIds: new Set(),
       interruptedSessionIds: new Set(),
       orphanBySessionId: {},
+      failureReasonById: {},
       fileTabsById: {},
       boardTabsById: {},
       removedWorkspaces: [],

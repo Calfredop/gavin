@@ -24,11 +24,46 @@
     // should go); its value is handed to the chosen action.
     picker?: { label: string; options: PickerOption[] } | null;
     choices: Choice[];
+    // The dismissing button's word. "Cancel" reads right when the other
+    // answer is the action, but some prompts have two actions and no
+    // way out ("Restore" / "Start fresh") -- there, "Cancel" would lie
+    // about what the button does.
+    cancelLabel?: string;
     onCancel: () => void;
   }
-  let { title, lines, picker = null, choices, onCancel }: Props = $props();
+  let { title, lines, picker = null, choices, cancelLabel = "Cancel", onCancel }: Props = $props();
 
   let picked = $state<string | null>(null);
+  let cancelButton = $state<HTMLButtonElement | null>(null);
+  let choiceButtons = $state<Array<HTMLButtonElement | null>>([]);
+
+  // Focus lands INSIDE the modal, on the answer that is safe to give by
+  // reflex: the last choice when it is harmless, the dismissing button
+  // whenever the prompt is destructive. That is the platform
+  // convention, and it is the reason Enter can be trusted here at all --
+  // every destructive prompt in the app marks its choice `danger`, so
+  // Enter dismisses those rather than firing them.
+  const enterIsSafe = $derived(choices.length > 0 && !choices.some((c) => c.danger));
+  // Once, on the first render that has a button to aim at -- not on
+  // every re-run of the effect, or a later state change would yank focus
+  // back out of wherever the human had moved it.
+  let focusTaken = false;
+  let focusWasOn: Element | null = null;
+  $effect(() => {
+    if (focusTaken) return;
+    const target = enterIsSafe ? choiceButtons[choices.length - 1] : cancelButton;
+    if (!target) return;
+    focusTaken = true;
+    focusWasOn = document.activeElement;
+    target.focus();
+  });
+  // Handed back on teardown: a prompt raised over a surface the human was
+  // typing in (the card detail's editor) must not swallow the caret on
+  // its way out.
+  $effect(() => () => {
+    if (focusWasOn instanceof HTMLElement && focusWasOn.isConnected) focusWasOn.focus();
+  });
+
   // Defaulted in an effect rather than at declaration: reading `picker`
   // once would freeze the first render's value.
   $effect(() => {
@@ -54,10 +89,11 @@
     </label>
   {/if}
   <div class="actions">
-    <button type="button" onclick={onCancel}>Cancel</button>
-    {#each choices as choice (choice.label)}
+    <button type="button" bind:this={cancelButton} onclick={onCancel}>{cancelLabel}</button>
+    {#each choices as choice, i (choice.label)}
       <button
         type="button"
+        bind:this={choiceButtons[i]}
         class:danger={choice.danger}
         disabled={choice.needsPick && picked === null}
         onclick={() => choice.onPick(picked)}
@@ -103,6 +139,10 @@
     padding: 3px 6px;
     flex: 1 1 auto;
     min-width: 0;
+  }
+  .actions button:focus-visible {
+    outline: 2px solid var(--border-accent);
+    outline-offset: 1px;
   }
   .actions button:disabled {
     opacity: 0.45;

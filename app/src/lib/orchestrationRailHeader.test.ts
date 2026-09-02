@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 // suite can see, so this pins them the way orchestrationRailScroll pins
 // the scroll rules.
 
-const SVELTE = import.meta.glob("./*.svelte", {
+const SVELTE = import.meta.glob(["./*.svelte", "./ui/StatusBadge.svelte"], {
   query: "?raw",
   import: "default",
   eager: true,
@@ -66,8 +66,10 @@ describe("the rail header's first row", () => {
     // Conflicts, state and attention describe the rail the name names --
     // they belong beside it, and they are small.
     expect(first).toContain('class="rail-badge');
-    expect(first).toContain('class="state');
-    expect(first).toContain('class="attention"');
+    // Both are StatusBadges from the shared vocabulary (ui/indicators.ts),
+    // the same badge the hub's rail list and the step chips draw.
+    expect(first).toContain("indicator={railIndicator(railState)}");
+    expect(first).toContain("indicator={attentionIndicator(attention)}");
     // Not one button. This is the whole fix: an action added back to
     // this row starts squeezing the name again.
     expect(first).not.toContain("<IconButton");
@@ -80,8 +82,15 @@ describe("the rail header's first row", () => {
     const name = ruleFor(".name");
     expect(name).toContain("min-width: 0");
     expect(name).toContain("text-overflow: ellipsis");
-    expect(ruleFor(".state")).toContain("flex: none");
-    expect(ruleFor(".attention")).toContain("flex: none");
+    // The state and attention labels are StatusBadges, and the badge's
+    // own rule is what refuses to shrink -- one rule for every badge in
+    // the app rather than a private flex: none per surface.
+    const badge = SVELTE["./ui/StatusBadge.svelte"];
+    expect(badge, "no source for ui/StatusBadge.svelte").toBeTruthy();
+    const at = badge.indexOf("\n  .status-badge {");
+    expect(at, "no `.status-badge` rule in StatusBadge.svelte").toBeGreaterThan(-1);
+    const rule = badge.slice(at, badge.indexOf("}", at)).replace(/\s+/g, " ");
+    expect(rule).toContain("flex: 0 0 auto");
   });
 });
 

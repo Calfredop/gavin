@@ -1109,6 +1109,7 @@ mod tests {
                 position: 0,
                 worktree_path: Some("/x/wt-a".into()),
                 branch: Some("feature/api".into()),
+                auto_resume: None,
                 page_id: None,
                 stages: vec![protocol::Stage {
                     id: "s1".into(),
@@ -1143,6 +1144,9 @@ mod tests {
                 state: "running".into(),
                 session_id: Some("s-1".into()),
                 reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
             }],
         }
     }

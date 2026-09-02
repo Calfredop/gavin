@@ -25,12 +25,22 @@
   import { restoredBadge, type RestoredBadge } from "./orphan";
   import { endSessionOrphan } from "./orphanActions";
   import { dirtyPaths } from "./fileEditing";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
-  import { X, Plus, RotateCw, TriangleAlert, Kanban, Pin, SquareArrowOutUpRight } from "@lucide/svelte";
+  import { X, Plus, Kanban, Pin, SquareArrowOutUpRight } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import {
+    agentFailedIndicator,
+    agentIndicator,
+    gitIndicator,
+    shellOrphanIndicator,
+    shellRestartedIndicator,
+    unsavedEditsIndicator,
+    type Indicator,
+  } from "./ui/indicators";
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import Tooltip from "./Tooltip.svelte";
@@ -166,16 +176,22 @@
     if (unknown.length > 0) void repairUnknownTabs(unknown);
   });
 
-  // idle intentionally returns null here -- no dot at all is the idle
-  // indicator, not a neutral-colored one (see this plan's Global
-  // Constraints). waiting_for_input is "request attention" in the UI --
-  // the internal/data-model name stays unchanged, matching the existing
-  // Rust enum.
-  function tabStatusDot(sessionId: string): { class: string; title: string } | null {
+  // idle intentionally returns null here -- no badge at all is the idle
+  // indicator, not a neutral-toned one (see this plan's Global
+  // Constraints). The two states that DO draw come from the app's shared
+  // agent vocabulary (ui/indicators.ts), so a tab, the board card bound
+  // to the same session and the sidebar row under it all say it with the
+  // same glyph and the same tone.
+  function tabStatusBadge(sessionId: string): Indicator | null {
     const status = $layoutState.sessionStatusById[sessionId];
-    if (status === "working") return { class: "status-working", title: "Working" };
-    if (status === "waiting_for_input") return { class: "status-waiting", title: "Request attention" };
-    return null;
+    // Before every other status: this is the one that used to be
+    // indistinguishable from idle -- i.e. from no badge at all -- so a tab
+    // whose agent had broken looked exactly like one whose agent was
+    // done. The reason is the agent's own line, and the tab is where the
+    // human goes to read the rest of it.
+    if (status === "failed") return agentFailedIndicator($layoutState.failureReasonById[sessionId]);
+    if (status !== "working" && status !== "waiting_for_input") return null;
+    return agentIndicator(status);
   }
 
   // What the ↻/⚠ badge on this tab says, or null for no badge. All three
@@ -192,14 +208,18 @@
     });
   }
 
-  // Filled when dirty, hollow (outlined) when clean, absent entirely when
-  // this session has no git repo -- no branch name, no ahead/behind, and
-  // no tooltip here; that detail lives entirely in the sidebar (see this
-  // plan's Global Constraints).
-  function tabGitDot(sessionId: string): { dirty: boolean } | null {
+  // Absent entirely when this session has no git repo. Dirty and clean
+  // now differ by TONE on one branch glyph rather than by fill on a
+  // coloured dot: the old outlined-amber "clean" spent the app's
+  // attention colour saying there was nothing to attend to, and the
+  // filled one was indistinguishable from the unsaved-edits dot two
+  // elements along. No branch name or ahead/behind here either; that
+  // detail lives entirely in the sidebar (see this plan's Global
+  // Constraints).
+  function tabGitBadge(sessionId: string): Indicator | null {
     const status = $layoutState.gitStatusById[sessionId];
     if (!status) return null;
-    return { dirty: status.dirty };
+    return gitIndicator(status.dirty);
   }
 
   function startEditing(sessionId: string): void {
@@ -225,7 +245,7 @@
 
   function reportMenuError(text: string): void {
     console.error(text);
-    void message(text, { title: "gavin", kind: "error" });
+    void showAlert({ title: "That didn't work", lines: [text] });
   }
 
   function openTabMenu(e: MouseEvent, sessionId: string): void {
@@ -417,21 +437,16 @@
             <span class="tab-label" ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span>
           </Tooltip>
         {/if}
-        {#if tabStatusDot(sessionId)}
-          {@const dot = tabStatusDot(sessionId)}
-          <span class="status-dot {dot?.class}" title={dot?.title}></span>
+        {#if tabStatusBadge(sessionId)}
+          {@const status = tabStatusBadge(sessionId)}
+          {#if status}<StatusBadge indicator={status} size={10} />{/if}
         {/if}
         {#if fileTabPath(sessionId) && $dirtyPaths.has(fileTabPath(sessionId) ?? "")}
-          <span class="dirty-dot" title="Unsaved changes"></span>
+          <StatusBadge indicator={unsavedEditsIndicator()} size={10} />
         {/if}
-        {#if tabGitDot(sessionId)}
-          {@const gitDot = tabGitDot(sessionId)}
-          <span
-            class="git-dot"
-            class:dirty={gitDot?.dirty}
-            class:clean={!gitDot?.dirty}
-            title={gitDot?.dirty ? "Uncommitted changes" : "Clean"}
-          ></span>
+        {#if tabGitBadge(sessionId)}
+          {@const git = tabGitBadge(sessionId)}
+          {#if git}<StatusBadge indicator={git} size={10} />{/if}
         {/if}
         {#if linkedCard(sessionId)}
           {@const link = linkedCard(sessionId)}
@@ -462,27 +477,29 @@
              someone ran `ls` in the shell that replaced its tab. That
              case is the only one with an action behind it, and all three
              wordings come from orphan.ts so no second surface can
-             describe them differently. -->
+             describe them differently. The glyph and the tone come from
+             the shared vocabulary (ui/indicators.ts): the shell axis,
+             with the orphan as its one danger-toned state. -->
         {#if tabBadge(sessionId)}
           {@const badge = tabBadge(sessionId)!}
           <span
             class="restored-badge"
-            class:interrupted={badge.tone === "interrupted"}
             class:orphaned={badge.tone === "orphaned"}
             role={badge.canEnd ? "button" : undefined}
             aria-label={badge.canEnd ? "End the process this session left running" : undefined}
-            title={badge.title}
             onclick={(e) => {
               if (!badge.canEnd) return;
               e.stopPropagation();
               void endSessionOrphan(sessionId);
             }}
           >
-            {#if badge.tone === "orphaned"}
-              <TriangleAlert size={10} />
-            {:else}
-              <RotateCw size={10} />
-            {/if}
+            <StatusBadge
+              indicator={badge.tone === "orphaned"
+                ? shellOrphanIndicator()
+                : shellRestartedIndicator(badge.tone === "interrupted")}
+              size={10}
+              tip={badge.title}
+            />
           </span>
         {/if}
         {#if !isPinnedTab(sessionId)}
@@ -622,60 +639,18 @@
   .tab.pinned {
     padding-right: 10px;
   }
-  .status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-  }
-  .status-dot.status-working {
-    background: var(--accent);
-  }
-  .status-dot.status-waiting {
-    background: var(--danger);
-  }
-  .dirty-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-    background: var(--warning);
-  }
-  .git-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-    box-sizing: border-box;
-  }
-  .git-dot.dirty {
-    background: var(--warning);
-  }
-  .git-dot.clean {
-    background: transparent;
-    border: 1px solid var(--warning);
-  }
   .restored-badge {
     display: flex;
     align-items: center;
     flex: 0 0 auto;
-    color: var(--success);
   }
-  /* Same glyph, different claim: green says "your shell came back",
-     amber says "your agent did not". */
-  .restored-badge.interrupted {
-    color: var(--warning);
-  }
-  /* A different GLYPH, not just a different colour: this one is not a
-     note about what happened, it is a live process still editing the
-     folder, and it is the only badge here that does something when
-     pressed. Danger red and a pointer say both. */
+  /* The one badge here that does something when pressed: a live process
+     still editing the folder. The tone is the badge's own; this only
+     says it can be clicked. */
   .restored-badge.orphaned {
-    color: var(--danger);
     cursor: pointer;
   }
   .restored-badge.orphaned:hover {
-    color: var(--danger);
     opacity: 0.75;
   }
   .tab-label-input {

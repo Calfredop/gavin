@@ -97,6 +97,22 @@ impl OrchestrationStore {
         add_column_if_missing(&conn, "orch_stages", "name", "TEXT")?;
         // orch_rails predates branch binding for the same reason.
         add_column_if_missing(&conn, "orch_rails", "branch", "TEXT")?;
+        // v21: the agent CLI's own conversation id for this run, and the
+        // directory it was LAUNCHED in. Both nullable, because a profile
+        // with no verified resume argv records neither and a run from
+        // before v21 has neither -- and "no conversation to resume" is
+        // the honest reading of an absent id, not an error.
+        add_column_if_missing(&conn, "orch_step_runs", "conversation_id", "TEXT")?;
+        add_column_if_missing(&conn, "orch_step_runs", "launch_cwd", "TEXT")?;
+        // v22: the per-rail auto-resume opt-in, and the persisted budget
+        // for the resumes it performs. The budget is on the RUN because
+        // that is what it bounds -- one automatic attempt per run -- and
+        // it is on DISK because an app reload and a daemon restart are
+        // the conditions auto-resume exists for. Both nullable: a rail
+        // authored before v22 has no opinion, which reads as off, and a
+        // run that was never resumed has no count, which reads as zero.
+        add_column_if_missing(&conn, "orch_rails", "auto_resume", "INTEGER")?;
+        add_column_if_missing(&conn, "orch_step_runs", "resume_attempts", "INTEGER")?;
         Ok(Self { conn })
     }
 
@@ -104,7 +120,7 @@ impl OrchestrationStore {
         let mut rails: Vec<Rail> = self
             .conn
             .prepare(
-                "SELECT id, name, position, worktree_path, branch, page_id FROM orch_rails
+                "SELECT id, name, position, worktree_path, branch, auto_resume, page_id FROM orch_rails
                  WHERE workspace_id = ?1 ORDER BY position",
             )?
             .query_map(params![workspace_id], |row| {
@@ -114,7 +130,10 @@ impl OrchestrationStore {
                     position: row.get(2)?,
                     worktree_path: row.get(3)?,
                     branch: row.get(4)?,
-                    page_id: row.get(5)?,
+                    // SQLite has no bool: the column is INTEGER, so it
+                    // comes back as one and 0/1 is the opt-in.
+                    auto_resume: row.get::<_, Option<i64>>(5)?.map(|v| v != 0),
+                    page_id: row.get(6)?,
                     stages: Vec::new(),
                 })
             })?
@@ -208,13 +227,19 @@ impl OrchestrationStore {
 
         let step_runs: Vec<StepRun> = self
             .conn
-            .prepare("SELECT step_id, state, session_id, reason FROM orch_step_runs")?
+            .prepare(
+                "SELECT step_id, state, session_id, reason, conversation_id, launch_cwd, resume_attempts \
+                 FROM orch_step_runs",
+            )?
             .query_map([], |row| {
                 Ok(StepRun {
                     step_id: row.get(0)?,
                     state: row.get(1)?,
                     session_id: row.get(2)?,
                     reason: row.get(3)?,
+                    conversation_id: row.get(4)?,
+                    launch_cwd: row.get(5)?,
+                    resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -345,8 +370,8 @@ impl OrchestrationStore {
 
         for rail in rails {
             tx.execute(
-                "INSERT INTO orch_rails (id, workspace_id, name, position, worktree_path, branch, page_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO orch_rails (id, workspace_id, name, position, worktree_path, branch, auto_resume, page_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     rail.id,
                     workspace_id,
@@ -354,6 +379,7 @@ impl OrchestrationStore {
                     rail.position,
                     rail.worktree_path,
                     rail.branch,
+                    rail.auto_resume.map(|v| i64::from(v)),
                     rail.page_id
                 ],
             )?;
@@ -458,17 +484,39 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// `conversation_id` and `launch_cwd` are written on the way IN and
+    /// never cleared by a later write that omits them: the launch records
+    /// them once, and every subsequent transition of the same step (a
+    /// stall, a done) carries None. Losing them there would leave exactly
+    /// the state that most needs a resume -- a stalled step -- with
+    /// nothing to resume.
     pub fn set_step_run(
         &mut self,
         step_id: &str,
         state: &str,
         session_id: Option<&str>,
         reason: Option<&str>,
+        conversation_id: Option<&str>,
+        launch_cwd: Option<&str>,
+        resume_attempts: Option<u32>,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO orch_step_runs (step_id, state, session_id, reason) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(step_id) DO UPDATE SET state = ?2, session_id = ?3, reason = ?4",
-            params![step_id, state, session_id, reason],
+            "INSERT INTO orch_step_runs (step_id, state, session_id, reason, conversation_id, launch_cwd, resume_attempts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(step_id) DO UPDATE SET
+               state = ?2, session_id = ?3, reason = ?4,
+               conversation_id = COALESCE(?5, orch_step_runs.conversation_id),
+               launch_cwd = COALESCE(?6, orch_step_runs.launch_cwd),
+               resume_attempts = COALESCE(?7, orch_step_runs.resume_attempts)",
+            params![
+                step_id,
+                state,
+                session_id,
+                reason,
+                conversation_id,
+                launch_cwd,
+                resume_attempts.map(i64::from)
+            ],
         )?;
         Ok(())
     }
@@ -684,6 +732,7 @@ mod tests {
             position: 0,
             worktree_path: None,
             branch: None,
+            auto_resume: None,
             page_id: None,
             stages: vec![Stage {
                 id: format!("{id}-s1"),
@@ -793,7 +842,7 @@ mod tests {
     fn run_state_survives_a_replace_that_keeps_the_step_id() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "done", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "done", Some("sess-1"), None, None, None, None).unwrap();
         // Same step id, moved into a differently-named rail.
         let mut moved = rail("r9", &[("t1", "/x/a.md")]);
         moved.name = "renamed".into();
@@ -808,7 +857,7 @@ mod tests {
     fn run_state_for_a_vanished_step_is_dropped() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "done", None, None).unwrap();
+        s.set_step_run("t1", "done", None, None, None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &none()).unwrap();
         assert!(s.get("ws-1").unwrap().step_runs.is_empty());
     }
@@ -817,7 +866,7 @@ mod tests {
     fn deleting_a_running_step_is_refused_and_changes_nothing() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None, None).unwrap();
         let err = s
             .replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-1"]))
             .unwrap_err()
@@ -836,7 +885,7 @@ mod tests {
     fn deleting_a_running_step_whose_session_is_gone_is_allowed() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-9"]))
             .unwrap();
         let o = s.get("ws-1").unwrap();
@@ -849,7 +898,7 @@ mod tests {
     fn deleting_a_running_step_with_no_session_is_allowed() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", None, None).unwrap();
+        s.set_step_run("t1", "running", None, None, None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-1"]))
             .unwrap();
         assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].steps[0].id, "t2");
@@ -859,7 +908,7 @@ mod tests {
     fn moving_a_running_step_between_rails_is_allowed() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r2", &[("t1", "/x/a.md")])], &[], &live(&["sess-1"])).unwrap();
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.rails[0].id, "r2");
@@ -921,6 +970,7 @@ mod tests {
             position: 0,
             worktree_path: None,
             branch: None,
+            auto_resume: None,
             page_id: None,
             stages: vec![Stage {
                 id: "rt-s1".into(),
@@ -1210,7 +1260,95 @@ mod tests {
         let s = OrchestrationStore::open(&path).unwrap();
         let back = s.get("ws-1").unwrap().rails[0].clone();
         assert_eq!(back.branch, None);
+        // v22 rides the same path, and its absent value has to read as
+        // the safe one: a rail authored before the opt-in existed never
+        // consented to resuming itself.
+        assert_eq!(back.auto_resume, None);
         assert_eq!(back.worktree_path.as_deref(), Some("/x/wt"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The per-rail opt-in survives a plan rewrite, which is the only way
+    /// a rail is ever stored: `replace_plan` deletes every rail of the
+    /// workspace and re-inserts them, so a field it forgot to carry would
+    /// be silently cleared by the next unrelated edit to the board.
+    #[test]
+    fn a_rails_auto_resume_opt_in_round_trips() {
+        let mut s = store();
+        let mut r = rail("r1", &[("t1", "/x/a.md")]);
+        r.auto_resume = Some(true);
+        s.replace_plan("ws-1", &[r], &[], &none()).unwrap();
+        assert_eq!(s.get("ws-1").unwrap().rails[0].auto_resume, Some(true));
+
+        let mut off = rail("r1", &[("t1", "/x/a.md")]);
+        off.auto_resume = Some(false);
+        s.replace_plan("ws-1", &[off], &[], &none()).unwrap();
+        assert_eq!(s.get("ws-1").unwrap().rails[0].auto_resume, Some(false));
+    }
+
+    /// The budget is the one run field written by a LATER transition than
+    /// the launch, so it needs the opposite of `conversation_id`'s
+    /// treatment in one direction and the same in the other: an explicit
+    /// count is stored, and a None leaves the stored one alone -- because
+    /// the dozen transitions that say nothing about the budget (a stall,
+    /// a done, a rail reset) all pass None.
+    #[test]
+    fn the_resume_budget_is_written_when_given_and_kept_when_not() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, Some("conv-1"), Some("/x"), Some(0))
+            .unwrap();
+        assert_eq!(s.get("ws-1").unwrap().step_runs[0].resume_attempts, Some(0));
+
+        // The automatic resume spends the budget.
+        s.set_step_run("t1", "running", Some("sess-2"), None, None, None, Some(1)).unwrap();
+        assert_eq!(s.get("ws-1").unwrap().step_runs[0].resume_attempts, Some(1));
+
+        // A stall says nothing about it, and must not spend or refund it.
+        s.set_step_run("t1", "stalled", Some("sess-2"), Some("broke"), None, None, None).unwrap();
+        let run = s.get("ws-1").unwrap().step_runs[0].clone();
+        assert_eq!(run.resume_attempts, Some(1));
+        assert_eq!(run.conversation_id.as_deref(), Some("conv-1"));
+    }
+
+    /// The migration for the two v22 columns, from the v21 shape.
+    #[test]
+    fn opening_a_pre_v22_database_adds_the_auto_resume_columns() {
+        let dir = std::env::temp_dir().join(format!("gavin-orch-v22-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE orch_rails (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL,
+                    position INTEGER NOT NULL, worktree_path TEXT, branch TEXT, page_id TEXT);
+                 CREATE TABLE orch_stages (
+                    id TEXT PRIMARY KEY, rail_id TEXT NOT NULL, position INTEGER NOT NULL,
+                    mode TEXT, name TEXT);
+                 CREATE TABLE orch_steps (
+                    id TEXT PRIMARY KEY, stage_id TEXT NOT NULL, position INTEGER NOT NULL,
+                    card_path TEXT NOT NULL, tool_id TEXT, tool_params TEXT);
+                 CREATE TABLE orch_step_runs (
+                    step_id TEXT PRIMARY KEY, state TEXT NOT NULL, session_id TEXT, reason TEXT,
+                    conversation_id TEXT, launch_cwd TEXT);
+                 INSERT INTO orch_rails VALUES ('r1','ws-1','backend',0,'/x/wt',NULL,NULL);
+                 INSERT INTO orch_stages VALUES ('g1','r1',0,'parallel',NULL);
+                 INSERT INTO orch_steps VALUES ('t1','g1',0,'/x/a.md',NULL,NULL);
+                 INSERT INTO orch_step_runs VALUES ('t1','running','s-1',NULL,'conv-1','/x/wt');",
+            )
+            .unwrap();
+        }
+        let s = OrchestrationStore::open(&path).unwrap();
+        let o = s.get("ws-1").unwrap();
+        assert_eq!(o.rails[0].auto_resume, None, "a v21 rail never opted in");
+        assert_eq!(o.step_runs[0].resume_attempts, None, "a v21 run was never auto-resumed");
+        assert_eq!(o.step_runs[0].conversation_id.as_deref(), Some("conv-1"));
+
+        // Idempotent: the ALTERs run on every open.
+        drop(s);
+        assert!(OrchestrationStore::open(&path).is_ok());
         let _ = std::fs::remove_file(&path);
     }
 

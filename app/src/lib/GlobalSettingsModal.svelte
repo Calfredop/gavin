@@ -21,6 +21,8 @@
   import type { ThemePref } from "./ui/theme";
   import IconButton from "./ui/IconButton.svelte";
   import Modal from "./Modal.svelte";
+  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "./agentPause";
+  import { agentPauseStore, profilesInUse, saveAgentPause } from "./agentPauseState";
 
   interface Props {
     onClose: () => void;
@@ -40,6 +42,32 @@
   /// Only profiles gavin knows how to put a model on. A row for `cursor`
   /// or `custom` would be a control that cannot reach the agent.
   const profiles = $derived($agentProfilesStore.filter((p) => p.modelFlag));
+
+  /// The app-wide cycle, or the shipped default while there is none --
+  /// an editor needs fields on screen, and `saveAgentPause` is what turns
+  /// the default into a stored cycle.
+  const cycle = $derived($agentPauseStore ?? { ...DEFAULT_CYCLE, anchorMs: 0 });
+  const cycleError = $derived(cycle.enabled ? validateCycle(cycle) : null);
+
+  /// Whether any agent in use can actually be asked about its limits. The
+  /// limit gate is offered either way -- a workspace may switch agents --
+  /// but saying so beats a control that silently never fires.
+  const probed = $derived(
+    $agentProfilesStore.some((p) => p.usageProbe && profilesInUse().includes(p.id))
+  );
+
+  /// Writes through on every change, refusing an invalid cycle rather
+  /// than storing one gavin would then have to ignore at read time.
+  function edit(patch: Partial<PauseCycle>): void {
+    const next = { ...cycle, ...patch };
+    if (next.enabled && validateCycle(next)) {
+      // Keep it on screen so the message can explain itself; nothing is
+      // saved until it is usable again.
+      agentPauseStore.set(next);
+      return;
+    }
+    void saveAgentPause(next);
+  }
 
   /// Which rows have their custom box open. A row whose stored value is
   /// not one of its presets starts open showing that value -- otherwise
@@ -145,6 +173,77 @@
         Every workspace that sets nothing of its own follows this; every card can still be switched
         either way on the card itself.
       </p>
+    </section>
+
+    <section>
+      <h3>Agent pause</h3>
+      <p class="hint">
+        Sit out part of every window so a rail does not spend a subscription limit
+        while nobody is watching. Nothing already running is interrupted — only
+        new starts wait.
+      </p>
+      <div class="row">
+        <span>Scheduled</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={cycle.enabled}
+            onchange={(e) => edit({ enabled: e.currentTarget.checked })}
+          />
+          <span>Pause on a cycle</span>
+        </label>
+      </div>
+      <div class="row">
+        <span>Pause for</span>
+        <input
+          class="num"
+          type="number"
+          min="1"
+          disabled={!cycle.enabled}
+          value={cycle.pauseMinutes}
+          onchange={(e) => edit({ pauseMinutes: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">minutes every</span>
+        <input
+          class="num"
+          type="number"
+          min={MIN_PERIOD_MINUTES}
+          disabled={!cycle.enabled}
+          value={cycle.periodMinutes}
+          onchange={(e) => edit({ periodMinutes: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">minutes</span>
+      </div>
+      <div class="row">
+        <span>At the limit</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={cycle.limitEnabled}
+            onchange={(e) => edit({ limitEnabled: e.currentTarget.checked })}
+          />
+          <span>Hold when a window is</span>
+        </label>
+        <input
+          class="num"
+          type="number"
+          min="1"
+          max="100"
+          disabled={!cycle.limitEnabled}
+          value={cycle.limitPercent}
+          onchange={(e) => edit({ limitPercent: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">% used</span>
+      </div>
+      {#if cycleError}
+        <p class="hint error">{cycleError}</p>
+      {:else if !probed}
+        <p class="hint">
+          Holding at a limit needs an agent whose limits gavin can read — today
+          Claude Code and Codex. No workspace here runs one, so only the schedule
+          applies.
+        </p>
+      {/if}
     </section>
 
     <section>
@@ -254,6 +353,22 @@
   .hint {
     color: var(--text-subtle);
     margin: 6px 0 0;
+  }
+  .hint.error {
+    color: var(--danger-text);
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text);
+  }
+  .row input.num {
+    width: 56px;
+    text-align: right;
+  }
+  .unit {
+    color: var(--text-muted);
   }
   .actions {
     display: flex;

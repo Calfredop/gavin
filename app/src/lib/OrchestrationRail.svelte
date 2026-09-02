@@ -8,12 +8,16 @@
     Sparkles,
     SquareStack,
     BrushCleaning,
-    CirclePause,
-    MessageCircleQuestionMark,
     GripVertical,
     Ellipsis,
+    LifeBuoy,
   } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import { resumeNoteFor } from "./autoResume";
+  import { resumeTrail } from "./autoResumeState";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { tooltip } from "./tooltip";
+  import { attentionIndicator, railIndicator } from "./ui/indicators";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
   import type { Label } from "./kanban";
@@ -46,7 +50,6 @@
   } from "./orchestration";
   import { highlightedConflict } from "./orchestrationState";
   import { orchDragState } from "./orchestrationDrag";
-  import { tooltip } from "./tooltip";
   import { openContextMenuFromEvent } from "./contextMenu";
 
   interface Props {
@@ -81,6 +84,14 @@
     onStart: () => void;
     onPause: () => void;
     onReset: () => void;
+    /// The rail's consent to resuming its own broken steps, and the
+    /// switch that gives it. Part of the PLAN, not a per-viewer
+    /// preference -- so it rides the same save every other rail edit
+    /// does.
+    onToggleAutoResume: (autoResume: boolean) => void;
+    /// Why this daemon cannot carry that consent, or null. A v21 daemon
+    /// drops the budget field, which would turn one attempt into a loop.
+    autoResumeBlocked?: string | null;
     onDelete: () => void;
     /// Opens the column menu at the pointer -- the parent owns the
     /// board's columns and builds the entries, exactly as it does for a
@@ -152,6 +163,8 @@
     onStart,
     onPause,
     onReset,
+    onToggleAutoResume,
+    autoResumeBlocked = null,
     onDelete,
     onMoveAll,
     onClearDone,
@@ -324,19 +337,17 @@
           onmouseleave={() => highlightedConflict.set(null)}
         >{n}</span>
       {/each}
-      <span class="state {railState}">{railState}</span>
-      <!-- After the state word, not instead of it: a rail with a step
-           waiting on a human is still running, and saying otherwise here
-           would contradict the Pause button on the row below. -->
+      <StatusBadge indicator={railIndicator(railState)} text={railState} />
+      <!-- After the state, not instead of it: a rail with a step waiting
+           on a human is still running, and saying otherwise here would
+           contradict the Pause button right beside it. Same badge the
+           step and its chip use for the same fact, one level down. -->
       {#if attention}
-        <span class="attention" use:tooltip={attentionTitle}>
-          {#if attention === "asking"}
-            <MessageCircleQuestionMark size={11} />
-          {:else}
-            <CirclePause size={11} />
-          {/if}
-          needs you
-        </span>
+        <StatusBadge
+          indicator={attentionIndicator(attention)}
+          text="needs you"
+          tip={attentionTitle}
+        />
       {/if}
     </div>
     <div class="action-row">
@@ -359,6 +370,27 @@
         onclick={onReorganize}
       />
       <IconButton icon={RotateCcw} label="Reset run state" onclick={onReset} />
+      <!-- Consent, given in advance and per rail. Default off: a rail
+           that resumes itself six hours after you walked away made a
+           decision that was yours unless you made it here first. -->
+      <!-- The reason hangs on the SPAN, not the button. A disabled
+           element dispatches no mouseenter, so a tooltip bound to it can
+           never explain why it is disabled -- which is the one moment
+           the explanation is worth having. -->
+      <span use:tooltip={autoResumeBlocked ?? ""}>
+        <IconButton
+          icon={LifeBuoy}
+          label={rail.autoResume ? "Auto-resume: on" : "Auto-resume: off"}
+          tip={autoResumeBlocked ??
+            (rail.autoResume
+              ? "This rail reopens a step's own conversation once when its agent breaks — never after a login prompt, a usage limit or a crash. Click to turn off."
+              : "Let this rail reopen a broken step's conversation once, without asking. Click to turn on.")}
+          tone={rail.autoResume ? "accent" : "default"}
+          active={rail.autoResume === true}
+          disabled={autoResumeBlocked !== null}
+          onclick={() => onToggleAutoResume(!rail.autoResume)}
+        />
+      </span>
       <IconButton
         icon={SquareStack}
         label="Move all cards to a column…"
@@ -487,6 +519,7 @@
               {placed}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
+              resumeNote={resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts)}
               attention={attentions.get(step.id) ?? null}
               {doneColumnName}
               badges={numbersForStep(numbered, step.id)}
@@ -514,6 +547,7 @@
               toolParams={stepParams(step)}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
+              resumeNote={resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts)}
               attention={attentions.get(step.id) ?? null}
               {doneColumnName}
               badges={numbersForStep(numbered, step.id)}
@@ -616,28 +650,6 @@
     color: var(--text);
     font-size: inherit;
     font-weight: 600;
-  }
-  .state {
-    flex: none;
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-  .state.running {
-    color: var(--accent-text);
-  }
-  .state.paused {
-    color: var(--warning-text);
-  }
-  /* Warning tone, matching the chip ring it summarises. A running rail
-     keeps its accent-coloured state word: this qualifies that word, it
-     does not replace it. */
-  .attention {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 11px;
-    color: var(--warning-text);
   }
   .rail-badge {
     flex: none;
