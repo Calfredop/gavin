@@ -553,16 +553,22 @@
 {/if}
 
 <style>
+  /* The same first row the Orchestration tab draws: a rule under it so
+     the lens reads as a bar over the board rather than as floating
+     controls, and the search grows into the row instead of sitting at an
+     input's default ~20-character width. */
   .board-bar {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 8px 10px;
-    padding: 8px 16px 0;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
     flex: 0 0 auto;
   }
   .board-bar :global(.board-search) {
-    max-width: 520px;
+    flex: 1 1 auto;
+    max-width: 420px;
   }
   .board-bar :global(.archive-toggle) {
     flex: 0 0 auto;

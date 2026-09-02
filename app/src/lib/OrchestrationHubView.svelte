@@ -581,7 +581,8 @@
 
 <div class="view">
   <header class="bar">
-    <h2>Orchestration</h2>
+    <!-- No heading: the hub's tab strip already names this view, and a
+         second "Orchestration" only ate the row the search wants. -->
     <SearchInput
       bind:value={search}
       class="bar-search"
@@ -933,12 +934,6 @@
     gap: 8px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
-  }
-  h2 {
-    flex: 0 0 auto;
-    margin: 0;
-    font-size: 14px;
-    font-weight: 600;
   }
   .spacer {
     flex: 1 1 auto;

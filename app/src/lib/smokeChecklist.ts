@@ -1352,6 +1352,30 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    // The two tabs that open with a search over a wide surface. Their
+    // first rows had drifted into different shapes, and neither file can
+    // see the other, so the check is "do these two still look like one
+    // thing".
+    title: "The tabs' first row",
+    items: [
+      {
+        id: "first-row-kanban-width",
+        text: "Kanban: the search box spans the row like Orchestration's, not an input-sized stub",
+        hint: "Both cap at the same width, so a wide window leaves the same gap on each tab.",
+      },
+      {
+        id: "first-row-kanban-rule",
+        text: "Kanban: a rule runs under the whole bar, separating the lens from the columns",
+        hint: "Narrow the window until the facets wrap — the rule stays under the last row of controls, not through them.",
+      },
+      {
+        id: "first-row-orch-heading",
+        text: "Orchestration: the row opens straight on the search box — no “Orchestration” heading",
+        hint: "The hub's tab strip above already names the view; the heading only repeated it and cost the row width.",
+      },
+    ],
+  },
+  {
     title: "App hub",
     items: [
       {
