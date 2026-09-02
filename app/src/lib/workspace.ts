@@ -37,6 +37,22 @@ export interface AgentCommitRecord {
   cwd: string;
 }
 
+/// An orchestration agent run: the session doing it, what it is, and the
+/// name to call it by. Unlike AgentCommitRecord's the session is VISIBLE
+/// (it lands on the Agents page), so the layout tree already knows it
+/// exists -- what the tree cannot say is what it is doing, and a button
+/// that has to refuse a second run has to name the first.
+export interface OrchestrationAgentRecord {
+  sessionId: string;
+  /// The rail being reorganized; null/absent for a whole-tab Generate.
+  railId?: string | null;
+  /// What the human calls this run ("Generate", "Reorganize “backend”").
+  /// Stored rather than re-derived: a rail can be renamed or deleted
+  /// while its run is still going, and the blocked button still has to
+  /// say what is holding the slot.
+  label: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -53,6 +69,11 @@ export interface Workspace {
   rootPath?: string;
   /// The running main agent session (D12) -- outside every page tree.
   mainSessionId?: string;
+  /// The orchestration agent run (a Generate, or one rail's Reorganize)
+  /// still in flight. One slot per workspace, because both requests end
+  /// in a write of the WHOLE plan -- see orchestrationAgent.ts, which
+  /// owns every rule about it.
+  orchestrationAgent?: OrchestrationAgentRecord;
   /// Launch command for it; "claude" when unset.
   /// Accent colour; absent means the default. Machine-local (D35).
   color?: string;

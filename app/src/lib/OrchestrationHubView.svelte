@@ -22,7 +22,7 @@
   import { buildCardMenuEntries } from "./cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
-  import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
+  import { layoutState, daemonCompat } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import {
     cardIndex,
@@ -50,6 +50,7 @@
     runAllConfirm,
   } from "./railConfirm";
   import { findTool, toolKindLabel } from "./orchestrationTools";
+  import { generateAction, generateButtonLabel, reorganizeAction } from "./orchestrationAgent";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
     groupTemplateRecords,
@@ -82,6 +83,7 @@
     addStepToStageAction,
     requestGenerate,
     requestRailReorganize,
+    revealOrchestrationAgent,
     renameRailAction,
     addToolAsStepAction,
     addToolAsStageAction,
@@ -372,18 +374,6 @@
   // surfaces say how many each plan carries. Without it the children the
   // human wrote would have simply gone missing from the panel.
   const nestedCounts = $derived(nestedChildCounts(cards));
-  // Two ways Generate can be pointless, and the button says which: no
-  // agent to hand the request to, or nothing left for it to place.
-  // Measured over every unplaced card, never the search lens's view:
-  // Generate hands the agent the real set, so a filter that happens to
-  // hide them all must not claim there is nothing left to place.
-  const generateTip = $derived(
-    !agentAvailable
-      ? "Start the workspace agent on Home first"
-      : pickable.length === 0
-        ? "Nothing is left to place — every unfinished card is already on a rail"
-        : "Hand the unplaced cards to the workspace agent"
-  );
   const allUnplacedGroups = $derived(board ? groupUnplacedByStatus(available, board) : []);
 
   // The search lens (orchestrationSearch.ts): rails with no hit leave
@@ -585,20 +575,37 @@
       : []
   );
 
-  // Both agent buttons end the same way: the request is bracketed-pasted
-  // into the running workspace agent and the view jumps to Home to watch
-  // it, exactly as sendToMainAgent does for a card.
-  async function handOff(err: string | null): Promise<void> {
-    if (err) {
-      saveErrors.update((e) => ({ ...e, [workspaceId]: err }));
-      return;
-    }
-    await switchWorkspaceView(workspaceId, "home");
+  // The workspace's one orchestration agent slot (orchestrationAgent.ts).
+  // Both buttons read it: a run holding it makes every one of them a jump
+  // to that run instead of a second launch, because both requests rewrite
+  // the WHOLE plan and would overwrite each other.
+  const agentRun = $derived(ws?.orchestrationAgent ?? null);
+  const generateFor = $derived(
+    generateAction({
+      run: agentRun,
+      // Measured over every unplaced card, never the search lens's view:
+      // Generate hands the agent the real set, so a filter that happens
+      // to hide them all must not claim there is nothing left to place.
+      unplacedCount: pickable.length,
+      hasRoot: root !== null,
+      daemonBlocked: orchestrationBlocked,
+    })
+  );
+  const reorganizeFor = $derived((railId: string) =>
+    reorganizeAction({ run: agentRun, railId, hasRoot: root !== null, daemonBlocked: orchestrationBlocked })
+  );
+
+  // Both agent buttons end the same way: a session of their own is
+  // spawned in the workspace root and the view jumps to it. No hop to
+  // Home any more -- the request no longer lands in the main agent's
+  // terminal, so Home is not where the answer appears.
+  function handOff(err: string | null): void {
+    if (err) saveErrors.update((e) => ({ ...e, [workspaceId]: err }));
   }
 
   /// The header button: the unplaced cards are the job.
   async function generate(): Promise<void> {
-    await handOff(await requestGenerate(workspaceId, pickable, conflictSummary));
+    handOff(await requestGenerate(workspaceId, pickable, conflictSummary));
   }
 
   /// A rail header's button: that one rail is the job, and it is handed
@@ -610,7 +617,22 @@
     const summary = conflictsForRail(numbered, rail).map(
       ({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`
     );
-    await handOff(await requestRailReorganize(workspaceId, railId, cards, tools, summary));
+    handOff(await requestRailReorganize(workspaceId, railId, cards, tools, summary));
+  }
+
+  /// One press, two meanings: start the run, or land in the one already
+  /// going. Never a dead button -- a disabled control cannot explain
+  /// itself, and "why can I not press this" is exactly the question a
+  /// run holding the slot answers by showing itself.
+  function pressGenerate(): void {
+    if (generateFor.kind === "jump") void revealOrchestrationAgent(workspaceId);
+    else if (generateFor.kind === "start") void generate();
+  }
+
+  function pressReorganize(railId: string): void {
+    const action = reorganizeFor(railId);
+    if (action.kind === "jump") void revealOrchestrationAgent(workspaceId);
+    else if (action.kind === "start") void reorganizeRail(railId);
   }
 
   function onStart(railId: string): void {
@@ -640,11 +662,11 @@
     <button
       type="button"
       class="add-rail"
-      disabled={!agentAvailable || pickable.length === 0 || Boolean(orchestrationBlocked)}
-      title={orchestrationBlocked || generateTip}
-      onclick={() => void generate()}
+      disabled={generateFor.kind === "blocked"}
+      title={generateFor.tip}
+      onclick={pressGenerate}
     >
-      Generate with agent…
+      {generateButtonLabel(agentRun)}
     </button>
     <button
       type="button"
@@ -737,7 +759,8 @@
           }}
           onCancelEdit={() => (editingRailId = null)}
           onBind={() => (binding = rail.id)}
-          onReorganize={() => void reorganizeRail(rail.id)}
+          onReorganize={() => pressReorganize(rail.id)}
+          reorganize={reorganizeFor(rail.id)}
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onMarkStepDone={(stepId) => void markStepDone(workspaceId, stepId)}

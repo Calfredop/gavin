@@ -7,7 +7,14 @@ import * as backend from "./backend";
 import * as terminalRegistry from "./terminalRegistry";
 import { hotState } from "./hotState";
 import * as workspace from "./workspace";
-import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs, RemovedWorkspace } from "./workspace";
+import type {
+  Workspace,
+  WorkspacesData,
+  GitStatus,
+  GitViewPrefs,
+  OrchestrationAgentRecord,
+  RemovedWorkspace,
+} from "./workspace";
 import { sessionLabel } from "./paths";
 import { buildRunCommand } from "./cardRun";
 import { workspaceIdForSession } from "./workspace";
@@ -1391,6 +1398,28 @@ export async function setGitViewPrefs(workspaceId: string, patch: Partial<GitVie
   const state = get(layoutState);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, gitView: { ...(w.gitView ?? {}), ...patch } } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Writes the workspace's in-flight orchestration agent into config.json,
+/// or clears it (`null`). One slot per workspace, deliberately: Generate
+/// and every rail's Reorganize both end in a write of the WHOLE plan, so
+/// two at once overwrite each other rather than dividing the work.
+///
+/// Persisted rather than held in a store, for the reason `agentCommit`
+/// is: the run routinely outlives the window that started it, and a
+/// window that comes back with no memory of it starts a second one on
+/// top. The session itself IS in the layout tree (it lands on the Agents
+/// page), but the tree cannot say what it is doing.
+export async function setOrchestrationAgent(
+  workspaceId: string,
+  record: OrchestrationAgentRecord | null
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, orchestrationAgent: record ?? undefined } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

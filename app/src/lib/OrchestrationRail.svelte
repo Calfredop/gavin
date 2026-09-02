@@ -29,6 +29,7 @@
   } from "./orchestration";
   import { stepParams, attentionTip, railAttention } from "./orchestration";
   import { findTool } from "./orchestrationTools";
+  import type { OrchestrationAgentAction } from "./orchestrationAgent";
   import type { Tool } from "./orchestrationTools";
   import {
     railStateOf,
@@ -91,10 +92,15 @@
     /// Resolved page name for the bindings row; null when unbound.
     pageName: string | null;
     onBind: () => void;
-    /// Hand THIS rail to the workspace agent (the header's wand). Scoped
+    /// Hand THIS rail to an agent of its own (the header's wand). Scoped
     /// on purpose: the tab header's Generate button is about the cards
     /// nobody placed, this one is about the arrangement of one rail.
     onReorganize: () => void;
+    /// What pressing the wand does right now (orchestrationAgent.ts).
+    /// `jump` while ANY orchestration agent is running -- the slot is the
+    /// workspace's, not this rail's, because both requests rewrite the
+    /// whole plan -- and the tip says which run is holding it.
+    reorganize: OrchestrationAgentAction;
     onAddStep: () => void;
     onRetryStep: (stepId: string) => void;
     onMarkStepDone: (stepId: string) => void;
@@ -151,6 +157,7 @@
     onClearDone,
     onBind,
     onReorganize,
+    reorganize,
     onAddStep,
     onRetryStep,
     onMarkStepDone,
@@ -337,11 +344,10 @@
       {/if}
       <IconButton
         icon={Sparkles}
-        label="Reorganize with agent"
-        tip={agentAvailable
-          ? "Reorganize this rail with the workspace agent"
-          : "Start the workspace agent on Home first"}
-        disabled={!agentAvailable}
+        label={reorganize.kind === "jump" ? "Jump to the running agent" : "Reorganize with agent"}
+        tip={reorganize.tip}
+        tone={reorganize.kind === "jump" ? "accent" : "default"}
+        disabled={reorganize.kind === "blocked"}
         onclick={onReorganize}
       />
       <IconButton icon={RotateCcw} label="Reset run state" onclick={onReset} />

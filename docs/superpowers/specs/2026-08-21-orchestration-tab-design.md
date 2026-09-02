@@ -864,6 +864,32 @@ path, then switch to Home to watch. Neither ever *starts* an agent: with none
 running both are disabled with "Start the workspace agent on Home first",
 holding the same line the card-run flow already holds.
 
+**Amended 2026-09-02:** each request now **spawns a dedicated session** in the
+workspace root — the shape "Develop into a plan…" uses — instead of pasting
+into the main agent, and the view jumps to that tab rather than to Home. Three
+consequences, all deliberate:
+
+- The main agent is no longer a precondition. Organising the work stopped
+  depending on a terminal the human may never have opened, so the "Start the
+  workspace agent on Home first" refusal is gone from both controls; what
+  remains is the workspace **root**, which is where the session is started and
+  which the gavin tools resolve the workspace from. Never a rail's worktree:
+  that is a different checkout with a different (or absent) `.gavin-root`.
+- Both prompts now open with `NAME_TAB_FIRST`. The run has a tab of its own,
+  and a tab labelled by a session-id fragment says nothing about which of the
+  two requests is in it.
+- **One run per workspace**, tracked. Both requests still write the WHOLE plan
+  (see O17), so two at once do not divide the work — they overwrite each other.
+  The in-flight run is recorded on the workspace in `config.json`
+  (`orchestrationAgent`: session id, rail id, label), which is what survives a
+  restart; while it is held, the header button and *every* rail wand jump to
+  that tab instead of launching a second. `orchestrationAgent.ts` owns the
+  rules — including when a run is over, which is not an exit code: an
+  interactive agent never exits, so the slot frees when the session is gone,
+  was interrupted by a daemon restart, or has gone `idle` (its turn ended).
+  An absent status is not idle — the daemon only pushes on a change, so
+  "nothing reported yet" would otherwise end every run in the tick it started.
+
 **`Generate with agent…`** (tab header) carries the **unplaced cards** —
 title, status and path each — plus the rails the tab currently shows and
 gavin's current conflicts. With every runnable card already on a rail it has

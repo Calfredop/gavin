@@ -1,17 +1,24 @@
-// The two requests the Orchestration tab hands to the RUNNING workspace
-// agent, as pure text. Both drive the same `gavin-orchestrate` skill and
-// both end in a whole-plan write; what differs is the SCOPE the prompt
-// hands the agent:
+// The two requests the Orchestration tab hands to an agent of its own, as
+// pure text. Both drive the same `gavin-orchestrate` skill and both end in
+// a whole-plan write; what differs is the SCOPE the prompt hands the
+// agent:
 //
 //   - Generate  — the tab header's button, over the cards nobody placed;
 //   - Reorganize — a rail header's button, over that one rail.
 //
+// Each now launches a DEDICATED session rather than being pasted into the
+// workspace's main agent, which is why both start with NAME_TAB_FIRST:
+// the run has a tab of its own on the Agents page, and a tab labelled by a
+// session-id fragment tells the human nothing about which of the two
+// requests is in it.
+//
 // Kept out of orchestrationState.ts so the wording is testable without a
-// terminal to paste into (spec O10's habit: the load-bearing part is a
-// pure function).
+// terminal to launch (spec O10's habit: the load-bearing part is a pure
+// function).
 
 import type { CardEntry, Orchestration, Rail, Step, ToolSummary } from "./orchestration";
 import { isToolStep, stepStateOf } from "./orchestration";
+import { NAME_TAB_FIRST } from "./cardRun";
 
 const READ_FIRST =
   "Read gavin_get_orchestration for the authoritative picture before writing anything.";
@@ -87,9 +94,9 @@ export function composeGeneratePrompt(
   conflictSummary: string[]
 ): string {
   // The whole list is one gavin_get_orchestration call away, and this one
-  // is bracketed-pasted into a terminal -- so a big backlog is cut here
-  // and SAID to be cut, rather than filling the agent's screen or being
-  // silently truncated into "that is all of them".
+  // arrives as a launch argument -- so a big backlog is cut here and SAID
+  // to be cut, rather than filling the agent's screen or being silently
+  // truncated into "that is all of them".
   const shown = unplaced.slice(0, MAX_LISTED);
   const list = [
     ...shown.map((e) => `- ${e.plan.title} (${e.plan.status ?? "no status"}) — ${e.plan.path}`),
@@ -99,6 +106,8 @@ export function composeGeneratePrompt(
   ].join("\n");
 
   return [
+    NAME_TAB_FIRST,
+    "",
     "Use the gavin-orchestrate skill to put this workspace's UNPLACED cards on rails.",
     "",
     unplaced.length > 0
@@ -143,6 +152,8 @@ export function composeRailPrompt(
     .join("\n");
 
   return [
+    NAME_TAB_FIRST,
+    "",
     `Use the gavin-orchestrate skill to reorganize the rail "${rail.name}" — that rail only.`,
     "",
     stages.length > 0

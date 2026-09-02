@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { composeGeneratePrompt, composeRailPrompt } from "./orchestrationPrompts";
+import { NAME_TAB_FIRST } from "./cardRun";
 import type { CardEntry, Orchestration, Rail, ToolSummary } from "./orchestration";
 import { emptyOrchestration } from "./orchestration";
 
@@ -180,5 +181,18 @@ describe("composeRailPrompt", () => {
     expect(composeRailPrompt(orchWith([r]), r, CARDS, TOOLS, [])).toContain(
       "Gavin currently flags no conflicts on this rail."
     );
+  });
+});
+
+describe("both prompts", () => {
+  it("open by telling the agent to name its own tab", () => {
+    // They land in a session of their own now, so the tab is the human's
+    // only handle on which of the two requests is in it.
+    expect(composeGeneratePrompt(null, [], []).startsWith(NAME_TAB_FIRST)).toBe(true);
+    expect(
+      composeRailPrompt(emptyOrchestration(), rail("r1", "backend", []), new Map(), [], []).startsWith(
+        NAME_TAB_FIRST
+      )
+    ).toBe(true);
   });
 });

@@ -72,7 +72,9 @@ import {
   resolvedAgentFor,
   createSessionOnPage,
   createPage,
+  handleAgentSessionSpawned,
   sessionExits,
+  setOrchestrationAgent,
   setSessionName,
 } from "./layoutState";
 import { allSessionIds, presetSingle } from "./layout";
@@ -86,7 +88,14 @@ import {
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
 import { setRailNotificationVoice, type SessionStatus } from "./notifications";
-import { pasteToMainAgent, resolveAttachmentsForRun } from "./cardRunActions";
+import {
+  GENERATE_LABEL,
+  orchestrationAgentOver,
+  reorganizeLabel,
+} from "./orchestrationAgent";
+import { sessionLiveness } from "./workspace";
+import type { OrchestrationAgentRecord } from "./workspace";
+import { resolveAttachmentsForRun, revealSession } from "./cardRunActions";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -869,9 +878,16 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     void tick(workspaceId);
   });
   const stop = startScheduler();
+  // Started here for the reason the scheduler is: it belongs to the app,
+  // not to a tab. A Generate that finishes while the human is reading the
+  // board still has to release the button, and the record it clears was
+  // loaded from config.json a moment ago -- this first pass is also how a
+  // run that outlived the last window gets adopted or written off.
+  const stopAgents = startOrchestrationAgentWatch();
   setRailNotificationVoice(railStatusVoice);
   return () => {
     stop();
+    stopAgents();
     setRailNotificationVoice(null);
     unlisten();
   };
@@ -886,6 +902,9 @@ export function __resetForTesting(): void {
   tickAgain.clear();
   // A scheduler left running would tick the next test's stores.
   stopScheduler?.();
+  stopAgentWatch?.();
+  sweepingAgents = false;
+  sweepAgentsAgain = false;
   setRailNotificationVoice(null);
   spawningPages.clear();
   highlightedConflict.set(null);
@@ -1246,23 +1265,88 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
   return mutatePlan(workspaceId, (o) => setStageMode(o, stageId, "sequence"));
 }
 
-/// Hand the GENERATE request to the RUNNING workspace agent: the cards
-/// nobody has placed, plus a summary of what the tab currently shows, so
-/// the agent starts from the same picture the human is looking at -- it
-/// still calls gavin_get_orchestration for the authoritative read.
+// ---- the tab's own agent runs ----------------------------------------------
+//
+// Generate and a rail's Reorganize each spawn a DEDICATED session (the
+// shape "Develop into a plan…" uses) instead of pasting into the
+// workspace's main agent. Two things follow, and both are the point:
+// the request no longer needs the human to have started the Home agent,
+// and the run has an identity -- which is what lets a second press be
+// told there is a first one still thinking.
+//
+// One slot per WORKSPACE, not per rail: both prompts end in a write of
+// the whole plan (they tell the agent to send every rail it was not asked
+// about back exactly as it read it), so two runs at once do not divide
+// the work, they overwrite each other.
+
+/// Spawns the run, records it, and lands the human in its tab. The error
+/// string is for the tab's own strip; null means it started.
+async function launchOrchestrationAgent(
+  workspaceId: string,
+  record: Omit<OrchestrationAgentRecord, "sessionId">,
+  prompt: string
+): Promise<string | null> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return "That workspace is gone";
+  // Re-read HERE rather than trusting the button's derived value: the
+  // buttons are rendered from the same slot, but a run started from
+  // another window (or by the press before this one, mid-await) is only
+  // visible on a fresh read.
+  if (ws.orchestrationAgent) {
+    return `${ws.orchestrationAgent.label} is already running — jump to its tab instead of starting a second`;
+  }
+  // The workspace ROOT, never a rail's worktree: a worktree is a
+  // different checkout with a different (or absent) `.gavin-root`, and
+  // the gavin tools resolve which workspace they are talking about from
+  // where they run. A reorganize launched in the rail's own checkout
+  // would rewrite somebody else's board.
+  const root = ws.rootPath || null;
+  if (!root) return "This workspace has no root folder — set one on the Settings tab first";
+
+  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
+  let sessionId: string;
+  try {
+    sessionId = await backend.createSession(root, command);
+  } catch (e) {
+    return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
+  }
+  handleAgentSessionSpawned(workspaceId, sessionId);
+  // Written down BEFORE the jump, because the window may not survive the
+  // run: an unrecorded session is one the next window has no way to tell
+  // apart from any other agent on the Agents page.
+  await setOrchestrationAgent(workspaceId, { ...record, sessionId });
+  // Then jump. Like Develop, this run writes no card status and binds no
+  // card, so the board and the rails show nothing at all until it
+  // finishes -- left where they were, the human would be watching a tab
+  // that says nothing about the request they just made. Before the
+  // rename below, so a failed rename (cosmetic) cannot swallow the jump.
+  await revealSession(sessionId);
+  const provisional = provisionalSessionName(record.label);
+  if (provisional) await setSessionName(sessionId, provisional);
+  return null;
+}
+
+/// The GENERATE request: the cards nobody has placed, plus a summary of
+/// what the tab currently shows, so the agent starts from the same
+/// picture the human is looking at -- it still calls
+/// gavin_get_orchestration for the authoritative read.
 export function requestGenerate(
   workspaceId: string,
   unplaced: CardEntry[],
   conflictSummary: string[]
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId] ?? null;
-  return pasteToMainAgent(workspaceId, composeGeneratePrompt(orch, unplaced, conflictSummary));
+  return launchOrchestrationAgent(
+    workspaceId,
+    { railId: null, label: GENERATE_LABEL },
+    composeGeneratePrompt(orch, unplaced, conflictSummary)
+  );
 }
 
-/// The same agent, aimed at ONE rail (the button in its header). Reads
+/// The same skill, aimed at ONE rail (the button in its header). Reads
 /// the rail out of the store rather than taking it from the caller, so a
 /// rail deleted between render and click is caught here instead of
-/// pasting a prompt about work that no longer exists.
+/// launching an agent at work that no longer exists.
 export function requestRailReorganize(
   workspaceId: string,
   railId: string,
@@ -1273,8 +1357,86 @@ export function requestRailReorganize(
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
   if (!orch || !rail) return Promise.resolve("That rail is gone");
-  return pasteToMainAgent(
+  return launchOrchestrationAgent(
     workspaceId,
+    { railId, label: reorganizeLabel(rail.name) },
     composeRailPrompt(orch, rail, cards, tools, conflictSummary)
   );
+}
+
+/// Puts the human in front of the run holding the slot -- what both
+/// buttons do while one is going, instead of going dead.
+///
+/// A record whose session has left the layout reveals nothing and is left
+/// alone: the sweep below owns clearing it, and a jump that quietly
+/// deleted the record would hide the very run the human was asking about
+/// if the reveal merely raced a page rebuild.
+export async function revealOrchestrationAgent(workspaceId: string): Promise<void> {
+  const record = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.orchestrationAgent;
+  if (!record) return;
+  await revealSession(record.sessionId);
+}
+
+let sweepingAgents = false;
+let sweepAgentsAgain = false;
+let stopAgentWatch: (() => void) | null = null;
+
+/// Frees the slot of every run that is over (orchestrationAgentOver).
+///
+/// A module-level subscription, NOT the hub tab's `$effect`: a run
+/// finishing while the human is on some other tab still has to release
+/// the button, and the same sweep is what ADOPTS a run at startup -- the
+/// record loads with the workspaces, and the first pass over it decides
+/// whether last night's agent is still thinking or long gone. There is no
+/// separate adoption path, because there is no separate question.
+///
+/// Deliberately tolerant of arriving early: `interruptedSessionIds` and
+/// `sessionStatusById` are seeded from Attach baselines that land after
+/// bootstrap, so a first pass can read a killed run as live. The next
+/// emission corrects it -- which is why this is a subscription and not a
+/// one-shot at startup.
+export function startOrchestrationAgentWatch(): () => void {
+  stopAgentWatch?.();
+  const unsubscribe = layoutState.subscribe(() => void sweepOrchestrationAgents());
+  const stop = () => {
+    unsubscribe();
+    // Guarded: a later start owns the field, and this teardown arriving
+    // afterwards must not clear the live watch out of it.
+    if (stopAgentWatch === stop) stopAgentWatch = null;
+  };
+  stopAgentWatch = stop;
+  return stop;
+}
+
+async function sweepOrchestrationAgents(): Promise<void> {
+  // Clearing writes `layoutState`, which re-enters this subscription --
+  // and so does anything else that lands during the persist. Collapsed
+  // into a single replay (the shape `tick` already uses): re-entrant
+  // passes only raise the flag, and the pass in flight runs once more
+  // afterwards so a change that arrived mid-await is never the one nobody
+  // looked at.
+  if (sweepingAgents) {
+    sweepAgentsAgain = true;
+    return;
+  }
+  sweepingAgents = true;
+  try {
+    do {
+      sweepAgentsAgain = false;
+      for (const ws of get(layoutState).workspaces) {
+        const record = ws.orchestrationAgent;
+        if (!record) continue;
+        // Re-read per workspace: the clear before this one persisted, and
+        // liveness has to be judged against the state that came back.
+        const state = get(layoutState);
+        const status = state.sessionStatusById[record.sessionId];
+        if (orchestrationAgentOver(sessionLiveness(state, record.sessionId), status)) {
+          await setOrchestrationAgent(ws.id, null);
+        }
+      }
+    } while (sweepAgentsAgain);
+  } finally {
+    sweepingAgents = false;
+    sweepAgentsAgain = false;
+  }
 }

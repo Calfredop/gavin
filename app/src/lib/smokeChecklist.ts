@@ -1575,6 +1575,56 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Orchestration agent runs",
+    items: [
+      {
+        id: "orch-agent-own-tab",
+        text: "“Generate with agent…” opens a NEW agent tab on the Agents page, named “Generate”, and lands you in it — the Home agent's terminal is untouched",
+        hint: "The whole change: it used to bracket-paste into the Home agent and hop to Home. Check the Home terminal received nothing.",
+      },
+      {
+        id: "orch-agent-no-home-agent-needed",
+        text: "With the workspace's Home agent STOPPED, Generate still works — no “Start the workspace agent on Home first”",
+      },
+      {
+        id: "orch-agent-rail-wand",
+        text: "A rail's wand does the same for that rail, in a tab named “Reorganize “<rail>””",
+      },
+      {
+        id: "orch-agent-names-itself",
+        text: "Once the agent is up it renames its own tab (gavin_name_session) — the app's provisional name is only the first second or two",
+      },
+      {
+        id: "orch-agent-one-slot",
+        text: "While one run is going, the header button reads “Generating…”/“Agent running…” and EVERY rail wand jumps to that tab instead of starting a second",
+        hint: "Hover each: the tooltip names the run holding the slot. Two of these agents at once would overwrite each other's plan.",
+      },
+      {
+        id: "orch-agent-frees-on-idle",
+        text: "When the agent finishes its turn and sits quiet, the buttons go back to offering a fresh run — within a couple of seconds, without touching anything",
+        hint: "It must NOT free while the agent is mid-question: ask it something and leave it waiting — the slot stays held.",
+      },
+      {
+        id: "orch-agent-survives-restart",
+        text: "Quit and relaunch the app while a run is going: the button still says a run is going and still jumps to that tab",
+        hint: "This is the “with resume” half — the record lives in config.json, not in memory.",
+      },
+      {
+        id: "orch-agent-frees-after-daemon-restart",
+        text: "Restart the DAEMON while a run is going: the tab comes back as a bare shell and the buttons free themselves",
+        hint: "An interrupted session keeps its old id, so “is it still in the layout” is not enough — this is the case that would otherwise lock the button forever.",
+      },
+      {
+        id: "orch-agent-frees-when-tab-closed",
+        text: "Closing the run's tab frees the buttons too",
+      },
+      {
+        id: "orch-agent-no-root",
+        text: "On a workspace with no root folder both controls are dead and say so (“no root folder — set one on the Settings tab first”)",
+      },
+    ],
+  },
+  {
     title: "Auto commit",
     items: [
       {

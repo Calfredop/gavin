@@ -100,6 +100,34 @@ pub struct AgentCommitRecord {
     pub cwd: String,
 }
 
+/// The orchestration agent run (a Generate, or one rail's Reorganize)
+/// that was still going when this config was written.
+///
+/// Both requests end in a write of the WHOLE plan -- the prompts tell the
+/// agent to send every rail it was not asked about back exactly as it
+/// read it -- so a second run started while the first is thinking reads a
+/// plan that is about to be replaced, and one of the two arrangements is
+/// simply lost. One record per workspace is therefore the invariant, not
+/// a simplification: Generate and every rail's wand share the one slot.
+///
+/// The session is a visible one on the Agents page, so unlike
+/// `GitViewPrefs::agent_commit` the layout tree does reference it. What
+/// the tree cannot say is WHAT it is doing -- and a button that has to
+/// refuse a second run has to name the first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestrationAgentRecord {
+    pub session_id: String,
+    /// The rail being reorganized, or absent for a whole-tab Generate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rail_id: Option<String>,
+    /// What to call the run where the human meets it ("Generate",
+    /// "Reorganize “backend”"). Stored rather than re-derived: the
+    /// rail can be renamed or deleted while its run is still going, and
+    /// the button it blocks still has to say what is holding the slot.
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -123,6 +151,11 @@ pub struct Workspace {
     /// out to be dead, so an agent is only ever started deliberately.
     #[serde(default)]
     pub main_session_id: Option<String>,
+    /// The orchestration agent run still in flight, if any. Cleared by
+    /// the frontend the moment the run's session is gone, interrupted or
+    /// idle -- see orchestrationAgent.ts, which owns the whole rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestration_agent: Option<OrchestrationAgentRecord>,
     /// D41 migration only: the pre-settings `agentCommand`, which now
     /// lives in `.gavin-root/config.toml`. Read once at bootstrap,
     /// carried into config.toml, then cleared -- `skip_serializing_if`
@@ -348,6 +381,7 @@ mod tests {
             hub_view: None,
             root_path: None,
             main_session_id: None,
+            orchestration_agent: None,
             legacy_agent_command: None,
             color: None,
             notify_needs_input: true,
@@ -823,6 +857,45 @@ mod tests {
             serde_json::to_value(&record).unwrap(),
             serde_json::json!({ "workspaceId": "ws-1", "contextFolder": "/tmp/ws/auth" })
         );
+    }
+
+    /// The record survives a save/load cycle, and an old config.json that
+    /// has never seen one still loads. Without the round trip the whole
+    /// point is lost: a run that outlives the window is exactly the case
+    /// this field exists for, and a field that does not come back is a
+    /// second Generate started on top of a first.
+    #[test]
+    fn orchestration_agent_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.orchestration_agent = Some(OrchestrationAgentRecord {
+            session_id: "session-9".to_string(),
+            rail_id: Some("rail-1".to_string()),
+            label: "Reorganize \u{201c}backend\u{201d}".to_string(),
+        });
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+            theme: None,
+            agent_models: HashMap::new(),
+            terminal_font_size: None,
+            auto_commit: None,
+            removed_workspaces: Vec::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+    }
+
+    /// Absent is the normal state, and it must serialize away entirely --
+    /// a `"orchestrationAgent": null` in every workspace would be noise in
+    /// a file the human does read.
+    #[test]
+    fn absent_orchestration_agent_is_not_serialized() {
+        let json = serde_json::to_value(sample_workspace()).unwrap();
+        assert!(json.get("orchestrationAgent").is_none());
     }
 
     // Was main_session_and_agent_command_roundtrip: the launch command
