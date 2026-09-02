@@ -7,7 +7,8 @@
   import { renameColumnAction, deleteColumnAction } from "./kanbanState";
   import { kanbanState, cardSessionFor } from "./kanbanState";
   import { tooltip } from "./tooltip";
-  import { layoutState } from "./layoutState";
+  import { layoutState, resolvedAgents } from "./layoutState";
+  import { agentPromptBlocker } from "./cardRun";
   import { findSessionLocation } from "./workspace";
   import {
     columnRunAction,
@@ -192,6 +193,14 @@
   // and binds before the next starts, so a re-click never double-runs.
   const runAction = $derived(onRunCard === null ? null : columnRunAction(column.name));
 
+  // Why no card in this column can be started, or null. A whole-column
+  // run is the same launch repeated, so a profile that takes no prompt
+  // blocks all of them for one reason -- said once, on the header
+  // button, rather than as N identical error strips after the click.
+  const runBlocked = $derived(
+    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+  );
+
   function sessionStateFor(path: string): CardSessionState {
     const binding = cardSessionFor($kanbanState[workspaceId], path);
     if (!binding) return "none";
@@ -269,6 +278,9 @@
     }
     if (runAction && runnable.length > 0) {
       entries.push({
+        // Left clickable when the agent takes no prompt: a menu row
+        // cannot show a tooltip, so a greyed one would say nothing at
+        // all, while the click reports the reason in the error strip.
         label: columnRunMenuLabel(runAction, runnable.length),
         onPick: () => void runAll(),
       });
@@ -310,19 +322,25 @@
       <span class="count" class:filtered use:tooltip={countTip}>{countText}</span>
     {/if}
     {#if runAction && runnable.length > 0}
-      <IconButton
-        icon={runAction.mode === "resume" ? RotateCcw : Play}
-        label={runAction.aria}
-        tone="accent"
-        variant="outlined"
-        size={10}
-        class="run-all"
-        disabled={runningAll}
-        tip={columnRunTip(runAction, runnable.length)}
-        onclick={() => void runAll()}
-      >
-        <span class="run-all-count">{runnable.length}</span>
-      </IconButton>
+      <!-- The reason rides the wrapper, not the button: IconButton binds
+           its tooltip to the <button>, and a disabled element never
+           fires mouseenter. Null while the agent can run, so this span
+           is inert in the ordinary case. -->
+      <span class="run-all-wrap" use:tooltip={runBlocked}>
+        <IconButton
+          icon={runAction.mode === "resume" ? RotateCcw : Play}
+          label={runAction.aria}
+          tone="accent"
+          variant="outlined"
+          size={10}
+          class="run-all"
+          disabled={runningAll || runBlocked !== null}
+          tip={runBlocked === null ? columnRunTip(runAction, runnable.length) : null}
+          onclick={() => void runAll()}
+        >
+          <span class="run-all-count">{runnable.length}</span>
+        </IconButton>
+      </span>
     {/if}
     {#if canArchiveAll}
       <IconButton
@@ -513,6 +531,13 @@
   /* Scoped ancestor first -- see BoardCard's .chevron for why a bare
      :global class rule is an app-wide rule. */
   .header :global(.run-all) {
+    flex: 0 0 auto;
+  }
+  /* The wrapper is the header's flex item now, so it carries what the
+     button used to; `display: flex` keeps it the button's exact size,
+     which is what the tooltip has to be hoverable over. */
+  .run-all-wrap {
+    display: flex;
     flex: 0 0 auto;
   }
   .run-all-count,

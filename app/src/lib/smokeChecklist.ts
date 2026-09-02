@@ -906,6 +906,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Git tab → “Commit via agent” on a dirty repo commits in chunks, leaves the tree clean, and ends on its own",
         hint: "The run is hidden and has no way to ask permission: its grant is .opencode/agent/gavin-commit.md. Delete that file and the run should fail loudly rather than hang.",
       },
+      {
+        id: "oc-cursor-still-blocked",
+        text: "Switch the profile to Cursor: the card's ▶ session pill is disabled and hovering the row says the agent takes no prompt",
+        hint: "Hover the ROW, not the greyed pill — a disabled element fires no mouseenter. Same sentence on the card modal, inline.",
+      },
     ],
   },
   {

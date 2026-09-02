@@ -18,6 +18,7 @@
     daemonCompat,
     workspaceRootPath,
     openFileInSplit,
+    resolvedAgents,
   } from "./layoutState";
   import {
     addAttachment,
@@ -30,7 +31,7 @@
   import { isViewableInApp } from "./fileTypes";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, relaunchCard, developCard } from "./cardRunActions";
-  import { developAvailable } from "./cardRun";
+  import { developAvailable, agentPromptBlocker } from "./cardRun";
   import { findCardPlacement, stepStateOf } from "./orchestration";
   import {
     orchestrations,
@@ -354,6 +355,15 @@
   // Do card gets an interview before it gets an agent.
   const canDevelop = $derived(developAvailable(card.kind, card.status, binding !== null));
 
+  // Both buttons below build the agent's command line, so both are
+  // blocked by an agent that takes no prompt -- and for a reason that is
+  // about the WORKSPACE, not this card. Re-launch is deliberately not
+  // gated: it replays the command the first launch stored, and never
+  // builds one.
+  const runBlocked = $derived(
+    agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+  );
+
   async function handleDevelop(): Promise<void> {
     errorMessage = null;
     const err = await developCard(workspaceId, card);
@@ -631,14 +641,23 @@
       {:else}
         <div class="session-actions">
           {#if canDevelop}
-            <button type="button" onclick={() => void handleDevelop()}>
+            <button
+              type="button"
+              disabled={runBlocked !== null}
+              onclick={() => void handleDevelop()}
+            >
               Develop into a plan…
             </button>
           {/if}
-          <button type="button" onclick={() => void handleRun()}>
+          <button type="button" disabled={runBlocked !== null} onclick={() => void handleRun()}>
             ▶ Run {card.kind === "plan" ? "this plan" : "this task"} with the agent
           </button>
         </div>
+        <!-- Inline rather than a tooltip: a disabled button fires no
+             mouseenter, and this modal has the room to just say it. -->
+        {#if runBlocked}
+          <p class="quiet">{runBlocked}</p>
+        {/if}
       {/if}
     </div>
     <div class="section">

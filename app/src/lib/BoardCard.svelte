@@ -10,7 +10,8 @@
   import { cardRailBadge } from "./orchestration";
   import { boardSelection } from "./boardSelection";
   import { tooltip } from "./tooltip";
-  import { layoutState } from "./layoutState";
+  import { layoutState, resolvedAgents } from "./layoutState";
+  import { agentPromptBlocker } from "./cardRun";
   import { findSessionLocation } from "./workspace";
   import { jumpToBoundSession } from "./cardRunActions";
   // Svelte 5 self-import for the nested-children recursion.
@@ -66,6 +67,18 @@
   // Live session binding (card-model spec §3) -- same dot vocabulary the
   // terminal tabs use, plus a distinct exited ring since a card can stay
   // bound to a long-gone session.
+  // Why this workspace's agent cannot start a card at all, or null.
+  // Not about this card: the agent the workspace chose takes no prompt
+  // on its command line, so a launch would hand it a prompt it reads as
+  // a path and open nothing. Read reactively -- the profile table is
+  // fetched asynchronously, and a card mounted before it lands would
+  // otherwise keep the empty table's answer.
+  const runBlocked = $derived(
+    workspaceId === null
+      ? null
+      : agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+  );
+
   const binding = $derived(
     workspaceId !== null ? cardSessionFor($kanbanState[workspaceId], card.id) : null
   );
@@ -270,16 +283,24 @@
     </div>
   {/if}
   {#if runnable}
-    <div class="run-pills">
+    <!-- The block's reason hangs HERE, on the row, not on the button it
+         disables: a disabled element fires no mouseenter, so a tooltip
+         bound to one can never appear. The row is never disabled.
+         "▶ agent" is deliberately NOT gated -- it pastes into a session
+         that is already running, and builds no argv at all. -->
+    <div class="run-pills" use:tooltip={runBlocked}>
       {#if onRun}
         <button
           type="button"
           class="pill pill-session"
-          use:tooltip={"Run in a dedicated agent session, bound to this card"}
+          disabled={runBlocked !== null}
+          use:tooltip={runBlocked === null
+            ? "Run in a dedicated agent session, bound to this card"
+            : null}
           onpointerdown={shield}
           onclick={(e) => {
             e.stopPropagation();
-            onRun?.(card);
+            if (runBlocked === null) onRun?.(card);
           }}
         >
           ▶ session
