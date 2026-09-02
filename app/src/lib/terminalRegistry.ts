@@ -158,11 +158,18 @@ function registerPathLinks(term: Terminal, sessionId: string): void {
 // and recreate everything below it) without losing scrollback or needing a
 // new Attach. The container is a detached div until some TerminalPane
 // appends it into its own mount point.
-export function getOrCreateTerminal(sessionId: string): RegistryEntry {
+//
+// `fontSize` is required rather than defaulted: unlike the theme, which is
+// one app-wide value this module can hold, the size depends on the
+// workspace the session belongs to -- something this module deliberately
+// cannot see (it must never import layoutState.ts, which imports it). A
+// default here would be a second answer to "what size is this terminal",
+// and the wrong one for every workspace with a setting of its own.
+export function getOrCreateTerminal(sessionId: string, fontSize: number): RegistryEntry {
   const existing = registry.get(sessionId);
   if (existing) return existing;
 
-  const term = new Terminal({ convertEol: false, theme: xtermTheme(live.theme) });
+  const term = new Terminal({ convertEol: false, fontSize, theme: xtermTheme(live.theme) });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.loadAddon(
@@ -199,6 +206,23 @@ export function getOrCreateTerminal(sessionId: string): RegistryEntry {
   const entry: RegistryEntry = { term, container, fitAddon };
   registry.set(sessionId, entry);
   return entry;
+}
+
+/// Re-sizes one terminal's type, reporting whether anything changed.
+///
+/// Per session, not app-wide like `applyTerminalTheme`: font size is a
+/// per-workspace setting, and terminals from a workspace that is not on
+/// screen stay in this registry with their containers detached. Walking
+/// every entry would hand those a size their workspace never chose, and
+/// the caller's follow-up `fit()` would measure a detached div -- zero
+/// columns, reported to the daemon, repainting the program into nothing.
+/// So only the mounted pane that owns a terminal ever moves it, and the
+/// return value tells that pane whether a refit is owed.
+export function setTerminalFontSize(sessionId: string, fontSize: number): boolean {
+  const entry = registry.get(sessionId);
+  if (!entry || entry.term.options.fontSize === fontSize) return false;
+  entry.term.options.fontSize = fontSize;
+  return true;
 }
 
 export function applyTerminalTheme(theme: EffectiveTheme): void {

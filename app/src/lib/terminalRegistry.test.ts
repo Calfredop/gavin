@@ -9,7 +9,12 @@ let resolveListen: (() => void) | undefined;
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    options = {};
+    options: Record<string, unknown>;
+    constructor(options: Record<string, unknown>) {
+      // Kept rather than discarded: the size a terminal is BORN at is the
+      // half of the font-size story a later setter cannot fix.
+      this.options = { ...options };
+    }
     write(data: string) {
       written.push(data);
     }
@@ -39,7 +44,12 @@ vi.mock("./backend", () => ({
 }));
 
 import * as backend from "./backend";
-import { getOrCreateTerminal, restoreScreen, destroyTerminal } from "./terminalRegistry";
+import {
+  getOrCreateTerminal,
+  restoreScreen,
+  destroyTerminal,
+  setTerminalFontSize,
+} from "./terminalRegistry";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -55,7 +65,7 @@ describe("restoring a terminal's screen", () => {
   });
 
   it("does not ask for a repaint until the listener that would receive it exists", async () => {
-    getOrCreateTerminal("s1");
+    getOrCreateTerminal("s1", 13);
     const restoring = restoreScreen("s1");
     await flush();
     expect(backend.snapshotSession).not.toHaveBeenCalled();
@@ -67,7 +77,7 @@ describe("restoring a terminal's screen", () => {
   });
 
   it("repaints a session once per frontend load, however many panes mount it", async () => {
-    getOrCreateTerminal("s2");
+    getOrCreateTerminal("s2", 13);
     resolveListen?.();
     await restoreScreen("s2");
     // A pane remounting (a tree-shape change elsewhere) re-runs onMount
@@ -80,7 +90,7 @@ describe("restoring a terminal's screen", () => {
 
   it("leaves the terminal alone when the daemon refuses the request", async () => {
     vi.mocked(backend.snapshotSession).mockRejectedValueOnce(new Error("too old"));
-    getOrCreateTerminal("s3");
+    getOrCreateTerminal("s3", 13);
     resolveListen?.();
     await expect(restoreScreen("s3")).resolves.toBeUndefined();
     expect(written).toEqual([]);
@@ -88,15 +98,49 @@ describe("restoring a terminal's screen", () => {
   });
 
   it("repaints again for a session id that was torn down and rebuilt", async () => {
-    getOrCreateTerminal("s4");
+    getOrCreateTerminal("s4", 13);
     resolveListen?.();
     await restoreScreen("s4");
     destroyTerminal("s4");
 
-    getOrCreateTerminal("s4");
+    getOrCreateTerminal("s4", 13);
     resolveListen?.();
     await restoreScreen("s4");
     expect(backend.snapshotSession).toHaveBeenCalledTimes(2);
     destroyTerminal("s4");
+  });
+});
+
+describe("terminal font size", () => {
+  beforeEach(() => {
+    vi.stubGlobal("document", { createElement: () => ({ style: {} }) });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("creates a terminal at the size it was given", () => {
+    expect(getOrCreateTerminal("f1", 11).term.options.fontSize).toBe(11);
+    destroyTerminal("f1");
+  });
+
+  it("moves a live terminal and says a refit is owed", () => {
+    const entry = getOrCreateTerminal("f2", 13);
+    expect(setTerminalFontSize("f2", 16)).toBe(true);
+    expect(entry.term.options.fontSize).toBe(16);
+    destroyTerminal("f2");
+  });
+
+  it("reports no change when the size is already right", () => {
+    // The pane refits on `true` alone, and a refit costs a resize request
+    // to the daemon -- so "no change" has to be distinguishable from a
+    // change, not merely harmless.
+    getOrCreateTerminal("f3", 13);
+    expect(setTerminalFontSize("f3", 13)).toBe(false);
+    destroyTerminal("f3");
+  });
+
+  it("does nothing for a session with no terminal", () => {
+    expect(setTerminalFontSize("nobody", 13)).toBe(false);
   });
 });

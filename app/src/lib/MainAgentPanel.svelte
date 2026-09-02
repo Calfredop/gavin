@@ -1,7 +1,15 @@
 <script lang="ts">
   import TerminalPane from "./TerminalPane.svelte";
-  import { layoutState, startMainAgent, stopMainAgent, setAgentField, resolvedAgentFor } from "./layoutState";
+  import {
+    layoutState,
+    startMainAgent,
+    stopMainAgent,
+    setAgentField,
+    resolvedAgentFor,
+    terminalFontSizeDefault,
+  } from "./layoutState";
   import { gavinTrees } from "./gavinState";
+  import { resolveTerminalFontSize } from "./terminalFont";
 
   interface Props {
     workspaceId: string;
@@ -10,6 +18,13 @@
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const sessionId = $derived(ws?.mainSessionId ?? null);
+  // Resolved against THIS workspace rather than through layoutState's
+  // active-workspace store: the panel is handed a workspaceId, and a panel
+  // that reads the size of whichever workspace happens to be on screen
+  // would be right only by coincidence.
+  const fontSize = $derived(
+    resolveTerminalFontSize(ws?.terminalFontSize, $terminalFontSizeDefault)
+  );
 
   let commandDraft = $state("");
   let draftFor = $state<string | null>(null);
@@ -45,7 +60,7 @@
   </div>
   {#if sessionId}
     <div class="terminal">
-      <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} />
+      <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} {fontSize} />
     </div>
   {:else}
     <div class="idle">

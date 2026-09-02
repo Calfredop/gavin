@@ -1,7 +1,14 @@
 <script lang="ts">
   import { Monitor, Sun, Moon } from "@lucide/svelte";
-  import { agentProfilesStore, agentModelDefaultsStore, setAgentModelDefault } from "./layoutState";
+  import {
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    setAgentModelDefault,
+    terminalFontSizeDefault,
+    setTerminalFontSizeDefault,
+  } from "./layoutState";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
+  import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "./terminalFont";
   import { themeState } from "./ui/themeState.svelte";
   import type { ThemePref } from "./ui/theme";
   import IconButton from "./ui/IconButton.svelte";
@@ -88,6 +95,28 @@
           {/each}
         </div>
       </div>
+    </section>
+
+    <section>
+      <h3>Terminal</h3>
+      <div class="row">
+        <span>Font size</span>
+        <select
+          value={$terminalFontSizeDefault === null ? "" : String($terminalFontSizeDefault)}
+          onchange={(e) =>
+            void setTerminalFontSizeDefault(
+              e.currentTarget.value === "" ? null : Number(e.currentTarget.value)
+            )}
+        >
+          {#each fontSizeOptions(DEFAULT_TERMINAL_FONT_SIZE, $terminalFontSizeDefault) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        Every terminal in every workspace, unless the workspace sets a size of its own. Open
+        terminals resize as you pick.
+      </p>
     </section>
 
     <section>

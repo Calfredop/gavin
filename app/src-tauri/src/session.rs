@@ -63,6 +63,7 @@ fn persist_workspaces(
     // same-shaped maps in a row is an argument list you can transpose
     // without the compiler noticing.
     agent_models: HashMap<String, String>,
+    terminal_font_size: Option<u16>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -74,6 +75,7 @@ fn persist_workspaces(
             board_tabs,
             theme,
             agent_models,
+            terminal_font_size,
             removed_workspaces: data.removed_workspaces.clone(),
         },
     )
@@ -127,11 +129,34 @@ mod workspaces_data_tests {
             HashMap::new(),
             Some("light".to_string()),
             models.clone(),
+            None,
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
         assert_eq!(loaded.agent_models, models);
         assert_eq!(loaded.theme, Some("light".to_string()));
+    }
+
+    /// The seventh carry-through field. Cheap to lose compared with the
+    /// tombstones below, but lost the same way: a save that rebuilds
+    /// AppConfig without it silently snaps every terminal in the app back
+    /// to the default size.
+    #[test]
+    fn persist_workspaces_carries_the_terminal_font_size_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            Some(11),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().terminal_font_size, Some(11));
     }
 
     /// The sixth carry-through field, and the one whose loss is
@@ -159,6 +184,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().removed_workspaces, vec![tombstone]);
@@ -193,6 +219,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             Some("light".to_string()),
             HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
@@ -234,6 +261,7 @@ mod smoketest_tests {
             confirm_tab_close: true,
             git_view: None,
             last_active_at: None,
+            terminal_font_size: None,
         }
     }
 
@@ -279,6 +307,7 @@ mod smoketest_tests {
             confirm_tab_close: true,
             git_view: None,
             last_active_at: None,
+            terminal_font_size: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -397,6 +426,7 @@ pub fn set_workspaces_state(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
@@ -406,6 +436,7 @@ pub fn set_workspaces_state(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -414,6 +445,7 @@ pub fn set_workspaces_state(
         board_tabs,
         theme,
         agent_models,
+        terminal_font_size,
     )
         .map_err(|e| e.to_string())
 }
@@ -434,6 +466,7 @@ pub fn set_agent_model_default(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
 ) -> Result<(), String> {
     // An empty model removes the entry rather than storing "": the
     // picker's unset row must be able to UNDO a default, not just
@@ -453,6 +486,7 @@ pub fn set_agent_model_default(
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -462,6 +496,7 @@ pub fn set_agent_model_default(
         board_tabs,
         theme,
         agent_models,
+        terminal_font_size,
     )
     .map_err(|e| e.to_string())
 }
@@ -481,6 +516,7 @@ pub fn set_theme_pref(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -496,6 +532,7 @@ pub fn set_theme_pref(
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -504,8 +541,62 @@ pub fn set_theme_pref(
         board_tabs,
         theme,
         agent_models,
+        terminal_font_size,
     )
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_terminal_font_size(state: State<TerminalFontSize>) -> Option<u16> {
+    *state.0.lock().unwrap()
+}
+
+/// The app-wide terminal font size. `None` clears the setting rather than
+/// writing a number, which is what puts every inheriting workspace back on
+/// gavin's default -- the same "there is no separate clear command" shape
+/// set_theme_pref and set_session_name take.
+///
+/// The range is enforced here as well as in the frontend: this value goes
+/// into xterm's metrics, and a config.json edited by hand to 0 would come
+/// back through the same door as a picked value.
+#[tauri::command]
+pub fn set_terminal_font_size(
+    size: Option<u16>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+) -> Result<(), String> {
+    let terminal_font_size = {
+        let mut current = font_size_state.0.lock().unwrap();
+        *current = size.filter(|s| {
+            (crate::config::MIN_TERMINAL_FONT_SIZE..=crate::config::MAX_TERMINAL_FONT_SIZE)
+                .contains(s)
+        });
+        *current
+    };
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -524,6 +615,7 @@ pub fn set_session_name(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -544,6 +636,7 @@ pub fn set_session_name(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -552,6 +645,7 @@ pub fn set_session_name(
         board_tabs,
         theme,
         agent_models,
+        terminal_font_size,
     )
         .map_err(|e| e.to_string())
 }
@@ -576,6 +670,7 @@ pub fn set_file_tabs(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -584,6 +679,7 @@ pub fn set_file_tabs(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -592,6 +688,7 @@ pub fn set_file_tabs(
         board_tabs,
         theme,
         agent_models,
+        terminal_font_size,
     )
         .map_err(|e| e.to_string())
 }
@@ -603,6 +700,13 @@ pub struct BoardTabs(pub Mutex<HashMap<String, crate::config::BoardTabRecord>>);
 /// App-global light/dark preference: "light", "dark", or None for
 /// System. Same always-carry persistence contract as FileTabs/BoardTabs.
 pub struct ThemePref(pub Mutex<Option<String>>);
+
+/// App-wide terminal font size in px, or None when nobody has chosen one
+/// and gavin's own default applies. Same always-carry persistence contract
+/// as ThemePref -- and the same reason for storing absence rather than the
+/// default number: a config that spells out today's default would pin
+/// every existing install to it the day the default moves.
+pub struct TerminalFontSize(pub Mutex<Option<u16>>);
 
 #[tauri::command]
 pub fn get_board_tabs(state: State<BoardTabs>) -> HashMap<String, crate::config::BoardTabRecord> {
@@ -622,6 +726,7 @@ pub fn set_board_tabs(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -630,6 +735,7 @@ pub fn set_board_tabs(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -638,6 +744,7 @@ pub fn set_board_tabs(
         board_tabs,
         theme,
         agent_models,
+        terminal_font_size,
     )
         .map_err(|e| e.to_string())
 }
@@ -1443,6 +1550,7 @@ mod resolve_workspaces_tests {
             confirm_tab_close: true,
             git_view: None,
             last_active_at: None,
+            terminal_font_size: None,
         }
     }
 
@@ -1748,6 +1856,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 confirm_tab_close: true,
                 git_view: None,
                 last_active_at: None,
+                terminal_font_size: None,
             });
         }
     } else {
@@ -2030,6 +2139,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 confirm_tab_close: true,
                 git_view: None,
                 last_active_at: None,
+                terminal_font_size: None,
             },
         );
     }
@@ -2065,6 +2175,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         board_tabs.clone(),
         config.theme.clone(),
         config.agent_models.clone(),
+        config.terminal_font_size,
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -2077,6 +2188,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(BoardTabs(Mutex::new(board_tabs)));
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.manage(AgentModels(Mutex::new(config.agent_models)));
+    app_handle.manage(TerminalFontSize(Mutex::new(config.terminal_font_size)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
@@ -3287,6 +3399,7 @@ mod main_session_tests {
             confirm_tab_close: true,
             git_view: None,
             last_active_at: None,
+            terminal_font_size: None,
         }
     }
 
@@ -3757,6 +3870,7 @@ mod attach_target_tests {
             confirm_tab_close: true,
             git_view: None,
             last_active_at: None,
+            terminal_font_size: None,
         }
     }
 

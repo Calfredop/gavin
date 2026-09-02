@@ -13,6 +13,7 @@
     setSessionName,
     openBoardInSplit,
     repairUnknownTabs,
+    terminalFontSize,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { kanbanState, fetchBoard } from "./kanbanState";
@@ -513,6 +514,7 @@
           {sessionId}
           visible={sessionId === active}
           focused={sessionId === $layoutState.focusedSessionId}
+          fontSize={$terminalFontSize}
         />
       {/if}
     {/each}

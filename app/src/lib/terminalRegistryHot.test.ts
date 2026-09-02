@@ -87,25 +87,25 @@ describe("terminalRegistry across a hot reload", () => {
 
   it("hands the re-executed module the terminal the first one built", async () => {
     const before = await execute();
-    const entry = before.getOrCreateTerminal("s1");
+    const entry = before.getOrCreateTerminal("s1", 13);
 
     const after = await execute();
 
     // Same entry means same Terminal and same container element, so the
     // remounted pane re-appends the node it already had, scrollback and all.
     // A fresh entry here IS the black terminal.
-    expect(after.getOrCreateTerminal("s1")).toBe(entry);
+    expect(after.getOrCreateTerminal("s1", 13)).toBe(entry);
     expect(after.getTerminal("s1")).toBe(entry.term);
     after.destroyTerminal("s1");
   });
 
   it("does not register a second pty-output listener for a session it already has", async () => {
     const before = await execute();
-    before.getOrCreateTerminal("s2");
+    before.getOrCreateTerminal("s2", 13);
     expect(hot.listens).toBe(1);
 
     const after = await execute();
-    after.getOrCreateTerminal("s2");
+    after.getOrCreateTerminal("s2", 13);
 
     // Every extra listener is a permanent duplicate: nothing unlistens it
     // until the session dies, and each one writes the same bytes again.
@@ -122,13 +122,13 @@ describe("terminalRegistry across a hot reload", () => {
     // The theme lives beside the terminals for this reason: it is applied
     // once, by bootstrap, and a module-level `let` reverts it to the "dark"
     // initialiser on every reload with nothing to set it right again.
-    expect(after.getOrCreateTerminal("s3").term.options.theme).toEqual({ theme: "light" });
+    expect(after.getOrCreateTerminal("s3", 13).term.options.theme).toEqual({ theme: "light" });
     after.destroyTerminal("s3");
   });
 
   it("does not re-ask the daemon for a screen the surviving terminal still shows", async () => {
     const before = await execute();
-    before.getOrCreateTerminal("s4");
+    before.getOrCreateTerminal("s4", 13);
     await before.restoreScreen("s4");
     expect(hot.snapshots).toEqual(["s4"]);
 
@@ -143,7 +143,7 @@ describe("terminalRegistry across a hot reload", () => {
 
   it("still starts clean when a real page load leaves nothing to adopt", async () => {
     const before = await execute();
-    const entry = before.getOrCreateTerminal("s5");
+    const entry = before.getOrCreateTerminal("s5", 13);
     // A reload gets a fresh realm and an empty bag -- which the real
     // `hotState` also produces from an undefined `data`. The terminal is
     // genuinely gone then, and restoreScreen is what covers it.
@@ -151,7 +151,7 @@ describe("terminalRegistry across a hot reload", () => {
 
     const after = await execute();
 
-    expect(after.getOrCreateTerminal("s5")).not.toBe(entry);
+    expect(after.getOrCreateTerminal("s5", 13)).not.toBe(entry);
     await after.restoreScreen("s5");
     expect(hot.snapshots).toEqual(["s5"]);
     after.destroyTerminal("s5");

@@ -1,4 +1,4 @@
-import { writable, get, type Writable } from "svelte/store";
+import { writable, derived, get, type Writable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { LayoutNode } from "./layout";
@@ -20,6 +20,7 @@ import {
   type AgentProfileInfo,
   type McpFormatInfo,
 } from "./settings";
+import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
 import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import type { DaemonCompat } from "./daemonCompat";
@@ -854,6 +855,14 @@ export async function bootstrap(): Promise<void> {
     .then((models) => agentModelDefaultsStore.set(models))
     .catch(() => {});
 
+  // Normalized on the way in, not just on the way out: config.json is a
+  // file a user can edit, and a size xterm cannot render must read as "no
+  // setting" rather than reaching a Terminal.
+  void backend
+    .getTerminalFontSize()
+    .then((size) => terminalFontSizeDefault.set(normalizeTerminalFontSize(size)))
+    .catch(() => {});
+
   void pollForStartupState();
 }
 
@@ -1066,6 +1075,34 @@ export const mcpFormatsStore = writable<McpFormatInfo[]>([]);
 /// posture agentProfilesStore takes above.
 export const agentModelDefaultsStore = writable<Record<string, string>>({});
 
+/// The app-wide terminal font size from config.json, or null when the user
+/// has never set one. Null rather than the default so the global panel can
+/// tell "chose 13" from "never chose", and so a workspace with no size of
+/// its own still falls all the way through to gavin's default.
+///
+/// Like agentProfilesStore this is a Rust lookup re-fetched on every
+/// bootstrap, so it is deliberately not parked across an HMR remount.
+export const terminalFontSizeDefault = writable<number | null>(null);
+
+/// The size terminals render at right now: the active workspace's own
+/// choice, else the app-wide one, else gavin's default. A derived store
+/// rather than a lookup at each pane so that changing either setting moves
+/// every open terminal in the same tick -- and so the two settings panels
+/// and the panes can never disagree about which one wins.
+///
+/// Keyed on the ACTIVE workspace because that is the only one with panes on
+/// screen: a terminal belonging to a workspace that is not showing keeps
+/// its old size in the registry until its pane mounts again, which is
+/// exactly when it is asked for a new one.
+export const terminalFontSize = derived(
+  [layoutState, terminalFontSizeDefault],
+  ([$layout, $default]) =>
+    resolveTerminalFontSize(
+      workspace.getActiveWorkspace($layout)?.terminalFontSize,
+      $default
+    )
+);
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
 export function resolvedAgentFor(workspaceId: string) {
@@ -1206,6 +1243,40 @@ export async function setAgentModelDefault(profileId: string, model: string): Pr
   } catch (e) {
     setError(String(e));
   }
+}
+
+/// The app-wide terminal font size. Machine-local like the theme and the
+/// model defaults, so it goes straight to config.json through Tauri and
+/// never touches the daemon -- a display preference is nobody else's
+/// business, and it must keep working against any daemon.
+///
+/// Null clears the setting rather than storing a number, which is what
+/// puts every workspace that inherits back on gavin's default.
+export async function setTerminalFontSizeDefault(size: number | null): Promise<void> {
+  const normalized = size === null ? null : normalizeTerminalFontSize(size);
+  try {
+    await backend.setTerminalFontSize(normalized);
+    terminalFontSizeDefault.set(normalized);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// One workspace's own terminal font size, or null to inherit the app-wide
+/// one. Rides the workspace record (config.json) like the accent colour and
+/// the notification toggles, rather than config.toml: how big the type is
+/// on THIS machine is not a project fact to commit.
+export async function setWorkspaceFontSize(
+  workspaceId: string,
+  size: number | null
+): Promise<void> {
+  const state = get(layoutState);
+  const normalized = size === null ? undefined : (normalizeTerminalFontSize(size) ?? undefined);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, terminalFontSize: normalized } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
 export async function setWorkspaceColor(workspaceId: string, color: string): Promise<void> {

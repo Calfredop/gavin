@@ -62,6 +62,11 @@ export interface Workspace {
   /// Whether closing a tab asks first; absent means on. Machine-local,
   /// like the notification toggles -- a habit, not a project setting.
   confirmTabClose?: boolean;
+  /// Terminal font size for this workspace's panes; absent means inherit
+  /// the app-wide setting (and, failing that, gavin's default). Machine-
+  /// local like the accent colour -- how big the type is on this screen is
+  /// not a fact about the project.
+  terminalFontSize?: number;
   /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
   gitView?: GitViewPrefs;
   /// When this workspace was last switched to, epoch milliseconds.

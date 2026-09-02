@@ -48,6 +48,8 @@ vi.mock("./backend", () => ({
   composeAgentPrompt: vi.fn().mockResolvedValue("prompt"),
   agentProfiles: vi.fn().mockResolvedValue([]),
   getAgentModelDefaults: vi.fn().mockResolvedValue({}),
+  getTerminalFontSize: vi.fn().mockResolvedValue(null),
+  setTerminalFontSize: vi.fn().mockResolvedValue(undefined),
   mcpFormats: vi.fn().mockResolvedValue([]),
   moveAgentFile: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: endTabs calls .catch() on this, so a bare
@@ -145,6 +147,10 @@ import {
   stopMainAgent,
   setWorkspaceColor,
   setWorkspaceFlag,
+  setWorkspaceFontSize,
+  setTerminalFontSizeDefault,
+  terminalFontSizeDefault,
+  terminalFontSize,
   setAgentField,
   setGitViewPrefs,
   startMainAgentWithPrompt,
@@ -2461,6 +2467,57 @@ describe("workspace settings", () => {
     const w = get(layoutState).workspaces[0];
     expect(w.notifyFinished).toBe(false);
     expect(w.notifyNeedsInput).not.toBe(false);
+  });
+
+  it("setWorkspaceFontSize stores a size, and null clears it back to inheriting", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspaceFontSize("ws-1", 16);
+    expect(get(layoutState).workspaces[0].terminalFontSize).toBe(16);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+
+    await setWorkspaceFontSize("ws-1", null);
+    expect(get(layoutState).workspaces[0].terminalFontSize).toBeUndefined();
+  });
+
+  it("setWorkspaceFontSize refuses a size xterm could not render", async () => {
+    // Stored as "no choice" rather than clamped: a workspace that ends up
+    // inheriting is recoverable, one pinned to 2000px is a pane with no
+    // rows and no way back to the setting.
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspaceFontSize("ws-1", 2000);
+    expect(get(layoutState).workspaces[0].terminalFontSize).toBeUndefined();
+  });
+
+  it("setTerminalFontSizeDefault goes to config.json, never to the daemon", async () => {
+    // A display preference must keep working against any daemon, so it
+    // takes the Tauri route the theme does.
+    vi.mocked(backend.setRootConfigField).mockClear();
+    await setTerminalFontSizeDefault(11);
+    expect(backend.setTerminalFontSize).toHaveBeenCalledWith(11);
+    expect(backend.setRootConfigField).not.toHaveBeenCalled();
+    expect(get(terminalFontSizeDefault)).toBe(11);
+
+    await setTerminalFontSizeDefault(null);
+    expect(get(terminalFontSizeDefault)).toBeNull();
+  });
+
+  it("the resolved size prefers the active workspace, then the app default, then gavin's", async () => {
+    terminalFontSizeDefault.set(null);
+    setState([ws("ws-1", [])], "ws-1", null);
+    expect(get(terminalFontSize)).toBe(13);
+
+    terminalFontSizeDefault.set(11);
+    expect(get(terminalFontSize)).toBe(11);
+
+    await setWorkspaceFontSize("ws-1", 16);
+    expect(get(terminalFontSize)).toBe(16);
+
+    // Switching workspaces re-answers the question -- the store is what
+    // every open pane reads, so a second workspace must not inherit the
+    // first one's override.
+    setState([{ ...ws("ws-1", []), terminalFontSize: 16 }, ws("ws-2", [])], "ws-2", null);
+    expect(get(terminalFontSize)).toBe(11);
+    terminalFontSizeDefault.set(null);
   });
 
   it("setAgentField writes config.toml through the daemon, not config.json", async () => {

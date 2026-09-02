@@ -98,6 +98,18 @@ export function setAgentModelDefault(profileId: string, model: string): Promise<
   return invoke("set_agent_model_default", { profileId, model });
 }
 
+/// The app-wide terminal font size. null means none was ever set -- the
+/// Rust side stores absence rather than repeating the default, the same
+/// convention the theme uses, so changing gavin's default moves every
+/// install that never chose one.
+export function getTerminalFontSize(): Promise<number | null> {
+  return invoke("get_terminal_font_size");
+}
+
+export function setTerminalFontSize(size: number | null): Promise<void> {
+  return invoke("set_terminal_font_size", { size });
+}
+
 // Set once by layoutState.ts's bootstrap() -- both real input paths in
 // this app (terminalRegistry.ts's per-keystroke term.onData, and
 // clipboard.ts's paste action) already call writeInput directly, so

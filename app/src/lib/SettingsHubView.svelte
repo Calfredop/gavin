@@ -11,7 +11,10 @@
     restartDaemonInPlace,
     mcpFormatsStore,
     daemonCompat,
+    terminalFontSizeDefault,
+    setWorkspaceFontSize,
   } from "./layoutState";
+  import { fontSizeOptions, resolveTerminalFontSize } from "./terminalFont";
   import { gavinTrees } from "./gavinState";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "./daemonCompat";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
@@ -65,6 +68,13 @@
   let mcpFileError = $state<string | null>(null);
   let prdError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
+
+  // --- terminal ---------------------------------------------------------
+  /// What this workspace inherits when it sets no size of its own: the
+  /// app-wide setting, or gavin's default when there isn't one. Named in
+  /// the picker's first row so "Default" is never a number the panel
+  /// leaves the reader to guess.
+  const inheritedFontSize = $derived(resolveTerminalFontSize(undefined, $terminalFontSizeDefault));
 
   // --- danger zone -----------------------------------------------------
   let deleting = $state(false);
@@ -343,6 +353,29 @@
         <span>Root</span>
         <WorkspaceRootControl workspace={ws} variant="settings" />
       </div>
+    </section>
+
+    <section>
+      <h3>Terminal</h3>
+      <div class="row">
+        <span>Font size</span>
+        <select
+          value={ws.terminalFontSize === undefined ? "" : String(ws.terminalFontSize)}
+          onchange={(e) =>
+            void setWorkspaceFontSize(
+              workspaceId,
+              e.currentTarget.value === "" ? null : Number(e.currentTarget.value)
+            )}
+        >
+          {#each fontSizeOptions(inheritedFontSize, ws.terminalFontSize) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        Only this workspace's terminals. Default follows the app-wide size in Settings, so leaving it
+        alone is how a workspace tracks that.
+      </p>
     </section>
 
     <section>

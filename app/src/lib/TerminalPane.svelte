@@ -1,12 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as backend from "./backend";
-  import { getOrCreateTerminal, restoreScreen } from "./terminalRegistry";
+  import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "./terminalRegistry";
   import type { Terminal } from "@xterm/xterm";
   import type { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
 
-  let { sessionId, visible, focused }: { sessionId: string; visible: boolean; focused: boolean } = $props();
+  let {
+    sessionId,
+    visible,
+    focused,
+    fontSize,
+  }: { sessionId: string; visible: boolean; focused: boolean; fontSize: number } = $props();
 
   let mountPoint: HTMLDivElement;
   let term: Terminal;
@@ -27,7 +32,7 @@
   }
 
   onMount(() => {
-    const entry = getOrCreateTerminal(sessionId);
+    const entry = getOrCreateTerminal(sessionId, fontSize);
     term = entry.term;
     fitAddon = entry.fitAddon;
     mountPoint.appendChild(entry.container);
@@ -39,6 +44,22 @@
     // order, so awaiting the resize's own write is enough to sequence them.
     void fit().then(() => restoreScreen(sessionId));
     if (focused) term.focus();
+  });
+
+  // The settings panels write a size; this is what carries it to the
+  // terminal. Driven from the MOUNTED pane rather than pushed across the
+  // registry because a resize is only meaningful for a terminal whose
+  // container is in the document -- and an inactive tab's is: it is hidden
+  // with `visibility`, so it keeps its rectangle and refits correctly
+  // alongside the visible one (the same reason fit() runs for every tab in
+  // a pane, not just the active one).
+  //
+  // The first run is a no-op: onMount already created the terminal at this
+  // size, so setTerminalFontSize reports no change and no refit is owed.
+  $effect(() => {
+    const size = fontSize;
+    if (!ready) return;
+    if (setTerminalFontSize(sessionId, size)) void fit();
   });
 
   // Re-focus whenever this session becomes the one with keyboard focus

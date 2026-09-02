@@ -750,6 +750,20 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Set one in the panel, then look at that workspace's Settings ▸ Model row.",
       },
       {
+        id: "set-font-size-app",
+        text: "The global panel's Terminal ▸ Font size resizes every open terminal as you pick, and the program inside reflows to the new size",
+        hint: "Watch a full-screen TUI (top, or an agent): a wrong reflow means the daemon never heard the new cols/rows.",
+      },
+      {
+        id: "set-font-size-workspace",
+        text: "A workspace's own Font size overrides the app-wide one for its terminals only; another workspace's stay put",
+        hint: "Its first row reads “Default (n)” with n = the app-wide size — picking that row again clears the override.",
+      },
+      {
+        id: "set-font-size-persists",
+        text: "Both sizes survive an app restart, and a terminal restored from the daemon comes back at the chosen size",
+      },
+      {
         id: "set-external",
         text: "Editing config.toml in a terminal updates the panel (~3s); a field you're typing in is NOT clobbered",
         hint: "Focus the Command field, type, then edit config.toml externally.",

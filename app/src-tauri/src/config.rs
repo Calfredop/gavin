@@ -44,6 +44,14 @@ pub const LEGACY_UNFILED_WORKSPACE_NAME: &str = "Unfiled";
 /// (app/src/lib/workspace.ts's SMOKETEST_WORKSPACE_ID).
 pub const SMOKETEST_WORKSPACE_ID: &str = "__smoketest__";
 
+/// The range a terminal font size has to fall in to be stored. Must match
+/// the frontend's own copy exactly (app/src/lib/terminalFont.ts's
+/// MIN/MAX_TERMINAL_FONT_SIZE): both ends of the wire validate, because
+/// config.json is a file a user can edit and the value lands in xterm's
+/// metrics either way.
+pub const MIN_TERMINAL_FONT_SIZE: u16 = 8;
+pub const MAX_TERMINAL_FONT_SIZE: u16 = 32;
+
 /// Per-workspace Git tab preferences (spec §1: splitter widths, diff
 /// layout, the hunk/line discard confirm opt-out). Crosses to the frontend
 /// inside Workspace, hence camelCase.
@@ -137,6 +145,13 @@ pub struct Workspace {
     /// someone who closes tabs constantly.
     #[serde(default = "default_true")]
     pub confirm_tab_close: bool,
+    /// Terminal font size for this workspace's panes. Absent means inherit
+    /// `AppConfig::terminal_font_size`, and failing that gavin's own
+    /// default -- so absence is a real state, not a stand-in for the
+    /// default value. Machine-local (D35) like `color`: a display
+    /// preference, not a project fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_font_size: Option<u16>,
     /// Git tab preferences; None until the user changes something.
     #[serde(default)]
     pub git_view: Option<GitViewPrefs>,
@@ -229,6 +244,15 @@ pub struct AppConfig {
     /// save.
     #[serde(default)]
     pub agent_models: HashMap<String, String>,
+    /// App-wide terminal font size, in px. Absent means no one has chosen
+    /// one and gavin's own default applies -- stored as absence rather
+    /// than as the number, exactly like `theme`, so a later change to that
+    /// default reaches every install that never expressed a preference.
+    /// Like session_names/file_tabs/board_tabs/theme/agent_models it must
+    /// be carried through `persist_workspaces`, or it silently resets on
+    /// the next save.
+    #[serde(default)]
+    pub terminal_font_size: Option<u16>,
     /// Tombstones for workspaces removed from the sidebar, newest first.
     /// `default` so every config.json written before this field existed
     /// still loads; like session_names/file_tabs/board_tabs/theme/
@@ -303,6 +327,7 @@ mod tests {
             confirm_tab_close: true,
             git_view: None,
             last_active_at: None,
+            terminal_font_size: None,
         }
     }
 
@@ -329,6 +354,35 @@ mod tests {
         assert_eq!(load(dir.path()).unwrap().theme, None);
     }
 
+    /// Both halves of the setting round-trip, and both read as absent from
+    /// a config written before they existed -- which is the whole install
+    /// base on the upgrade, and the only way "inherit gavin's default"
+    /// stays the starting state.
+    #[test]
+    fn terminal_font_sizes_roundtrip_and_default_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.terminal_font_size = Some(16);
+        let config = AppConfig {
+            workspaces: vec![ws],
+            terminal_font_size: Some(11),
+            ..Default::default()
+        };
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.terminal_font_size, Some(11));
+        assert_eq!(loaded.workspaces[0].terminal_font_size, Some(16));
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[{"id":"w","name":"W","pages":[],"activePageId":null,"activeView":null}]}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap();
+        assert_eq!(old.terminal_font_size, None);
+        assert_eq!(old.workspaces[0].terminal_font_size, None);
+    }
+
     #[test]
     fn save_then_load_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
@@ -340,6 +394,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -361,6 +416,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -396,6 +452,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -505,6 +562,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -544,6 +602,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -570,6 +629,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -613,6 +673,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -631,6 +692,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(&nested, &config).unwrap();
@@ -657,6 +719,7 @@ mod tests {
             board_tabs,
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -708,6 +771,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -759,6 +823,7 @@ mod tests {
             board_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
+            terminal_font_size: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
