@@ -67,6 +67,12 @@ export interface Workspace {
   /// local like the accent colour -- how big the type is on this screen is
   /// not a fact about the project.
   terminalFontSize?: number;
+  /// Whether a card filed in this workspace starts carrying the
+  /// auto-commit block; absent means inherit the app-wide setting (and,
+  /// failing that, gavin's default of off). Machine-local like the accent
+  /// colour -- whether this human wants agents committing for them is a
+  /// habit, not a fact about the project.
+  autoCommit?: boolean;
   /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
   gitView?: GitViewPrefs;
   /// When this workspace was last switched to, epoch milliseconds.

@@ -152,6 +152,15 @@ pub struct Workspace {
     /// preference, not a project fact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_font_size: Option<u16>,
+    /// Whether a card filed in this workspace starts carrying the
+    /// auto-commit block. Absent means inherit `AppConfig::auto_commit`,
+    /// and failing that gavin's own default (off) -- so absence is a real
+    /// state, not a stand-in for `false`. Machine-local (D35) like
+    /// `color`: whether THIS human wants agents committing for them is a
+    /// habit, not a fact about the project, and committing it would hand
+    /// the setting to everyone who clones the repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_commit: Option<bool>,
     /// Git tab preferences; None until the user changes something.
     #[serde(default)]
     pub git_view: Option<GitViewPrefs>,
@@ -253,6 +262,16 @@ pub struct AppConfig {
     /// the next save.
     #[serde(default)]
     pub terminal_font_size: Option<u16>,
+    /// App-wide default for a new card's auto-commit block. Absent means
+    /// nobody has chosen and gavin's own default (off) applies -- stored
+    /// as absence rather than as `false`, exactly like `theme` and
+    /// `terminal_font_size`, so a later change to that default reaches
+    /// every install that never expressed a preference. Like
+    /// session_names/file_tabs/board_tabs/theme/agent_models/
+    /// terminal_font_size it must be carried through `persist_workspaces`,
+    /// or it silently resets on the next save.
+    #[serde(default)]
+    pub auto_commit: Option<bool>,
     /// Tombstones for workspaces removed from the sidebar, newest first.
     /// `default` so every config.json written before this field existed
     /// still loads; like session_names/file_tabs/board_tabs/theme/
@@ -328,6 +347,7 @@ mod tests {
             git_view: None,
             last_active_at: None,
             terminal_font_size: None,
+            auto_commit: None,
         }
     }
 
@@ -395,6 +415,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -417,6 +438,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -453,6 +475,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -563,6 +586,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -603,6 +627,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -630,6 +655,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -674,6 +700,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -693,6 +720,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(&nested, &config).unwrap();
@@ -720,6 +748,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -772,6 +801,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();
@@ -824,6 +854,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
+            auto_commit: None,
             removed_workspaces: Vec::new(),
         };
         save(dir.path(), &config).unwrap();

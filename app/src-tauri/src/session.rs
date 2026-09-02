@@ -64,6 +64,7 @@ fn persist_workspaces(
     // without the compiler noticing.
     agent_models: HashMap<String, String>,
     terminal_font_size: Option<u16>,
+    auto_commit: Option<bool>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -76,6 +77,7 @@ fn persist_workspaces(
             theme,
             agent_models,
             terminal_font_size,
+            auto_commit,
             removed_workspaces: data.removed_workspaces.clone(),
         },
     )
@@ -130,6 +132,7 @@ mod workspaces_data_tests {
             Some("light".to_string()),
             models.clone(),
             None,
+            None,
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
@@ -154,9 +157,57 @@ mod workspaces_data_tests {
             None,
             HashMap::new(),
             Some(11),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().terminal_font_size, Some(11));
+    }
+
+    /// The eighth carry-through field. A save that rebuilt AppConfig
+    /// without it would flip the app-wide default silently back to off,
+    /// and the only symptom would be new cards quietly losing the
+    /// auto-commit block -- which nobody notices until an agent finishes
+    /// without committing.
+    #[test]
+    fn persist_workspaces_carries_the_auto_commit_default_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            Some(true),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(true));
+    }
+
+    /// Absence is a state of its own: `false` means "this install chose
+    /// off" and None means "nobody chose", and only the second may be
+    /// moved by a change to gavin's default. A round-trip that collapsed
+    /// them would take the app-wide Off switch away.
+    #[test]
+    fn an_explicit_off_survives_the_round_trip_as_false_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            Some(false),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(false));
     }
 
     /// The sixth carry-through field, and the one whose loss is
@@ -184,6 +235,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             HashMap::new(),
+            None,
             None,
         )
         .unwrap();
@@ -219,6 +271,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             Some("light".to_string()),
             HashMap::new(),
+            None,
             None,
         )
         .unwrap();
@@ -262,6 +315,7 @@ mod smoketest_tests {
             git_view: None,
             last_active_at: None,
             terminal_font_size: None,
+            auto_commit: None,
         }
     }
 
@@ -308,6 +362,7 @@ mod smoketest_tests {
             git_view: None,
             last_active_at: None,
             terminal_font_size: None,
+            auto_commit: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -427,6 +482,7 @@ pub fn set_workspaces_state(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
@@ -437,6 +493,7 @@ pub fn set_workspaces_state(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -446,6 +503,7 @@ pub fn set_workspaces_state(
         theme,
         agent_models,
         terminal_font_size,
+        auto_commit,
     )
         .map_err(|e| e.to_string())
 }
@@ -467,6 +525,7 @@ pub fn set_agent_model_default(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
 ) -> Result<(), String> {
     // An empty model removes the entry rather than storing "": the
     // picker's unset row must be able to UNDO a default, not just
@@ -487,6 +546,7 @@ pub fn set_agent_model_default(
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -497,6 +557,7 @@ pub fn set_agent_model_default(
         theme,
         agent_models,
         terminal_font_size,
+        auto_commit,
     )
     .map_err(|e| e.to_string())
 }
@@ -517,6 +578,7 @@ pub fn set_theme_pref(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -533,6 +595,7 @@ pub fn set_theme_pref(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -542,6 +605,7 @@ pub fn set_theme_pref(
         theme,
         agent_models,
         terminal_font_size,
+        auto_commit,
     )
         .map_err(|e| e.to_string())
 }
@@ -570,6 +634,7 @@ pub fn set_terminal_font_size(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
 ) -> Result<(), String> {
     let terminal_font_size = {
         let mut current = font_size_state.0.lock().unwrap();
@@ -585,6 +650,7 @@ pub fn set_terminal_font_size(
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -595,6 +661,57 @@ pub fn set_terminal_font_size(
         theme,
         agent_models,
         terminal_font_size,
+        auto_commit,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_auto_commit(state: State<AutoCommit>) -> Option<bool> {
+    *state.0.lock().unwrap()
+}
+
+/// The app-wide default for a new card's auto-commit block. `None` clears
+/// the setting rather than writing `false`, which is what puts every
+/// inheriting workspace back on gavin's own default -- the same "there is
+/// no separate clear command" shape set_theme_pref and
+/// set_terminal_font_size take.
+#[tauri::command]
+pub fn set_auto_commit(
+    enabled: Option<bool>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
+) -> Result<(), String> {
+    let auto_commit = {
+        let mut current = auto_commit_state.0.lock().unwrap();
+        *current = enabled;
+        *current
+    };
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+        auto_commit,
     )
     .map_err(|e| e.to_string())
 }
@@ -616,6 +733,7 @@ pub fn set_session_name(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -637,6 +755,7 @@ pub fn set_session_name(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -646,6 +765,7 @@ pub fn set_session_name(
         theme,
         agent_models,
         terminal_font_size,
+        auto_commit,
     )
         .map_err(|e| e.to_string())
 }
@@ -671,6 +791,7 @@ pub fn set_file_tabs(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -680,6 +801,7 @@ pub fn set_file_tabs(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -689,6 +811,7 @@ pub fn set_file_tabs(
         theme,
         agent_models,
         terminal_font_size,
+        auto_commit,
     )
         .map_err(|e| e.to_string())
 }
@@ -707,6 +830,14 @@ pub struct ThemePref(pub Mutex<Option<String>>);
 /// default number: a config that spells out today's default would pin
 /// every existing install to it the day the default moves.
 pub struct TerminalFontSize(pub Mutex<Option<u16>>);
+
+/// App-wide default for a new card's auto-commit block, or None when
+/// nobody has chosen and gavin's own default (off) applies. Same
+/// always-carry persistence contract as ThemePref, and the same reason for
+/// storing absence rather than `false`: a config that spelled out today's
+/// default would pin every existing install to it the day the default
+/// moves.
+pub struct AutoCommit(pub Mutex<Option<bool>>);
 
 #[tauri::command]
 pub fn get_board_tabs(state: State<BoardTabs>) -> HashMap<String, crate::config::BoardTabRecord> {
@@ -727,6 +858,7 @@ pub fn set_board_tabs(
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -736,6 +868,7 @@ pub fn set_board_tabs(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -745,6 +878,7 @@ pub fn set_board_tabs(
         theme,
         agent_models,
         terminal_font_size,
+        auto_commit,
     )
         .map_err(|e| e.to_string())
 }
@@ -1551,6 +1685,7 @@ mod resolve_workspaces_tests {
             git_view: None,
             last_active_at: None,
             terminal_font_size: None,
+            auto_commit: None,
         }
     }
 
@@ -1857,6 +1992,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 git_view: None,
                 last_active_at: None,
                 terminal_font_size: None,
+                auto_commit: None,
             });
         }
     } else {
@@ -2140,6 +2276,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 git_view: None,
                 last_active_at: None,
                 terminal_font_size: None,
+                auto_commit: None,
             },
         );
     }
@@ -2176,6 +2313,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.theme.clone(),
         config.agent_models.clone(),
         config.terminal_font_size,
+        config.auto_commit,
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -2189,6 +2327,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.manage(AgentModels(Mutex::new(config.agent_models)));
     app_handle.manage(TerminalFontSize(Mutex::new(config.terminal_font_size)));
+    app_handle.manage(AutoCommit(Mutex::new(config.auto_commit)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
@@ -3400,6 +3539,7 @@ mod main_session_tests {
             git_view: None,
             last_active_at: None,
             terminal_font_size: None,
+            auto_commit: None,
         }
     }
 
@@ -3871,6 +4011,7 @@ mod attach_target_tests {
             git_view: None,
             last_active_at: None,
             terminal_font_size: None,
+            auto_commit: None,
         }
     }
 

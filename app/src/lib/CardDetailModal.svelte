@@ -28,6 +28,7 @@
     removeAttachment,
     type AttachmentStatus,
   } from "./attachments";
+  import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
   import { isViewableInApp } from "./fileTypes";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, resumeCard, relaunchCard, developCard } from "./cardRunActions";
@@ -88,6 +89,7 @@
     errorMessage = null;
     checklistError = null;
     attachmentsError = null;
+    autoCommitError = null;
     let unlisten: UnlistenFn | null = null;
     let closed = false;
     const read = () =>
@@ -225,6 +227,58 @@
       ? card.labels.filter((l) => slugStatus(l) !== slugStatus(name))
       : [...card.labels, name];
     await writeField("labels", next.join(", "));
+  }
+
+  // --- auto commit (does this card ask its agent to commit?) ------------
+  // The state is a fenced block in the card's BODY, not a frontmatter
+  // field, so it travels to every agent that reads the card without
+  // anything being wired up per launch route -- and so it needs no
+  // protocol bump to work. That means writing the FILE rather than a
+  // field: `setPlanFrontmatterField` cannot reach the body.
+  //
+  // Task and plan only: nothing ever executes a note, so the instruction
+  // would be text no agent reads, on a card with nothing to finish.
+  const autoCommitApplies = $derived(autoCommitAppliesTo(card.kind));
+  const autoCommitOn = $derived(hasAutoCommit(content));
+  let autoCommitBusy = $state(false);
+  let autoCommitError = $state<string | null>(null);
+
+  async function toggleAutoCommit(on: boolean): Promise<void> {
+    autoCommitError = null;
+    autoCommitBusy = true;
+    try {
+      // Re-read first, and splice THAT. `content` is a watched snapshot
+      // behind a 500ms debounce, so an agent's edit can be seconds old by
+      // the time the box is clicked -- and this write replaces the whole
+      // file, so splicing the stale copy would silently undo that edit.
+      const current = await backend.readFileForViewer(card.id);
+      if (!current.exists) {
+        autoCommitError = "The card's file is gone.";
+        await reloadContent();
+        return;
+      }
+      const next = setAutoCommitInFile(current.content, on);
+      // Unchanged means the frontmatter never closes, so there is no body
+      // to splice -- setAutoCommitInFile refuses rather than guessing.
+      if (next === current.content) {
+        content = current.content;
+        if (hasAutoCommit(next) !== on) {
+          autoCommitError =
+            "This card's frontmatter block is never closed, so gavin can't tell where the body starts. Fix the --- lines and try again.";
+        }
+        return;
+      }
+      await backend.writeFileForEditor(card.id, next);
+      // Set now rather than waiting for the watcher: the box would
+      // otherwise sit in its old position for the debounce and read as a
+      // click that did nothing.
+      content = next;
+    } catch (e) {
+      autoCommitError = String(e instanceof Error ? e.message : e);
+      await reloadContent();
+    } finally {
+      autoCommitBusy = false;
+    }
   }
 
   // --- attachments (files the card points an agent at) ------------------
@@ -547,6 +601,30 @@
         {/each}
       </div>
     </div>
+  {/if}
+  {#if autoCommitApplies}
+    <label class="row auto-commit">
+      <span class="label">Auto commit</span>
+      <input
+        type="checkbox"
+        checked={autoCommitOn}
+        disabled={autoCommitBusy || content === null}
+        onchange={(e) => void toggleAutoCommit(e.currentTarget.checked)}
+      />
+      <span class="auto-commit-hint">
+        <!-- Unknown is not the same answer as off. Until the read lands
+             the box is disabled and says so, rather than showing an
+             unticked box for a card that does carry the block. -->
+        {content === null
+          ? "Reading the card…"
+          : autoCommitOn
+            ? "This card asks its agent to commit when it finishes."
+            : "This card says nothing about committing."}
+      </span>
+    </label>
+    {#if autoCommitError}
+      <p class="error">{autoCommitError}</p>
+    {/if}
   {/if}
   <!-- The blocked reason rides the SECTION, not the button: tooltip.ts
        binds mouseenter, which a disabled element never fires, so a
@@ -879,6 +957,29 @@
     font-family: monospace;
     padding: 3px 6px;
     border-radius: 4px;
+  }
+  .auto-commit {
+    cursor: pointer;
+  }
+  /* The only label here longer than the 70px column the other rows share
+     ("Priority", the previous longest, is three characters shorter). A
+     fixed width would push it into the control beside it, so this row
+     alone takes the width it needs and keeps 70px as the floor -- the
+     shorter rows stay aligned with each other. */
+  .auto-commit .label {
+    width: auto;
+    min-width: 70px;
+    white-space: nowrap;
+  }
+  .auto-commit input:disabled {
+    cursor: default;
+  }
+  .auto-commit-hint {
+    color: var(--text-subtle);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .broken {
     color: var(--warning-text);

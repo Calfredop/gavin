@@ -1412,6 +1412,50 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Auto commit",
+    items: [
+      {
+        id: "auto-commit-compose",
+        text: "⌘N on a task or plan shows an “Auto commit” box; ticking it and filing the card puts the sentence at the foot of the card's body",
+        hint: "Open the card's file: the sentence sits between two <!-- gavin:auto-commit --> comments, which the modal's preview does not draw.",
+      },
+      {
+        id: "auto-commit-note-hidden",
+        text: "Switching the composer to the note chip takes the box away — and a note filed after ticking it carries no block",
+        hint: "Nothing ever executes a note, so the instruction would be text no agent reads.",
+      },
+      {
+        id: "auto-commit-detail-toggle",
+        text: "The card detail modal's “Auto commit” box matches the card, and clicking it adds or removes the sentence in the body preview",
+        hint: "Off again must leave the prompt exactly as it was — no stray blank lines, no lost paragraph.",
+      },
+      {
+        id: "auto-commit-detail-note",
+        text: "A note's detail modal has no Auto commit row at all",
+      },
+      {
+        id: "auto-commit-workspace-default",
+        text: "Settings → Cards → Auto commit = On makes the next ⌘N in THAT workspace open with the box already ticked",
+        hint: "The composer seeds once on open: change the setting with the composer up and the box must not move under you.",
+      },
+      {
+        id: "auto-commit-app-default",
+        text: "The app-wide Settings → Cards row moves every workspace whose own row still reads “Default (…)”, and none that chose",
+        hint: "Set one workspace to Off explicitly, then flip the app-wide one to On: that workspace stays off.",
+      },
+      {
+        id: "auto-commit-survives-restart",
+        text: "Both settings survive an app restart, and an explicit Off stays Off rather than falling back to the default",
+        hint: "config.json stores absence for “never chose” and false for “chose off” — they must not collapse into one.",
+      },
+      {
+        id: "auto-commit-agent-reads-it",
+        text: "Running a card that carries the block hands the agent a prompt with that sentence in it",
+        hint: "The body IS the prompt, so nothing extra is injected — read the launched tab's first screen.",
+      },
+    ],
+  },
+  {
     title: "App hub",
     items: [
       {

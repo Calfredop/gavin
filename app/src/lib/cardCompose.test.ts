@@ -12,6 +12,7 @@ import {
   composeCloseAction,
   NEW_CARD_STATUS,
 } from "./cardCompose";
+import { AUTO_COMMIT_BLOCK } from "./autoCommit";
 import { isPermanentColumn, type CardView } from "./planBoard";
 import type { MergedBoard } from "./boardSearch";
 
@@ -74,6 +75,44 @@ describe("buildCreatePlanArgs", () => {
     expect(
       buildCreatePlanArgs({ kind: "task", title: "T", body: "", status: "To Do", attachments: [] }, [])
     ).toMatchObject({ attachments: undefined });
+  });
+
+  it("folds the auto-commit block into the body, so one write files the whole card", () => {
+    const r = buildCreatePlanArgs(
+      { kind: "task", title: "T", body: "do the thing", status: "To Do", autoCommit: true },
+      []
+    );
+    expect(r).toMatchObject({ body: `do the thing\n\n${AUTO_COMMIT_BLOCK}` });
+  });
+
+  it("makes the block the whole body when the prompt was left empty", () => {
+    const r = buildCreatePlanArgs(
+      { kind: "plan", title: "T", body: "  ", status: "To Do", autoCommit: true },
+      []
+    );
+    expect(r).toMatchObject({ body: AUTO_COMMIT_BLOCK });
+  });
+
+  it("leaves the body alone when auto commit is off or absent", () => {
+    expect(
+      buildCreatePlanArgs(
+        { kind: "task", title: "T", body: "do the thing", status: "To Do", autoCommit: false },
+        []
+      )
+    ).toMatchObject({ body: "do the thing" });
+    expect(
+      buildCreatePlanArgs({ kind: "task", title: "T", body: "do the thing", status: "To Do" }, [])
+    ).toMatchObject({ body: "do the thing" });
+  });
+
+  it("never puts the block on a note, even with the flag still set", () => {
+    // The chips hide the checkbox on note but do not clear it, so the
+    // flag can arrive true on a card nothing will ever execute.
+    const r = buildCreatePlanArgs(
+      { kind: "note", title: "T", body: "remember this", status: "To Do", autoCommit: true },
+      []
+    );
+    expect(r).toMatchObject({ body: "remember this" });
   });
 });
 

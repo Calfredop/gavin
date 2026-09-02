@@ -21,6 +21,7 @@ import {
   type McpFormatInfo,
 } from "./settings";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
+import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
 import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import type { DaemonCompat } from "./daemonCompat";
@@ -863,6 +864,14 @@ export async function bootstrap(): Promise<void> {
     .then((size) => terminalFontSizeDefault.set(normalizeTerminalFontSize(size)))
     .catch(() => {});
 
+  // Normalized on the way in for the same reason: config.json is a file a
+  // user can edit, and anything that is not a boolean has to read as "no
+  // setting" so a workspace still falls through to gavin's default.
+  void backend
+    .getAutoCommit()
+    .then((enabled) => autoCommitDefault.set(normalizeAutoCommit(enabled)))
+    .catch(() => {});
+
   void pollForStartupState();
 }
 
@@ -1103,6 +1112,27 @@ export const terminalFontSize = derived(
     )
 );
 
+/// The app-wide auto-commit default from config.json, or null when the
+/// user has never set one. Null rather than false so the global panel can
+/// tell "chose off" from "never chose", and so a workspace with no setting
+/// of its own still falls all the way through to gavin's default.
+///
+/// Re-fetched on every bootstrap like terminalFontSizeDefault, so it is
+/// deliberately not parked across an HMR remount.
+export const autoCommitDefault = writable<boolean | null>(null);
+
+/// Whether a card filed in the ACTIVE workspace starts with the
+/// auto-commit block: that workspace's own choice, else the app-wide one,
+/// else gavin's default. Derived rather than looked up at the composer so
+/// that changing either setting moves the next card in the same tick, and
+/// so the two settings panels and the composer can never disagree about
+/// which one wins.
+export const newCardAutoCommit = derived(
+  [layoutState, autoCommitDefault],
+  ([$layout, $default]) =>
+    resolveAutoCommit(workspace.getActiveWorkspace($layout)?.autoCommit, $default)
+);
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
 export function resolvedAgentFor(workspaceId: string) {
@@ -1274,6 +1304,38 @@ export async function setWorkspaceFontSize(
   const normalized = size === null ? undefined : (normalizeTerminalFontSize(size) ?? undefined);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, terminalFontSize: normalized } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// The app-wide auto-commit default. Machine-local like the theme, the
+/// model defaults and the font size, so it goes straight to config.json
+/// through Tauri and never touches the daemon -- which is also why this
+/// feature needs no protocol bump and no compat gate to work.
+///
+/// Null clears the setting rather than storing false, which is what puts
+/// every workspace that inherits back on gavin's default.
+export async function setAutoCommitDefault(enabled: boolean | null): Promise<void> {
+  try {
+    await backend.setAutoCommit(enabled);
+    autoCommitDefault.set(enabled);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// One workspace's own auto-commit default, or null to inherit the
+/// app-wide one. Rides the workspace record (config.json) like the accent
+/// colour and the font size, rather than config.toml: whether THIS human
+/// wants agents committing for them is not a project fact to commit.
+export async function setWorkspaceAutoCommit(
+  workspaceId: string,
+  enabled: boolean | null
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, autoCommit: enabled ?? undefined } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

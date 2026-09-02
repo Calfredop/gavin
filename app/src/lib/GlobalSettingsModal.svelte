@@ -6,9 +6,17 @@
     setAgentModelDefault,
     terminalFontSizeDefault,
     setTerminalFontSizeDefault,
+    autoCommitDefault,
+    setAutoCommitDefault,
   } from "./layoutState";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "./terminalFont";
+  import {
+    DEFAULT_AUTO_COMMIT,
+    autoCommitFromSelect,
+    autoCommitOptions,
+    autoCommitToSelect,
+  } from "./autoCommit";
   import { themeState } from "./ui/themeState.svelte";
   import type { ThemePref } from "./ui/theme";
   import IconButton from "./ui/IconButton.svelte";
@@ -116,6 +124,26 @@
       <p class="hint">
         Every terminal in every workspace, unless the workspace sets a size of its own. Open
         terminals resize as you pick.
+      </p>
+    </section>
+
+    <section>
+      <h3>Cards</h3>
+      <div class="row">
+        <span>Auto commit</span>
+        <select
+          value={autoCommitToSelect($autoCommitDefault)}
+          onchange={(e) => void setAutoCommitDefault(autoCommitFromSelect(e.currentTarget.value))}
+        >
+          {#each autoCommitOptions(DEFAULT_AUTO_COMMIT) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        Whether a new task or plan card starts asking the agent to commit its work when it finishes.
+        Every workspace that sets nothing of its own follows this; every card can still be switched
+        either way on the card itself.
       </p>
     </section>
 

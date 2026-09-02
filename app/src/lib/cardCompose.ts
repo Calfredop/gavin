@@ -4,6 +4,7 @@
 // and forwards.
 
 import { formatAttachments } from "./attachments";
+import { autoCommitAppliesTo, setAutoCommitInBody } from "./autoCommit";
 import { translateDropIndex } from "./pageBoard";
 import { slugFileName } from "./planExplorer";
 import { slugStatus, type CardView } from "./planBoard";
@@ -37,6 +38,13 @@ export interface ComposeSpec {
   // three steps for one intention. Optional: every call site that
   // predates the field means "none".
   attachments?: string[];
+  // Whether the card is filed carrying the auto-commit block. Folded
+  // into the BODY here rather than written afterwards, so the card
+  // reaches disk complete in the one CreatePlan the composer already
+  // makes: a second write would leave a window in which the card exists
+  // without the instruction, and a failure mode in which it never gets
+  // it. Optional -- absent means off.
+  autoCommit?: boolean;
 }
 
 export type ComposeArgs =
@@ -66,7 +74,14 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
     fileName = base.replace(/\.md$/, `-${n}.md`);
     n += 1;
   }
-  const body = spec.body.trim();
+  // `autoCommitAppliesTo` is asked again here rather than trusted from
+  // the checkbox: the composer hides that control on the note chip, but
+  // switching chips does not clear the flag underneath, and a note is a
+  // card nothing will ever execute. Same posture as railToApply.
+  const body = setAutoCommitInBody(
+    spec.body.trim(),
+    spec.autoCommit === true && autoCommitAppliesTo(spec.kind)
+  );
   const attachments = formatAttachments(spec.attachments ?? []);
   return {
     fileName,

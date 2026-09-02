@@ -110,6 +110,19 @@ export function setTerminalFontSize(size: number | null): Promise<void> {
   return invoke("set_terminal_font_size", { size });
 }
 
+/// The app-wide default for a new card's auto-commit block. null means
+/// none was ever set -- same absence-not-the-default convention as the
+/// theme and the font size, so a change to gavin's default reaches every
+/// install that never chose. Distinct from `false`, which is an install
+/// that chose OFF and must stay off whatever the default becomes.
+export function getAutoCommit(): Promise<boolean | null> {
+  return invoke("get_auto_commit");
+}
+
+export function setAutoCommit(enabled: boolean | null): Promise<void> {
+  return invoke("set_auto_commit", { enabled });
+}
+
 // Set once by layoutState.ts's bootstrap() -- both real input paths in
 // this app (terminalRegistry.ts's per-keystroke term.onData, and
 // clipboard.ts's paste action) already call writeInput directly, so

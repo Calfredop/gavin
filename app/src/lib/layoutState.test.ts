@@ -49,6 +49,8 @@ vi.mock("./backend", () => ({
   agentProfiles: vi.fn().mockResolvedValue([]),
   getAgentModelDefaults: vi.fn().mockResolvedValue({}),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
+  getAutoCommit: vi.fn().mockResolvedValue(null),
+  setAutoCommit: vi.fn().mockResolvedValue(undefined),
   setTerminalFontSize: vi.fn().mockResolvedValue(undefined),
   mcpFormats: vi.fn().mockResolvedValue([]),
   moveAgentFile: vi.fn().mockResolvedValue(undefined),
@@ -151,6 +153,10 @@ import {
   setTerminalFontSizeDefault,
   terminalFontSizeDefault,
   terminalFontSize,
+  setWorkspaceAutoCommit,
+  setAutoCommitDefault,
+  autoCommitDefault,
+  newCardAutoCommit,
   setAgentField,
   setGitViewPrefs,
   startMainAgentWithPrompt,
@@ -2499,6 +2505,52 @@ describe("workspace settings", () => {
 
     await setTerminalFontSizeDefault(null);
     expect(get(terminalFontSizeDefault)).toBeNull();
+  });
+
+  it("setAutoCommitDefault goes to config.json, never to the daemon", async () => {
+    // The whole point of keeping auto commit out of frontmatter is that
+    // it needs no daemon at all -- so this setting must not acquire one.
+    vi.mocked(backend.setRootConfigField).mockClear();
+    await setAutoCommitDefault(true);
+    expect(backend.setAutoCommit).toHaveBeenCalledWith(true);
+    expect(backend.setRootConfigField).not.toHaveBeenCalled();
+    expect(get(autoCommitDefault)).toBe(true);
+
+    await setAutoCommitDefault(null);
+    expect(get(autoCommitDefault)).toBeNull();
+  });
+
+  it("setWorkspaceAutoCommit stores a choice, and null clears it back to inheriting", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspaceAutoCommit("ws-1", true);
+    expect(get(layoutState).workspaces[0].autoCommit).toBe(true);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+
+    // False is a CHOICE, not an absence: a workspace that has said "off"
+    // must stay off when the app-wide default is turned on.
+    await setWorkspaceAutoCommit("ws-1", false);
+    expect(get(layoutState).workspaces[0].autoCommit).toBe(false);
+
+    await setWorkspaceAutoCommit("ws-1", null);
+    expect(get(layoutState).workspaces[0].autoCommit).toBeUndefined();
+  });
+
+  it("the new-card default prefers the active workspace, then the app default, then off", async () => {
+    autoCommitDefault.set(null);
+    setState([ws("ws-1", [])], "ws-1", null);
+    expect(get(newCardAutoCommit)).toBe(false);
+
+    autoCommitDefault.set(true);
+    expect(get(newCardAutoCommit)).toBe(true);
+
+    await setWorkspaceAutoCommit("ws-1", false);
+    expect(get(newCardAutoCommit)).toBe(false);
+
+    // Switching workspaces re-answers the question: a second workspace
+    // that chose nothing must follow the app default, not the first
+    // workspace's explicit off.
+    setState([{ ...ws("ws-1", []), autoCommit: false }, ws("ws-2", [])], "ws-2", null);
+    expect(get(newCardAutoCommit)).toBe(true);
   });
 
   it("the resolved size prefers the active workspace, then the app default, then gavin's", async () => {

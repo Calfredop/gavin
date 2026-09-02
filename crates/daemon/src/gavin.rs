@@ -2644,6 +2644,35 @@ mod tests {
         assert!(dup.unwrap_err().to_string().contains("already exists"));
     }
 
+    /// The app's "auto commit" switch is a fenced HTML-comment block the
+    /// composer folds into the card's BODY (app/src/lib/autoCommit.ts) --
+    /// deliberately not a frontmatter field, so it needs nothing from the
+    /// daemon and reaches every agent that reads the card. Nothing is
+    /// wired for it here, which is the point: this pins that the body
+    /// survives verbatim and that the block cannot be mistaken for
+    /// frontmatter, checklist items or anything else the scan parses.
+    #[test]
+    fn a_body_carrying_an_html_comment_block_round_trips_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let body = "Do the thing.\n\n<!-- gavin:auto-commit -->\n\
+                    When the implementation is done, commit it.\n\
+                    <!-- /gavin:auto-commit -->";
+        let path = create_plan_file(
+            dir.path(), "ac.md", "T", None, None, Some(body), Some("task"), None, None,
+        )
+        .unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.ends_with(&format!("{body}\n")), "body must land verbatim: {written:?}");
+        // The comment markers are body text, not a second frontmatter
+        // block: title/status still parse, and nothing became a checklist.
+        let info = plan_file_info(&path, &written);
+        assert_eq!(info.title, "T");
+        assert_eq!(info.status.as_deref(), Some("To Do"));
+        assert_eq!(info.checklist_total, 0);
+        assert!(!info.parse_warning);
+    }
+
     #[test]
     fn read_prd_returns_content_and_errors_when_absent() {
         let dir = tempfile::tempdir().unwrap();

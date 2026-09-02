@@ -14,6 +14,7 @@
   // chips reshape it in place: plan swaps the prompt for a body, note
   // drops the body entirely.
   import { untrack } from "svelte";
+  import { get } from "svelte/store";
   import { open } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -43,7 +44,8 @@
     attachmentName,
     removeAttachment,
   } from "./attachments";
-  import { daemonCompat, workspaceRootPath } from "./layoutState";
+  import { autoCommitAppliesTo } from "./autoCommit";
+  import { daemonCompat, newCardAutoCommit, workspaceRootPath } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import { formatShortcut } from "./shortcuts";
   import { isMacSync } from "./platform";
@@ -109,6 +111,12 @@
   // the kind of stale path the run gate exists to catch.
   let attachments = $state<string[]>([]);
   let attachmentsError = $state<string | null>(null);
+  // Seeded ONCE from the resolved default -- this workspace's setting,
+  // else the app-wide one, else off -- with `get` rather than `$store` so
+  // a settings change mid-compose cannot flip a box the human has already
+  // ticked. Survives `reset()` for the same reason railId does: filing a
+  // run of cards that all need committing is one tick, not one per card.
+  let autoCommit = $state(get(newCardAutoCommit));
   let runNow = $state(false);
   let error = $state<string | null>(null);
   let titleEl = $state<HTMLTextAreaElement | null>(null);
@@ -210,7 +218,7 @@
     }
     const ctx = contexts.find((c) => c.folderPath === contextFolder);
     const args = buildCreatePlanArgs(
-      { kind, title, body, status, attachments },
+      { kind, title, body, status, attachments, autoCommit },
       ctx?.plans.map((p) => p.fileName) ?? []
     );
     if ("error" in args) {
@@ -478,8 +486,20 @@
     <div class="compose-error">{attachmentsError}</div>
   {/if}
 
+  {#if autoCommitAppliesTo(kind)}
+    <label class="check-row">
+      <input
+        type="checkbox"
+        bind:checked={autoCommit}
+        onfocus={() => (focusField = "body")}
+        onkeydown={(e) => handleKeydown("body", e)}
+      />
+      Auto commit — ask the agent to commit when it finishes
+    </label>
+  {/if}
+
   {#if kind === "task" && !railId && onRunCard}
-    <label class="run-now">
+    <label class="check-row">
       <input
         type="checkbox"
         bind:checked={runNow}
@@ -654,7 +674,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .run-now {
+  /* Shared by the two checkbox rows -- auto commit and Run now -- so
+     the name says what the row IS, not which control reached for it
+     first. */
+  .check-row {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -663,7 +686,7 @@
     font-size: 0.8em;
     margin-top: 8px;
   }
-  .run-now input {
+  .check-row input {
     accent-color: var(--accent);
   }
   .compose-error {

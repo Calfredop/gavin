@@ -68,6 +68,8 @@ pub fn run() {
             session::set_theme_pref,
             session::get_terminal_font_size,
             session::set_terminal_font_size,
+            session::get_auto_commit,
+            session::set_auto_commit,
             session::get_session_names,
             session::set_session_name,
             session::get_file_tabs,

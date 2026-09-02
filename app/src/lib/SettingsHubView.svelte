@@ -13,8 +13,16 @@
     daemonCompat,
     terminalFontSizeDefault,
     setWorkspaceFontSize,
+    autoCommitDefault,
+    setWorkspaceAutoCommit,
   } from "./layoutState";
   import { fontSizeOptions, resolveTerminalFontSize } from "./terminalFont";
+  import {
+    autoCommitFromSelect,
+    autoCommitOptions,
+    autoCommitToSelect,
+    resolveAutoCommit,
+  } from "./autoCommit";
   import { gavinTrees } from "./gavinState";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "./daemonCompat";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
@@ -75,6 +83,14 @@
   /// the picker's first row so "Default" is never a number the panel
   /// leaves the reader to guess.
   const inheritedFontSize = $derived(resolveTerminalFontSize(undefined, $terminalFontSizeDefault));
+
+  // --- cards ------------------------------------------------------------
+  /// What this workspace inherits when it sets nothing of its own: the
+  /// app-wide setting, or gavin's default when there isn't one. Named in
+  /// the picker's first row for the same reason the font size is -- a
+  /// panel must never show a box whose selected row is secretly doing
+  /// something.
+  const inheritedAutoCommit = $derived(resolveAutoCommit(undefined, $autoCommitDefault));
 
   // --- danger zone -----------------------------------------------------
   let deleting = $state(false);
@@ -375,6 +391,26 @@
       <p class="hint">
         Only this workspace's terminals. Default follows the app-wide size in Settings, so leaving it
         alone is how a workspace tracks that.
+      </p>
+    </section>
+
+    <section>
+      <h3>Cards</h3>
+      <div class="row">
+        <span>Auto commit</span>
+        <select
+          value={autoCommitToSelect(ws.autoCommit)}
+          onchange={(e) =>
+            void setWorkspaceAutoCommit(workspaceId, autoCommitFromSelect(e.currentTarget.value))}
+        >
+          {#each autoCommitOptions(inheritedAutoCommit) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        Whether a new task or plan card in this workspace starts asking the agent to commit its work
+        when it finishes. Every card can still be switched either way on the card itself.
       </p>
     </section>
 
