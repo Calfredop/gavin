@@ -1543,6 +1543,43 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "The pinned workspace reads “Scratchpad”, keeps its pages, and appears in the hub's recents like any other",
         hint: "Launch against an existing config.json — the id stays __unfiled__, so nothing may be orphaned by the rename.",
       },
+      {
+        id: "hub-stats-agree",
+        text: "The fleet strip's tabs / repos / cards / rails totals equal the sidebar's per-workspace strips added up",
+        hint: "Cards fold by column NAME across boards, so two boards with a “To Do” each show one merged “TD”.",
+      },
+      {
+        id: "hub-stats-shared-checkout",
+        text: "Two workspaces opened on the SAME folder count as one repo in the strip, not two",
+        hint: "Per-workspace tallies would double it; the fleet one dedupes by repoRoot.",
+      },
+      {
+        id: "hub-running-lists-cards",
+        text: "Running a card from a board makes it appear under its workspace in “Running tasks”, and stopping the agent removes it",
+        hint: "The heading's count and the strip both come from fleetSummary — they must never differ.",
+      },
+      {
+        id: "hub-running-phases",
+        text: "An agent that asks a question moves to the top of its group with a red dot and “Waiting for you”",
+        hint: "Order is waiting → interrupted → working → idle, then by title.",
+      },
+      {
+        id: "hub-running-interrupted",
+        text: "After a daemon restart, a card whose run was killed reads “Interrupted” with a hollow ring — never “Working”",
+        hint: "The daemon's status describes the bare shell it put back, so the phase must be read from interruptedSessionIds first.",
+      },
+      {
+        id: "hub-running-jumps",
+        text: "A task row opens that card's detail modal in its own tab (Kanban, or Orchestration for a card on a rail); the terminal button lands on the running tab instead",
+      },
+      {
+        id: "hub-running-loose",
+        text: "A busy terminal you started by hand shows as “n busy agents with no card” under its workspace, and a quiet one shows nothing",
+      },
+      {
+        id: "hub-two-columns",
+        text: "Narrowing the window stacks the two columns instead of squashing them, and long card titles and root paths ellipse rather than widening the panel",
+      },
     ],
   },
   {

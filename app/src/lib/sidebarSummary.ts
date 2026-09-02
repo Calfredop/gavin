@@ -45,7 +45,11 @@ export function showGitChip(git: WorkspaceGitSummary): boolean {
 /// tree (D12) and is usually the one sitting in the workspace root. That
 /// last part matters -- a rooted workspace whose pages are all empty
 /// would otherwise show no git recap at all.
-function workspaceSessionIds(ws: Workspace): string[] {
+///
+/// Exported because the app hub asks the same question of the whole
+/// fleet at once, and a second walk of the same trees is the shape that
+/// drifts.
+export function workspaceSessionIds(ws: Workspace): string[] {
   const ids = ws.pages.flatMap((p) => allSessionIds(p.layout));
   return ws.mainSessionId ? [...ids, ws.mainSessionId] : ids;
 }
@@ -55,12 +59,25 @@ export function workspaceGitSummary(
   gitStatusById: Record<string, GitStatus | null>,
   committing = false
 ): WorkspaceGitSummary {
+  return gitSummaryOf(workspaceSessionIds(ws), gitStatusById, committing);
+}
+
+/// The tally itself, over whatever set of sessions the caller cares
+/// about: one workspace's (above) or the whole fleet's (the app hub).
+/// The dedupe is what makes the second case correct rather than merely
+/// convenient -- two workspaces opened on the SAME checkout are one
+/// repo, and summing two per-workspace tallies would count it twice.
+export function gitSummaryOf(
+  sessionIds: Iterable<string>,
+  gitStatusById: Record<string, GitStatus | null>,
+  committing = false
+): WorkspaceGitSummary {
   // Deduped by repoRoot exactly like summarizePageGitStatus: five
   // sessions sharing one checkout are one repo, not five. Sessions with
   // no repo (null or missing entry) are ignored rather than counted as a
   // group of their own.
   const byRepoRoot = new Map<string, GitStatus>();
-  for (const id of workspaceSessionIds(ws)) {
+  for (const id of sessionIds) {
     const status = gitStatusById[id];
     if (status) byRepoRoot.set(status.repoRoot, status);
   }
@@ -193,7 +210,7 @@ export type RailPhase = "running" | "attention" | "done" | "idle";
 export function railPhase(
   orch: Orchestration,
   rail: Rail,
-  attentionRailIds: Set<string> = new Set()
+  attentionRailIds: ReadonlySet<string> = new Set()
 ): RailPhase {
   if (attentionRailIds.has(rail.id)) return "attention";
   if (railStateOf(orch, rail.id) === "running") return "running";
@@ -216,7 +233,7 @@ export interface RailsSummary {
 /// nothing to say about rails until it arrives.
 export function railsSummary(
   orch: Orchestration | null | undefined,
-  attentionRailIds: Set<string> = new Set()
+  attentionRailIds: ReadonlySet<string> = new Set()
 ): RailsSummary {
   const summary: RailsSummary = { running: 0, attention: 0, done: 0, idle: 0, total: 0 };
   if (!orch) return summary;

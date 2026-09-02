@@ -4,12 +4,22 @@ import {
   relativeTime,
   appLinks,
   workspaceRecapLine,
+  runningTasks,
+  runningTaskCount,
+  fleetSummary,
   APP_LINKS,
   APP_VERSION,
   type AppLink,
+  type FleetInput,
+  type FleetState,
+  type WorkspaceRunning,
 } from "./appHub";
 import type { WorkspaceAgentsSummary } from "./sidebarSummary";
-import { UNFILED_WORKSPACE_ID, type Workspace } from "./workspace";
+import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "./workspace";
+import type { LayoutNode } from "./layout";
+import type { Board } from "./kanban";
+import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
+import type { Orchestration } from "./orchestration";
 
 function ws(id: string, lastActiveAt?: number): Workspace {
   return { id, name: id.toUpperCase(), pages: [], activePageId: null, lastActiveAt };
@@ -143,5 +153,393 @@ describe("workspaceRecapLine", () => {
 describe("APP_VERSION", () => {
   it("is the package version, not a placeholder", () => {
     expect(APP_VERSION).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});
+
+// --- the fleet: running tasks and the stats strip ---------------------
+
+function leaf(tabs: string[]): LayoutNode {
+  return { type: "leaf", tabs, activeTabIndex: 0 };
+}
+
+function page(id: string, tabs: string[], name = id): Page {
+  return { id, name, layout: leaf(tabs), focusedSessionId: null };
+}
+
+function wsWith(id: string, pages: Page[], overrides: Partial<Workspace> = {}): Workspace {
+  return { id, name: id.toUpperCase(), pages, activePageId: pages[0]?.id ?? null, ...overrides };
+}
+
+function fleetState(workspaces: Workspace[], overrides: Partial<FleetState> = {}): FleetState {
+  return {
+    workspaces,
+    activeWorkspaceId: workspaces[0]?.id ?? null,
+    sessionStatusById: {},
+    fileTabsById: {},
+    boardTabsById: {},
+    gitStatusById: {},
+    interruptedSessionIds: new Set(),
+    ...overrides,
+  };
+}
+
+function boardWith(cardSessions: Array<{ path: string; sessionId: string }>, names = ["To Do", "In Progress", "Done"]): Board {
+  return {
+    columns: names.map((name, position) => ({ id: `c${position}`, name, position })),
+    labels: [],
+    cardSessions: cardSessions.map((cs) => ({ ...cs, cwd: "/ws", command: null })),
+  };
+}
+
+function planCard(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
+  return {
+    path: `/ws/.gavin-root/plans/${fileName}`,
+    fileName,
+    title: fileName.replace(/\.md$/, ""),
+    status: "In Progress",
+    priority: null,
+    order: null,
+    kind: "plan",
+    parent: null,
+    labels: [],
+    checklistDone: 0,
+    checklistTotal: 0,
+    parseWarning: false,
+    ...overrides,
+  };
+}
+
+function treeWith(plans: PlanFileInfo[]): GavinTree {
+  const ctx: GavinContext = {
+    folderPath: "/ws/.gavin-root",
+    kind: "root",
+    name: "ws",
+    plans,
+    docs: [],
+    specs: [],
+    hasPrd: false,
+    configWarning: false,
+  };
+  return { rootPath: "/ws", rootMissing: false, contexts: [ctx] };
+}
+
+function input(state: FleetState, overrides: Partial<FleetInput> = {}): FleetInput {
+  return { state, boards: {}, trees: {}, orchestrations: {}, ...overrides };
+}
+
+const CARD = "/ws/.gavin-root/plans/card.md";
+
+describe("runningTasks", () => {
+  it("has nothing to say about a fleet with no bindings", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1"])])]);
+    expect(runningTasks(input(state))).toEqual([]);
+  });
+
+  it("reports a bound live session as a running task", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1"], "Agents")])], {
+      sessionStatusById: { s1: "working" },
+    });
+    const groups = runningTasks(
+      input(state, {
+        boards: { a: boardWith([{ path: CARD, sessionId: "s1" }]) },
+        trees: { a: treeWith([planCard("card.md", { title: "Fix the login flow" })]) },
+      })
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].workspaceId).toBe("a");
+    expect(groups[0].tasks).toEqual([
+      {
+        workspaceId: "a",
+        sessionId: "s1",
+        path: CARD,
+        title: "Fix the login flow",
+        cardStatus: "In Progress",
+        phase: "working",
+        pageId: "p1",
+        pageName: "Agents",
+        pageWorkspaceId: "a",
+        view: "kanban",
+      },
+    ]);
+  });
+
+  it("drops a binding whose session has exited", () => {
+    // No tree holds "gone", so the binding outlived its session.
+    const state = fleetState([wsWith("a", [page("p1", ["s1"])])]);
+    const groups = runningTasks(
+      input(state, { boards: { a: boardWith([{ path: CARD, sessionId: "gone" }]) } })
+    );
+    expect(groups).toEqual([]);
+  });
+
+  it("calls a run the daemon replaced with a bare shell interrupted, not idle", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1"])])], {
+      // The daemon's status describes the SHELL, not the agent that was
+      // there -- reading it would report a stopped run as working.
+      sessionStatusById: { s1: "working" },
+      interruptedSessionIds: new Set(["s1"]),
+    });
+    const groups = runningTasks(
+      input(state, { boards: { a: boardWith([{ path: CARD, sessionId: "s1" }]) } })
+    );
+    expect(groups[0].tasks[0].phase).toBe("interrupted");
+  });
+
+  it("falls back to the file name when the tree has not seen the card", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1"])])]);
+    const groups = runningTasks(
+      input(state, { boards: { a: boardWith([{ path: CARD, sessionId: "s1" }]) } })
+    );
+    expect(groups[0].tasks[0].title).toBe("card.md");
+    expect(groups[0].tasks[0].cardStatus).toBeNull();
+  });
+
+  it("reads a nested task's status off its parent", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1"])])]);
+    const groups = runningTasks(
+      input(state, {
+        boards: { a: boardWith([{ path: "/ws/.gavin-root/plans/step.md", sessionId: "s1" }]) },
+        trees: {
+          a: treeWith([
+            planCard("parent.md", { status: "Done" }),
+            planCard("step.md", { kind: "task", status: null, parent: "parent.md" }),
+          ]),
+        },
+      })
+    );
+    expect(groups[0].tasks[0].cardStatus).toBe("Done");
+  });
+
+  it("points a card that sits on a rail at the Orchestration tab", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1"])])]);
+    const orch: Orchestration = {
+      rails: [
+        {
+          id: "r1",
+          name: "R",
+          position: 0,
+          worktreePath: null,
+          pageId: null,
+          stages: [{ id: "st1", position: 0, steps: [{ id: "t1", position: 0, cardPath: CARD }] }],
+        },
+      ],
+      conflictNotes: [],
+      railRuns: [],
+      stepRuns: [],
+    };
+    const groups = runningTasks(
+      input(state, {
+        boards: { a: boardWith([{ path: CARD, sessionId: "s1" }]) },
+        orchestrations: { a: orch },
+      })
+    );
+    expect(groups[0].tasks[0].view).toBe("orchestration");
+  });
+
+  it("orders what needs a human first, then by title", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1", "s2", "s3", "s4"])])], {
+      sessionStatusById: { s1: "idle", s2: "working", s3: "waiting_for_input", s4: "working" },
+      interruptedSessionIds: new Set(),
+    });
+    const groups = runningTasks(
+      input(state, {
+        boards: {
+          a: boardWith([
+            { path: "/ws/.gavin-root/plans/d.md", sessionId: "s1" },
+            { path: "/ws/.gavin-root/plans/c.md", sessionId: "s2" },
+            { path: "/ws/.gavin-root/plans/a.md", sessionId: "s3" },
+            { path: "/ws/.gavin-root/plans/b.md", sessionId: "s4" },
+          ]),
+        },
+      })
+    );
+    expect(groups[0].tasks.map((t) => t.title)).toEqual(["a.md", "b.md", "c.md", "d.md"]);
+    expect(groups[0].tasks.map((t) => t.phase)).toEqual(["waiting", "working", "working", "idle"]);
+  });
+
+  it("groups by workspace in the hub's own recents order", () => {
+    const state = fleetState(
+      [
+        wsWith("old", [page("p1", ["s1"])], { lastActiveAt: 100 }),
+        wsWith("new", [page("p2", ["s2"])], { lastActiveAt: 300 }),
+      ],
+      { sessionStatusById: { s1: "working", s2: "working" } }
+    );
+    const groups = runningTasks(
+      input(state, {
+        boards: {
+          old: boardWith([{ path: CARD, sessionId: "s1" }]),
+          new: boardWith([{ path: CARD, sessionId: "s2" }]),
+        },
+      })
+    );
+    expect(groups.map((g) => g.workspaceId)).toEqual(["new", "old"]);
+  });
+
+  it("counts a busy agent with no card as a loose agent", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1", "s2"])])], {
+      sessionStatusById: { s1: "working", s2: "waiting_for_input" },
+    });
+    const groups = runningTasks(input(state));
+    expect(groups).toHaveLength(1);
+    expect(groups[0].tasks).toEqual([]);
+    expect(groups[0].looseAgents).toBe(2);
+  });
+
+  it("does not count a quiet terminal, or a file or board tab, as a loose agent", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1", "f1", "b1"])])], {
+      sessionStatusById: { s1: "idle", f1: "working", b1: "working" },
+      fileTabsById: { f1: { path: "/x.md" } },
+      boardTabsById: { b1: {} },
+    });
+    expect(runningTasks(input(state))).toEqual([]);
+  });
+
+  it("does not count a card's own agent twice as a loose one", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1"])])], {
+      sessionStatusById: { s1: "working" },
+    });
+    const groups = runningTasks(
+      input(state, { boards: { a: boardWith([{ path: CARD, sessionId: "s1" }]) } })
+    );
+    expect(groups[0].looseAgents).toBe(0);
+  });
+
+  it("finds the page a bound tab was dragged to", () => {
+    const state = fleetState([wsWith("a", [page("p1", []), page("p2", ["s1"], "Second")])], {
+      sessionStatusById: { s1: "working" },
+    });
+    const groups = runningTasks(
+      input(state, { boards: { a: boardWith([{ path: CARD, sessionId: "s1" }]) } })
+    );
+    expect(groups[0].tasks[0].pageName).toBe("Second");
+  });
+});
+
+describe("runningTaskCount", () => {
+  it("adds up the tasks, never the loose agents", () => {
+    const groups = [
+      { workspaceId: "a", name: "A", tasks: [{}, {}], looseAgents: 3 },
+      { workspaceId: "b", name: "B", tasks: [{}], looseAgents: 0 },
+    ] as unknown as WorkspaceRunning[];
+    expect(runningTaskCount(groups)).toBe(3);
+  });
+});
+
+describe("fleetSummary", () => {
+  it("is all zeros for an empty fleet", () => {
+    const summary = fleetSummary(input(fleetState([])));
+    expect(summary.workspaces).toBe(0);
+    expect(summary.rooted).toBe(0);
+    expect(summary.tasks).toBe(0);
+    expect(summary.cards.columns).toEqual([]);
+    expect(summary.git.repoCount).toBe(0);
+  });
+
+  it("counts rooted workspaces apart from the whole fleet", () => {
+    const state = fleetState([
+      wsWith("a", [], { rootPath: "/ws" }),
+      wsWith("b", []),
+    ]);
+    const summary = fleetSummary(input(state));
+    expect(summary.workspaces).toBe(2);
+    expect(summary.rooted).toBe(1);
+  });
+
+  it("sums agents and pages over every workspace", () => {
+    const state = fleetState(
+      [
+        wsWith("a", [page("p1", ["s1", "s2"])]),
+        wsWith("b", [page("p2", ["s3"]), page("p3", [])]),
+      ],
+      { sessionStatusById: { s1: "working", s2: "waiting_for_input", s3: "idle" } }
+    );
+    const summary = fleetSummary(input(state));
+    expect(summary.agents).toEqual({ pages: 3, tabs: 3, agents: 3, running: 1, waiting: 1, idle: 1 });
+  });
+
+  it("counts one checkout shared by two workspaces once", () => {
+    const state = fleetState(
+      [wsWith("a", [page("p1", ["s1"])]), wsWith("b", [page("p2", ["s2"])])],
+      {
+        gitStatusById: {
+          s1: { repoRoot: "/repo", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
+          s2: { repoRoot: "/repo", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
+        },
+      }
+    );
+    const summary = fleetSummary(input(state));
+    expect(summary.git).toEqual({ repoCount: 1, dirtyCount: 1, ahead: 2, behind: 0, committing: false });
+  });
+
+  it("raises the committing flag when any workspace has a run in flight", () => {
+    const state = fleetState([wsWith("a", [])]);
+    expect(fleetSummary(input(state, { committing: new Set(["a"]) })).git.committing).toBe(true);
+    expect(fleetSummary(input(state, { committing: new Set() })).git.committing).toBe(false);
+  });
+
+  it("merges two boards' columns by slug, keeping first-appearance order", () => {
+    const state = fleetState([wsWith("a", []), wsWith("b", [])]);
+    const summary = fleetSummary(
+      input(state, {
+        boards: { a: boardWith([], ["To Do", "In Progress", "Done"]), b: boardWith([], ["to do", "Blocked", "Done"]) },
+        trees: {
+          a: treeWith([planCard("x.md", { status: "To Do" }), planCard("y.md", { status: "Done" })]),
+          b: treeWith([planCard("z.md", { status: "to do" }), planCard("w.md", { status: "Blocked" })]),
+        },
+      })
+    );
+    expect(summary.cards.columns).toEqual([
+      { name: "To Do", count: 2 },
+      { name: "In Progress", count: 0 },
+      { name: "Done", count: 1 },
+      { name: "Blocked", count: 1 },
+    ]);
+    expect(summary.cards.total).toBe(4);
+    expect(summary.cards.todo).toBe(2);
+    expect(summary.cards.done).toBe(1);
+    expect(summary.cards.inProgress).toBe(1);
+  });
+
+  it("sums rails by phase across the fleet, attention included", () => {
+    const railed = (id: string, running: boolean): Orchestration => ({
+      rails: [
+        {
+          id,
+          name: id,
+          position: 0,
+          worktreePath: null,
+          pageId: null,
+          stages: [{ id: `${id}-s`, position: 0, steps: [{ id: `${id}-t`, position: 0, cardPath: CARD }] }],
+        },
+      ],
+      conflictNotes: [],
+      railRuns: running ? [{ railId: id, state: "running", currentStageId: null }] : [],
+      stepRuns: [],
+    });
+    const state = fleetState([wsWith("a", []), wsWith("b", [])]);
+    const summary = fleetSummary(
+      input(state, {
+        orchestrations: { a: railed("r1", true), b: railed("r2", false) },
+        attention: { b: new Set(["r2"]) },
+      })
+    );
+    expect(summary.rails).toEqual({ running: 1, attention: 1, done: 0, idle: 0, total: 2 });
+  });
+
+  it("counts the same running tasks the column renders", () => {
+    const state = fleetState([wsWith("a", [page("p1", ["s1", "s2"])])], {
+      sessionStatusById: { s1: "working", s2: "working" },
+    });
+    const bundle = input(state, {
+      boards: {
+        a: boardWith([
+          { path: "/ws/.gavin-root/plans/a.md", sessionId: "s1" },
+          { path: "/ws/.gavin-root/plans/b.md", sessionId: "s2" },
+        ]),
+      },
+    });
+    expect(fleetSummary(bundle).tasks).toBe(runningTaskCount(runningTasks(bundle)));
+    expect(fleetSummary(bundle).tasks).toBe(2);
   });
 });
