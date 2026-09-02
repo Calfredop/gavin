@@ -3,11 +3,13 @@
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig, resolvePrdPath } from "./settings";
   import { setupProgress, type SetupStep } from "./setupWizard";
+  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
   import * as backend from "./backend";
   import Modal from "./Modal.svelte";
   import AgentStep from "./wizardSteps/AgentStep.svelte";
   import IntegrationStep from "./wizardSteps/IntegrationStep.svelte";
   import PrdStep from "./wizardSteps/PrdStep.svelte";
+  import SuperpowersStep from "./wizardSteps/SuperpowersStep.svelte";
   import LaunchStep from "./wizardSteps/LaunchStep.svelte";
 
   interface Props {
@@ -18,6 +20,7 @@
   const STEPS: Array<{ id: SetupStep; label: string }> = [
     { id: "agent", label: "Agent" },
     { id: "integration", label: "Integration" },
+    { id: "superpowers", label: "Superpowers" },
     { id: "prd", label: "PRD" },
     { id: "launch", label: "Launch" },
   ];
@@ -36,16 +39,27 @@
   // opened the wizard on the wrong one for good.
   let agentFileBody = $state<string | null | undefined>(undefined);
   let prdBody = $state<string | null | undefined>(undefined);
+  // The Superpowers check joins them, undefined for the same reason: a
+  // detector still running is not a detector that found nothing.
+  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
+  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
 
   async function reread(): Promise<void> {
     const root = ws?.rootPath;
     if (!root) return;
-    const [agentFile, prd] = await Promise.all([
+    const [agentFile, prd, sp, marks] = await Promise.all([
       backend.readFileForViewer(`${root}/${agentCfg.file}`).catch(() => null),
       backend.readFileForViewer(`${root}/${prdPath}`).catch(() => null),
+      // A detector that threw still has to settle the pending flag, or
+      // the wizard never renders at all. UNKNOWN_STATUS is the honest
+      // stand-in: it offers no button and completes no step.
+      backend.superpowersStatus(root).catch(() => UNKNOWN_STATUS),
+      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
     ]);
     agentFileBody = agentFile?.exists ? agentFile.content : null;
     prdBody = prd?.exists ? prd.content : null;
+    superpowers = sp;
+    superpowersMark = marks[root];
   }
 
   $effect(() => {
@@ -62,6 +76,8 @@
       agentFileBody,
       prdBody,
       mainSessionId: ws?.mainSessionId ?? null,
+      superpowers,
+      superpowersMark,
     })
   );
 
@@ -106,6 +122,14 @@
           <AgentStep {workspaceId} onDone={advance} />
         {:else if current === "integration"}
           <IntegrationStep {workspaceId} onDone={advance} />
+        {:else if current === "superpowers"}
+          <SuperpowersStep
+            {workspaceId}
+            status={superpowers}
+            mark={superpowersMark}
+            onChanged={() => void reread()}
+            onDone={advance}
+          />
         {:else if current === "prd"}
           <!-- integrationDone comes from the same derivation the stepper
                draws, so a PRD repointed here rewrites the integration

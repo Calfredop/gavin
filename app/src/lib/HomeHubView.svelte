@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { layoutState, switchWorkspaceView, agentProfilesStore, openWizard, agentModelDefaultsStore} from "./layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "./settings";
-  import { setupProgress } from "./setupWizard";
+  import { setupProgress, SETUP_STEPS } from "./setupWizard";
+  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
   import { gavinTrees, refreshGavinTree } from "./gavinState";
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "./homeSummary";
@@ -51,6 +52,11 @@
   // half-finished setup for the length of two IPC round trips.
   let prdBody = $state<string | null | undefined>(undefined);
   let agentFileBody = $state<string | null | undefined>(undefined);
+  // Same unknown-until-read rule for the third input: the banner counts
+  // the Superpowers step too, and a check still running must not be
+  // rendered as a step left undone.
+  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
+  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
 
   const setup = $derived(
     setupProgress({
@@ -59,6 +65,8 @@
       agentFileBody,
       prdBody,
       mainSessionId: ws?.mainSessionId ?? null,
+      superpowers,
+      superpowersMark,
     })
   );
 
@@ -104,6 +112,8 @@
     // flight, whose answer belongs to the root we just left.
     prdBody = undefined;
     agentFileBody = undefined;
+    superpowers = undefined;
+    superpowersMark = undefined;
     const mine = ++readToken;
     if (!r || !treeSettled) return;
     void backend
@@ -131,6 +141,33 @@
         if (mine !== readToken) return;
         agentFileExists = null;
         agentFileBody = null;
+      });
+    // Marker first, detector only if there is no marker. The banner just
+    // needs to know whether the step is answered, and a recorded answer
+    // settles it on its own -- whereas the detector is a SUBPROCESS, and
+    // this panel remounts on every visit to the Home tab. Running
+    // `claude plugin list` each time to re-derive something the human
+    // already told us would be the most expensive read on the panel and
+    // the least informative.
+    //
+    // Settled on failure, like the two reads above: the banner is held
+    // back while any input is pending, so a read that threw must still
+    // land an answer or the banner never appears again.
+    void backend
+      .getSuperpowersMarks()
+      .catch(() => ({}) as Record<string, SuperpowersMark>)
+      .then((marks) => {
+        if (mine !== readToken) return;
+        const recorded = marks[r];
+        superpowersMark = recorded;
+        if (recorded) return;
+        return backend
+          .superpowersStatus(r)
+          .catch(() => UNKNOWN_STATUS)
+          .then((res) => {
+            if (mine !== readToken) return;
+            superpowers = res;
+          });
       });
     // One-shot git status for the tile — no watcher here; the Git tab
     // itself holds the live one.
@@ -195,7 +232,7 @@
     {#if root && !setup.pending && !setup.complete}
       <button type="button" class="setup-card" onclick={() => openWizard(workspaceId)}>
         <b>Finish setting up this workspace</b>
-        <span>{setup.done.length} of 4 done — continue</span>
+        <span>{setup.done.length} of {SETUP_STEPS.length} done — continue</span>
       </button>
     {/if}
     <div class="grid" bind:this={gridEl}>
