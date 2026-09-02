@@ -1480,6 +1480,31 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Orchestration rail scrolling",
+    items: [
+      {
+        id: "rail-scroll-per-rail",
+        text: "A rail with more steps than fit scrolls on its own: its stages move, every other rail stays exactly where it was",
+        hint: "Needs two rails of very different lengths. Scroll the long one to its bottom, then look at the short one — before this change the whole grid moved as one, so the short rail's steps went off the top with it.",
+      },
+      {
+        id: "rail-scroll-header-fixed",
+        text: "The scrolled rail's header — name, worktree/page chips, state, buttons — stays put and never scrolls away",
+        hint: "Same result as the old sticky header, reached differently: it now sits outside the scroller instead of sticking inside it. Watch its bottom border: it must not slide over a step, and no step may show through above it.",
+      },
+      {
+        id: "rail-scroll-no-page-scroll",
+        text: "No vertical scrollbar on the grid itself, and “+ Add step” is reachable at the foot of a long rail",
+        hint: "The grid keeps only its horizontal bar. If the tail of a long rail is CLIPPED rather than scrollable, the row track lost its height — that is the failure this replaced the shared scroll with.",
+      },
+      {
+        id: "rail-scroll-drag-autoscroll",
+        text: "Dragging a step to the bottom edge of a long rail auto-scrolls THAT rail, and the drop lands where the indicator sat",
+        hint: "Hold the chip near the rail body's lower edge: its stages should creep up under the pointer. Dragging past the left or right edge still scrolls the grid sideways.",
+      },
+    ],
+  },
+  {
     title: "Rail branch/worktree defaults",
     items: [
       {

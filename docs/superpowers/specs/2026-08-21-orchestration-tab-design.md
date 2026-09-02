@@ -605,8 +605,16 @@ viewport) and **stage index as rows** (O8), so rows auto-size to the tallest
 stage at that index and a horizontal band reads as "roughly concurrent" —
 the same read the conflicts box reasons about. Rails advance independently,
 so the alignment is nominal, not a timeline; the header says "stage 2", not
-a clock. One shared vertical scroll, which is fine for rails a handful of
-stages long.
+a clock.
+
+**Vertical scrolling is per rail**, the kanban's rule: the grid takes the
+horizontal axis and pins its row track to its own height, so every rail is
+exactly one viewport tall and scrolls its own stages. The first draft gave
+the grid one shared vertical scroll — fine for rails a handful of stages
+long, and wrong the moment one rail outgrew the rest, because reading its
+tail dragged every other rail's steps off the top and left the sticky
+headers as the only thing saying which column you were in. Rails advance
+independently; so should their scrollbars.
 
 A **single-step stage** draws bare — the card plus a connector to the next
 stage. A **multi-step stage** draws a labelled band spanning the rail width
@@ -616,7 +624,8 @@ concurrent.
 
 ### 6.2 Chips and headers
 
-**Rail header** (sticky, the board's column-header shape): name, worktree
+**Rail header** (fixed by layout, outside the rail's scroller — the board's
+column-header shape): name, worktree
 chip, page chip, run state, and Start/Pause/Resume. Its overflow menu:
 Rename, Bind worktree…, Bind page…, Reset, Delete rail. A rail-level
 conflict (`worktree-missing`, `rail-unbound`) badges the header, not a chip.

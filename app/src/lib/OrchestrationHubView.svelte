@@ -1015,15 +1015,25 @@
   }
   /* Rails are grid columns and stage index is the row track, so a
      horizontal band across the grid reads as roughly concurrent
-     (orchestration spec O8). */
+     (orchestration spec O8).
+
+     The grid scrolls sideways ONLY. `grid-template-rows: minmax(0, 1fr)`
+     is the whole trick: it gives the single row a definite height equal
+     to the grid's, so a rail taller than the viewport scrolls its own
+     stages (`.rail-body`) instead of growing the row and taking every
+     other rail's header off-screen with it -- the kanban's rule, where
+     the strip scrolls x and each column scrolls its own cards. `auto`
+     rows plus `align-items: start` was the shared vertical scroll this
+     replaces. */
   .grid {
     flex: 1;
     min-width: 0;
     display: grid;
     grid-auto-flow: column;
     grid-auto-columns: minmax(280px, 1fr);
-    overflow: auto;
-    align-items: start;
+    grid-template-rows: minmax(0, 1fr);
+    overflow-x: auto;
+    overflow-y: hidden;
   }
   .picker-body {
     min-width: 320px;

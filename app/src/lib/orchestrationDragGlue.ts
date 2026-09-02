@@ -5,6 +5,7 @@
 //
 // Data-attribute contract (rendered by the orchestration components):
 //   [data-orch-rail]       rail column root; value = rail id
+//   [data-orch-rail-body]  the rail's scrolling stage list (auto-scroll)
 //   [data-orch-stage]      a stage band; value = stage id
 //   [data-orch-stage-pos]  a stage band; value = its position
 //   [data-orch-step]       a step chip wrapper; value = step id
@@ -226,8 +227,11 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
     }
   }
 
-  // The grid scrolls in BOTH axes (unlike the board, where each column
-  // scrolls its own card list), so this nudges root on x and y.
+  // Auto-scroll, the board's rule exactly: the grid takes x, and the
+  // rail under the pointer scrolls its OWN stage list on y. The grid
+  // itself no longer scrolls vertically -- each rail is one viewport
+  // tall and owns its scroller -- so a `scrollEl.scrollTop` nudge here
+  // would move nothing at all.
   let rafId: number | null = null;
   function frame(): void {
     rafId = null;
@@ -242,11 +246,21 @@ export function attachOrchestrationDrag(opts: OrchDragOptions): () => void {
       scrollEl.scrollLeft += dx;
       scrolled ||= scrollEl.scrollLeft !== before;
     }
-    const dy = autoScrollVelocity(drag.pointer.y, gridRect.top, gridRect.bottom);
-    if (dy !== 0) {
-      const before = scrollEl.scrollTop;
-      scrollEl.scrollTop += dy;
-      scrolled ||= scrollEl.scrollTop !== before;
+
+    for (const railEl of scrollEl.querySelectorAll("[data-orch-rail]")) {
+      const r = railEl.getBoundingClientRect();
+      if (drag.pointer.x < r.left || drag.pointer.x > r.right) continue;
+      const body = railEl.querySelector("[data-orch-rail-body]");
+      if (body) {
+        const br = body.getBoundingClientRect();
+        const dy = autoScrollVelocity(drag.pointer.y, br.top, br.bottom);
+        if (dy !== 0) {
+          const before = body.scrollTop;
+          body.scrollTop += dy;
+          scrolled ||= body.scrollTop !== before;
+        }
+      }
+      break;
     }
 
     if (scrolled) refreshTarget();

@@ -375,6 +375,10 @@
     {/if}
   </header>
 
+  <!-- Everything below the header scrolls, and only this element does:
+       the rail is exactly as tall as the grid, the way a kanban column
+       is exactly as tall as the board. -->
+  <div class="rail-body" data-orch-rail-body>
   {#each stagesShown as stage, i (stage.id)}
     {#if newStageAt === i}<div class="stage-placeholder"></div>{/if}
     {#if i > 0 && newStageAt !== i}<div class="connector"></div>{/if}
@@ -516,27 +520,44 @@
   <button type="button" class="add-step" onclick={onAddStep}>
     <Plus size={13} /> Add step
   </button>
+  </div>
 </div>
 
 <style>
+  /* The rail fills the grid's row track and never grows past it, so its
+     own body is what scrolls -- min-height: 0 is what stops a tall stack
+     of stages from pushing the column past the viewport instead. */
   .rail {
     display: flex;
     flex-direction: column;
-    gap: 8px;
     min-width: 0;
+    min-height: 0;
     padding: 8px;
     border-right: 1px solid var(--border);
   }
+  /* Fixed by layout rather than by `position: sticky`: the header is a
+     sibling of the scroller now, not a child of it, so it cannot be
+     scrolled off in the first place. */
   header {
-    position: sticky;
-    top: 0;
-    z-index: 1;
+    flex: none;
     display: flex;
     flex-direction: column;
     gap: 4px;
+    margin-bottom: 8px;
     padding-bottom: 6px;
     background: var(--surface-base);
     border-bottom: 1px solid var(--border);
+  }
+  /* The rail's one scroll container -- the `.cards` of a kanban column.
+     It carries the 8px gap the rail used to, so stage spacing is
+     unchanged. */
+  .rail-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
   .name-row {
     display: flex;
