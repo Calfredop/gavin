@@ -41,10 +41,12 @@ vi.mock("./layoutState", () => ({
   workspaceRootPath: vi.fn(() => "/ws"),
   resolvedAgentFor: vi.fn(() => ({
     profileId: "claude-code",
+    label: "Claude Code",
     file: "CLAUDE.md",
     command: "claude --model opus",
     launchCommand: "claude --model opus",
     mcpSupported: true,
+    promptArgs: "",
   })),
 }));
 vi.mock("./workspace", () => ({

@@ -191,7 +191,7 @@
   {/if}
   <button type="button" disabled={busy} onclick={() => void saveMine()}>Continue →</button>
 </div>
-{#if profile && !profile.promptArg && !authored}
+{#if profile && !agentFlowAvailable(profile) && !authored}
   <p class="hint">“Ask the agent” isn’t available for {profile.label} yet.</p>
 {/if}
 

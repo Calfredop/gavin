@@ -827,8 +827,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "wiz-agent-gate",
-        text: "With Cursor or opencode, “Ask the agent” is absent and the step says why; with Codex or Gemini it is offered",
-        hint: "Those two take a path, not a prompt, in their bare positional — the other three take a prompt.",
+        text: "With Cursor, “Ask the agent” is absent and the step says why; with Codex, Gemini or opencode it is offered",
+        hint: "Cursor is now the only profile with nowhere to put a prompt — opencode has one, it is just a flag (--prompt=) rather than the bare positional.",
       },
       {
         id: "wiz-integration-degrades",
@@ -871,6 +871,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "It reads GAVIN_SESSION_ID from its PTY; run it from a terminal outside gavin and it says so instead of renaming something random.",
       },
       { id: "mcp-board", text: "gavin_get_board returns the columns and your free-form cards" },
+    ],
+  },
+  {
+    // The second profile that gets everything: skills, a seeded card
+    // run, and a hidden commit run. Its argv conventions differ from
+    // Claude Code's at every one of those points, and argv is precisely
+    // what no suite here can exercise -- a wrong flag is green in Node
+    // and dead in a terminal.
+    title: "opencode profile",
+    items: [
+      {
+        id: "oc-integration-writes",
+        text: "On the opencode profile, Integration writes AGENTS.md, the four skills under .opencode/skills/, opencode.json and .opencode/agent/gavin-commit.md — and no .claude/ or .mcp.json appears",
+        hint: "Set profile = \"opencode\" in .gavin-root/config.toml first. The wizard's Integration step lists every path it wrote; read that list.",
+      },
+      {
+        id: "oc-card-run-seeded",
+        text: "Running a card opens the opencode TUI with the card's prompt ALREADY posted as a user message and the agent working on it",
+        hint: "This is the whole bug: before the fix the session died with “Failed to change directory to …”, because the bare positional is a project folder. If you see a directory error, the flag did not survive.",
+      },
+      {
+        id: "oc-skills-load",
+        text: "Inside that session the gavin skill is available and the agent follows it (it names its own tab within the first move)",
+        hint: "opencode discovers skills at process start, so a session opened BEFORE the write will not see them — start a fresh one.",
+      },
+      {
+        id: "oc-mcp-tools-callable",
+        text: "The gavin_* tools work from inside an opencode session — ask it to read the PRD and create a card",
+        hint: "opencode namespaces MCP tools by server key, so they appear as gavin_gavin_read_prd. The card landing on the board is the proof.",
+      },
+      {
+        id: "oc-commit-via-agent",
+        text: "Git tab → “Commit via agent” on a dirty repo commits in chunks, leaves the tree clean, and ends on its own",
+        hint: "The run is hidden and has no way to ask permission: its grant is .opencode/agent/gavin-commit.md. Delete that file and the run should fail loudly rather than hang.",
+      },
     ],
   },
   {

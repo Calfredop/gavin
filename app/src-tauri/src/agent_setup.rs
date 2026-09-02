@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
-/// One gavin-managed skill file. Overwritten wholesale on every setup
-/// run, like the instructions block's marker section.
-pub struct SkillFile {
+/// One gavin-authored file dropped verbatim into a workspace --
+/// a skill under the profile's skill root, or the agent definition a
+/// headless run names. Overwritten wholesale on every setup run, like
+/// the instructions block's marker section: gavin owns these outright,
+/// so there is nothing in them to merge.
+pub struct ManagedFile {
     pub dir: &'static str,
     pub file: &'static str,
     pub contents: &'static str,
@@ -74,7 +77,7 @@ pub struct McpLayout {
     pub config_file: &'static str,
     pub server_key: &'static str,
     pub format: McpFormat,
-    pub skills: &'static [SkillFile],
+    pub skills: &'static [ManagedFile],
 }
 
 /// A layout with the path resolved: from the profile table for the five
@@ -86,7 +89,7 @@ pub struct ResolvedMcp {
     config_file: String,
     server_key: &'static str,
     format: McpFormat,
-    skills: &'static [SkillFile],
+    skills: &'static [ManagedFile],
 }
 
 impl ResolvedMcp {
@@ -100,6 +103,18 @@ impl ResolvedMcp {
     fn skill_slot(&self) -> Option<(&'static Path, &'static str)> {
         let first = self.skills.first()?;
         Some((Path::new(first.dir).parent()?, first.file))
+    }
+
+    /// The path the instructions block points an agent at. The FIRST
+    /// entry by the same convention skill_slot relies on: the table
+    /// lists the always-on workflow skill first, and the block exists to
+    /// name exactly that one. Read from the layout rather than written
+    /// as a literal, because two profiles now install skills to two
+    /// different roots -- a hardcoded `.claude/…` would send an opencode
+    /// workspace to a file gavin never wrote there.
+    fn workflow_skill_path(&self) -> Option<String> {
+        let first = self.skills.first()?;
+        Some(format!("{}/{}", first.dir, first.file))
     }
 }
 
@@ -160,16 +175,27 @@ pub struct AgentProfile {
     pub instructions_file: &'static str,
     /// Empty for `custom`, where the user supplies it.
     pub command: &'static str,
-    /// Whether this agent accepts a positional prompt argument, i.e.
-    /// `<command> "<prompt>"`. Only true where the convention is
-    /// verified: getting it wrong puts garbage in the agent's argv, so
-    /// agent-driven flows are hidden rather than risked (spec §7.2).
-    pub prompt_arg: bool,
+    /// The argv that carries a prompt into a LAUNCHED (visible) session,
+    /// as a prefix concatenated with the shell-quoted prompt:
+    ///
+    /// - `Some("")` — a bare positional: `claude '<prompt>'`.
+    /// - `Some("--prompt=")` — a flag whose value is ATTACHED:
+    ///   `opencode --prompt='<prompt>'`. The attached form is not a
+    ///   stylistic choice; see the opencode row for why the separated
+    ///   one is broken.
+    /// - `None` — this agent takes no prompt at all, so every
+    ///   agent-driven flow is hidden rather than launched with garbage
+    ///   in its argv (spec §7.2).
+    ///
+    /// A prefix rather than a bool because two shapes had to coexist and
+    /// one concatenation expresses both: `<command> <prompt_args><quoted>`
+    /// is the whole builder, for every row.
+    pub prompt_args: Option<&'static str>,
     /// The argv that makes this agent run ONE prompt with no TUI and
     /// then exit: `<command> <headless_args> "<prompt>"`. Empty where
     /// the convention is unverified, which hides every background run --
     /// a hidden session that never exits is a spinner with no end, so
-    /// this is a harder requirement than `prompt_arg` alone.
+    /// this is a harder requirement than `prompt_args` alone.
     ///
     /// The tool allow-list is part of it: a headless agent cannot be
     /// asked to approve anything, so a run with no grant is a run that
@@ -198,6 +224,17 @@ pub struct AgentProfile {
     /// ids that rot -- so those rows ship empty and the user types what
     /// they want. A wrong name here lands in somebody's argv.
     pub models: &'static [&'static str],
+    /// A gavin-owned agent DEFINITION this profile's headless run names
+    /// by `--agent`, when its CLI grants tool permissions through a file
+    /// rather than a flag. Written and removed exactly like a skill --
+    /// gavin owns the whole file -- and deliberately not merged into the
+    /// user's own agent config: that would silently re-scope the
+    /// interactive sessions they drive themselves, and gavin writes
+    /// nothing into someone else's config beyond the MCP entry.
+    ///
+    /// None where the grant rides the argv instead, which is every other
+    /// row that runs headless.
+    pub agent_file: Option<ManagedFile>,
     pub mcp: Option<McpLayout>,
 }
 
@@ -209,14 +246,17 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Claude Code",
         instructions_file: "CLAUDE.md",
         command: "claude",
-        prompt_arg: true,
+        // `claude "<prompt>"`: the bare positional starts the session.
+        prompt_args: Some(""),
         headless_args: "-p --allowedTools \"Bash(git *)\" --",
+        // The allow-list rides claude's own argv, so there is no file.
+        agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".mcp.json",
             server_key: "gavin",
             format: McpFormat::JsonServers,
             skills: &[
-                SkillFile {
+                ManagedFile {
                     dir: ".claude/skills/gavin",
                     file: "SKILL.md",
                     contents: include_str!("gavin_skill.md"),
@@ -224,7 +264,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
                 // Its own skill, not a section of the workflow one: this
                 // loads only when orchestration comes up, so the
                 // always-on skill stays short.
-                SkillFile {
+                ManagedFile {
                     dir: ".claude/skills/gavin-orchestrate",
                     file: "SKILL.md",
                     contents: include_str!("gavin_orchestrate_skill.md"),
@@ -232,7 +272,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
                 // Loaded by the In Progress column's Resume: the card
                 // it names was worked on before, and picking that up is
                 // a different job from starting it.
-                SkillFile {
+                ManagedFile {
                     dir: ".claude/skills/gavin-resume",
                     file: "SKILL.md",
                     contents: include_str!("gavin_resume_skill.md"),
@@ -240,7 +280,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
                 // The To Do counterpart, loaded by a card's "Develop
                 // into a plan": the card is one line of intent, and
                 // turning it into steps is an interview, not a build.
-                SkillFile {
+                ManagedFile {
                     dir: ".claude/skills/gavin-develop",
                     file: "SKILL.md",
                     contents: include_str!("gavin_develop_skill.md"),
@@ -257,8 +297,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         command: "codex",
         // `codex "<prompt>"`: the TUI's clap parser takes an optional
         // positional PROMPT that starts the session.
-        prompt_arg: true,
+        prompt_args: Some(""),
         headless_args: "",
+        agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".codex/config.toml",
             server_key: "gavin",
@@ -276,8 +317,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // `gemini [query..]`: the positional is the initial prompt and
         // stays interactive, which is what a launched session wants.
         // (-p would run it headless and exit.)
-        prompt_arg: true,
+        prompt_args: Some(""),
         headless_args: "",
+        agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".gemini/settings.json",
             server_key: "gavin",
@@ -292,12 +334,13 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Cursor",
         instructions_file: "AGENTS.md",
         command: "cursor",
-        // Verified false, not merely unverified: `cursor` is the IDE
+        // Verified absent, not merely unverified: `cursor` is the IDE
         // launcher and its positionals are paths, so a prompt would be
         // read as a file to open. Cursor's terminal agent is a separate
         // binary; a user who wants it points `command` at it in Settings.
-        prompt_arg: false,
+        prompt_args: None,
         headless_args: "",
+        agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".cursor/mcp.json",
             server_key: "gavin",
@@ -308,20 +351,73 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     AgentProfile {
         id: "opencode",
         model_flag: "--model",
+        // `opencode models` is a per-user catalogue assembled from the
+        // providers THIS machine has configured -- 445 rows here -- and
+        // `--model sonnet` dies with `ProviderModelNotFoundError
+        // { providerID: "sonnet", modelID: "" }`. There is no stable
+        // alias to offer, so the user types their own `provider/model`.
         models: &[],
         label: "opencode",
         instructions_file: "AGENTS.md",
         command: "opencode",
-        // Also verified false: `opencode [project]`'s positional is a
-        // directory to start in, so a prompt would land as a path.
-        // Prompts go through the `opencode run` subcommand instead.
-        prompt_arg: false,
-        headless_args: "",
+        // ATTACHED, not separated. `opencode [project]`'s bare positional
+        // is a directory (`opencode 'Fix the login flow'` dies with
+        // "Failed to change directory to …/Fix the login flow"), so the
+        // prompt has to ride a flag -- and `--prompt <value>` is parsed
+        // by yargs, which reads a value beginning with `-` as the next
+        // flag and prints the usage banner instead of starting. The
+        // `--prompt=<value>` form takes the same value and stores it
+        // byte for byte, newlines and quotes included. Verified
+        // 2026-09-02 against 1.3.13 through `sh -c`, which is how the
+        // daemon runs every session.
+        prompt_args: Some("--prompt="),
+        // `run` is the non-interactive subcommand; `--agent` names the
+        // gavin-owned definition below, which carries the git-only grant
+        // (1.3.13 has no `--auto`, whatever the docs say). The trailing
+        // `--` is load-bearing here too: without it a prompt starting
+        // with `-` is read as a flag and the run prints usage.
+        //
+        // A denied tool comes back as a tool error the agent can read
+        // ("The user has specified a rule which prevents you…") and an
+        // `ask`-level permission auto-rejects, so a hidden run cannot
+        // stall on an approval nobody can give.
+        headless_args: "run --agent gavin-commit --",
+        // opencode reads `.claude/skills/` too, but a workspace that
+        // never chose Claude Code should not grow a `.claude/`
+        // directory. Its own validator accepts gavin's existing
+        // `name` + `description` frontmatter unchanged, so the four
+        // files install verbatim.
+        agent_file: Some(ManagedFile {
+            dir: ".opencode/agent",
+            file: "gavin-commit.md",
+            contents: include_str!("opencode_commit_agent.md"),
+        }),
         mcp: Some(McpLayout {
             config_file: "opencode.json",
             server_key: "gavin",
             format: McpFormat::JsonLocal,
-            skills: &[],
+            skills: &[
+                ManagedFile {
+                    dir: ".opencode/skills/gavin",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".opencode/skills/gavin-orchestrate",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_orchestrate_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".opencode/skills/gavin-resume",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_resume_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".opencode/skills/gavin-develop",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_develop_skill.md"),
+                },
+            ],
         }),
     },
     AgentProfile {
@@ -331,8 +427,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         label: "Custom…",
         instructions_file: "",
         command: "",
-        prompt_arg: false,
+        prompt_args: None,
         headless_args: "",
+        agent_file: None,
         mcp: None,
     },
 ];
@@ -407,7 +504,7 @@ const MARKER_END: &str = "<!-- gavin:end -->";
 /// short and defers to the skill file.
 const BLOCK_WITH_SKILL: &str = "## Gavin workspace\n\n\
 This repo is a gavin workspace. Read `{prd}` first — it leads all\n\
-development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`\n\
+development. Follow the gavin workflow skill in `{skill}`\n\
 (plan before coding, keep plan statuses current, use the gavin_* MCP tools).\n";
 
 /// Inline variant: for agents with no skill mechanism, the same guidance
@@ -448,12 +545,13 @@ development.\n\n\
 /// workspace pointed at its own `docs/PRD.md` must not hand its agents a
 /// block telling them to read a file gavin never wrote.
 fn instructions_block_for(mcp: Option<&ResolvedMcp>, prd: &str) -> String {
-    let template = match mcp {
-        Some(layout) if !layout.skills.is_empty() => BLOCK_WITH_SKILL,
-        Some(_) => BLOCK_INLINE_WITH_MCP,
-        None => BLOCK_INLINE,
+    let skill = mcp.and_then(ResolvedMcp::workflow_skill_path);
+    let template = match (mcp, skill.as_deref()) {
+        (Some(_), Some(_)) => BLOCK_WITH_SKILL,
+        (Some(_), None) => BLOCK_INLINE_WITH_MCP,
+        (None, _) => BLOCK_INLINE,
     };
-    with_prd_path(template, prd)
+    with_prd_path(template, prd).replace("{skill}", skill.as_deref().unwrap_or(""))
 }
 
 /// The one substitution every authored document shares. Kept as a named
@@ -577,20 +675,20 @@ fn write_mcp_config_toml(path: &Path, layout: &ResolvedMcp, binary: &Path) -> an
     Ok(())
 }
 
-/// Gavin-managed: every skill is overwritten wholesale on each setup run.
+/// Gavin-managed: overwritten wholesale on each setup run, whatever the
+/// file is. Substitution runs for every one of them, not just the ones
+/// that mention the PRD today: a document that grows a `{prd}` later
+/// needs no change here, and one that has none is unaffected.
+fn write_managed_file(root: &Path, file: &ManagedFile, prd: &str) -> anyhow::Result<PathBuf> {
+    let dir = root.join(file.dir);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(file.file);
+    std::fs::write(&path, with_prd_path(file.contents, prd))?;
+    Ok(path)
+}
+
 fn write_skills(root: &Path, layout: &ResolvedMcp, prd: &str) -> anyhow::Result<Vec<PathBuf>> {
-    let mut written = Vec::new();
-    for skill in layout.skills {
-        let dir = root.join(skill.dir);
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join(skill.file);
-        // Substituted for every skill, not just the ones that mention the
-        // PRD today: a document that grows a `{prd}` later needs no
-        // change here, and one that has none is unaffected.
-        std::fs::write(&path, with_prd_path(skill.contents, prd))?;
-        written.push(path);
-    }
-    Ok(written)
+    layout.skills.iter().map(|skill| write_managed_file(root, skill, prd)).collect()
 }
 
 /// Replaces the marker block in place, appends it otherwise (creating the
@@ -719,6 +817,18 @@ fn run_integration(
             ));
         }
     }
+
+    // Independent of MCP: this is the profile's own tool grant, and the
+    // headless run names it by `--agent`. Written last so the wizard's
+    // list reads outward from the instructions file.
+    if let Some(file) = profile.agent_file.as_ref() {
+        written.push(
+            write_managed_file(root, file, &prd)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
     Ok(IntegrationResult { written, skipped })
 }
 
@@ -748,6 +858,11 @@ pub struct GavinInstall {
     /// appear in no table, and a wizard that only read the table would
     /// leave them behind.
     pub skill_root: Option<PathBuf>,
+    /// The gavin-owned agent definition, where the profile declares one.
+    /// A whole file gavin authored, so it is removed outright -- unlike
+    /// the MCP config and the instructions file, which are shared and
+    /// only ever edited.
+    pub agent_file: Option<PathBuf>,
 }
 
 pub fn gavin_install(root: &Path) -> GavinInstall {
@@ -764,6 +879,7 @@ pub fn gavin_install(root: &Path) -> GavinInstall {
         mcp: mcp.map(|m| (root.join(&m.config_file), m.server_key.to_string())),
         skills,
         skill_root,
+        agent_file: profile.agent_file.as_ref().map(|f| root.join(f.dir).join(f.file)),
     }
 }
 
@@ -909,7 +1025,7 @@ fn step_skill(flow: &str) -> Option<StepSkill> {
 
 /// Installs the flow's skill (when the profile supports skills) and
 /// returns the prompt that starts the agent on it. The caller wraps this
-/// with buildRunCommand; only profiles with prompt_arg get that far.
+/// with buildRunCommand; only profiles with prompt_args get that far.
 #[tauri::command]
 pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, String> {
     let root = Path::new(&root_path);
@@ -965,7 +1081,11 @@ pub struct AgentProfileDto {
     /// settings copy can name it rather than saying ".mcp.json" at every
     /// profile. Empty for `custom`, whose path lives in config.toml.
     pub mcp_config_file: String,
-    pub prompt_arg: bool,
+    /// The profile's prompt argv prefix, or null where it takes no
+    /// prompt at all. Null rather than "" so the frontend cannot confuse
+    /// "no prompt argument exists" with "the prompt is the bare
+    /// positional" -- the two are opposite answers and "" is the second.
+    pub prompt_args: Option<String>,
     pub headless_args: String,
     /// The flag that selects a model, empty where the CLI takes none --
     /// which is how the settings panels decide whether to offer a model
@@ -1012,7 +1132,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             command: p.command.to_string(),
             mcp_supported: p.mcp.is_some(),
             mcp_config_file: p.mcp.as_ref().map(|m| m.config_file).unwrap_or("").to_string(),
-            prompt_arg: p.prompt_arg,
+            prompt_args: p.prompt_args.map(|a| a.to_string()),
             headless_args: p.headless_args.to_string(),
             model_flag: p.model_flag.to_string(),
             models: p.models.iter().map(|m| m.to_string()).collect(),
@@ -1124,39 +1244,112 @@ mod tests {
         }
     }
 
-    /// Only Claude Code has somewhere gavin can install a skill file; the
+    /// Which profiles have somewhere gavin can install a skill file; the
     /// rest carry the same guidance inline (spec §9, settled by the init
     /// wizard). This is what instructions_block_for and compose_agent_prompt
-    /// both key on, so it is worth pinning on its own.
+    /// both key on, so it is worth pinning on its own -- and the roots
+    /// must differ, because a workspace that never chose Claude Code
+    /// should not grow a `.claude/` directory.
     #[test]
-    fn only_claude_code_has_a_skill_slot() {
-        let with_skills: Vec<&str> = AGENT_PROFILES
+    fn skill_slots_are_the_verified_set_and_do_not_share_a_root() {
+        let with_skills: Vec<(&str, String)> = AGENT_PROFILES
             .iter()
-            .filter(|p| p.mcp.as_ref().is_some_and(|m| !m.skills.is_empty()))
-            .map(|p| p.id)
+            .filter_map(|p| {
+                let layout: ResolvedMcp = p.mcp.as_ref()?.into();
+                let (dir, file) = layout.skill_slot()?;
+                Some((p.id, format!("{}/{}", dir.display(), file)))
+            })
             .collect();
-        assert_eq!(with_skills, ["claude-code"]);
+        assert_eq!(
+            with_skills,
+            [
+                ("claude-code", ".claude/skills/SKILL.md".to_string()),
+                ("opencode", ".opencode/skills/SKILL.md".to_string()),
+            ]
+        );
+        // Every profile that installs skills installs the SAME four, so
+        // no surface can be taught a skill one agent has and the other
+        // does not.
+        let names: Vec<Vec<&str>> = AGENT_PROFILES
+            .iter()
+            .filter_map(|p| p.mcp.as_ref())
+            .filter(|m| !m.skills.is_empty())
+            .map(|m| m.skills.iter().map(|s| s.dir.rsplit('/').next().unwrap()).collect())
+            .collect();
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0], ["gavin", "gavin-orchestrate", "gavin-resume", "gavin-develop"]);
+        assert_eq!(names[0], names[1]);
     }
 
-    /// A headless row must also take a positional prompt: the caller
-    /// builds `<command> <headless_args> '<prompt>'`, so an agent that
-    /// cannot be handed a prompt in argv has nowhere to put one. And it
-    /// must end in `--`, or a variadic flag ahead of the prompt eats it.
+    /// The block points at a REAL path for whichever profile is
+    /// configured. It used to name `.claude/skills/gavin/SKILL.md` as a
+    /// literal, which was true while Claude Code was the only row with
+    /// skills and became a lie the moment a second one appeared.
     #[test]
-    fn only_claude_code_runs_headless_and_headless_rows_are_well_formed() {
+    fn the_instructions_block_names_the_profiles_own_skill_file() {
+        for (id, expected) in [
+            ("claude-code", ".claude/skills/gavin/SKILL.md"),
+            ("opencode", ".opencode/skills/gavin/SKILL.md"),
+        ] {
+            let layout: ResolvedMcp = profile_by_id(id).mcp.as_ref().unwrap().into();
+            let block = instructions_block_for(Some(&layout), "docs/PRD.md");
+            assert!(block.contains(expected), "{id} block does not name {expected}: {block}");
+            assert!(!block.contains("{skill}"), "{id} block left the placeholder in");
+        }
+        // A profile with no skill slot gets the inline variant, which has
+        // no placeholder to leak.
+        let layout: ResolvedMcp = profile_by_id("codex").mcp.as_ref().unwrap().into();
+        let block = instructions_block_for(Some(&layout), "docs/PRD.md");
+        assert!(!block.contains("{skill}"));
+        assert!(block.contains("gavin_set_plan_field"), "codex gets the inline-with-MCP block");
+    }
+
+    /// A headless row must be promptable at all: the caller builds
+    /// `<command> <headless_args> '<prompt>'`, so an agent that can be
+    /// handed no prompt has nowhere to put one. And it must end in `--`,
+    /// or a flag ahead of the prompt eats it -- claude's allow-list flag
+    /// is variadic, and opencode's yargs reads a leading `-` as a flag.
+    #[test]
+    fn headless_rows_are_the_verified_set_and_well_formed() {
         let headless: Vec<&str> =
             AGENT_PROFILES.iter().filter(|p| !p.headless_args.is_empty()).map(|p| p.id).collect();
-        assert_eq!(headless, ["claude-code"]);
+        assert_eq!(headless, ["claude-code", "opencode"]);
         for p in AGENT_PROFILES {
             if p.headless_args.is_empty() {
                 continue;
             }
-            assert!(p.prompt_arg, "{} runs headless but takes no positional prompt", p.id);
+            assert!(p.prompt_args.is_some(), "{} runs headless but takes no prompt", p.id);
             assert!(
                 p.headless_args.ends_with(" --"),
                 "{} must end its headless argv with `--`",
                 p.id
             );
+        }
+    }
+
+    /// The grant a hidden run needs has to exist wherever there is no
+    /// flag carrying it. Stated as a pair so neither half can drift: a
+    /// row that names `--agent` and ships no file would launch against a
+    /// definition that is not there, and a file nothing names is dead
+    /// weight in someone's repo.
+    #[test]
+    fn a_headless_row_naming_an_agent_ships_that_agent_file() {
+        for p in AGENT_PROFILES {
+            let names_one = p.headless_args.contains("--agent ");
+            assert_eq!(
+                names_one,
+                p.agent_file.is_some(),
+                "{}: headless argv and agent file must agree",
+                p.id
+            );
+            if let Some(file) = p.agent_file.as_ref() {
+                let stem = file.file.trim_end_matches(".md");
+                assert!(
+                    p.headless_args.contains(&format!("--agent {stem} ")),
+                    "{} names an agent its file does not define",
+                    p.id
+                );
+            }
         }
     }
 
@@ -1503,15 +1696,128 @@ mod tests {
         assert!(compose_agent_prompt(root, "not-a-flow".to_string()).is_err());
     }
 
-    /// Verified 2026-08-23 against each CLI's own argument parser. The
-    /// two absences are verified too: `cursor` opens paths, and
-    /// opencode's bare positional is a project directory -- both would
-    /// swallow a prompt as a filename.
+    /// The whole column, not just which rows have one: `Some("")` and
+    /// `None` are opposite answers that a `is_some()` check would blur,
+    /// and `Some("--prompt=")` is a third shape that only exists because
+    /// the separated form was tried and refused. Verified 2026-08-23
+    /// against each CLI's own argument parser, opencode re-verified
+    /// 2026-09-02 against 1.3.13 (see the card's `## Verified` block).
+    /// The absence is verified too: `cursor` opens paths, so a prompt
+    /// would be swallowed as a filename.
     #[test]
-    fn prompt_arg_is_set_only_where_the_convention_is_verified() {
-        let with_prompt: Vec<&str> =
-            AGENT_PROFILES.iter().filter(|p| p.prompt_arg).map(|p| p.id).collect();
-        assert_eq!(with_prompt, ["claude-code", "codex", "gemini"]);
+    fn prompt_args_is_set_only_where_the_convention_is_verified() {
+        let column: Vec<(&str, Option<&str>)> =
+            AGENT_PROFILES.iter().map(|p| (p.id, p.prompt_args)).collect();
+        assert_eq!(
+            column,
+            [
+                ("claude-code", Some("")),
+                ("codex", Some("")),
+                ("gemini", Some("")),
+                ("cursor", None),
+                ("opencode", Some("--prompt=")),
+                ("custom", None),
+            ]
+        );
+        // A prefix is concatenated with the quoted prompt, never joined
+        // by a space, so a flagged row must carry its own separator or
+        // the value lands as a positional.
+        for p in AGENT_PROFILES {
+            if let Some(args) = p.prompt_args.filter(|a| !a.is_empty()) {
+                assert!(args.ends_with('='), "{} must attach its prompt value", p.id);
+            }
+        }
+    }
+
+    /// The whole opencode install, from the one entry point that writes
+    /// it. Asserted as a set of paths rather than one file at a time:
+    /// the failure this guards against is a row that gains a field and
+    /// loses a writer, which only shows up as an absence.
+    #[test]
+    fn an_opencode_root_gets_its_skills_agent_file_and_mcp_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "opencode");
+
+        let result = run_integration(dir.path(), fake_binary()).unwrap();
+
+        let rel: Vec<String> = result
+            .written
+            .iter()
+            .map(|p| {
+                Path::new(p).strip_prefix(dir.path()).unwrap().to_string_lossy().to_string()
+            })
+            .collect();
+        assert_eq!(
+            rel,
+            [
+                "AGENTS.md",
+                ".opencode/skills/gavin/SKILL.md",
+                ".opencode/skills/gavin-orchestrate/SKILL.md",
+                ".opencode/skills/gavin-resume/SKILL.md",
+                ".opencode/skills/gavin-develop/SKILL.md",
+                "opencode.json",
+                ".opencode/agent/gavin-commit.md",
+            ]
+        );
+        // Nothing was skipped: this profile has both capabilities now.
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        // And nothing was written into a Claude Code workspace's shape.
+        assert!(!dir.path().join(".claude").exists(), "opencode must not grow a .claude/");
+        assert!(!dir.path().join(".mcp.json").exists());
+    }
+
+    /// The agent file is the one gavin writes AND the one the headless
+    /// argv names, with the grant that makes a hidden run safe. Read off
+    /// disk rather than off the constant, so a writer that stopped
+    /// substituting or stopped running fails here.
+    #[test]
+    fn the_opencode_agent_file_carries_the_git_only_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "opencode");
+        run_integration(dir.path(), fake_binary()).unwrap();
+
+        let body =
+            std::fs::read_to_string(dir.path().join(".opencode/agent/gavin-commit.md")).unwrap();
+        // The frontmatter opencode's own parser normalizes into
+        // `{permission: bash, pattern: "git *", action: allow}`.
+        assert!(body.starts_with("---
+"), "must open with frontmatter");
+        for line in ["  edit: deny", "  webfetch: deny", "    \"*\": deny", "    \"git *\": allow"] {
+            assert!(body.contains(line), "missing {line} in:\n{body}");
+        }
+        // A `{prd}` that was never substituted would reach the agent as
+        // a literal, the same failure the skill writer guards against.
+        assert!(!body.contains("{prd}"));
+    }
+
+    /// A step skill lands beside the profile's OWN skills, not in
+    /// Claude Code's directory. This is `skill_slot` doing its job for a
+    /// second profile for the first time.
+    #[test]
+    fn a_step_skill_lands_under_the_opencode_skill_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = rooted_with_profile(dir.path(), "opencode");
+
+        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+
+        assert!(dir.path().join(".opencode/skills/gavin-write-prd/SKILL.md").is_file());
+        assert!(!dir.path().join(".claude").exists());
+        // The skill-slot branch hands back the short "use the skill"
+        // prompt, not the whole document inlined.
+        assert!(prompt.contains("gavin-write-prd"));
+        assert!(!prompt.contains("following these instructions exactly"));
+    }
+
+    #[test]
+    fn gavin_install_reports_the_agent_file_only_where_the_profile_has_one() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "opencode");
+        let install = gavin_install(dir.path());
+        assert_eq!(install.agent_file.unwrap(), dir.path().join(".opencode/agent/gavin-commit.md"));
+        assert_eq!(install.skill_root.unwrap(), dir.path().join(".opencode/skills"));
+
+        rooted_with_profile(dir.path(), "claude-code");
+        assert!(gavin_install(dir.path()).agent_file.is_none());
     }
 
     #[test]

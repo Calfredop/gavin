@@ -27,10 +27,12 @@ vi.mock("./layoutState", () => ({
   setSessionName: vi.fn().mockResolvedValue(undefined),
   resolvedAgentFor: vi.fn(() => ({
     profileId: "claude-code",
+    label: "Claude Code",
     file: "CLAUDE.md",
     command: "claude",
     launchCommand: "claude",
     mcpSupported: true,
+    promptArgs: "",
   })),
 }));
 vi.mock("./workspace", () => ({ findSessionLocation: vi.fn() }));

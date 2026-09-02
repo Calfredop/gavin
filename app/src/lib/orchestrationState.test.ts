@@ -30,6 +30,8 @@ vi.mock("./layoutState", () => ({
     launchCommand: "claude",
     file: "CLAUDE.md",
     profile: "claude-code",
+    label: "Claude Code",
+    promptArgs: "",
   })),
   createSessionOnPage: vi.fn(),
   createPage: vi.fn().mockResolvedValue(null),

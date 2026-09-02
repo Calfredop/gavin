@@ -75,12 +75,14 @@ vi.mock("./layoutState", async () => {
     createSessionForCard: vi.fn().mockResolvedValue("sess-1"),
     resolvedAgentFor: vi.fn(() => ({
       profileId: "claude-code",
+      label: "Claude Code",
       file: "CLAUDE.md",
       command: "claude",
       launchCommand: "claude",
       mcpSupported: true,
       mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --',
+      promptArgs: "",
     })),
     sessionExits: writable(new Map<string, number>()),
     handleAgentSessionSpawned: vi.fn(),
@@ -598,9 +600,9 @@ describe("commit via agent", () => {
 
   it("refuses an agent with no headless mode, saying so", async () => {
     vi.mocked(resolvedAgentFor).mockReturnValueOnce({
-      profileId: "codex", file: "AGENTS.md", command: "codex",
+      profileId: "codex", label: "Codex CLI", file: "AGENTS.md", command: "codex",
       mcpSupported: false, mcpConfigFile: "", headlessArgs: "",
-      model: "", launchCommand: "codex",
+      promptArgs: "", model: "", launchCommand: "codex",
     });
     ensureGitView("ws", "/r");
     await refresh("ws");

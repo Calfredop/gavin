@@ -143,9 +143,18 @@ describe("applyPrdSections", () => {
 
 describe("agentFlowAvailable", () => {
   it("is true only for a profile with a verified prompt argument", () => {
-    expect(agentFlowAvailable({ promptArg: true })).toBe(true);
-    expect(agentFlowAvailable({ promptArg: false })).toBe(false);
+    expect(agentFlowAvailable({ promptArgs: "" })).toBe(true);
+    expect(agentFlowAvailable({ promptArgs: "--prompt=" })).toBe(true);
+    expect(agentFlowAvailable({ promptArgs: null })).toBe(false);
     expect(agentFlowAvailable(undefined)).toBe(false);
+  });
+
+  // The regression this guards: `promptArgs` is a PREFIX, and the bare
+  // positional's prefix is the empty string. A truthiness check would
+  // hide "Ask the agent" from claude-code, codex and gemini alike --
+  // three profiles where the flow has always worked.
+  it("treats the empty prefix as a prompt, not as an absent one", () => {
+    expect(agentFlowAvailable({ promptArgs: "" })).toBe(true);
   });
 });
 

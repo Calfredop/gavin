@@ -1,4 +1,4 @@
-import { writable, get } from "svelte/store";
+import { writable, derived, get } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { LayoutNode } from "./layout";
@@ -8,7 +8,7 @@ import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
 import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs, RemovedWorkspace } from "./workspace";
 import { sessionLabel } from "./paths";
-import { buildRunCommand } from "./cardRun";
+import { buildRunCommand, noPromptReason } from "./cardRun";
 import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
@@ -870,6 +870,30 @@ export function resolvedAgentFor(workspaceId: string) {
   );
 }
 
+/// The same answer, reactively: `$resolvedAgents(workspaceId)`.
+///
+/// `resolvedAgentFor` above is three `get()`s, which is right for an
+/// action -- it runs once, at the moment of the click -- and wrong for a
+/// component, which would keep whatever the table said at mount. The
+/// table is fetched asynchronously at bootstrap, so at mount it is
+/// usually still empty: a control derived from the one-shot helper shows
+/// claude-code's answer for the whole session, whatever the workspace
+/// actually chose.
+///
+/// A store OF a function rather than one store per workspace, because
+/// the workspace id is a prop the component already has and the three
+/// inputs are app-wide.
+export const resolvedAgents = derived(
+  [gavinTrees, agentProfilesStore, agentModelDefaultsStore],
+  ([$trees, $profiles, $models]) =>
+    (workspaceId: string) =>
+      resolveAgentConfig(
+        $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+        $profiles,
+        $models
+      )
+);
+
 // Starts the workspace's main agent: a normal daemon session at the
 // workspace root, remembered on the workspace rather than placed in a
 // page tree (D12). Never called automatically.
@@ -918,7 +942,16 @@ export async function startMainAgentWithPrompt(
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws?.rootPath || ws.mainSessionId) return;
-  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
+  const agent = resolvedAgentFor(workspaceId);
+  const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
+  // The wizard gates this button on agentFlowAvailable, so reaching here
+  // means the profile changed under an open wizard. Say why rather than
+  // launching `cursor '<a whole prompt>'`, which opens a file picker on
+  // a path nobody named.
+  if (command === null) {
+    setError(noPromptReason(agent.label));
+    return;
+  }
   let sessionId: string;
   try {
     sessionId = await backend.createSession(ws.rootPath, command);

@@ -94,8 +94,60 @@ export function shellQuote(s: string): string {
   return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
-export function buildRunCommand(agentCommand: string, prompt: string): string {
-  return `${agentCommand} ${shellQuote(prompt)}`;
+// `<command> <promptArgs><quoted prompt>`: the launched, VISIBLE
+// session, seeded with what it was asked to do. `promptArgs` is a prefix
+// concatenated with the quoted prompt rather than a flag joined by a
+// space, because the two conventions in the table need different
+// spellings and one concatenation covers both:
+//
+//   ""          -> `claude 'do it'`            (the bare positional)
+//   "--prompt=" -> `opencode --prompt='do it'` (a flag with its value ATTACHED)
+//
+// The attached form is not cosmetic. opencode parses `--prompt <value>`
+// with yargs, which reads a value beginning with `-` as the next flag
+// and prints its usage banner instead of starting; `--prompt=<value>`
+// takes the same bytes and keeps them.
+//
+// Null for a profile that takes NO prompt, so a mangled argv can never
+// be launched. That is the case this function exists to refuse: `cursor`
+// and bare `opencode` read their positional as a PATH, so handing either
+// a prompt starts nothing and reports nothing -- the session opens on a
+// directory that does not exist, or dies before there is a session at
+// all. Every caller must handle the null; there is nothing safe to fall
+// back to.
+export function buildRunCommand(
+  agentCommand: string,
+  promptArgs: string | null,
+  prompt: string
+): string | null {
+  if (promptArgs === null) return null;
+  return `${agentCommand} ${promptArgs}${shellQuote(prompt)}`;
+}
+
+// Why this workspace's agent cannot be started on a card. Never about
+// the card: it is about the agent the workspace CHOSE, which is a thing
+// the human can go and change, so the sentence says where.
+//
+// A plain string rather than string|null, because every caller reaches
+// it having already found out it is blocked -- buildRunCommand handed
+// back null, or the surface is deciding whether to offer the action at
+// all -- and needs the words, not a second verdict.
+export function noPromptReason(agentLabel: string): string {
+  return (
+    `${agentLabel} takes no prompt on its command line, so gavin cannot start a card ` +
+    `with it. Pick a different agent in Settings.`
+  );
+}
+
+// The same answer in gitState's agentCommitBlocker shape, for the
+// surfaces that bind a reason to a control rather than react to a failed
+// launch. Hang it on a NON-disabled ancestor: a disabled element never
+// fires mouseenter, so a tooltip bound to one can never appear.
+export function agentPromptBlocker(
+  promptArgs: string | null,
+  agentLabel: string
+): string | null {
+  return promptArgs === null ? noPromptReason(agentLabel) : null;
 }
 
 /// The one instruction behind the Git tab's "Commit via agent". Fixed
