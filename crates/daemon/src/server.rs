@@ -404,7 +404,10 @@ fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heurist
             // left for this thread to ever do for this session again.
             return;
         }
-        let mut inner = heuristic.inner.lock().unwrap();
+        // Not `mut`: this binding only ever READS, and is dropped before
+        // the failure verdict is taken. The mutation moved to the second
+        // binding below, which is re-taken after the screen is read.
+        let inner = heuristic.inner.lock().unwrap();
         if !inner.running {
             return;
         }
