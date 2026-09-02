@@ -1297,8 +1297,33 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "With System Settings → Accessibility → Display → Reduce motion on, the working badge stops spinning but stays blue and readable",
       },
       {
+        id: "badge-step-states-visible",
+        text: "On a rail, every step chip shows a square saying where the rail has got to — empty for pending, a filled centre for the one running now, a tick for done, a cross for stalled",
+        hint: "Pending and running used to draw NO glyph at all: running was an accent ring and nothing else. Look down a part-run rail — the squares should read as a progress column.",
+      },
+      {
+        id: "badge-step-chip-matches-card",
+        text: "The same step says the same thing on its chip and on its board card — same square, same colour, the card just spells the word out too",
+        hint: "Switch the rail between chip and card view with one step running. The card used to say “running” in blue text with no glyph while the chip said it with a blue ring and no word.",
+      },
+      {
+        id: "badge-step-vs-agent",
+        text: "A running step whose agent is waiting on you shows BOTH marks side by side: the accent square for the rail, the amber question mark for the agent — and only one of them, the agent's, is a spinner's neighbour",
+        hint: "Two different questions. The step is still running, which is why the rail has not stopped; the agent is the thing standing still.",
+      },
+      {
+        id: "badge-rail-state",
+        text: "A rail's own state badge matches in its header and in the Home hub's rail list — a dash for idle, a doubled chevron for running, a pause for paused",
+        hint: "The two surfaces kept private copies of the same three colours. Start and pause a rail with Home open beside it.",
+      },
+      {
+        id: "badge-chevrons-sharp",
+        text: "The running rail's doubled chevron keeps its points at 11px — not two blunt smudges",
+        hint: "It is cut with the same miter join theme.css gives the disclosure chevrons. Compare it against a sidebar disclosure arrow.",
+      },
+      {
         id: "badge-both-themes",
-        text: "Every badge above still reads in the light theme — especially amber-on-white and the priority ramp",
+        text: "Every badge above still reads in the light theme — especially amber-on-white, the priority ramp, and the step squares against a chip's severity fill",
       },
     ],
   },
