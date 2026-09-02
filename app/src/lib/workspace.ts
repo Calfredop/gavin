@@ -11,6 +11,9 @@ export interface Page {
 export interface GitViewPrefs {
   navWidth?: number;
   listWidth?: number;
+  /// The Unstaged block's share (0-1) of the two lists' height in the
+  /// Changes column; Staged takes the rest. Absent = an even split.
+  unstagedShare?: number;
   diffLayout?: "unified" | "split";
   skipHunkDiscardConfirm?: boolean;
   /// Collapsed sidebar sections of the Git tab, keyed by section id.

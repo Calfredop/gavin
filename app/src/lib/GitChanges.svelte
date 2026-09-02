@@ -1,5 +1,8 @@
 <script lang="ts">
   import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges } from "./gitState";
+  import { layoutState, setGitViewPrefs } from "./layoutState";
+  import { DEFAULT_SHARE, shareFromHeight } from "./gitChangesSplit";
+  import { tooltip } from "./tooltip";
   import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "./git";
   import { describeFileDiscard, type FileDiscardPrompt } from "./discardFlow";
   import GitFileRow from "./GitFileRow.svelte";
@@ -33,6 +36,57 @@
     { area: "unstaged" as Area, items: unstaged },
     { area: "staged" as Area, items: staged },
   ]);
+
+  // The divider between the two lists. The split is kept as Unstaged's
+  // SHARE of the pair and applied as their flex-grow factors, so it
+  // holds whatever height the column has -- see gitChangesSplit.ts.
+  const prefShare = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.gitView?.unstagedShare ?? DEFAULT_SHARE);
+  let share = $state(DEFAULT_SHARE);
+  $effect(() => {
+    share = prefShare;
+  });
+
+  // Window-level listeners with a buttons===0 bail-out, like the column
+  // splitters in GitHubView: WKWebView drops pointerup when the
+  // pointerdown target leaves the DOM, and rows come and go under this
+  // one as the watcher refreshes.
+  function startResize(e: PointerEvent): void {
+    e.preventDefault();
+    // The divider's own neighbours are the two blocks it divides.
+    const el = e.currentTarget as HTMLElement | null;
+    const top = el?.previousElementSibling as HTMLElement | null;
+    const bottom = el?.nextElementSibling as HTMLElement | null;
+    if (!top || !bottom) return;
+    const startY = e.clientY;
+    const startH = top.offsetHeight;
+    const total = startH + bottom.offsetHeight;
+    const startShare = share;
+    const move = (ev: PointerEvent): void => {
+      if (ev.buttons === 0) {
+        up();
+        return;
+      }
+      share = shareFromHeight(startH + ev.clientY - startY, total);
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      // A click that never moved writes nothing -- which also keeps the
+      // two clicks of a double-click from racing the reset below.
+      if (share !== startShare) void setGitViewPrefs(workspaceId, { unstagedShare: share });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
+  // Double-click restores the even split the column ships with -- the
+  // way back from a divider dragged somewhere unhelpful.
+  function evenOut(): void {
+    share = DEFAULT_SHARE;
+    void setGitViewPrefs(workspaceId, { unstagedShare: undefined });
+  }
 
   // Stage/unstage all means all of WHAT IS LISTED. Unfiltered that is
   // the whole area (the cheap bulk command); filtered it is exactly the
@@ -149,8 +203,18 @@
       matches={filtering ? { shown, total: totalFiles } : null}
     />
   </div>
-  {#each sections as { area, items } (area)}
-    <section class="list">
+  {#each sections as { area, items }, i (area)}
+    {#if i > 0}
+      <div
+        class="hsplit"
+        role="separator"
+        aria-orientation="horizontal"
+        use:tooltip={"Drag to resize \u00b7 double-click to even out"}
+        onpointerdown={startResize}
+        ondblclick={evenOut}
+      ></div>
+    {/if}
+    <section class="list" class:above-split={i === 0} style:flex-grow={i === 0 ? share : 1 - share}>
       <header>
         <span class="title">{area === "unstaged" ? "Unstaged" : "Staged"}</span>
         <span class="count" class:filtered={filtering}>
@@ -236,6 +300,18 @@
   }
   .count.filtered {
     color: var(--accent-text);
+  }
+  .list.above-split {
+    /* The divider is the separation; a border under it would double up. */
+    border-bottom: 0;
+  }
+  .hsplit {
+    flex: 0 0 4px;
+    cursor: row-resize;
+    background: var(--surface-raised);
+  }
+  .hsplit:hover {
+    background: var(--surface-selected);
   }
   .filter-bar {
     padding: 5px 8px;

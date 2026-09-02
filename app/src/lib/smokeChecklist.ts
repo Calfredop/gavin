@@ -1063,6 +1063,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Git tab shows unstaged/staged lists for the workspace repo and refreshes within ~300 ms of `touch x` in a terminal",
       },
       {
+        id: "git-changes-divider",
+        text: "Drag the divider between Unstaged and Staged: the split holds while the lists refresh, survives an app restart, and a double-click evens it out again",
+        hint: "Release the pointer outside the column too -- WKWebView drops pointerup when the row under the cursor is replaced by a refresh.",
+      },
+      {
         id: "git-partial-stage",
         text: "Select a few lines in a hunk → “Stage selected (n)” stages only those lines (staged diff shows them; unstaged keeps the rest)",
       },

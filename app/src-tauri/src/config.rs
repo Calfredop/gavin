@@ -54,6 +54,10 @@ pub struct GitViewPrefs {
     pub nav_width: Option<u32>,
     #[serde(default)]
     pub list_width: Option<u32>,
+    /// The Unstaged block's share (0-1) of the two lists' height in the
+    /// Changes column; Staged takes the rest. Absent = an even split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unstaged_share: Option<f64>,
     /// "unified" | "split"
     #[serde(default)]
     pub diff_layout: Option<String>,
@@ -521,6 +525,7 @@ mod tests {
         ws.git_view = Some(GitViewPrefs {
             nav_width: Some(180),
             list_width: None,
+            unstaged_share: Some(0.375),
             diff_layout: Some("split".to_string()),
             skip_hunk_discard_confirm: true,
             nav_collapsed: None,
