@@ -123,11 +123,14 @@ export interface ConflictNote {
 ///
 /// `kind` is here because it changes the COMPLETION RULE, not because
 /// the scheduler runs anything: an agent tool's session never exits (see
-/// agentTurnEnded), so T5's exit code can never be its verdict.
+/// agentTurnEnded), so T5's exit code can never be its verdict. A
+/// `gavin` tool has no session at all -- orchestrationState resolves it
+/// to `done` or `stalled` in the launch itself, so no rule here ever
+/// sees one running.
 export interface ToolSummary {
   id: string;
   name: string;
-  kind: "agent" | "command" | "script";
+  kind: "agent" | "command" | "script" | "gavin";
 }
 
 export type RailState = "idle" | "running" | "paused";
@@ -304,6 +307,62 @@ export function runnableIdleRails(orch: Orchestration): Rail[] {
       (rail) =>
         railStateOf(orch, rail.id) === "idle" && firstUnfinishedStageId(rail, orch) !== null
     );
+}
+
+/// What the `Start rail` tool should do about the rail it names, decided
+/// here so the whole rule is testable without a store (spec T9).
+///
+/// The two no-ops are the same two exclusions `runnableIdleRails` makes,
+/// for the same reason: `startRail` re-points a rail at its FIRST
+/// unfinished stage, so calling it on a rail that is already going would
+/// rewind it. A rail three stages in does not need starting, and one
+/// with nothing unfinished cannot be started at all.
+///
+/// A PAUSED rail refuses rather than resuming. It is paused because a
+/// human paused it or because a step of it stalled (rule 5), and neither
+/// is something another rail's step should overrule -- the second would
+/// re-launch the very step that failed.
+export type StartRailVerdict =
+  | { kind: "start"; railId: string }
+  | { kind: "noop"; railId: string }
+  | { kind: "refuse"; reason: string };
+
+/// `name` is matched case- and space-insensitively: a human typed it
+/// into a step parameter, and a rail called "Deploy" not matching
+/// "deploy " would be a stall with no visible cause.
+export function startRailVerdict(
+  orch: Orchestration,
+  fromRailId: string,
+  name: string
+): StartRailVerdict {
+  const wanted = name.trim().toLowerCase();
+  if (!wanted) return { kind: "refuse", reason: "no rail named — set this step's Rail parameter" };
+  const matches = orch.rails.filter((r) => r.name.trim().toLowerCase() === wanted);
+  if (matches.length === 0) {
+    return { kind: "refuse", reason: `no rail called “${name.trim()}” in this workspace` };
+  }
+  // Rail names are not unique -- nothing in addRail or renameRail makes
+  // them so -- and starting an arbitrary one of two would be worse than
+  // saying which fact is missing.
+  if (matches.length > 1) {
+    return {
+      kind: "refuse",
+      reason: `“${name.trim()}” names ${matches.length} rails — rename one of them`,
+    };
+  }
+  const target = matches[0];
+  // Self-reference would arm the rail this step is running on, which
+  // re-points it at the stage holding this very step: a loop with no
+  // exit, written by hand in a parameter field.
+  if (target.id === fromRailId) return { kind: "refuse", reason: "a rail cannot start itself" };
+  const state = railStateOf(orch, target.id);
+  if (state === "paused") {
+    return { kind: "refuse", reason: `“${target.name}” is paused — resume it yourself` };
+  }
+  if (state === "running") return { kind: "noop", railId: target.id };
+  return firstUnfinishedStageId(target, orch) === null
+    ? { kind: "noop", railId: target.id }
+    : { kind: "start", railId: target.id };
 }
 
 /// What the reactive layer must DO. nextActions decides; executing is

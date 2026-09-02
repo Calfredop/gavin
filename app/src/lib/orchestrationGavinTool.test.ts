@@ -1,0 +1,115 @@
+import { describe, it, expect } from "vitest";
+import { BUILTIN_TOOLS } from "./orchestrationTools";
+
+// The `gavin` tool kind is the one kind with no session behind it, and
+// three facts about it are invisible when they break:
+//
+//   * Every surface that turns a tool kind into an ICON has to know it.
+//     A missed ternary falls through to the script icon and the drawer
+//     quietly claims Start rail is a bash script.
+//   * The launch branches on it BEFORE resolving a checkout. A gavin
+//     action touches no worktree, so an unbound rail in a workspace with
+//     no root would otherwise stall it on something it never needed.
+//   * The step is filed `done` BEFORE the target rail is armed. startRail
+//     ticks, and this workspace's tick is already in flight, so the call
+//     only queues a replay -- which re-reads this step and would launch
+//     it a second time if it were still pending.
+//
+// Reads the sources rather than the rendered DOM or a live store,
+// following orchestrationRunAll.test.ts.
+
+const SOURCES = import.meta.glob("./*.{svelte,ts}", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
+describe("the gavin tool kind", () => {
+  // Every place that picks an icon from a kind, by the shape they share.
+  const ICON_SITES = [
+    "./OrchestrationDrawer.svelte",
+    "./ToolLibraryDialog.svelte",
+    "./OrchestrationStepChip.svelte",
+  ];
+
+  for (const path of ICON_SITES) {
+    it(`${path} draws a gavin tool with its own icon`, () => {
+      const source = SOURCES[path];
+      expect(source, path).toBeTruthy();
+      expect(source).toMatch(/kind === "gavin"/);
+      expect(source).toContain("Zap");
+    });
+  }
+
+  it("is never offered as a kind a human can author", () => {
+    // TOOL_KINDS drives the edit form's chips. A `gavin` chip there would
+    // let someone save a tool whose body names nothing.
+    expect(SOURCES["./orchestrationTools.ts"]).toContain(
+      'export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];'
+    );
+  });
+
+  it("offers no Duplicate, since the edit form cannot express it", () => {
+    expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain('{:else if tool.kind === "gavin"}');
+  });
+});
+
+describe("running a gavin action", () => {
+  const source = SOURCES["./orchestrationState.ts"];
+  // Bounded by the function's own closing brace, so a declaration moving
+  // in after it cannot silently widen what these assertions read.
+  const start = source.indexOf("async function executeGavinAction");
+  const action = source.slice(start, source.indexOf("\n}\n", start) + 2);
+
+  it("branches on the kind before resolving a checkout", () => {
+    const branch = source.indexOf('if (tool.kind === "gavin")');
+    const cwd = source.indexOf("no worktree bound and the workspace has no root");
+    expect(branch).toBeGreaterThan(-1);
+    expect(cwd).toBeGreaterThan(-1);
+    expect(branch).toBeLessThan(cwd);
+  });
+
+  it("files the step done before arming the target rail", () => {
+    const done = action.indexOf('setStepRunAction(workspaceId, step.id, "done", null, null)');
+    const start = action.indexOf("await startRail(workspaceId, verdict.railId)");
+    expect(done).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(-1);
+    expect(done).toBeLessThan(start);
+  });
+
+  it("starts nothing on a verdict that is not a start", () => {
+    expect(action).toContain('if (verdict.kind === "start") await startRail');
+  });
+
+  // Nothing else ever ticks for this step. Every other launch leaves a
+  // session whose exit or status wakes the scheduler; `orchestrations` is
+  // deliberately not a scheduler input, so the done-write raises nothing.
+  // Without the re-tick the rail would advance only on some unrelated
+  // event -- and the noop verdicts, which do not even call startRail,
+  // would raise nothing at all.
+  it("asks the tick to run again once the step is resolved", () => {
+    expect(action).toContain("Promise<boolean>");
+    expect(action.trimEnd().endsWith("return true;\n}")).toBe(true);
+    // and the launch path carries it up to executeActions
+    expect(source).toContain("return await executeGavinAction(workspaceId, rail, step, tool);");
+    expect(source).toContain(
+      "again = (await executeLaunch(workspaceId, action.stepId)) || again;"
+    );
+  });
+
+  // No session, so nothing ever reports an exit code or a status for it:
+  // a `gavin` step that reached `running` would sit there forever, and
+  // the daemon refuses every plan write that drops a running step.
+  it("never leaves the step running", () => {
+    expect(action).not.toContain('"running"');
+    expect(action).not.toContain("createSessionOnPage");
+  });
+});
+
+describe("the Start rail built-in", () => {
+  it("is the only gavin tool shipped", () => {
+    expect(BUILTIN_TOOLS.filter((t) => t.kind === "gavin").map((t) => t.id)).toEqual([
+      "builtin:start-rail",
+    ]);
+  });
+});

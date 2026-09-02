@@ -18,6 +18,9 @@ import {
   validateTool,
   isBuiltinId,
   toolKindLabel,
+  gavinActionOf,
+  resolveToolParam,
+  GAVIN_ACTIONS,
   type Tool,
   type ToolRecord,
 } from "./orchestrationTools";
@@ -43,8 +46,8 @@ describe("the built-in set", () => {
     return tool;
   };
 
-  it("ships eleven tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(11);
+  it("ships twelve tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(12);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
@@ -94,9 +97,27 @@ describe("the built-in set", () => {
     expect(tool.body).toContain("git -C");
   });
 
-  it("demonstrates all three kinds", () => {
+  it("demonstrates every kind", () => {
     const kinds = new Set(BUILTIN_TOOLS.map((t) => t.kind));
-    expect([...kinds].sort()).toEqual(["agent", "command", "script"]);
+    expect([...kinds].sort()).toEqual(["agent", "command", "gavin", "script"]);
+  });
+
+  // Chaining rails is the whole point: the last step of one rail arms
+  // the next. Nothing else in the app can do it, which is why this is
+  // the one built-in that is not a prompt or a command line.
+  it("ships a Start rail action naming the rail by parameter", () => {
+    const tool = builtin("builtin:start-rail");
+    expect(tool.kind).toBe("gavin");
+    expect(gavinActionOf(tool)).toBe("start-rail");
+    // No default: a shipped rail name would arm somebody else's rail.
+    expect(tool.params.map((p) => [p.name, p.default])).toEqual([["rail", ""]]);
+  });
+
+  it("gives every gavin built-in a body naming a real action", () => {
+    for (const tool of BUILTIN_TOOLS) {
+      if (tool.kind !== "gavin") continue;
+      expect(GAVIN_ACTIONS, tool.id).toContain(tool.body.trim());
+    }
   });
 
   it("is marked builtin scope throughout, so nothing offers to edit one", () => {
@@ -123,7 +144,7 @@ describe("the built-in set", () => {
   // (Repo is macOS-only per docs/dev-setup.md, so bash is a given.)
   it("every command and script built-in is syntactically valid shell", () => {
     for (const tool of BUILTIN_TOOLS) {
-      if (tool.kind === "agent") continue;
+      if (tool.kind !== "command" && tool.kind !== "script") continue;
       const body = resolveToolBody(tool, {});
       expect(() => execFileSync("bash", ["-n"], { input: body, stdio: "pipe" }), tool.id).not.toThrow();
     }
@@ -134,7 +155,7 @@ describe("the built-in set", () => {
   // must not be the thing that breaks it.
   it("stays valid shell with a parameter carrying spaces", () => {
     for (const tool of BUILTIN_TOOLS) {
-      if (tool.kind === "agent") continue;
+      if (tool.kind !== "command" && tool.kind !== "script") continue;
       const filled = Object.fromEntries(tool.params.map((p) => [p.name, "a b c"]));
       const body = resolveToolBody(tool, filled);
       expect(() => execFileSync("bash", ["-n"], { input: body, stdio: "pipe" }), tool.id).not.toThrow();
@@ -145,6 +166,7 @@ describe("the built-in set", () => {
     expect(toolKindLabel("agent")).toBe("Agent prompt");
     expect(toolKindLabel("command")).toBe("Bash command");
     expect(toolKindLabel("script")).toBe("Bash script");
+    expect(toolKindLabel("gavin")).toBe("Gavin action");
   });
 });
 
@@ -352,5 +374,53 @@ describe("validateTool", () => {
         ],
       })
     ).toMatch(/both/);
+  });
+
+  // Unreachable from the dialog, which offers only the three authorable
+  // kinds -- but such a tool would stall every step it was dropped onto,
+  // with the mistake discoverable only when a rail reached one.
+  it("rejects a gavin tool whose body names no action", () => {
+    expect(validateTool({ ...ok, kind: "gavin", body: "stop-rail" })).toMatch(/stop-rail/);
+    expect(validateTool({ ...ok, kind: "gavin", body: "start-rail" })).toBeNull();
+  });
+});
+
+describe("gavinActionOf", () => {
+  const tool = (over: Partial<Tool> = {}): Tool => ({ ...emptyTool("u1"), ...over });
+
+  it("reads the action out of a gavin tool's body", () => {
+    expect(gavinActionOf(tool({ kind: "gavin", body: " start-rail\n" }))).toBe("start-rail");
+  });
+
+  it("is null for a tool of any other kind, whatever its body says", () => {
+    expect(gavinActionOf(tool({ kind: "command", body: "start-rail" }))).toBeNull();
+  });
+
+  // A plan written by a NEWER gavin can name an action this build does
+  // not implement. Guessing would run the wrong one.
+  it("is null for an action this version does not know", () => {
+    expect(gavinActionOf(tool({ kind: "gavin", body: "delete-everything" }))).toBeNull();
+  });
+});
+
+describe("resolveToolParam", () => {
+  const tool = { params: [{ name: "rail", label: "Rail", default: "Deploy" }] };
+
+  it("prefers the step's override", () => {
+    expect(resolveToolParam(tool, { rail: "Docs" }, "rail")).toBe("Docs");
+  });
+
+  it("falls back to the tool's own default", () => {
+    expect(resolveToolParam(tool, {}, "rail")).toBe("Deploy");
+  });
+
+  // An override the human deliberately blanked is NOT the default: they
+  // cleared the field, and the caller has to see that.
+  it("keeps an override that is empty", () => {
+    expect(resolveToolParam(tool, { rail: "" }, "rail")).toBe("");
+  });
+
+  it("is empty for a parameter the tool does not declare", () => {
+    expect(resolveToolParam(tool, { other: "x" }, "other")).toBe("");
   });
 });

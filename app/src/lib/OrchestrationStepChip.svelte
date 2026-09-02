@@ -11,6 +11,7 @@
     Bot,
     Terminal,
     FileCode2,
+    Zap,
     Sliders,
     CirclePause,
     MessageCircleQuestionMark,
@@ -101,7 +102,9 @@
         ? Bot
         : tool.kind === "command"
           ? Terminal
-          : FileCode2
+          : tool.kind === "gavin"
+            ? Zap
+            : FileCode2
       : toolId
         ? Terminal
         : kind === "plan"

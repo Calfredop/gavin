@@ -13,6 +13,9 @@ holds unless restated here.
 tool output captured into gavin, tools that read the rail's run state, tool
 versioning, and sharing tools between machines.
 
+*"Tools that read the rail's run state" was narrowed on 2026-09-02: §8 adds
+one that WRITES it, and still nothing that reads it.*
+
 ---
 
 ## Decisions
@@ -27,6 +30,7 @@ versioning, and sharing tools between machines.
 | T6 | A tool step runs in **the rail's checkout** (`worktreePath ?? tree.rootPath`), so it participates in `same-worktree` conflicts exactly like a card step. `duplicate-card` never fires for tools — two `Push` steps are correct. |
 | T7 | Built-ins are **data, not code**: a `BUILTIN_TOOLS` array in `orchestrationTools.ts`, unit-tested like any other pure module. Nothing about running them is special-cased. |
 | T8 | The plan is still replaced **wholesale**; tools are a **separate, targeted store** (upsert/delete by id), because a tool outlives every arrangement that uses it. |
+| T9 | **Added 2026-09-02:** a fourth kind, `gavin`, is an action **the app performs itself** — no session, no checkout, no exit code. Built-in only, and its **body names the action** so it stays data (T7) rather than a branch on an id. One ships: `builtin:start-rail`. See §8. |
 
 ---
 
@@ -35,7 +39,7 @@ versioning, and sharing tools between machines.
 ### 1.1 Tool
 
 ```ts
-export type ToolKind = "agent" | "command" | "script";
+export type ToolKind = "agent" | "command" | "script" | "gavin";
 export type ToolScope = "builtin" | "global" | "workspace";
 
 export interface ToolParam {
@@ -60,6 +64,9 @@ export interface Tool {
 `scope` is **derived, not stored**: the daemon stores `workspace_id`
 (`NULL` = global) and the app labels the row. Built-ins never reach the
 daemon at all.
+
+`gavin` was added by §8. `TOOL_KINDS` — what the library dialog's chips
+offer — stays the three **authorable** kinds; the fourth is built-in only.
 
 ### 1.2 Step
 
@@ -370,3 +377,96 @@ Renaming rather than flipping was deliberate: pulling `main` into a
 long-running rail is a real operation the human already used, and flipping
 `builtin:merge` would have changed the direction of every existing step
 silently, under an unchanged name.
+
+---
+
+## 8. `gavin` tools: actions the app performs (added 2026-09-02)
+
+`Start rail` is a step that arms **another rail** — how one rail's last
+step unblocks the next, without a human watching for the first to finish.
+None of the other three kinds can express it: it is not a prompt, not a
+command line, and no shell reaches gavin's run state.
+`gavin_set_orchestration` writes the *arrangement*, never `railRuns`, so
+an agent tool could not do it either.
+
+So a fourth kind (T9). `builtin:start-rail`, kind `gavin`, one param
+`rail` with **no default** — a shipped rail name would arm somebody
+else's rail.
+
+### 8.1 The body names the action
+
+A `gavin` tool's body is `start-rail`, and `gavinActionOf` reads it back.
+Not a branch on the tool id, because that would make the built-in set
+code again after T7 spent a spec making it data: the scheduler asks the
+tool what it does, and an action this build does not implement stalls
+with the body quoted — which is what makes a plan written by a NEWER
+gavin diagnosable rather than mysterious.
+
+`validateTool` refuses a `gavin` tool naming no action. Unreachable from
+the dialog, which offers only the authorable three, but such a tool would
+stall every step it was dropped onto with the mistake visible only at
+launch. The dialog offers **no Duplicate** on one for the same reason:
+its edit form has no chip that could express the kind.
+
+### 8.2 It resolves in the launch, and never runs
+
+`executeToolLaunch` branches on `tool.kind === "gavin"` **before**
+resolving a checkout — a gavin action touches no worktree, and stalling
+one on an unbound rail in a rootless workspace would be a refusal about
+something it was never going to use.
+
+The step goes straight from `pending` to `done` or `stalled`. It never
+passes through `running`, which matters twice: there is no session for
+T5's exit code or §3.1.1's idle status to speak for, and a step stuck
+`running` wedges the rail shut (the daemon refuses every plan write that
+drops a running step).
+
+`done` is written **before** `startRail`. That call ticks, this
+workspace's tick is already in flight, so it only queues a replay — which
+re-reads this step and would launch it a second time if it were still
+pending.
+
+And the launch **asks for that replay itself**, through the same `again`
+return `executeSwitchBranch` uses (`executeLaunch` and `executeToolLaunch`
+return a boolean for it). Every other launch leaves a session behind, and
+that session's exit or status is what ticks the scheduler afterwards; this
+one starts none, and `orchestrations` is deliberately not a scheduler
+input, so the `done` write raises nothing by itself. Without the return,
+the rail would sit on a finished step until some unrelated event ticked —
+and the two no-op verdicts, which never reach `startRail` at all, would
+raise nothing whatsoever.
+
+### 8.3 What it refuses, and what it shrugs at
+
+`startRailVerdict` (pure, in `orchestration.ts`) decides. Names match
+case- and space-insensitively: a human typed this into a parameter field,
+and `"Deploy"` failing to match `"deploy "` would be a stall with no
+visible cause.
+
+| target | verdict | why |
+|---|---|---|
+| no name given | refuse | names the field, so the fix is one click away |
+| no rail by that name | refuse | quotes the name |
+| two rails by that name | refuse | rail names are not unique — nothing in `addRail` or `renameRail` makes them so — and starting an arbitrary one is worse than saying which fact is missing |
+| the rail this step is on | refuse | arming it re-points that rail at the stage holding this very step: a loop with no exit |
+| paused | refuse | a pause is a human's decision or a stalled step's consequence; resuming would re-launch the step that failed |
+| already running | **no-op, done** | `startRail` re-points a rail at its FIRST unfinished stage, so this would REWIND it — the same exclusion `runnableIdleRails` makes for "Run all" |
+| idle, nothing unfinished | **no-op, done** | there is no stage to arm; a finished rail is not a failure |
+| idle, work left | **start** | |
+
+The two no-ops are `done` rather than stalls, on the posture
+`builtin:commit` already takes towards a clean tree: nothing to do is a
+success, not a problem. Every refusal is a stall, so it lands on the chip
+and rule 5 pauses the rail, exactly as a failed launch does.
+
+### 8.4 Surfaces
+
+A `Zap` icon in the drawer, the step chip and the library dialog;
+`toolKindLabel` says **Gavin action**. `StepParamsDialog` cannot preview a
+body that is not source, so it promises what the step will do instead —
+*Start the rail "Deploy".* — and says plainly when no rail is named yet.
+
+Conflicts are untouched: a `gavin` step joins `same-worktree` groups like
+any other tool step (T6). That is a harmless over-report — it touches no
+checkout — and handing `detectConflicts` the tool library to tell them
+apart costs more than the false positive does.

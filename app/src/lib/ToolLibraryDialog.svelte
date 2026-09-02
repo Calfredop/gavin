@@ -2,7 +2,7 @@
   // The tool library: one modal, two modes. List mode shows what exists,
   // grouped by scope; edit mode is the form. Built-ins are read-only and
   // offer Duplicate rather than Edit (tools spec T4).
-  import { Bot, Terminal, FileCode2, Plus, Copy, Pencil, Trash2, Group } from "@lucide/svelte";
+  import { Bot, Terminal, FileCode2, Zap, Plus, Copy, Pencil, Trash2, Group } from "@lucide/svelte";
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import {
@@ -112,7 +112,7 @@
   }
 
   const iconFor = (kind: ToolKind) =>
-    kind === "agent" ? Bot : kind === "command" ? Terminal : FileCode2;
+    kind === "agent" ? Bot : kind === "command" ? Terminal : kind === "gavin" ? Zap : FileCode2;
 
   const SECTIONS: Array<{ scope: ToolScope; title: string; blurb: string }> = [
     { scope: "workspace", title: "This workspace", blurb: "Only this workspace sees these." },
@@ -238,6 +238,13 @@
                       <button type="button" class="ghost" onclick={() => (confirmingDelete = null)}>
                         Keep
                       </button>
+                    {:else if tool.kind === "gavin"}
+                      <!-- Nothing to author: a gavin tool's body names an
+                           action this app implements, and the edit form
+                           offers only the three kinds a human can write.
+                           A duplicate would be a tool whose kind chip
+                           highlights nothing. -->
+                      <span class="readonly">gavin's own</span>
                     {:else if tool.scope === "builtin"}
                       <IconButton
                         icon={Copy}
@@ -657,6 +664,7 @@
   }
   .kind,
   .params,
+  .readonly,
   .confirm {
     flex: none;
     color: var(--text-subtle);

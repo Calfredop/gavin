@@ -4,7 +4,7 @@
   // later edit to that default still reaches a step that never
   // deliberately overrode it.
   import Modal from "./Modal.svelte";
-  import { pruneOverrides, resolveToolBody, toolKindLabel } from "./orchestrationTools";
+  import { gavinActionOf, pruneOverrides, resolveToolBody, toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
 
   interface Props {
@@ -30,7 +30,17 @@
     draft = Object.fromEntries(shape.map((p) => [p.name, params[p.name] ?? p.default]));
   });
 
-  const preview = $derived(resolveToolBody(tool, draft));
+  // A `gavin` tool has no body to preview: its body NAMES the action
+  // rather than being source. So it promises what it will do, which is
+  // the same promise the resolved body makes for the other three kinds.
+  const namedRail = $derived((draft.rail ?? "").trim());
+  const preview = $derived(
+    gavinActionOf(tool) === "start-rail"
+      ? namedRail
+        ? `Start the rail “${namedRail}”.`
+        : "Nothing — with no rail named, this step stalls when the rail reaches it."
+      : resolveToolBody(tool, draft)
+  );
   const changed = $derived(Object.keys(pruneOverrides(tool, draft)).length);
 
   function save(): void {
@@ -72,7 +82,7 @@
     <!-- The resolved body, so the human can see exactly what will run
          BEFORE the rail reaches this step -- literal substitution (T3)
          means a stray quote is visible here and nowhere else. -->
-    <p class="preview-label">This step will run:</p>
+    <p class="preview-label">{tool.kind === "gavin" ? "This step will do:" : "This step will run:"}</p>
     <pre class="preview">{preview}</pre>
 
     <footer>

@@ -8,7 +8,11 @@
 // constants here and never reach the daemon; everything else is stored
 // per workspace or global to the machine.
 
-export type ToolKind = "agent" | "command" | "script";
+/// `gavin` is the odd one out: an action the APP performs, with no
+/// session and no checkout (tools spec T9). It is built-in-only -- the
+/// library dialog never offers it -- because its body is not source the
+/// human writes, it is the name of the action.
+export type ToolKind = "agent" | "command" | "script" | "gavin";
 
 /// Where a tool came from. `builtin` is read-only -- the library dialog
 /// offers Duplicate instead of Edit. Derived from the wire's
@@ -46,10 +50,36 @@ export interface ToolRecord {
   position: number;
 }
 
+/// The kinds a human can AUTHOR, in the order the dialog's chips offer
+/// them. Deliberately not every ToolKind: a `gavin` tool's body selects
+/// an action this app implements, so one typed into the dialog would
+/// name nothing.
 export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];
 
 export function toolKindLabel(kind: ToolKind): string {
-  return kind === "agent" ? "Agent prompt" : kind === "command" ? "Bash command" : "Bash script";
+  return kind === "agent"
+    ? "Agent prompt"
+    : kind === "command"
+      ? "Bash command"
+      : kind === "gavin"
+        ? "Gavin action"
+        : "Bash script";
+}
+
+/// The actions a `gavin` tool can name. The body is the selector rather
+/// than the tool id, so a `gavin` tool stays DATA like every other one
+/// (spec T7) -- the scheduler branches on what the tool says it does,
+/// not on which constant it happens to be.
+export const GAVIN_ACTIONS = ["start-rail"] as const;
+export type GavinAction = (typeof GAVIN_ACTIONS)[number];
+
+/// The action this tool performs, or null -- for a tool of another kind,
+/// and for a `gavin` tool naming an action this version does not have.
+/// The caller stalls on null rather than guessing.
+export function gavinActionOf(tool: Pick<Tool, "kind" | "body">): GavinAction | null {
+  if (tool.kind !== "gavin") return null;
+  const named = tool.body.trim();
+  return (GAVIN_ACTIONS as readonly string[]).includes(named) ? (named as GavinAction) : null;
 }
 
 export function isBuiltinId(id: string): boolean {
@@ -57,9 +87,14 @@ export function isBuiltinId(id: string): boolean {
 }
 
 // ---- The built-in set ------------------------------------------------------
-// Eleven tools covering every example the card named, and demonstrating
-// all three kinds. Data, not code: nothing about running these is
-// special.
+// Twelve tools covering every example the card named, and demonstrating
+// all three authorable kinds. Data, not code: nothing about running the
+// first eleven is special.
+//
+// The twelfth, Start rail, is the exception the `gavin` kind exists for:
+// arming another rail is not a shell command and not a prompt, it is
+// something only this app can do. Its body still names the action rather
+// than hiding it in a branch on the id.
 //
 // Merge ships TWICE, once per direction, because a step always runs in
 // the rail's own checkout and only the inbound direction is reachable
@@ -264,6 +299,20 @@ export const BUILTIN_TOOLS: Tool[] = [
       "APPLESCRIPT",
     ].join("\n"),
   },
+  {
+    id: "builtin:start-rail",
+    name: "Start rail",
+    description:
+      "Arms another rail in this workspace, by name — the last step of a rail that unblocks " +
+      "the next one. Runs inside gavin: no session, no checkout.",
+    kind: "gavin",
+    scope: "builtin",
+    // No default. A rail name is the one parameter no shipped value can
+    // guess, and an empty one refuses at launch with a message naming
+    // the field rather than arming somebody else's rail.
+    params: [{ name: "rail", label: "Rail to start", default: "" }],
+    body: "start-rail",
+  },
 ];
 
 // ---- Resolution ------------------------------------------------------------
@@ -334,6 +383,24 @@ export function resolveToolBody(
     value.set(param.name, overrides[param.name] ?? param.default);
   }
   return tool.body.replace(PLACEHOLDER, (whole, name: string) => value.get(name) ?? whole);
+}
+
+/// The value a step will actually use for ONE declared param: its
+/// override, else the tool's own default. `""` when the tool declares no
+/// such param, which is the same answer an empty default gives -- every
+/// caller treats empty as "not supplied".
+///
+/// resolveToolBody is the substitution path; this is the read path, for
+/// a `gavin` action whose params are arguments rather than text to paste
+/// into a body.
+export function resolveToolParam(
+  tool: Pick<Tool, "params">,
+  overrides: Record<string, string>,
+  name: string
+): string {
+  const param = tool.params.find((p) => p.name === name);
+  if (!param) return "";
+  return overrides[name] ?? param.default;
 }
 
 /// A one-line summary of the params a step actually OVERRODE, for the
@@ -412,6 +479,13 @@ export function toRecord(tool: Tool, workspaceId: string, position: number): Too
 export function validateTool(tool: Tool): string | null {
   if (!tool.name.trim()) return "A tool needs a name.";
   if (!tool.body.trim()) return "A tool needs a body.";
+  // Unreachable from the dialog, which offers only the three authorable
+  // kinds -- but a `gavin` tool that reached a save with a body naming
+  // nothing would stall every step it was dropped onto, with the mistake
+  // discoverable only at launch.
+  if (tool.kind === "gavin" && !gavinActionOf(tool)) {
+    return `“${tool.body.trim()}” is not a gavin action.`;
+  }
   const seen = new Set<string>();
   for (const param of tool.params) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(param.name)) {

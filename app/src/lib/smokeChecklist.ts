@@ -450,6 +450,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Run a rail to the end so every card sits in Done, then press Reset run state: the broom must go flat and its tooltip read “This rail has no done steps”, because every step is queued to run again. A stalled step is the same — move its card to Done by hand and it still stays on the rail, since Retry would run it. The fallback still has to work the other way round: on a rail that has NEVER run, moving one of its cards to Done by hand takes that step alone off.",
       },
       {
+        id: "run-start-rail-tool",
+        text: "A “Start rail” step naming another rail arms that rail the moment the first rail reaches it — and finishes instantly, with no session of its own",
+        hint: "Drag Start rail from the drawer onto the END of rail A, open its Sliders and type rail B's name, then start A. When A reaches the step it must go done at once (no tab appears, no terminal opens) and B must start on its own — B's page appears, its first agent launches. Watch it from B's page too: the chain has to fire whether or not the Orchestration tab is on screen.",
+      },
+      {
+        id: "run-start-rail-refuses",
+        text: "Start rail refuses, with the reason on the chip, for: a blank name, a name no rail carries, the rail it is on, and a PAUSED rail",
+        hint: "Four presses. Each stalls the step and pauses the rail carrying it — hover the chip for the sentence. The paused one is the load-bearing case: pause rail B mid-run, then let A reach the step. It must NOT resume B (that would re-launch whatever stalled it) and must say so. Then check the two shrugs, which are done and NOT stalls: name a rail that is already running, and one whose every step is finished — both leave that rail exactly where it was.",
+      },
+      {
+        id: "run-start-rail-library",
+        text: "Start rail reads “Gavin action” in the drawer and the library, with its own ⚡ icon, and the library offers no Duplicate on it",
+        hint: "Its params popover previews “Start the rail “<name>”.” rather than a command line, and says nothing is named yet when the field is empty. The library's Built-in section shows “gavin's own” where the other eleven show Duplicate.",
+      },
+      {
         id: "skill-updated",
         text: "Re-run “Set up agent integration”: SKILL.md teaches name-your-tab-first, kinds, nesting, promotion, tick-when-done; gavin-orchestrate, gavin-resume and gavin-develop land beside it",
       },

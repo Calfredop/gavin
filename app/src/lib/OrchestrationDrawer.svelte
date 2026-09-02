@@ -8,6 +8,7 @@
     Bot,
     Terminal,
     FileCode2,
+    Zap,
     Settings2,
     Group,
   } from "@lucide/svelte";
@@ -105,7 +106,7 @@
   // reach for, while the card list churns.
   let toolsCollapsed = $state(false);
   const iconFor = (kind: Tool["kind"]) =>
-    kind === "agent" ? Bot : kind === "command" ? Terminal : FileCode2;
+    kind === "agent" ? Bot : kind === "command" ? Terminal : kind === "gavin" ? Zap : FileCode2;
   // Built-ins first, then everything the human made, each alphabetical --
   // a stable order, so a tool stays where they last saw it.
   const SCOPE_ORDER: Tool["scope"][] = ["builtin", "workspace", "global"];

@@ -46,6 +46,7 @@ import {
   stepAttentions,
   findStep,
   insertStageWithSteps,
+  startRailVerdict,
 } from "./orchestration";
 import type {
   Action,
@@ -60,7 +61,8 @@ import type {
   ToolSummary,
 } from "./orchestration";
 import { composeGeneratePrompt, composeRailPrompt } from "./orchestrationPrompts";
-import { findTool, resolveToolBody } from "./orchestrationTools";
+import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "./orchestrationTools";
+import type { Tool } from "./orchestrationTools";
 import { stepsFromTemplate } from "./orchestrationGroups";
 import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
@@ -410,14 +412,70 @@ export async function markStepDone(workspaceId: string, stepId: string): Promise
   await tick(workspaceId);
 }
 
+/// Run a `gavin` tool: an action the app performs itself, with no
+/// session, no checkout and no exit code (tools spec T9). It resolves
+/// synchronously, so the step never passes through `running` -- there is
+/// nothing to watch and no verdict to wait for, and every rule that
+/// reconciles a dead session is therefore silent about it.
+///
+/// Returns whether the tick that ran it should run AGAIN, for the same
+/// reason executeSwitchBranch does: this step is DONE by the time it
+/// returns, and the pass that scheduled it decided the stage's fate
+/// before that was true. Nothing else would ever say so -- a session's
+/// exit or status is what ticks after every other launch, and this one
+/// starts no session. `orchestrations` is deliberately not a scheduler
+/// input, so the write below wakes nothing by itself.
+async function executeGavinAction(
+  workspaceId: string,
+  rail: Rail,
+  step: Step,
+  tool: Tool
+): Promise<boolean> {
+  const stall = (reason: string): Promise<void> =>
+    setStepRunAction(workspaceId, step.id, "stalled", null, reason);
+
+  // A tool the human duplicated and re-pointed, or one shipped by a
+  // NEWER gavin whose plan this daemon still holds. Naming the body is
+  // what makes that second case diagnosable.
+  if (gavinActionOf(tool) !== "start-rail") {
+    await stall(`“${tool.body.trim()}” is not an action this version of gavin knows`);
+    return false;
+  }
+
+  const orch = get(orchestrations)[workspaceId];
+  if (!orch) return false;
+  const verdict = startRailVerdict(orch, rail.id, resolveToolParam(tool, stepParams(step), "rail"));
+  if (verdict.kind === "refuse") {
+    await stall(verdict.reason);
+    // A stall is rule 5's business and it already paused this rail;
+    // re-ticking would only re-read a rail that is going nowhere.
+    return false;
+  }
+
+  // Done BEFORE the target is armed, and that order is load-bearing:
+  // startRail ticks, this workspace's tick is already in flight, so the
+  // call only queues a replay -- which then re-reads this step. Left
+  // pending, it would be launched a second time.
+  await setStepRunAction(workspaceId, step.id, "done", null, null);
+  // A rail already running, or with nothing left to run, is a no-op and
+  // not a failure -- the same posture builtin:commit takes on a clean
+  // tree. Calling startRail on either would REWIND it (see
+  // startRailVerdict), which is the one outcome worse than doing nothing.
+  if (verdict.kind === "start") await startRail(workspaceId, verdict.railId);
+  return true;
+}
+
 /// Launch a TOOL step (tools spec §3). Nothing card-shaped happens here:
 /// no card_sessions binding and no "In Progress" write, because a tool
 /// is not a card and has no status to keep.
+/// Returns whether the tick should run again -- true only for a `gavin`
+/// action, which finishes its step inside this call (see below). Every
+/// other tool leaves a session running, and its own end is what ticks.
 async function executeToolLaunch(
   workspaceId: string,
   rail: Rail,
   step: Step
-): Promise<void> {
+): Promise<boolean> {
   // null is "not fetched yet", NOT "empty" -- stalling here would turn a
   // cold start into a stalled rail. Leaving the step `pending` and
   // writing nothing is safe: the tab re-ticks when the library lands
@@ -425,12 +483,19 @@ async function executeToolLaunch(
   // this same launch. nextActions makes the matching choice, passing a
   // null library through launchBlocker rather than blocking on it.
   const library = libraryFor(get(toolRecords), workspaceId);
-  if (library === null) return;
+  if (library === null) return false;
 
   const tool = findTool(library, step.toolId as string);
   if (!tool) {
     await setStepRunAction(workspaceId, step.id, "stalled", null, "tool is no longer in the library");
-    return;
+    return false;
+  }
+
+  // Before the checkout: a gavin action needs neither, and stalling one
+  // on an unbound rail with no root would be a refusal about something
+  // it was never going to touch.
+  if (tool.kind === "gavin") {
+    return await executeGavinAction(workspaceId, rail, step, tool);
   }
 
   // The rail's checkout, NOT a card's contextFolder -- there is no card.
@@ -444,7 +509,7 @@ async function executeToolLaunch(
       null,
       "no worktree bound and the workspace has no root"
     );
-    return;
+    return false;
   }
 
   const body = resolveToolBody(tool, stepParams(step));
@@ -456,7 +521,7 @@ async function executeToolLaunch(
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
   if (!sessionId) {
     await setStepRunAction(workspaceId, step.id, "stalled", null, `could not start ${tool.name}`);
-    return;
+    return false;
   }
   // A command tool's PTY can close in well under a second, so the tab
   // needs a name the moment it appears or it is unidentifiable. Best
@@ -471,25 +536,26 @@ async function executeToolLaunch(
     // Cosmetic only.
   }
   await setStepRunAction(workspaceId, step.id, "running", sessionId, null);
+  return false;
 }
 
 /// Deliberately the EXISTING card-run path, so the board and the tab can
 /// never disagree about what is running (spec §4.3).
-async function executeLaunch(workspaceId: string, stepId: string): Promise<void> {
+/// Returns whether the tick should run again -- see executeToolLaunch.
+async function executeLaunch(workspaceId: string, stepId: string): Promise<boolean> {
   const orch = get(orchestrations)[workspaceId];
   const rail = railOwning(orch, stepId);
   const step = rail?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId);
-  if (!rail || !step) return;
+  if (!rail || !step) return false;
 
   if (isToolStep(step)) {
-    await executeToolLaunch(workspaceId, rail, step);
-    return;
+    return await executeToolLaunch(workspaceId, rail, step);
   }
 
   const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
   if (!entry) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
-    return;
+    return false;
   }
 
   // The same gate a board Run uses, and for the same reason -- but here
@@ -500,7 +566,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
   const resolved = await resolveAttachmentsForRun(workspaceId, entry.plan.attachments ?? []);
   if ("error" in resolved) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, resolved.error);
-    return;
+    return false;
   }
 
   let prompt: string;
@@ -508,7 +574,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
     const file = await backend.readFileForViewer(step.cardPath);
     if (!file.exists) {
       await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
-      return;
+      return false;
     }
     prompt = composeTaskPrompt(
       step.cardPath,
@@ -525,7 +591,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
   if (!sessionId) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
-    return;
+    return false;
   }
 
   // Named before the agent has drawn a frame, same as a board Run and the
@@ -552,6 +618,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
       // stalling the step over. The card's own agent will set it.
     }
   }
+  return false;
 }
 
 /// Put a rail's checkout on its branch (spec O15). Three steps, and the
@@ -619,16 +686,18 @@ async function stallStage(workspaceId: string, railId: string, reason: string): 
   await setRailRunAction(workspaceId, railId, "paused", current);
 }
 
-/// Returns whether the tick should run again immediately -- see
-/// executeSwitchBranch, the one action that changes what the scheduler
-/// reads rather than only what it has already decided.
+/// Returns whether the tick should run again immediately. Two actions
+/// ask for it, and both change what the scheduler READS rather than only
+/// what it has already decided: executeSwitchBranch moves the refs
+/// snapshot, and a `gavin` tool step finishes inside its own launch --
+/// so the stage's fate was decided before that step was done.
 export async function executeActions(workspaceId: string, actions: Action[]): Promise<boolean> {
   let again = false;
   for (const action of actions) {
     const orch = get(orchestrations)[workspaceId];
     if (!orch) return again;
     if (action.kind === "launch") {
-      await executeLaunch(workspaceId, action.stepId);
+      again = (await executeLaunch(workspaceId, action.stepId)) || again;
     } else if (action.kind === "markDone") {
       const sessionId = orch.stepRuns.find((r) => r.stepId === action.stepId)?.sessionId ?? null;
       // The session id is kept deliberately: the step is finished, but

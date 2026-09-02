@@ -8,6 +8,7 @@ import {
   railStateOf,
   firstUnfinishedStageId,
   runnableIdleRails,
+  startRailVerdict,
   nextActions,
   addRail,
   renameRail,
@@ -272,6 +273,85 @@ describe("runnableIdleRails", () => {
 
   it("is empty for a plan with no rails", () => {
     expect(runnableIdleRails(emptyOrchestration())).toEqual([]);
+  });
+});
+
+describe("startRailVerdict", () => {
+  // Two rails, one step each. The step doing the starting lives on r1;
+  // r2 is what "Start rail" names.
+  function two(
+    railRuns: Orchestration["railRuns"] = [],
+    stepRuns: Orchestration["stepRuns"] = []
+  ): Orchestration {
+    return {
+      rails: [
+        { ...rail("r1", [[["t1", "/x/a.md"]]]), name: "Build" },
+        { ...rail("r2", [[["t2", "/x/b.md"]]]), name: "Deploy" },
+      ],
+      conflictNotes: [],
+      railRuns,
+      stepRuns,
+    };
+  }
+
+  it("starts an idle rail with something left to run", () => {
+    expect(startRailVerdict(two(), "r1", "Deploy")).toEqual({ kind: "start", railId: "r2" });
+  });
+
+  // The name comes out of a text field a human typed into.
+  it("matches the name ignoring case and surrounding space", () => {
+    expect(startRailVerdict(two(), "r1", "  deploy ")).toEqual({ kind: "start", railId: "r2" });
+  });
+
+  it("refuses an empty name by naming the field", () => {
+    const v = startRailVerdict(two(), "r1", "   ");
+    expect(v.kind).toBe("refuse");
+    expect(v).toMatchObject({ reason: expect.stringContaining("Rail parameter") });
+  });
+
+  it("refuses a name no rail carries", () => {
+    expect(startRailVerdict(two(), "r1", "Docs")).toMatchObject({
+      kind: "refuse",
+      reason: expect.stringContaining("Docs"),
+    });
+  });
+
+  // Nothing makes rail names unique, so this is reachable by rename.
+  it("refuses a name two rails share rather than picking one", () => {
+    const o = two();
+    o.rails[0].name = "Deploy";
+    expect(startRailVerdict(o, "r1", "Deploy")).toMatchObject({ kind: "refuse" });
+  });
+
+  // Arming the rail this step runs on re-points it at the stage holding
+  // this very step: a loop with no exit.
+  it("refuses to start the rail the step is on", () => {
+    expect(startRailVerdict(two(), "r1", "Build")).toEqual({
+      kind: "refuse",
+      reason: "a rail cannot start itself",
+    });
+  });
+
+  // startRail rewinds a rail already under way (see runnableIdleRails),
+  // which is the one outcome worse than doing nothing.
+  it("does nothing to a rail that is already running", () => {
+    const o = two([{ railId: "r2", state: "running", currentStageId: "r2-s0" }]);
+    expect(startRailVerdict(o, "r1", "Deploy")).toEqual({ kind: "noop", railId: "r2" });
+  });
+
+  it("does nothing to a rail with nothing left to run", () => {
+    const o = two([], [{ stepId: "t2", state: "done", sessionId: null, reason: null }]);
+    expect(startRailVerdict(o, "r1", "Deploy")).toEqual({ kind: "noop", railId: "r2" });
+  });
+
+  // A pause is a human's decision or a stalled step's consequence.
+  // Resuming would re-launch the very step that failed.
+  it("refuses a paused rail rather than resuming it", () => {
+    const o = two([{ railId: "r2", state: "paused", currentStageId: "r2-s0" }]);
+    expect(startRailVerdict(o, "r1", "Deploy")).toMatchObject({
+      kind: "refuse",
+      reason: expect.stringContaining("paused"),
+    });
   });
 });
 

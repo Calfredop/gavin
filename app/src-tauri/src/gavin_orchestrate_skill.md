@@ -18,7 +18,8 @@ A step is one of two things, never both:
 - a **tool step** (`toolId` + `toolParams`) — a reusable unit of work
   from the workspace's tool library: an agent prompt, a bash command, or
   a bash script. It is done when its session exits 0, and stalled on any
-  other exit.
+  other exit. One tool, `Start rail`, is an action gavin performs itself
+  and finishes instantly — see §2a.
 
 The human arms a rail with Start; gavin then launches each stage and
 advances when every step in it is done.
@@ -154,6 +155,24 @@ end. Pick them from the `tools` list in the read payload — never invent a
   own default — and prefer omitting, so a later edit to that default
   reaches the step.
 - A tool step needs no `cardPath` at all. Sending both is refused.
+
+### Chaining one rail to the next
+
+`Start rail` is the tool for a dependency between rails: put it at the
+**end** of the rail that must finish first, with
+`toolParams: { "rail": "<the other rail's name>" }`. When the first rail
+reaches it, the named rail arms itself — no human waiting for the first
+to finish, and no session of its own.
+
+Use it only for a real ordering constraint. Two rails that could run at
+once should both just be started; chaining them serializes work the whole
+tab exists to parallelize. And say in a `conflict_notes` entry which fact
+made the second rail wait for the first.
+
+It names the rail by NAME, so a rail you rename in the same write has to
+be renamed in the parameter too. It refuses rather than guesses: an
+unknown name, a name two rails share, the rail the step is itself on, and
+a paused rail all stall the step.
 
 ## 3. Record your reasoning
 
