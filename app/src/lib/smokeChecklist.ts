@@ -500,6 +500,14 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Type (don't wait), then edit the same file externally → conflict banner; both buttons behave",
         hint: "Keep mine = your text wins on the next save; Take theirs = buffer is replaced.",
       },
+      {
+        id: "edit-no-self-conflict",
+        text: "Type several lines at a natural pace, pausing over a second between them — NO conflict banner ever appears",
+        hint:
+          "The false alarm this rules out: autosave writes, the watcher reports that write 500ms " +
+          "later, and the buffer has moved on by then. Nothing but this editor may touch the file " +
+          "during the pass.",
+      },
       { id: "edit-plan-card", text: "Editing a plan's status: line here moves its card on the board (~3s)" },
       { id: "edit-truncated", text: "A >1 MB file offers no Edit mode and says why" },
       { id: "edit-hub-tabs", text: "PRD and CLAUDE.md tabs appear only with a root bound, and open in Edit" },

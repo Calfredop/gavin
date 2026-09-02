@@ -49,19 +49,70 @@ describe("canEdit", () => {
 
 describe("resolveExternalChange", () => {
   it("ignores an echo of our own save", () => {
-    expect(resolveExternalChange({ incoming: "same", buffer: "same", dirty: false })).toBe("ignore");
+    expect(
+      resolveExternalChange({ incoming: "same", buffer: "same", onDisk: "same", dirty: false }),
+    ).toBe("ignore");
   });
 
   it("ignores identical content even while dirty", () => {
-    expect(resolveExternalChange({ incoming: "same", buffer: "same", dirty: true })).toBe("ignore");
+    expect(
+      resolveExternalChange({ incoming: "same", buffer: "same", onDisk: "same", dirty: true }),
+    ).toBe("ignore");
+  });
+
+  it("ignores our own save echoing back after the buffer has moved on", () => {
+    // The bug this function exists to prevent, and the one comparing
+    // against the buffer alone could not: autosave writes "line one",
+    // the watcher takes 500ms to report it, and by then the human has
+    // typed the next line. The incoming content is OUR write, not
+    // somebody else's edit, so it must never raise a banner.
+    expect(
+      resolveExternalChange({
+        incoming: "line one",
+        buffer: "line one\nline two",
+        onDisk: "line one",
+        dirty: true,
+      }),
+    ).toBe("ignore");
+  });
+
+  it("ignores a repeat event carrying disk content it has already seen", () => {
+    // A single save produces a burst of filesystem events; only the
+    // first one may be news.
+    expect(
+      resolveExternalChange({
+        incoming: "theirs",
+        buffer: "ours",
+        onDisk: "theirs",
+        dirty: true,
+      }),
+    ).toBe("ignore");
   });
 
   it("reloads silently when the buffer is clean", () => {
-    expect(resolveExternalChange({ incoming: "theirs", buffer: "ours", dirty: false })).toBe("reload");
+    expect(
+      resolveExternalChange({ incoming: "theirs", buffer: "ours", onDisk: "ours", dirty: false }),
+    ).toBe("reload");
   });
 
   it("raises a conflict when the buffer is dirty", () => {
-    expect(resolveExternalChange({ incoming: "theirs", buffer: "ours", dirty: true })).toBe("conflict");
+    expect(
+      resolveExternalChange({ incoming: "theirs", buffer: "ours", onDisk: "ours", dirty: true }),
+    ).toBe("conflict");
+  });
+
+  it("still conflicts when someone else writes over content we saved", () => {
+    // Same shape as the echo case -- dirty buffer, incoming differs from
+    // it -- but the disk has moved past our last write, so this one IS
+    // news and the human has to choose.
+    expect(
+      resolveExternalChange({
+        incoming: "theirs",
+        buffer: "line one\nline two",
+        onDisk: "line one",
+        dirty: true,
+      }),
+    ).toBe("conflict");
   });
 });
 

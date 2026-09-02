@@ -44,14 +44,25 @@ export function classifyExternalRead(input: {
 export type ExternalChangeVerdict = "ignore" | "reload" | "conflict";
 
 // Content-based, never time-based (D26): our own save trips the watcher,
-// and a timing window would be defeated by a slow disk. If what landed on
-// disk equals what we already have, there is nothing to do -- that covers
-// both our echo and someone writing identical content.
+// and a timing window would be defeated by a slow disk.
+//
+// `onDisk` is the content this editor last READ from or WROTE to the path
+// -- what it believes is there -- and it, not the buffer, is what decides
+// whether an event is news. Comparing against the buffer alone made every
+// autosave a false alarm: the watcher debounces 500ms
+// (FILE_WATCH_DEBOUNCE) before reporting our own write, and a human
+// typing has moved the buffer on well inside that window, so the echo
+// came back looking exactly like somebody else's edit to a dirty file.
+// The buffer comparison stays as a second escape hatch -- if the disk
+// already holds what the user is holding, there is nothing to reconcile
+// however it got there.
 export function resolveExternalChange(input: {
   incoming: string;
   buffer: string;
+  onDisk: string;
   dirty: boolean;
 }): ExternalChangeVerdict {
+  if (input.incoming === input.onDisk) return "ignore";
   if (input.incoming === input.buffer) return "ignore";
   return input.dirty ? "conflict" : "reload";
 }

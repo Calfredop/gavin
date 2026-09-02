@@ -26,6 +26,11 @@
 
   let mode = $state<EditorMode>(initialMode ?? defaultMode(path, "tab"));
   let buffer = $state("");
+  // What this editor last read from or wrote to `path`. The conflict
+  // check runs against THIS, not the buffer: our own write comes back
+  // through the watcher's 500ms debounce, by which point the buffer has
+  // almost always moved on. Not $state -- nothing renders from it.
+  let onDisk = "";
   let dirty = $state(false);
   let truncated = $state(false);
   let exists = $state(true);
@@ -75,6 +80,7 @@
     try {
       const result = await backend.readFileForViewer(path);
       buffer = result.content;
+      onDisk = result.content;
       truncated = result.truncated;
       exists = result.exists;
       deleted = false;
@@ -111,11 +117,24 @@
       saveTimer = null;
     }
     if (!editable || !dirty) return;
+    const written = buffer;
+    // Claimed BEFORE the await, not after: the watcher event for this
+    // write can outrun the invoke's own resolution, and an echo that
+    // arrives while `onDisk` still names the previous content is exactly
+    // the false conflict this tracking exists to stop. If the write then
+    // fails, `onDisk` is optimistic -- correctly so, since the next event
+    // reads back content we did not put there and reports the divergence.
+    onDisk = written;
     try {
-      await backend.writeFileForEditor(path, buffer);
+      await backend.writeFileForEditor(path, written);
       saveError = null;
       exists = true;
-      setDirty(false);
+      // Only clean if the buffer is still what we wrote. A keystroke
+      // landing during the write re-arms the autosave timer, and clearing
+      // the flag unconditionally made that timer no-op on `!dirty` --
+      // stranding those characters until the next edit, and letting
+      // onDestroy skip them entirely on a tab close.
+      if (buffer === written) setDirty(false);
     } catch (e) {
       saveError = String(e instanceof Error ? e.message : e);
     }
@@ -193,7 +212,11 @@
     deleted = false;
     truncated = result.truncated;
     exists = result.exists;
-    switch (resolveExternalChange({ incoming: result.content, buffer, dirty })) {
+    const verdict = resolveExternalChange({ incoming: result.content, buffer, onDisk, dirty });
+    // Whatever we do about it, the read just told us what is on disk --
+    // so a repeat event carrying the same content is no longer news.
+    onDisk = result.content;
+    switch (verdict) {
       case "ignore":
         return;
       case "reload":
