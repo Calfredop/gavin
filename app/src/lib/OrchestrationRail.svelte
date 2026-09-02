@@ -289,6 +289,12 @@
 
 <div class="rail" data-orch-rail={rail.id}>
   <header>
+    <!-- Two rows on purpose. A rail is a 280px grid column once the human
+         has a handful of them, and one row holding the name, the state
+         word and six icon buttons left the name ellipsised down to a few
+         characters -- the one thing that says WHICH rail you are reading.
+         Row one is the name and what qualifies it (conflicts, state,
+         attention); row two is every action. -->
     <div class="name-row">
       {#if editing}
         <input
@@ -321,7 +327,7 @@
       <span class="state {railState}">{railState}</span>
       <!-- After the state word, not instead of it: a rail with a step
            waiting on a human is still running, and saying otherwise here
-           would contradict the Pause button right beside it. -->
+           would contradict the Pause button on the row below. -->
       {#if attention}
         <span class="attention" use:tooltip={attentionTitle}>
           {#if attention === "asking"}
@@ -332,6 +338,8 @@
           needs you
         </span>
       {/if}
+    </div>
+    <div class="action-row">
       {#if railState === "running"}
         <IconButton icon={Pause} label="Pause" onclick={onPause} />
       {:else}
@@ -571,6 +579,14 @@
     align-items: center;
     gap: 4px;
   }
+  /* The name's row-mate, not its competitor: the actions have a row of
+     their own so the name is the only thing on row one that has to give
+     width, and six buttons at ~24px each still fit a 280px rail. */
+  .action-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
   .name {
     flex: 1;
     min-width: 0;
@@ -602,6 +618,7 @@
     font-weight: 600;
   }
   .state {
+    flex: none;
     font-size: 11px;
     color: var(--text-muted);
   }
@@ -615,6 +632,7 @@
      keeps its accent-coloured state word: this qualifies that word, it
      does not replace it. */
   .attention {
+    flex: none;
     display: inline-flex;
     align-items: center;
     gap: 3px;

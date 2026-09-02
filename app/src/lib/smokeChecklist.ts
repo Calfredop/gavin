@@ -1510,6 +1510,26 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Orchestration rail header",
+    items: [
+      {
+        id: "rail-header-name-readable",
+        text: "With six or more rails on the grid, every rail's name is readable in full on the header's first row",
+        hint: "Give one rail a long name (\u201cReview the attachments pipeline\u201d). At 280px a rail used to spend that whole row on six buttons and the state word, leaving the name two characters and an ellipsis.",
+      },
+      {
+        id: "rail-header-actions-second-row",
+        text: "All of the rail's buttons — start/pause, wand, reset, move-all, clear-done, delete — sit on ONE row directly under the name",
+        hint: "None may wrap to a third row, even on the narrowest rail: a header that reflows costs more height than the name gained width.",
+      },
+      {
+        id: "rail-header-state-stays-whole",
+        text: "On a running rail that is waiting on you, “running” and “needs you” stay whole beside the name and the NAME is what ellipsises",
+        hint: "Start a rail and let its agent ask a question. If “needs you” is the thing that gets clipped or wraps, the flex weights went the wrong way round.",
+      },
+    ],
+  },
+  {
     title: "Rail branch/worktree defaults",
     items: [
       {
