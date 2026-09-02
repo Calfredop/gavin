@@ -8,6 +8,7 @@
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
   import { isArchivedCard, slugStatus } from "./planBoard";
+  import { childCards, parentCard } from "./cardRelations";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "./planChecklist";
   import { requestedExplorerPath, slugFileName } from "./planExplorer";
   import { patchPlanField, patchPlanCreated, patchPlanPath } from "./gavinState";
@@ -53,12 +54,19 @@
     // plan's free-standing children.
     allCards: CardView[];
     onClose: () => void;
+    // Swap the modal onto a related card -- a child in the Tasks list,
+    // or the plan in "Part of". The host owns the open path, so this is
+    // the same write it makes when the board opens a card. Required: a
+    // detail modal that cannot reach the cards it names is the bug this
+    // exists to fix, so every surface has to answer the question.
+    onOpenCard: (path: string) => void;
     // Fires when a field write moved the card's file -- setting it Done
     // archives it into `plans/done/`. The host holds the open card's path
     // as identity, so it has to follow, or the modal vanishes mid-edit.
     onPathChange?: (path: string) => void;
   }
-  let { card, workspaceId, columns, labels, allCards, onClose, onPathChange }: Props = $props();
+  let { card, workspaceId, columns, labels, allCards, onClose, onOpenCard, onPathChange }: Props =
+    $props();
 
   const PRIORITIES: Priority[] = ["none", "low", "medium", "high", "urgent"];
   let errorMessage = $state<string | null>(null);
@@ -72,6 +80,14 @@
   // already holds open leaves that tab's watch intact when this closes.
   $effect(() => {
     const path = card.id;
+    // The Tasks list and "Part of" repoint this modal at another card
+    // WITHOUT unmounting it, so everything held about the old one has to
+    // go now: a stale body under the new title reads as that card's, and
+    // a stale error accuses it of a failure it never had.
+    content = null;
+    errorMessage = null;
+    checklistError = null;
+    attachmentsError = null;
     let unlisten: UnlistenFn | null = null;
     let closed = false;
     const read = () =>
@@ -325,14 +341,11 @@
     }
   }
 
-  // --- children of a plan ---------------------------------------------
-  const freeChildren = $derived(
-    card.kind === "plan"
-      ? allCards.filter(
-          (c) => c.parent === card.fileName && c.contextFolder === card.contextFolder && c.status !== null
-        )
-      : []
-  );
+  // --- the cards around this one (cardRelations.ts) --------------------
+  const children = $derived(childCards(card, allCards));
+  // The way back out of a child, and the only one: nothing else on this
+  // modal leads to the plan a task belongs to.
+  const partOf = $derived(parentCard(card, allCards));
 
   // --- session block (task/plan, card-model spec §3) -------------------
   const binding = $derived(cardSessionFor($kanbanState[workspaceId], card.id));
@@ -472,7 +485,7 @@
   }
 </script>
 
-<Modal {onClose}>
+<Modal {onClose} scrollKey={card.id}>
   <div class="header">
     <span class="kind-badge kind-{card.kind}">{card.kind}</span>
     <span class="meta">{card.contextName} · {card.fileName}</span>
@@ -485,7 +498,13 @@
   {#if card.parent}
     <div class="row">
       <span class="label">Part of</span>
-      <span class:broken={card.parentBroken}>{card.parentBroken ? `⚠ ${card.parent} (not found)` : card.parentTitle}</span>
+      {#if partOf}
+        <button type="button" class="card-link" title={partOf.title} onclick={() => onOpenCard(partOf.id)}>
+          {partOf.title}
+        </button>
+      {:else}
+        <span class:broken={card.parentBroken}>{card.parentBroken ? `⚠ ${card.parent} (not found)` : card.parentTitle}</span>
+      {/if}
     </div>
   {/if}
   <label class="row">
@@ -608,13 +627,15 @@
       {/if}
     </div>
   {/if}
-  {#if card.kind === "plan" && (card.nestedChildren.length > 0 || freeChildren.length > 0)}
+  {#if children.length > 0}
     <div class="section">
       <div class="section-title">Tasks</div>
-      {#each [...card.nestedChildren, ...freeChildren] as child (child.id)}
+      {#each children as child (child.id)}
         <div class="child-row">
-          <span class="child-title">{child.title}</span>
-          <span class="child-status">{child.status ?? "(nested)"}</span>
+          <button type="button" class="child-open" title="Open this task's card" onclick={() => onOpenCard(child.id)}>
+            <span class="child-title" title={child.title}>{child.title}</span>
+            <span class="child-status">{child.status ?? "(nested)"}</span>
+          </button>
           <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
             Un-parent
           </button>
@@ -921,13 +942,64 @@
   }
   .child-row {
     display: flex;
+    align-items: center;
     justify-content: space-between;
     gap: 10px;
     font-size: 0.85em;
     padding: 2px 0;
   }
+  /* A link to another card, not a control: activating it swaps this
+     modal onto that card, which is the same move clicking the card on
+     the board makes. Styled as text so the Tasks list still reads as a
+     list, with the row only lighting up under the pointer. */
+  .child-open {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    margin: 0 -4px;
+    padding: 1px 4px;
+    text-align: left;
+  }
+  .child-open:hover {
+    background: var(--surface-base);
+  }
+  .child-open:hover .child-title,
+  .card-link:hover {
+    text-decoration: underline;
+  }
+  .child-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .child-status {
     color: var(--text-muted);
+    flex: 0 0 auto;
+  }
+  /* The "Part of" link, same navigation the other way: a nested task's
+     only route back to the plan it belongs to. */
+  .card-link {
+    background: transparent;
+    border: none;
+    color: var(--accent-text);
+    cursor: pointer;
+    font: inherit;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .prompt {
     background: var(--surface-base);

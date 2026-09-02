@@ -548,6 +548,7 @@
       labels={board.labels}
       {allCards}
       onClose={() => (openPlanPath = null)}
+      onOpenCard={(path) => (openPlanPath = path)}
       onPathChange={(path) => (openPlanPath = path)}
     />
   {/if}

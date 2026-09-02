@@ -158,6 +158,16 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Card detail: title/status/priority edits round-trip into the file; status select can free a nested child",
       },
       {
+        id: "kind-detail-child-open",
+        text: "Card detail → Tasks: clicking a row swaps the modal onto THAT task — its own title, prompt, attachments and session block, not the plan's",
+        hint: "Free-standing children (the ones wearing a status) are in the same list and open the same way. The Un-parent button beside the row must still only detach — it never navigates.",
+      },
+      {
+        id: "kind-detail-part-of",
+        text: "The task's “Part of” row is a link back to the plan: one click each way, and every card the modal lands on starts scrolled to the TOP",
+        hint: "Open a long plan, scroll down to Tasks, click a short child — you should be looking at the child's header, not at empty space below it. A card whose parent file is missing keeps the plain ⚠ <file> (not found) text with nothing to click.",
+      },
+      {
         id: "kind-labels",
         text: "Label chips in the detail write labels: names (slug-matched colors); clearing the last removes the line",
       },

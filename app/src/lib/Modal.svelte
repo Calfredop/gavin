@@ -1,9 +1,21 @@
 <script lang="ts">
   interface Props {
     onClose: () => void;
+    // Identity of what the panel is showing. A modal that can be
+    // repointed at something else without unmounting (the card detail
+    // navigating to a nested task) keeps the old scroll offset
+    // otherwise, which on shorter content lands the reader at the
+    // bottom of a card they have not seen the top of.
+    scrollKey?: string;
     children?: import("svelte").Snippet;
   }
-  let { onClose, children }: Props = $props();
+  let { onClose, scrollKey, children }: Props = $props();
+
+  let panel = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    if (scrollKey === undefined) return;
+    if (panel) panel.scrollTop = 0;
+  });
 
   function handleBackdropClick(event: MouseEvent): void {
     if (event.target === event.currentTarget) onClose();
@@ -17,7 +29,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="backdrop" onclick={handleBackdropClick} role="presentation">
-  <div class="panel" role="dialog" aria-modal="true">
+  <div class="panel" role="dialog" aria-modal="true" bind:this={panel}>
     {@render children?.()}
   </div>
 </div>
