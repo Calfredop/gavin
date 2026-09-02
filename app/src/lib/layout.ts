@@ -329,6 +329,15 @@ export function allSessionIds(node: LayoutNode): string[] {
   return node.children.flatMap(allSessionIds);
 }
 
+// Every pane in the tree, in the same left-to-right, top-to-bottom order
+// allSessionIds walks. A pane is the unit that DISAPPEARS when its last
+// tab goes (closeTab prunes an empty leaf), so anything that closes tabs
+// in bulk has to be able to ask which panes a batch would empty.
+export function allLeaves(node: LayoutNode): Leaf[] {
+  if (node.type === "leaf") return [node];
+  return node.children.flatMap(allLeaves);
+}
+
 // Neither a file tab nor a board tab is a terminal session: closing one
 // ends no process, and no agent runs behind one. The two id maps are the
 // only thing that distinguishes them -- a tab absent from both IS a

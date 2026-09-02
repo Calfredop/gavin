@@ -52,6 +52,7 @@ import {
   type SidebarMenuHooks,
 } from "./sidebarMenu";
 import type { TabMenuContext } from "./tabMenu";
+import type { PageTabState } from "./sidebarSummary";
 import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "./contextMenu";
 import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
 
@@ -75,9 +76,19 @@ function hooks(): SidebarMenuHooks {
     startRenamePage: vi.fn(),
     startRenameSession: vi.fn(),
     newPage: vi.fn(),
+    confirmCloseIdle: vi.fn(),
     reportError: vi.fn(),
   };
 }
+// Every page fixture's tab is a terminal session with no status
+// recorded, which pageAgentsSummary (and so idleTabsOnPage) reads as
+// idle -- the state a page menu is opened in by default.
+const tabState = (extra: Partial<PageTabState> = {}): PageTabState => ({
+  sessionStatusById: {},
+  fileTabsById: {},
+  boardTabsById: {},
+  ...extra,
+});
 const items = (entries: ContextMenuEntry[]) => entries.filter((e): e is ContextMenuItem => !isSeparator(e));
 const find = (entries: ContextMenuEntry[], label: string) => {
   const item = items(entries).find((e) => e.label === label);
@@ -159,29 +170,44 @@ describe("changeWorkspaceRoot", () => {
 describe("buildPageMenuEntries", () => {
   const all = [ws("w1", [page("p1"), page("p2")]), ws("w2", [page("q1")]), ws(UNFILED_WORKSPACE_ID, [])];
   it("lists the page menu with a Move entry per other workspace", () => {
-    const labels = items(buildPageMenuEntries(all[0], all[0].pages[0], all, hooks())).map((e) => e.label);
+    const labels = items(buildPageMenuEntries(all[0], all[0].pages[0], all, tabState(), hooks())).map((e) => e.label);
     expect(labels).toEqual([
       "Rename…",
       "New Page",
       "Move to w2",
       `Move to ${UNFILED_WORKSPACE_ID}`,
+      "Close Idle Tabs",
       "Close Other Pages",
       "Close Page",
     ]);
   });
   it("moves a page to the end of the target workspace", () => {
-    find(buildPageMenuEntries(all[0], all[0].pages[0], all, hooks()), "Move to w2").onPick();
+    find(buildPageMenuEntries(all[0], all[0].pages[0], all, tabState(), hooks()), "Move to w2").onPick();
     expect(movePageAction).toHaveBeenCalledWith("p1", "w2", 1);
   });
   it("closes other pages sequentially with confirms and stops on decline", async () => {
     const three = ws("w1", [page("p1"), page("p2"), page("p3")]);
     vi.mocked(confirmPageClose).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    find(buildPageMenuEntries(three, three.pages[0], [three], hooks()), "Close Other Pages").onPick();
+    find(buildPageMenuEntries(three, three.pages[0], [three], tabState(), hooks()), "Close Other Pages").onPick();
     await flush();
     expect(vi.mocked(closePage).mock.calls).toEqual([["w1", "p2"]]);
   });
+  it("hands the frozen idle set and its prompt to the confirm hook", () => {
+    const h = hooks();
+    find(buildPageMenuEntries(all[0], all[0].pages[0], all, tabState(), h), "Close Idle Tabs").onPick();
+    expect(h.confirmCloseIdle).toHaveBeenCalledWith({
+      ids: ["p1-s"],
+      prompt: expect.objectContaining({ title: 'Close 1 idle tab on "p1"?', confirmLabel: "Close 1 tab" }),
+    });
+  });
+  it("disables Close Idle Tabs when every tab is busy", () => {
+    const state = tabState({ sessionStatusById: { "p1-s": "working" } });
+    const entry = find(buildPageMenuEntries(all[0], all[0].pages[0], all, state, hooks()), "Close Idle Tabs");
+    expect(entry.disabled).toBe(true);
+    expect(entry.danger).toBe(true);
+  });
   it("disables Close Other Pages when the page is alone", () => {
-    const entries = buildPageMenuEntries(all[1], all[1].pages[0], all, hooks());
+    const entries = buildPageMenuEntries(all[1], all[1].pages[0], all, tabState(), hooks());
     expect(find(entries, "Close Other Pages").disabled).toBe(true);
     expect(find(entries, "Close Page").danger).toBe(true);
   });

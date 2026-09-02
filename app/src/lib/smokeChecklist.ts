@@ -1080,6 +1080,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Closing a page's idle tabs",
+    items: [
+      {
+        id: "close-idle-enabled",
+        text: "Right-click a page row: “Close Idle Tabs” is greyed out while every session is working or waiting, and live the moment one goes idle",
+        hint: "The page row's own recap is the check: greyed exactly when it shows no “N idle”.",
+      },
+      {
+        id: "close-idle-count-agrees",
+        text: "The prompt's count is the same number the page row shows as “idle”",
+        hint: "A tab that never ran anything counts as idle on both — that is the case most likely to disagree.",
+      },
+      {
+        id: "close-idle-prompt-is-ours",
+        text: "The prompt is gavin's own panel, not a macOS dialog, and lists what STAYS: the working/waiting tabs, any pinned idle tab, and every file or board tab",
+        hint: "Set one up with all three. A pinned idle tab must be named as spared, not silently closed.",
+      },
+      {
+        id: "close-idle-closes-once",
+        text: "Confirm: exactly those tabs close, in one pass, with no second confirmation — and the busy and pinned ones are still there",
+        hint: "Turn the workspace's “Close confirm” setting ON first: this prompt replaces it, so a second dialog is the bug.",
+      },
+      {
+        id: "close-idle-empties",
+        text: "The prompt warns before it takes a whole pane or the whole page: idle tabs filling one pane of a split say “1 pane … closes too”, and a page with nothing but idle tabs says the page closes with them — and it does",
+        hint: "The page really disappears from the sidebar. Cancel must leave every tab exactly as it was.",
+      },
+      {
+        id: "close-idle-other-page",
+        text: "Do it on a page you are NOT looking at: its tabs close and the view stays put",
+        hint: "Another workspace's page too — closing tabs there must not switch workspaces.",
+      },
+    ],
+  },
+  {
     title: "Title bar",
     items: [
       {

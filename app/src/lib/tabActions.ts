@@ -8,6 +8,14 @@ import { closeSession } from "./layoutState";
 
 export async function closeTabs(sessionIds: string[]): Promise<void> {
   if (!(await confirmTabsClose(sessionIds))) return;
+  await closeTabsNow(sessionIds);
+}
+
+// The batch close with the asking already done, for callers that ask
+// with the app's own prompt instead (the page menu's "Close Idle Tabs"
+// puts its counts in a ConfirmPrompt). Going through closeTabs there
+// would ask twice -- once in the app, once in a native dialog.
+export async function closeTabsNow(sessionIds: string[]): Promise<void> {
   for (const id of sessionIds) {
     await closeSession(id);
   }

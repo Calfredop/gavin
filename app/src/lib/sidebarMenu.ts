@@ -14,6 +14,8 @@ import {
 } from "./layoutState";
 import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
 import { buildTabMenuEntries, type TabMenuContext } from "./tabMenu";
+import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "./idleTabs";
+import type { PageTabState } from "./sidebarSummary";
 import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
 import type { ContextMenuEntry } from "./contextMenu";
 
@@ -22,6 +24,10 @@ export interface SidebarMenuHooks {
   startRenamePage: (pageId: string) => void;
   startRenameSession: (sessionId: string) => void;
   newPage: (workspaceId: string) => void;
+  /// Raises the app's own confirmation for "Close Idle Tabs". Not a
+  /// native `confirm`: the prompt has to spell out the tabs that STAY,
+  /// which is a list, not a sentence.
+  confirmCloseIdle: (request: CloseIdleRequest) => void;
   reportError: (message: string) => void;
 }
 
@@ -73,10 +79,15 @@ export async function changeWorkspaceRoot(workspaceId: string, reportError: (m: 
   }
 }
 
+// `tabs` is the live tab state read at right-click time, and only
+// "Close Idle Tabs" needs it: which tabs are idle is a fact about
+// running agents, not about the page's own record, so it cannot come
+// off the Page.
 export function buildPageMenuEntries(
   ws: Workspace,
   page: Page,
   allWorkspaces: Workspace[],
+  tabs: PageTabState,
   hooks: SidebarMenuHooks
 ): ContextMenuEntry[] {
   const others = ws.pages.filter((p) => p.id !== page.id);
@@ -94,7 +105,18 @@ export function buildPageMenuEntries(
       });
     }
   }
+  const idle = idleTabsOnPage(page, tabs);
   entries.push(
+    { separator: true },
+    {
+      // Its own group: every other close in this menu takes a whole
+      // page, and this one takes tabs out of the page it stays on.
+      label: "Close Idle Tabs",
+      danger: true,
+      disabled: idle.ids.length === 0,
+      onPick: () =>
+        hooks.confirmCloseIdle({ ids: idle.ids, prompt: closeIdlePrompt(page, idle) }),
+    },
     { separator: true },
     {
       label: "Close Other Pages",

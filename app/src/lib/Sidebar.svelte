@@ -2,6 +2,7 @@
   import { accentVar } from "./settings";
   import GlobalSettingsModal from "./GlobalSettingsModal.svelte";
   import SessionsManagerModal from "./SessionsManagerModal.svelte";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import {
     layoutState,
     switchWorkspace,
@@ -104,6 +105,8 @@
     buildSessionRowMenuEntries,
     type SidebarMenuHooks,
   } from "./sidebarMenu";
+  import { closeTabsNow } from "./tabActions";
+  import type { CloseIdleRequest } from "./idleTabs";
   import type { TabMenuContext } from "./tabMenu";
 
   let expanded: Set<string> = $state(new Set());
@@ -449,6 +452,10 @@
   /// walking the process table for the life of the app.
   let showSessionsManager = $state(false);
 
+  // The pending "Close Idle Tabs" confirmation: the frozen id list and
+  // the copy describing it, both built when the menu entry was picked.
+  let closeIdle = $state<CloseIdleRequest | null>(null);
+
   function startEditingWorkspace(workspaceId: string, currentName: string): void {
     editingWorkspaceId = workspaceId;
     workspaceEditValue = currentName;
@@ -528,6 +535,7 @@
       },
       startRenameSession: startEditingSession,
       newPage: quickAddPage,
+      confirmCloseIdle: (request) => (closeIdle = request),
       reportError: reportMenuError,
     };
   }
@@ -544,7 +552,7 @@
 
   function openPageMenu(e: MouseEvent, ws: Workspace, page: Page): void {
     if (inTextInput(e)) return;
-    openContextMenuFromEvent(e, buildPageMenuEntries(ws, page, $layoutState.workspaces, menuHooks()));
+    openContextMenuFromEvent(e, buildPageMenuEntries(ws, page, $layoutState.workspaces, $layoutState, menuHooks()));
   }
 
   // The pane a row's tab actually shares. "Close Others" and the two
@@ -1222,6 +1230,25 @@
     </button>
   </div>
 </div>
+
+{#if closeIdle}
+  {@const pending = closeIdle}
+  <ConfirmPrompt
+    title={pending.prompt.title}
+    lines={pending.prompt.lines}
+    choices={[
+      {
+        label: pending.prompt.confirmLabel,
+        danger: true,
+        onPick: () => {
+          closeIdle = null;
+          void closeTabsNow(pending.ids);
+        },
+      },
+    ]}
+    onCancel={() => (closeIdle = null)}
+  />
+{/if}
 
 {#if showSessionsManager}
   <SessionsManagerModal onClose={() => (showSessionsManager = false)} />
