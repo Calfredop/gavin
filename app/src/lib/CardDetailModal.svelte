@@ -28,6 +28,13 @@
     type AttachmentStatus,
   } from "./attachments";
   import { isViewableInApp } from "./fileTypes";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import {
+    agentExitedIndicator,
+    agentFailedIndicator,
+    agentIndicator,
+    agentInterruptedIndicator,
+  } from "./ui/indicators";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, resumeCard, relaunchCard, developCard } from "./cardRunActions";
   import { cardSessionState } from "./columnRunAction";
@@ -365,6 +372,21 @@
           ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
           : "exited"
   );
+  // The same badge the board card, the terminal tab and the sidebar row
+  // draw for this very session -- the detail modal used to say the state
+  // in a bare word, which is accurate but shares nothing with the three
+  // surfaces the human just came from.
+  // Interrupted and failed come first for the same reason bindingStatus
+  // puts them first: the daemon's status is not the run's.
+  const bindingBadge = $derived(
+    bindingInterrupted
+      ? agentInterruptedIndicator()
+      : bindingFailed
+        ? agentFailedIndicator(failureReason)
+        : binding && bindingLive
+          ? agentIndicator($layoutState.sessionStatusById[binding.sessionId])
+          : agentExitedIndicator()
+  );
 
   async function handleRun(): Promise<void> {
     errorMessage = null;
@@ -655,12 +677,7 @@
       <div class="section-title">Agent session</div>
       {#if binding}
         <div class="session-info">
-          <span
-            class="session-status"
-            class:exited={!bindingLive && !bindingInterrupted && !bindingFailed}
-            class:interrupted={bindingInterrupted}
-            class:failed={bindingFailed}>{bindingStatus}</span
-          >
+          <StatusBadge indicator={bindingBadge} size={12} text={bindingStatus} class="session-status" />
           <span class="session-cwd">{binding.cwd}</span>
         </div>
         {#if bindingFailed}
@@ -996,14 +1013,10 @@
     opacity: 0.85;
     margin-bottom: 6px;
   }
-  .session-status.exited {
-    opacity: 0.6;
-  }
-  .session-status.interrupted {
-    color: var(--warning);
-  }
-  .session-status.failed {
-    color: var(--danger);
+  /* Positioning only -- the badge owns its own tone, exited included
+     (a neutral, struck-through circle). */
+  .session-info :global(.session-status) {
+    flex: 0 0 auto;
   }
   .session-note {
     margin: 6px 0 8px;

@@ -1445,6 +1445,47 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Alerts & confirms",
+    items: [
+      {
+        id: "dialog-not-native",
+        text: "Closing a terminal tab asks in a gavin modal — themed panel, monospace, dimmed backdrop — not a macOS sheet",
+        hint: "The whole section: no prompt in the app should be drawn by the OS any more.",
+      },
+      {
+        id: "dialog-says-the-verb",
+        text: "Every prompt's buttons name the action: Close tab / Close pane / Close page / Close tabs / Remove workspace / Archive card — never OK",
+      },
+      {
+        id: "dialog-enter-and-escape",
+        text: "Enter takes the harmless answer and Escape always dismisses: Enter closes the tab, but on “Remove this workspace” and “Archive this card” Enter cancels instead",
+        hint: "Destructive prompts keep focus on the dismissing button on purpose.",
+      },
+      {
+        id: "dialog-stacked-escape",
+        text: "Deleting a card from its detail modal: one Escape closes only the confirm, and the card detail is still open behind it",
+        hint: "Both are window-level Escape listeners — this is the one that used to close both.",
+      },
+      {
+        id: "dialog-alert-one-button",
+        text: "A failing menu action (rename a page to something the daemon rejects, or Show in Finder on a deleted folder) shows a one-button gavin modal, not a red macOS alert",
+      },
+      {
+        id: "dialog-window-close",
+        text: "The red traffic light asks “Close this window?” with Close window / Keep open, and Keep open really keeps it",
+        hint: "⌘W closes a tab, not the window — use the button, or ⌘Q.",
+      },
+      {
+        id: "dialog-reclaim-two-actions",
+        text: "The removed-folder reclaim offers Restore / Start fresh — neither says Cancel, because both spend the saved board",
+      },
+      {
+        id: "dialog-queue",
+        text: "Two failures in a row show one modal at a time: dismissing the first reveals the second rather than losing it",
+      },
+    ],
+  },
+  {
     // Everything here needs a real subscription, a real clock and a real
     // machine suspend. The phase arithmetic, the bands and the gate ARE
     // unit-tested (agentPause.test.ts, agentUsage.test.ts); what no suite
@@ -1527,6 +1568,82 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "wizard-offers-pause",
         text: "The init wizard's agent step offers the pause, unticked, and ticking it makes Settings show the same cycle",
         hint: "The wizard writes the APP-wide cycle, not a workspace override.",
+      },
+    ],
+  },
+  {
+    title: "Badges & indicators",
+    items: [
+      {
+        id: "badge-no-bare-dots",
+        text: "No coloured dot anywhere carries a meaning on its own: every badge is a glyph, and hovering it names its axis first (“Agent · …”, “Priority · …”, “Git · …”)",
+        hint: "The point of the whole section. If you meet a dot you have to guess about, that is the bug.",
+      },
+      {
+        id: "badge-priority-ramp",
+        text: "A card's priority is a signal-bar ramp, and medium and high are visibly different",
+        hint: "They used to be the SAME amber dot. Set four cards to low / medium / high / urgent and look at them side by side.",
+      },
+      {
+        id: "badge-priority-low-visible",
+        text: "A low-priority card's badge is actually visible on the card, in both themes",
+        hint: "It used to be painted in --surface-success, a near-black tint, so it simply was not there.",
+      },
+      {
+        id: "badge-agent-one-vocabulary",
+        text: "One running agent looks the same in all four places at once: its board card, its terminal tab, its sidebar row, and the card's detail modal",
+        hint: "Run a card, then put the board and the terminal side by side. Working spins; waiting is an amber question mark; idle is a dashed ring.",
+      },
+      {
+        id: "badge-waiting-is-amber",
+        text: "An agent waiting on you is amber everywhere — badge, card spine, the sidebar's page and workspace counts, the hub tab's corner pip",
+        hint: "The counts used to be filled red while the row below them was amber for the same fact. Red is now only for broken and for urgent.",
+      },
+      {
+        id: "badge-tab-bar-three-axes",
+        text: "A terminal tab can show three badges at once and each is readable: a spinning agent, a branch glyph for the checkout, a pencil for unsaved edits",
+        hint: "Open a file tab with an unsaved edit beside a running agent in a dirty repo. These were three near-identical dots.",
+      },
+      {
+        id: "badge-git-clean-is-quiet",
+        text: "A clean checkout's branch glyph is muted, not an amber ring — on the tab bar and in the sidebar's expanded tab rows",
+      },
+      {
+        id: "badge-sidebar-one-branch-glyph",
+        text: "An expanded page's tab row shows ONE branch glyph, toned with the branch name beside it, not a glyph plus a separate dot",
+      },
+      {
+        id: "badge-reduced-motion",
+        text: "With System Settings → Accessibility → Display → Reduce motion on, the working badge stops spinning but stays blue and readable",
+      },
+      {
+        id: "badge-step-states-visible",
+        text: "On a rail, every step chip shows a square saying where the rail has got to — empty for pending, a filled centre for the one running now, a tick for done, a cross for stalled",
+        hint: "Pending and running used to draw NO glyph at all: running was an accent ring and nothing else. Look down a part-run rail — the squares should read as a progress column.",
+      },
+      {
+        id: "badge-step-chip-matches-card",
+        text: "The same step says the same thing on its chip and on its board card — same square, same colour, the card just spells the word out too",
+        hint: "Switch the rail between chip and card view with one step running. The card used to say “running” in blue text with no glyph while the chip said it with a blue ring and no word.",
+      },
+      {
+        id: "badge-step-vs-agent",
+        text: "A running step whose agent is waiting on you shows BOTH marks side by side: the accent square for the rail, the amber question mark for the agent — and only one of them, the agent's, is a spinner's neighbour",
+        hint: "Two different questions. The step is still running, which is why the rail has not stopped; the agent is the thing standing still.",
+      },
+      {
+        id: "badge-rail-state",
+        text: "A rail's own state badge matches in its header and in the Home hub's rail list — a dash for idle, a doubled chevron for running, a pause for paused",
+        hint: "The two surfaces kept private copies of the same three colours. Start and pause a rail with Home open beside it.",
+      },
+      {
+        id: "badge-chevrons-sharp",
+        text: "The running rail's doubled chevron keeps its points at 11px — not two blunt smudges",
+        hint: "It is cut with the same miter join theme.css gives the disclosure chevrons. Compare it against a sidebar disclosure arrow.",
+      },
+      {
+        id: "badge-both-themes",
+        text: "Every badge above still reads in the light theme — especially amber-on-white, the priority ramp, and the step squares against a chip's severity fill",
       },
     ],
   },

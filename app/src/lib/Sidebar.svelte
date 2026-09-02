@@ -41,19 +41,16 @@
     Gauge,
     GitBranch,
     Kanban,
-    Play,
     Check,
-    CircleDashed,
-    CircleDot,
     FileText,
     PanelsTopLeft,
     SquareArrowOutUpRight,
     Boxes,
-    MessageCircleQuestionMark,
-    OctagonAlert,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { agentIndicator, agentIndicatorByState, gitIndicator } from "./ui/indicators";
 
   import { sessionLabel, folderName, boardTabLabel } from "./paths";
   import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
@@ -99,7 +96,7 @@
   import { agentCommitPhase, gitStore } from "./gitState";
   import { hintDigitFor } from "./shortcuts";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import {
     buildWorkspaceMenuEntries,
@@ -301,22 +298,15 @@
     return sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, row.id);
   }
 
-  // "waiting_for_input" is the data-model name; "Request attention" is
-  // what the UI has always called it (Pane.svelte's tab dots say the
-  // same), so the two surfaces agree.
-  const STATUS_WORD: Record<SessionStatus, string> = {
-    working: "Working",
-    waiting_for_input: "Request attention",
-    // Not "Idle", which is what this used to read as: the agent is at a
-    // prompt exactly as an idle one is, and it stopped because something
-    // broke rather than because it finished.
-    failed: "Stopped — something broke",
-    // A status this build cannot read, written by a newer daemon. Named
-    // rather than folded into Idle, which is precisely the default that
-    // made a broken agent look like a finished one.
-    unknown: "Unknown status",
-    idle: "Idle",
-  };
+  // The row's own bubble opens with the very sentence its badge would
+  // have shown, straight from the shared vocabulary -- so the row, the
+  // badge on it and the terminal tab above cannot drift into three
+  // different words for one daemon status. ("waiting_for_input" is the
+  // data-model name and stays put; the human-facing phrasing lives in
+  // ui/indicators.ts.)
+  function statusWord(status: SessionStatus): string {
+    return agentIndicator(status).tip;
+  }
 
   // The checkout a session sits in, named by its folder: for a linked
   // worktree that IS the worktree's own directory name, since git reports
@@ -332,7 +322,7 @@
   // on the git line: mouseenter does not bubble, so a nested one would
   // take over the row's and never hand it back.
   function tabRowTip(row: PageTabRow, status: GitStatus | null): string {
-    const lines = [row.status ? STATUS_WORD[row.status] : row.kind === "file" ? "File" : "Board"];
+    const lines = [row.status ? statusWord(row.status) : row.kind === "file" ? "File" : "Board"];
     const where =
       row.kind === "board"
         ? ($layoutState.boardTabsById[row.id]?.contextFolder ?? "")
@@ -525,7 +515,7 @@
 
   function reportMenuError(text: string): void {
     console.error(text);
-    void message(text, { title: "gavin", kind: "error" });
+    void showAlert({ title: "That didn't work", lines: [text] });
   }
 
   function menuHooks(): SidebarMenuHooks {
@@ -775,9 +765,14 @@
                 <GitBranch size={11} />
               {/if}
               {#if git.repoCount > 0}<span class="recap-count">{git.repoCount}</span>{/if}
+              <!-- No marker of its own: the group already opened with a
+                   branch glyph, and a second one here would be the axis
+                   restated. What the number needed was the warning tone
+                   -- it used to be an amber DOT beside a plain count,
+                   the same dot the board drew for priority and the tab
+                   bar for unsaved edits. The tooltip spells it out. -->
               {#if git.dirtyCount > 0}
-                <span class="git-dot dirty"></span>
-                <span class="recap-count">{git.dirtyCount}</span>
+                <span class="recap-count dirty-count">{git.dirtyCount}</span>
               {/if}
               {#if git.ahead > 0}<span class="recap-delta">&uarr;{git.ahead}</span>{/if}
               {#if git.behind > 0}<span class="recap-delta">&darr;{git.behind}</span>{/if}
@@ -834,19 +829,25 @@
             onclick={() => openHubView(ws, "orchestration")}
           >
             <span class="recap-body">
+              <!-- A rail stage is an agent doing something, so running /
+                   needing-you / idle borrow the agent badge rather than
+                   drawing a third vocabulary for the same three facts.
+                   Only `done` is the rail's own word -- an agent has no
+                   such state. -->
               {#each railStripStats(rails) as key (key)}
-                <span class="rail-stat {key}">
-                  {#if key === "running"}
-                    <Play size={10} />
-                  {:else if key === "attention"}
-                    <MessageCircleQuestionMark size={10} />
-                  {:else if key === "done"}
+                {#if key === "done"}
+                  <span class="rail-stat done">
                     <Check size={10} />
-                  {:else}
-                    <CircleDashed size={10} />
-                  {/if}
-                  <span class="recap-count">{rails[key]}</span>
-                </span>
+                    <span class="recap-count">{rails[key]}</span>
+                  </span>
+                {:else}
+                  <StatusBadge
+                    indicator={agentIndicatorByState(key === "running" ? "working" : key === "attention" ? "waiting_for_input" : "idle")}
+                    size={10}
+                    tip={null}
+                    text={rails[key]}
+                  />
+                {/if}
               {/each}
             </span>
           </button>
@@ -933,24 +934,37 @@
           {#if editingPageId !== page.id && tabs.tabs > 0}
             <span class="page-recap" role="group" aria-label={tabsRecapTip(tabs)} use:tooltip={tabsRecapTip(tabs)}>
               <span class="tab-stat total"><PanelsTopLeft size={10} /><span class="recap-count">{tabs.tabs}</span></span>
+              <!-- The agent tallies wear the agent badge (ui/indicators.ts),
+                   not a local Play/ring pair: these count the very
+                   sessions whose rows are one level down, and the two
+                   used to disagree about what "running" looks like. The
+                   strip has one bubble of its own, so the badges take
+                   none. -->
               {#if tabs.running > 0}
-                <span class="tab-stat running"><Play size={9} /><span class="recap-count">{tabs.running}</span></span>
+                <StatusBadge indicator={agentIndicatorByState("working")} size={9} tip={null} text={tabs.running} />
               {/if}
-              <!-- Its own stat, not folded into idle. Before v21 a broken
+              <!-- Its own tally, not folded into idle. Before v21 a broken
                    agent WAS idle here, so this strip told the human a page
                    was quietly finished when what it actually was, was
                    broken. Leaving it out of both buckets instead would be
                    worse still: the agent would vanish from the row. -->
               {#if tabs.failed > 0}
-                <span class="tab-stat failed"><OctagonAlert size={9} /><span class="recap-count">{tabs.failed}</span></span>
+                <StatusBadge indicator={agentIndicatorByState("failed")} size={9} tip={null} text={tabs.failed} />
               {/if}
               {#if tabs.idle > 0}
-                <span class="tab-stat idle"><CircleDashed size={9} /><span class="recap-count">{tabs.idle}</span></span>
+                <StatusBadge indicator={agentIndicatorByState("idle")} size={9} tip={null} text={tabs.idle} />
               {/if}
             </span>
           {/if}
           {#if waitingForInputCount(page) > 0}
-            <span class="waiting-badge">{waitingForInputCount(page)}</span>
+            {@const waiting = waitingForInputCount(page)}
+            <StatusBadge
+              indicator={agentIndicatorByState("waiting_for_input")}
+              size={10}
+              text={waiting}
+              tip={`${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you on this page`}
+              class="waiting-badge"
+            />
           {/if}
           <button
             class="close-page"
@@ -985,19 +999,20 @@
                 }}
                 oncontextmenu={(e) => openSessionRowMenu(e, ws, page, row)}
               >
-                <span class="tab-kind {row.status ?? row.kind}">
-                  {#if row.kind === "board"}
-                    <Kanban size={10} />
-                  {:else if row.kind === "file"}
-                    <FileText size={10} />
-                  {:else if row.status === "working"}
-                    <Play size={10} />
-                  {:else if row.status === "waiting_for_input"}
-                    <CircleDot size={10} />
-                  {:else}
-                    <CircleDashed size={10} />
-                  {/if}
-                </span>
+                <!-- A terminal row leads with the shared agent badge, so
+                     the sidebar, the tab bar above it and the board card
+                     bound to the same session say the same thing. File
+                     and board rows have no agent behind them and get a
+                     plain kind glyph instead. The row already carries its
+                     own bubble (tabRowTip), so the badge does not add a
+                     second one. -->
+                {#if row.kind === "board" || row.kind === "file"}
+                  <span class="tab-kind">
+                    {#if row.kind === "board"}<Kanban size={10} />{:else}<FileText size={10} />{/if}
+                  </span>
+                {:else}
+                  <StatusBadge indicator={agentIndicator(row.status)} size={10} tip={null} class="tab-kind" />
+                {/if}
                 <span class="tab-body">
                   {#if editingSessionId === row.id}
                     <input
@@ -1022,9 +1037,15 @@
                   {#if gitStatus}
                     <span class="tab-git">
                       <span class="worktree">{worktreeName(gitStatus)}</span>
-                      <GitBranch size={9} />
-                      <span class="git-branch">{gitStatus.branch}</span>
-                      <span class="git-dot" class:dirty={gitStatus.dirty} class:clean={!gitStatus.dirty}></span>
+                      <!-- ONE branch glyph, toned by the checkout's state,
+                           with the branch name taking the tone from it.
+                           There used to be a plain glyph here AND a
+                           coloured dot two elements along -- the axis
+                           stated twice, the state carried only by the
+                           second. The name keeps its own element so it
+                           can still truncate. -->
+                      <StatusBadge indicator={gitIndicator(gitStatus.dirty)} size={9} tip={null} />
+                      <span class="git-branch" class:dirty={gitStatus.dirty}>{gitStatus.branch}</span>
                       {#if formatAheadBehind(gitStatus)}
                         <span class="git-ahead-behind">{formatAheadBehind(gitStatus)}</span>
                       {/if}
@@ -1135,7 +1156,14 @@
           {/if}
           <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
           {#if workspaceWaitingForInputCount(ws) > 0}
-            <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
+            {@const waiting = workspaceWaitingForInputCount(ws)}
+            <StatusBadge
+              indicator={agentIndicatorByState("waiting_for_input")}
+              size={10}
+              text={waiting}
+              tip={`${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you in this workspace`}
+              class="waiting-badge"
+            />
           {/if}
           <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
         </div>
@@ -1209,7 +1237,14 @@
             >{ws.name}</span>
           {/if}
           {#if workspaceWaitingForInputCount(ws) > 0}
-            <span class="waiting-badge">{workspaceWaitingForInputCount(ws)}</span>
+            {@const waiting = workspaceWaitingForInputCount(ws)}
+            <StatusBadge
+              indicator={agentIndicatorByState("waiting_for_input")}
+              size={10}
+              text={waiting}
+              tip={`${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you in this workspace`}
+              class="waiting-badge"
+            />
           {/if}
           <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
           <button
@@ -1376,16 +1411,18 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .waiting-badge {
-    flex: 0 0 auto;
-    background: var(--danger);
-    color: var(--text-inverted);
+  /* A ring around the agent badge, not a filled red pill. Red was the
+     app's loudest colour spent on a fact that is neither broken nor
+     urgent -- and the SAME fact rendered amber two rows below, on the
+     session row this number counts. Amber now, everywhere, with the ring
+     doing the work the fill used to: making a count read as a count. The
+     glyph and the tone are the badge's; only the ring is ours. */
+  .page-row :global(.waiting-badge),
+  .workspace-row :global(.waiting-badge) {
+    border: 1px solid var(--border-warning);
     border-radius: 8px;
-    padding: 0 5px;
-    font-size: 0.85em;
+    padding: 0 4px;
     line-height: 1.4;
-    min-width: 14px;
-    text-align: center;
   }
   .git-branch {
     flex: 0 1 auto;
@@ -1395,19 +1432,8 @@
     white-space: nowrap;
     color: var(--text-muted);
   }
-  .git-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-    box-sizing: border-box;
-  }
-  .git-dot.dirty {
-    background: var(--warning);
-  }
-  .git-dot.clean {
-    background: transparent;
-    border: 1px solid var(--warning);
+  .git-branch.dirty {
+    color: var(--warning-text);
   }
   .git-ahead-behind {
     flex: 0 1 auto;
@@ -1619,33 +1645,29 @@
   .recap-count {
     font-variant-numeric: tabular-nums;
   }
+  /* "of those repos, this many have uncommitted changes" -- the app's
+     one meaning for amber (ui/indicators.ts): this wants a human. */
+  .dirty-count {
+    color: var(--warning-text);
+  }
   .recap-delta {
     font-size: 0.9em;
     white-space: nowrap;
   }
-  /* One tally per rail phase, coloured the way the Orchestration tab
-     colours a rail's own state. Idle deliberately has no rule: a rail
-     that is not doing anything stays the row's muted default, exactly as
-     the page rows' own idle tally does. */
+  /* Only `done` is drawn here now: running, needing-you and idle are
+     the shared agent badge, which brings its own tone with it. */
   .rail-stat {
     display: inline-flex;
     align-items: center;
     gap: 2px;
   }
-  .rail-stat.running {
-    color: var(--accent-text);
-  }
   .rail-stat.done {
     color: var(--success-text);
   }
-  /* Warning tone, matching the rail header and the chip ring it counts. */
-  .rail-stat.attention {
-    color: var(--warning-text);
-  }
   /* The page row's own recap: how many tabs the page holds, and how many
-     agents are running / idle behind them. Same icon vocabulary as the
-     rails chip above -- Play for running, an unfilled ring for idle, and
-     idle left muted rather than coloured -- so the two rows read as one
+     agents are running / idle behind them. The agent counts wear the
+     shared agent badge (ui/indicators.ts), the same one the rails chip
+     above and the session rows below use, so all three read as one
      system. Borderless, unlike the workspace chips: those are buttons,
      this is a readout, and a 200px page row has no width to spend on a
      hairline that carries no meaning of its own.
@@ -1662,12 +1684,6 @@
     display: inline-flex;
     align-items: center;
     gap: 2px;
-  }
-  .tab-stat.running {
-    color: var(--accent-text);
-  }
-  .tab-stat.failed {
-    color: var(--danger);
   }
   .workspace-row.drop-before,
   .page-row.drop-before {
@@ -1729,24 +1745,20 @@
     background: var(--surface-base);
     color: var(--text);
   }
-  /* Same three-state vocabulary as the recap above and the terminal tab
-     dots: working speaks up in the accent, an unfilled ring is idle, and
-     waiting is the one that asks for you -- the warning hue the page
-     row's badge already uses for exactly that. File and board tabs stay
-     muted; nothing is running behind them to have a state. */
-  .tab-kind {
+  /* A terminal row's glyph is the shared agent badge, which brings its
+     own tone; a file or board row is a plain muted glyph, because
+     nothing is running behind it to have a state. The descendant
+     :global() reaches into the badge component -- a LEADING one would be
+     app-wide, which is how PlanTree's .split once dimmed LayoutTree. */
+  .tab-row :global(.tab-kind) {
     display: inline-flex;
     /* Aligns the icon to the label's cap height rather than the row's
        top edge, at this row's own (0.9em) size. */
     padding-top: 2px;
     flex: 0 0 auto;
+  }
+  .tab-row span.tab-kind {
     color: var(--text-muted);
-  }
-  .tab-kind.working {
-    color: var(--accent-text);
-  }
-  .tab-kind.waiting_for_input {
-    color: var(--warning);
   }
   /* Beside the NAME, like .tab-kind on the other side -- a row with a
      git line under it is two lines tall and the link belongs on the

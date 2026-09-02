@@ -79,11 +79,16 @@ export function liveSessionTotal(closables: ArchiveClosables[]): number {
   return closables.reduce((n, c) => n + c.sessionIds.length, 0);
 }
 
-/// The dialog's wording, in confirmClose.ts's voice: what is about to
-/// happen, then what it costs. Only ever shown when `sessions` is at
-/// least 1 -- a batch that ends nothing is not worth a dialog.
-export function archiveClosePrompt(cards: number, sessions: number): string {
+/// The dialog's wording, in confirmClose.ts's voice: the question, then
+/// what it costs. Title and consequence separately because the shared
+/// modal renders them separately -- the heading asks, the list below it
+/// spells out the price. Only ever shown when `sessions` is at least
+/// 1 -- a batch that ends nothing is not worth a dialog.
+export function archiveClosePrompt(cards: number, sessions: number): { title: string; lines: string[] } {
   const cardWord = cards === 1 ? "this card" : `these ${cards} cards`;
   const s = sessions === 1 ? "" : "s";
-  return `Archive ${cardWord}? ${sessions} running agent session${s} will end.`;
+  return {
+    title: `Archive ${cardWord}?`,
+    lines: [`${sessions} running agent session${s} will end.`],
+  };
 }

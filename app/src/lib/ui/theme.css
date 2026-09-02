@@ -212,10 +212,20 @@ select {
    states, so sharpening one would make a disclosure change character on
    expand.
 
+   The doubled “»” the rail badge wears for a running rail is the same
+   bare bent line twice over, so it blunts the same way and harder: at
+   11px two round joins sit inside the width one arrow used to have.
+
    Lucide sets linecap/linejoin as presentation ATTRIBUTES, which any
    rule outranks, so :where() — zero specificity — already wins here
    while still yielding to a component that wants the round one back. */
-:where(.lucide-chevron-right, .lucide-chevron-down, .lucide-chevron-left, .lucide-chevron-up) {
+:where(
+  .lucide-chevron-right,
+  .lucide-chevron-down,
+  .lucide-chevron-left,
+  .lucide-chevron-up,
+  .lucide-chevrons-right
+) {
   stroke-linejoin: miter;
   stroke-linecap: butt;
 }

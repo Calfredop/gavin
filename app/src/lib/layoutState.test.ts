@@ -6,7 +6,7 @@ import { allSessionIds } from "./layout";
 import type { Page, Workspace } from "./workspace";
 import { getActiveView } from "./workspace";
 import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { askConfirm } from "./dialog";
 import { kanbanState } from "./kanbanState";
 import { orchestrations } from "./orchestrationState";
 import { toolRecords } from "./toolsState";
@@ -14,7 +14,7 @@ import { toolRecords } from "./toolsState";
 // setWorkspaceRoot's reclaim offer is the only dialog this module opens.
 // Defaults to "Start fresh" so every test that is not about the reclaim
 // takes the ordinary binding path.
-vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn().mockResolvedValue(false) }));
+vi.mock("./dialog", () => ({ askConfirm: vi.fn().mockResolvedValue(false) }));
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
@@ -295,7 +295,12 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
-    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("Gavin");
+    expect(vi.mocked(askConfirm).mock.calls[0][0].title).toContain("Gavin");
+    // Neither button is a "Cancel": both answers spend the tombstone.
+    expect(vi.mocked(askConfirm).mock.calls[0][0]).toMatchObject({
+      confirmLabel: "Restore",
+      cancelLabel: "Start fresh",
+    });
   });
 
   it("does not offer it for a folder nothing was removed from", async () => {
@@ -303,7 +308,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/other");
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
   });
 
   // Re-pointing a workspace that already holds tabs and a watch is a
@@ -313,7 +318,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
   });
 
   it("does not offer it for a workspace that is already bound to a root", async () => {
@@ -321,12 +326,12 @@ describe("reclaiming a removed workspace's rows", () => {
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
   });
 
   it("Start fresh binds normally and drops the record so it stops asking", async () => {
     withTombstone([ws("fresh", [])]);
-    vi.mocked(confirm).mockResolvedValueOnce(false);
+    vi.mocked(askConfirm).mockResolvedValueOnce(false);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
@@ -339,7 +344,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
   it("Restore re-keys the workspace, carrying its pages with it", async () => {
     withTombstone([ws("fresh", [page("p1", leaf([]))])]);
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    vi.mocked(askConfirm).mockResolvedValueOnce(true);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
@@ -357,7 +362,7 @@ describe("reclaiming a removed workspace's rows", () => {
   // workspace was created with.
   it("Restore unwatches the new id, then watches and fetches the restored one", async () => {
     withTombstone([ws("fresh", [])]);
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    vi.mocked(askConfirm).mockResolvedValueOnce(true);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 
@@ -371,7 +376,7 @@ describe("reclaiming a removed workspace's rows", () => {
 
   it("Restore persists the restored id", async () => {
     withTombstone([ws("fresh", [])]);
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    vi.mocked(askConfirm).mockResolvedValueOnce(true);
 
     await setWorkspaceRoot("fresh", "/repo/gavin");
 

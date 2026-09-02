@@ -8,7 +8,7 @@
 // rail step -- so it is patched into the tree immediately rather than
 // waited for from the watcher ~170ms later.
 
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { askConfirm } from "./dialog";
 import { get } from "svelte/store";
 import * as backend from "./backend";
 import { patchPlanPath } from "./gavinState";
@@ -90,7 +90,13 @@ export async function executeArchive(
   const closables = closablesForArchive(get(layoutState), get(kanbanState)[workspaceId], cards);
   const sessions = liveSessionTotal(closables);
   if (sessions > 0) {
-    const go = await confirm(archiveClosePrompt(cards.length, sessions), { title: "gavin" });
+    const go = await askConfirm({
+      ...archiveClosePrompt(cards.length, sessions),
+      confirmLabel: cards.length === 1 ? "Archive card" : "Archive cards",
+      // Killing a running agent loses whatever it had not written down,
+      // so this one is never answerable with a stray Enter.
+      danger: true,
+    });
     // Cancelled: nothing moved, nothing closed, and nothing to report.
     if (!go) return ARCHIVE_CANCELLED;
   }

@@ -8,8 +8,6 @@
     Sparkles,
     SquareStack,
     BrushCleaning,
-    CirclePause,
-    MessageCircleQuestionMark,
     GripVertical,
     Ellipsis,
     LifeBuoy,
@@ -17,6 +15,9 @@
   import IconButton from "./ui/IconButton.svelte";
   import { resumeNoteFor } from "./autoResume";
   import { resumeTrail } from "./autoResumeState";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { tooltip } from "./tooltip";
+  import { attentionIndicator, railIndicator } from "./ui/indicators";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
   import type { Label } from "./kanban";
@@ -47,7 +48,6 @@
   } from "./orchestration";
   import { highlightedConflict } from "./orchestrationState";
   import { orchDragState } from "./orchestrationDrag";
-  import { tooltip } from "./tooltip";
   import { openContextMenuFromEvent } from "./contextMenu";
 
   interface Props {
@@ -323,19 +323,17 @@
           onmouseleave={() => highlightedConflict.set(null)}
         >{n}</span>
       {/each}
-      <span class="state {railState}">{railState}</span>
-      <!-- After the state word, not instead of it: a rail with a step
-           waiting on a human is still running, and saying otherwise here
-           would contradict the Pause button right beside it. -->
+      <StatusBadge indicator={railIndicator(railState)} text={railState} />
+      <!-- After the state, not instead of it: a rail with a step waiting
+           on a human is still running, and saying otherwise here would
+           contradict the Pause button right beside it. Same badge the
+           step and its chip use for the same fact, one level down. -->
       {#if attention}
-        <span class="attention" use:tooltip={attentionTitle}>
-          {#if attention === "asking"}
-            <MessageCircleQuestionMark size={11} />
-          {:else}
-            <CirclePause size={11} />
-          {/if}
-          needs you
-        </span>
+        <StatusBadge
+          indicator={attentionIndicator(attention)}
+          text="needs you"
+          tip={attentionTitle}
+        />
       {/if}
       {#if railState === "running"}
         <IconButton icon={Pause} label="Pause" onclick={onPause} />
@@ -608,26 +606,6 @@
     color: var(--text);
     font-size: inherit;
     font-weight: 600;
-  }
-  .state {
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-  .state.running {
-    color: var(--accent-text);
-  }
-  .state.paused {
-    color: var(--warning-text);
-  }
-  /* Warning tone, matching the chip ring it summarises. A running rail
-     keeps its accent-coloured state word: this qualifies that word, it
-     does not replace it. */
-  .attention {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: 11px;
-    color: var(--warning-text);
   }
   .rail-badge {
     flex: none;

@@ -1,4 +1,4 @@
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { askConfirm } from "./dialog";
 import { get } from "svelte/store";
 import { layoutState } from "./layoutState";
 import type { LayoutNode } from "./layout";
@@ -49,17 +49,16 @@ export async function confirmTabClose(sessionId: string): Promise<boolean> {
   const state = get(layoutState);
   if (!tabCloseConfirmEnabled(state, sessionId)) return true;
   const tree = treeHolding(state, sessionId);
-  if (tree && isLastTabInPane(tree, sessionId)) {
-    return confirm("Close this tab? It's the last one in this pane, so the pane will close too.", {
-      title: "gavin",
-    });
-  }
   // A file or board tab ends no process; a terminal tab does, and saying
   // so is the whole point of the prompt.
   const ends = !state.fileTabsById[sessionId] && !state.boardTabsById[sessionId];
-  return confirm(ends ? "Close this tab? The session will end." : "Close this tab?", {
-    title: "gavin",
-  });
+  const lines = [
+    ...(ends ? ["The terminal session will end."] : []),
+    ...(tree && isLastTabInPane(tree, sessionId)
+      ? ["It's the last tab in this pane, so the pane will close too."]
+      : []),
+  ];
+  return askConfirm({ title: "Close this tab?", lines, confirmLabel: "Close tab" });
 }
 
 // Prompts once for a whole batch (the tab menu's Close Others / to the
@@ -72,8 +71,11 @@ export async function confirmTabsClose(sessionIds: string[]): Promise<boolean> {
   const state = get(layoutState);
   if (!tabCloseConfirmEnabled(state, sessionIds[0])) return true;
   const sessions = sessionTabsOnly(sessionIds, state.fileTabsById, state.boardTabsById).length;
-  const tail = sessions === 0 ? "" : ` ${sessions} terminal session${sessions === 1 ? "" : "s"} will end.`;
-  return confirm(`Close ${sessionIds.length} tabs?${tail}`, { title: "gavin" });
+  return askConfirm({
+    title: `Close ${sessionIds.length} tabs?`,
+    lines: sessions === 0 ? [] : [`${sessions} terminal session${sessions === 1 ? "" : "s"} will end.`],
+    confirmLabel: "Close tabs",
+  });
 }
 
 // Prompts before closing an entire pane -- always, since the toolbar's
@@ -88,8 +90,10 @@ export async function confirmPaneClose(anySessionId: string): Promise<boolean> {
   if (!path) return true;
   const leaf = getNodeAtPath(tree, path);
   const count = leaf.type === "leaf" ? sessionTabsOnly(leaf.tabs, state.fileTabsById, state.boardTabsById).length : 0;
-  return confirm(`Close this pane? ${count} terminal session${count === 1 ? "" : "s"} will end.`, {
-    title: "gavin",
+  return askConfirm({
+    title: "Close this pane?",
+    lines: [`${count} terminal session${count === 1 ? "" : "s"} will end.`],
+    confirmLabel: "Close pane",
   });
 }
 
@@ -102,8 +106,10 @@ export async function confirmPageClose(workspaceId: string, pageId: string): Pro
   const page = state.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === pageId);
   if (!page) return true;
   const count = sessionTabsOnly(allSessionIds(page.layout), state.fileTabsById, state.boardTabsById).length;
-  return confirm(`Close this page? ${count} terminal session${count === 1 ? "" : "s"} will end.`, {
-    title: "gavin",
+  return askConfirm({
+    title: "Close this page?",
+    lines: [`${count} terminal session${count === 1 ? "" : "s"} will end.`],
+    confirmLabel: "Close page",
   });
 }
 
@@ -121,9 +127,16 @@ export async function confirmWorkspaceClose(workspaceId: string): Promise<boolea
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return true;
   const count = sessionTabsOnly(allSessionIdsInWorkspace(ws), state.fileTabsById, state.boardTabsById).length;
-  return confirm(
-    `Remove this workspace from gavin? ${count} terminal session${count === 1 ? "" : "s"} will end. ` +
-      `Nothing on disk is deleted and its board is kept — re-adding the folder offers to restore it.`,
-    { title: "gavin" }
-  );
+  return askConfirm({
+    title: "Remove this workspace from gavin?",
+    lines: [
+      `${count} terminal session${count === 1 ? "" : "s"} will end.`,
+      "Nothing on disk is deleted and its board is kept — re-adding the folder offers to restore it.",
+    ],
+    confirmLabel: "Remove workspace",
+    // Red, and Enter dismisses rather than removes: the gesture reads as
+    // a delete even though it is not one, so it must not be answerable
+    // by reflex.
+    danger: true,
+  });
 }
