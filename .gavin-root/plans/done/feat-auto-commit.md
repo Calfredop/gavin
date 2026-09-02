@@ -1,7 +1,7 @@
 ---
 kind: task
 title: [feat] auto commit
-status: In Progress
+status: Done
 ---
 When creating a task, plan, note (a new card) add a checkbox for "Auto commit". If checked the md file should be enriched with a chunk of text that states something like:
 
