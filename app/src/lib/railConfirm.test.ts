@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { railDeleteConfirm, railClearDoneConfirm, groupRemoveConfirm } from "./railConfirm";
+import {
+  railDeleteConfirm,
+  railClearDoneConfirm,
+  groupRemoveConfirm,
+  runAllConfirm,
+} from "./railConfirm";
 import type { CardEntry, Orchestration, Rail, Stage, Step } from "./orchestration";
 import type { PlanFileInfo } from "./gavin";
 
@@ -217,5 +222,60 @@ describe("groupRemoveConfirm", () => {
     expect(groupRemoveConfirm(s, cards).lines).toContain(
       "1 card stays — a step is only a reference."
     );
+  });
+});
+
+describe("runAllConfirm", () => {
+  function named(id: string, name: string, position: number): Rail {
+    return { ...rail(id, [[["s-" + id, "/ws/.gavin-root/plans/a.md"]]]), name, position };
+  }
+
+  function orchOfMany(rails: Rail[], over: Partial<Orchestration> = {}): Orchestration {
+    return { rails, conflictNotes: [], railRuns: [], stepRuns: [], ...over };
+  }
+
+  it("names the rails it is about to start, in screen order", () => {
+    const o = orchOfMany([named("r1", "docs", 1), named("r2", "daemon", 0)]);
+    const c = runAllConfirm(o);
+    expect(c.title).toBe("Run 2 idle rails?");
+    expect(c.lines[0]).toBe("Starts: daemon, docs.");
+    expect(c.confirmLabel).toBe("Start 2 rails");
+  });
+
+  it("singularizes a lone rail", () => {
+    const c = runAllConfirm(orchOfMany([named("r1", "docs", 0)]));
+    expect(c.title).toBe("Run 1 idle rail?");
+    expect(c.confirmLabel).toBe("Start 1 rail");
+  });
+
+  it("accounts for the running rails it is leaving alone", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1)], {
+      railRuns: [{ railId: "r2", state: "running", currentStageId: "r2-s0" }],
+    });
+    const c = runAllConfirm(o);
+    expect(c.lines[0]).toBe("Starts: docs.");
+    expect(c.lines).toContain("1 rail already running keeps going, untouched.");
+  });
+
+  it("accounts for the paused rails it is leaving alone", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1)], {
+      railRuns: [{ railId: "r2", state: "paused", currentStageId: "r2-s0" }],
+    });
+    const c = runAllConfirm(o);
+    expect(c.lines.some((l) => l.startsWith("1 rail paused stays paused"))).toBe(true);
+  });
+
+  it("accounts for an idle rail with nothing left to run", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1)], {
+      stepRuns: [{ stepId: "s-r2", state: "done", sessionId: null, reason: null }],
+    });
+    const c = runAllConfirm(o);
+    expect(c.lines[0]).toBe("Starts: docs.");
+    expect(c.lines).toContain("1 idle rail has nothing left to run.");
+  });
+
+  it("says nothing about exclusions that do not apply", () => {
+    const c = runAllConfirm(orchOfMany([named("r1", "docs", 0)]));
+    expect(c.lines).toHaveLength(2);
   });
 });

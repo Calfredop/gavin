@@ -1,4 +1,12 @@
-import { isToolStep, railCardPaths, railDoneStepIds, railStateOf, stepStateOf } from "./orchestration";
+import {
+  isToolStep,
+  railCardPaths,
+  railDoneStepIds,
+  railStateOf,
+  runnableIdleRails,
+  firstUnfinishedStageId,
+  stepStateOf,
+} from "./orchestration";
 import type { CardEntry, Orchestration, Rail, Stage } from "./orchestration";
 
 /// What a destructive rail action asks before it runs: the prompt's
@@ -100,4 +108,44 @@ export function groupRemoveConfirm(stage: Stage, cards: Map<string, CardEntry>):
       `${count(cardPaths.size, "card")} ${cardPaths.size === 1 ? "stays" : "stay"} — a step is only a reference.`
     );
   return { title, lines, confirmLabel: "Remove group" };
+}
+
+/// What "Run all" asks before it arms every idle rail. Not destructive,
+/// but not small either -- N rails, each launching an agent on a page of
+/// its own -- so it names them, and it accounts for every rail it is NOT
+/// starting. A count smaller than the number of rails on screen is
+/// exactly the moment a human wants to know why, and the three reasons
+/// (already running, deliberately paused, nothing left to do) are
+/// different enough that one lumped "some rails were skipped" would
+/// answer none of them.
+export function runAllConfirm(orch: Orchestration): RailConfirm {
+  const runnable = runnableIdleRails(orch);
+  const idle = orch.rails.filter((r) => railStateOf(orch, r.id) === "idle");
+  const running = orch.rails.filter((r) => railStateOf(orch, r.id) === "running").length;
+  const paused = orch.rails.filter((r) => railStateOf(orch, r.id) === "paused").length;
+  const finished = idle.filter((r) => firstUnfinishedStageId(r, orch) === null).length;
+  const lines = [
+    `Starts: ${runnable.map((r) => r.name).join(", ")}.`,
+    "Each one arms at its first unfinished stage and launches on its own page.",
+  ];
+  // Said as a fact about the rails, not as an apology: a running rail is
+  // left alone because re-arming it would rewind it to its first
+  // unfinished stage, and a paused one because pausing was a decision.
+  if (running > 0)
+    lines.push(
+      `${count(running, "rail")} already running ${running === 1 ? "keeps" : "keep"} going, untouched.`
+    );
+  if (paused > 0)
+    lines.push(
+      `${count(paused, "rail")} paused ${paused === 1 ? "stays" : "stay"} paused — resume ${paused === 1 ? "it" : "them"} from ${paused === 1 ? "its" : "their"} own header.`
+    );
+  if (finished > 0)
+    lines.push(
+      `${count(finished, "idle rail")} ${finished === 1 ? "has" : "have"} nothing left to run.`
+    );
+  return {
+    title: `Run ${count(runnable.length, "idle rail")}?`,
+    lines,
+    confirmLabel: `Start ${count(runnable.length, "rail")}`,
+  };
 }

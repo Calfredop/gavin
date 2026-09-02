@@ -285,6 +285,27 @@ export function firstUnfinishedStageId(rail: Rail, orch: Orchestration): string 
   return null;
 }
 
+/// The rails a "Run all" arms, in the order they sit on screen. Two
+/// exclusions, and they are different facts.
+///
+/// A RUNNING or PAUSED rail is left out because Start is not a no-op on
+/// one: `startRail` re-points `currentStageId` at the FIRST unfinished
+/// stage, so a rail already three stages in and holding one stalled step
+/// behind it would be rewound and re-launched from there. "Run all"
+/// means "start the ones that are not going", never "restart the fleet".
+///
+/// An idle rail with nothing unfinished is left out because `startRail`
+/// refuses it anyway (no stage to arm) -- counting it would put a rail
+/// in the prompt that the press then silently does nothing to.
+export function runnableIdleRails(orch: Orchestration): Rail[] {
+  return [...orch.rails]
+    .sort((a, b) => a.position - b.position)
+    .filter(
+      (rail) =>
+        railStateOf(orch, rail.id) === "idle" && firstUnfinishedStageId(rail, orch) !== null
+    );
+}
+
 /// What the reactive layer must DO. nextActions decides; executing is
 /// orchestrationState.ts's job alone.
 export type Action =

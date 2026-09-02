@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Plus } from "@lucide/svelte";
+  import { Play, Plus } from "@lucide/svelte";
   import OrchestrationRail from "./OrchestrationRail.svelte";
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
@@ -40,9 +40,15 @@
     stepParams,
     findStep,
     findStage,
+    runnableIdleRails,
   } from "./orchestration";
   import type { Rail } from "./orchestration";
-  import { railDeleteConfirm, railClearDoneConfirm, groupRemoveConfirm } from "./railConfirm";
+  import {
+    railDeleteConfirm,
+    railClearDoneConfirm,
+    groupRemoveConfirm,
+    runAllConfirm,
+  } from "./railConfirm";
   import { findTool, toolKindLabel } from "./orchestrationTools";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
@@ -189,6 +195,35 @@
     railPrompt = null;
     if (pending.kind === "delete") void deleteRailAction(workspaceId, pending.railId);
     else void clearDoneStepsAction(workspaceId, pending.railId);
+  }
+
+  // "Run all": arm every idle rail that still has a stage to start. Held
+  // as a bare flag rather than a captured list of rails so a plan that
+  // reloads under the open prompt re-derives what it is about to do --
+  // and closes, the way the rail prompts do, if there is nothing left to
+  // start by the time the human reaches the button.
+  let runAllPrompt = $state(false);
+  const runnableRails = $derived(orch ? runnableIdleRails(orch) : []);
+  const runAllContent = $derived.by(() =>
+    runAllPrompt && orch && runnableRails.length > 0 ? runAllConfirm(orch) : null
+  );
+  const runAllTip = $derived(
+    runnableRails.length === 0
+      ? "No idle rail has anything left to run"
+      : `Start ${runnableRails.length} idle ${runnableRails.length === 1 ? "rail" : "rails"}…`
+  );
+
+  /// SEQUENTIALLY, never in parallel. Every run-state write reads the
+  /// store, applies to that snapshot and writes the whole thing back
+  /// (mutateRunState), so two starts in flight at once would both build
+  /// on the same `railRuns` and the second would drop the first's row --
+  /// a rail left looking idle while its steps launch. The ids are taken
+  /// before the first await for the same reason: `runnableRails` is
+  /// derived, and the rail it starts leaves it on the very next tick.
+  async function runAll(): Promise<void> {
+    const ids = runnableRails.map((r) => r.id);
+    runAllPrompt = false;
+    for (const id of ids) await startRail(workspaceId, id);
   }
 
   // The group whose "Save as template…" dialog is open, by stage id --
@@ -614,6 +649,15 @@
     <button
       type="button"
       class="add-rail"
+      disabled={runnableRails.length === 0}
+      title={runAllTip}
+      onclick={() => (runAllPrompt = true)}
+    >
+      <Play size={14} /> Run all
+    </button>
+    <button
+      type="button"
+      class="add-rail"
       disabled={Boolean(orchestrationBlocked)}
       title={orchestrationBlocked ?? ""}
       onclick={() => void newRail()}
@@ -827,6 +871,15 @@
       },
     ]}
     onCancel={() => (railPrompt = null)}
+  />
+{/if}
+
+{#if runAllContent}
+  <ConfirmPrompt
+    title={runAllContent.title}
+    lines={runAllContent.lines}
+    choices={[{ label: runAllContent.confirmLabel, onPick: () => void runAll() }]}
+    onCancel={() => (runAllPrompt = false)}
   />
 {/if}
 

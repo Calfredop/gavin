@@ -1539,6 +1539,42 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Running every idle rail",
+    items: [
+      {
+        id: "run-all-placement",
+        text: "The Orchestration toolbar's “Run all” sits between “Generate with agent…” and “+ Rail”",
+      },
+      {
+        id: "run-all-dead-when-nothing",
+        text: "With every rail either running or empty, “Run all” is greyed and its tooltip reads “No idle rail has anything left to run”",
+        hint: "Test both halves: a workspace with no rails at all, and one whose only rail has every step already done. Neither may offer a live button.",
+      },
+      {
+        id: "run-all-confirm-names-rails",
+        text: "Pressing it opens the confirm naming each rail it will start, by name, in the order they sit on screen",
+      },
+      {
+        id: "run-all-starts-idle-only",
+        text: "Confirming flips every idle non-empty rail to running; the rails already running keep their own current stage",
+        hint: "The one that matters: leave a rail running on its SECOND stage with a stalled step behind it, then Run all. That rail must not rewind to stage 1.",
+      },
+      {
+        id: "run-all-leaves-paused",
+        text: "A paused rail stays paused, and the confirm said so before you pressed",
+      },
+      {
+        id: "run-all-each-gets-a-page",
+        text: "Each rail started this way lands its sessions on its own page, exactly as pressing its own Start would",
+        hint: "Unbound rails get a page created at Start (spec O16) — check the sidebar grew one page per rail, not one shared page.",
+      },
+      {
+        id: "run-all-cancel",
+        text: "Cancelling the confirm starts nothing — every rail is still idle",
+      },
+    ],
+  },
+  {
     title: "Auto commit",
     items: [
       {

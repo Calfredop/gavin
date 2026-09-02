@@ -7,6 +7,7 @@ import {
   stepStateOf,
   railStateOf,
   firstUnfinishedStageId,
+  runnableIdleRails,
   nextActions,
   addRail,
   renameRail,
@@ -224,6 +225,53 @@ describe("firstUnfinishedStageId", () => {
 
   it("is null for a rail with no stages", () => {
     expect(firstUnfinishedStageId(rail("r1", []), emptyOrchestration())).toBeNull();
+  });
+});
+
+describe("runnableIdleRails", () => {
+  // Three rails with one step each, so the only thing separating them in
+  // each case is their run state.
+  function three(): Rail[] {
+    return [
+      { ...rail("r1", [[["t1", "/x/a.md"]]]), position: 2 },
+      { ...rail("r2", [[["t2", "/x/b.md"]]]), position: 0 },
+      { ...rail("r3", [[["t3", "/x/c.md"]]]), position: 1 },
+    ];
+  }
+
+  function withRuns(rails: Rail[], railRuns: Orchestration["railRuns"], stepRuns: Orchestration["stepRuns"] = []): Orchestration {
+    return { rails, conflictNotes: [], railRuns, stepRuns };
+  }
+
+  it("takes every idle rail, in screen order", () => {
+    const o = withRuns(three(), []);
+    expect(runnableIdleRails(o).map((r) => r.id)).toEqual(["r2", "r3", "r1"]);
+  });
+
+  it("leaves a running rail alone", () => {
+    // Not a no-op: startRail re-points currentStageId at the FIRST
+    // unfinished stage, so re-arming a rail mid-run rewinds it.
+    const o = withRuns(three(), [{ railId: "r3", state: "running", currentStageId: "r3-s0" }]);
+    expect(runnableIdleRails(o).map((r) => r.id)).toEqual(["r2", "r1"]);
+  });
+
+  it("leaves a paused rail alone", () => {
+    const o = withRuns(three(), [{ railId: "r2", state: "paused", currentStageId: "r2-s0" }]);
+    expect(runnableIdleRails(o).map((r) => r.id)).toEqual(["r3", "r1"]);
+  });
+
+  it("drops an idle rail with no stages at all", () => {
+    const o = withRuns([rail("empty", []), ...three()], []);
+    expect(runnableIdleRails(o).map((r) => r.id)).not.toContain("empty");
+  });
+
+  it("drops an idle rail whose every step is already done", () => {
+    const o = withRuns(three(), [], [{ stepId: "t2", state: "done", sessionId: null, reason: null }]);
+    expect(runnableIdleRails(o).map((r) => r.id)).toEqual(["r3", "r1"]);
+  });
+
+  it("is empty for a plan with no rails", () => {
+    expect(runnableIdleRails(emptyOrchestration())).toEqual([]);
   });
 });
 
