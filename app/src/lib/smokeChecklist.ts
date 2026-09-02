@@ -851,6 +851,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "board-tab", text: "Clicking it opens a “<context> · board” tab with only that context's plans" },
       { id: "board-persists", text: "The board tab survives an app restart" },
       { id: "board-missing", text: "Deleting the context folder shows “This context no longer exists”" },
+      {
+        id: "board-tab-survives-hot-reload",
+        text: "With a board tab open, touch app/src/routes/+page.svelte — the tab is still a board afterwards, not a black terminal, and no “unknown session” strip appears",
+        hint: "That edit re-runs bootstrap() while layoutState's store keeps running, so the layout tree survives while the tab maps are re-seeded from Rust underneath it. Dev only: the bundled app runs bootstrap once per launch.",
+      },
     ],
   },
   {

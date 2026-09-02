@@ -468,7 +468,25 @@ async function loadTabMaps(): Promise<void> {
       for (const [tabId, path] of Object.entries(fileTabs)) {
         fileTabsById[tabId] = { path };
       }
-      layoutState.update((s) => ({ ...s, fileTabsById, boardTabsById: boardTabs }));
+      // Rust's copy is a SEED, not the truth. Every write to these maps
+      // lands in the store first and is mirrored to Rust afterwards, so
+      // for the whole flight of a `set_*_tabs` the store is ahead by
+      // exactly the tab that was just opened. `bootstrap` is
+      // +page.svelte's onMount and runs again whenever that component is
+      // recreated -- under `tauri dev`, on any edit that reaches it
+      // without reaching this module, which leaves the layout tree
+      // standing. Copying Rust's map OVER the store's therefore drops
+      // that tab's entry while its id stays in the tree, and an id in a
+      // tree and in neither map is a terminal session as far as
+      // Pane.svelte is concerned (see ClosedTabs). Merging underneath
+      // keeps the seed doing its whole job -- every restored tab Rust
+      // knows about and the store does not still arrives -- without it
+      // ever being able to un-classify a tab the app itself just opened.
+      layoutState.update((s) => ({
+        ...s,
+        fileTabsById: { ...fileTabsById, ...s.fileTabsById },
+        boardTabsById: { ...boardTabs, ...s.boardTabsById },
+      }));
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -477,6 +495,91 @@ async function loadTabMaps(): Promise<void> {
   // failed outright, and pollForStartupState's own timeout (or the
   // bootstrap error it surfaces) is what the human sees. Resolving here
   // rather than hanging keeps that path the one that reports it.
+}
+
+/// Tab ids this app run has already asked Rust to classify, the ids
+/// waiting for the next pass, and the ids a pass is asking about right
+/// now. See repairUnknownTabs. Module-level and NOT parked on hotBag
+/// (unlike the stores above): a re-executed module rebuilds them by
+/// asking again, which costs one round trip and no correctness.
+const unknownTabsChecked = new Set<string>();
+const pendingUnknownTabs = new Set<string>();
+const unknownTabsInFlight = new Set<string>();
+let pendingUnknownTabPass: Promise<void> | null = null;
+
+/// The last-resort repair for the one thing Pane.svelte cannot tell
+/// apart on its own.
+///
+/// A tab id in a layout tree and in NEITHER map is a daemon session --
+/// and that is also exactly what a board or file tab looks like the
+/// moment its map entry goes missing, because nothing about the id
+/// itself says which it is. So a lost entry does not degrade, it
+/// inverts: a real xterm and a `pty-output` listener get built for an id
+/// the daemon never had, `fit()` asks the daemon to resize it, and the
+/// refusal comes back as the daemon-request-error strip. Nothing tidies
+/// that terminal up either -- destroyTerminal is only ever reached from
+/// a close path, and this tab is not closing.
+///
+/// Rather than trust one copy of the classification, ask the other:
+/// every open mirrors its map into Rust, so Rust answers for any tab the
+/// store has lost. An id Rust calls a board or a file tab is put back in
+/// the map and its mistaken terminal destroyed; an id Rust has nothing
+/// for really is a session and is left alone -- and recorded, so an
+/// ordinary terminal is asked about once in the whole run and never
+/// again. The ids queue up for one shared pass, so a page of ten
+/// terminals costs one pair of round trips rather than ten.
+///
+/// This does not replace getting the classification right (loadTabMaps
+/// merges rather than overwrites for exactly that reason); it is what
+/// stops the NEXT way of losing an entry from costing a bogus PTY.
+export function repairUnknownTabs(tabIds: string[]): Promise<void> {
+  for (const id of tabIds) {
+    // In flight counts as asked. Pane.svelte calls this from an $effect
+    // over the store, which every cwd and status push re-runs, so
+    // without this the same ids would be re-asked several times over
+    // while the first pass was still waiting on its round trip.
+    if (unknownTabsChecked.has(id) || unknownTabsInFlight.has(id)) continue;
+    pendingUnknownTabs.add(id);
+  }
+  if (pendingUnknownTabs.size === 0) return Promise.resolve();
+  pendingUnknownTabPass ??= Promise.resolve().then(runUnknownTabPass);
+  return pendingUnknownTabPass;
+}
+
+async function runUnknownTabPass(): Promise<void> {
+  // Cleared first: an id queued while the round trip below is in flight
+  // has to schedule its own pass rather than be silently dropped into
+  // this one's already-taken snapshot.
+  pendingUnknownTabPass = null;
+  const ids = [...pendingUnknownTabs];
+  pendingUnknownTabs.clear();
+  for (const id of ids) unknownTabsInFlight.add(id);
+  // The startup seed answers this question for every restored tab, and
+  // both ready paths already wait on it -- asking underneath it would be
+  // one guaranteed miss per restored board tab.
+  await tabMapsLoaded;
+  const [fileTabs, boardTabs] = await Promise.all([
+    backend.getFileTabs().catch(() => null),
+    backend.getBoardTabs().catch(() => null),
+  ]);
+  for (const id of ids) unknownTabsInFlight.delete(id);
+  // Nothing was learned, so nothing is recorded: leaving these unchecked
+  // is what lets the next render ask again.
+  if (!fileTabs || !boardTabs) return;
+  for (const id of ids) unknownTabsChecked.add(id);
+  const files = ids.filter((id) => fileTabs[id] !== undefined);
+  const boards = ids.filter((id) => boardTabs[id] !== undefined);
+  if (files.length === 0 && boards.length === 0) return;
+  layoutState.update((s) => {
+    const fileTabsById = { ...s.fileTabsById };
+    const boardTabsById = { ...s.boardTabsById };
+    // ??=, not =: the store is the authority the moment it has an answer
+    // of its own, exactly as in loadTabMaps.
+    for (const id of files) fileTabsById[id] ??= { path: fileTabs[id] };
+    for (const id of boards) boardTabsById[id] ??= boardTabs[id];
+    return { ...s, fileTabsById, boardTabsById };
+  });
+  for (const id of [...files, ...boards]) terminalRegistry.destroyTerminal(id);
 }
 
 /// Refills what the frontend only ever learns from daemon pushes.

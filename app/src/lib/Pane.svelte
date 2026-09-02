@@ -12,6 +12,7 @@
     focusPane,
     setSessionName,
     openBoardInSplit,
+    repairUnknownTabs,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { kanbanState, fetchBoard } from "./kanbanState";
@@ -145,6 +146,20 @@
     // Orchestration is a rooted-workspace feature; an unrooted one has
     // no plan to fetch.
     if (ws.rootPath) void fetchOrchestration(ws.id);
+  });
+
+  // The tabs below that this pane is about to render as terminals, purely
+  // because they are in neither map -- which is the only thing that makes
+  // a tab id a session here, and is equally what a board or file tab
+  // looks like if its entry is ever lost. repairUnknownTabs asks Rust's
+  // copy of the classification, once per id per app run: a real terminal
+  // is confirmed and never asked about again, a board or file tab is put
+  // back in the map and the terminal built for it destroyed. Without it a
+  // lost entry is permanent, and costs a `pty-output` listener plus a
+  // resize the daemon refuses every time the pane is rebuilt.
+  $effect(() => {
+    const unknown = leaf.tabs.filter((id) => !boardTab(id) && !fileTabPath(id));
+    if (unknown.length > 0) void repairUnknownTabs(unknown);
   });
 
   // idle intentionally returns null here -- no dot at all is the idle

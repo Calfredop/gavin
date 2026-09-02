@@ -96,6 +96,7 @@ vi.mock("./notifications", () => ({
 
 import * as backend from "./backend";
 import * as notifications from "./notifications";
+import * as terminalRegistry from "./terminalRegistry";
 import {
   layoutState,
   splitPane,
@@ -135,6 +136,7 @@ import {
   movePageAction,
   setWorkspaceRoot,
   openBoardInSplit,
+  repairUnknownTabs,
   handleAgentSessionSpawned,
   retryConnect,
   bootstrap,
@@ -448,6 +450,200 @@ describe("openBoardInSplit", () => {
     expect(backend.setBoardTabs).toHaveBeenCalledWith(state.boardTabsById);
     expect(backend.setWorkspacesState).toHaveBeenCalled();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+// `bootstrap()` is +page.svelte's onMount, and under `tauri dev` an edit
+// that reaches +page.svelte without reaching THIS module destroys and
+// recreates the page while the store keeps running: the layout tree
+// survives, and bootstrap runs a second time against it. loadTabMaps then
+// re-reads Rust's copy of the two maps -- and the store is AHEAD of Rust
+// for the whole flight of openBoardInSplit's `set_board_tabs`, which is
+// mirrored to Rust only after the store already holds the entry. Copying
+// Rust's map over the store's therefore drops the new tab's entry while
+// its id stays in the tree, which is exactly the state Pane.svelte reads
+// as a terminal session (see ClosedTabs) -- a real xterm, a `pty-output`
+// listener and a resize the daemon refuses, for an id it never had.
+//
+// The two writers the bug report suspected are innocent: pruneBoardTabs
+// and repairBoardTabs both `get(layoutState)` and update with no await in
+// between, so neither can carry a stale snapshot across one. loadTabMaps
+// is the only whole-map writer that reads across a round trip.
+describe("the tab maps against a store Rust has not caught up with", () => {
+  async function bootstrapAgain(): Promise<void> {
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({
+      workspaces: get(layoutState).workspaces,
+      activeWorkspaceId: "ws-1",
+    });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    await bootstrap();
+    await vi.waitFor(() => expect(backend.getBoardTabs).toHaveBeenCalled());
+  }
+
+  it("keeps a board tab whose set_board_tabs has not landed yet", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    // Still in flight: Rust has not been told about this tab, so its
+    // get_board_tabs still answers with the map from before the click.
+    vi.mocked(backend.setBoardTabs).mockImplementationOnce(() => new Promise(() => {}));
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+
+    void openBoardInSplit("a", "ws-1", "/ws/auth");
+    const tabId = Object.keys(get(layoutState).boardTabsById)[0];
+    expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
+
+    await bootstrapAgain();
+
+    // Still in the tree, so it must still be classified: an id in a tree
+    // and in neither map IS a terminal as far as Pane.svelte is concerned.
+    expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
+    expect(get(layoutState).boardTabsById[tabId]).toEqual({
+      workspaceId: "ws-1",
+      contextFolder: "/ws/auth",
+    });
+  });
+
+  it("keeps a file tab whose set_file_tabs has not landed yet", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.setFileTabs).mockImplementationOnce(() => new Promise(() => {}));
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+
+    void openFileInSplit("a", "/ws/readme.md");
+    const tabId = Object.keys(get(layoutState).fileTabsById)[0];
+
+    await bootstrapAgain();
+
+    expect(allSessionIds(get(layoutState).workspaces[0].pages[0].layout)).toContain(tabId);
+    expect(get(layoutState).fileTabsById[tabId]).toEqual({ path: "/ws/readme.md" });
+  });
+
+  // The seed is still a seed: a tab Rust knows about and the store does
+  // not -- every restored board and file tab, on every real startup --
+  // has to arrive.
+  it("still takes the entries only Rust has", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({
+      "bt-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" },
+    });
+    vi.mocked(backend.getFileTabs).mockResolvedValue({ "ft-1": "/ws/readme.md" });
+
+    await bootstrapAgain();
+
+    expect(get(layoutState).boardTabsById["bt-1"]).toEqual({
+      workspaceId: "ws-1",
+      contextFolder: "/ws/auth",
+    });
+    expect(get(layoutState).fileTabsById["ft-1"]).toEqual({ path: "/ws/readme.md" });
+  });
+});
+
+// Pane.svelte reads "in neither map" as "daemon session", which is also
+// what a board or file tab looks like the moment its entry is lost --
+// nothing about the id itself distinguishes them. So before a pane is
+// left standing as a terminal, the other copy of the classification gets
+// asked.
+describe("repairUnknownTabs", () => {
+  it("puts back a board tab Rust still classifies, and destroys the terminal built for it", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a", "bt-1"]))])], "ws-1", "a");
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({
+      "bt-1": { workspaceId: "ws-1", contextFolder: "/ws/auth" },
+    });
+
+    await repairUnknownTabs(["a", "bt-1"]);
+
+    expect(get(layoutState).boardTabsById["bt-1"]).toEqual({
+      workspaceId: "ws-1",
+      contextFolder: "/ws/auth",
+    });
+    // Nothing else ever would: destroyTerminal is only reached from a
+    // close path, and this tab is not closing.
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("bt-1");
+    expect(terminalRegistry.destroyTerminal).not.toHaveBeenCalledWith("a");
+  });
+
+  it("puts back a file tab Rust still classifies", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["ft-1"]))])], "ws-1", "ft-1");
+    vi.mocked(backend.getFileTabs).mockResolvedValue({ "ft-1": "/ws/readme.md" });
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+
+    await repairUnknownTabs(["ft-1"]);
+
+    expect(get(layoutState).fileTabsById["ft-1"]).toEqual({ path: "/ws/readme.md" });
+  });
+
+  // The common case by far: every ordinary terminal reaches here, and it
+  // must cost one question in the whole app run, not one per render.
+  it("leaves a real session alone and asks about it only once", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["sess-1"]))])], "ws-1", "sess-1");
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+
+    await repairUnknownTabs(["sess-1"]);
+    await repairUnknownTabs(["sess-1"]);
+
+    expect(get(layoutState).boardTabsById).toEqual({});
+    expect(get(layoutState).fileTabsById).toEqual({});
+    expect(terminalRegistry.destroyTerminal).not.toHaveBeenCalled();
+    expect(backend.getBoardTabs).toHaveBeenCalledTimes(1);
+  });
+
+  // One pane per split, each with its own tabs, all mounting in the same
+  // tick: they share a pass rather than each paying a round trip.
+  it("batches the ids several panes queue in one tick into a single pass", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["s-1", "s-2", "s-3"]))])], "ws-1", "s-1");
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+
+    await Promise.all([
+      repairUnknownTabs(["s-1"]),
+      repairUnknownTabs(["s-2"]),
+      repairUnknownTabs(["s-3"]),
+    ]);
+
+    expect(backend.getBoardTabs).toHaveBeenCalledTimes(1);
+  });
+
+  // Pane.svelte asks from an $effect over the store, which every cwd and
+  // status push re-runs -- so the same ids arrive again and again while
+  // the first pass is still waiting on its round trip.
+  it("does not re-ask for ids a pass already has in flight", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["s-9"]))])], "ws-1", "s-9");
+    let release: ((v: Record<string, string>) => void) | undefined;
+    vi.mocked(backend.getFileTabs).mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve; })
+    );
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+
+    const first = repairUnknownTabs(["s-9"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await repairUnknownTabs(["s-9"]);
+    await repairUnknownTabs(["s-9"]);
+    release!({});
+    await first;
+
+    expect(backend.getBoardTabs).toHaveBeenCalledTimes(1);
+  });
+
+  it("records nothing when the read fails, so the next render asks again", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["bt-2"]))])], "ws-1", "bt-2");
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs).mockRejectedValueOnce(new Error("state not managed"));
+
+    await repairUnknownTabs(["bt-2"]);
+    expect(get(layoutState).boardTabsById["bt-2"]).toBeUndefined();
+
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({
+      "bt-2": { workspaceId: "ws-1", contextFolder: "/ws/auth" },
+    });
+    await repairUnknownTabs(["bt-2"]);
+
+    expect(get(layoutState).boardTabsById["bt-2"]).toEqual({
+      workspaceId: "ws-1",
+      contextFolder: "/ws/auth",
+    });
   });
 });
 
