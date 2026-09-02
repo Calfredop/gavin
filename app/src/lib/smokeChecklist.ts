@@ -1210,6 +1210,47 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Alerts & confirms",
+    items: [
+      {
+        id: "dialog-not-native",
+        text: "Closing a terminal tab asks in a gavin modal — themed panel, monospace, dimmed backdrop — not a macOS sheet",
+        hint: "The whole section: no prompt in the app should be drawn by the OS any more.",
+      },
+      {
+        id: "dialog-says-the-verb",
+        text: "Every prompt's buttons name the action: Close tab / Close pane / Close page / Close tabs / Remove workspace / Archive card — never OK",
+      },
+      {
+        id: "dialog-enter-and-escape",
+        text: "Enter takes the harmless answer and Escape always dismisses: Enter closes the tab, but on “Remove this workspace” and “Archive this card” Enter cancels instead",
+        hint: "Destructive prompts keep focus on the dismissing button on purpose.",
+      },
+      {
+        id: "dialog-stacked-escape",
+        text: "Deleting a card from its detail modal: one Escape closes only the confirm, and the card detail is still open behind it",
+        hint: "Both are window-level Escape listeners — this is the one that used to close both.",
+      },
+      {
+        id: "dialog-alert-one-button",
+        text: "A failing menu action (rename a page to something the daemon rejects, or Show in Finder on a deleted folder) shows a one-button gavin modal, not a red macOS alert",
+      },
+      {
+        id: "dialog-window-close",
+        text: "The red traffic light asks “Close this window?” with Close window / Keep open, and Keep open really keeps it",
+        hint: "⌘W closes a tab, not the window — use the button, or ⌘Q.",
+      },
+      {
+        id: "dialog-reclaim-two-actions",
+        text: "The removed-folder reclaim offers Restore / Start fresh — neither says Cancel, because both spend the saved board",
+      },
+      {
+        id: "dialog-queue",
+        text: "Two failures in a row show one modal at a time: dismissing the first reveals the second rather than losing it",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {
