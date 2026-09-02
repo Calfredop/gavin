@@ -722,6 +722,26 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       { id: "home-tiles", text: "Each of the six tiles navigates to its tab" },
       { id: "home-resize", text: "Resizing the window keeps the agent terminal correctly sized, not clipped" },
+      {
+        id: "home-board-panel-size",
+        text: "The Board panel is only as tall as its column chips; the PRD excerpt takes the height it used to spend",
+        hint: "Add columns until the chips wrap past a third of the side column — the panel caps and the chips scroll rather than pushing the PRD out.",
+      },
+      {
+        id: "home-prd-scrolls",
+        text: "The PRD panel scrolls: a PRD longer than the panel can be read on past its last visible line, and never ends mid-sentence with no way on",
+        hint: "Wheel over the excerpt. Paragraph breaks must survive — a wall with no blank lines means prdExcerpt went back to stripping them.",
+      },
+      {
+        id: "home-divider-drag",
+        text: "The gap between the agent and the PRD/Board/Orchestration column drags: the agent terminal reflows to its new width, and neither side can be dragged away entirely",
+        hint: "Drag past both ends. Release outside the window too — WKWebView drops pointerup when the target leaves the DOM, and the buttons===0 bail-out is what catches it.",
+      },
+      {
+        id: "home-divider-persists",
+        text: "The dragged split survives leaving the Home tab and an app restart; a double-click on the divider puts it back to the shipped 3:2",
+        hint: "The panel remounts on every visit to Home, so a split that only survives the visit is component state that never reached config.json.",
+      },
     ],
   },
   {

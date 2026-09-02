@@ -73,6 +73,12 @@ export interface Workspace {
   /// colour -- whether this human wants agents committing for them is a
   /// habit, not a fact about the project.
   autoCommit?: boolean;
+  /// The main agent cell's share (0-1) of the Home tab's row; the
+  /// PRD/Board/Orchestration column takes the rest. Absent means the
+  /// split the tab shipped with. Machine-local (D35) like the accent
+  /// colour -- how wide a terminal wants to be on this screen is not a
+  /// fact about the project.
+  homeAgentShare?: number;
   /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
   gitView?: GitViewPrefs;
   /// When this workspace was last switched to, epoch milliseconds.

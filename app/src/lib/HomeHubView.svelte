@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { layoutState, switchWorkspaceView, agentProfilesStore, openWizard, agentModelDefaultsStore} from "./layoutState";
+  import {
+    layoutState,
+    switchWorkspaceView,
+    agentProfilesStore,
+    openWizard,
+    agentModelDefaultsStore,
+    setHomeAgentShare,
+  } from "./layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "./settings";
   import { setupProgress } from "./setupWizard";
   import { gavinTrees, refreshGavinTree } from "./gavinState";
@@ -11,13 +18,24 @@
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { changedCount } from "./git";
   import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  import {
+    DEFAULT_AGENT_SHARE,
+    agentShareFromWidth,
+    homeGridColumns,
+    resolveAgentShare,
+  } from "./homeSplit";
+  import { tooltip } from "./tooltip";
 
   interface Props {
     workspaceId: string;
   }
   let { workspaceId }: Props = $props();
 
-  const EXCERPT_LINES = 15;
+  // The panel scrolls, so this is not "what fits" but "how much of the
+  // PRD is worth keeping in a summary tile". Long enough that scrolling
+  // it answers a question; short enough that a book-length PRD does not
+  // land in the home tab whole -- the PRD tab is where it is read.
+  const EXCERPT_LINES = 200;
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const root = $derived(ws?.rootPath ?? null);
@@ -42,7 +60,8 @@
   let prdLines = $state<string[]>([]);
   let agentFileExists = $state<boolean | null>(null);
   let agent = $state<{ fit: () => void } | null>(null);
-  let gridEl = $state<HTMLElement | null>(null);
+  let agentEl = $state<HTMLElement | null>(null);
+  let dragging = $state(false);
 
   // Whole bodies for the setup derivation; the summaries above are
   // derived from the same two reads. undefined until the read lands --
@@ -173,12 +192,70 @@
           : "—"
   );
 
+  // The agent's own cell, not the row: dragging the divider leaves the
+  // row exactly as wide as it was, and a terminal that only refits when
+  // the WINDOW changes size would keep the columns it had before the
+  // drag.
   onMount(() => {
-    if (!gridEl) return;
+    if (!agentEl) return;
     const observer = new ResizeObserver(() => agent?.fit());
-    observer.observe(gridEl);
+    observer.observe(agentEl);
     return () => observer.disconnect();
   });
+
+  // The divider between the agent and the summaries column. What is kept
+  // is the agent cell's SHARE of the row, applied as the grid's two `fr`
+  // factors, so the split holds at every pane width -- see homeSplit.ts.
+  const storedShare = $derived(resolveAgentShare(ws?.homeAgentShare));
+  let share = $state(DEFAULT_AGENT_SHARE);
+  $effect(() => {
+    share = storedShare;
+  });
+
+  // Window-level listeners with a buttons===0 bail-out, like every other
+  // splitter here: WKWebView drops pointerup when the pointerdown target
+  // leaves the DOM.
+  function startDrag(e: PointerEvent): void {
+    e.preventDefault();
+    // The divider's own neighbours are the two cells it divides.
+    const el = e.currentTarget as HTMLElement | null;
+    const left = el?.previousElementSibling as HTMLElement | null;
+    const right = el?.nextElementSibling as HTMLElement | null;
+    if (!left || !right) return;
+    const startX = e.clientX;
+    const startW = left.offsetWidth;
+    const total = startW + right.offsetWidth;
+    const startShare = share;
+    dragging = true;
+    const move = (ev: PointerEvent): void => {
+      if (ev.buttons === 0) {
+        up();
+        return;
+      }
+      share = agentShareFromWidth(startW + ev.clientX - startX, total);
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      dragging = false;
+      // A click that never moved writes nothing -- which also keeps the
+      // two clicks of a double-click from racing the reset below.
+      if (share !== startShare) void setHomeAgentShare(workspaceId, share);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
+  // Double-click restores the split the tab ships with -- the way back
+  // from a divider dragged somewhere unhelpful. Clears the preference
+  // rather than storing the default, so absence keeps meaning "never
+  // dragged".
+  function resetSplit(): void {
+    share = DEFAULT_AGENT_SHARE;
+    void setHomeAgentShare(workspaceId, undefined);
+  }
 
   function go(view: string): void {
     void switchWorkspaceView(workspaceId, view);
@@ -198,10 +275,19 @@
         <span>{setup.done.length} of 4 done — continue</span>
       </button>
     {/if}
-    <div class="grid" bind:this={gridEl}>
-      <div class="agent-cell">
+    <div class="grid" style:grid-template-columns={homeGridColumns(share)}>
+      <div class="agent-cell" bind:this={agentEl}>
         <MainAgentPanel bind:this={agent} {workspaceId} />
       </div>
+      <div
+        class="divider"
+        class:dragging
+        role="separator"
+        aria-orientation="vertical"
+        use:tooltip={"Drag to resize \u00b7 double-click to reset"}
+        onpointerdown={startDrag}
+        ondblclick={resetSplit}
+      ></div>
       <div class="side">
         <button type="button" class="panel" onclick={() => go("prd")}>
           <span class="panel-head">PRD</span>
@@ -211,7 +297,7 @@
             <span class="excerpt">{prdLines.join("\n")}</span>
           {/if}
         </button>
-        <button type="button" class="panel" onclick={() => go("kanban")}>
+        <button type="button" class="panel board-panel" onclick={() => go("kanban")}>
           <span class="panel-head">Board</span>
           {#if boards.columns.length === 0}
             <span class="muted">No board yet.</span>
@@ -322,10 +408,11 @@
     gap: 10px;
     box-sizing: border-box;
   }
+  /* Columns come from homeSplit's template, inline: the divider between
+     them IS the gutter the grid used to hold, so there is no column gap
+     of its own to add. */
   .grid {
     display: grid;
-    grid-template-columns: 3fr 2fr;
-    gap: 10px;
     flex: 1 1 auto;
     min-height: 0;
   }
@@ -333,10 +420,29 @@
     min-width: 0;
     min-height: 0;
   }
+  /* The grab area is the whole track; only the hairline down its middle
+     ever paints, so an idle home tab looks exactly as it did before the
+     divider became draggable. */
+  .divider {
+    position: relative;
+    cursor: col-resize;
+  }
+  .divider::before {
+    content: "";
+    position: absolute;
+    inset: 0 4px;
+    border-radius: 2px;
+    background: transparent;
+  }
+  .divider:hover::before,
+  .divider.dragging::before {
+    background: var(--border-strong);
+  }
   .side {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    min-width: 0;
     min-height: 0;
   }
   .panel {
@@ -426,19 +532,37 @@
     flex: none;
     color: var(--danger-text);
   }
+  /* Scrolls rather than clips: the panel is as tall as the column
+     leaves it, and an excerpt cut off mid-sentence with no way to see
+     the rest is the one thing a PRD summary must not be. Stretched and
+     min-height:0 for the same reason the rails list is -- a flex child
+     only scrolls once it is allowed to be shorter than its content. */
   .excerpt {
+    align-self: stretch;
     white-space: pre-wrap;
-    overflow: hidden;
+    min-height: 0;
+    overflow-y: auto;
     opacity: 0.85;
     line-height: 1.5;
   }
   .muted {
     color: var(--text-subtle);
   }
+  /* Sized to its chips rather than to a third of the column: a board is
+     one wrapped row of counts, and spending a third of the side column
+     on it is a third the PRD excerpt does not get. Capped so a board
+     with many columns scrolls instead of squeezing the others. */
+  .board-panel {
+    flex: 0 1 auto;
+    max-height: 30%;
+  }
   .columns {
     display: flex;
     flex-wrap: wrap;
+    align-self: stretch;
     gap: 8px;
+    min-height: 0;
+    overflow-y: auto;
   }
   .column {
     display: flex;

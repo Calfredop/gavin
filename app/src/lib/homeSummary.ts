@@ -60,12 +60,29 @@ export function planSummary(tree: GavinTree | undefined): PlanSummary {
 
 // First non-empty lines, so a PRD that opens with blank lines or a lone
 // heading still shows something useful in a small panel.
+/// The PRD as the home tab's panel shows it: the file's first
+/// `maxLines` lines that say something, with the blank lines BETWEEN
+/// them kept so the excerpt reads as prose rather than as one wall of
+/// text. The panel scrolls, so the excerpt is long enough to be worth
+/// scrolling -- which is exactly what makes the paragraph breaks matter.
+/// Runs of blanks collapse to one, and neither end keeps a blank: an
+/// empty first or last row would spend a line of the panel saying
+/// nothing.
 export function prdExcerpt(content: string, maxLines: number): string[] {
-  return content
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
-    .slice(0, maxLines);
+  const lines: string[] = [];
+  let kept = 0;
+  for (const raw of content.split("\n")) {
+    const line = raw.trimEnd();
+    if (line.trim().length === 0) {
+      if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("");
+      continue;
+    }
+    lines.push(line);
+    kept += 1;
+    if (kept === maxLines) break;
+  }
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
 }
 
 /// One rail, reduced to what a recap row can say: where it is and

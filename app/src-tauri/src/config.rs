@@ -161,6 +161,15 @@ pub struct Workspace {
     /// the setting to everyone who clones the repo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_commit: Option<bool>,
+    /// The main agent cell's share (0-1) of the Home tab's row; the
+    /// PRD/Board/Orchestration column takes the rest. Absent means the
+    /// split the tab shipped with -- stored as absence rather than as
+    /// that number, so changing the shipped split later still reaches
+    /// everyone who never dragged the divider. Machine-local (D35) like
+    /// `color`: how wide a terminal wants to be on this screen is not a
+    /// fact about the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_agent_share: Option<f64>,
     /// Git tab preferences; None until the user changes something.
     #[serde(default)]
     pub git_view: Option<GitViewPrefs>,
@@ -344,6 +353,7 @@ mod tests {
             notify_needs_input: true,
             notify_finished: true,
             confirm_tab_close: true,
+            home_agent_share: None,
             git_view: None,
             last_active_at: None,
             terminal_font_size: None,
@@ -639,6 +649,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load(dir.path()).unwrap().workspaces[0].git_view, None);
+    }
+
+    #[test]
+    fn home_agent_share_roundtrips_and_is_omitted_when_never_dragged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.home_agent_share = Some(0.3125);
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+            theme: None,
+            agent_models: HashMap::new(),
+            terminal_font_size: None,
+            auto_commit: None,
+            removed_workspaces: Vec::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+
+        // Absence is the state that means "never dragged", so an
+        // undragged divider must not write the key at all -- a stored
+        // 0.6 would pin this install to today's shipped split forever.
+        let mut plain = config.clone();
+        plain.workspaces[0].home_agent_share = None;
+        save(dir.path(), &plain).unwrap();
+        let raw = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!raw.contains("homeAgentShare"), "{raw}");
+        assert_eq!(load(dir.path()).unwrap().workspaces[0].home_agent_share, None);
     }
 
     #[test]

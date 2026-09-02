@@ -84,8 +84,22 @@ describe("planSummary", () => {
 });
 
 describe("prdExcerpt", () => {
-  it("takes the first non-empty lines up to the limit", () => {
-    expect(prdExcerpt("# Title\n\n\nFirst\nSecond\nThird\n", 2)).toEqual(["# Title", "First"]);
+  it("counts the limit in lines that say something, not in blank ones", () => {
+    expect(prdExcerpt("# Title\n\n\nFirst\nSecond\nThird\n", 2)).toEqual([
+      "# Title",
+      "",
+      "First",
+    ]);
+  });
+
+  it("collapses a run of blank lines to one paragraph break", () => {
+    expect(prdExcerpt("One\n\n\n\nTwo\n", 10)).toEqual(["One", "", "Two"]);
+  });
+
+  // A blank first or last row would spend one of the panel's few lines
+  // drawing nothing.
+  it("keeps no blank line at either end", () => {
+    expect(prdExcerpt("\n\n# Title\n\nBody\n\n\n", 10)).toEqual(["# Title", "", "Body"]);
   });
 
   it("returns everything when the file is shorter than the limit", () => {
@@ -94,6 +108,7 @@ describe("prdExcerpt", () => {
 
   it("handles empty content", () => {
     expect(prdExcerpt("", 5)).toEqual([]);
+    expect(prdExcerpt("\n\n\n", 5)).toEqual([]);
   });
 });
 

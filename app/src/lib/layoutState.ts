@@ -1368,6 +1368,22 @@ export async function setWorkspaceFlag(
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
+/// Where the Home tab's divider sits for this workspace, as the agent
+/// cell's share of the row. `undefined` clears the preference rather
+/// than storing today's default -- absence is what lets a later change
+/// to the shipped split reach anyone who never dragged the divider.
+export async function setHomeAgentShare(
+  workspaceId: string,
+  share: number | undefined
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, homeAgentShare: share } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
 // Git tab preferences (splitter widths, diff layout, discard-confirm
 // opt-out): merged, never replaced, so one control's save can't clobber
 // another's.
