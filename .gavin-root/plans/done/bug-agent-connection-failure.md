@@ -1,7 +1,7 @@
 ---
 kind: task
 title: "[bug] a rail advances when its agent dies of a connection failure"
-status: To Do
+status: Done
 priority: high
 ---
 An agent session's status is two seconds of silence. `create_session` spawns

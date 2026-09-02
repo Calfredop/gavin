@@ -1,7 +1,7 @@
 ---
 kind: task
 title: "[bug] a surviving orphan agent is invisible after a daemon restart"
-status: To Do
+status: Done
 priority: medium
 ---
 `SessionRecord.generation`'s doc comment (`crates/daemon/src/registry.rs`)
@@ -102,3 +102,82 @@ parallelism — re-run that module alone before calling a failure a regression.
 The probe itself needs the temp-`$HOME` experiment above; a unit test can only
 cover the reuse guard and the reporting, not whether a real child outlives a
 real daemon.
+
+---
+
+## What was measured
+
+Under a temp `$HOME`, with the daemon killed exactly the way
+`kill_running_daemons` does (SIGTERM by name):
+
+- **The mechanism is real.** A child that ignores SIGHUP survives, reparented
+  to init (`ppid=1`), and keeps running. Confirmed with
+  `sh -c "trap '' HUP; sleep 900"`.
+- **No agent gavin ships survives today.** `claude`, `gemini` and `opencode`
+  were each launched through a real session and each died on the PTY hangup.
+  `codex` is not installed on this machine (only a cmux shim, which exits
+  immediately), so it is unmeasured rather than cleared.
+- **A detached grandchild survives even when the agent dies.** A subprocess the
+  agent put in its own session (`setsid` / `start_new_session`) outlives both
+  the daemon and its parent, reparented to init. The probe cannot see it — it
+  remembers only the pid gavin itself spawned. Following those would mean
+  scanning the process table the way cmux's `VaultAgentProcessScanner` does.
+
+So the probe is a guard against a future agent version or a `custom` profile
+rather than a daily occurrence, which is why it is surfaced as a warning with
+an action and not as a modal. It costs one syscall per inherited row on the
+common path and writes nothing.
+
+## What landed
+
+**Daemon.** New `crates/daemon/src/proc.rs`: `identify(pid)` via
+`proc_pidinfo(PROC_PIDTBSDINFO)` returns a `ProcessHandle { pid,
+started_at_us }`, or `None` for an unused pid, another user's, or a zombie.
+The reuse guard is the start time — `still_running` requires the pid to be
+live *and* the same incarnation, and every unknown reads as gone.
+
+`SessionRecord` gained `process` (what is in the PTY now) and `orphan` (a
+previous lifetime's process found still alive), each a nullable pid/start-time
+pair. `recover` probes every inherited row before touching it, re-checking an
+already-recorded orphan FIRST so a second daemon restart cannot drop a
+survivor (by then the row's own process is the bare shell the first recovery
+spawned). `end_orphan` re-probes identity, sends SIGTERM only, waits up to 2s
+for the process to actually exit, and clears the row only once the OS agrees.
+No SIGKILL escalation.
+
+`SessionRecord.generation`'s doc comment is corrected: it no longer claims a
+row from a dead lifetime means the process is gone.
+
+**Protocol v21.** `SessionSummary.orphan`, the `SessionOrphaned` push, and
+`Request::EndOrphan` (which takes a session id, never a pid, so the daemon
+cannot be turned into a way to signal arbitrary processes).
+
+**App.** `daemonCompat.ts` gains `orphanDetection: 21`, because `orphan: null`
+from a v20 daemon means *nobody looked* — the `setupProgress` trap. Every
+consumer goes through `orphan.ts`'s `orphanDetectionAvailable`, and the
+interrupted copy softens below v21 instead of asserting a clean stop. The tab
+badge escalates from amber ↻ to a red ⚠ that names the pid and ends the
+process behind a confirm; the card detail says "end it before you resume",
+ahead of the Resume button, since resuming beside a live agent is the
+second-agent-in-one-checkout outcome by a different route.
+
+## Known gaps (deliberate)
+
+- An orphan on a row recovery marks **Exited** (its cwd was deleted) is
+  recorded and logged, but `get_session_baselines` filters Exited rows out, so
+  it has no UI. Closing that belongs with `sessions-manager.md`.
+- A **hidden session** (one with no tab, e.g. the git-commit agent) has no
+  surface for its orphan either — same card.
+- `orphanActions.ts` uses `confirm`/`message` from `@tauri-apps/plugin-dialog`,
+  matching this tree. When `ui-proprietary-confirm.md` lands its shared modal,
+  these two call sites convert with every other one.
+
+## Verified
+
+`cargo test --workspace` green (672); `npm test` green (2030), `npm run check`
+0 errors, `npm run build` clean. End-to-end under a temp `$HOME`: detection,
+the three Attach pushes in order, persistence across two restarts, `EndOrphan`
+killing it and clearing the row, an idempotent second press, and a
+SIGTERM-ignoring process correctly reported as still running with the badge
+kept. 8 new items in `smokeChecklist.ts` under "A surviving orphan agent" for
+the owner's GUI pass.

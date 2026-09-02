@@ -1,4 +1,5 @@
 ---
+status: Done
 order: 1024
 kind: task
 title: [spike] Superpowers install + detection matrix
@@ -35,3 +36,13 @@ Deliverable:
 `docs/superpowers/specs/2026-09-01-superpowers-install-matrix.md` -- one
 table row per profile, then a short section each with the captured
 output. Write no app code; this card ends at the document.
+
+## Delivered (2026-09-02)
+
+`docs/superpowers/specs/2026-09-01-superpowers-install-matrix.md`.
+
+Verified end to end here: Claude Code (install, reinstall, failure, uninstall,
+detection) and Gemini CLI (install, list, uninstall). UNVERIFIED, with the step
+that would verify each named in the doc: Codex CLI (its shim has no binary on
+this machine) and Cursor (not on PATH). opencode is verified as far as the file
+shape goes and no further.
