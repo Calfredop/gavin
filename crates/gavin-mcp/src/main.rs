@@ -164,7 +164,7 @@ fn tool_definitions() -> Value {
     json!([
         { "name": "gavin_get_tree", "description": "The gavin workspace's contexts and plan files (canonical parse, incl. statuses and warnings).", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_read_prd", "description": "Read the workspace PRD — the lead document for all development.", "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "gavin_create_plan", "description": "Create a card file (note, task, or plan) in a gavin context with canonical frontmatter. Never overwrites.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_create_plan", "description": "Create a card file (note, task, or plan) in a gavin context with canonical frontmatter. Never overwrites. Creating one In Progress claims it for your session, so the board stops offering to start a second agent on it.", "inputSchema": { "type": "object", "properties": {
             "context_folder": { "type": "string", "description": "Folder that is the root or contains .gavin (relative allowed)" },
             "file_name": { "type": "string", "description": "kebab-case-name.md" },
             "title": { "type": "string" },
@@ -175,7 +175,7 @@ fn tool_definitions() -> Value {
             "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" },
             "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte. Setting status to Done files the card under plans/done/ (and any status off Done brings it back); the reply carries the card's path afterwards.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back); the reply carries the card's path afterwards.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
             "key": { "type": "string", "enum": ["status", "priority", "order"] },
             "value": { "type": "string" }
@@ -228,9 +228,7 @@ fn dispatch_tool(
     if name == "gavin_name_session" {
         return name_session(
             &require_arg(args, "name")?,
-            // Injected into every PTY the daemon spawns (pty.rs). Absent
-            // means this agent is not running in a gavin tab at all.
-            std::env::var("GAVIN_SESSION_ID").ok().filter(|v| !v.is_empty()),
+            current_session_id(),
             transport,
         );
     }
@@ -330,6 +328,11 @@ fn dispatch_tool(
         _ => None,
     };
     let resp = transport.request(&req)?;
+    // Before the reply is shaped, and its outcome deliberately dropped:
+    // see `claim_card`.
+    if let Some(card) = claim_target(&req, &resp) {
+        claim_card(root, &card, current_session_id(), transport);
+    }
     match resp {
         Response::GavinTreeScanned { tree } => Ok(serde_json::to_string_pretty(&tree)?),
         Response::PrdContent { content } => Ok(content),
@@ -369,6 +372,62 @@ fn clean_session_name(raw: &str) -> anyhow::Result<String> {
         None => collapsed,
     };
     Ok(truncated)
+}
+
+/// The session this MCP server is running inside, injected into every PTY
+/// the daemon spawns (pty.rs). Absent means the agent is not in a gavin
+/// tab at all -- a bare `claude` in a terminal, or a test.
+fn current_session_id() -> Option<String> {
+    std::env::var("GAVIN_SESSION_ID").ok().filter(|v| !v.is_empty())
+}
+
+/// The card this tool call just put in the calling session's hands, if
+/// it put one there at all.
+///
+/// Two writes qualify, and they are the two an agent makes when it
+/// starts work on its own initiative: filing a card straight into In
+/// Progress, and moving an existing one there. Both report the path the
+/// card ended up at, which is the one to claim -- a status write can
+/// file the card under `plans/done/`, and the binding keys on where the
+/// file IS.
+///
+/// The status VALUE is not read here. "In Progress" is the board's
+/// column name and the human may have renamed the columns around it, so
+/// the daemon decides from the card on disk (`claim_card_for_session`)
+/// and this side only decides *which* card it just wrote.
+fn claim_target(req: &Request, resp: &Response) -> Option<String> {
+    match (req, resp) {
+        (Request::CreatePlan { .. }, Response::PlanCreated { path }) => Some(path.clone()),
+        (Request::SetPlanFrontmatterField { key, .. }, Response::PlanFieldSet { path })
+            if key == "status" =>
+        {
+            Some(path.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Tells the daemon that this session is working the card it just wrote,
+/// so the board stops offering to start a second agent on it.
+///
+/// Every failure is swallowed on purpose. The agent asked for a card
+/// write and got one; the claim is bookkeeping it neither requested nor
+/// can act on, and turning "your workspace is not open in gavin" or a
+/// daemon too old to know the request into a failed `gavin_create_plan`
+/// would break card filing for everyone to fix a board affordance. An
+/// un-claimed card is exactly the card every daemon before v21 produced.
+fn claim_card(
+    root: &Path,
+    path: &str,
+    session_id: Option<String>,
+    transport: &mut dyn DaemonTransport,
+) {
+    let Some(session_id) = session_id else { return };
+    let _ = transport.request(&Request::ClaimCardForSession {
+        root_path: root.to_string_lossy().to_string(),
+        path: path.to_string(),
+        session_id,
+    });
 }
 
 const NOT_IN_A_SESSION: &str =
@@ -1320,6 +1379,121 @@ mod tests {
         assert_eq!(v.pointer("/result/isError").unwrap(), true);
         assert!(reply.contains("not inside a gavin workspace"));
         assert!(t.requests.is_empty(), "no daemon call without a root");
+    }
+
+    #[test]
+    fn a_status_write_and_a_new_card_are_the_two_claimable_writes() {
+        // The card an agent just put in its own hands, and nothing else.
+        // Both answers are the path the daemon REPORTED, not the one
+        // asked for: a status write can file the card under plans/done/,
+        // and the binding keys on where the file is.
+        assert_eq!(
+            claim_target(
+                &Request::CreatePlan {
+                    context_folder: "/ws".into(),
+                    file_name: "a.md".into(),
+                    title: "A".into(),
+                    status: Some("In Progress".into()),
+                    priority: None,
+                    body: None,
+                    kind: None,
+                    parent: None,
+                    attachments: None,
+                },
+                &Response::PlanCreated { path: "/ws/plans/a.md".into() }
+            )
+            .as_deref(),
+            Some("/ws/plans/a.md")
+        );
+        assert_eq!(
+            claim_target(
+                &Request::SetPlanFrontmatterField {
+                    path: "/ws/plans/a.md".into(),
+                    key: "status".into(),
+                    value: "Done".into(),
+                },
+                &Response::PlanFieldSet { path: "/ws/plans/done/a.md".into() }
+            )
+            .as_deref(),
+            Some("/ws/plans/done/a.md")
+        );
+        // A priority write says nothing about who is working the card.
+        assert_eq!(
+            claim_target(
+                &Request::SetPlanFrontmatterField {
+                    path: "/ws/plans/a.md".into(),
+                    key: "priority".into(),
+                    value: "high".into(),
+                },
+                &Response::PlanFieldSet { path: "/ws/plans/a.md".into() }
+            ),
+            None
+        );
+        // And neither does a card write that failed.
+        assert_eq!(
+            claim_target(
+                &Request::CreatePlan {
+                    context_folder: "/ws".into(),
+                    file_name: "a.md".into(),
+                    title: "A".into(),
+                    status: None,
+                    priority: None,
+                    body: None,
+                    kind: None,
+                    parent: None,
+                    attachments: None,
+                },
+                &Response::Error { message: "nope".into() }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_claim_carries_the_root_and_is_skipped_outside_a_gavin_tab() {
+        let mut t = mock(vec![Response::Ok]);
+        claim_card(Path::new("/ws"), "/ws/plans/a.md", Some("s-1".into()), &mut t);
+        match &t.requests[0] {
+            Request::ClaimCardForSession { root_path, path, session_id } => {
+                assert_eq!(root_path, "/ws");
+                assert_eq!(path, "/ws/plans/a.md");
+                assert_eq!(session_id, "s-1");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+
+        // A bare `claude` in a terminal has no session to bind to. It
+        // still gets to file cards -- the claim is the only thing that
+        // drops out.
+        let mut t = mock(vec![Response::Ok]);
+        claim_card(Path::new("/ws"), "/ws/plans/a.md", None, &mut t);
+        assert!(t.requests.is_empty());
+
+        // And a daemon that refuses it -- too old to know the request,
+        // workspace not open in gavin -- is swallowed rather than
+        // returned. The exhausted mock errors on every call, so this
+        // asserts both halves: the claim WAS attempted, and its failure
+        // went nowhere.
+        let mut t = mock(vec![]);
+        claim_card(Path::new("/ws"), "/ws/plans/a.md", Some("s-1".into()), &mut t);
+        assert_eq!(t.requests.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_claim_never_fails_the_card_write_that_earned_it() {
+        // The daemon refuses everything after the create -- too old to
+        // know the request, workspace not open, whatever. The agent
+        // asked for a card and must still be told it got one.
+        let mut t = mock(vec![Response::PlanCreated { path: "/ws/plans/a.md".into() }]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"gavin_create_plan","arguments":{"context_folder":".","file_name":"a.md","title":"A"}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), false, "{reply}");
+        assert!(reply.contains("created plan"), "{reply}");
     }
 
     #[test]

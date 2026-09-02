@@ -2,6 +2,7 @@ import { writable } from "svelte/store";
 import { parseAttachments } from "./attachments";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "./backend";
+import { refreshBoard } from "./kanbanState";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 import type { Workspace } from "./workspace";
 
@@ -23,6 +24,15 @@ export async function initGavinListeners(): Promise<UnlistenFn> {
   return listen<[string, GavinTree]>("gavin-tree-changed", (event) => {
     const [workspaceId, tree] = event.payload;
     gavinTrees.update((m) => ({ ...m, [workspaceId]: tree }));
+    // The board's card<->session bindings are no longer written only by
+    // this app: an agent that puts a card In Progress through the gavin
+    // tools claims it in the daemon (ClaimCardForSession), and nothing
+    // pushes that. Riding the tree push is exact rather than lucky --
+    // a claim only ever follows a card write, and a card write is what
+    // produces this event. Without it the workspace agent's card sits
+    // there showing a Run button until something else happens to refetch
+    // the board, which is the whole window the double-launch lives in.
+    void refreshBoard(workspaceId);
   });
 }
 

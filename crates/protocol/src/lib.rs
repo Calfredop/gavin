@@ -13,6 +13,14 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v21 added `Request::ClaimCardForSession`: an agent telling the daemon
+/// it is working the card it just wrote, so a card the workspace agent
+/// picked up on the Home tab stops looking startable on the board. A new
+/// request variant, so `min_version_for` gates it by type and an older
+/// daemon simply never receives it -- and no `daemonCompat.ts` entry is
+/// owed, because gavin-mcp is the only sender and a claim that never
+/// happens leaves exactly the unbound card v20 always produced.
+///
 /// v20 gave recovery an epoch. The daemon stamps every registry row with
 /// the lifetime that created it, so a row it INHERITED is provably one no
 /// process is hosting any more -- and an inherited row that carried a
@@ -52,7 +60,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -198,6 +206,23 @@ pub enum Request {
     /// The SQLite board of the WATCHED workspace whose root matches.
     GetBoardByRoot {
         root_path: String,
+    },
+    /// An agent session declaring that it is working the card it just
+    /// wrote -- the MCP's counterpart to the app's `LinkCardSession`,
+    /// which the app can send because it knows the workspace id and an
+    /// agent never does. Root -> watcher -> workspace, per
+    /// GetBoardByRoot; `cwd` and `command` come off the session record,
+    /// for the same reason.
+    ///
+    /// The daemon decides whether the claim stands, from the status the
+    /// card now carries on disk: a binding means "a session is working
+    /// this card", so only the In Progress column earns one. Sent after
+    /// every `gavin_create_plan` and every `gavin_set_plan_field` status
+    /// write, and a no-op for all the rest.
+    ClaimCardForSession {
+        root_path: String,
+        path: String,
+        session_id: String,
     },
     /// Creates a session and pushes AgentSessionSpawned on the watching
     /// app connection (D19: spawning requires the workspace to be open).
@@ -441,6 +466,14 @@ pub fn min_version_for(req: &Request) -> u32 {
         // the frontend just leaves the terminal as it found it -- which is
         // what it did before any of this existed.
         Request::Snapshot { .. } => 18,
+
+        // An agent claiming the card it just put In Progress. A new
+        // request TYPE, so this match is the whole gate and no
+        // daemonCompat.ts mirror is owed: the app never sends it (only
+        // gavin-mcp does), and against an older daemon it simply never
+        // reaches the wire -- leaving the card unbound, which is exactly
+        // what every daemon before 21 did anyway.
+        Request::ClaimCardForSession { .. } => 21,
 
         // Never sent -- it only exists to absorb a newer peer's request.
         // u32::MAX keeps it un-sendable if it ever reaches a send path.
@@ -1729,6 +1762,10 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v21: Request::ClaimCardForSession -- an agent binding the card
+        // it just put In Progress to its own session. A new request
+        // TYPE, so min_version_for is the whole gate and daemonCompat.ts
+        // owes it nothing: the app never sends it.
         // v19: card attachments -- PlanFileInfo.attachments, a seventh
         // SetPlanFrontmatterField key, and CreatePlan.attachments. No
         // new variant, which is exactly why daemonCompat.ts owes it a
@@ -1764,7 +1801,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 20);
+        assert_eq!(PROTOCOL_VERSION, 21);
     }
 
     #[test]
@@ -1896,6 +1933,11 @@ mod tests {
                 attachments: None,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
+            Request::ClaimCardForSession {
+                root_path: "r".into(),
+                path: "p".into(),
+                session_id: "s".into(),
+            },
             Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },
             Request::DeleteCardFile { path: "p".into() },
             Request::SetChecklistItem {
@@ -1983,7 +2025,7 @@ mod tests {
     /// derived by hand from `min_version_for`'s match arms on this branch,
     /// not copied from a plan: v1=21, v4=2, v5=2, v6=1, v7=1, v8=2, v10=8,
     /// v11=4, v12=1 (Shutdown), v13=2 (the archive), v15=3 (group
-    /// templates), plus Unknown.
+    /// templates), v21=1 (ClaimCardForSession), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -2005,6 +2047,7 @@ mod tests {
         expected.insert(12, 1);
         expected.insert(13, 2);
         expected.insert(15, 3);
+        expected.insert(21, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

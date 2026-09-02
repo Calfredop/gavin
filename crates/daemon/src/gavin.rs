@@ -460,6 +460,17 @@ fn is_done_status(status: &str) -> bool {
     slug_title(status).as_deref() == Some(DONE_DIR)
 }
 
+/// The permanent column that means "a session has this card in hand".
+/// Matched the same slugged way `is_done_status` matches Done, so "In
+/// Progress", "in progress" and "in-progress" are one status.
+///
+/// Only this column earns a card<->session binding: a binding is what
+/// makes the board stop offering Run, and a backlog card an agent merely
+/// FILED must stay startable. Claiming (server.rs) is gated on it.
+pub fn is_in_progress_status(status: &str) -> bool {
+    slug_title(status).as_deref() == Some("in-progress")
+}
+
 /// True for a `plans` directory that really is a context's plans folder
 /// (its parent is a `.gavin*` marker directory).
 fn is_plans_dir(dir: &Path) -> bool {

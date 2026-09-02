@@ -191,6 +191,31 @@ impl KanbanStore {
         Ok(())
     }
 
+    /// The session currently bound to one card, if any. Read on its own
+    /// rather than off `get_board` because a claim (`ClaimCardForSession`)
+    /// only has to know whether somebody else already owns this one card,
+    /// and building the whole board to answer that reads every column,
+    /// label and binding the workspace has.
+    pub fn card_session(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> anyhow::Result<Option<CardSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, session_id, cwd, command FROM card_sessions
+             WHERE workspace_id = ?1 AND path = ?2",
+        )?;
+        let mut rows = stmt.query_map(params![workspace_id, path], |row| {
+            Ok(CardSession {
+                path: row.get(0)?,
+                session_id: row.get(1)?,
+                cwd: row.get(2)?,
+                command: row.get(3)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
     /// Upserts a card file's live session binding (card-model spec §3) --
     /// runtime state keyed by (workspace, path), never written to files.
     pub fn link_card_session(

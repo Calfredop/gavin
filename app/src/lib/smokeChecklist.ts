@@ -324,6 +324,25 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Green ▶ agent pill pastes the prompt into the RUNNING main agent and jumps Home; disabled (with tooltip) when none runs",
         hint: "No binding/dot for main-agent sends — the card's status is the tracking.",
       },
+      {
+        id: "claim-agent-start",
+        text: "Ask the Home tab's workspace agent to file a card AND start it: the card appears already wearing that session's dot, with no ▶ pill",
+        hint: "The agent's own gavin_set_plan_field(\"In Progress\") is the claim. Needs a daemon at v21+ — an older one leaves the card unbound, as before.",
+      },
+      {
+        id: "claim-arrives-live",
+        text: "That dot appears while you are LOOKING at the board — no tab switch or refresh needed",
+        hint: "The board refetch rides the gavin-tree push the agent's own card write produced (~170ms).",
+      },
+      {
+        id: "claim-backlog-startable",
+        text: "A card the same agent files as To Do keeps its ▶ pill and still counts in the column's “Start all”",
+        hint: "Only In Progress claims. Filing a backlog must not make it unstartable.",
+      },
+      {
+        id: "claim-no-steal",
+        text: "A card already bound to a LIVE spawned agent keeps that dot when a different agent writes In Progress on it",
+      },
       { id: "run-now-composer", text: "Composer task chip + “Run now” creates the card and immediately runs it, and the modal closes behind it" },
       {
         id: "run-selected",

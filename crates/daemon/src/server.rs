@@ -962,6 +962,98 @@ impl SessionManager {
         self.kanban.lock().unwrap().unlink_card_session(workspace_id, path)
     }
 
+    /// An agent session claiming the card it just wrote. The app binds a
+    /// card the moment it launches an agent FOR it; nothing did the same
+    /// for a card an agent picked up by itself -- so a card the Home
+    /// tab's workspace agent filed and started still looked unbound on
+    /// the board, and Run, Resume and "Start all" would all cheerfully
+    /// spawn a second agent onto work already in flight.
+    ///
+    /// Three gates, all of them "a binding must not lie":
+    ///
+    ///  - The workspace must be open (watched), like every other
+    ///    root-addressed request. There is no board to bind against
+    ///    otherwise.
+    ///  - The card must be In Progress ON DISK, read back rather than
+    ///    taken from the caller. A binding is what makes the board stop
+    ///    offering Run, so an agent filing a backlog must not bind it;
+    ///    In Progress is the one status that means a session has the
+    ///    card in hand, and it is the status the gavin skill already
+    ///    tells every agent to write when it starts.
+    ///  - A DIFFERENT session that is still alive keeps its claim. A
+    ///    card's binding is the human's route to the agent working it,
+    ///    and a bystander that merely touched the file must never
+    ///    redirect it. The same session re-claiming is an upsert, and a
+    ///    dead one's claim is stale by definition.
+    ///
+    /// `cwd` and `command` come off the session record because the agent
+    /// knows neither; they are what the card detail's Re-launch replays.
+    /// Answers whether the claim stood. The wire reply is a plain `Ok`
+    /// either way -- the agent asked for none of this and has nothing to
+    /// do about a refusal -- so the bool exists for the tests that pin
+    /// each of the three gates.
+    pub fn claim_card_for_session(
+        &self,
+        root_path: &str,
+        path: &str,
+        session_id: &str,
+    ) -> anyhow::Result<bool> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        let record = self
+            .registry
+            .lock()
+            .unwrap()
+            .get(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("no such session: {session_id}"))?;
+
+        // Canonicalized, because a binding is keyed by path STRING and
+        // this is the one caller whose path did not come out of the
+        // watcher's scan. `create_plan_file` joins the context folder it
+        // was handed verbatim, so an agent that passes `.` as its
+        // context -- the obvious thing to pass -- gets a card reported at
+        // `<root>/./.gavin-root/plans/x.md`. Keyed on that spelling the
+        // binding is real, invisible and unfixable: the board's card id
+        // is the scanned path, and the two never compare equal.
+        let path = &std::path::Path::new(path)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(path))
+            .to_string_lossy()
+            .to_string();
+
+        // The card's OWN status line, deliberately raw. A nested task
+        // that carries no `status:` inherits its parent's, and reading
+        // that inherited value here would claim a card whose session
+        // never said anything -- the claim is a declaration, and a card
+        // with no status line made none. An agent starting a nested task
+        // writes a status, which is exactly what frees it from its
+        // parent on the board.
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let info = crate::gavin::plan_file_info(std::path::Path::new(path), &content);
+        if !info.status.as_deref().is_some_and(crate::gavin::is_in_progress_status) {
+            return Ok(false);
+        }
+
+        let workspace_id = watcher.workspace_id.clone();
+        let held = self.kanban.lock().unwrap().card_session(&workspace_id, path)?;
+        if let Some(held) = held {
+            if held.session_id != session_id
+                && self.sessions.lock().unwrap().contains_key(&held.session_id)
+            {
+                return Ok(false);
+            }
+        }
+        self.kanban.lock().unwrap().link_card_session(
+            &workspace_id,
+            path,
+            session_id,
+            &record.cwd,
+            record.command.as_deref(),
+        )?;
+        Ok(true)
+    }
+
     pub fn delete_card_file(&self, path: &str) -> anyhow::Result<()> {
         crate::gavin::delete_card_file(std::path::Path::new(path))?;
         self.kanban.lock().unwrap().unlink_card_session_all(path)
@@ -1741,6 +1833,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }
         Request::LinkCardSession { workspace_id, path, session_id, cwd, command } => manager
             .link_card_session(&workspace_id, &path, &session_id, &cwd, command.as_deref())
+            .map(|_| Response::Ok),
+        Request::ClaimCardForSession { root_path, path, session_id } => manager
+            .claim_card_for_session(&root_path, &path, &session_id)
             .map(|_| Response::Ok),
         Request::UnlinkCardSession { workspace_id, path } => manager
             .unlink_card_session(&workspace_id, &path)
@@ -3161,6 +3256,131 @@ mod tests {
         assert_eq!(board.card_sessions[0].path, after);
         let orch = manager.get_orchestration("ws-1").unwrap();
         assert_eq!(orch.rails[0].stages[0].steps[0].card_path, after);
+    }
+
+    /// A manager watching a fresh gavin root, with one card written into
+    /// it. Returns the manager, the workspace dir (kept alive by the
+    /// caller) and the card's canonical path -- the only spelling
+    /// anything ever learns a card path in.
+    fn manager_watching_a_card(
+        dir: &tempfile::TempDir,
+        ws: &tempfile::TempDir,
+        status: &str,
+    ) -> (Arc<SessionManager>, String, String) {
+        let manager = test_manager(dir);
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let card = root.join(".gavin-root").join("plans").join("ship.md");
+        std::fs::write(&card, format!("---\ntitle: Ship\nstatus: {status}\n---\n")).unwrap();
+        let (_ours, theirs) = UnixStream::pair().unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        (manager, root.to_string_lossy().to_string(), card.to_string_lossy().to_string())
+    }
+
+    /// A live session in the registry AND in the pty map, which is what
+    /// `claim_card_for_session` reads to decide whether an existing
+    /// binding still has an agent behind it.
+    fn live_session(manager: &SessionManager) -> String {
+        manager.create_session("/tmp/ws", "/tmp", Some("/bin/sh")).unwrap()
+    }
+
+    #[test]
+    fn claiming_binds_an_in_progress_card_to_the_session_that_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
+        let session = live_session(&manager);
+
+        assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
+
+        let bound = &manager.get_board("ws-1").unwrap().card_sessions[0];
+        assert_eq!(bound.path, card);
+        assert_eq!(bound.session_id, session);
+        // Off the session record, not the caller: the agent knows
+        // neither, and Re-launch replays both.
+        assert_eq!(bound.cwd, "/tmp");
+        assert_eq!(bound.command.as_deref(), Some("/bin/sh"));
+    }
+
+    #[test]
+    fn claiming_leaves_a_card_the_agent_only_filed_startable() {
+        // The whole reason the claim reads the card back instead of
+        // trusting the call: an agent that files a backlog of To Do
+        // cards has not started any of them, and a binding is what makes
+        // the board stop offering Run.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "To Do");
+        let session = live_session(&manager);
+
+        assert!(!manager.claim_card_for_session(&root, &card, &session).unwrap());
+        assert!(manager.get_board("ws-1").unwrap().card_sessions.is_empty());
+    }
+
+    #[test]
+    fn claiming_never_takes_a_card_off_another_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
+        let owner = live_session(&manager);
+        let bystander = live_session(&manager);
+        manager.link_card_session("ws-1", &card, &owner, "/p", None).unwrap();
+
+        assert!(!manager.claim_card_for_session(&root, &card, &bystander).unwrap());
+        assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].session_id, owner);
+    }
+
+    #[test]
+    fn claiming_replaces_a_binding_whose_session_is_gone() {
+        // A binding outlives its session on purpose (the card detail's
+        // Re-launch reads it), so "already bound" cannot mean "already
+        // being worked". Only a session the daemon still hosts keeps its
+        // claim.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
+        manager.link_card_session("ws-1", &card, "s-long-gone", "/p", None).unwrap();
+        let session = live_session(&manager);
+
+        assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
+        assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].session_id, session);
+    }
+
+    #[test]
+    fn claiming_keys_the_binding_on_the_path_the_board_uses() {
+        // The MCP hands over whatever `create_plan_file` built out of the
+        // context folder the agent passed, and `.` is the obvious thing
+        // to pass. The board's card id is the watcher's SCANNED path, so
+        // a binding keyed on the un-normalized spelling would exist and
+        // never be found.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
+        let session = live_session(&manager);
+        let dotted = card.replace("/.gavin-root/", "/./.gavin-root/");
+        assert_ne!(dotted, card);
+
+        assert!(manager.claim_card_for_session(&root, &dotted, &session).unwrap());
+        assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].path, card);
+    }
+
+    #[test]
+    fn claiming_refuses_a_workspace_that_is_not_open_in_gavin() {
+        // Same rule as every other root-addressed request: with no
+        // watcher there is no workspace id, and a binding keyed on a
+        // guess would attach to the wrong board.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let session = live_session(&manager);
+        let err = manager
+            .claim_card_for_session("/tmp/not-a-workspace", "/tmp/not-a-workspace/a.md", &session)
+            .unwrap_err();
+        assert!(err.to_string().contains("not open in gavin"), "{err}");
     }
 
     #[test]

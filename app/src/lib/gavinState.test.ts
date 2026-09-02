@@ -10,6 +10,7 @@ vi.mock("./backend", () => ({
   // the real best-effort path.
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
   unwatchGavinRoot: vi.fn().mockResolvedValue(undefined),
+  getBoard: vi.fn().mockResolvedValue({ columns: [], labels: [], cardSessions: [] }),
 }));
 
 import { listen } from "@tauri-apps/api/event";
@@ -44,6 +45,18 @@ describe("gavinState", () => {
     }) => void;
     handler({ payload: ["ws-1", tree] });
     expect(get(gavinTrees)["ws-1"]).toEqual(tree);
+  });
+
+  it("re-reads the board on a tree push, for bindings the daemon made itself", async () => {
+    // An agent claiming the card it just put In Progress writes a
+    // card_sessions row nothing pushes. The card write that earned the
+    // claim is what produced this event, so the refetch rides it.
+    await initGavinListeners();
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: {
+      payload: [string, GavinTree];
+    }) => void;
+    handler({ payload: ["ws-1", tree] });
+    expect(backend.getBoard).toHaveBeenCalledWith("ws-1");
   });
 
   it("watches only workspaces that have a rootPath", () => {

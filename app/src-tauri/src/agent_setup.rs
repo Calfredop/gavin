@@ -433,7 +433,9 @@ development.\n\n\
   Their frontmatter drives a kanban board the human watches: `status:` is the\n\
   column, `priority:` the dot, `kind:` one of note/task/plan.\n\
 - Plan before coding. Create a plan file, keep its `status:` current as you\n\
-  work, and never mark work done that you have not verified.\n\
+  work, and never mark work done that you have not verified. Write In\n\
+  Progress when you START: that column claims the card for your tab, so the\n\
+  board stops offering to run a second agent on it.\n\
 - Use the `gavin_*` MCP tools rather than editing frontmatter by hand:\n\
   `gavin_read_prd`, `gavin_get_tree`, `gavin_create_plan`,\n\
   `gavin_set_plan_field`, `gavin_promote_task`.\n\

@@ -69,6 +69,12 @@ a human ran your card, the app already set it In Progress — you set the done
 column when finished. Labels: `gavin_set_plan_field(path, "labels", "bug,
 ui")` referencing the board's label names.
 
+**In Progress claims the card for your tab.** A card in that column belongs
+to the session that put it there: the board shows your session instead of a
+Run button, so nobody starts a second agent on work already under way. That
+is why the status write belongs at the START of the work and not only at the
+end — and why a card someone else is working is not yours to move there.
+
 A card set to **Done** is filed under `plans/done/` — that keeps the plans
 folder to the work still in flight — and taking it off Done brings it back.
 The reply names the card's path after the write, so when it moved, use the
