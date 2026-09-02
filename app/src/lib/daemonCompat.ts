@@ -116,6 +116,27 @@ export const FEATURE_MIN_VERSION = {
   // the opposite of what happens, and it is the one screen where being
   // wrong costs work. See `restartConfirmLines`.
   interruptedRuns: 20,
+  // Conversation resume. v21 widened SetStepRun and LinkCardSession with
+  // `conversation_id` and `launch_cwd` -- the agent CLI's own id for the
+  // conversation a run IS, and the directory it was launched in. A v20
+  // daemon parses both requests perfectly well and drops both fields on
+  // the floor, so `min_version_for` (which gates request TYPES) is
+  // structurally blind to it and this entry is the only gate there is.
+  //
+  // Its consumer is the LAUNCH, not a disabled control: against an older
+  // daemon gavin does not mint a conversation id at all
+  // (`conversationIdForLaunch`), because an id that cannot be persisted
+  // is an id no Resume can ever use -- and the card detail modal's
+  // Resume copy, which promises the same conversation back, would be
+  // promising something the daemon threw away.
+  conversationResume: 21,
+  // Failure detection. Unlike the entry above this half IS a new request
+  // type (`SetFailurePatterns`), so the wire gate catches it and
+  // `armFailureDetection` swallows the refusal -- a quiet agent then
+  // reads as idle exactly as it did before v21. The entry exists for the
+  // COPY: the card detail modal and the sidebar recap both name a
+  // failure as a thing gavin can see, and on an older daemon it cannot.
+  failureDetection: 21,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

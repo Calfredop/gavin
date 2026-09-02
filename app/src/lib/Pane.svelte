@@ -154,6 +154,18 @@
   // Rust enum.
   function tabStatusDot(sessionId: string): { class: string; title: string } | null {
     const status = $layoutState.sessionStatusById[sessionId];
+    // Before every other status: this is the one that used to be
+    // indistinguishable from idle -- i.e. from no dot at all -- so a tab
+    // whose agent had broken looked exactly like one whose agent was
+    // done. The reason is the agent's own line, and the tab is where the
+    // human goes to read the rest of it.
+    if (status === "failed") {
+      const reason = $layoutState.failureReasonById[sessionId];
+      return {
+        class: "status-failed",
+        title: reason ? `Stopped — ${reason}` : "Stopped: its agent did not finish",
+      };
+    }
     if (status === "working") return { class: "status-working", title: "Working" };
     if (status === "waiting_for_input") return { class: "status-waiting", title: "Request attention" };
     return null;
@@ -582,6 +594,12 @@
   }
   .status-dot.status-waiting {
     background: var(--danger);
+  }
+  /* Danger like `waiting`, but ringed rather than solid: both want the
+     human, and only one of them is a question they can answer. */
+  .status-dot.status-failed {
+    background: var(--danger);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 30%, transparent);
   }
   .dirty-dot {
     width: 6px;

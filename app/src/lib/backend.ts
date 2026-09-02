@@ -209,13 +209,21 @@ export function getBoardTabs(): Promise<Record<string, BoardTab>> {
 export interface SessionBaseline {
   id: string;
   cwd: string;
-  status: SessionStatus;
+  /// The daemon's own word for it, unparsed. Run through
+  /// `parseSessionStatus` before it reaches the store: a status this
+  /// build does not recognise must not read as `idle`.
+  status: string;
   restored: boolean;
   /// The run this session held was killed with a previous daemon and its
   /// command was not re-run: a bare shell occupies the tab now. Read back
   /// here rather than only pushed, for the same reason the other three
   /// are -- the push is baselined on Attach, once per app PROCESS.
   interrupted: boolean;
+  /// Why this session is `failed`, in the agent's own words, or null.
+  /// Baselined for the same reason as the rest -- the `session-failed`
+  /// push arrives once per app PROCESS -- and it matters more: a red
+  /// session with nothing to say for itself is the state this replaces.
+  failureReason: string | null;
 }
 
 // The frontend learns cwd/status/restored/interrupted from pushes whose
@@ -224,6 +232,18 @@ export interface SessionBaseline {
 // them back; see the Rust command's own doc comment.
 export function getSessionBaselines(): Promise<SessionBaseline[]> {
   return invoke("get_session_baselines");
+}
+
+/// Hands the daemon what THIS session's agent prints when it has stopped
+/// because something broke, so a quiet agent that BROKE stops reading as
+/// one that finished (`session::set_failure_patterns`).
+///
+/// Called once per agent session, right after it is created. Best-effort
+/// on purpose: against a daemon older than v21 the request is refused
+/// and a quiet agent reads as idle exactly as it always did, so no
+/// caller has to branch on the daemon version to launch an agent.
+export function setFailurePatterns(sessionId: string, patterns: string[]): Promise<void> {
+  return invoke("set_failure_patterns", { sessionId, patterns });
 }
 
 /// The git half of the same read-back, one answer per cwd in the order
@@ -335,9 +355,24 @@ export function linkCardSession(
   path: string,
   sessionId: string,
   cwd: string,
-  command: string | null
+  command: string | null,
+  /// The agent CLI's own conversation id for this run, and the directory
+  /// it was LAUNCHED in -- not `cwd` above, which follows OSC 7 and
+  /// drifts the moment the agent moves into a worktree. Both null for a
+  /// profile with no verified resume argv, which falls back to a written
+  /// reconstruction instead.
+  conversationId: string | null = null,
+  launchCwd: string | null = null
 ): Promise<void> {
-  return invoke("link_card_session", { workspaceId, path, sessionId, cwd, command });
+  return invoke("link_card_session", {
+    workspaceId,
+    path,
+    sessionId,
+    cwd,
+    command,
+    conversationId,
+    launchCwd,
+  });
 }
 
 export function unlinkCardSession(workspaceId: string, path: string): Promise<void> {
@@ -379,6 +414,9 @@ export function agentProfiles(): Promise<
     headlessArgs: string;
     modelFlag: string;
     models: string[];
+    failurePatterns: string[];
+    sessionIdArgs: string;
+    resumeArgs: string;
   }>
 > {
   return invoke("agent_profiles");
@@ -633,9 +671,21 @@ export function setStepRun(
   stepId: string,
   state: StepState,
   sessionId: string | null,
-  reason: string | null
+  reason: string | null,
+  /// See linkCardSession: the conversation this run IS, and where it was
+  /// launched, so a stalled step can be resumed as that conversation
+  /// rather than reconstructed from an account of it.
+  conversationId: string | null = null,
+  launchCwd: string | null = null
 ): Promise<void> {
-  return invoke("set_step_run", { stepId, stateValue: state, sessionId, reason });
+  return invoke("set_step_run", {
+    stepId,
+    stateValue: state,
+    sessionId,
+    reason,
+    conversationId,
+    launchCwd,
+  });
 }
 
 // --- The tool library -------------------------------------------------------

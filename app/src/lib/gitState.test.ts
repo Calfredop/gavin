@@ -635,6 +635,7 @@ describe("commit via agent", () => {
       profileId: "codex", file: "AGENTS.md", command: "codex",
       mcpSupported: false, mcpConfigFile: "", headlessArgs: "",
       model: "", launchCommand: "codex",
+      failurePatterns: [], sessionIdArgs: "", resumeArgs: "",
     });
     ensureGitView("ws", "/r");
     await refresh("ws");

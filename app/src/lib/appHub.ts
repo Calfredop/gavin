@@ -99,6 +99,10 @@ export function appLinks(links: AppLink[] = APP_LINKS): AppLink[] {
 /// resting workspace showing only its size.
 export function workspaceRecapLine(summary: WorkspaceAgentsSummary): string {
   const parts: string[] = [];
+  // Broken first: it is the one bucket the human cannot leave alone, and
+  // before v21 it was counted as idle -- so a hub row said "3 pages" for
+  // a workspace whose whole rail had stopped.
+  if (summary.failed > 0) parts.push(`${summary.failed} stopped`);
   if (summary.running > 0) parts.push(`${summary.running} running`);
   if (summary.waiting > 0) parts.push(`${summary.waiting} waiting`);
   parts.push(summary.pages === 0 ? "no pages" : plural(summary.pages, "page"));

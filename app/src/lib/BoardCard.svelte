@@ -81,6 +81,20 @@
         cls: "status-interrupted",
         tip: "Interrupted — the daemon restarted and this run was not resumed. Open the card to resume it.",
       };
+    // Also before any status, and for a sharper version of the same
+    // reason: a failed agent's daemon status IS `failed`, but every
+    // surface used to read the two quiet seconds behind it as `idle` --
+    // a green dot over a run that broke. Open the card to resume it,
+    // never jump into it.
+    if (state === "failed") {
+      const why = $layoutState.failureReasonById[binding.sessionId];
+      return {
+        cls: "status-failed",
+        tip: why
+          ? `Stopped — ${why}. Open the card to resume it.`
+          : "Stopped: its agent did not finish. Open the card to resume it.",
+      };
+    }
     if (state === "exited")
       return { cls: "status-exited", tip: "Session exited — open the card for Re-launch" };
     const status = $layoutState.sessionStatusById[binding.sessionId];
@@ -106,7 +120,7 @@
     // jumping into the bare shell the daemon left would say the run is
     // still going.
     const result = await jumpToBoundSession(workspaceId, card.id);
-    if (result === "exited" || result === "interrupted") onOpen(card.id);
+    if (result === "exited" || result === "interrupted" || result === "failed") onOpen(card.id);
   }
   const runnable = $derived(card.kind !== "note" && binding === null && (onRun !== null || onSendToAgent !== null));
 
@@ -164,6 +178,7 @@
   class:session-waiting={sessionDot?.cls === "status-waiting"}
   class:session-idle={sessionDot?.cls === "status-idle"}
   class:session-interrupted={sessionDot?.cls === "status-interrupted"}
+  class:session-failed={sessionDot?.cls === "status-failed"}
   role="button"
   tabindex="0"
   onkeydown={handleKeydown}
@@ -542,6 +557,16 @@
   .status-dot.status-interrupted {
     background: transparent;
     border: 1px solid var(--warning);
+  }
+  /* Danger, where interrupted takes warning: a restart is something the
+     human did, and this is something that happened TO the run. Solid,
+     because unlike the two hollow dots above there is still a live
+     process in there -- it has just stopped saying anything. */
+  .card.session-failed {
+    border-left: 3px solid var(--danger);
+  }
+  .status-dot.status-failed {
+    background: var(--danger);
   }
   /* In flow, not overlaid: a compact nested card has no spare room, and
      an expanded plan's pills must sit with ITS content rather than below

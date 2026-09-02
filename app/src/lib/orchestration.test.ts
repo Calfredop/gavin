@@ -62,6 +62,7 @@ import {
   railAttention,
   railsWantingAttention,
   attentionTip,
+  failedStepReason,
 } from "./orchestration";
 import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "./orchestration";
 import { BUILTIN_TOOLS } from "./orchestrationTools";
@@ -880,6 +881,163 @@ describe("nextActions", () => {
     ).toEqual([]);
   });
 
+
+  // ---- A FAILED session (rule 3d) -------------------------------------
+  //
+  // The agent's API connection died, its token expired, its usage ran
+  // out, or the machine slept through the conversation. The PROCESS is
+  // still alive at its prompt -- so the session is in `liveSessionIds`
+  // -- and it goes quiet, which is `idle`, which rule 3b called a
+  // finished turn and marked the step DONE. The rail then advanced to
+  // the next stage against a checkout where the previous step did
+  // nothing. That is the defect this rule exists for.
+
+  const BROKE = "API Error: Connection dropped (ECONNRESET)";
+  const FAILED_REASON = `the agent stopped because something broke — ${BROKE}`;
+  const failed = (id = "s1") => new Map([[id, BROKE]]);
+
+  it("stalls an AGENT TOOL step whose agent broke, instead of calling its silence a finished turn", () => {
+    const r = toolRail("r1", [[["t1", "builtin:commit"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([]),
+        [],
+        new Set(["s1"]),
+        TOOLS,
+        new Map(),
+        // The daemon says `failed`, not `idle` -- but even a caller that
+        // only had `idle` would be corrected by the reason map, which is
+        // what rule 3d actually keys on.
+        new Map([["s1", "failed" as SessionStatus]]),
+        new Set(),
+        failed()
+      )
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: FAILED_REASON }]);
+  });
+
+  it("stalls a CARD step whose agent broke rather than leaving it running for good", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([plan("a.md")]),
+        [],
+        new Set(["s1"]),
+        null,
+        new Map(),
+        new Map(),
+        new Set(),
+        failed()
+      )
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: FAILED_REASON }]);
+  });
+
+  // The stall reason is what the human reads on the chip and in the rail
+  // header, and it is the difference between "wait ten minutes and press
+  // Resume" and "run /login first".
+  it("carries the agent's own line into the stall", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    const [action] = nextActions(
+      orch,
+      BOARD,
+      tree([plan("a.md")]),
+      [],
+      new Set(["s1"]),
+      null,
+      new Map(),
+      new Map(),
+      new Set(),
+      new Map([["s1", "API Error: 401 OAuth token has expired. Please run /login"]])
+    );
+    expect(action).toEqual({
+      kind: "stall",
+      stepId: "t1",
+      reason:
+        "the agent stopped because something broke — API Error: 401 OAuth token has expired. Please run /login",
+    });
+  });
+
+  it("marks a failed step done when its card reached the done column first", () => {
+    // The agent finished the card and THEN its connection died. Finished
+    // work is finished, exactly as it is for an interrupted session.
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([plan("a.md", { status: "Done" })]),
+        [],
+        new Set(["s1"]),
+        null,
+        new Map(),
+        new Map(),
+        new Set(),
+        failed()
+      )
+    ).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+  });
+
+  it("stalls a failed step on a rail that is not running, so the rail stays editable", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = notRunning(r, [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([plan("a.md")]),
+        [],
+        new Set(["s1"]),
+        null,
+        new Map(),
+        new Map(),
+        new Set(),
+        failed()
+      )
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: FAILED_REASON }]);
+  });
+
+  // A session can be both only if the daemon restarted and then the bare
+  // shell's replacement broke. The failure is the newer fact, and the
+  // one with a resumable conversation behind it.
+  it("prefers the failure reason over the interrupted one when a session is both", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(
+        orch,
+        BOARD,
+        tree([plan("a.md")]),
+        [],
+        new Set(["s1"]),
+        null,
+        new Map(),
+        new Map(),
+        new Set(["s1"]),
+        failed()
+      )
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: FAILED_REASON }]);
+  });
+
+  // The pre-v21 caller passes no map at all, and a rail then behaves
+  // exactly as it did before any of this existed.
+  it("says nothing about a session that did not break", () => {
+    const r = toolRail("r1", [[["t1", "builtin:commit"]]]);
+    const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    const idle = new Map([["s1", "idle" as SessionStatus]]);
+    expect(
+      nextActions(orch, BOARD, tree([]), [], new Set(["s1"]), TOOLS, new Map(), idle, new Set(), new Map())
+    ).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+    expect(
+      nextActions(orch, BOARD, tree([]), [], new Set(["s1"]), TOOLS, new Map(), idle, new Set(), failed("someone-else"))
+    ).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+  });
 
   it("judges a dead tool step on a paused rail by its exit code", () => {
     const r = toolRail("r1", [[["t1", "builtin:push"]]]);
@@ -3032,6 +3190,31 @@ describe("stepAttentions", () => {
   it("returns an empty map for an orchestration with no rails", () => {
     expect(attn(emptyOrchestration(), statuses("idle")).size).toBe(0);
   });
+
+  // "turn-ended" is true of a broken agent and useless: it means "the
+  // agent stopped talking". The human needs to know it BROKE.
+  it("marks a step whose agent broke as failed, not as a turn that ended", () => {
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("failed")).get("t1")).toBe("failed");
+  });
+
+  // Unlike `turn-ended`, which skips tool steps because their own rules
+  // speak for them: here the rule (3d) and the mark say the same thing,
+  // and the human is about to be shown a paused rail that owes them a
+  // reason.
+  it("marks a failed TOOL step too", () => {
+    const orch = running(toolRail("r1", [[["t1", "builtin:commit"]]]), "r1-s0", runs());
+    expect(attn(orch, statuses("failed")).get("t1")).toBe("failed");
+  });
+
+  // `unknown` is a status written by a NEWER daemon. Not a mark: gavin
+  // has no idea what it means, and inventing an attention for it would
+  // be the same guess the old "anything I do not recognise is idle"
+  // default made, pointed the other way.
+  it("says nothing about a status this build cannot read", () => {
+    const orch = running(cardRail, "r1-s0", runs());
+    expect(attn(orch, statuses("unknown")).get("t1")).toBeUndefined();
+  });
 });
 
 describe("railAttention / railsWantingAttention", () => {
@@ -3048,6 +3231,14 @@ describe("railAttention / railsWantingAttention", () => {
     expect(railAttention(r, marks({}))).toBeNull();
   });
 
+  // "failed" outranks both: a question and a quiet agent are states a
+  // rail can legitimately be in, and a broken one is not.
+  it("puts a broken agent above a question and above a quiet one", () => {
+    const r = rail("r1", [[["t1", A], ["t2", B]]]);
+    expect(railAttention(r, marks({ t1: "failed", t2: "asking" }))).toBe("failed");
+    expect(railAttention(r, marks({ t1: "turn-ended", t2: "failed" }))).toBe("failed");
+  });
+
   it("collects the rails with any marked step", () => {
     const orch: Orchestration = {
       ...emptyOrchestration(),
@@ -3055,6 +3246,23 @@ describe("railAttention / railsWantingAttention", () => {
     };
     expect(railsWantingAttention(orch, marks({ t2: "asking" }))).toEqual(new Set(["r2"]));
     expect(railsWantingAttention(orch, marks({}))).toEqual(new Set());
+  });
+});
+
+describe("failedStepReason", () => {
+  it("carries the agent's own sentence, which is what the human acts on", () => {
+    expect(failedStepReason("API Error: 529 Overloaded.")).toBe(
+      "the agent stopped because something broke — API Error: 529 Overloaded."
+    );
+  });
+
+  it("still says something true when the reason was lost", () => {
+    expect(failedStepReason(undefined)).toBe(
+      "the agent stopped because something broke, not because it finished"
+    );
+    expect(failedStepReason("  ")).toBe(
+      "the agent stopped because something broke, not because it finished"
+    );
   });
 });
 
@@ -3067,5 +3275,14 @@ describe("attentionTip", () => {
 
   it("does not mention a column for a question, which has nothing to do with one", () => {
     expect(attentionTip("asking", "Done")).toBe("the agent is asking you something");
+  });
+
+  // The mark lasts one tick -- rule 3d stalls the step on the same pass
+  // -- so the tip says WHAT happened and the stall reason
+  // (failedStepReason) carries the agent's own line.
+  it("says a failure broke rather than that a turn ended", () => {
+    expect(attentionTip("failed", "Done")).toBe(
+      "the agent stopped because something broke, not because it finished"
+    );
   });
 });

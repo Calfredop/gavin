@@ -27,6 +27,15 @@ export interface AgentProfileInfo {
   /// Stable model aliases offered as picks; empty where the CLI has none
   /// worth pinning, and the user types their own instead.
   models: string[];
+  /// What this agent prints when it has STOPPED because something broke.
+  /// Empty where nobody has verified the text -- which reads as no
+  /// failure detection, never as "nothing failed"
+  /// (agent_setup.rs's failure_patterns).
+  failurePatterns: string[];
+  /// Conversation resume: the argv that fixes a session id at launch and
+  /// the one that reopens it. Both empty unless BOTH are verified.
+  sessionIdArgs: string;
+  resumeArgs: string;
 }
 
 /// Mirrors McpFormatDto from agent_setup.rs, for the `custom` profile's
@@ -213,6 +222,18 @@ export interface ResolvedAgent {
   /// is what the settings box edits and writes back to config.toml -- a
   /// flag folded into it would be persisted and then appended again.
   launchCommand: string;
+  /// What this agent prints when it has stopped because something BROKE.
+  /// Handed to the daemon per session, which matches them against the
+  /// rendered screen. Empty means NO failure detection for this
+  /// workspace's agent -- never "nothing failed".
+  failurePatterns: string[];
+  /// The argv that fixes a conversation id at launch, and the one that
+  /// reopens it. Both empty unless the profile verified BOTH, because
+  /// resuming by an id gavin never fixed is a fresh conversation wearing
+  /// a better name. Empty leaves conversation resume off and the written
+  /// reconstruction (`composeResumeTaskPrompt`) in its place.
+  sessionIdArgs: string;
+  resumeArgs: string;
 }
 
 const FALLBACK_PROFILE = "claude-code";
@@ -268,6 +289,17 @@ export function resolveAgentConfig(
     // garbage in its argv. Empty means "no headless run offered", the
     // same posture mcpSupported takes.
     headlessArgs: effective?.headlessArgs ?? "",
+    // Same posture as headlessArgs, and for the same reason: these three
+    // describe the BINARY. Claude Code's `--session-id` on somebody
+    // else's agent is garbage in its argv, and its error text on
+    // somebody else's screen would paint healthy sessions as broken. A
+    // config that OVERRIDES `command` keeps them, deliberately -- the
+    // override is nearly always a wrapper or an absolute path to the
+    // same binary, and the alternative is losing failure detection for
+    // everyone who pins a path.
+    failurePatterns: effective?.failurePatterns ?? [],
+    sessionIdArgs: effective?.sessionIdArgs ?? "",
+    resumeArgs: effective?.resumeArgs ?? "",
   };
 }
 

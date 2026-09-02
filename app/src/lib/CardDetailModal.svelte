@@ -339,15 +339,22 @@
   const sessionState = $derived(cardSessionState($layoutState, binding));
   const bindingLive = $derived(sessionState === "live");
   const bindingInterrupted = $derived(sessionState === "interrupted");
+  const bindingFailed = $derived(sessionState === "failed");
+  /// The agent's own account of what broke, when something did.
+  const failureReason = $derived(
+    binding ? ($layoutState.failureReasonById[binding.sessionId] ?? null) : null
+  );
   // The daemon's status describes whatever occupies the session id NOW,
   // which for an interrupted run is the bare shell that replaced the
   // agent -- so it is not consulted at all there.
   const bindingStatus = $derived(
     bindingInterrupted
       ? "interrupted"
-      : binding && bindingLive
-        ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
-        : "exited"
+      : bindingFailed
+        ? "stopped — something broke"
+        : binding && bindingLive
+          ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
+          : "exited"
   );
 
   async function handleRun(): Promise<void> {
@@ -641,11 +648,22 @@
         <div class="session-info">
           <span
             class="session-status"
-            class:exited={!bindingLive && !bindingInterrupted}
-            class:interrupted={bindingInterrupted}>{bindingStatus}</span
+            class:exited={!bindingLive && !bindingInterrupted && !bindingFailed}
+            class:interrupted={bindingInterrupted}
+            class:failed={bindingFailed}>{bindingStatus}</span
           >
           <span class="session-cwd">{binding.cwd}</span>
         </div>
+        {#if bindingFailed}
+          <p class="session-note">
+            This agent stopped because something broke, not because it finished{failureReason
+              ? ` — ${failureReason}`
+              : ""}. The process is still sitting at its prompt and whatever it had
+            already written is still in the checkout. Resume picks the work up — where
+            this agent supports it, by reopening the same conversation rather than
+            starting a new one.
+          </p>
+        {/if}
         {#if bindingInterrupted}
           <p class="session-note">
             The daemon restarted while this agent was working, so it was stopped and not
@@ -655,7 +673,7 @@
           </p>
         {/if}
         <div class="session-actions">
-          {#if bindingInterrupted}
+          {#if bindingInterrupted || bindingFailed}
             <button type="button" onclick={() => void handleResume()}>Resume this card</button>
           {/if}
           <button type="button" disabled={!bindingLive} onclick={() => void handleRun()}>Jump to session</button>
@@ -967,6 +985,9 @@
   }
   .session-status.interrupted {
     color: var(--warning);
+  }
+  .session-status.failed {
+    color: var(--danger);
   }
   .session-note {
     margin: 6px 0 8px;

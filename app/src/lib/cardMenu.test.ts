@@ -22,6 +22,7 @@ vi.mock("./layoutState", () => ({
     sessionNames: {},
     cwdBySessionId: {},
     interruptedSessionIds: new Set<string>(),
+    failureReasonById: {},
   }),
   // null = "not connected yet", which featureBlockedReason reads as "do
   // not pre-emptively grey anything out" -- so the archive entry is live
@@ -37,7 +38,16 @@ vi.mock("./layoutState", () => ({
     command: "claude",
     launchCommand: "claude",
     mcpSupported: true,
+    failurePatterns: ["API Error:"],
+    sessionIdArgs: "--session-id",
+    resumeArgs: "--resume",
   })),
+  armFailureDetection: vi.fn().mockResolvedValue(undefined),
+  // null = no conversation id, which is what a daemon too old to persist
+  // one gives every launch. These tests are about which menu entries
+  // appear, so the resume they exercise is the written-reconstruction
+  // fallback rather than a reopened conversation.
+  conversationIdForLaunch: vi.fn(() => null),
 }));
 vi.mock("./workspace", () => {
   const findSessionLocation = vi.fn();
@@ -46,11 +56,17 @@ vi.mock("./workspace", () => {
     // Built on the SAME mock the tests drive, so "in a layout tree" and
     // "live" can never disagree about one session id in here.
     sessionLiveness: (
-      state: { interruptedSessionIds?: ReadonlySet<string> },
+      state: {
+        interruptedSessionIds?: ReadonlySet<string>;
+        failureReasonById?: Record<string, string>;
+      },
       sessionId: string
     ) => {
       const location = findSessionLocation(state, sessionId);
       if (!location) return "gone";
+      // Same precedence as the real one: a failure is the newer fact and
+      // the one with a resumable conversation behind it.
+      if (state.failureReasonById?.[sessionId] !== undefined) return "failed";
       return state.interruptedSessionIds?.has(sessionId) ? "interrupted" : "live";
     },
   };
@@ -133,7 +149,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   kanbanState.set({ "ws-1": board() });
   orchestrations.set({ "ws-1": emptyOrchestration() });
-  layoutState.update((s) => ({ ...s, interruptedSessionIds: new Set<string>() }));
+  layoutState.update((s) => ({
+    ...s,
+    interruptedSessionIds: new Set<string>(),
+    failureReasonById: {},
+  }));
   vi.mocked(findSessionLocation).mockReturnValue(null);
 });
 
@@ -229,6 +249,27 @@ describe("buildCardMenuEntries", () => {
 
     const entries = labels(buildCardMenuEntries(card("plan", null), hooks()));
     expect(entries).toContain("Resume — the agent was interrupted");
+    expect(entries).not.toContain("Jump to session");
+    expect(entries).not.toContain("Re-launch agent");
+  });
+
+  // The other way a bound session stops being somewhere worth jumping
+  // to. Unlike an interrupted one the agent is still sitting at its
+  // prompt, so "Jump to session" would present a broken run as work in
+  // progress -- and unlike an interrupted one there is a conversation on
+  // disk to reopen.
+  it("a failed binding offers Resume instead of Jump or Re-launch", () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
+    layoutState.update((s) => ({
+      ...s,
+      failureReasonById: { "s-1": "API Error: 529 Overloaded." },
+    }));
+
+    const entries = labels(buildCardMenuEntries(card("plan", null), hooks()));
+    expect(entries).toContain("Resume — the agent stopped because something broke");
     expect(entries).not.toContain("Jump to session");
     expect(entries).not.toContain("Re-launch agent");
   });

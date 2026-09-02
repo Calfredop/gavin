@@ -34,8 +34,14 @@ vi.mock("./layoutState", () => ({
     sessionNames: {},
     cwdBySessionId: {},
     interruptedSessionIds: new Set<string>(),
+    failureReasonById: {} as Record<string, string>,
   }),
   handleAgentSessionSpawned: vi.fn(),
+  armFailureDetection: vi.fn().mockResolvedValue(undefined),
+  // The DAEMON half of the conversation-resume gate lives here, so the
+  // tests drive it from one place: null is "no id", which is both a
+  // profile with no verified argv and a daemon too old to persist one.
+  conversationIdForLaunch: vi.fn(() => null as string | null),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
@@ -46,6 +52,9 @@ vi.mock("./layoutState", () => ({
     command: "claude --model opus",
     launchCommand: "claude --model opus",
     mcpSupported: true,
+    failurePatterns: ["API Error:"],
+    sessionIdArgs: "",
+    resumeArgs: "",
   })),
 }));
 vi.mock("./workspace", () => {
@@ -55,18 +64,20 @@ vi.mock("./workspace", () => {
     // Built on the SAME mock the tests drive, so "in a layout tree" and
     // "live" can never disagree about one session id in here.
     sessionLiveness: (
-      state: { interruptedSessionIds?: ReadonlySet<string> },
+      state: { interruptedSessionIds?: ReadonlySet<string>; failureReasonById?: Record<string, string> },
       sessionId: string
     ) => {
       const location = findSessionLocation(state, sessionId);
       if (!location) return "gone";
+      const failed = (state as { failureReasonById?: Record<string, string> }).failureReasonById;
+      if (failed?.[sessionId] !== undefined) return "failed";
       return state.interruptedSessionIds?.has(sessionId) ? "interrupted" : "live";
     },
   };
 });
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, workspaceRootPath } from "./layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, armFailureDetection } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
@@ -107,11 +118,36 @@ function board(cardSessions: Board["cardSessions"] = []): Board {
   return { columns: [{ id: "c1", name: "To Do", position: 0 }], labels: [], cardSessions };
 }
 
+/// The default profile: verified failure patterns, and NO conversation
+/// resume -- which is what codex, gemini and opencode look like, and
+/// what claude-code looks like against a daemon too old to persist the
+/// id. The tests that want resume opt in.
+const NO_RESUME_AGENT = {
+  profileId: "claude-code",
+  file: "CLAUDE.md",
+  command: "claude --model opus",
+  launchCommand: "claude --model opus",
+  mcpSupported: true,
+  failurePatterns: ["API Error:"],
+  sessionIdArgs: "",
+  resumeArgs: "",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   kanbanState.set({ "ws-1": board() });
   gavinTrees.set({});
-  layoutState.update((s) => ({ ...s, interruptedSessionIds: new Set<string>() }));
+  // Both v21 maps reset per test: these stores are module-level, so one
+  // test's broken session would otherwise decide what the next one sees.
+  layoutState.update((s) => ({
+    ...s,
+    interruptedSessionIds: new Set<string>(),
+    failureReasonById: {},
+  }));
+  // clearAllMocks clears CALLS, not implementations, so a test that
+  // swaps the profile in has to be undone here or it leaks forward.
+  vi.mocked(resolvedAgentFor).mockReturnValue(NO_RESUME_AGENT as never);
+  vi.mocked(conversationIdForLaunch).mockReturnValue(null);
   vi.mocked(findSessionLocation).mockReturnValue(null);
 });
 
@@ -385,6 +421,48 @@ describe("relaunchCard", () => {
     expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-new");
   });
 
+  // Measured against the real binary: `claude --session-id <uuid>` on an
+  // id that already exists refuses outright -- "Session ID <uuid> is
+  // already in use" -- so replaying the stored command would not start
+  // at all. A fresh id is also what this button MEANS: re-launch is "run
+  // this again from the beginning"; reopening the conversation is
+  // Resume, which is a different entry with different words on it.
+  it("mints a new conversation id rather than replaying the one baked into the command", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue({
+      profileId: "claude-code",
+      file: "CLAUDE.md",
+      command: "claude",
+      launchCommand: "claude",
+      mcpSupported: true,
+      failurePatterns: ["API Error:"],
+      sessionIdArgs: "--session-id",
+      resumeArgs: "--resume",
+    } as never);
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/p/t.md",
+          sessionId: "s-dead",
+          cwd: "/p",
+          command: "claude --session-id 11111111-1111-1111-1111-111111111111 'x'",
+          conversationId: "11111111-1111-1111-1111-111111111111",
+          launchCwd: "/p",
+        },
+      ]),
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toBeNull();
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).not.toContain("11111111-1111-1111-1111-111111111111");
+    expect(command).toMatch(/^claude --session-id [0-9a-f-]{36} 'x'$/);
+    const bound = get(kanbanState)["ws-1"].cardSessions[0];
+    expect(bound.conversationId).not.toBe("11111111-1111-1111-1111-111111111111");
+    expect(bound.command).toBe(command);
+  });
+
   it("errors when nothing is remembered", async () => {
     expect(await relaunchCard("ws-1", "/p/absent.md")).toContain("No session");
   });
@@ -465,6 +543,95 @@ describe("an interrupted binding", () => {
 
     expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
     expect(backend.createSession).toHaveBeenCalled();
+  });
+});
+
+// The other cause of death, and the one with a resumable conversation
+// behind it: the process is still alive at its prompt, so every check in
+// the app used to read it as work in progress.
+describe("a failed binding", () => {
+  function broke(sessionId: string, reason = "API Error: Connection dropped"): void {
+    layoutState.update((s) => ({ ...s, failureReasonById: { [sessionId]: reason } }));
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+  }
+
+  const claudeAgent = {
+    profileId: "claude-code",
+    file: "CLAUDE.md",
+    command: "claude",
+    launchCommand: "claude",
+    mcpSupported: true,
+    failurePatterns: ["API Error:"],
+    sessionIdArgs: "--session-id",
+    resumeArgs: "--resume",
+  };
+
+  it("reports failed from jumpToBoundSession, and navigates nowhere", async () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+    });
+    broke("s-live");
+
+    expect(await jumpToBoundSession("ws-1", "/p/t.md")).toBe("failed");
+    expect(switchToSessionInPage).not.toHaveBeenCalled();
+  });
+
+  // The payoff of the whole conversation-id design: the agent reopens
+  // its OWN transcript instead of a new agent reading an account of it.
+  it("resumes the conversation by id, with no prompt and no file read", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue(claudeAgent as never);
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-live",
+          cwd: "/ws/drifted",
+          command: "claude --session-id u-1 'go'",
+          conversationId: "u-1",
+          launchCwd: "/ws/worktree",
+        },
+      ]),
+    });
+    broke("s-live");
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+
+    const err = await resumeCard("ws-1", card("task", "In Progress"));
+
+    expect(err).toBeNull();
+    // The LAUNCH cwd, not the session's: `cwd` follows OSC 7 and drifts
+    // the moment the agent moves into a worktree.
+    expect(backend.createSession).toHaveBeenCalledWith("/ws/worktree", "claude --resume u-1");
+    // Nothing composed and nothing read: the transcript already holds
+    // the whole task.
+    expect(backend.readFileForViewer).not.toHaveBeenCalled();
+    // The same conversation id: resuming appends to that transcript, so
+    // the id stays the handle on this work.
+    expect(get(kanbanState)["ws-1"].cardSessions[0]).toMatchObject({
+      sessionId: "s-new",
+      conversationId: "u-1",
+      launchCwd: "/ws/worktree",
+    });
+  });
+
+  // A profile with no verified resume argv keeps today's behaviour, and
+  // so does a binding recorded before v21. The two layer cleanly.
+  it("falls back to the written reconstruction with no conversation to reopen", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue(claudeAgent as never);
+    kanbanState.set({
+      "ws-1": board([
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+      ]),
+    });
+    broke("s-live");
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo it.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+
+    expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
+    expect(vi.mocked(backend.createSession).mock.calls[0][1]).toContain("gavin-resume");
   });
 });
 

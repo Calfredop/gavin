@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { resolvedAgentFor, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
+import { resolvedAgentFor, armFailureDetection, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { cardSessionState } from "./columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
@@ -18,6 +18,8 @@ import {
   composeResumePlanPrompt,
   composeDevelopPrompt,
   buildRunCommand,
+  buildResumeCommand,
+  withFreshConversationId,
   provisionalSessionName,
   runStatusNeeded,
 } from "./cardRun";
@@ -66,11 +68,14 @@ export async function resolveAttachmentsForRun(
 //
 // "interrupted" never jumps. Landing the human in a dead shell and
 // calling it their agent is the lie this whole change removes; the
-// answer there is Resume, which the caller routes to.
+// answer there is Resume, which the caller routes to. "failed" is the
+// same refusal for the other cause of death: the tab holds an agent that
+// is genuinely there and has genuinely stopped, and jumping to it would
+// present a broken run as work in progress.
 export async function jumpToBoundSession(
   workspaceId: string,
   path: string
-): Promise<"jumped" | "interrupted" | "exited" | "none"> {
+): Promise<"jumped" | "interrupted" | "failed" | "exited" | "none"> {
   const binding = cardSessionFor(get(kanbanState)[workspaceId], path);
   if (!binding) return "none";
   const state = cardSessionState(get(layoutState), binding);
@@ -129,8 +134,9 @@ export async function developCard(
   // The card file is never read here: the skill's first move is to read
   // it, and inlining a task's body is what turns an interview into a
   // build.
+  const agent = resolvedAgentFor(workspaceId);
   const command = buildRunCommand(
-    resolvedAgentFor(workspaceId).launchCommand,
+    agent.launchCommand,
     composeDevelopPrompt(card.id, card.title)
   );
 
@@ -140,6 +146,9 @@ export async function developCard(
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
+  // No conversation id: a develop run binds nothing, so there is no
+  // record for one to outlive and nothing that could ever resume it.
+  void armFailureDetection(sessionId, agent.failurePatterns);
   handleAgentSessionSpawned(workspaceId, sessionId);
   const provisional = provisionalSessionName(card.title);
   if (provisional) await setSessionName(sessionId, provisional);
@@ -185,6 +194,57 @@ async function launchCard(
     }
   }
 
+  // The launch command lives in .gavin-root/config.toml now (D41), so it
+  // comes from the same resolver the main agent and the settings panel
+  // use rather than a per-workspace field.
+  const agent = resolvedAgentFor(workspaceId);
+
+  // Resume, where the CLI can do it, is the agent reopening its OWN
+  // conversation -- not a new agent reading an account of what the last
+  // one was doing. The transcript is still on disk and gavin holds its
+  // id because it minted it at launch, so there is nothing to
+  // reconstruct.
+  //
+  // Only ever by an id gavin itself recorded on THIS binding, which is
+  // the whole binding verification this needs: the id and the run are
+  // written together on every launch, so a stale id cannot outlive the
+  // run it belongs to. A resume against somebody else's conversation is
+  // how you get the silent fresh start this is trying to avoid.
+  //
+  // The LAUNCH cwd, not the card's context folder and not the session's
+  // cwd: `cwd` on the binding follows OSC 7 and drifts the moment the
+  // agent moves into a worktree, and the resumed agent has to run where
+  // the work is.
+  const resumeCommand =
+    mode === "resume"
+      ? buildResumeCommand(agent.launchCommand, agent.resumeArgs, binding?.conversationId)
+      : null;
+  if (resumeCommand !== null && binding) {
+    const resumeCwd = binding.launchCwd ?? binding.cwd;
+    let resumed: string;
+    try {
+      resumed = await backend.createSession(resumeCwd, resumeCommand);
+    } catch (e) {
+      return `Couldn't resume the conversation: ${e instanceof Error ? e.message : e}`;
+    }
+    void armFailureDetection(resumed, agent.failurePatterns);
+    handleAgentSessionSpawned(workspaceId, resumed);
+    const name = provisionalSessionName(card.title);
+    if (name) await setSessionName(resumed, name);
+    // The SAME conversation id: resuming appends to that transcript
+    // rather than rotating it (measured), so the id stays the handle on
+    // this work and a second failure can be resumed the same way.
+    await linkCardSessionAction(workspaceId, {
+      path,
+      sessionId: resumed,
+      cwd: resumeCwd,
+      command: resumeCommand,
+      conversationId: binding.conversationId,
+      launchCwd: resumeCwd,
+    });
+    return null;
+  }
+
   let prompt: string;
   if (card.kind === "task") {
     const file = await backend.readFileForViewer(path);
@@ -201,10 +261,8 @@ async function launchCard(
         : composePlanPrompt(path, resolved.paths);
   }
 
-  // The launch command lives in .gavin-root/config.toml now (D41), so it
-  // comes from the same resolver the main agent and the settings panel
-  // use rather than a per-workspace field.
-  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
+  const conversationId = conversationIdForLaunch(agent);
+  const command = buildRunCommand(agent.launchCommand, prompt, agent.sessionIdArgs, conversationId);
   const cwd = card.contextFolder;
 
   let sessionId: string;
@@ -213,6 +271,7 @@ async function launchCard(
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
+  void armFailureDetection(sessionId, agent.failurePatterns);
   handleAgentSessionSpawned(workspaceId, sessionId);
   // Named before the agent has drawn a frame. The agent's own
   // gavin_name_session replaces this the moment it runs -- but that call
@@ -221,7 +280,17 @@ async function launchCard(
   // fragment tells the human nothing about which card is running.
   const provisional = provisionalSessionName(card.title);
   if (provisional) await setSessionName(sessionId, provisional);
-  await linkCardSessionAction(workspaceId, { path, sessionId, cwd, command });
+  await linkCardSessionAction(workspaceId, {
+    path,
+    sessionId,
+    cwd,
+    command,
+    conversationId,
+    // The directory this run was LAUNCHED in, kept separate from `cwd`
+    // above because that one follows the session's OSC 7 reports and
+    // drifts the moment the agent moves into a worktree.
+    launchCwd: cwd,
+  });
   return null;
 }
 
@@ -301,13 +370,30 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
 export async function relaunchCard(workspaceId: string, path: string): Promise<string | null> {
   const binding = cardSessionFor(get(kanbanState)[workspaceId], path);
   if (!binding) return "No session remembered for this card";
+  const agent = resolvedAgentFor(workspaceId);
+  // The remembered command carries the conversation id gavin fixed at
+  // launch, and running it again as-is DOES NOT WORK: `claude
+  // --session-id <uuid>` refuses outright with "Session ID <uuid> is
+  // already in use", so the re-launch would fail to start at all.
+  // Measured, not deduced.
+  //
+  // A fresh id is also what this button means. Re-launch is "run this
+  // again from the beginning"; reopening the old conversation is
+  // Resume, which is a different entry with different words on it.
+  const fresh = withFreshConversationId(binding.command, agent.sessionIdArgs);
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(binding.cwd, binding.command ?? undefined);
+    sessionId = await backend.createSession(binding.cwd, fresh.command ?? undefined);
   } catch (e) {
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }
+  void armFailureDetection(sessionId, agent.failurePatterns);
   handleAgentSessionSpawned(workspaceId, sessionId);
-  await linkCardSessionAction(workspaceId, { ...binding, sessionId });
+  await linkCardSessionAction(workspaceId, {
+    ...binding,
+    sessionId,
+    command: fresh.command,
+    conversationId: fresh.conversationId,
+  });
   return null;
 }

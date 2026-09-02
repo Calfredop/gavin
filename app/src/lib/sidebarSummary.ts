@@ -276,13 +276,19 @@ export interface PageAgentsSummary {
   /// as plainly not finished with you. The sidebar draws this count as
   /// the page row's attention badge rather than inside the recap.
   waiting: number;
+  /// Agents that stopped because something BROKE. Its own bucket for the
+  /// same reason `waiting` has one, and a sharper one: before v21 these
+  /// counted as `idle`, so the sidebar's recap said a workspace was
+  /// quietly finished when what it actually was, was broken.
+  failed: number;
   idle: number;
 }
 
 /// Tallies one page's tabs, and buckets the agents among them by status.
 /// A session with no status recorded yet counts as idle -- a tab that has
 /// never reported in has certainly not started working -- which is also
-/// what keeps `running + waiting + idle === agents` true at all times.
+/// what keeps `running + waiting + failed + idle === agents` true at all
+/// times.
 ///
 /// Which tabs are agents goes through layout's sessionTabsOnly, the same
 /// projection behind the close-page prompt's "N terminal sessions will
@@ -293,17 +299,20 @@ export function pageAgentsSummary(page: Page, state: PageTabState): PageAgentsSu
   const agentIds = sessionTabsOnly(ids, state.fileTabsById, state.boardTabsById);
   let running = 0;
   let waiting = 0;
+  let failed = 0;
   for (const id of agentIds) {
     const status = state.sessionStatusById[id];
     if (status === "working") running += 1;
     else if (status === "waiting_for_input") waiting += 1;
+    else if (status === "failed") failed += 1;
   }
   return {
     tabs: ids.length,
     agents: agentIds.length,
     running,
     waiting,
-    idle: agentIds.length - running - waiting,
+    failed,
+    idle: agentIds.length - running - waiting - failed,
   };
 }
 
@@ -336,6 +345,7 @@ export function workspaceAgentsSummary(ws: Workspace, state: PageTabState): Work
     agents: 0,
     running: 0,
     waiting: 0,
+    failed: 0,
     idle: 0,
   };
   for (const page of ws.pages) {
@@ -344,6 +354,7 @@ export function workspaceAgentsSummary(ws: Workspace, state: PageTabState): Work
     total.agents += summary.agents;
     total.running += summary.running;
     total.waiting += summary.waiting;
+    total.failed += summary.failed;
     total.idle += summary.idle;
   }
   const main = ws.mainSessionId;
@@ -353,6 +364,7 @@ export function workspaceAgentsSummary(ws: Workspace, state: PageTabState): Work
     const status = state.sessionStatusById[main];
     if (status === "working") total.running += 1;
     else if (status === "waiting_for_input") total.waiting += 1;
+    else if (status === "failed") total.failed += 1;
     else total.idle += 1;
   }
   return total;

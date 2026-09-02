@@ -74,6 +74,22 @@ describe("restartOutcome", () => {
 describe("featureBlockedReason", () => {
   const v9 = { daemonVersion: 9, appVersion: 12, degraded: true };
 
+  // v21 widened SetStepRun and LinkCardSession rather than adding a
+  // request type, so min_version_for -- which gates TYPES -- is
+  // structurally blind to it: a v20 daemon parses both fine and drops
+  // `conversation_id` and `launch_cwd` on the floor. This entry is the
+  // only gate there is, and its consumer is the LAUNCH: an id that
+  // cannot be persisted is an id no Resume can ever use.
+  it("blocks conversation resume below v21 and allows it at exactly v21", () => {
+    expect(featureBlockedReason({ daemonVersion: 20, appVersion: 21, degraded: true }, "conversationResume")).toContain("v21");
+    expect(featureBlockedReason({ daemonVersion: 21, appVersion: 21, degraded: false }, "conversationResume")).toBeNull();
+  });
+
+  it("blocks failure detection below v21, which is what the copy about it depends on", () => {
+    expect(featureBlockedReason({ daemonVersion: 20, appVersion: 21, degraded: true }, "failureDetection")).toContain("v21");
+    expect(featureBlockedReason({ daemonVersion: 21, appVersion: 21, degraded: false }, "failureDetection")).toBeNull();
+  });
+
   it("blocks orchestration on a v9 daemon", () => {
     expect(featureBlockedReason(v9, "orchestration")).toContain("v10");
   });

@@ -8,6 +8,9 @@ import {
   composeDevelopPrompt,
   shellQuote,
   buildRunCommand,
+  buildResumeCommand,
+  mintConversationId,
+  withFreshConversationId,
   buildHeadlessCommand,
   COMMIT_PROMPT,
   buildToolCommand,
@@ -166,6 +169,104 @@ describe("buildRunCommand", () => {
   it("appends the quoted prompt to the agent command", () => {
     expect(buildRunCommand("claude", "do it")).toBe("claude 'do it'");
     expect(buildRunCommand("claude --model x", "a'b")).toBe("claude --model x 'a'\\''b'");
+  });
+});
+
+describe("buildRunCommand with a conversation id", () => {
+  // Ahead of the prompt, because the prompt is a positional: anything
+  // after it would be read as a second one.
+  it("fixes the conversation id at launch, before the prompt", () => {
+    expect(buildRunCommand("claude", "do it", "--session-id", "abc-123")).toBe(
+      "claude --session-id abc-123 'do it'"
+    );
+  });
+
+  // Dropped TOGETHER: an id with no argv to carry it, or argv with no
+  // id, would each put a stray token in front of the prompt.
+  it("drops both halves unless it has both", () => {
+    expect(buildRunCommand("claude", "do it", "--session-id", null)).toBe("claude 'do it'");
+    expect(buildRunCommand("claude", "do it", "", "abc-123")).toBe("claude 'do it'");
+    expect(buildRunCommand("claude", "do it", "   ", "abc-123")).toBe("claude 'do it'");
+  });
+
+  it("composes with the model flag the launch command already carries", () => {
+    expect(buildRunCommand("claude --model opus", "go", "--session-id", "u1")).toBe(
+      "claude --model opus --session-id u1 'go'"
+    );
+  });
+});
+
+describe("mintConversationId", () => {
+  it("mints a real UUID, which is what the CLI validates", () => {
+    const id = mintConversationId("--session-id");
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(mintConversationId("--session-id")).not.toBe(id);
+  });
+
+  // A profile whose argv nobody has verified gets no id, and falls back
+  // to the written reconstruction. Guessing a flag here would put
+  // garbage in somebody's argv.
+  it("mints nothing for a profile with no verified argv", () => {
+    expect(mintConversationId("")).toBeNull();
+    expect(mintConversationId("  ")).toBeNull();
+  });
+});
+
+describe("buildResumeCommand", () => {
+  // No prompt. Resume puts the agent back at the end of its OWN
+  // transcript; a prompt here would be a fresh instruction on top of a
+  // conversation that already holds the whole task.
+  it("reopens the conversation and hands the agent nothing else", () => {
+    expect(buildResumeCommand("claude --model opus", "--resume", "u1")).toBe(
+      "claude --model opus --resume u1"
+    );
+  });
+
+  it("returns null without both a verified argv and an id", () => {
+    expect(buildResumeCommand("claude", "", "u1")).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", null)).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", undefined)).toBeNull();
+    expect(buildResumeCommand("claude", "--resume", "  ")).toBeNull();
+  });
+});
+
+describe("withFreshConversationId", () => {
+  // Measured against the real binary: re-running a command that carries
+  // `--session-id <uuid>` does not repeat the conversation, it FAILS --
+  // "Session ID <uuid> is already in use" -- so a re-launch that replayed
+  // the stored command would never start at all.
+  it("swaps the baked-in id for a new one", () => {
+    const { command, conversationId } = withFreshConversationId(
+      "claude --session-id 11111111-1111-1111-1111-111111111111 'do it'",
+      "--session-id"
+    );
+    expect(conversationId).not.toBe("11111111-1111-1111-1111-111111111111");
+    expect(command).toBe(`claude --session-id ${conversationId} 'do it'`);
+  });
+
+  it("leaves a command with no id in it exactly as it was", () => {
+    expect(withFreshConversationId("claude 'do it'", "--session-id")).toEqual({
+      command: "claude 'do it'",
+      conversationId: null,
+    });
+    expect(withFreshConversationId("claude --session-id x 'do it'", "")).toEqual({
+      command: "claude --session-id x 'do it'",
+      conversationId: null,
+    });
+    expect(withFreshConversationId(null, "--session-id")).toEqual({
+      command: null,
+      conversationId: null,
+    });
+  });
+
+  // The argv always sits AHEAD of the quoted prompt, so the first
+  // occurrence is the id even when the prompt quotes the same flag.
+  it("swaps the launch flag, not a mention of it inside the prompt", () => {
+    const { command } = withFreshConversationId(
+      "claude --session-id 11111111-1111-1111-1111-111111111111 'run --session-id 9 for me'",
+      "--session-id"
+    );
+    expect(command).toContain("'run --session-id 9 for me'");
   });
 });
 

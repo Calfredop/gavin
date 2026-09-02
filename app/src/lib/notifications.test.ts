@@ -17,6 +17,8 @@ import {
   maybeNotifyAgentCommit,
   agentCommitBody,
   setRailNotificationVoice,
+  parseSessionStatus,
+  failureBody,
   __resetForTesting,
 } from "./notifications";
 
@@ -247,5 +249,69 @@ describe("the rail's voice over a status notification", () => {
     await maybeNotifyStatusChange("s-1", "working", "idle", "my-project", ALL_ON);
     const call = vi.mocked(sendNotification).mock.calls[0][0] as { body: string };
     expect(call.body).toBe("my-project finished");
+  });
+});
+
+// ---- v21: a broken agent is not a finished one -----------------------------
+
+describe("parseSessionStatus", () => {
+  it("keeps every status this build knows", () => {
+    for (const s of ["idle", "working", "waiting_for_input", "failed", "unknown"]) {
+      expect(parseSessionStatus(s)).toBe(s);
+    }
+  });
+
+  // The whole reason this function exists. The daemon's own
+  // SessionStatus::from_str used to map anything unrecognised to `idle`,
+  // and `idle` is the ONE value orchestration acts on by marking a step
+  // done and advancing the rail -- so a status invented by a newer daemon
+  // would advance a rail on the strength of not being understood.
+  it("never reads an unrecognised status as idle", () => {
+    for (const s of ["", "IDLE", "crashed", "api_error", "Idle "]) {
+      expect(parseSessionStatus(s)).toBe("unknown");
+    }
+  });
+});
+
+describe("failureBody", () => {
+  it("carries the agent's own sentence, which is the part a human acts on", () => {
+    expect(failureBody("api", "API Error: 529 Overloaded.")).toBe(
+      "api stopped — API Error: 529 Overloaded."
+    );
+  });
+
+  it("still says something true when the reason was lost", () => {
+    expect(failureBody("api", undefined)).toBe("api stopped: its agent did not finish");
+    expect(failureBody("api", "   ")).toBe("api stopped: its agent did not finish");
+  });
+});
+
+describe("a failed session", () => {
+  it("no longer sends the human a notification saying it finished", async () => {
+    await maybeNotifyStatusChange("s1", "working", "failed", "rail step", ALL_ON, "API Error: x");
+    expect(sendNotification).toHaveBeenCalledWith({
+      title: "gavin",
+      body: "rail step stopped — API Error: x",
+    });
+  });
+
+  // A failure is news whatever the session was doing, and the daemon only
+  // ever writes it at the end of a turn -- so unlike `finished` it is not
+  // gated on a previous `working`.
+  it("notifies from any previous status", async () => {
+    await maybeNotifyStatusChange("s1", undefined, "failed", "rail step", ALL_ON, "boom");
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  // A failure rides the `finished` toggle rather than a third one: both
+  // say "this run reached an end", which is what that toggle answers for.
+  it("is silenced by the workspace's finished toggle", async () => {
+    await maybeNotifyStatusChange("s1", "working", "failed", "rail step", { needsInput: true, finished: false }, "boom");
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("says nothing at all for a status this build cannot read", async () => {
+    await maybeNotifyStatusChange("s1", "working", "unknown", "rail step", ALL_ON);
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 });

@@ -145,7 +145,16 @@ export function linkCardSessionAction(workspaceId: string, binding: CardSession)
   return mutateBindings(
     workspaceId,
     (sessions) => [...sessions.filter((cs) => cs.path !== binding.path), binding],
-    () => backend.linkCardSession(workspaceId, binding.path, binding.sessionId, binding.cwd, binding.command)
+    () =>
+      backend.linkCardSession(
+        workspaceId,
+        binding.path,
+        binding.sessionId,
+        binding.cwd,
+        binding.command,
+        binding.conversationId ?? null,
+        binding.launchCwd ?? null
+      )
   );
 }
 

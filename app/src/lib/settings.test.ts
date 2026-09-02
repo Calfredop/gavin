@@ -18,9 +18,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"] },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "", modelFlag: "--model", models: [] },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "", modelFlag: "", models: [] },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], sessionIdArgs: "--session-id", resumeArgs: "--resume" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], sessionIdArgs: "", resumeArgs: "" },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], sessionIdArgs: "", resumeArgs: "" },
 ];
 
 describe("normalizeColor", () => {
@@ -207,6 +207,9 @@ describe("resolveAgentConfig", () => {
       headlessArgs: "",
       model: "",
       launchCommand: "codex --x",
+      failurePatterns: [],
+      sessionIdArgs: "",
+      resumeArgs: "",
     });
   });
 
@@ -222,6 +225,7 @@ describe("resolveAgentConfig", () => {
       mcpSupported: true, mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --',
       model: "", launchCommand: "claude",
+      failurePatterns: ["API Error:"], sessionIdArgs: "--session-id", resumeArgs: "--resume",
     });
     expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES, {}).profileId).toBe(
       "claude-code"
@@ -299,6 +303,9 @@ describe("resolveAgentConfig", () => {
       headlessArgs: "",
       model: "",
       launchCommand: "my-agent",
+      failurePatterns: [],
+      sessionIdArgs: "",
+      resumeArgs: "",
     });
     // Custom with nothing filled in still resolves to something safe.
     const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
@@ -316,6 +323,39 @@ describe("resolveAgentConfig", () => {
     const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
     expect(bare.command).toBe("claude");
     expect(bare.headlessArgs).toBe("");
+  });
+
+  // Same posture as the headless argv above, and the same reason: these
+  // three describe the BINARY. Claude Code's `--session-id` on somebody
+  // else's agent is garbage in its argv, and its error text on somebody
+  // else's screen would paint healthy sessions as broken.
+  it("takes the failure and resume argv from the effective profile only", () => {
+    const claude = resolveAgentConfig(null, PROFILES, {});
+    expect(claude.failurePatterns).toEqual(["API Error:"]);
+    expect(claude.sessionIdArgs).toBe("--session-id");
+    expect(claude.resumeArgs).toBe("--resume");
+    const codex = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {});
+    expect(codex.failurePatterns).toEqual([]);
+    expect(codex.resumeArgs).toBe("");
+    // A bare `custom` borrows claude's COMMAND and none of its argv.
+    const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
+    expect(bare.command).toBe("claude");
+    expect(bare.failurePatterns).toEqual([]);
+    expect(bare.sessionIdArgs).toBe("");
+  });
+
+  // An overridden `command` is nearly always a wrapper or an absolute
+  // path to the SAME binary, so it keeps the profile's argv -- losing
+  // failure detection for everyone who pins a path would be the worse
+  // failure of the two.
+  it("keeps the profile's argv when only the command is overridden", () => {
+    const r = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: "/opt/bin/claude" },
+      PROFILES,
+      {}
+    );
+    expect(r.failurePatterns).toEqual(["API Error:"]);
+    expect(r.sessionIdArgs).toBe("--session-id");
   });
 
   it("gives custom MCP support the moment a config file is named for it", () => {

@@ -70,6 +70,8 @@ import { gitStore, refresh as refreshGit } from "./gitState";
 import {
   layoutState,
   resolvedAgentFor,
+  armFailureDetection,
+  conversationIdForLaunch,
   createSessionOnPage,
   createPage,
   sessionExits,
@@ -254,7 +256,18 @@ export function setStepRunAction(
   stepId: string,
   state: StepState,
   sessionId: string | null,
-  reason: string | null
+  reason: string | null,
+  /// The agent CLI's own id for the conversation this run IS, and the
+  /// directory it was launched in. Recorded on the RUN rather than the
+  /// tab deliberately: the session that failed is closed or replaced
+  /// long before the human decides what to do about it, and the
+  /// conversation has to outlive it.
+  ///
+  /// `launchCwd` is not the session's cwd. `record.cwd` follows OSC 7
+  /// and drifts the moment the agent `cd`s -- a repo root, then a
+  /// worktree -- and a resume has to run where the WORK is.
+  conversationId: string | null = null,
+  launchCwd: string | null = null
 ): Promise<void> {
   return mutateRunState(
     workspaceId,
@@ -262,10 +275,10 @@ export function setStepRunAction(
       ...orch,
       stepRuns: [
         ...orch.stepRuns.filter((r) => r.stepId !== stepId),
-        { stepId, state, sessionId, reason },
+        { stepId, state, sessionId, reason, conversationId, launchCwd },
       ],
     }),
-    () => backend.setStepRun(stepId, state, sessionId, reason)
+    () => backend.setStepRun(stepId, state, sessionId, reason, conversationId, launchCwd)
   );
 }
 
@@ -439,9 +452,13 @@ async function executeToolLaunch(
   }
 
   const body = resolveToolBody(tool, stepParams(step));
+  const agent = resolvedAgentFor(workspaceId);
+  // Only an AGENT tool gets a conversation: a command or script step is
+  // a shell, and its verdict is its exit code (tools spec T5).
+  const conversationId = tool.kind === "agent" ? conversationIdForLaunch(agent) : null;
   const command =
     tool.kind === "agent"
-      ? buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, body)
+      ? buildRunCommand(agent.launchCommand, body, agent.sessionIdArgs, conversationId)
       : buildToolCommand(tool.kind, body, tool.name);
 
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
@@ -453,6 +470,9 @@ async function executeToolLaunch(
   // needs a name the moment it appears or it is unidentifiable. Best
   // effort: a nameless tab is cosmetic, not a reason to stall a step
   // whose session is already running.
+  if (tool.kind === "agent") {
+    void armFailureDetection(sessionId, agent.failurePatterns);
+  }
   try {
     // The store, not backend.setSessionName: the backend command only
     // persists the name to config and pushes nothing back, so a tab named
@@ -461,7 +481,7 @@ async function executeToolLaunch(
   } catch {
     // Cosmetic only.
   }
-  await setStepRunAction(workspaceId, step.id, "running", sessionId, null);
+  await setStepRunAction(workspaceId, step.id, "running", sessionId, null, conversationId, cwd);
 }
 
 /// Deliberately the EXISTING card-run path, so the board and the tab can
@@ -511,13 +531,16 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
     prompt = composePlanPrompt(step.cardPath, resolved.paths);
   }
 
-  const command = buildRunCommand(resolvedAgentFor(workspaceId).launchCommand, prompt);
+  const agent = resolvedAgentFor(workspaceId);
+  const conversationId = conversationIdForLaunch(agent);
+  const command = buildRunCommand(agent.launchCommand, prompt, agent.sessionIdArgs, conversationId);
   const cwd = rail.worktreePath ?? entry.contextFolder;
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
   if (!sessionId) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
     return;
   }
+  void armFailureDetection(sessionId, agent.failurePatterns);
 
   // Named before the agent has drawn a frame, same as a board Run and the
   // tool step above: the agent's own gavin_name_session refines this, but
@@ -532,8 +555,15 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
       // Cosmetic only.
     }
   }
-  await linkCardSessionAction(workspaceId, { path: step.cardPath, sessionId, cwd, command });
-  await setStepRunAction(workspaceId, stepId, "running", sessionId, null);
+  await linkCardSessionAction(workspaceId, {
+    path: step.cardPath,
+    sessionId,
+    cwd,
+    command,
+    conversationId,
+    launchCwd: cwd,
+  });
+  await setStepRunAction(workspaceId, stepId, "running", sessionId, null, conversationId, cwd);
   if (runStatusNeeded(entry.plan.status)) {
     try {
       await backend.setPlanFrontmatterField(step.cardPath, "status", "In Progress");
@@ -714,9 +744,24 @@ async function runTick(workspaceId: string): Promise<boolean> {
   // same id, back in the layout -- so without this the scheduler waits on
   // a shell that will never finish a card. See nextActions rule 3c.
   const interrupted = get(layoutState).interruptedSessionIds;
+  // A FAILED session is in `live` too, and goes quiet -- which is `idle`,
+  // which rule 3b reads as a finished turn. Without this the rail
+  // advances on work that never happened. See nextActions rule 3d.
+  const failureReasons = new Map(Object.entries(get(layoutState).failureReasonById));
   return await executeActions(
     workspaceId,
-    nextActions(orch, board, tree, worktrees, live, tools, get(sessionExits), statuses, interrupted)
+    nextActions(
+      orch,
+      board,
+      tree,
+      worktrees,
+      live,
+      tools,
+      get(sessionExits),
+      statuses,
+      interrupted,
+      failureReasons
+    )
   );
 }
 

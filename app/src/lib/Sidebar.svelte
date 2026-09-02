@@ -46,6 +46,7 @@
     SquareArrowOutUpRight,
     Boxes,
     MessageCircleQuestionMark,
+    OctagonAlert,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -302,6 +303,14 @@
   const STATUS_WORD: Record<SessionStatus, string> = {
     working: "Working",
     waiting_for_input: "Request attention",
+    // Not "Idle", which is what this used to read as: the agent is at a
+    // prompt exactly as an idle one is, and it stopped because something
+    // broke rather than because it finished.
+    failed: "Stopped — something broke",
+    // A status this build cannot read, written by a newer daemon. Named
+    // rather than folded into Idle, which is precisely the default that
+    // made a broken agent look like a finished one.
+    unknown: "Unknown status",
     idle: "Idle",
   };
 
@@ -374,6 +383,7 @@
     const buckets: string[] = [];
     if (tabs.running > 0) buckets.push(`${tabs.running} running`);
     if (tabs.waiting > 0) buckets.push(`${tabs.waiting} waiting for input`);
+    if (tabs.failed > 0) buckets.push(`${tabs.failed} stopped because something broke`);
     if (tabs.idle > 0) buckets.push(`${tabs.idle} idle`);
     const agents = tabs.agents === 0 ? "no agents" : `${plural(tabs.agents, "agent", "agents")}: ${buckets.join(", ")}`;
     const others = tabs.tabs - tabs.agents;
@@ -916,6 +926,14 @@
               <span class="tab-stat total"><PanelsTopLeft size={10} /><span class="recap-count">{tabs.tabs}</span></span>
               {#if tabs.running > 0}
                 <span class="tab-stat running"><Play size={9} /><span class="recap-count">{tabs.running}</span></span>
+              {/if}
+              <!-- Its own stat, not folded into idle. Before v21 a broken
+                   agent WAS idle here, so this strip told the human a page
+                   was quietly finished when what it actually was, was
+                   broken. Leaving it out of both buckets instead would be
+                   worse still: the agent would vanish from the row. -->
+              {#if tabs.failed > 0}
+                <span class="tab-stat failed"><OctagonAlert size={9} /><span class="recap-count">{tabs.failed}</span></span>
               {/if}
               {#if tabs.idle > 0}
                 <span class="tab-stat idle"><CircleDashed size={9} /><span class="recap-count">{tabs.idle}</span></span>
@@ -1622,6 +1640,9 @@
   }
   .tab-stat.running {
     color: var(--accent-text);
+  }
+  .tab-stat.failed {
+    color: var(--danger);
   }
   .workspace-row.drop-before,
   .page-row.drop-before {

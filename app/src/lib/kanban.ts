@@ -23,6 +23,11 @@ export interface CardSession {
   sessionId: string;
   cwd: string;
   command: string | null;
+  /// See orchestration.ts's StepRun: the conversation this run IS, and
+  /// the directory it was LAUNCHED in (`cwd` above drifts with OSC 7).
+  /// Optional because every binding recorded before v21 has neither.
+  conversationId?: string | null;
+  launchCwd?: string | null;
 }
 
 export interface Board {

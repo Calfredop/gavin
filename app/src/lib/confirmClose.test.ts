@@ -50,6 +50,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
+    failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],

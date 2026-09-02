@@ -92,6 +92,14 @@ vi.mock("./notifications", () => ({
   // bootstrap() starts the orchestration listeners, which register the
   // rail's voice over this module (see setRailNotificationVoice).
   setRailNotificationVoice: vi.fn(),
+  // NOT a vi.fn(): this is a pure parser and every status that reaches
+  // the store goes through it, so a mock returning undefined would empty
+  // the map these tests are about. The real one is the behaviour under
+  // test as much as the store write is.
+  parseSessionStatus: (raw: string) =>
+    ["idle", "working", "waiting_for_input", "failed", "unknown"].includes(raw)
+      ? raw
+      : "unknown",
 }));
 
 import * as backend from "./backend";
@@ -111,6 +119,8 @@ import {
   handleGitStatusChanged,
   handleSessionRestored,
   handleSessionInterrupted,
+  handleSessionFailed,
+  __resetFailureNotices,
   reconcileLayoutSessions,
   restartDaemonInPlace,
   clearRestoredMarker,
@@ -182,6 +192,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
+    failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -210,6 +221,7 @@ beforeEach(() => {
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
+    failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -811,8 +823,11 @@ describe("handleSessionStatusChanged", () => {
     // The fifth argument is the owning workspace's toggles (D38); a
     // session in no workspace defaults to both on.
     const bothOn = { needsInput: true, finished: true };
-    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a", bothOn);
-    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a", bothOn);
+    // The sixth argument is the failure reason, undefined for every
+    // status but `failed` -- which notifies from handleSessionFailed
+    // instead, because that is the only call that holds one.
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a", bothOn, undefined);
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a", bothOn, undefined);
   });
 
   it("resolves the notification label via sessionNames, falling back the same way tab labels do", () => {
@@ -824,7 +839,8 @@ describe("handleSessionStatusChanged", () => {
       undefined,
       "waiting_for_input",
       "my-session",
-      { needsInput: true, finished: true }
+      { needsInput: true, finished: true },
+      undefined
     );
   });
 });
@@ -915,6 +931,62 @@ describe("handleSessionInterrupted", () => {
   });
 });
 
+// The daemon writes StatusChanged("failed") and SessionFailed together
+// and in that order, so the status lands first and the REASON -- the
+// only part a human can act on -- lands a beat later. These are the two
+// halves meeting.
+describe("handleSessionFailed", () => {
+  beforeEach(() => __resetFailureNotices());
+
+  it("keeps the agent's own sentence against the session id", () => {
+    handleSessionStatusChanged("a", "failed");
+    handleSessionFailed("a", "API Error: 529 Overloaded.");
+    expect(get(layoutState).failureReasonById["a"]).toBe("API Error: 529 Overloaded.");
+  });
+
+  // Any other status clears the reason with it, matching what the daemon
+  // does to the row: a session that started talking again is no longer
+  // described by the last thing that broke, and a stale reason on a live
+  // session is worse than none -- it is the text every surface shows.
+  it("drops the reason the moment the session says anything else", () => {
+    handleSessionStatusChanged("a", "failed");
+    handleSessionFailed("a", "API Error: x");
+    handleSessionStatusChanged("a", "working");
+    expect(get(layoutState).failureReasonById["a"]).toBeUndefined();
+  });
+
+  // The notification is owned HERE, not by the status handler, because
+  // this is the only call that holds the reason. Announcing a failure
+  // with nothing to say about it would be the same uselessness the old
+  // "<label> finished" had.
+  it("fires the one notification for the transition, carrying the reason", () => {
+    handleSessionStatusChanged("a", "working");
+    vi.mocked(notifications.maybeNotifyStatusChange).mockClear();
+
+    handleSessionStatusChanged("a", "failed");
+    expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+
+    handleSessionFailed("a", "API Error: x");
+    expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledWith(
+      "a",
+      "working",
+      "failed",
+      "a",
+      { needsInput: true, finished: true },
+      "API Error: x"
+    );
+  });
+
+  // A reason arriving for a session already known to be failed is the
+  // same failure read twice -- an Attach baseline, a re-read -- and must
+  // not interrupt the human again.
+  it("stays silent for a reason with no transition behind it", () => {
+    handleSessionFailed("a", "API Error: x");
+    expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+    expect(get(layoutState).failureReasonById["a"]).toBe("API Error: x");
+  });
+});
+
 // Both liveness checks in the app read the persisted LAYOUT TREE, not
 // the daemon's session list -- so a tab id a failed recovery left behind
 // reads as a running agent forever, and its rail step can never be
@@ -933,7 +1005,7 @@ describe("reconcileLayoutSessions", () => {
   it("clears a tab the daemon has no session for, and leaves the live ones", async () => {
     setState([pageWith(["s-live", "ghost"])], "ws-1", "s-live");
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, failureReason: null },
     ]);
 
     await reconcileLayoutSessions();
@@ -945,7 +1017,7 @@ describe("reconcileLayoutSessions", () => {
     setState([pageWith(["s-live", "file-1"])], "ws-1", "s-live");
     layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/ws/README.md" } } }));
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, failureReason: null },
     ]);
 
     await reconcileLayoutSessions();
@@ -971,7 +1043,7 @@ describe("reconcileLayoutSessions", () => {
           })),
         })),
       }));
-      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false }];
+      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, failureReason: null }];
     });
 
     await reconcileLayoutSessions();
@@ -2098,8 +2170,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
   it("fills cwd, status and the restored badge from the daemon", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false },
-      { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false, failureReason: null },
+      { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false, failureReason: null },
     ]);
 
     await bootstrapReady();
@@ -2116,8 +2188,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
   });
   it("fills the interrupted set, which the restored one does not speak for", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true },
-      { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false },
+      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, failureReason: null },
+      { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false, failureReason: null },
     ]);
 
     await bootstrapReady();
@@ -2130,11 +2202,32 @@ describe("bootstrap seeds the push-fed session maps", () => {
   });
 
 
+  // The reason is a push like the other four, and its baseline rides on
+  // Attach -- which happens once per app PROCESS. Without this a
+  // reloaded frontend comes up with a red session and nothing to say for
+  // itself, which is the exact state this feature exists to replace.
+  it("fills the failure reason, so a reload does not leave a red session mute", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-broke", cwd: "/ws", status: "failed", restored: false, interrupted: false, failureReason: "API Error: x" },
+      { id: "s-fine", cwd: "/ws", status: "idle", restored: false, interrupted: false, failureReason: null },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).failureReasonById["s-broke"]).toBe("API Error: x"));
+    const state = get(layoutState);
+    expect(state.sessionStatusById["s-broke"]).toBe("failed");
+    expect(state.failureReasonById["s-fine"]).toBeUndefined();
+    // Read straight into the map, never through handleSessionFailed:
+    // re-reading a failure the human has already seen is not a new one.
+    expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+  });
+
   it("never overwrites a push that already landed", async () => {
     vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
       // A live push beats the snapshot this call is about to return.
       handleCwdChanged("s-1", "/ws/live");
-      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false }];
+      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false, failureReason: null }];
     });
 
     await bootstrapReady();
@@ -2159,8 +2252,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // when the status actually CHANGES.
   it("fills the git status the sidebar's repo chip reads", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false },
-      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false, failureReason: null },
+      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false, failureReason: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockResolvedValue([
       { repoRoot: "/ws", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
@@ -2189,7 +2282,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   it("never overwrites a git push that already landed", async () => {
     const live = { repoRoot: "/ws", branch: "live", dirty: false, ahead: 0, behind: 0, hasUpstream: false };
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, failureReason: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockImplementation(async () => {
       handleGitStatusChanged("s-1", live);
@@ -2205,7 +2298,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // git can be missing, slow, or refuse a repo outright.
   it("keeps the cwd seed when the git half fails", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, failureReason: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockRejectedValue(new Error("git was not found on PATH"));
 
@@ -2480,6 +2573,7 @@ describe("runningSessionCount", () => {
       gitStatusById: {},
       restoredSessionIds: new Set(),
       interruptedSessionIds: new Set(),
+      failureReasonById: {},
       fileTabsById: {},
       boardTabsById: {},
       removedWorkspaces: [],

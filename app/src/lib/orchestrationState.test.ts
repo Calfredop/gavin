@@ -24,13 +24,26 @@ vi.mock("./layoutState", () => ({
   // A REAL store: tick() derives the set of LIVE session ids from it, so
   // a test that needs a running step's session to still exist has to be
   // able to put a page holding it in here.
-  layoutState: writable({ workspaces: [] as unknown[], sessionStatusById: {} as Record<string, string> }),
+  layoutState: writable({
+    workspaces: [] as unknown[],
+    sessionStatusById: {} as Record<string, string>,
+    // rule 3d's input: a failed agent is LIVE and quiet, so without this
+    // the scheduler reads its silence as a finished turn.
+    failureReasonById: {} as Record<string, string>,
+  }),
   resolvedAgentFor: vi.fn(() => ({
     command: "claude",
     launchCommand: "claude",
     file: "CLAUDE.md",
     profile: "claude-code",
+    failurePatterns: ["API Error:"],
+    sessionIdArgs: "",
+    resumeArgs: "",
   })),
+  armFailureDetection: vi.fn().mockResolvedValue(undefined),
+  // Null by default: no conversation id unless a test asks for one, which
+  // is what an unverified profile OR a pre-v21 daemon looks like.
+  conversationIdForLaunch: vi.fn(() => null as string | null),
   createSessionOnPage: vi.fn(),
   createPage: vi.fn().mockResolvedValue(null),
   // The card-attachment run gate resolves relative paths against the
@@ -202,6 +215,7 @@ const boardStore = kanbanStateModule.kanbanState as unknown as Writable<Record<s
 const layoutStore = layoutStateModule.layoutState as unknown as Writable<{
   workspaces: unknown[];
   sessionStatusById: Record<string, string>;
+  failureReasonById: Record<string, string>;
   activeWorkspaceId?: string | null;
 }>;
 
@@ -212,12 +226,12 @@ beforeEach(() => {
   // file: a page one test puts in must not decide what the next one
   // sees. `clearAllMocks` does nothing for them.
   boardStore.set({});
-  layoutStore.set({ workspaces: [], sessionStatusById: {} });
+  layoutStore.set({ workspaces: [], sessionStatusById: {}, failureReasonById: {} });
   cardAttachments.a = [];
 });
 
 function setLayoutState(value: { workspaces: unknown[] }): void {
-  layoutStore.set({ ...value, sessionStatusById: {} });
+  layoutStore.set({ ...value, sessionStatusById: {}, failureReasonById: {} });
 }
 
 describe("fetchOrchestration", () => {
@@ -325,9 +339,9 @@ describe("run-state actions", () => {
   it("upserts a step run in the store and persists it", async () => {
     await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
     expect(get(orchestrations)["ws-1"].stepRuns).toEqual([
-      { stepId: "t1", state: "running", sessionId: "sess-1", reason: null },
+      { stepId: "t1", state: "running", sessionId: "sess-1", reason: null, conversationId: null, launchCwd: null },
     ]);
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-1", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-1", null, null, null);
   });
 });
 
@@ -457,7 +471,9 @@ describe("executeActions — switchBranch (spec O15)", () => {
       "t1",
       "stalled",
       null,
-      expect.stringContaining("uncommitted")
+      expect.stringContaining("uncommitted"),
+      null,
+      null,
     );
     expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
   });
@@ -484,7 +500,9 @@ describe("executeActions — switchBranch (spec O15)", () => {
       "t1",
       "stalled",
       null,
-      expect.stringContaining("already checked out")
+      expect.stringContaining("already checked out"),
+      null,
+      null,
     );
   });
 
@@ -591,6 +609,7 @@ describe("rail controls", () => {
     layoutStore.set({
       workspaces: [{ id: "ws-1", pages: [{ id: "p1", name: "backend" }] }],
       sessionStatusById: {},
+      failureReasonById: {},
     });
     await startRail("ws-1", "r1");
     expect(layoutStateModule.createPage).not.toHaveBeenCalled();
@@ -616,7 +635,7 @@ describe("rail controls", () => {
   it("Retry returns a stalled step to pending and clears its reason", async () => {
     await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "card file is missing");
     await retryStep("ws-1", "t1");
-    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "pending", null, null);
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "pending", null, null, null, null);
   });
 
   // The escape hatch. A step whose completion signal never arrives used
@@ -625,13 +644,13 @@ describe("rail controls", () => {
   it("Mark done files a running step done, keeping its session", async () => {
     await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
     await markStepDone("ws-1", "t1");
-    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", "sess-1", null);
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", "sess-1", null, null, null);
   });
 
   it("Mark done clears a stalled step's reason with it", async () => {
     await setStepRunAction("ws-1", "t1", "stalled", null, "Push branch exited with code 1");
     await markStepDone("ws-1", "t1");
-    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", null, null);
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", null, null, null, null);
   });
 });
 
@@ -686,7 +705,7 @@ describe("executeActions", () => {
 
   it("a stall records the reason and pauses the owning rail", async () => {
     await executeActions("ws-1", [{ kind: "stall", stepId: "t1", reason: "card file is missing" }]);
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "stalled", null, "card file is missing");
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "stalled", null, "card file is missing", null, null);
     expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
   });
 
@@ -703,7 +722,9 @@ describe("executeActions", () => {
       "t1",
       "stalled",
       null,
-      "agent exited before the card reached Done"
+      "agent exited before the card reached Done",
+      null,
+      null,
     );
     expect(backend.setRailRun).not.toHaveBeenCalled();
   });
@@ -711,7 +732,7 @@ describe("executeActions", () => {
   it("markDone keeps the session id so the transcript stays reachable", async () => {
     await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
     await executeActions("ws-1", [{ kind: "markDone", stepId: "t1" }]);
-    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", "sess-1", null);
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", "sess-1", null, null, null);
   });
 
   it("advance moves the rail's current stage", async () => {
@@ -739,7 +760,9 @@ describe("executeActions", () => {
       "t1",
       "stalled",
       null,
-      expect.stringContaining("docs/spec.md")
+      expect.stringContaining("docs/spec.md"),
+      null,
+      null,
     );
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
@@ -778,7 +801,9 @@ describe("executeActions", () => {
       "t1",
       "stalled",
       null,
-      expect.stringContaining("could not start")
+      expect.stringContaining("could not start"),
+      null,
+      null,
     );
   });
 
@@ -812,7 +837,7 @@ describe("executeActions", () => {
 
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
 
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt");
   });
 
   it("a launch binds the card session, records the session id, and writes In Progress", async () => {
@@ -836,8 +861,13 @@ describe("executeActions", () => {
       sessionId: "sess-9",
       cwd: "/x/wt",
       command: expect.stringContaining("claude "),
+      // No conversation id: the mocked profile verifies no `--session-id`
+      // argv. `launchCwd` is recorded regardless -- it is what a resume
+      // would need, and unlike `cwd` it never drifts.
+      conversationId: null,
+      launchCwd: "/x/wt",
     });
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt");
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
   });
 });
@@ -1099,7 +1129,7 @@ describe("launching a tool step", () => {
       "/x/wt",
       expect.stringContaining("git push -u origin HEAD")
     );
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt");
   });
 
   // A tool is not a card: no card_sessions binding and no status write.
@@ -1125,7 +1155,7 @@ describe("launching a tool step", () => {
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
     vi.mocked(layoutStateModule.setSessionName).mockRejectedValue(new Error("nope"));
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt");
   });
 
   it("substitutes the step's parameter overrides", async () => {
@@ -1167,7 +1197,9 @@ describe("launching a tool step", () => {
       "t1",
       "stalled",
       null,
-      "tool is no longer in the library"
+      "tool is no longer in the library",
+      null,
+      null,
     );
   });
 
@@ -1178,7 +1210,9 @@ describe("launching a tool step", () => {
       "t1",
       "stalled",
       null,
-      "could not start Push branch"
+      "could not start Push branch",
+      null,
+      null,
     );
   });
 
@@ -1237,7 +1271,7 @@ describe("launching a tool step before the library has loaded", () => {
     toolRecords.set({ "ws-1": [] });
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt");
   });
 });
 
@@ -1265,6 +1299,8 @@ function armWorkspace(): void {
     // No status reported for either: a session the daemon has said
     // nothing about is not a finished one.
     sessionStatusById: {},
+    // Nothing broke.
+    failureReasonById: {},
     // The scheduler ticks the workspace the human is looking at, so a
     // workspace nothing has activated is one it leaves alone.
     activeWorkspaceId: "ws-1",
@@ -1346,6 +1382,8 @@ describe("dropping onto a running stage", () => {
       state: "running",
       sessionId: "sess-9",
       reason: null,
+      conversationId: null,
+      launchCwd: "/x/wt",
     });
   });
 
@@ -1372,7 +1410,7 @@ describe("dropping onto a running stage", () => {
   // now part of the beat in flight.
   it("starts a step moved onto that stage from a later one", async () => {
     expect(await moveStepIntoStageAction("ws-1", "t2", "s1", 2)).toBeNull();
-    expect(backend.setStepRun).toHaveBeenCalledWith("t2", "running", "sess-9", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t2", "running", "sess-9", null, null, "/x/wt");
   });
 
   // Every OTHER drop target stays queued -- a new stage is a later beat.
@@ -1673,7 +1711,7 @@ describe("a tick requested while one is in flight", () => {
     await tick("ws-1");
 
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledTimes(2);
-    expect(backend.setStepRun).toHaveBeenCalledWith("late", "running", "sess-9", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("late", "running", "sess-9", null, null, "/x/wt");
   });
 });
 
@@ -1737,7 +1775,7 @@ describe("an agent tool step whose turn has ended", () => {
   it("is filed done and lets the rail move on, though its session is still live", async () => {
     status({ "sess-1": "idle" });
     await tick("ws-1");
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null);
     // The next stage actually started: without that this is a green test
     // over a rail that is still stuck.
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
@@ -1811,7 +1849,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
   it("advances the rail when the running agent goes idle", async () => {
     layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
     await vi.waitFor(() =>
-      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null)
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null)
     );
     // The next stage actually started: without this the rail is merely
     // ticking, not running.
@@ -1852,7 +1890,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
 
     await fetchOrchestration("ws-1");
 
-    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null);
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null);
   });
 
   // The daemon's push is the third plan arrival, and the one an agent
@@ -1872,7 +1910,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     });
 
     await vi.waitFor(() =>
-      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null)
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null)
     );
   });
 

@@ -575,7 +575,12 @@ export function findSessionLocation(
 ///   daemon spawned in place of the run (`SessionManager::recover`).
 /// - `gone` -- no tree holds this id at all; the session exited, or the
 ///   startup reconciliation cleared its tab.
-export type SessionLiveness = "live" | "interrupted" | "gone";
+/// - `failed` -- the process is still there and still at its prompt, but
+///   its agent stopped because something BROKE: the daemon matched the
+///   profile's error text on the rendered screen, or watched the machine
+///   sleep through the conversation. Unlike `interrupted` there is a
+///   resumable conversation behind it.
+export type SessionLiveness = "live" | "interrupted" | "failed" | "gone";
 
 /// Resolves a bound session id into that vocabulary.
 ///
@@ -590,10 +595,18 @@ export type SessionLiveness = "live" | "interrupted" | "gone";
 /// vanished and was interrupted reads as gone. Nothing is offered to
 /// resume a tab that is not there.
 export function sessionLiveness(
-  state: WorkspacesData & { interruptedSessionIds: ReadonlySet<string> },
+  state: WorkspacesData & {
+    interruptedSessionIds: ReadonlySet<string>;
+    failureReasonById?: Record<string, string>;
+  },
   sessionId: string
 ): SessionLiveness {
   if (!findSessionLocation(state, sessionId)) return "gone";
+  // `failed` before `interrupted`: a session can be both only if the
+  // daemon restarted and then the bare shell's replacement broke, and
+  // the failure is both the newer fact and the one with a resumable
+  // conversation behind it.
+  if (state.failureReasonById?.[sessionId] !== undefined) return "failed";
   return state.interruptedSessionIds.has(sessionId) ? "interrupted" : "live";
 }
 
