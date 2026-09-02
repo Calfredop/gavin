@@ -41,6 +41,7 @@
     severityForRail,
     stageMode,
     isGroup,
+    stageLabel,
   } from "./orchestration";
   import { highlightedConflict } from "./orchestrationState";
   import { orchDragState } from "./orchestrationDrag";
@@ -431,7 +432,7 @@
               title={groupsBlocked ?? "Rename this group"}
               onclick={() => startGroupRename(stage)}
             >
-              {stage.name ?? `stage ${i + 1}`}
+              {stageLabel(stage, i)}
             </button>
           {/if}
           <div class="mode-toggle" title={groupsBlocked ?? undefined}>

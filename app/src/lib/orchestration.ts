@@ -70,6 +70,22 @@ export function isGroup(stage: Stage): boolean {
   return stage.steps.length > 1;
 }
 
+/// The label a group wears in its header: the name the human gave it, or
+/// the positional fallback. `index` is its slot in the stage list AS
+/// RENDERED, because the number beside a group is the number the human
+/// is reading next to it.
+///
+/// One spelling, because two surfaces draw it -- the rail header and the
+/// drag ghost -- and a ghost that disagrees with the header is the whole
+/// reason this exists. A blank name counts as no name: renaming to ""
+/// stores null (see the rail's commitGroupName), but a hand-edited or
+/// older row can still carry "", and a label is the one thing that must
+/// never render empty.
+export function stageLabel(stage: Stage, index: number): string {
+  const name = stage.name?.trim();
+  return name ? name : `stage ${index + 1}`;
+}
+
 export interface Rail {
   id: string;
   name: string;
@@ -989,6 +1005,24 @@ export function findStage(orch: Orchestration, stageId: string): Stage | null {
     for (const stage of rail.stages) {
       if (stage.id === stageId) return stage;
     }
+  }
+  return null;
+}
+
+/// The label the rail is currently drawing for `stageId`, resolved from
+/// the stage id alone -- which is all the drag ghost has, since it is
+/// rendered outside the rail that owns the group. Null when no rail
+/// holds that stage.
+///
+/// The index comes from the rail's own position order, which is what the
+/// header numbers. That agrees with the header during a GROUP drag: only
+/// a STEP drag can collapse a stage out of the rendered list, and a step
+/// drag never asks for a stage's label.
+export function stageLabelById(orch: Orchestration, stageId: string): string | null {
+  for (const rail of orch.rails) {
+    const sorted = [...rail.stages].sort((a, b) => a.position - b.position);
+    const i = sorted.findIndex((s) => s.id === stageId);
+    if (i >= 0) return stageLabel(sorted[i], i);
   }
   return null;
 }

@@ -17,6 +17,8 @@ import {
   removeStep,
   stageMode,
   isGroup,
+  stageLabel,
+  stageLabelById,
   findStage,
   setStageMode,
   renameStage,
@@ -1498,6 +1500,62 @@ describe("isGroup", () => {
       ],
     };
     expect(isGroup(two)).toBe(true);
+  });
+});
+
+describe("a group's label", () => {
+  const stage = (over: Partial<Stage> = {}): Stage => ({
+    id: "s1",
+    position: 0,
+    steps: [],
+    ...over,
+  });
+
+  it("is the name the human gave it", () => {
+    expect(stageLabel(stage({ name: "Step 2" }), 4)).toBe("Step 2");
+  });
+
+  it("falls back to the positional label when unnamed", () => {
+    expect(stageLabel(stage(), 1)).toBe("stage 2");
+    expect(stageLabel(stage({ name: null }), 0)).toBe("stage 1");
+  });
+
+  it("treats a blank name as no name", () => {
+    // Renaming to "" stores null, but a hand-edited row can still carry
+    // a blank -- and a label is the one thing that must never render
+    // empty.
+    expect(stageLabel(stage({ name: "   " }), 2)).toBe("stage 3");
+  });
+
+  it("numbers a stage by its rail position, not its id order", () => {
+    // What the ghost has is a stage id; what the human is reading is the
+    // header's number, which comes from the rail's position order.
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStage(addStage(o, "r1", "late"), "r1", "early");
+    o = {
+      ...o,
+      rails: o.rails.map((r) => ({
+        ...r,
+        stages: r.stages.map((s) => ({ ...s, position: s.id === "early" ? 0 : 1 })),
+      })),
+    };
+    expect(stageLabelById(o, "early")).toBe("stage 1");
+    expect(stageLabelById(o, "late")).toBe("stage 2");
+  });
+
+  it("prefers the name over the number, and numbers per rail", () => {
+    let o = addRail(addRail(emptyOrchestration(), "r1", "backend"), "r2", "frontend");
+    o = addStage(addStage(o, "r1", "a"), "r1", "b");
+    o = addStage(o, "r2", "c");
+    o = renameStage(o, "b", "Migrations");
+    expect(stageLabelById(o, "b")).toBe("Migrations");
+    // First stage of the SECOND rail: numbering restarts, the way the
+    // header draws it.
+    expect(stageLabelById(o, "c")).toBe("stage 1");
+  });
+
+  it("is null for a stage no rail holds", () => {
+    expect(stageLabelById(emptyOrchestration(), "gone")).toBe(null);
   });
 });
 

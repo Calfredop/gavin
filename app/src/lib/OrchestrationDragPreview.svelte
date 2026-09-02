@@ -4,7 +4,7 @@
   import BoardCard from "./BoardCard.svelte";
   import type { Label } from "./kanban";
   import type { PlacedCardView } from "./planBoard";
-  import { findStep, findStage, type CardEntry, type Orchestration } from "./orchestration";
+  import { findStep, stageLabelById, type CardEntry, type Orchestration } from "./orchestration";
   import type { Tool } from "./orchestrationTools";
   import type { GroupTemplate } from "./orchestrationGroups";
 
@@ -37,15 +37,16 @@
     cards.get(path)?.plan.title ?? (path.split("/").pop() ?? "");
   const nameOfTool = (id: string): string => tools.find((t) => t.id === id)?.name ?? id;
   const nameOfTemplate = (id: string): string => templates.find((t) => t.id === id)?.name ?? id;
-  // Same fallback the rail itself falls back to for an unnamed group
-  // (`stage.name ?? \`stage ${i + 1}\``), minus the live position number:
-  // that index comes from the rail's own drag-adjusted stage list, which
-  // this component has no access to, so "Group" is the honest generic
-  // rather than a number that could be wrong.
-  const nameOfStage = (id: string): string => {
-    const stage = orch ? findStage(orch, id) : null;
-    return stage?.name ?? "Group";
-  };
+  // Exactly the label the group's own header is showing -- its name, or
+  // the positional "stage N" -- because a ghost that reads "Group" says
+  // nothing about WHICH group is in flight, which is the one thing a
+  // human dragging one past three others needs to know. stageLabelById
+  // numbers over the rail's position order; that is the rendered order
+  // during a group drag, since only a STEP drag collapses a stage out of
+  // the list. "Group" survives as the last resort for a stage that left
+  // the orchestration mid-drag, where there is no label to show.
+  const nameOfStage = (id: string): string =>
+    (orch ? stageLabelById(orch, id) : null) ?? "Group";
 
   /// The card path this drag is carrying, or null for a tool, a
   /// template, a whole group (and for a step whose rail no longer holds

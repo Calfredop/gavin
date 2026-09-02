@@ -481,6 +481,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Dragging the group's grip moves every member together, to another position and to another rail",
       },
       {
+        id: "group-drag-label",
+        text: "While a group flies, the ghost under the cursor reads that group's own label — its name, or “stage N” — never a bare “Group”",
+        hint: "Do both: drag a named group, then an unnamed one and check the ghost's number is the one its header was showing. A generic word tells you nothing about which of four groups you are holding.",
+      },
+      {
         id: "group-runs-in-order",
         text: "Starting a rail on a sequence group launches ONE member; the next launches only when the first finishes",
         hint: "Two tool steps (e.g. Commit then Push) make this visible without waiting on a card.",
