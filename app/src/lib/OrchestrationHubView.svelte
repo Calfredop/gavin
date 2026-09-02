@@ -706,6 +706,7 @@
 
   {#if orch}
     <OrchestrationConflicts
+      {workspaceId}
       {numbered}
       {cards}
       {orch}

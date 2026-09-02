@@ -1645,6 +1645,30 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "The conflicts box remembers",
+    items: [
+      {
+        id: "conflicts-collapse-sticks",
+        text: "Collapse the conflicts box, switch to the Kanban tab and back — it is STILL collapsed, and the header still counts the conflicts",
+        hint: "This is the whole card: one hub view is rendered at a time, so coming back rebuilds the box from scratch. Expand it again and leave — it must come back expanded too, not just remember the closed half.",
+      },
+      {
+        id: "conflicts-collapse-survives-reload",
+        text: "With it collapsed, quit and relaunch the app: the box opens collapsed",
+        hint: "The answer lives in localStorage, not in the plan — nothing on the daemon changes.",
+      },
+      {
+        id: "conflicts-collapse-per-workspace",
+        text: "Collapsing it in one workspace leaves another workspace's box expanded on its first visit",
+      },
+      {
+        id: "conflicts-collapse-not-reopened",
+        text: "While it is collapsed, causing a NEW conflict (bind two rails to the same worktree) updates the count in the header without springing the box open",
+        hint: "Re-opening on every change is the same annoyance in disguise. The count and the “· n live” tail are what a closed box is for.",
+      },
+    ],
+  },
+  {
     title: "Auto commit",
     items: [
       {

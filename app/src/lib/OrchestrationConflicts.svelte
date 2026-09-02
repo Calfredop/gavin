@@ -2,10 +2,13 @@
   import { ChevronDown, ChevronRight, TriangleAlert } from "@lucide/svelte";
   import { highlightedConflict } from "./orchestrationState";
   import { describeConflict, conflictRailId } from "./orchestration";
+  import { loadConflictsCollapsed, saveConflictsCollapsed } from "./orchestrationConflictBanner";
   import type { CardEntry, NumberedConflict, Orchestration } from "./orchestration";
   import type { Tool } from "./orchestrationTools";
 
   interface Props {
+    /// Whose box this is: the collapse is remembered per workspace.
+    workspaceId: string;
     numbered: NumberedConflict[];
     cards: Map<string, CardEntry>;
     orch: Orchestration;
@@ -23,9 +26,33 @@
     /// never clear.
     groupsBlocked: string | null;
   }
-  let { numbered, cards, orch, tools, onBindWorktree, onMakeSequential, groupsBlocked }: Props = $props();
+  let {
+    workspaceId,
+    numbered,
+    cards,
+    orch,
+    tools,
+    onBindWorktree,
+    onMakeSequential,
+    groupsBlocked,
+  }: Props = $props();
 
-  let collapsed = $state(false);
+  // Open on first appearance, then whatever the human last chose. The box
+  // outlives its own component: `+page.svelte` renders one hub view at a
+  // time, so every trip to Kanban and back used to re-run this line and
+  // re-open a box that had just been closed.
+  let collapsed = $state(loadConflictsCollapsed(workspaceId));
+
+  // A workspace switch keeps this instance alive and only swaps the prop,
+  // so the seed has to be re-read rather than trusted from mount.
+  $effect(() => {
+    collapsed = loadConflictsCollapsed(workspaceId);
+  });
+
+  function toggle() {
+    collapsed = !collapsed;
+    saveConflictsCollapsed(workspaceId, collapsed);
+  }
 
   const liveCount = $derived(numbered.filter((x) => x.conflict.severity === "live").length);
 </script>
@@ -33,7 +60,7 @@
 <!-- Absent entirely when there are none: an empty box is noise. -->
 {#if numbered.length > 0}
   <section class="conflicts" class:has-live={liveCount > 0}>
-    <button type="button" class="head" onclick={() => (collapsed = !collapsed)}>
+    <button type="button" class="head" onclick={toggle}>
       {#if collapsed}<ChevronRight size={14} />{:else}<ChevronDown size={14} />{/if}
       <TriangleAlert size={14} />
       <span>
