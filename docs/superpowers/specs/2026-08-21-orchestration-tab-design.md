@@ -486,6 +486,7 @@ two occasions that one misses.
 type Conflict =
   | { kind: "same-worktree";  scope: "stage" | "rails"; stageId: string | null; severity: "live" | "potential"; stepIds: string[]; worktreePath: string }
   | { kind: "duplicate-card"; severity: "potential"; stepIds: string[]; cardPath: string }
+  | { kind: "nested-with-parent"; severity: "potential"; stepIds: string[]; cardPath: string; parentPath: string }  // amended 2026-09-02
   | { kind: "worktree-missing"; severity: "potential"; railId: string; worktreePath: string }
   | { kind: "branch-missing"; severity: "potential"; railId: string; branch: string }
   | { kind: "rail-unbound";   severity: "potential"; railId: string }
@@ -531,6 +532,16 @@ splits the stage into consecutive single-step stages. Running two agents in
 one working tree is a real hazard; the honest options are "put them on
 different rails with different worktrees" or "run them one after another",
 and the box names the second one.
+
+**`nested-with-parent`** (amended 2026-09-02) is `duplicate-card`'s story
+told about two *different* cards that are one piece of work: a nested task
+and the plan it nests inside, both on rails, neither `done`. The plan's agent
+works its children — its card step draws them (§6.2) — so the child's own
+step re-runs work the rail is already scheduled to do. Only ever reached
+deliberately, since neither the drawer nor the picker offers a nested child
+(§6.2), which is why it says so rather than refusing: breaking a child out
+onto a rail of its own can be right, and giving it a `status:` is how the
+human makes that permanent.
 
 **`branch-missing`** is `worktree-missing`'s twin for O15: the rail names a
 branch the repo no longer has. Rail-level, so it badges the header rather
@@ -638,6 +649,17 @@ it reaches anyway (rule 2).
 card not on any rail, draggable into the grid — the affordance that makes
 this "based on what's in the plans/kanban" concrete. A **+ Add step** picker
 on each stage covers the same ground for click and keyboard users.
+
+**Amended 2026-09-02:** a **nested** child (`parent:` set, no `status:`) is
+not listed by either, nor by `gavin_get_orchestration`'s `unplacedCards`. It
+has no card of its own on the board — it is drawn inside its plan's card, and
+so inside that plan's card step here (§6.2) — so the **plan is the unit of
+placement** and a rail carrying it carries the children. The plan's row wears
+a `+N` for the children it carries, so they read as folded in rather than
+gone. A child with a `status:` of its own is free-standing and unaffected.
+
+Placing one deliberately is still possible from the child's own card menu;
+`nested-with-parent` (§5) is what says the plan is on a rail too.
 
 ### 6.3 Conflicts box
 

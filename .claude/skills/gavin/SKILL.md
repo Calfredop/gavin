@@ -58,6 +58,14 @@ agent or status, promote it: `gavin_promote_task(plan_path, item)` creates
 the nested task and rewrites the item into a link — when that task completes,
 tick the original item.
 
+**Nesting travels.** A nested task has no card of its own anywhere: it moves
+into `plans/done/` with its parent, archives with it, and on the Orchestration
+tab it rides inside its parent's step — the plan is the unit a rail places, so
+nested children are not offered for placement separately. Only a **plan** can
+be a parent, and `parent:` is a file name in the same context folder; a
+`parent:` that resolves to anything else leaves the card loose on the board
+with a broken mark rather than erroring.
+
 ## 4. Keep status current
 
 The board's COLUMN NAMES are the status vocabulary — check them with

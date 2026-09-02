@@ -62,6 +62,30 @@ what you may CHANGE, not what you write. A rail you were not asked about
 goes back with the same ids, the same stages and the same `toolId` /
 `toolParams` it arrived with.
 
+## 1b. A plan carries its nested children
+
+A card can NEST inside another: `kind: task`, `parent:` naming a plan's
+file name, and **no `status:` line of its own**. Such a child has no card
+of its own on the board — it is drawn inside the plan's card, and so it
+rides inside the plan's card step on a rail. The agent that runs the plan
+works its children.
+
+So the **plan is the unit of placement**, and `unplacedCards` does not
+list nested children at all. Neither should your arrangement:
+
+- **One step per plan, never one step per nested child.** A plan and a
+  child of it on rails are the same work scheduled twice; gavin flags it
+  as a `nested-with-parent` conflict.
+- A piece that genuinely wants a rail of its own — its own agent, its own
+  worktree, its own status on the board — is not a nested child. It needs
+  a `status:` of its own, which makes it free-standing. That is an edit
+  to the card, so say so and let the human make it; do not work around it
+  by placing the nested child.
+
+A card with `parent:` **and** a status is free-standing already: it sits
+in its own column, `unplacedCards` lists it, and you place it like any
+other card. Its plan being on a rail says nothing about it.
+
 ## 2. The parallelism rule
 
 Two steps collide only when they edit the **same working tree**:

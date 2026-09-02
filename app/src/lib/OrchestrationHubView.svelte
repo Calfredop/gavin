@@ -34,6 +34,7 @@
     groupUnplacedByStatus,
     conflictsForRail,
     availableCards,
+    nestedChildCounts,
     unfinishedCards,
     planIndex,
     stepParams,
@@ -332,6 +333,10 @@
   // would otherwise offer up (and Generate would instruct an agent to
   // place) cards the scheduler marks done and cascades straight past.
   const pickable = $derived(unfinishedCards(available, planIndex(cards), board));
+  // A nested child is not on offer -- its plan carries it -- so both
+  // surfaces say how many each plan carries. Without it the children the
+  // human wrote would have simply gone missing from the panel.
+  const nestedCounts = $derived(nestedChildCounts(cards));
   // Two ways Generate can be pointless, and the button says which: no
   // agent to hand the request to, or nothing left for it to place.
   // Measured over every unplaced card, never the search lens's view:
@@ -715,6 +720,7 @@
         hiddenCount={unplaced.total - unplaced.shown}
         {tools}
         {templates}
+        {nestedCounts}
         targetRailId={rails[0]?.id ?? null}
         onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
         onAddTool={(toolId) => void addToolAsStepAction(workspaceId, rails[0].id, toolId)}
@@ -883,16 +889,25 @@
       {:else}
         <ul class="picker">
           {#each pickable as entry (entry.plan.path)}
+            <!-- A nested child is not on this list: its plan carries it.
+                 The count is what says so on the plan's row, rather than
+                 the children just being absent. -->
+            {@const nested = nestedCounts.get(entry.plan.path) ?? 0}
             <li>
               <button
                 type="button"
+                title={nested > 0
+                  ? `Carries ${nested} nested ${nested === 1 ? "task" : "tasks"} — placing this plan places them too`
+                  : undefined}
                 onclick={() => {
                   void addStepAsStageAction(workspaceId, railId, entry.plan.path);
                   picking = null;
                 }}
               >
                 <span class="pick-title">{entry.plan.title}</span>
-                <span class="pick-kind">{entry.plan.kind}</span>
+                <span class="pick-kind">
+                  {nested > 0 ? `${entry.plan.kind} · +${nested} nested` : entry.plan.kind}
+                </span>
               </button>
             </li>
           {/each}

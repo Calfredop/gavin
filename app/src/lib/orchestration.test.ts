@@ -33,6 +33,7 @@ import {
   splitStageIntoSequence,
   groupUnplacedByStatus,
   availableCards,
+  nestedChildCounts,
   unfinishedCards,
   unplacedCount,
   addCardAsStage,
@@ -1195,6 +1196,76 @@ describe("detectConflicts — the other kinds", () => {
     });
   });
 
+  // Two card files, one piece of work: the plan's agent works its nested
+  // children (its rail step draws them inside the card), so the child's
+  // own step re-runs work the rail is already scheduled to do. Only ever
+  // reached deliberately -- availableCards does not offer a nested child
+  // -- which is why it is said out loud rather than refused.
+  const NESTED = tree([
+    plan("parent.md", { kind: "plan", status: "To Do" }),
+    plan("child.md", { kind: "task", status: null, parent: "parent.md" }),
+    plan("free.md", { kind: "task", status: "To Do", parent: "parent.md" }),
+  ]);
+  const PARENT = "/ws/.gavin-root/plans/parent.md";
+  const CHILD = "/ws/.gavin-root/plans/child.md";
+  const FREE = "/ws/.gavin-root/plans/free.md";
+
+  it("flags a nested child on a rail while its plan is on one too", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", PARENT]], [["t2", CHILD]]])]);
+    expect(detectConflicts(o, NESTED, WT)).toContainEqual({
+      kind: "nested-with-parent",
+      severity: "potential",
+      stepIds: ["t2", "t1"],
+      cardPath: CHILD,
+      parentPath: PARENT,
+    });
+  });
+
+  it("flags it across two rails, not just within one", () => {
+    const o = orchOf([
+      bound("r1", "/x/wt-a", [[["t1", PARENT]]]),
+      bound("r2", "/x/main", [[["t2", CHILD]]]),
+    ]);
+    expect(detectConflicts(o, NESTED, WT)).toContainEqual(
+      expect.objectContaining({ kind: "nested-with-parent", stepIds: ["t2", "t1"] })
+    );
+  });
+
+  it("says nothing about a nested child whose plan is on no rail", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", CHILD]]])]);
+    expect(detectConflicts(o, NESTED, WT).some((c) => c.kind === "nested-with-parent")).toBe(false);
+  });
+
+  it("says nothing about a plan on a rail whose children are not", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", PARENT]]])]);
+    expect(detectConflicts(o, NESTED, WT).some((c) => c.kind === "nested-with-parent")).toBe(false);
+  });
+
+  // A status of its own makes the child free-standing: its own card, in
+  // its own column, and its own work. The plan being on a rail says
+  // nothing about it.
+  it("says nothing about a parented card that carries its own status", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", PARENT]], [["t2", FREE]]])]);
+    expect(detectConflicts(o, NESTED, WT).some((c) => c.kind === "nested-with-parent")).toBe(false);
+  });
+
+  // Every conflict here is about work still ahead -- a finished step
+  // cannot collide with anything (placedSteps drops the done ones).
+  it("says nothing once the child's step is done", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", PARENT]], [["t2", CHILD]]])], {
+      stepRuns: [{ stepId: "t2", state: "done", sessionId: null, reason: null }],
+    });
+    expect(detectConflicts(o, NESTED, WT).some((c) => c.kind === "nested-with-parent")).toBe(false);
+  });
+
+  it("names both cards in its line", () => {
+    const o = orchOf([bound("r1", "/x/wt-a", [[["t1", PARENT]], [["t2", CHILD]]])]);
+    const c = detectConflicts(o, NESTED, WT).find((x) => x.kind === "nested-with-parent") as Conflict;
+    const line = describeConflict(c, cardIndex(NESTED), o);
+    expect(line).toContain("“child”");
+    expect(line).toContain("“parent”");
+  });
+
   it("flags a rail whose bound worktree is gone", () => {
     const o = orchOf([bound("r1", "/x/vanished", [[["t1", A]]])]);
     expect(detectConflicts(o, CARDS, WT)).toContainEqual({
@@ -1774,6 +1845,96 @@ describe("availableCards", () => {
     const roadmap = at("/ws/archive-rework/.gavin/plans/roadmap.md");
     const out = availableCards(index([roadmap]), new Set());
     expect(out.map((e) => e.plan.path)).toEqual([roadmap.plan.path]);
+  });
+
+  // A nested child has no card of its own on the board -- it is drawn
+  // inside its parent's, and a card step on a rail draws it there too. So
+  // the PLAN is the unit of placement, and listing the children beside it
+  // offered the same work over again: one row for the plan and one per
+  // child, all of them still there after the plan had been dragged onto a
+  // rail, with nothing in the row to say the two were related.
+  const parent = at("/ws/.gavin-root/plans/parent.md", { kind: "plan", status: "To Do" });
+  const nested = (fileName: string, over: Partial<PlanFileInfo> = {}) =>
+    at(`/ws/.gavin-root/plans/${fileName}`, { kind: "task", status: null, parent: "parent.md", ...over });
+
+  it("never offers a nested child -- its plan is the unit of placement", () => {
+    const out = availableCards(index([parent, nested("child.md")]), new Set());
+    expect(out.map((e) => e.plan.path)).toEqual([parent.plan.path]);
+  });
+
+  it("leaves the plan on offer once its child is off the list", () => {
+    const out = availableCards(index([todo, parent, nested("a.md"), nested("b.md")]), new Set());
+    expect(out.map((e) => e.plan.fileName)).toEqual(["todo.md", "parent.md"]);
+  });
+
+  // A status of its own is what makes a child FREE-STANDING: the board
+  // draws it in its own column, so it is its own work and its own step,
+  // and the plan being on a rail says nothing about it.
+  it("still offers a parented card that carries its own status", () => {
+    const free = nested("free.md", { status: "To Do" });
+    const out = availableCards(index([parent, free]), new Set());
+    expect(out.map((e) => e.plan.fileName)).toEqual(["parent.md", "free.md"]);
+  });
+
+  // The board resolves a parent on (contextFolder, fileName) and marks
+  // the card broken when that resolves to nothing -- it is drawn in its
+  // own column, so it has to be placeable from here too.
+  it("offers a card whose parent resolves to nothing", () => {
+    const orphan = at("/ws/.gavin-root/plans/orphan.md", {
+      kind: "task",
+      status: null,
+      parent: "gone.md",
+    });
+    const out = availableCards(index([orphan]), new Set());
+    expect(out.map((e) => e.plan.fileName)).toEqual(["orphan.md"]);
+  });
+
+  it("offers a card whose parent is a task rather than a plan", () => {
+    const notAPlan = at("/ws/.gavin-root/plans/parent.md", { kind: "task", status: "To Do" });
+    const out = availableCards(index([notAPlan, nested("child.md")]), new Set());
+    expect(out.map((e) => e.plan.fileName)).toEqual(["parent.md", "child.md"]);
+  });
+
+  // Deliberate placement is the escape hatch this exclusion leaves open
+  // (the child's own card menu), and a step already on a rail must keep
+  // reading as placed -- otherwise the drawer would offer back the very
+  // card it is looking at on a rail.
+  it("does not offer a nested child that is already on a rail", () => {
+    const child = nested("child.md");
+    const out = availableCards(index([parent, child]), new Set([child.plan.path]));
+    expect(out.map((e) => e.plan.path)).toEqual([parent.plan.path]);
+  });
+});
+
+describe("nestedChildCounts", () => {
+  const index = (plans: PlanFileInfo[]) => cardIndex(tree(plans));
+
+  // availableCards leaves a nested child off the panel entirely, so the
+  // plan's row is the only place left that can say the child exists.
+  it("counts the nested children of each plan", () => {
+    const counts = nestedChildCounts(
+      index([
+        plan("big.md", { kind: "plan", status: "To Do" }),
+        plan("one.md", { kind: "task", status: null, parent: "big.md" }),
+        plan("two.md", { kind: "task", status: null, parent: "big.md" }),
+      ])
+    );
+    expect(counts.get("/ws/.gavin-root/plans/big.md")).toBe(2);
+  });
+
+  it("leaves out a plan with no nested children at all", () => {
+    const counts = nestedChildCounts(index([plan("big.md", { kind: "plan", status: "To Do" })]));
+    expect(counts.has("/ws/.gavin-root/plans/big.md")).toBe(false);
+  });
+
+  it("does not count a child that carries its own status", () => {
+    const counts = nestedChildCounts(
+      index([
+        plan("big.md", { kind: "plan", status: "To Do" }),
+        plan("free.md", { kind: "task", status: "To Do", parent: "big.md" }),
+      ])
+    );
+    expect(counts.has("/ws/.gavin-root/plans/big.md")).toBe(false);
   });
 });
 

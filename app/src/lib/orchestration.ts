@@ -183,6 +183,27 @@ export function planIndex(cards: Map<string, CardEntry>): Map<string, CardEntry>
   return index;
 }
 
+/// THE PLAN THIS CARD IS DRAWN INSIDE, or null. The one spelling of the
+/// nesting rule on this side of the app: `kind: task`, a `parent:` that
+/// is not the card itself, no `status:` of its own, and a parent that
+/// actually resolves to a plan in the same context -- exactly the
+/// conditions `mergePlanCards` nests on, resolved on the same `planKey`,
+/// so the two can never drift about which cards are nested.
+///
+/// One hop, deliberately: a card that nests is a task, and a parent is
+/// always a plan, so no chain can form.
+///
+/// A card whose `parent:` resolves to nothing, to a non-plan, or to
+/// itself is NOT nested -- the board draws it in its own column wearing
+/// a broken-parent mark, and every surface here has to agree with what
+/// the human is looking at.
+export function nestedParent(entry: CardEntry, plans: Map<string, CardEntry>): CardEntry | null {
+  const { plan, contextFolder } = entry;
+  if ((plan.status ?? null) !== null) return null;
+  if (plan.kind !== "task" || !plan.parent || plan.parent === plan.fileName) return null;
+  return plans.get(planKey(contextFolder, plan.parent)) ?? null;
+}
+
 /// THE STATUS THE BOARD SHOWS THIS CARD IN, which is not always the
 /// card's own. A task with a `parent:` and no `status:` of its own is
 /// NESTED: it is drawn inside its parent's card, so the column the human
@@ -193,18 +214,9 @@ export function planIndex(cards: Map<string, CardEntry>): Map<string, CardEntry>
 /// task under a Done plan looked unfinished: pressing Start re-ran
 /// finished work, and the launch then wrote `In Progress` onto the card,
 /// which un-nested it and moved it back out of `done/`.
-///
-/// One hop, deliberately: a card that nests is a task, and a parent is
-/// always a plan, so no chain can form. The same conditions
-/// `mergePlanCards` nests on, resolved on the same `planKey` -- one
-/// spelling of the link, not two that can drift.
 export function effectiveStatus(entry: CardEntry, plans: Map<string, CardEntry>): string | null {
-  const { plan, contextFolder } = entry;
-  const own = plan.status ?? null;
-  if (own !== null || plan.kind !== "task" || !plan.parent || plan.parent === plan.fileName) {
-    return own;
-  }
-  return plans.get(planKey(contextFolder, plan.parent))?.plan.status ?? null;
+  const parent = nestedParent(entry, plans);
+  return parent ? (parent.plan.status ?? null) : (entry.plan.status ?? null);
 }
 
 /// WHERE AN AGENT'S SHELL STARTS. Not the isolation question: SP2 adds
@@ -1635,19 +1647,59 @@ export function groupUnplacedByStatus(cards: CardEntry[], board: Board): Unplace
 /// Feeds both the unplaced drawer and a stage's "+ Add step" picker, so
 /// the two can never disagree about what is on offer.
 ///
-/// Two kinds never appear. A NOTE is not runnable (launchBlocker says so
-/// too, one tick too late to be useful here). An ARCHIVED card is not on
-/// the board at all -- mergePlanCards pulls it out before any column sees
-/// it -- and offering filed-away work back as a candidate would undo the
-/// human's filing decision in the one place they came to see what is
+/// Three kinds never appear. A NOTE is not runnable (launchBlocker says
+/// so too, one tick too late to be useful here). An ARCHIVED card is not
+/// on the board at all -- mergePlanCards pulls it out before any column
+/// sees it -- and offering filed-away work back as a candidate would undo
+/// the human's filing decision in the one place they came to see what is
 /// left to do.
+///
+/// And a NESTED child is not a unit of placement: its plan is. It has no
+/// card of its own on the board -- it is drawn inside its parent's, and a
+/// card step on a rail draws it there too (spec O14/§6.2) -- so a rail
+/// carrying the plan is already carrying the child. Listed here it was
+/// the same work twice: one row for the plan and one for each of its
+/// children, still all there after the plan had been dragged onto a
+/// rail, with nothing in the row to say the two were related.
+///
+/// This is what is OFFERED, not what is allowed. A human who does want
+/// one child on a rail of its own still sends it from the child's own
+/// card menu; `nested-with-parent` then says out loud that the plan
+/// carrying it is on a rail too.
 export function availableCards(
   cards: Map<string, CardEntry>,
   placed: Set<string>
 ): CardEntry[] {
+  // Derived here rather than taken as an argument: the caller already
+  // hands us every card, and a second source for "which of these are
+  // plans" is exactly the drift `nestedParent` exists to prevent.
+  const plans = planIndex(cards);
   return [...cards.values()].filter(
-    (e) => e.plan.kind !== "note" && !isArchivedCard(e.plan.path) && !placed.has(e.plan.path)
+    (e) =>
+      e.plan.kind !== "note" &&
+      !isArchivedCard(e.plan.path) &&
+      !placed.has(e.plan.path) &&
+      nestedParent(e, plans) === null
   );
+}
+
+/// How many NESTED children each plan carries, keyed by the plan's path.
+/// Only plans with at least one appear at all.
+///
+/// `availableCards` leaves those children out of what is on offer -- the
+/// plan is the unit of placement -- so without this a plan would sit in
+/// the drawer as one row like any other and the children the human wrote
+/// would simply have vanished from the panel. The number is what says
+/// they went INTO the plan rather than away.
+export function nestedChildCounts(cards: Map<string, CardEntry>): Map<string, number> {
+  const plans = planIndex(cards);
+  const counts = new Map<string, number>();
+  for (const entry of cards.values()) {
+    const parent = nestedParent(entry, plans);
+    if (!parent) continue;
+    counts.set(parent.plan.path, (counts.get(parent.plan.path) ?? 0) + 1);
+  }
+  return counts;
 }
 
 /// `availableCards` with FINISHED work taken out -- what the "+ Add step"
@@ -1711,6 +1763,17 @@ export type Conflict =
       worktreePath: string;
     }
   | { kind: "duplicate-card"; severity: "potential"; stepIds: string[]; cardPath: string }
+  /// duplicate-card's story told about two DIFFERENT cards that are one
+  /// piece of work: a nested task and the plan it nests inside, both on
+  /// rails. `stepIds` carries the child's steps first, then the
+  /// parent's, so both ends of the pair wear the badge.
+  | {
+      kind: "nested-with-parent";
+      severity: "potential";
+      stepIds: string[];
+      cardPath: string;
+      parentPath: string;
+    }
   | { kind: "worktree-missing"; severity: "potential"; railId: string; worktreePath: string }
   /// worktree-missing's twin for spec O15: the rail names a branch this
   /// repo no longer has, so its every switch would fail.
@@ -1728,6 +1791,7 @@ export interface NumberedConflict {
 const KIND_ORDER: Conflict["kind"][] = [
   "same-worktree",
   "duplicate-card",
+  "nested-with-parent",
   "worktree-missing",
   "branch-missing",
   "rail-unbound",
@@ -1888,6 +1952,34 @@ export function detectConflicts(
     });
   }
 
+  // 3b. A nested task and the plan it nests inside, both on rails. Two
+  // card files, one piece of work: the plan's agent works its children
+  // (its step draws them inside the card, spec §6.2), so the child's own
+  // step re-runs work the rail is already scheduled to do.
+  //
+  // Only ever reached deliberately -- the drawer and the "+ Add step"
+  // picker do not offer a nested child at all (availableCards), so
+  // whoever put it here went to the child's own card menu to do it.
+  // Which is why this says so rather than refusing: a human who wants
+  // that child broken out onto a rail of its own may well be right, and
+  // giving it a status is how they make it permanent.
+  const nestCards = cardIndex(tree);
+  const nestPlans = planIndex(nestCards);
+  for (const [cardPath, group] of byCard) {
+    const entry = nestCards.get(cardPath);
+    const parent = entry ? nestedParent(entry, nestPlans) : null;
+    if (!parent) continue;
+    const parentSteps = byCard.get(parent.plan.path);
+    if (!parentSteps) continue;
+    conflicts.push({
+      kind: "nested-with-parent",
+      severity: "potential",
+      stepIds: [...group.map((s) => s.stepId), ...parentSteps.map((s) => s.stepId)],
+      cardPath,
+      parentPath: parent.plan.path,
+    });
+  }
+
   // 4/5. Rail-level bindings. `worktrees === null` means the refs
   // snapshot has not loaded -- unknown must never read as "gone".
   const known = worktrees ? new Set(worktrees.map((w) => w.path)) : null;
@@ -2044,6 +2136,15 @@ export function describeConflict(
     }
     case "duplicate-card":
       return `the same card is on two steps: ${list(c.stepIds)}`;
+    case "nested-with-parent": {
+      // Titled from the CARD PATHS rather than from the steps: the two
+      // ends of this pair are two different cards, and naming them by
+      // step would print the same fallback file name twice for a pair
+      // the tree has lost.
+      const titleOfCard = (path: string): string =>
+        cards.get(path)?.plan.title ?? (path.split("/").pop() ?? path);
+      return `“${titleOfCard(c.cardPath)}” is nested inside “${titleOfCard(c.parentPath)}”, which is on a rail too — the plan's agent already carries it, so take one of the two off`;
+    }
     case "worktree-missing":
       return `rail “${nameOfRail(c.railId)}” points at ${c.worktreePath}, which is not a worktree of this repo`;
     case "branch-missing":

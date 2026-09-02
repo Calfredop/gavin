@@ -26,6 +26,11 @@
     /// global one, in the order templateLibrary already sorted them --
     /// this workspace's first, then the machine's, each alphabetical.
     templates: GroupTemplate[];
+    /// Nested children per plan path (orchestration.nestedChildCounts).
+    /// A nested child is not listed here -- its plan carries it, on the
+    /// board and on a rail alike -- so the plan's row says how many it
+    /// carries rather than letting them look lost.
+    nestedCounts: Map<string, number>;
     /// Clicking a row adds it to this rail as its own stage; null when
     /// there is no rail to add to yet.
     targetRailId: string | null;
@@ -55,6 +60,7 @@
     groups,
     tools,
     templates,
+    nestedCounts,
     targetRailId,
     onAdd,
     onAddTool,
@@ -224,16 +230,21 @@
       {#if !isCollapsed(group)}
         <ul>
           {#each group.cards as entry (entry.plan.path)}
+            {@const nested = nestedCounts.get(entry.plan.path) ?? 0}
             <li>
               <button
                 type="button"
                 data-orch-card={entry.plan.path}
                 class:dragging={$orchDragState?.id === entry.plan.path}
                 disabled={!targetRailId}
+                title={nested > 0
+                  ? `Carries ${nested} nested ${nested === 1 ? "task" : "tasks"} — placing this plan places them too`
+                  : undefined}
                 onclick={() => onAdd(entry.plan.path)}
               >
                 {#if entry.plan.kind === "plan"}<ListChecks size={12} />{:else}<FileText size={12} />{/if}
                 <span>{entry.plan.title}</span>
+                {#if nested > 0}<span class="scope nested">+{nested}</span>{/if}
               </button>
             </li>
           {/each}
@@ -370,6 +381,11 @@
     color: var(--text-subtle);
     font-size: 9px;
     text-transform: uppercase;
+  }
+  /* Not uppercased like the tool/template scope tags: this one is a
+     number, and "+3" says nothing louder in capitals. */
+  .scope.nested {
+    text-transform: none;
   }
   .manage {
     display: flex;

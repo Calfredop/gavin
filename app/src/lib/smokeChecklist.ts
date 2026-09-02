@@ -290,6 +290,16 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "unparent",
         text: "Un-parent in the children list removes parent:; the card lands in the first column",
       },
+      {
+        id: "nest-not-in-unplaced",
+        text: "A nested child is absent from the Orchestration tab's Unplaced drawer and from “+ Add step”; its plan's row wears a “+N” instead",
+        hint: "A nested child has no card of its own — the plan carries it, on the board and on a rail alike. Check the plan's row in BOTH surfaces shows the count, and that the drawer's header total dropped by the number of children (they are no longer counted as work left to place). Then drag the plan onto a rail: the whole family leaves the drawer at once — expand its step and the children are drawn inside the card, which is where they went. A child given a status: of its own reappears in both lists immediately.",
+      },
+      {
+        id: "nest-with-parent-conflict",
+        text: "Right-click a nested child → “Send to rail” while its plan is on a rail too: the Conflicts box gets a “nested inside” row badging BOTH steps",
+        hint: "The only route to it, since neither the drawer nor the picker offers a nested child. Hovering the row lights both chips with the same number. Taking either step off clears it; so does finishing the child's step.",
+      },
     ],
   },
   {

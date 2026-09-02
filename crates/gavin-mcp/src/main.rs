@@ -191,7 +191,7 @@ fn tool_definitions() -> Value {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
-        { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees, branches and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail, and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees, branches and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail (a plan's nested children ride with it and are not listed separately), and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id — AND each stage's `mode` and `name`: omitting `mode` reverts that stage to `parallel`, which turns a sequential group into steps that all run at once in one checkout. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
             "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, branch, pageId, stages: [{ id, position, mode, name, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. Stages run one after another. A stage's `mode` is \"parallel\" (its steps run at once in the rail's checkout) or \"sequence\" (one at a time, in position order); a stage of two or more steps is what the app calls a GROUP, and `name` is what it is called. `mode` defaults to \"parallel\" when omitted. `worktreePath` says WHICH CHECKOUT (null = the workspace root), `branch` says WHICH BRANCH gavin puts that checkout on before launching a step (null = whatever is checked out) — so a branch with no worktree means the root checkout on that branch, no separate folder.", "items": { "type": "object" } },
             "conflict_notes": { "type": "array", "description": "Your judgements, shown to the human in the Conflicts box. Each: { id, stepIds: [...], note }.", "items": { "type": "object" } }
@@ -448,6 +448,25 @@ fn name_session(
     }
 }
 
+/// Whether this card is DRAWN INSIDE another's: `kind: task`, a
+/// `parent:` that is not itself, no `status:` of its own, and a parent
+/// that resolves to a plan in the same context. The conditions the board
+/// nests on (`mergePlanCards`) and the orchestration tab reads through
+/// (`nestedParent` in orchestration.ts), spelled once here.
+///
+/// A `parent:` that resolves to nothing, to a task, or to the card
+/// itself is NOT nesting -- the board draws such a card in its own
+/// column wearing a broken-parent mark, so it is its own unit of work.
+fn is_nested(plan: &protocol::PlanFileInfo, plans_in_context: &HashSet<&str>) -> bool {
+    if plan.status.is_some() || !matches!(plan.kind, protocol::CardKind::Task) {
+        return false;
+    }
+    match plan.parent.as_deref() {
+        Some(parent) => parent != plan.file_name && plans_in_context.contains(parent),
+        None => false,
+    }
+}
+
 fn kind_str(kind: &protocol::CardKind) -> &'static str {
     match kind {
         protocol::CardKind::Note => "note",
@@ -617,10 +636,29 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
     // they deliberately put down. Same rule as the tab's own drawer
     // (availableCards in orchestration.ts), matched the same way it is:
     // by the folder, since the folder IS the archive.
+    //
+    // A NESTED child is left out for the same reason the drawer leaves
+    // it out: it has no card of its own on the board -- it is drawn
+    // inside its plan's, and so is a rail step carrying that plan -- so
+    // the plan is the unit of placement and listing the children beside
+    // it offers the same work over again. This list is the AUTHORITATIVE
+    // one (the tab's own Generate prompt tells the agent to read it), so
+    // the two spellings of the rule have to agree.
     let unplaced: Vec<Value> = tree
         .contexts
         .iter()
-        .flat_map(|ctx| ctx.plans.iter())
+        .flat_map(|ctx| {
+            // Resolved per CONTEXT, on file_name: exactly the key the
+            // board nests on (`planKey`), so a `parent:` naming a plan in
+            // some other context does not nest here either.
+            let plans_here: HashSet<&str> = ctx
+                .plans
+                .iter()
+                .filter(|p| matches!(p.kind, protocol::CardKind::Plan))
+                .map(|p| p.file_name.as_str())
+                .collect();
+            ctx.plans.iter().filter(move |p| !is_nested(p, &plans_here))
+        })
         .filter(|p| !matches!(p.kind, protocol::CardKind::Note))
         .filter(|p| !p.path.contains("/plans/archive/"))
         .filter(|p| !placed.contains(p.path.as_str()))
@@ -983,6 +1021,84 @@ mod tests {
                 prd: None,
             }],
         }
+    }
+
+    /// two_card_tree plus a nested child of a plan, a child of that plan
+    /// with a status of its OWN, and a child whose `parent:` resolves to
+    /// nothing. Only the first is drawn inside another card.
+    fn nesting_tree() -> protocol::GavinTree {
+        let mut tree = two_card_tree();
+        let base = tree.contexts[0].plans[0].clone();
+        let child = |file: &str, title: &str, parent: &str, status: Option<&str>| {
+            protocol::PlanFileInfo {
+                path: format!("/ws/.gavin-root/plans/{file}"),
+                file_name: file.into(),
+                title: title.into(),
+                status: status.map(str::to_string),
+                parent: Some(parent.into()),
+                kind: protocol::CardKind::Task,
+                ..base.clone()
+            }
+        };
+        tree.contexts[0].plans.push(protocol::PlanFileInfo {
+            path: "/ws/.gavin-root/plans/big.md".into(),
+            file_name: "big.md".into(),
+            title: "Big plan".into(),
+            kind: protocol::CardKind::Plan,
+            ..base.clone()
+        });
+        tree.contexts[0].plans.push(child("nested.md", "Nested child", "big.md", None));
+        tree.contexts[0].plans.push(child("free.md", "Free child", "big.md", Some("To Do")));
+        tree.contexts[0].plans.push(child("orphan.md", "Orphan", "gone.md", None));
+        tree
+    }
+
+    fn unplaced_titles(tree: protocol::GavinTree) -> Vec<String> {
+        let mut t = mock(vec![
+            orchestration_reply(),
+            board_reply(),
+            tools_reply(),
+            Response::GavinTreeScanned { tree },
+            Response::DirtyPaths { paths: vec![], truncated: false },
+        ]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"gavin_get_orchestration","arguments":{}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        let text: serde_json::Value =
+            serde_json::from_str(envelope["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        text["unplacedCards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["title"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// This list is the AUTHORITATIVE one -- the tab's Generate prompt
+    /// sends the agent here for the truth -- so it has to leave out
+    /// exactly what the drawer leaves out. A nested child has no card of
+    /// its own on the board; its plan is the unit of placement, and
+    /// listing both offers the same work twice.
+    #[test]
+    fn unplaced_cards_leave_out_nested_children() {
+        let titles = unplaced_titles(nesting_tree());
+        assert!(!titles.contains(&"Nested child".to_string()), "{titles:?}");
+        assert!(titles.contains(&"Big plan".to_string()), "{titles:?}");
+    }
+
+    /// A status of its own is what makes a child free-standing: the board
+    /// draws it in its own column, so it is its own work and its own step.
+    /// A `parent:` that resolves to nothing is not nesting either -- the
+    /// board draws that card in its own column too, wearing a broken mark.
+    #[test]
+    fn unplaced_cards_keep_free_standing_and_orphaned_children() {
+        let titles = unplaced_titles(nesting_tree());
+        assert!(titles.contains(&"Free child".to_string()), "{titles:?}");
+        assert!(titles.contains(&"Orphan".to_string()), "{titles:?}");
     }
 
     fn orchestration_reply() -> Response {
