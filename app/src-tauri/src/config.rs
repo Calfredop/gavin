@@ -170,6 +170,13 @@ pub struct Workspace {
     /// workspaces save, so an older config simply loads with it absent.
     #[serde(default)]
     pub last_active_at: Option<i64>,
+    /// This workspace's own pause cycle, overriding the app-wide one.
+    /// Absent means INHERIT, which is not the same as off -- a workspace
+    /// that wants no pause while the app has one stores a cycle with
+    /// `enabled: false`, and `skip_serializing_if` keeps the key out of
+    /// config.json entirely for the ordinary inheriting case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_pause: Option<AgentPauseConfig>,
 }
 
 fn default_true() -> bool {
@@ -203,6 +210,59 @@ pub struct RemovedWorkspace {
 pub struct BoardTabRecord {
     pub workspace_id: String,
     pub context_folder: String,
+}
+
+/// A duty cycle: sit out `pause_minutes` of every `period_minutes`, and
+/// hold when a probe says a limit window is `limit_percent` full.
+///
+/// Mirrors `PauseCycle` in `agentPause.ts`, which owns every judgement
+/// made from it -- this is storage. Machine-local, like the notification
+/// toggles and `auto_resume_runs`: it says what this human wants gavin
+/// doing while they are away from THIS machine.
+///
+/// `anchor_ms` is why the cycle survives everything the card asks it to.
+/// It is fixed when the cycle is switched on and never rewritten, so the
+/// phase is a pure function of it and the wall clock: a machine that
+/// slept for two days, an app that was closed overnight and a frontend
+/// that reloaded all resolve to the same answer, because none of them are
+/// inputs. Re-anchoring on load would slide the pause forward every
+/// launch; re-anchoring on wake would mean a laptop that sleeps often
+/// never pauses at all.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPauseConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_period_minutes")]
+    pub period_minutes: u32,
+    #[serde(default = "default_pause_minutes")]
+    pub pause_minutes: u32,
+    #[serde(default)]
+    pub anchor_ms: i64,
+    #[serde(default = "default_limit_percent")]
+    pub limit_percent: f64,
+    /// Whether a probe's limits may pause work at all. Separate switch
+    /// from `enabled`, because the blunt gate and the precise one are
+    /// wanted independently: an agent with no probe can only have the
+    /// cycle, and somebody who trusts the numbers may want only the
+    /// limits.
+    #[serde(default = "default_true")]
+    pub limit_enabled: bool,
+}
+
+/// Five hours, matching the window Claude Code and Codex both meter
+/// against, so a pause lands at the end of one window rather than
+/// straddling two.
+fn default_period_minutes() -> u32 {
+    300
+}
+
+fn default_pause_minutes() -> u32 {
+    10
+}
+
+fn default_limit_percent() -> f64 {
+    95.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -258,6 +318,14 @@ pub struct AppConfig {
     /// it silently resets on the next save.
     #[serde(default)]
     pub removed_workspaces: Vec<RemovedWorkspace>,
+    /// The app-wide agent pause cycle. `None` -- the shipped default --
+    /// means no cycle at all, so no existing workspace changes behaviour
+    /// on update. A workspace with no cycle of its own inherits this one.
+    /// Like session_names/file_tabs/board_tabs/theme/agent_models/
+    /// removed_workspaces it must be carried through `persist_workspaces`,
+    /// or it silently resets on the next save.
+    #[serde(default)]
+    pub agent_pause: Option<AgentPauseConfig>,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -326,6 +394,7 @@ mod tests {
             auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
+            agent_pause: None,
         }
     }
 
@@ -364,6 +433,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -385,6 +455,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -420,6 +491,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -530,6 +602,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -569,6 +642,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -595,6 +669,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -638,6 +713,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -656,6 +732,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(&nested, &config).unwrap();
 
@@ -682,6 +759,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -733,6 +811,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -789,6 +868,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            agent_pause: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

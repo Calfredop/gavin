@@ -4,6 +4,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
+import type { PauseCycle } from "./agentPause";
 import * as terminalRegistry from "./terminalRegistry";
 import * as workspace from "./workspace";
 import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs, RemovedWorkspace } from "./workspace";
@@ -708,6 +709,12 @@ export async function bootstrap(): Promise<void> {
   // module is fully evaluated and the load is safe.
   const { initOrchestrationListeners } = await import("./orchestrationState");
   unlisteners.push(await initOrchestrationListeners());
+  // Same dynamic-import reason as above: agentPauseState reads
+  // resolvedAgentFor from this module. Started here rather than from a
+  // component, because a pause whose clock only advances while one tab is
+  // mounted is the bug that made rails tick only on their own tab.
+  const { startPauseClock } = await import("./agentPauseState");
+  unlisteners.push(startPauseClock());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);
@@ -1167,6 +1174,28 @@ export async function setWorkspaceFlag(
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, [key]: value } : w
   );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// This workspace's own pause cycle. `null` REMOVES the override, which
+/// puts the workspace back to inheriting the app-wide one -- not to no
+/// pause at all. Turning the cycle off here while the app has one stores
+/// a cycle with `enabled: false`, which is why clearing and disabling are
+/// two different calls.
+export async function setWorkspacePause(
+  workspaceId: string,
+  cycle: PauseCycle | null
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) => {
+    if (w.id !== workspaceId) return w;
+    if (cycle === null) {
+      const { agentPause: _dropped, ...rest } = w;
+      return rest;
+    }
+    return { ...w, agentPause: cycle };
+  });
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }

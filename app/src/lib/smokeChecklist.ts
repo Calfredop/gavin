@@ -1391,6 +1391,92 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    // Everything here needs a real subscription, a real clock and a real
+    // machine suspend. The phase arithmetic, the bands and the gate ARE
+    // unit-tested (agentPause.test.ts, agentUsage.test.ts); what no suite
+    // can reach is whether the numbers on screen match the ones the agent
+    // itself reports, and whether a lid closing does what the module
+    // claims it does.
+    title: "Agent limits & usage",
+    items: [
+      {
+        id: "usage-panel-matches-agent",
+        text: "Sidebar → Usage shows Claude Code's 5-hour and weekly bars, and the percentages match what /usage says inside Claude Code",
+        hint: "The one check that matters. A bar that disagrees with the agent is worse than no bar — if they differ, note both numbers.",
+      },
+      {
+        id: "usage-unsupported-is-a-sentence",
+        text: "A workspace on Gemini, Cursor or opencode gets a sentence saying gavin cannot read its limits — not an empty bar or a 0%",
+        hint: "Absence is never zero. 'gavin cannot see' must never render like 'plenty left'.",
+      },
+      {
+        id: "usage-refresh-and-backoff",
+        text: "The refresh button re-reads; hammering it does not produce a wall of errors",
+        hint: "The host caches for two minutes and parks itself for fifteen on a 429. If you can get it into a persistent 429, say so — that endpoint is known to be touchy.",
+      },
+      {
+        id: "usage-codex-age",
+        text: "With Codex in use, the panel shows its windows AND says how old the reading is",
+        hint: "Codex's numbers come from its last turn, not from now. A number with no age on it would read as live.",
+      },
+      {
+        id: "pause-off-by-default",
+        text: "An existing workspace shows Agent pause OFF in Settings, and nothing pauses after the update",
+        hint: "Stored as absence. A workspace that starts pausing because it was updated is the failure this default exists to prevent.",
+      },
+      {
+        id: "pause-cycle-holds-a-rail",
+        text: "Set a short cycle (period 15, pause 7), start a rail, and watch the next step NOT launch during the pause window",
+        hint: "The pause is the TAIL of each period. The sidebar Usage row should read 'Paused' with the reason in its tooltip.",
+      },
+      {
+        id: "pause-leaves-running-work-alone",
+        text: "An agent already mid-turn when the pause begins finishes normally — it is not interrupted or killed",
+        hint: "A pause that kills work in flight is not a pause. This is the decision the feature was built around.",
+      },
+      {
+        id: "pause-manual-run-still-works",
+        text: "While paused, your own Run on a card still starts an agent",
+        hint: "The gate is on gavin starting work, not on you. The human keeps the wheel.",
+      },
+      {
+        id: "pause-lifts-and-rail-continues",
+        text: "When the pause window ends, the held step launches by itself within a minute or so",
+        hint: "This IS 'resume'. Nothing is armed for it — the next tick recomputes the phase from the wall clock.",
+      },
+      {
+        id: "pause-survives-sleep",
+        text: "With a cycle running, close the lid for longer than a whole period and reopen: the phase is right for the CURRENT time, not shifted by however long it slept",
+        hint: "The originating requirement. A wrong answer here means something is counting down instead of reading the clock.",
+      },
+      {
+        id: "pause-survives-restart",
+        text: "Quit and relaunch the app mid-cycle: the pause window falls at the same wall-clock times as before",
+        hint: "The anchor is persisted and never rewritten. If the pause moved, a save site is re-stamping it.",
+      },
+      {
+        id: "pause-workspace-override",
+        text: "A workspace with its own settings ignores the app-wide cycle; unticking 'own settings' puts it back to inheriting",
+        hint: "Absent means INHERIT, not off. A workspace switched off stores enabled:false — check config.json if in doubt.",
+      },
+      {
+        id: "pause-limit-hold",
+        text: "Set the limit threshold below your current usage and confirm rails hold with 'At limit' and the real reset time",
+        hint: "Easiest with the weekly window. The reason should name the window and its reset, not just say 'paused'.",
+      },
+      {
+        id: "pause-defers-auto-resume",
+        text: "With auto-resume on, break a run DURING a pause window: the resume waits for the pause instead of being cancelled",
+        hint: "A pause defers a resume. If the run is skipped outright and never comes back, the deferral is not re-arming.",
+      },
+      {
+        id: "wizard-offers-pause",
+        text: "The init wizard's agent step offers the pause, unticked, and ticking it makes Settings show the same cycle",
+        hint: "The wizard writes the APP-wide cycle, not a workspace override.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

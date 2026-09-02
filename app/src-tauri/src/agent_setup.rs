@@ -261,7 +261,83 @@ pub struct AgentProfile {
     /// `composeResumeTaskPrompt` -- a written reconstruction instead of
     /// the conversation itself.
     pub resume_args: &'static str,
+    /// How gavin reads this agent's SUBSCRIPTION limits -- the windows
+    /// the account is spending against, not the tokens one conversation
+    /// happened to burn.
+    ///
+    /// `None` is the honest default and the common case: three of the
+    /// five profiles expose nothing an outside process can read, and the
+    /// usage panel says so in those words rather than showing a bar it
+    /// invented. The same posture as `failure_patterns` -- an empty row
+    /// means "gavin cannot see this", never "there is no limit".
+    ///
+    /// What was checked, 2026-09-02:
+    ///
+    /// - `gemini` -- `/stats` renders through Ink and prints nothing when
+    ///   piped; `~/.gemini/tmp/*/chats/session-*.json` carries per-session
+    ///   token totals, which is a burn estimate and not a quota. No row.
+    /// - `cursor` -- usage lives in the web dashboard. No row.
+    /// - `opencode` -- provider keys are the user's own, so there is no
+    ///   single limit to report. No row.
+    pub usage_probe: Option<UsageProbe>,
     pub mcp: Option<McpLayout>,
+}
+
+/// Where a profile's usage numbers come from. One variant per VERIFIED
+/// route, never a generic "run this command and parse it": every route
+/// below has its own auth, its own shape and its own failure mode, and
+/// flattening them into a string would move all three into the caller.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UsageProbe {
+    /// Claude Code. `GET https://api.anthropic.com/api/oauth/usage` with
+    /// the CLI's own OAuth token, which answers with a `five_hour` and a
+    /// `seven_day` object, each `{utilization, resets_at}`.
+    ///
+    /// Chosen over the two alternatives deliberately. The statusline's
+    /// stdin JSON carries the same numbers
+    /// (`rate_limits.five_hour.used_percentage`), but a profile has ONE
+    /// statusline and taking it would silently replace whatever the human
+    /// runs there. Summing `~/.claude/projects/**.jsonl` needs no
+    /// credential at all, but it can only ever produce a local burn
+    /// estimate -- blind to the same account on another machine and to
+    /// claude.ai -- and a bar that disagrees with `/usage` is worse than
+    /// no bar.
+    ///
+    /// The endpoint is account truth for every device, which is the whole
+    /// reason it is worth reaching for a credential to read it.
+    AnthropicOauth,
+    /// Codex CLI. Read the newest `token_count` event out of the rollout
+    /// files under `~/.codex/sessions`, whose payload carries
+    /// `rate_limits.primary` and `.secondary`, each with `used_percent`,
+    /// `window_minutes` and either `resets_at` or `resets_in_seconds`.
+    ///
+    /// Chosen over `codex app-server`'s `account/rateLimits/read`, which
+    /// is live rather than last-seen but which nothing here could verify:
+    /// `codex` resolves to a shim on this machine, so the handshake, the
+    /// method name and the reply shape would all have been copied from a
+    /// blog post into a subprocess gavin spawns. A file whose shape is
+    /// checked is worth more than an RPC that is not, and the cost is
+    /// staleness -- which is reportable. The reading carries the event's
+    /// own timestamp so the panel can say how old it is, and a number
+    /// with an age on it is never mistaken for a live one.
+    ///
+    /// `resets_in_seconds` is why the timestamp is load-bearing rather
+    /// than decorative: it is relative to the moment the event was
+    /// written, so resolving it against `now` would under-report the
+    /// remaining wait by however long codex has been idle.
+    CodexRollout,
+}
+
+impl UsageProbe {
+    /// The wire name the frontend keys on. Stable strings, like
+    /// `McpFormat::id`: they reach `agentUsage.ts` and a rename here
+    /// without one there silently turns every probe into "unsupported".
+    pub fn id(self) -> &'static str {
+        match self {
+            UsageProbe::AnthropicOauth => "anthropic-oauth",
+            UsageProbe::CodexRollout => "codex-rollout",
+        }
+    }
 }
 
 /// One row of a profile's cause table: a substring of the failure line
@@ -323,6 +399,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // either way, so the one argument for forking does not apply.
         session_id_args: "--session-id",
         resume_args: "--resume",
+        usage_probe: Some(UsageProbe::AnthropicOauth),
         mcp: Some(McpLayout {
             config_file: ".mcp.json",
             server_key: "gavin",
@@ -375,6 +452,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_causes: &[],
         session_id_args: "",
         resume_args: "",
+        usage_probe: Some(UsageProbe::CodexRollout),
         mcp: Some(McpLayout {
             config_file: ".codex/config.toml",
             server_key: "gavin",
@@ -398,6 +476,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_causes: &[],
         session_id_args: "",
         resume_args: "",
+        usage_probe: None,
         mcp: Some(McpLayout {
             config_file: ".gemini/settings.json",
             server_key: "gavin",
@@ -422,6 +501,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_causes: &[],
         session_id_args: "",
         resume_args: "",
+        usage_probe: None,
         mcp: Some(McpLayout {
             config_file: ".cursor/mcp.json",
             server_key: "gavin",
@@ -445,6 +525,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_causes: &[],
         session_id_args: "",
         resume_args: "",
+        usage_probe: None,
         mcp: Some(McpLayout {
             config_file: "opencode.json",
             server_key: "gavin",
@@ -465,6 +546,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_causes: &[],
         session_id_args: "",
         resume_args: "",
+        usage_probe: None,
         mcp: None,
     },
 ];
@@ -1119,6 +1201,11 @@ pub struct AgentProfileDto {
     /// where the convention is unverified.
     pub session_id_args: String,
     pub resume_args: String,
+    /// How gavin reads this agent's subscription limits, or `None` where
+    /// it cannot (see AgentProfile::usage_probe). The usage panel keys on
+    /// this to decide between a bar and a sentence explaining there is
+    /// nothing to show.
+    pub usage_probe: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1176,6 +1263,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
                 .collect(),
             session_id_args: p.session_id_args.to_string(),
             resume_args: p.resume_args.to_string(),
+            usage_probe: p.usage_probe.map(|u| u.id().to_string()),
         })
         .collect()
 }
@@ -1339,6 +1427,35 @@ mod tests {
                 p.id
             );
         }
+    }
+
+    /// Which profiles claim they can be asked about their limits, pinned
+    /// so adding a probe is a deliberate act with a route behind it.
+    ///
+    /// The three `None` rows are the point of the test as much as the two
+    /// `Some` ones: Gemini's `/stats` prints nothing when piped, Cursor's
+    /// usage lives in a web dashboard and opencode runs on the user's own
+    /// provider keys, so a bar for any of them could only be invented.
+    #[test]
+    fn only_profiles_with_a_route_carry_a_usage_probe() {
+        let probed: Vec<(&str, &str)> = AGENT_PROFILES
+            .iter()
+            .filter_map(|p| p.usage_probe.map(|u| (p.id, u.id())))
+            .collect();
+        assert_eq!(
+            probed,
+            [("claude-code", "anthropic-oauth"), ("codex", "codex-rollout")]
+        );
+    }
+
+    /// The wire names reach `agentUsage.ts`, which decides what to render
+    /// from them. Renaming one here without renaming it there turns a
+    /// working probe into "unsupported" with nothing failing, so the
+    /// strings are pinned rather than derived.
+    #[test]
+    fn usage_probe_ids_are_stable_wire_names() {
+        assert_eq!(UsageProbe::AnthropicOauth.id(), "anthropic-oauth");
+        assert_eq!(UsageProbe::CodexRollout.id(), "codex-rollout");
     }
 
     /// The empty pattern list is a real answer -- "nobody has verified

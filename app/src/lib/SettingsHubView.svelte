@@ -4,6 +4,7 @@
     renameWorkspace,
     setWorkspaceColor,
     setWorkspaceFlag,
+    setWorkspacePause,
     setAgentField,
     setPrdPath,
     agentProfilesStore,
@@ -35,6 +36,8 @@
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import WorkspaceDeleteWizard from "./WorkspaceDeleteWizard.svelte";
   import { tooltip } from "./tooltip";
+  import { MIN_PERIOD_MINUTES, validateCycle } from "./agentPause";
+  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "./agentPauseState";
   import { UNFILED_WORKSPACE_ID } from "./workspace";
 
   interface Props {
@@ -43,6 +46,13 @@
   let { workspaceId }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+
+  /// What this workspace would inherit, and what an override starts from.
+  const appCycle = $derived($agentPauseStore);
+  const inheritedCycle = $derived(editableCycle(null));
+  /// Recomputed on every clock tick, so the "right now" line below is a
+  /// live countdown rather than whatever was true when the tab mounted.
+  const pauseNow = $derived(pauseFor(workspaceId, $nowStore));
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agent = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore));
@@ -418,6 +428,118 @@
     </section>
 
     <section>
+      <h3>Agent pause</h3>
+      <!-- Absent means INHERIT, which is not the same as off: a
+           workspace that wants no pause while the app has one stores a
+           cycle with enabled:false, so clearing and disabling are two
+           different controls. -->
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={ws.agentPause != null}
+          onchange={(e) =>
+            void setWorkspacePause(
+              workspaceId,
+              e.currentTarget.checked ? { ...inheritedCycle } : null
+            )}
+        />
+        Give this workspace its own pause settings
+      </label>
+      {#if ws.agentPause == null}
+        <p class="hint">
+          {#if appCycle?.enabled}
+            Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
+            {appCycle.periodMinutes} minutes.
+          {:else}
+            Following the app-wide setting, which is off. Settings → Agent pause
+            changes it for every workspace.
+          {/if}
+        </p>
+      {:else}
+        {@const own = ws.agentPause}
+        <div class="pause-row">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={own.enabled}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
+            />
+            Pause on a cycle
+          </label>
+        </div>
+        <div class="pause-row">
+          <span>Pause for</span>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            disabled={!own.enabled}
+            value={own.pauseMinutes}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                pauseMinutes: Number(e.currentTarget.value),
+              })}
+          />
+          <span>minutes every</span>
+          <input
+            class="num"
+            type="number"
+            min={MIN_PERIOD_MINUTES}
+            disabled={!own.enabled}
+            value={own.periodMinutes}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                periodMinutes: Number(e.currentTarget.value),
+              })}
+          />
+          <span>minutes</span>
+        </div>
+        <div class="pause-row">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={own.limitEnabled}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, {
+                  ...own,
+                  limitEnabled: e.currentTarget.checked,
+                })}
+            />
+            Hold when a window is
+          </label>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            max="100"
+            disabled={!own.limitEnabled}
+            value={own.limitPercent}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                limitPercent: Number(e.currentTarget.value),
+              })}
+          />
+          <span>% used</span>
+        </div>
+        {#if own.enabled && validateCycle(own)}
+          <p class="hint error">{validateCycle(own)}</p>
+        {/if}
+      {/if}
+      <p class="hint">
+        A pause stops gavin STARTING work — a rail's next step, a card run, an
+        automatic resume. An agent already mid-turn finishes, and your own Run
+        button always works.
+        {#if pauseNow.paused}
+          Right now: {pauseNow.why}.
+        {/if}
+      </p>
+    </section>
+
+    <section>
       <h3>Agent</h3>
       {#if !hasRoot}
         <p class="hint">Bind a root folder to configure the agent.</p>
@@ -777,5 +899,26 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
+  }
+  .pause-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+    color: var(--text-muted);
+  }
+  .pause-row input.num {
+    width: 56px;
+    text-align: right;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 1em;
+    padding: 3px 8px;
+  }
+  .hint.error {
+    color: var(--danger-text);
   }
 </style>

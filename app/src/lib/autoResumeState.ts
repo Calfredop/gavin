@@ -9,6 +9,7 @@
 // the effect, not by whichever component happens to be mounted.
 
 import { get, writable } from "svelte/store";
+import { pauseFor } from "./agentPauseState";
 import {
   autoResumeDecision,
   isImmediateRefailure,
@@ -251,6 +252,14 @@ function abortWave(why: string, exceptSessionId?: string): void {
   if (why) void notify(why);
 }
 
+/// How long a deferred resume waits before looking again.
+///
+/// A cap, not a schedule: the pause knows when it lifts, and this only
+/// stops that turning into one very long `setTimeout` -- the timer a
+/// closed laptop does not honour, and the reason every instant in this
+/// feature is absolute rather than a countdown.
+const PAUSE_RECHECK_MS = 60_000;
+
 async function fire(sessionId: string, previousStatus: SessionStatus | undefined): Promise<void> {
   const entry = armed.get(sessionId);
   armed.delete(sessionId);
@@ -271,6 +280,23 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
   if (decision.kind !== "resume") {
     resumeClaims.release(entry.key);
     void notify(resumeSkippedBody(ownerLabel(owner, sessionId), decision.why));
+    return;
+  }
+
+  // A pause DEFERS a resume; it does not cancel it. Re-armed rather than
+  // skipped for the same reason the offline branch below re-arms: the run
+  // is still worth resuming, this is simply not the moment. Skipping
+  // would let a ten-minute scheduled pause cost a network failure its one
+  // recovery, which is a pause deciding something it was never given.
+  //
+  // The re-arm is capped rather than sleeping until the pause lifts,
+  // because a multi-hour `setTimeout` is precisely what does not survive
+  // a laptop closing -- so this polls, and each poll re-reads a verdict
+  // computed from the wall clock.
+  const pause = pauseFor(owner.workspaceId, clock.now());
+  if (pause.paused) {
+    const wait = pause.until == null ? PAUSE_RECHECK_MS : pause.until - clock.now();
+    armWait(sessionId, previousStatus, Math.min(Math.max(wait, 1_000), PAUSE_RECHECK_MS), entry.key);
     return;
   }
 

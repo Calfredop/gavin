@@ -44,6 +44,11 @@ export interface AgentProfileInfo {
   /// the one that reopens it. Both empty unless BOTH are verified.
   sessionIdArgs: string;
   resumeArgs: string;
+  /// How gavin reads this agent's subscription limits ("anthropic-oauth",
+  /// "codex-rollout"), or null where it cannot -- which is three of the
+  /// five profiles and is a sentence the usage panel prints, not a bar it
+  /// leaves empty. See agent_setup.rs's usage_probe for what was checked.
+  usageProbe: string | null;
 }
 
 /// Mirrors McpFormatDto from agent_setup.rs, for the `custom` profile's

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { editableCycle, saveAgentPause } from "../agentPauseState";
   import { open } from "@tauri-apps/plugin-dialog";
   import {
     layoutState,
@@ -80,6 +81,22 @@
     await setAgentField(workspaceId, "command", commandDraft.trim() || agentCfg.command);
     onDone();
   }
+
+  /// The app-wide cycle is what the wizard offers: a workspace created
+  /// here has no override, so switching this on sets the app default that
+  /// every workspace then inherits. Turning it off later per workspace is
+  /// Settings' job, not the wizard's.
+  const pauseCycle = $derived(editableCycle(null));
+
+  /// Whether the profile being chosen can be asked about its limits, so
+  /// the copy does not promise a hold gavin cannot perform.
+  const probedHere = $derived(
+    $agentProfilesStore.some((p) => p.id === agentCfg.profileId && p.usageProbe)
+  );
+
+  async function togglePause(enabled: boolean): Promise<void> {
+    await saveAgentPause({ ...pauseCycle, enabled });
+  }
 </script>
 
 <h3>Which agent?</h3>
@@ -123,6 +140,27 @@
   </p>
 {/if}
 
+<label class="row">
+  <span>Pause</span>
+  <!-- Off by default, like every consent-shaped setting in gavin: an
+       existing workspace must not start pausing because it was updated.
+       Offered HERE because a subscription limit is a fact about the agent
+       being chosen one field above, not about the repo. -->
+  <span class="check">
+    <input
+      type="checkbox"
+      checked={pauseCycle.enabled}
+      onchange={(e) => void togglePause(e.currentTarget.checked)}
+    />
+    Sit out {pauseCycle.pauseMinutes} minutes every {Math.round(pauseCycle.periodMinutes / 60)} hours
+  </span>
+</label>
+<p class="hint indent">
+  Keeps a rail from spending the tail of a subscription window while nobody is watching.
+  Nothing already running is interrupted — only new starts wait. Settings can change the
+  numbers later{probedHere ? ", and gavin will also hold when this agent reports a full window" : ""}.
+</p>
+
 <div class="actions">
   <button type="button" onclick={() => void continueStep()}>Continue →</button>
 </div>
@@ -144,6 +182,14 @@
      belonging to the row above it rather than to the step. */
   .hint.indent {
     margin: -4px 0 10px 90px;
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #ccc;
+    font-family: monospace;
+    font-size: 0.85em;
   }
   .warn {
     margin: -4px 0 10px 90px;

@@ -91,6 +91,7 @@ import {
 import { stripFrontmatter } from "./planChecklist";
 import { setRailNotificationVoice, type SessionStatus } from "./notifications";
 import { pasteToMainAgent, resolveAttachmentsForRun } from "./cardRunActions";
+import { activePaused, mayStartWork } from "./agentPauseState";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -791,6 +792,18 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
     const orch = get(orchestrations)[workspaceId];
     if (!orch) return again;
     if (action.kind === "launch") {
+      // The pause gates STARTS and nothing else. Every other action
+      // below is bookkeeping about work that already happened -- marking
+      // a finished step done, stalling a dead one, advancing a stage --
+      // and holding those would leave the rail describing a state it is
+      // no longer in.
+      //
+      // Skipped, not stalled: a pause is not a failure, and writing
+      // `stalled` on the run row would need a human to clear something
+      // that clears itself. The action is simply not taken, and the tick
+      // that runs when the pause lifts (activePaused is an input below)
+      // emits it again -- which is the whole of "resume".
+      if (!mayStartWork(workspaceId)) continue;
       await executeLaunch(workspaceId, action.stepId);
     } else if (action.kind === "markDone") {
       const sessionId = orch.stepRuns.find((r) => r.stepId === action.stepId)?.sessionId ?? null;
@@ -941,7 +954,11 @@ async function runTick(workspaceId: string): Promise<boolean> {
 /// module must not require every store it will eventually subscribe to
 /// to exist yet.
 function tickInputStores(): Readable<unknown>[] {
-  return [kanbanState, gavinTrees, gitStore, toolRecords, layoutState, sessionExits];
+  // activePaused, not activePause: the verdict rides a thirty-second
+  // clock and would tick the scheduler twice a minute forever, while the
+  // deduped flag emits exactly twice per pause -- once when starts stop,
+  // once when they may resume.
+  return [kanbanState, gavinTrees, gitStore, toolRecords, layoutState, sessionExits, activePaused];
 }
 
 let stopScheduler: (() => void) | null = null;

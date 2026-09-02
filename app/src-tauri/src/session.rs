@@ -63,6 +63,10 @@ fn persist_workspaces(
     // same-shaped maps in a row is an argument list you can transpose
     // without the compiler noticing.
     agent_models: HashMap<String, String>,
+    // Safe as a positional despite the warning above: `Option<AgentPauseConfig>`
+    // shares a shape with nothing else here, so a transposition is a type
+    // error rather than a silent swap.
+    agent_pause: Option<crate::config::AgentPauseConfig>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -75,6 +79,7 @@ fn persist_workspaces(
             theme,
             agent_models,
             removed_workspaces: data.removed_workspaces.clone(),
+            agent_pause,
         },
     )
 }
@@ -91,6 +96,59 @@ pub struct FileTabs(pub Mutex<HashMap<String, String>>);
 /// command that saves must carry it along, exactly as `SessionNames`
 /// describes.
 pub struct AgentModels(pub Mutex<HashMap<String, String>>);
+
+/// The app-wide agent pause cycle, `None` for no cycle at all.
+/// Tauri-managed and persisted into the same `AppConfig` as the rest --
+/// the seventh field a save site can silently wipe, and carried through
+/// `persist_workspaces` for exactly that reason.
+pub struct AgentPause(pub Mutex<Option<crate::config::AgentPauseConfig>>);
+
+#[tauri::command]
+pub fn get_agent_pause(state: State<AgentPause>) -> Option<crate::config::AgentPauseConfig> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Replaces the app-wide cycle. `None` clears it back to no cycle at
+/// all, the same "there is no separate clear command" shape as
+/// `set_theme_pref`.
+///
+/// The ANCHOR is the caller's to supply and gavin never rewrites it here:
+/// the frontend stamps one when the cycle is first switched on, and every
+/// later edit carries the same value through. Stamping `now` on each save
+/// would slide the pause forward every time somebody nudged a field, so
+/// the cycle would never actually fire for anyone who kept adjusting it.
+#[tauri::command]
+pub fn set_agent_pause(
+    agent_pause: Option<crate::config::AgentPauseConfig>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    agent_pause_state: State<AgentPause>,
+) -> Result<(), String> {
+    *agent_pause_state.0.lock().unwrap() = agent_pause.clone();
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+        agent_pause,
+    )
+    .map_err(|e| e.to_string())
+}
 
 #[cfg(test)]
 mod workspaces_data_tests {
@@ -127,6 +185,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             Some("light".to_string()),
             models.clone(),
+            None,
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
@@ -159,6 +218,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().removed_workspaces, vec![tombstone]);
@@ -193,9 +253,57 @@ mod workspaces_data_tests {
             HashMap::new(),
             Some("light".to_string()),
             HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
+    }
+
+    /// The seventh field, and the seventh chance to make the same
+    /// mistake: session_names, file_tabs, board_tabs, theme, agent_models
+    /// and removed_workspaces were each silently reset by a save site
+    /// that reconstructed AppConfig without carrying them. A wiped pause
+    /// cycle would be quieter than any of those -- nothing looks wrong
+    /// until a rail runs straight through a window it was told to sit out.
+    #[test]
+    fn persist_workspaces_carries_the_agent_pause_cycle_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let cycle = crate::config::AgentPauseConfig {
+            enabled: true,
+            period_minutes: 300,
+            pause_minutes: 10,
+            anchor_ms: 1_700_000_000_000,
+            limit_percent: 95.0,
+            limit_enabled: true,
+        };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            Some(cycle.clone()),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, Some(cycle));
+    }
+
+    /// The anchor is what makes the cycle survive a restart, so it has to
+    /// come back off disk byte-identical. A config written before this
+    /// field existed loads with no cycle -- which is off, and is the
+    /// shipped default.
+    #[test]
+    fn a_config_without_a_cycle_loads_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            crate::config::config_path(dir.path()),
+            r#"{"workspaces":[],"activeWorkspaceId":null}"#,
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, None);
     }
 }
 
@@ -235,6 +343,7 @@ mod smoketest_tests {
             auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
+            agent_pause: None,
         }
     }
 
@@ -281,6 +390,7 @@ mod smoketest_tests {
             auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
+            agent_pause: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -399,6 +509,7 @@ pub fn set_workspaces_state(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    agent_pause_state: State<AgentPause>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
@@ -408,6 +519,7 @@ pub fn set_workspaces_state(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -416,6 +528,7 @@ pub fn set_workspaces_state(
         board_tabs,
         theme,
         agent_models,
+        agent_pause,
     )
         .map_err(|e| e.to_string())
 }
@@ -436,6 +549,7 @@ pub fn set_agent_model_default(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    agent_pause_state: State<AgentPause>,
 ) -> Result<(), String> {
     // An empty model removes the entry rather than storing "": the
     // picker's unset row must be able to UNDO a default, not just
@@ -455,6 +569,7 @@ pub fn set_agent_model_default(
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -464,6 +579,7 @@ pub fn set_agent_model_default(
         board_tabs,
         theme,
         agent_models,
+        agent_pause,
     )
     .map_err(|e| e.to_string())
 }
@@ -483,6 +599,7 @@ pub fn set_theme_pref(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    agent_pause_state: State<AgentPause>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -498,6 +615,7 @@ pub fn set_theme_pref(
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -506,6 +624,7 @@ pub fn set_theme_pref(
         board_tabs,
         theme,
         agent_models,
+        agent_pause,
     )
         .map_err(|e| e.to_string())
 }
@@ -526,6 +645,7 @@ pub fn set_session_name(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    agent_pause_state: State<AgentPause>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -546,6 +666,7 @@ pub fn set_session_name(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -554,6 +675,7 @@ pub fn set_session_name(
         board_tabs,
         theme,
         agent_models,
+        agent_pause,
     )
         .map_err(|e| e.to_string())
 }
@@ -578,6 +700,7 @@ pub fn set_file_tabs(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    agent_pause_state: State<AgentPause>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -586,6 +709,7 @@ pub fn set_file_tabs(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -594,6 +718,7 @@ pub fn set_file_tabs(
         board_tabs,
         theme,
         agent_models,
+        agent_pause,
     )
         .map_err(|e| e.to_string())
 }
@@ -624,6 +749,7 @@ pub fn set_board_tabs(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    agent_pause_state: State<AgentPause>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -632,6 +758,7 @@ pub fn set_board_tabs(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -640,6 +767,7 @@ pub fn set_board_tabs(
         board_tabs,
         theme,
         agent_models,
+        agent_pause,
     )
         .map_err(|e| e.to_string())
 }
@@ -1453,6 +1581,7 @@ mod resolve_workspaces_tests {
             auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
+            agent_pause: None,
         }
     }
 
@@ -1761,6 +1890,9 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
             auto_resume_runs: false,
                 git_view: None,
                 last_active_at: None,
+                // Absent means INHERIT the app-wide cycle, which is the
+                // right answer for a workspace gavin created itself.
+                agent_pause: None,
             });
         }
     } else {
@@ -2047,6 +2179,9 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
             auto_resume_runs: false,
                 git_view: None,
                 last_active_at: None,
+                // Absent means INHERIT the app-wide cycle, which is the
+                // right answer for a workspace gavin created itself.
+                agent_pause: None,
             },
         );
     }
@@ -2082,6 +2217,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         board_tabs.clone(),
         config.theme.clone(),
         config.agent_models.clone(),
+        config.agent_pause.clone(),
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -2094,6 +2230,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(BoardTabs(Mutex::new(board_tabs)));
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.manage(AgentModels(Mutex::new(config.agent_models)));
+    app_handle.manage(AgentPause(Mutex::new(config.agent_pause)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
@@ -3362,6 +3499,7 @@ mod main_session_tests {
             auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
+            agent_pause: None,
         }
     }
 
@@ -3845,6 +3983,7 @@ mod attach_target_tests {
             auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
+            agent_pause: None,
         }
     }
 

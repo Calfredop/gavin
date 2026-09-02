@@ -1,4 +1,5 @@
 mod agent_setup;
+mod agent_usage;
 mod config;
 mod daemon;
 mod edge_expand;
@@ -38,6 +39,7 @@ pub fn run() {
         .manage(fileviewer::FileWatchers::default())
         .manage(git::GitWatchers::default())
         .manage(git::GitOps::default())
+        .manage(agent_usage::UsageCache::new())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -122,6 +124,9 @@ pub fn run() {
             session::set_agent_model_default,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
+            agent_usage::agent_usage,
+            session::get_agent_pause,
+            session::set_agent_pause,
             agent_setup::mcp_formats,
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt,

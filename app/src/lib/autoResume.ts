@@ -139,6 +139,18 @@ export function autoResumePolicy(cause: FailureCause): AutoResumePolicy {
     case "outage":
       return { kind: "resume", on: "backoff" };
     case "usage-limit":
+      // Still a hold, and now a WATCHED one. When the profile has a usage
+      // probe (`agent_setup.rs`'s `usage_probe`) gavin can read the reset
+      // instant off the account rather than guessing it off the agent's
+      // line, and `pauseFor` holds every start until it passes -- so the
+      // rail resumes on its own the moment the window reopens.
+      //
+      // The hold stays because the resume is not this module's to fire:
+      // a run whose agent already died at the limit is picked up by the
+      // pause gate in `fire`, which defers instead of spending the one
+      // attempt against a wall. What was true when this was written --
+      // "the boundary is a clock gavin cannot read" -- is no longer true
+      // for `claude-code` and `codex`, and is still true for the rest.
       return {
         kind: "hold",
         why: "the usage limit has to reset before another attempt can get anywhere",

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { accentVar } from "./settings";
   import GlobalSettingsModal from "./GlobalSettingsModal.svelte";
+  import AgentUsageModal from "./AgentUsageModal.svelte";
+  import { activePause } from "./agentPauseState";
+  import { pauseLabel } from "./agentPause";
   import {
     layoutState,
     switchWorkspace,
@@ -35,6 +38,7 @@
     X,
     House,
     Settings,
+    Gauge,
     GitBranch,
     Kanban,
     Play,
@@ -451,6 +455,11 @@
   /// renders inside one workspace, which is the wrong shape for a
   /// preference that spans all of them.
   let showGlobalSettings = $state(false);
+
+  /// The agent usage panel. A modal beside Settings for the same reason:
+  /// it is about the app's agents, not about whichever workspace happens
+  /// to be open.
+  let showAgentUsage = $state(false);
 
   function startEditingWorkspace(workspaceId: string, currentName: string): void {
     editingWorkspaceId = workspaceId;
@@ -1223,12 +1232,28 @@
     {/each}
   </div>
   <div class="sidebar-footer">
+    <button class="footer-row" onclick={() => (showAgentUsage = true)}>
+      <Gauge size={12} />
+      <span>Usage</span>
+      <!-- The pause state lives on the row that explains it. A workspace
+           holding for a limit or a scheduled window is the one thing here
+           worth seeing without opening anything. -->
+      {#if pauseLabel($activePause)}
+        <span class="footer-badge" use:tooltip={$activePause.why ?? ""}
+          >{pauseLabel($activePause)}</span
+        >
+      {/if}
+    </button>
     <button class="footer-row" onclick={() => (showGlobalSettings = true)}>
       <Settings size={12} />
       <span>Settings</span>
     </button>
   </div>
 </div>
+
+{#if showAgentUsage}
+  <AgentUsageModal onClose={() => (showAgentUsage = false)} />
+{/if}
 
 {#if showGlobalSettings}
   <GlobalSettingsModal onClose={() => (showGlobalSettings = false)} />
@@ -1824,5 +1849,13 @@
   button.footer-row:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+  .footer-badge {
+    margin-left: auto;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: var(--surface-sunken);
+    color: var(--warning-text);
+    font-size: 0.85em;
   }
 </style>

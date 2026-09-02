@@ -1,3 +1,4 @@
+import type { PauseCycle } from "./agentPause";
 import type { LayoutNode } from "./layout";
 import { allSessionIds, findLeafPath } from "./layout";
 
@@ -88,6 +89,10 @@ export interface Workspace {
   /// how the app hub orders its recents: stamped newest first, then the
   /// never-stamped ones in their stored order.
   lastActiveAt?: number;
+  /// This workspace's own agent pause cycle. Absent means INHERIT the
+  /// app-wide one, which is not the same as off: a workspace that wants
+  /// no pause while the app has one stores a cycle with `enabled: false`.
+  agentPause?: PauseCycle;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

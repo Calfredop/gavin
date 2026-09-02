@@ -1,3 +1,5 @@
+import type { PauseCycle } from "./agentPause";
+import type { AgentUsageReport } from "./agentUsage";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
@@ -96,6 +98,20 @@ export function getAgentModelDefaults(): Promise<Record<string, string>> {
 /// An empty model removes the default rather than storing a blank.
 export function setAgentModelDefault(profileId: string, model: string): Promise<void> {
   return invoke("set_agent_model_default", { profileId, model });
+}
+
+/// The app-wide agent pause cycle, machine-local beside the theme.
+/// `null` is no cycle at all, which is the shipped default.
+export function getAgentPause(): Promise<PauseCycle | null> {
+  return invoke("get_agent_pause");
+}
+
+/// Replaces it; `null` clears it. The ANCHOR is the caller's to supply
+/// and the host never rewrites it -- stamping `now` on every save would
+/// slide the pause forward each time somebody nudged a field, so the
+/// cycle would never fire for anyone who kept adjusting it.
+export function setAgentPause(agentPause: PauseCycle | null): Promise<void> {
+  return invoke("set_agent_pause", { agentPause });
 }
 
 // Set once by layoutState.ts's bootstrap() -- both real input paths in
@@ -425,9 +441,18 @@ export function agentProfiles(): Promise<
     failureCauses: Array<{ pattern: string; cause: string }>;
     sessionIdArgs: string;
     resumeArgs: string;
+    usageProbe: string | null;
   }>
 > {
   return invoke("agent_profiles");
+}
+
+/// One agent's subscription-limit windows, or a named reason there are
+/// none to show. `force` is the panel's explicit refresh: it skips the
+/// host's freshness floor but not its 429 backoff, because a human
+/// pressing refresh cannot un-anger the endpoint.
+export function agentUsage(profileId: string, force = false): Promise<AgentUsageReport> {
+  return invoke("agent_usage", { profileId, force });
 }
 
 export function mcpFormats(): Promise<Array<{ id: string; label: string }>> {
