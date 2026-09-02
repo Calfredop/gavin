@@ -32,19 +32,30 @@
 
 import type { Component } from "svelte";
 import {
+  ChevronsRight,
   CircleDashed,
+  CirclePause,
   CircleSlash2,
   GitBranch,
   LoaderCircle,
   MessageCircleQuestionMark,
+  Minus,
+  Pause,
   Pencil,
   RotateCw,
   Signal,
   SignalHigh,
   SignalLow,
   SignalMedium,
+  Square,
+  SquareCheck,
+  SquareDot,
+  SquareX,
 } from "@lucide/svelte";
 import type { SessionStatus } from "../notifications";
+// The rails already own these three; re-declaring them here would be a
+// second definition free to drift from the one the scheduler runs on.
+import type { RailState, StepAttention, StepState } from "../orchestration";
 
 /// The five meanings colour is allowed to carry. Matches IconButton's own
 /// tone scale one for one, so a badge and a button beside it never
@@ -53,7 +64,7 @@ export type IndicatorTone = "neutral" | "accent" | "success" | "warning" | "dang
 
 /// The questions the app's badges answer. One glyph family each; the
 /// test enforces that no glyph is shared between two of them.
-export type IndicatorAxis = "agent" | "priority" | "git" | "edits" | "shell";
+export type IndicatorAxis = "agent" | "priority" | "git" | "edits" | "shell" | "step" | "rail";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
 /// which is the whole point: the old badges said "amber" and left the
@@ -64,6 +75,8 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   git: "Git",
   edits: "Edits",
   shell: "Shell",
+  step: "Step",
+  rail: "Rail",
 };
 
 export interface Indicator {
@@ -110,7 +123,10 @@ function make(
 // family (a rail's "needs you", the hub tab's attention pip, the
 // sidebar's count) already speaks in amber.
 
-const AGENT: Record<"working" | "waiting_for_input" | "idle" | "exited", Indicator> = {
+const AGENT: Record<
+  "working" | "waiting_for_input" | "turn_ended" | "idle" | "exited",
+  Indicator
+> = {
   working: make("agent", "working", LoaderCircle, "accent", "working", true),
   waiting_for_input: make(
     "agent",
@@ -119,6 +135,12 @@ const AGENT: Record<"working" | "waiting_for_input" | "idle" | "exited", Indicat
     "warning",
     "waiting for you"
   ),
+  // The agent stopped talking without the card reaching the done
+  // column. Like `exited` this is not a status the daemon reports -- it
+  // is read off a running step (see stepAttentions) -- but it is the
+  // same axis and the same question, so it lives here rather than
+  // becoming a fourth vocabulary on the rails.
+  turn_ended: make("agent", "turn_ended", CirclePause, "warning", "turn ended with the card unmoved"),
   idle: make("agent", "idle", CircleDashed, "neutral", "idle — nothing running"),
   exited: make("agent", "exited", CircleSlash2, "neutral", "session exited"),
 };
@@ -209,13 +231,81 @@ export function shellRestartedIndicator(): Indicator {
   return make("shell", "restarted", RotateCw, "success", "shell restarted after a daemon restart");
 }
 
+// ---- step --------------------------------------------------------------
+// How far the RAIL has got with one step -- not what the agent inside it
+// is doing, which is the agent axis above. The two genuinely differ: a
+// step is `running` the whole time its agent sits waiting for you, which
+// is exactly why the rails draw both marks side by side.
+//
+// Squares, because circles are the agent's and bars are priority's; a
+// step is a box in a queue. `running` is a filled centre -- the rail is
+// HERE -- and it does not spin: the agent badge beside it is the thing
+// entitled to claim motion, and two spinners in one chip say nothing.
+//
+// This axis is why the survey was worth doing. On a chip `running` was
+// an accent ring and nothing else, so the one state that matters most on
+// a rail was the one carried by colour alone; on a step card the same
+// state was the word "running" and no glyph at all. Same fact, two
+// renderings, neither of them sayable out loud.
+
+const STEP: Record<StepState, Indicator> = {
+  pending: make("step", "pending", Square, "neutral", "not started"),
+  running: make("step", "running", SquareDot, "accent", "running now"),
+  done: make("step", "done", SquareCheck, "success", "done"),
+  stalled: make("step", "stalled", SquareX, "danger", "stalled"),
+};
+
+export function stepIndicator(state: StepState): Indicator {
+  return STEP[state];
+}
+
+export const STEP_STATES = ["pending", "running", "done", "stalled"] as const;
+
+// ---- rail --------------------------------------------------------------
+// The rail itself, one level up from its steps. Both surfaces that show
+// it already spell the state out in words, so the badge is not carrying
+// the meaning alone -- what it buys is that the hub's rail list and the
+// rail's own header stop keeping private copies of the same tone table.
+// They had one each, and the hub's said so in a comment.
+//
+// `paused` is a bare Pause, the agent axis's `turn_ended` an enclosed
+// one: a paused rail was stopped by the human, an ended turn stopped by
+// itself.
+
+const RAIL: Record<RailState, Indicator> = {
+  idle: make("rail", "idle", Minus, "neutral", "idle — not started"),
+  running: make("rail", "running", ChevronsRight, "accent", "running"),
+  paused: make("rail", "paused", Pause, "warning", "paused"),
+};
+
+export function railIndicator(state: RailState): Indicator {
+  return RAIL[state];
+}
+
+export const RAIL_STATES = ["idle", "running", "paused"] as const;
+
+// ---- attention ---------------------------------------------------------
+// What a RUNNING step is waiting on a human for. Not an axis of its own:
+// both answers are facts about the agent, so they are agent badges, and
+// `asking` is literally the same badge the board card, the terminal tab
+// and the sidebar row already draw for `waiting_for_input`. That identity
+// is the point -- one agent stuck on a question looked like three
+// different things depending on which surface you found it on.
+
+export function attentionIndicator(attention: StepAttention): Indicator {
+  return attention === "asking" ? AGENT.waiting_for_input : AGENT.turn_ended;
+}
+
 /// Every indicator the app can draw. Exists for the invariant tests --
 /// nothing renders from it -- so a new state added above without a glyph
 /// of its own fails the suite instead of shipping.
 export function allIndicators(): Indicator[] {
   return [
     ...AGENT_STATES.map(agentIndicatorByState),
+    AGENT.turn_ended,
     ...PRIORITY_LEVELS.map((p) => PRIORITY[p]),
+    ...STEP_STATES.map(stepIndicator),
+    ...RAIL_STATES.map(railIndicator),
     gitIndicator(true),
     gitIndicator(false),
     unsavedEditsIndicator(),

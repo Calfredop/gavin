@@ -7,6 +7,8 @@
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "./homeSummary";
   import MainAgentPanel from "./MainAgentPanel.svelte";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { railIndicator } from "./ui/indicators";
   import * as backend from "./backend";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { changedCount } from "./git";
@@ -206,7 +208,7 @@
               {#each orchestra.rails as r (r.id)}
                 <span class="rail">
                   <span class="rail-name">{r.name}</span>
-                  <span class="state {r.state}">{r.state}</span>
+                  <StatusBadge indicator={railIndicator(r.state)} text={r.state} />
                   <!-- An armed rail says where it IS; an idle one says how
                        much of it is already behind us. -->
                   <span class="progress">
@@ -364,17 +366,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  /* The same three tones the rail header's own state chip wears. */
-  .state {
-    flex: none;
-    color: var(--text-subtle);
-  }
-  .state.running {
-    color: var(--accent-text);
-  }
-  .state.paused {
-    color: var(--warning-text);
   }
   .progress {
     flex: none;

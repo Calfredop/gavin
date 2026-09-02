@@ -4,12 +4,17 @@ import {
   AXIS_LABEL,
   AGENT_STATES,
   PRIORITY_LEVELS,
+  RAIL_STATES,
+  STEP_STATES,
   agentIndicator,
   agentIndicatorByState,
   agentExitedIndicator,
   allIndicators,
+  attentionIndicator,
   gitIndicator,
   priorityIndicator,
+  railIndicator,
+  stepIndicator,
   shellRestartedIndicator,
   unsavedEditsIndicator,
   type Indicator,
@@ -99,6 +104,78 @@ describe("the indicator vocabulary", () => {
     expect(gitIndicator(false).tone).toBe("neutral");
     expect(unsavedEditsIndicator().tone).toBe("accent");
     expect(shellRestartedIndicator().tone).toBe("success");
+    // A rail and a step both borrow the app's one meaning of accent:
+    // this is the thing happening now.
+    expect(stepIndicator("running").tone).toBe("accent");
+    expect(railIndicator("running").tone).toBe("accent");
+    expect(stepIndicator("done").tone).toBe("success");
+    expect(stepIndicator("stalled").tone).toBe("danger");
+    expect(stepIndicator("pending").tone).toBe("neutral");
+    expect(railIndicator("idle").tone).toBe("neutral");
+    expect(railIndicator("paused").tone).toBe("warning");
+  });
+});
+
+describe("stepIndicator", () => {
+  // The defect the survey turned up. A chip drew `running` as an accent
+  // ring and nothing else and `pending` as nothing at all, so half the
+  // state machine was invisible and the visible half was a colour --
+  // the same fault the board's amber dot had, one screen over.
+  it("gives every state a glyph, including the two that used to draw none", () => {
+    const glyphs = STEP_STATES.map((state) => glyphClass(stepIndicator(state)));
+    expect(new Set(glyphs).size, `the step states share a glyph: ${glyphs.join(", ")}`).toBe(
+      STEP_STATES.length
+    );
+  });
+
+  // Motion belongs to the agent axis. A step is `running` for the whole
+  // time its agent sits waiting on a human, so a spinner here would
+  // claim movement precisely when there is none.
+  it("does not spin while its agent might be standing still", () => {
+    expect(stepIndicator("running").spin).toBeFalsy();
+  });
+
+  it("keeps the step axis clear of the agent's", () => {
+    for (const state of STEP_STATES) expect(stepIndicator(state).axis).toBe("step");
+  });
+});
+
+describe("railIndicator", () => {
+  it("gives each rail state its own glyph", () => {
+    const glyphs = RAIL_STATES.map((state) => glyphClass(railIndicator(state)));
+    expect(new Set(glyphs).size, `the rail states share a glyph: ${glyphs.join(", ")}`).toBe(
+      RAIL_STATES.length
+    );
+  });
+
+  // A paused rail was stopped by the human; an agent whose turn ended
+  // stopped by itself. Both wear a pause, and the enclosure is the only
+  // thing telling them apart -- so it had better actually differ.
+  it("draws its pause differently from the agent's", () => {
+    expect(glyphClass(railIndicator("paused"))).not.toBe(
+      glyphClass(attentionIndicator("turn-ended"))
+    );
+  });
+});
+
+describe("attentionIndicator", () => {
+  // The identity that matters: an agent stuck on a question is ONE fact,
+  // and a rail chip must not invent a second badge for what the board
+  // card, the terminal tab and the sidebar row already draw.
+  it("draws asking as the very badge every other surface uses", () => {
+    expect(attentionIndicator("asking")).toBe(agentIndicator("waiting_for_input"));
+  });
+
+  // Both mean "come and look", so both are amber -- what separates them
+  // is the glyph, which is the whole rule this module encodes.
+  it("keeps both answers on the agent axis, in the wants-a-human tone", () => {
+    for (const attention of ["asking", "turn-ended"] as const) {
+      expect(attentionIndicator(attention).axis).toBe("agent");
+      expect(attentionIndicator(attention).tone).toBe("warning");
+    }
+    expect(glyphClass(attentionIndicator("asking"))).not.toBe(
+      glyphClass(attentionIndicator("turn-ended"))
+    );
   });
 });
 

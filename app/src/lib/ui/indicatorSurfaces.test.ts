@@ -77,6 +77,14 @@ describe("no surface hand-rolls an indicator", () => {
     ["Pane.svelte", "a terminal tab's agent, checkout and unsaved edits"],
     ["Sidebar.svelte", "page rows, tab rows and the workspace tallies"],
     ["CardDetailModal.svelte", "the card's agent session"],
+    // Found by the survey rather than named in the card, and the same
+    // disease: the orchestration surfaces had a run-state vocabulary of
+    // their own, disagreeing with each other about what `running` looks
+    // like even between a step's chip and that step's own card.
+    ["OrchestrationStepChip.svelte", "a step's run state and what its agent wants"],
+    ["OrchestrationStepCard.svelte", "the same step's run state on the board"],
+    ["OrchestrationRail.svelte", "the rail's own state"],
+    ["HomeHubView.svelte", "each rail's state in the hub's list"],
   ])("%s draws %s through StatusBadge", (file) => {
     expect(source(file)).toMatch(/import StatusBadge from "\.{1,2}\/(ui\/)?StatusBadge\.svelte"/);
   });
@@ -89,6 +97,35 @@ describe("no surface hand-rolls an indicator", () => {
     const pane = source("Pane.svelte");
     for (const dead of ["status-dot", "dirty-dot", "git-dot"]) {
       expect(pane, `Pane.svelte is drawing a .${dead} again`).not.toContain(dead);
+    }
+  });
+
+  // The orchestration flavour of the same mistake. These four files each
+  // held a private table mapping a run state to a colour -- and the hub's
+  // copy said so in a comment, which is how you know a shared vocabulary
+  // was overdue. A rule keyed on the state name is that table growing
+  // back, whatever it is spelt.
+  it.each([
+    ["OrchestrationStepChip.svelte", ["running", "done", "stalled", "pending"]],
+    ["OrchestrationStepCard.svelte", ["running", "done", "stalled"]],
+    ["OrchestrationRail.svelte", ["running", "paused"]],
+    ["HomeHubView.svelte", ["running", "paused"]],
+  ])("%s no longer colours a state by its name", (file, states) => {
+    const css = (source(file).split("<style>")[1] ?? "").split("</style>")[0];
+    for (const state of states as string[]) {
+      // `.state.running { color: var(--accent-text) }` and friends. Only
+      // a TONE token counts: a done chip dimming its own text to
+      // --text-muted is saying "finished work recedes", which is a
+      // property of the chip, not a second opinion about what the state
+      // means. The table this kills is the one that spends the app's
+      // five meaning-carrying colours.
+      const rule = new RegExp(`\\.(state|chip|rail)[^{}]*\\.${state}\\b[^{}]*\\{([^{}]*)\\}`, "g");
+      for (const match of css.matchAll(rule)) {
+        expect(
+          /(^|;)\s*color:\s*var\(--(accent|warning|danger|success)-text/.test(match[2]),
+          `${file} picks a tone for "${state}" itself; the tone belongs to ui/indicators.ts`
+        ).toBe(false);
+      }
     }
   });
 });
