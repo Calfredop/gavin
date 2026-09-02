@@ -732,6 +732,25 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Run a card; the terminal's first line should read `claude --model <what you typed>`.",
       },
       {
+        id: "set-sp-row",
+        text: "The Agent section ends with a Superpowers row: an Install button only when it is genuinely absent, otherwise the LED and its sentence",
+        hint: "The card's rule literally — a button that only shows when there is something to install.",
+      },
+      {
+        id: "set-sp-profile-switch",
+        text: "Switching profile re-asks: with Cursor the row explains gavin cannot check and offers the slash command instead of a button",
+        hint: "The detector is per profile, so the row must not keep answering for the agent selected a moment ago.",
+      },
+      {
+        id: "set-sp-take-back",
+        text: "After “I've installed it”, Settings offers “Take that back”, and using it returns the row to the honest not-installed state",
+        hint: "Only Settings offers this; the wizard's own step does not, where “Not now” already covers changing your mind.",
+      },
+      {
+        id: "set-sp-no-root",
+        text: "On a workspace with no root bound, the whole Agent section — Superpowers row included — is replaced by the bind-a-root hint",
+      },
+      {
         id: "global-settings-modal",
         text: "The sidebar footer's Settings opens the global panel, and its Theme control still flips the theme",
         hint: "The footer no longer has a theme toggle of its own — the panel's is the only one.",
@@ -781,10 +800,10 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       { id: "wiz-create", text: "Creating a workspace opens the setup modal; Continue is disabled until a folder is bound" },
       { id: "wiz-skip-create", text: "Skip setup leaves a usable, unrooted workspace — exactly as before" },
-      { id: "wiz-steps", text: "The wizard opens on the first unfinished step and walks Agent → Integration → PRD → Launch" },
+      { id: "wiz-steps", text: "The wizard opens on the first unfinished step and walks Agent → Integration → Superpowers → PRD → Launch" },
       {
         id: "wiz-resume",
-        text: "Closing the wizard mid-way leaves the workspace usable; the Home tab offers “n of 4 done — continue”",
+        text: "Closing the wizard mid-way leaves the workspace usable; the Home tab offers “n of 5 done — continue”",
       },
       {
         id: "wiz-no-flash",
@@ -829,6 +848,40 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "wiz-agent-gate",
         text: "With Cursor or opencode, “Ask the agent” is absent and the step says why; with Codex or Gemini it is offered",
         hint: "Those two take a path, not a prompt, in their bare positional — the other three take a prompt.",
+      },
+      {
+        id: "wiz-sp-verified",
+        text: "On a Claude Code workspace that already has Superpowers, the step shows a filled green LED and says it is active — with no Install button",
+        hint: "Detection runs `claude plugin list --json` with cwd = the root, because `enabled` is answered relative to it. A user-scope install counts from anywhere.",
+      },
+      {
+        id: "wiz-sp-install",
+        text: "On a workspace without it, Install runs hidden and the LED turns green without a reload; Show output holds the CLI's own lines",
+        hint: "Uninstall first: `claude plugin uninstall superpowers@claude-plugins-official --scope project` in the root. A second Install is a no-op success, not an error.",
+      },
+      {
+        id: "wiz-sp-install-fails",
+        text: "With `claude` unreachable, Install shows the failure and opens the output drawer by itself, and the LED stays off",
+        hint: "Launch the app from Finder rather than a shell to get the stripped PATH, or point [agent] command at a name that does not exist. The message must name the missing binary.",
+      },
+      {
+        id: "wiz-sp-copy",
+        text: "With Cursor or Codex selected, there is no Install button — the step names why gavin cannot check, shows the slash command, and Copy puts it on the clipboard",
+      },
+      {
+        id: "wiz-sp-asserted",
+        text: "“I've installed it” turns the LED into a hollow green ring, and the wording says gavin has not confirmed it",
+        hint: "Hollow vs filled is the whole point: one is a check, the other is your word. They must not look the same.",
+      },
+      {
+        id: "wiz-sp-not-now",
+        text: "“Not now” finishes the step, and the Home banner never asks about Superpowers again for that workspace",
+        hint: "Relaunch the app to confirm it stuck — the marker is in the app's config.json, keyed by root path.",
+      },
+      {
+        id: "wiz-sp-machine-local",
+        text: "The marker does not travel: a second checkout of the same repo at another path starts with the step unanswered",
+        hint: "Keyed by root path on purpose — a repo can reach a machine that has no Superpowers, and an assertion made here must not vouch for it.",
       },
       {
         id: "wiz-integration-degrades",

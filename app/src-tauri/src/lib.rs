@@ -8,6 +8,7 @@ mod git;
 mod layout;
 mod mac_window;
 mod session;
+mod superpowers;
 mod workspace_delete;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -122,6 +123,10 @@ pub fn run() {
             session::set_root_config_field,
             session::get_agent_model_defaults,
             session::set_agent_model_default,
+            session::get_superpowers_marks,
+            session::set_superpowers_mark,
+            superpowers::superpowers_status,
+            superpowers::superpowers_install,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_usage::agent_usage,

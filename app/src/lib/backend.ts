@@ -3,6 +3,7 @@ import type { AgentUsageReport } from "./agentUsage";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
+import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
 import type { BoardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
@@ -112,6 +113,38 @@ export function getAgentPause(): Promise<PauseCycle | null> {
 /// cycle would never fire for anyone who kept adjusting it.
 export function setAgentPause(agentPause: PauseCycle | null): Promise<void> {
   return invoke("set_agent_pause", { agentPause });
+}
+
+/// Superpowers plugin status for one workspace root. Straight to Tauri,
+/// like the model defaults above: the detector reads the local checkout
+/// and the marker lives in the app's own config.json, so none of this
+/// needs a daemon request and all of it keeps working across a version
+/// skew that has every gavin_* tool failing closed.
+export function superpowersStatus(rootPath: string): Promise<SuperpowersStatus> {
+  return invoke("superpowers_status", { rootPath });
+}
+
+/// Runs the install and returns the status that follows it. A failed
+/// install is not a rejection -- the returned status carries the run's
+/// stdout and stderr for the drawer, and its state is what the detector
+/// says afterwards. Rejects only when no install was attempted: a profile
+/// gavin must not install into, or a binary it could not spawn.
+export function superpowersInstall(rootPath: string): Promise<SuperpowersStatus> {
+  return invoke("superpowers_install", { rootPath });
+}
+
+/// What the human has told gavin, keyed by workspace root path.
+export function getSuperpowersMarks(): Promise<Record<string, SuperpowersMark>> {
+  return invoke("get_superpowers_marks");
+}
+
+/// `null` forgets what was said, so someone who asserted an install and
+/// then removed it has a way back to the honest answer.
+export function setSuperpowersMark(
+  rootPath: string,
+  mark: SuperpowersMark | null
+): Promise<void> {
+  return invoke("set_superpowers_mark", { rootPath, mark });
 }
 
 // Set once by layoutState.ts's bootstrap() -- both real input paths in

@@ -30,6 +30,7 @@
   } from "./settings";
   import { open } from "@tauri-apps/plugin-dialog";
   import * as backend from "./backend";
+  import SuperpowersControls from "./SuperpowersControls.svelte";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
   import Modal from "./Modal.svelte";
@@ -38,6 +39,7 @@
   import { tooltip } from "./tooltip";
   import { MIN_PERIOD_MINUTES, validateCycle } from "./agentPause";
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "./agentPauseState";
+  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
   import { UNFILED_WORKSPACE_ID } from "./workspace";
 
   interface Props {
@@ -61,6 +63,40 @@
   const profileLabel = $derived(
     $agentProfilesStore.find((p) => p.id === agent.profileId)?.label ?? agent.profileId
   );
+
+  // The Superpowers row's two inputs. Re-read on demand rather than
+  // watched: this is a settings panel, not a live view, and the only
+  // things that change either value are the controls right below.
+  // undefined until the first read lands, so the row can say "checking"
+  // instead of drawing an Install button for an unknown state.
+  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
+  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  let spToken = 0;
+  async function readSuperpowers(): Promise<void> {
+    const root = ws?.rootPath;
+    // Cleared first, and the token bumped in the same breath: a switch to
+    // another workspace must not leave the previous one's answer on
+    // screen, nor let its in-flight read land here.
+    superpowers = undefined;
+    superpowersMark = undefined;
+    const mine = ++spToken;
+    if (!root) return;
+    const [status, marks] = await Promise.all([
+      backend.superpowersStatus(root).catch(() => undefined),
+      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+    ]);
+    if (mine !== spToken) return;
+    superpowers = status;
+    superpowersMark = marks[root];
+  }
+  $effect(() => {
+    void ws?.rootPath;
+    // The profile decides which detector runs, so a profile switch has to
+    // re-ask -- otherwise the row keeps answering for the agent that was
+    // selected a moment ago.
+    void agent.profileId;
+    void readSuperpowers();
+  });
 
   // Drafts exist so a watcher push cannot overwrite a field mid-type
   // (spec §5.2): a focused input keeps its draft, everything else follows
@@ -717,6 +753,28 @@
             Name the file {profileLabel} reads MCP config from, and gavin can write itself into it.
           </p>
         {/if}
+
+        <div class="sp-row">
+          <span class="sp-title">
+            {superpowers ? superpowersLabel(superpowers.state) : "Superpowers plugin"}
+          </span>
+          {#if superpowers}
+            <SuperpowersControls
+              rootPath={ws?.rootPath ?? null}
+              status={superpowers}
+              mark={superpowersMark}
+              onChanged={() => void readSuperpowers()}
+              allowClear
+            />
+          {:else}
+            <p class="hint">Checking…</p>
+          {/if}
+          <p class="hint">
+            Process skills for {profileLabel} — brainstorm before building, plan before coding,
+            debug by narrowing. It is what makes gavin's plan and debug flows deep rather than
+            nominal.
+          </p>
+        </div>
       {/if}
     </section>
 
@@ -857,6 +915,18 @@
   .hint {
     color: var(--text-subtle);
     margin: 6px 0 0;
+  }
+  /* Set off from the fields above it: the rows above are all "edit this
+     value", and this one is "gavin checked something". */
+  .sp-row {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle, #333);
+  }
+  .sp-title {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-normal, #ddd);
   }
   .hint.warn {
     color: var(--warning-text);

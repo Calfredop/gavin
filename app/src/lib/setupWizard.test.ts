@@ -5,7 +5,20 @@ import {
   agentFlowAvailable,
   prdHasPlaceholders,
   PRD_PLACEHOLDERS,
+  SETUP_STEPS,
 } from "./setupWizard";
+import type { SuperpowersStatus } from "./superpowers";
+
+/// A settled check that found nothing: enough to keep the derivation off
+/// `pending` without completing the Superpowers step.
+const SP_ABSENT: SuperpowersStatus = {
+  state: "absent",
+  detail: "",
+  command: "",
+  installable: true,
+  output: "",
+};
+const SP_FOUND: SuperpowersStatus = { ...SP_ABSENT, state: "verified" };
 
 const TEMPLATE = [
   "# ws — Product Requirements",
@@ -30,6 +43,8 @@ const NOTHING_DONE = {
   agentFileBody: null,
   prdBody: TEMPLATE,
   mainSessionId: null,
+  superpowers: SP_ABSENT,
+  superpowersMark: undefined,
 };
 
 describe("setupProgress", () => {
@@ -63,23 +78,85 @@ describe("setupProgress", () => {
     expect(setupProgress({ ...NOTHING_DONE, prdBody: null }).done).toEqual([]);
   });
 
-  it("counts launch from the session id, and completes at four", () => {
+  it("counts launch from the session id, and completes at five", () => {
     const p = setupProgress({
       hasRoot: true,
       configCommand: "claude",
       agentFileBody: "<!-- gavin:start -->",
       prdBody: TEMPLATE.replace(PRD_PLACEHOLDERS.vision, "Real."),
       mainSessionId: "agent-1",
+      superpowers: SP_FOUND,
+      superpowersMark: undefined,
     });
-    expect(p.done).toEqual(["agent", "integration", "prd", "launch"]);
+    expect(p.done).toEqual(SETUP_STEPS);
     expect(p.next).toBeNull();
     expect(p.complete).toBe(true);
+  });
+
+  // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
+  // last. Pinned because the order is what the stepper draws and what
+  // `next` walks.
+  it("puts Superpowers third", () => {
+    expect(SETUP_STEPS).toEqual(["agent", "integration", "superpowers", "prd", "launch"]);
+  });
+
+  it("counts Superpowers when a check found the plugin", () => {
+    const p = setupProgress({ ...NOTHING_DONE, superpowers: SP_FOUND });
+    expect(p.done).toEqual(["superpowers"]);
+  });
+
+  it("counts Superpowers on the human's word where gavin could not check", () => {
+    const p = setupProgress({
+      ...NOTHING_DONE,
+      superpowers: { ...SP_ABSENT, state: "asserted", installable: false },
+      superpowersMark: "installed",
+    });
+    expect(p.done).toEqual(["superpowers"]);
+  });
+
+  // S6's second route, and the reason it exists: without it, declining
+  // once leaves the Home banner nagging for ever.
+  it("counts Superpowers as answered once it has been declined", () => {
+    const p = setupProgress({ ...NOTHING_DONE, superpowersMark: "skipped" });
+    expect(p.done).toEqual(["superpowers"]);
+  });
+
+  // gavin failing to check is not the human deciding.
+  it("does not count Superpowers just because gavin cannot check it", () => {
+    const p = setupProgress({
+      ...NOTHING_DONE,
+      superpowers: { ...SP_ABSENT, state: "unavailable", installable: false },
+    });
+    expect(p.done).toEqual([]);
+    expect(p.next).toBe("agent");
+  });
+
+  it("is pending while the Superpowers check has not come back", () => {
+    expect(setupProgress({ ...NOTHING_DONE, superpowers: undefined }).pending).toBe(true);
+  });
+
+  // A settled marker answers on its own, so an in-flight detector that
+  // cannot change the outcome must not hold the whole wizard shut.
+  it("is settled by a marker even with the check still running", () => {
+    const p = setupProgress({
+      ...NOTHING_DONE,
+      superpowers: undefined,
+      superpowersMark: "skipped",
+    });
+    expect(p.pending).toBe(false);
+    expect(p.done).toEqual(["superpowers"]);
   });
 
   it("next skips steps already done out of order", () => {
     const p = setupProgress({ ...NOTHING_DONE, mainSessionId: "agent-1" });
     expect(p.done).toEqual(["launch"]);
     expect(p.next).toBe("agent");
+  });
+
+  // The banner reads its total off this list rather than a literal, which
+  // is how "n of 4" survived a fifth step being added anywhere else.
+  it("exposes the step list every counter has to count", () => {
+    expect(SETUP_STEPS).toHaveLength(5);
   });
 
   // The two file bodies arrive from async reads, so every consumer sees a
