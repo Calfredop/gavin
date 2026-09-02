@@ -1248,8 +1248,83 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "orphan-copy-softens-on-an-old-daemon",
-        text: "Against a daemon older than v21, an interrupted tab's tooltip does NOT claim the process is gone — it says the daemon is too old to check",
+        text: "Against a daemon older than v22, an interrupted tab's tooltip does NOT claim the process is gone — it says the daemon is too old to check",
         hint: "The setupProgress trap. `orphan: null` from a v21 daemon means nobody looked, not that nothing survived, and min_version_for cannot see the difference — FEATURE_MIN_VERSION.orphanDetection is the only gate there is.",
+      },
+    ],
+  },
+  {
+    title: "Task manager",
+    items: [
+      {
+        id: "tasks-opens-from-the-sidebar",
+        text: "The sidebar footer has a “Task manager” row above Settings; it opens a panel listing every open terminal across every workspace",
+        hint: "One list for every workspace, not the active one: a session left running in a workspace nobody has open is exactly the kind this exists to find.",
+      },
+      {
+        id: "tasks-figures-appear-on-the-second-poll",
+        text: "CPU reads “—” for the first two seconds, then fills in; memory is there immediately",
+        hint: "A rate needs two samples and the interval between them. Memory is an instantaneous reading, so it has an answer straight away — the two columns are deliberately not the same kind of number.",
+      },
+      {
+        id: "tasks-cpu-counts-the-whole-tree",
+        text: "In a terminal tab run `yes > /dev/null`: that row climbs to ~100%. Run four of them in one tab (`for i in 1 2 3 4; do yes > /dev/null & done`): the ONE row reads ~400%",
+        hint: "The figure covers the session's process and everything it started, and is not clamped at 100. A shell showing 0.2% while its children pin four cores is the failure this shape avoids.",
+      },
+      {
+        id: "tasks-hidden-session-listed",
+        text: "Press “Commit via agent” on the Git tab and open the panel while it runs: the hidden run is listed, marked with no tab",
+        hint: "The card's “invisible sessions”. A commit agent, an orchestration Generate and a rail's Reorganize all run with nothing rendering them; before this they were visible only as a spinner.",
+      },
+      {
+        id: "tasks-jump-opens-a-tab-for-a-hidden-one",
+        text: "Press ↗ on that hidden row: it gets a tab on the workspace's Agents page and the panel closes onto it",
+        hint: "Same adoption path as the Git tab's “watch this run” button (handleAgentSessionSpawned), so a hidden session is never adopted twice by two different routes.",
+      },
+      {
+        id: "tasks-main-agent-goes-to-home",
+        text: "With a main agent panel running, press ↗ on its row: it goes to the workspace's Home tab, NOT onto a page as a new tab",
+        hint: "The main session lives outside every page tree (D12). Adopting it onto a page would move it out of the panel that owns it.",
+      },
+      {
+        id: "tasks-stale-rows-sort-first",
+        text: "With an orphan present (`trap '' HUP; sleep 900`, then restart the daemon), its row is at the TOP with a red ⚠ and a line saying it did not stop",
+        hint: "Sorted on staleness and visibility only — never on CPU, which would make rows swap places under the pointer every two seconds in a panel whose buttons kill processes.",
+      },
+      {
+        id: "tasks-kill-confirms-and-names",
+        text: "Press ✕ on any row: the confirmation names that session and its folder, and says disk edits stay",
+        hint: "The rows look alike and the interesting ones are the ones nothing else is showing, so the prompt is the only place to check you picked the right one.",
+      },
+      {
+        id: "tasks-kill-takes-the-tab",
+        text: "Kill a row that has a visible tab: the tab disappears with it, and the panel's list re-reads immediately",
+        hint: "The daemon pushes session-exited for a session it was hosting, but not for a row it had already marked exited — that tab would sit there dead until the next reload.",
+      },
+      {
+        id: "tasks-kill-ends-the-orphan-first",
+        text: "Kill the orphan row: `ps -p <pid>` shows nothing AND the row is gone",
+        hint: "The orphan's pid is recorded ON the session's registry row, and KillSession deletes that row. The other order would leave a live process with nothing left that knows how to end it.",
+      },
+      {
+        id: "tasks-refusing-orphan-keeps-its-row",
+        text: "With `trap '' HUP TERM; sleep 900`, kill that row: it STAYS, with a message naming the pid for `kill -9`",
+        hint: "The row is where the pid is recorded. Deleting it because the human pressed a button would erase the only handle they have on a process that just refused to stop.",
+      },
+      {
+        id: "tasks-kill-all-asks-once",
+        text: "Press “Kill all…”: ONE confirmation naming the count and how many are stale; every terminal in every workspace closes",
+        hint: "A prompt per session trains the human to click through prompts. One honest prompt that names the count is the whole safeguard.",
+      },
+      {
+        id: "tasks-poll-stops-on-close",
+        text: "Close the panel and leave the app idle: the daemon's CPU use drops back to nothing",
+        hint: "The panel is the only reason the daemon walks the process table. A poll that outlives the modal is a permanent background cost for a panel nobody has open.",
+      },
+      {
+        id: "tasks-old-daemon-still-manages",
+        text: "Against a daemon older than v23, the list still shows every session and still kills them — the two figure columns say why they are empty instead of reading 0",
+        hint: "ListSessions has been in the protocol since v1, so jumping and killing work all the way down. Blank cells would read as “this session is using nothing”, which is a measurement nobody took.",
       },
     ],
   },

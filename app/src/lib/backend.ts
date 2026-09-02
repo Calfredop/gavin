@@ -9,6 +9,7 @@ import type { GroupTemplateRecord } from "./orchestrationGroups";
 import type { DaemonCompat } from "./daemonCompat";
 import type { SessionStatus } from "./notifications";
 import type { OrphanProcess } from "./orphan";
+import type { ManagedSessions } from "./sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "./workspaceDelete";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
@@ -267,6 +268,16 @@ export function getSessionBaselines(): Promise<SessionBaseline[]> {
 /// both false means it had already gone.
 export function endOrphan(sessionId: string): Promise<{ ended: boolean; stillRunning: boolean }> {
   return invoke("end_orphan", { sessionId });
+}
+
+/// Every session the daemon holds, with one sample of what each costs.
+///
+/// A POLL, not a subscription: the task manager asks again while it is
+/// open and stops when it closes. Unfiltered, unlike
+/// `getSessionBaselines` -- exited rows and sessions no page is showing
+/// are exactly what this list is for. See session::list_managed_sessions.
+export function listManagedSessions(): Promise<ManagedSessions> {
+  return invoke("list_managed_sessions");
 }
 
 /// The git half of the same read-back, one answer per cwd in the order

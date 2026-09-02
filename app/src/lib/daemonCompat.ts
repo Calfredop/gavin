@@ -130,6 +130,15 @@ export const FEATURE_MIN_VERSION = {
   // goes through `orphanDetectionAvailable` in orphan.ts, which turns
   // this number into "did anyone check".
   orphanDetection: 22,
+  // The task manager's two figure columns. `SessionProcesses` is a new
+  // request TYPE, so min_version_for is the real gate and nothing is
+  // silently dropped -- this entry exists because the panel still has to
+  // say WHY the columns are empty. Blank cells against an older daemon
+  // would read as "this session is using nothing", which is a
+  // measurement nobody took. The list itself needs no gate: ListSessions
+  // has been in the protocol since v1, so jumping and killing work all
+  // the way down.
+  sessionMetrics: 23,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

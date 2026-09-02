@@ -110,6 +110,7 @@ pub fn run() {
             session::get_board_tabs,
             session::get_session_baselines,
             session::end_orphan,
+            session::list_managed_sessions,
             session::set_board_tabs,
             session::set_plan_frontmatter_field,
             session::create_plan,

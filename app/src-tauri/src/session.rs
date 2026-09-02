@@ -1424,6 +1424,122 @@ pub struct OrphanEndResult {
     pub still_running: bool,
 }
 
+/// One row of the task manager: everything the daemon knows about a
+/// session, whether or not anything in the app is showing it.
+///
+/// Deliberately unfiltered, unlike `get_session_baselines`, which drops
+/// Exited rows because a tab for a dead session is nothing the layout can
+/// use. This list exists precisely to account for the sessions no tab is
+/// showing -- an exited row that still carries an orphan is the sharpest
+/// case there is, and filtering it out is what left that case with no
+/// surface at all.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedSession {
+    pub id: String,
+    pub workspace_path: String,
+    pub cwd: String,
+    pub status: String,
+    pub restored: bool,
+    pub interrupted: bool,
+    pub orphan: Option<protocol::OrphanProcess>,
+    /// The command line the session was launched with, or None for a
+    /// plain shell.
+    pub command: Option<String>,
+    /// The pid the daemon verified is still this session's own process.
+    /// None means there is nothing running to measure OR to kill.
+    pub pid: Option<u32>,
+    pub rss_bytes: u64,
+    pub cpu_time_us: u64,
+    pub process_count: u32,
+    pub sampled_at_us: i64,
+}
+
+/// The task manager's read: every session, plus whether the figures in it
+/// are real.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedSessions {
+    pub sessions: Vec<ManagedSession>,
+    /// False when this daemon has no `SessionProcesses` to ask. The rows
+    /// are still there and still killable -- `ListSessions` has existed
+    /// since v1 -- but every figure in them is a zero nobody measured,
+    /// and a panel that drew those as "0.0% / 0 MB" would be inventing
+    /// data. The panel says the columns are unavailable instead.
+    pub metrics: bool,
+}
+
+/// Every session the daemon is holding, with one sample of what each is
+/// costing.
+///
+/// Two requests rather than one: `ListSessions` for the facts, which has
+/// been in the protocol since v1 and always answers, and
+/// `SessionProcesses` for the figures, which is gated at v23. Joining
+/// them here rather than in the frontend keeps the poll to a single IPC
+/// hop, and means the "which daemon is this" question is answered once,
+/// in the place that actually holds the compat verdict.
+///
+/// A gated-out metrics request degrades rather than fails: an older
+/// daemon still gets a working list of sessions to jump to and kill,
+/// which is most of the panel.
+#[tauri::command]
+pub fn list_managed_sessions(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<ManagedSessions, String> {
+    let compat = current_compat(&compat);
+    let resp = send_command_reconnecting(&state.0, &compat, &Request::ListSessions)
+        .map_err(|e| e.to_string())?;
+    let sessions = match resp {
+        Response::SessionList { sessions } => sessions,
+        Response::Error { message } => return Err(message),
+        other => return Err(format!("expected SessionList, got {other:?}")),
+    };
+
+    // Only the gate is tolerated silently. A daemon that HAS the request
+    // and failed to answer it is a fault worth surfacing, not a reason to
+    // quietly show a panel full of zeroes.
+    let metrics = compat.daemon_version >= protocol::min_version_for(&Request::SessionProcesses);
+    let processes: HashMap<String, protocol::SessionProcess> = if !metrics {
+        HashMap::new()
+    } else {
+        match send_command_reconnecting(&state.0, &compat, &Request::SessionProcesses)
+            .map_err(|e| e.to_string())?
+        {
+            Response::SessionProcessList { processes } => {
+                processes.into_iter().map(|p| (p.session_id.clone(), p)).collect()
+            }
+            Response::Error { message } => return Err(message),
+            other => return Err(format!("expected SessionProcessList, got {other:?}")),
+        }
+    };
+
+    Ok(ManagedSessions {
+        metrics,
+        sessions: sessions
+            .into_iter()
+            .map(|s| {
+                let p = processes.get(&s.id);
+                ManagedSession {
+                    id: s.id,
+                    workspace_path: s.workspace_path,
+                    cwd: s.cwd,
+                    status: s.status,
+                    restored: s.restored,
+                    interrupted: s.interrupted,
+                    orphan: s.orphan,
+                    command: p.and_then(|p| p.command.clone()),
+                    pid: p.and_then(|p| p.pid),
+                    rss_bytes: p.map(|p| p.rss_bytes).unwrap_or(0),
+                    cpu_time_us: p.map(|p| p.cpu_time_us).unwrap_or(0),
+                    process_count: p.map(|p| p.process_count).unwrap_or(0),
+                    sampled_at_us: p.map(|p| p.sampled_at_us).unwrap_or(0),
+                }
+            })
+            .collect(),
+    })
+}
+
 fn list_valid_session_ids(
     command_conn: &Mutex<UnixStream>,
     compat: &DaemonCompat,

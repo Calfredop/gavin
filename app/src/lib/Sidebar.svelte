@@ -1,6 +1,7 @@
 <script lang="ts">
   import { accentVar } from "./settings";
   import GlobalSettingsModal from "./GlobalSettingsModal.svelte";
+  import SessionsManagerModal from "./SessionsManagerModal.svelte";
   import {
     layoutState,
     switchWorkspace,
@@ -46,6 +47,7 @@
     SquareArrowOutUpRight,
     Boxes,
     MessageCircleQuestionMark,
+    Activity,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -441,6 +443,11 @@
   /// renders inside one workspace, which is the wrong shape for a
   /// preference that spans all of them.
   let showGlobalSettings = $state(false);
+  /// The task manager, opened from the footer row above Settings. It
+  /// polls while it is mounted, so it is created on demand rather than
+  /// kept hidden -- an always-mounted panel would have the daemon
+  /// walking the process table for the life of the app.
+  let showSessionsManager = $state(false);
 
   function startEditingWorkspace(workspaceId: string, currentName: string): void {
     editingWorkspaceId = workspaceId;
@@ -1205,12 +1212,20 @@
     {/each}
   </div>
   <div class="sidebar-footer">
+    <button class="footer-row" onclick={() => (showSessionsManager = true)}>
+      <Activity size={12} />
+      <span>Task manager</span>
+    </button>
     <button class="footer-row" onclick={() => (showGlobalSettings = true)}>
       <Settings size={12} />
       <span>Settings</span>
     </button>
   </div>
 </div>
+
+{#if showSessionsManager}
+  <SessionsManagerModal onClose={() => (showSessionsManager = false)} />
+{/if}
 
 {#if showGlobalSettings}
   <GlobalSettingsModal onClose={() => (showGlobalSettings = false)} />

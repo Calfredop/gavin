@@ -13,6 +13,14 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v23 added `Request::SessionProcesses`: one sample of what each live
+/// session is costing, as a cumulative CPU counter, a resident-memory
+/// total and the instant they were read. A new request variant, so
+/// `min_version_for` gates it by type and nothing is silently dropped;
+/// `daemonCompat.ts` mirrors it anyway, because the task manager has to
+/// explain two empty columns rather than render them blank. Deliberately
+/// NOT a widening of `SessionSummary`, which the gate cannot see.
+///
 /// v22 taught recovery to PROBE instead of infer. The daemon records the
 /// pid and start time of every process it spawns, and on recovery asks
 /// the OS whether a previous lifetime's process is still alive -- because
@@ -77,7 +85,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -97,6 +105,17 @@ pub enum Request {
         command: Option<String>,
     },
     ListSessions,
+    /// What every live session is costing right now: one sample of the
+    /// process in each session's PTY, plus everything that process
+    /// started.
+    ///
+    /// Separate from `ListSessions` rather than folded into it, for two
+    /// reasons. It is answered by walking the process table, which is
+    /// work `ListSessions` is asked to do on every workspace resolve and
+    /// every baseline read; and it is a POLL -- the caller asks again
+    /// while a task manager is open, and stops asking when it closes,
+    /// which a request bundled into session listing could not express.
+    SessionProcesses,
     /// Ends the surviving process recorded on this session, if it is
     /// still the process that was recorded.
     ///
@@ -492,6 +511,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         // what it did before any of this existed.
         Request::Snapshot { .. } => 18,
 
+        // One sample of what every session costs. A new request TYPE, so
+        // this match is the whole gate -- there is no widened payload
+        // riding along, which is exactly why the command line and the
+        // figures travel in `SessionProcess` rather than being added to
+        // `SessionSummary`. daemonCompat.ts still carries a mirror, not
+        // to catch a silent drop but because the task manager has to say
+        // WHY its two columns are empty rather than showing them blank.
+        Request::SessionProcesses => 23,
+
         // Ending a surviving orphan. A new request TYPE, so this match
         // does gate it -- but it is only half the feature: the REPORTING
         // side widens SessionSummary and adds a push, neither of which
@@ -628,6 +656,12 @@ pub enum Response {
     /// never-recorded orphan gets, which is why `still_running` rides
     /// along: it separates "it refused" from "there was nothing to end".
     OrphanEnded { id: String, ended: bool, still_running: bool },
+    /// One `SessionProcesses` sample. A session whose pid the daemon
+    /// never recorded, or whose process is gone, is present with
+    /// `process_count: 0` rather than absent: "measured, nothing there"
+    /// and "not in the list" are different answers, and only the first
+    /// lets a task manager say a row is idle instead of dropping it.
+    SessionProcessList { processes: Vec<SessionProcess> },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
@@ -738,6 +772,57 @@ pub struct OrphanProcess {
     /// can name what it is about to kill rather than showing a bare
     /// number. `None` for a session that never carried one.
     pub command: Option<String>,
+}
+
+/// One session's cost, as one sample.
+///
+/// CPU is a cumulative COUNTER and an instant, never a percentage. A rate
+/// needs two readings and the interval between them, and the only honest
+/// interval is the one the poller actually observed -- so the daemon
+/// reports what it read and when, and the client divides. A daemon that
+/// computed the percentage itself would have to keep a baseline per
+/// caller, and two clients polling at different periods would each
+/// corrupt the other's.
+///
+/// Both figures cover the process in the PTY *and everything it started*.
+/// `sh -c` execs the agent in place, so the root pid IS the agent -- but
+/// an agent's real cost is the language server, the MCP servers and the
+/// build it spawned, and a row reporting 0.2% for a session pinning four
+/// cores would be worse than a row reporting nothing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionProcess {
+    pub session_id: String,
+    /// The command line this session was launched with, or `None` for a
+    /// plain shell. Carried here rather than added to `SessionSummary`
+    /// on purpose: widening that struct is invisible to
+    /// `min_version_for`, and this whole payload rides behind a request
+    /// type the gate can actually see.
+    pub command: Option<String>,
+    /// The pid in the PTY now, or `None` when the daemon has no verified
+    /// identity for it -- a row written before the pid was recorded, or
+    /// one whose process has gone.
+    pub pid: Option<u32>,
+    /// Resident memory of the whole tree, in bytes. 0 when nothing was
+    /// measured.
+    pub rss_bytes: u64,
+    /// User + system CPU time consumed by the whole tree since each
+    /// process started, in microseconds. 0 when nothing was measured.
+    ///
+    /// Monotonic per process but NOT per tree: a child exiting between
+    /// two samples takes its share of the total with it, so the
+    /// difference between two of these can be negative. A client turning
+    /// them into a rate has to floor at zero rather than trust the
+    /// subtraction.
+    pub cpu_time_us: u64,
+    /// How many processes the two figures cover. 0 says the sample found
+    /// nothing, which is what separates a genuinely idle session from one
+    /// whose process the daemon cannot see.
+    pub process_count: u32,
+    /// The daemon's clock when the sample was taken, in microseconds
+    /// since the epoch -- the denominator for any rate computed from two
+    /// of these. The daemon's, not the client's, so a rate is not
+    /// distorted by however long the reply spent in transit.
+    pub sampled_at_us: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1846,6 +1931,10 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v23: Request::SessionProcesses -- one sample of what every
+        // live session costs, for the task manager. A new request TYPE,
+        // so min_version_for is the real gate; daemonCompat.ts mirrors it
+        // only so the panel can say why its columns are empty.
         // v22: recovery PROBES the process a killed session named rather
         // than inferring from the epoch that it must be gone.
         // Request::EndOrphan is a new variant this match does gate; the
@@ -1897,7 +1986,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 22);
+        assert_eq!(PROTOCOL_VERSION, 23);
     }
 
     #[test]

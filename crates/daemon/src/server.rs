@@ -1,4 +1,4 @@
-use protocol::{read_message, write_message, Board, Column, GitStatus, Label, Request, Response, SessionSummary};
+use protocol::{read_message, write_message, Board, Column, GitStatus, Label, Request, Response, SessionProcess, SessionSummary};
 use crate::kanban::KanbanStore;
 use crate::osc::OscCwdScanner;
 use crate::pty::PtySession;
@@ -850,6 +850,54 @@ impl SessionManager {
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
         let records = self.registry.lock().unwrap().list()?;
         Ok(records.into_iter().map(session_summary).collect())
+    }
+
+    /// One sample of what every session is costing right now.
+    ///
+    /// Every row in the registry gets an entry, including the ones with
+    /// nothing to measure. A session whose pid was never recorded, or
+    /// whose process is gone, comes back with `process_count: 0` rather
+    /// than being left out: "we looked and there is nothing running" is
+    /// the answer a task manager needs in order to show an exited row at
+    /// all, and dropping it would make the row vanish from a list whose
+    /// whole job is to account for sessions nobody can see.
+    ///
+    /// The sample instant is read once, before the walk, and shared by
+    /// every row. Stamping each row as it is measured would make the
+    /// interval between two polls differ per session by however long the
+    /// walk took, which is exactly the error a rate computed from these
+    /// would inherit.
+    ///
+    /// No caching and no baseline: this returns counters, not rates, so
+    /// there is nothing here for a second client's polling period to
+    /// corrupt.
+    pub fn session_processes(&self) -> anyhow::Result<Vec<SessionProcess>> {
+        let records = self.registry.lock().unwrap().list()?;
+        let sampled_at_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0);
+        Ok(records
+            .into_iter()
+            .map(|record| {
+                let usage = record.process.and_then(crate::proc::tree_usage);
+                SessionProcess {
+                    session_id: record.id,
+                    command: record.command,
+                    // The pid is reported only when the probe agreed it
+                    // is still the process that was recorded. A stored
+                    // number the identity check just rejected belongs to
+                    // something else, and putting it in a row that
+                    // carries a kill button is how the wrong process
+                    // gets ended.
+                    pid: usage.and(record.process).map(|p| p.pid),
+                    rss_bytes: usage.map(|u| u.rss_bytes).unwrap_or(0),
+                    cpu_time_us: usage.map(|u| u.cpu_time_us).unwrap_or(0),
+                    process_count: usage.map(|u| u.process_count).unwrap_or(0),
+                    sampled_at_us,
+                }
+            })
+            .collect())
     }
 
     /// Ends the process this session left running, and stops reporting it
@@ -1883,6 +1931,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .resize_session(&id, cols, rows)
             .map(|_| Response::Ok),
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
+        Request::SessionProcesses => manager
+            .session_processes()
+            .map(|processes| Response::SessionProcessList { processes }),
         Request::EndOrphan { id } => manager.end_orphan(&id),
         Request::GetBoard { workspace_id } => manager
             .get_board(&workspace_id)
@@ -5203,6 +5254,111 @@ mod tests {
             }
             other => panic!("expected OrphanEnded, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn session_processes_measures_a_live_session_and_names_its_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager
+            .create_session("/tmp", "/tmp", Some("/bin/sleep 30"))
+            .unwrap();
+
+        let sample = manager.session_processes().unwrap();
+        let row = sample.iter().find(|p| p.session_id == id).expect("the session must be sampled");
+        assert_eq!(row.command.as_deref(), Some("/bin/sleep 30"));
+        assert!(row.pid.is_some(), "a live session reports the pid it was verified at");
+        assert!(row.process_count >= 1, "at least the process in the PTY");
+        assert!(row.rss_bytes > 0, "a live process occupies memory");
+        assert!(row.sampled_at_us > 0, "a rate needs an instant to divide by");
+
+        manager.kill_session(&id).unwrap();
+    }
+
+    #[test]
+    fn session_processes_keeps_a_row_it_could_not_measure() {
+        // The reason `process_count` exists. A row the daemon cannot
+        // measure -- no recorded pid, or a process that has gone -- has
+        // to stay in the list: the whole point of the task manager is to
+        // account for sessions nobody can see, and dropping the
+        // unmeasurable ones would hide exactly those.
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "no-pid",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+        );
+        let manager = test_manager(&dir);
+
+        let sample = manager.session_processes().unwrap();
+        let row = sample.iter().find(|p| p.session_id == "no-pid").expect("the row must still be listed");
+        assert_eq!(row.pid, None);
+        assert_eq!(row.process_count, 0);
+        assert_eq!(row.rss_bytes, 0);
+        assert_eq!(row.cpu_time_us, 0);
+        assert_eq!(row.command.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn session_processes_withholds_a_pid_whose_identity_no_longer_matches() {
+        // A recycled pid is live, so reporting the number would put a
+        // stranger's process in a row that carries a kill button. The
+        // identity check is what decides, not the liveness of the number.
+        let dir = tempfile::tempdir().unwrap();
+        let live = crate::proc::identify(std::process::id()).unwrap();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "recycled",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(crate::proc::ProcessHandle { started_at_us: live.started_at_us + 1, ..live }),
+        );
+        let manager = test_manager(&dir);
+
+        let row = manager
+            .session_processes()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.session_id == "recycled")
+            .unwrap();
+        assert_eq!(row.pid, None, "the stored pid is live, but it is not this session's process");
+        assert_eq!(row.process_count, 0);
+    }
+
+    #[test]
+    fn session_processes_stamps_every_row_with_one_instant() {
+        // Two polls become a rate by subtracting these, so a per-row
+        // timestamp would give each session a different interval --
+        // however long the walk happened to take between them.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let a = manager.create_session("/tmp", "/tmp", Some("/bin/sleep 30")).unwrap();
+        let b = manager.create_session("/tmp", "/tmp", Some("/bin/sleep 30")).unwrap();
+
+        let sample = manager.session_processes().unwrap();
+        let stamps: std::collections::HashSet<i64> = sample.iter().map(|p| p.sampled_at_us).collect();
+        assert_eq!(stamps.len(), 1, "one sample, one instant");
+
+        manager.kill_session(&a).unwrap();
+        manager.kill_session(&b).unwrap();
+    }
+
+    #[test]
+    fn session_processes_is_dispatched_to_a_session_process_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager.create_session("/tmp", "/tmp", None).unwrap();
+
+        match handle_request(&manager, Request::SessionProcesses) {
+            Response::SessionProcessList { processes } => {
+                assert!(processes.iter().any(|p| p.session_id == id));
+            }
+            other => panic!("expected SessionProcessList, got {other:?}"),
+        }
+        manager.kill_session(&id).unwrap();
     }
 
     #[test]

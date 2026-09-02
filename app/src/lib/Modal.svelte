@@ -7,9 +7,15 @@
     // otherwise, which on shorter content lands the reader at the
     // bottom of a card they have not seen the top of.
     scrollKey?: string;
+    // Lifts the panel's width cap for content that is a TABLE rather
+    // than a column of label/control rows. Opt-in rather than a width
+    // the child sets on its own contents: the cap lives on .panel, which
+    // is scoped here, so a child wider than 480px otherwise just
+    // overflows the panel it is inside.
+    wide?: boolean;
     children?: import("svelte").Snippet;
   }
-  let { onClose, scrollKey, children }: Props = $props();
+  let { onClose, scrollKey, wide = false, children }: Props = $props();
 
   let panel = $state<HTMLDivElement | null>(null);
   $effect(() => {
@@ -29,7 +35,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="backdrop" onclick={handleBackdropClick} role="presentation">
-  <div class="panel" role="dialog" aria-modal="true" bind:this={panel}>
+  <div class="panel" class:wide role="dialog" aria-modal="true" bind:this={panel}>
     {@render children?.()}
   </div>
 </div>
@@ -55,5 +61,8 @@
     overflow-y: auto;
     color: var(--text);
     font-family: monospace;
+  }
+  .panel.wide {
+    max-width: min(880px, 92vw);
   }
 </style>
