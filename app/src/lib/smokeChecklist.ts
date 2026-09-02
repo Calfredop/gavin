@@ -870,13 +870,43 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Context boards",
     items: [
       { id: "board-icon", text: "cd into a .gavin context → kanban icon appears on the pane tab bar" },
-      { id: "board-tab", text: "Clicking it opens a “<context> · board” tab with only that context's plans" },
+      { id: "board-tab", text: "Clicking it opens a “<context> · board” tab for that context" },
       { id: "board-persists", text: "The board tab survives an app restart" },
       { id: "board-missing", text: "Deleting the context folder shows “This context no longer exists”" },
       {
         id: "board-tab-survives-hot-reload",
         text: "With a board tab open, touch app/src/routes/+page.svelte — the tab is still a board afterwards, not a black terminal, and no “unknown session” strip appears",
         hint: "That edit re-runs bootstrap() while layoutState's store keeps running, so the layout tree survives while the tab maps are re-seeded from Rust underneath it. Dev only: the bundled app runs bootstrap once per launch.",
+      },
+      {
+        id: "board-page-scoped",
+        text: "The board shows only the cards bound to THIS page: its title reads “· N cards on this page”, and a context card on no rail and in no tab here is absent",
+        hint: "Bound = a card you ran into a tab on this page, OR a card carried by a rail whose page this is. Every card in the context is still on the hub's Kanban tab.",
+      },
+      {
+        id: "board-page-empty",
+        text: "On a page with nothing bound, the board says “Nothing is bound to this page yet” and no column offers “+ Add card”",
+      },
+      {
+        id: "board-page-rail-cards",
+        text: "Start a rail (it takes a page of its own), open that context's board in that page: every card the rail carries is there, including steps that have never run",
+      },
+      {
+        id: "board-page-run-arrives",
+        text: "Run a card from the Kanban tab into a tab on this page → it appears on this page's board; close that tab → it leaves again",
+      },
+      {
+        id: "board-page-compose",
+        text: "On a rail-bound page, ⌘N offers no “note” chip and a fixed “Rail” row instead of the picker; the card it makes lands on that rail and STAYS on this board",
+      },
+      {
+        id: "board-page-compose-refused",
+        text: "On a page with no rail bound, ⌘N writes nothing and says “No rail is bound to this page…”",
+      },
+      {
+        id: "board-page-drag",
+        text: "Drag a card between columns on a page's board → its status changes, and the Kanban tab's order of the cards this board hides is unchanged",
+        hint: "The visual slot is translated into the whole column (pageBoard.translateDropIndex) — without that, one drop here renumbers every card the page shows and re-interleaves the rest.",
       },
     ],
   },

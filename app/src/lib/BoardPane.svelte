@@ -15,7 +15,7 @@
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
-  import { fetchOrchestration } from "./orchestrationState";
+  import { fetchOrchestration, orchestrations } from "./orchestrationState";
   import { cardSessionFor } from "./kanbanState";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import BoardSelectionBar from "./BoardSelectionBar.svelte";
@@ -27,6 +27,7 @@
   import type { DropTarget } from "./pointerDrag";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "./composeRequest";
   import { defaultComposeStatus } from "./cardCompose";
+  import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage } from "./pageBoard";
 
   interface Props {
     workspaceId: string;
@@ -81,11 +82,36 @@
   );
   const merged = $derived(board ? mergePlanCards(board, tree, { contextFolder }) : null);
 
+  // The PAGE lens (pageBoard.ts). A board nested in a page IS that
+  // page's board: it shows the cards bound to the page and nothing else.
+  // The whole context's board is a click away on the hub's Kanban tab,
+  // and projecting it here as well made this pane a second copy of it.
+  //
+  // A null page means the pane could not locate itself in any layout
+  // tree. It then shows the whole context board -- the behaviour that
+  // predates this lens -- rather than an empty one: a pane that cannot
+  // say whose page it is on has no business hiding anything.
+  //
+  // Same posture until the orchestration plan lands: unknown is not
+  // empty, and a board that blanks itself for a moment on every mount
+  // -- then fills in -- reads as a bug, not as a lens.
+  const page = $derived(pageHolding($layoutState.workspaces, tabId));
+  const orch = $derived($orchestrations[workspaceId]);
+  const scope = $derived(pageScope(page, board, orch));
+  const scoped = $derived(merged && page && orch ? scopeBoardToPage(merged, scope.paths) : null);
+  // Says out loud that this board is a lens, not the whole context --
+  // otherwise a board missing most of its cards just looks broken.
+  const scopeLabel = $derived(
+    scoped ? ` · ${scoped.inScope} ${scoped.inScope === 1 ? "card" : "cards"} on this page` : ""
+  );
+
   // Search lens -- see KanbanBoard: `merged` stays whole so the drop and
-  // delete paths keep committing against the real board.
+  // delete paths keep committing against the real board. Scope first,
+  // then search, so a column's "hidden" count keeps meaning "hidden by
+  // your query" rather than "not on this page".
   let search = $state("");
   const searching = $derived(isSearching(search));
-  const view = $derived(merged ? filterBoard(merged, search) : null);
+  const view = $derived(merged ? filterBoard(scoped ?? merged, search) : null);
   const allCards = $derived<CardView[]>(
     merged
       ? [...merged.columns.flatMap((c) => c.planCards), ...merged.autoColumns.flatMap((a) => a.planCards)].flatMap(
@@ -105,10 +131,27 @@
     tabId ? { kind: "tab", workspaceId, tabId } : null
   );
 
+  // A page-scoped board can only keep a card bound to its page, and the
+  // one binding the human can make while typing is a rail: the composer
+  // files what it creates onto this page's rail (CardComposeModal's
+  // pageRails). With no rail bound to the page there is nothing to open
+  // -- a card typed here would vanish the instant it was written -- so
+  // the column's + button goes away and ⌘N says why. The hub's Kanban
+  // tab is where a free-standing card is made.
+  const composerRails = $derived(page && orch ? scope.rails : null);
+  const composerAvailable = $derived(composerRails === null || composerRails.length > 0);
+
   function openComposer(preferred: string | null): void {
     // Nothing to file a card into until the board has loaded; the
     // error line below only renders once it has.
     if (!board) return;
+    // ⌘N reaches here even with the column's + button gone, so the
+    // refusal says why rather than doing nothing at all.
+    if (!composerAvailable) {
+      planWriteError =
+        "No rail is bound to this page, so a card made here would leave this board at once — the Kanban tab files cards for the whole context";
+      return;
+    }
     composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);
     if (composeStatus === null) planWriteError = "Add a column first — a card needs a status to live in";
   }
@@ -196,7 +239,12 @@
   function handleDragCommit(drag: ActiveDrag & { target: DropTarget }): void {
     if (drag.kind !== "plan" || !board || !merged) return;
     planWriteError = null;
-    void planCommitFromMerged(workspaceId, drag, board.columns, merged).then((err) => {
+    // The drop names the slot the human saw, among the cards this page
+    // shows; planDrop renumbers the WHOLE column. dropAgainstWholeBoard
+    // reconciles the two -- without it a page-scoped drop would reorder
+    // cards this board never showed.
+    const commit = dropAgainstWholeBoard(drag, scoped, merged);
+    void planCommitFromMerged(workspaceId, commit, board.columns, merged).then((err) => {
       if (err) planWriteError = err;
     });
   }
@@ -239,7 +287,9 @@
   {:else if !board}
     <div class="overlay"><p>Loading board…</p></div>
   {:else}
-    <div class="context-title" title={contextFolder}>{contextName}</div>
+    <div class="context-title" title={contextFolder}>
+      {contextName}<span class="scope-count">{scopeLabel}</span>
+    </div>
     {#if planWriteError}
       <div class="plan-error">
         <span>{planWriteError}</span>
@@ -261,6 +311,13 @@
         hint="filtered: clear to drag"
       />
     </div>
+    {#if scoped && scoped.inScope === 0 && !searching}
+      <div class="scope-empty">
+        Nothing is bound to this page yet. Cards appear here when a rail bound to this page carries
+        them, or when you run one into a tab on this page. Every card in this context is on the
+        Kanban tab.
+      </div>
+    {/if}
     <div class="columns" bind:this={columnsEl}>
       {#each view?.columns ?? [] as dc (dc.column.id)}
         <KanbanColumn
@@ -277,7 +334,7 @@
           {agentAvailable}
           onDeleteCard={(card) => (pendingDelete = card)}
           onCardContextMenu={handleCardContextMenu}
-          onAddCard={openComposer}
+          onAddCard={composerAvailable ? openComposer : null}
           {allCards}
         />
       {/each}
@@ -294,6 +351,7 @@
       columns={board.columns}
       initialStatus={composeStatus}
       pinnedContext={contextFolder}
+      pageRails={composerRails}
       onRunCard={handleRun}
       onClose={() => (composeStatus = null)}
     />
@@ -332,6 +390,17 @@
     font-family: monospace;
     font-size: 0.8em;
     padding: 8px 12px 0;
+    flex: 0 0 auto;
+  }
+  .scope-count {
+    opacity: 0.65;
+  }
+  .scope-empty {
+    margin: 8px 12px 0;
+    color: var(--text-muted);
+    font-family: monospace;
+    font-size: 0.8em;
+    line-height: 1.5;
     flex: 0 0 auto;
   }
   .board-bar {

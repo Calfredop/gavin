@@ -17,6 +17,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import type { Column } from "./kanban";
+  import type { Rail } from "./orchestration";
   import type { CardView } from "./planBoard";
   import type { PlanFileInfo } from "./gavin";
   import { gavinTrees, patchPlanCreated } from "./gavinState";
@@ -52,6 +53,13 @@
     initialStatus: string;
     /// Pins every card to one context and hides the picker (BoardPane).
     pinnedContext?: string | null;
+    /// The rails a card typed here may ride, replacing the workspace's
+    /// whole list. Set by a PAGE-SCOPED board (BoardPane): that board
+    /// only shows cards bound to its page, so a card filed onto any
+    /// other rail would vanish the moment it was written. Exactly one
+    /// rail pins it and hides the picker, the way pinnedContext does.
+    /// Null leaves the picker offering every rail.
+    pageRails?: Rail[] | null;
     /// Offered only when the board can actually run a card.
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
     onClose: () => void;
@@ -61,6 +69,7 @@
     columns,
     initialStatus,
     pinnedContext = null,
+    pageRails = null,
     onRunCard = null,
     onClose,
   }: Props = $props();
@@ -73,7 +82,11 @@
   // out from under a half-typed card.
   let status = $state(untrack(() => initialStatus));
   let context = $state<string | null>(untrack(() => pinnedContext));
-  let railId = $state<string | null>(null);
+  // Seeded ONCE from pageRails, for the same reason status and context
+  // are: a later prop change must not swap the rail out from under a
+  // half-typed card. Survives `reset()` too, so filing a run of cards
+  // onto a page's rail is one pick, not one per card.
+  let railId = $state<string | null>(untrack(() => pageRails?.[0]?.id ?? null));
   // Attached before the card exists: the whole point of doing it here is
   // that picking a file, filing the card, then reopening it to attach
   // the file is three gestures for one intention. Cleared with the rest
@@ -98,8 +111,17 @@
     pinnedContext ?? (contexts.find((c) => c.kind === "root") ?? contexts[0])?.folderPath ?? null
   );
   const rails = $derived(
-    [...($orchestrations[workspaceId]?.rails ?? [])].sort((a, b) => a.position - b.position)
+    pageRails ?? [...($orchestrations[workspaceId]?.rails ?? [])].sort((a, b) => a.position - b.position)
   );
+  /// A page-scoped board keeps only the cards bound to its page, so on
+  /// one of those the rail is COMPULSORY: a card off the rail would
+  /// vanish the moment it was written. That takes "none" out of the
+  /// picker and the note kind off the chips (a note never rides a rail
+  /// -- railToApply refuses it), and with a single rail to ride there is
+  /// no choice left to offer at all.
+  const railRequired = $derived(pageRails !== null);
+  const railPinned = $derived(railRequired && rails.length === 1);
+  const kinds = $derived(railRequired ? COMPOSE_KINDS.filter((k) => k !== "note") : COMPOSE_KINDS);
   // A v17 daemon parses CreatePlan happily and drops the new field on
   // the floor, so the card would be filed looking exactly as asked for
   // and carry none of these files. Nothing on the wire catches that --
@@ -274,7 +296,7 @@
   </div>
 
   <div class="kind-chips">
-    {#each COMPOSE_KINDS as k (k)}
+    {#each kinds as k (k)}
       <button
         type="button"
         class="kind-chip"
@@ -333,7 +355,14 @@
         </select>
       </label>
     {/if}
-    {#if kind !== "note" && rails.length > 0}
+    {#if railPinned}
+      <!-- Nothing to pick, but the card's destination is still worth
+           saying out loud: it is not the board in front of them. -->
+      <div class="field">
+        <span>Rail</span>
+        <span class="pinned-rail">{rails[0].name}</span>
+      </div>
+    {:else if kind !== "note" && rails.length > 0}
       <label class="field">
         <span>Rail</span>
         <select
@@ -346,7 +375,9 @@
             if (railId) runNow = false;
           }}
         >
-          <option value={null}>none</option>
+          {#if !railRequired}
+            <option value={null}>none</option>
+          {/if}
           {#each rails as rail (rail.id)}
             <option value={rail.id}>{rail.name}</option>
           {/each}
@@ -543,6 +574,16 @@
     padding: 3px 6px;
     flex: 1 1 auto;
     min-width: 0;
+  }
+  /* Beats `.field span`'s label width -- this is the value, not a label. */
+  .field .pinned-rail {
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .run-now {
     display: flex;
