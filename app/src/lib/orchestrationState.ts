@@ -15,6 +15,7 @@ import {
   doneColumn,
   addRail,
   renameRail,
+  setRailAutoResume,
   bindRail,
   deleteRail,
   addStage,
@@ -82,6 +83,7 @@ import {
   composeTaskPrompt,
   composePlanPrompt,
   buildRunCommand,
+  buildResumeCommand,
   provisionalSessionName,
   buildToolCommand,
   runStatusNeeded,
@@ -267,18 +269,43 @@ export function setStepRunAction(
   /// and drifts the moment the agent `cd`s -- a repo root, then a
   /// worktree -- and a resume has to run where the WORK is.
   conversationId: string | null = null,
-  launchCwd: string | null = null
+  launchCwd: string | null = null,
+  /// How many times gavin has resumed this run BY ITSELF -- the budget
+  /// for unattended recovery, bounded at one.
+  ///
+  /// null LEAVES the stored count alone, exactly as `conversationId`
+  /// does, because most transitions of a step (a stall, a done, a rail
+  /// reset) say nothing about the budget and must not spend or refund
+  /// it. A LAUNCH passes 0: a new conversation is a new run, so its
+  /// budget is fresh. An automatic resume passes the incremented count.
+  resumeAttempts: number | null = null
 ): Promise<void> {
   return mutateRunState(
     workspaceId,
-    (orch) => ({
-      ...orch,
-      stepRuns: [
-        ...orch.stepRuns.filter((r) => r.stepId !== stepId),
-        { stepId, state, sessionId, reason, conversationId, launchCwd },
-      ],
-    }),
-    () => backend.setStepRun(stepId, state, sessionId, reason, conversationId, launchCwd)
+    (orch) => {
+      // The optimistic copy has to mirror the daemon's COALESCE, or a
+      // null-carrying stall would blank the budget in the store while
+      // SQLite kept it -- and the next failure would read zero and
+      // resume a run that has already had its one attempt.
+      const previous = orch.stepRuns.find((r) => r.stepId === stepId);
+      return {
+        ...orch,
+        stepRuns: [
+          ...orch.stepRuns.filter((r) => r.stepId !== stepId),
+          {
+            stepId,
+            state,
+            sessionId,
+            reason,
+            conversationId: conversationId ?? previous?.conversationId ?? null,
+            launchCwd: launchCwd ?? previous?.launchCwd ?? null,
+            resumeAttempts: resumeAttempts ?? previous?.resumeAttempts ?? null,
+          },
+        ],
+      };
+    },
+    () =>
+      backend.setStepRun(stepId, state, sessionId, reason, conversationId, launchCwd, resumeAttempts)
   );
 }
 
@@ -398,6 +425,117 @@ export async function retryStep(workspaceId: string, stepId: string): Promise<vo
   await tick(workspaceId);
 }
 
+/// Reopen a stalled step's OWN conversation, in place, rather than
+/// running it again from the beginning.
+///
+/// Rule 2's retry -- what `retryStep` does -- re-derives the blocker and
+/// launches a FRESH agent with a fresh prompt, which is right for a step
+/// that never started and wrong for one whose agent broke mid-turn: the
+/// checkout already carries the first attempt's edits, and a second
+/// from-scratch run over them is the bug the interrupted-runs card
+/// exists to prevent. The step's `conversationId` and `launchCwd` were
+/// recorded at launch for exactly this.
+///
+/// Returns an error string, or null. Nothing here throws: a resume that
+/// cannot happen leaves the step stalled with a reason, which is where
+/// it already was.
+export async function resumeStep(
+  workspaceId: string,
+  stepId: string,
+  /// Whether GAVIN decided this, rather than the human pressing a
+  /// button. Only an automatic resume spends the persisted budget: a
+  /// human may press Resume as often as they like, and bounding that
+  /// was never what the budget is for.
+  options: { automatic?: boolean } = {}
+): Promise<string | null> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch ? railOwning(orch, stepId) : null;
+  const step = rail?.stages.flatMap((s) => s.steps).find((t) => t.id === stepId);
+  const run = orch?.stepRuns.find((r) => r.stepId === stepId);
+  if (!orch || !rail || !step || !run) return "This step is no longer on any rail";
+
+  const agent = resolvedAgentFor(workspaceId);
+  const command = buildResumeCommand(agent.launchCommand, agent.resumeArgs, run.conversationId);
+  if (!command) {
+    // Either the profile verified no resume argv, or this run predates
+    // the conversation id. Both mean the same thing and neither is an
+    // error worth a stall of its own: reopening is not available, and
+    // Retry (a fresh run) is the honest alternative.
+    return "This run has no conversation to reopen — use Retry to start it again";
+  }
+
+  // The LAUNCH cwd, not the session's: `cwd` on a session follows OSC 7
+  // and drifts the moment the agent moves into a worktree, and the
+  // resumed agent has to run where the work is.
+  const cwd = run.launchCwd ?? rail.worktreePath ?? null;
+  if (!cwd) return "Nothing recorded where this run was launched, so it cannot be reopened there";
+
+  let sessionId: string | null;
+  try {
+    sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
+  } catch (e) {
+    return `Couldn't reopen the conversation: ${e instanceof Error ? e.message : e}`;
+  }
+  if (!sessionId) return "Couldn't reopen the conversation";
+  void armFailureDetection(sessionId, agent.failurePatterns);
+
+  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
+  const label = entry?.plan.title ?? step.cardPath;
+  const provisional = provisionalSessionName(label);
+  if (provisional) {
+    try {
+      await setSessionName(sessionId, provisional);
+    } catch {
+      // Cosmetic only; the agent is already running.
+    }
+  }
+
+  // A CARD step's binding has to follow, or the board keeps pointing at
+  // the broken session while the rail points at the live one -- and the
+  // card's own Resume would then reopen a conversation that is already
+  // open. The SAME conversation id: resuming appends to that transcript
+  // rather than rotating it (measured), so the id stays the handle.
+  if (!isToolStep(step) && entry) {
+    await linkCardSessionAction(workspaceId, {
+      path: step.cardPath,
+      sessionId,
+      cwd,
+      command,
+      conversationId: run.conversationId ?? null,
+      launchCwd: cwd,
+      resumeAttempts: options.automatic ? (run.resumeAttempts ?? 0) + 1 : (run.resumeAttempts ?? null),
+    });
+  }
+
+  await setStepRunAction(
+    workspaceId,
+    stepId,
+    "running",
+    sessionId,
+    null,
+    run.conversationId ?? null,
+    cwd,
+    options.automatic ? (run.resumeAttempts ?? 0) + 1 : null
+  );
+
+  // Rule 5 paused the rail when the step stalled, and a resumed step on
+  // a paused rail would finish and then advance nothing. Only the rail
+  // this step belongs to, and only from `paused`: a rail the human left
+  // idle stays idle -- reopening one step is not starting the rail.
+  if (railStateOf(get(orchestrations)[workspaceId], rail.id) === "paused") {
+    const current = get(orchestrations)[workspaceId].railRuns.find(
+      (r) => r.railId === rail.id
+    )?.currentStageId;
+    // The stage this STEP sits in when the rail has no current one -- a
+    // step id would be accepted here and name nothing, leaving the rail
+    // running at a stage that does not exist.
+    const owning = rail.stages.find((g) => g.steps.some((t) => t.id === stepId))?.id ?? null;
+    await setRailRunAction(workspaceId, rail.id, "running", current ?? owning);
+  }
+  await tick(workspaceId);
+  return null;
+}
+
 /// The human's override for a step whose completion signal never
 /// arrives: file it done and let the rail move on, rather than deleting
 /// the session and the step to unwedge the rail (which is what this bug
@@ -481,7 +619,10 @@ async function executeToolLaunch(
   } catch {
     // Cosmetic only.
   }
-  await setStepRunAction(workspaceId, step.id, "running", sessionId, null, conversationId, cwd);
+  // 0, not null: this is a NEW conversation, so it is a new run, and a
+  // new run gets a fresh auto-resume budget. Carrying the old count
+  // forward would let one relaunched step inherit a spent budget.
+  await setStepRunAction(workspaceId, step.id, "running", sessionId, null, conversationId, cwd, 0);
 }
 
 /// Deliberately the EXISTING card-run path, so the board and the tab can
@@ -563,7 +704,8 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
     conversationId,
     launchCwd: cwd,
   });
-  await setStepRunAction(workspaceId, stepId, "running", sessionId, null, conversationId, cwd);
+  // See executeToolLaunch: a fresh conversation is a fresh budget.
+  await setStepRunAction(workspaceId, stepId, "running", sessionId, null, conversationId, cwd, 0);
   if (runStatusNeeded(entry.plan.status)) {
     try {
       await backend.setPlanFrontmatterField(step.cardPath, "status", "In Progress");
@@ -915,8 +1057,19 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   });
   const stop = startScheduler();
   setRailNotificationVoice(railStatusVoice);
+  // Registered beside the scheduler, and for the same reason: it is a
+  // module-level listener that has to run whatever view is mounted. A
+  // rail whose agent breaks while the human is watching its page -- or
+  // no page at all -- is exactly the case auto-resume exists for.
+  //
+  // Dynamically imported to keep the dependency one-way: autoResumeState
+  // reads this module (for resumeStep and orchestrations), so a static
+  // import here would close a cycle.
+  const { startAutoResume } = await import("./autoResumeState");
+  const stopAutoResume = startAutoResume();
   return () => {
     stop();
+    stopAutoResume();
     setRailNotificationVoice(null);
     unlisten();
   };
@@ -956,6 +1109,16 @@ export function bindRailAction(
   patch: { worktreePath?: string | null; branch?: string | null; pageId?: string | null }
 ): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => bindRail(o, railId, patch));
+}
+
+/// Turn this rail's auto-resume on or off. See setRailAutoResume: it is
+/// part of the plan, not a per-viewer preference.
+export function setRailAutoResumeAction(
+  workspaceId: string,
+  railId: string,
+  autoResume: boolean
+): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => setRailAutoResume(o, railId, autoResume));
 }
 
 export function deleteRailAction(workspaceId: string, railId: string): Promise<string | null> {

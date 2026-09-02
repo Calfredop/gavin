@@ -153,7 +153,12 @@ export function linkCardSessionAction(workspaceId: string, binding: CardSession)
         binding.cwd,
         binding.command,
         binding.conversationId ?? null,
-        binding.launchCwd ?? null
+        binding.launchCwd ?? null,
+        // The binding is upserted WHOLE, so an absent count writes
+        // zero rather than preserving what was there -- which is right:
+        // every call site builds the binding it means, and the sites
+        // that mean "a fresh run" are the majority.
+        binding.resumeAttempts ?? null
       )
   );
 }

@@ -137,6 +137,22 @@ export const FEATURE_MIN_VERSION = {
   // COPY: the card detail modal and the sidebar recap both name a
   // failure as a thing gavin can see, and on an older daemon it cannot.
   failureDetection: 21,
+  // Unattended auto-resume. v22 widened three EXISTING requests --
+  // `SetOrchestration` with a rail's `autoResume`, `SetStepRun` and
+  // `LinkCardSession` with the run's `resumeAttempts` -- so
+  // `min_version_for` (which gates request TYPES) is structurally blind
+  // to all three, and this entry is the only gate there is.
+  //
+  // What a v21 daemon would do with them is the reason it must be a hard
+  // gate rather than a warning. It parses each request perfectly well and
+  // drops the new field on the floor: the rail's opt-in vanishes, and --
+  // far worse -- the BUDGET vanishes with it. Every resume would then
+  // read `resumeAttempts` back as absent, which means "never resumed",
+  // which means resume again: an unbounded loop wearing the costume of a
+  // limit. So both consent surfaces (the rail header's toggle and the
+  // workspace setting for card runs) are disabled with the reason, and
+  // the driver itself refuses to arm.
+  autoResume: 22,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

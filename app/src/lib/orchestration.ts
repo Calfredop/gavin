@@ -85,6 +85,16 @@ export interface Rail {
   /// checked out", the behaviour that predates the field, so it is
   /// optional on the wire and absent on plans written before it.
   branch?: string | null;
+  /// Whether this rail may resume its OWN interrupted steps, without
+  /// being asked (auto-resume, v22). Absent and false both mean no.
+  ///
+  /// Optional on the wire and absent on plans written before it, exactly
+  /// as `branch` is -- and default-OFF for a reason `branch` did not
+  /// need: this is CONSENT. The standing objection to auto-resume is
+  /// that a rail resuming itself six hours after the human walked away
+  /// has made a decision that was theirs; a per-rail opt-in dissolves it
+  /// only if the human actually made it, in advance, for this rail.
+  autoResume?: boolean;
   /// Workspace page its sessions land on. Null until the rail is armed:
   /// Start gives an unbound rail a page of its own, named after it (spec
   /// O16, pageToSpawnForRail). Still null if that creation failed, and
@@ -139,6 +149,16 @@ export interface StepRun {
   /// which follows OSC 7 and drifts the moment the agent moves into a
   /// worktree -- and a resume has to run where the work is.
   launchCwd?: string | null;
+  /// How many times gavin has resumed this run BY ITSELF -- the budget
+  /// for unattended recovery (v22), bounded at
+  /// `MAX_AUTO_RESUME_ATTEMPTS`. Absent reads as zero, which is what
+  /// every run recorded before v22 is.
+  ///
+  /// On the ROW rather than in memory, deliberately: an app reload and a
+  /// daemon restart are precisely the conditions auto-resume runs under,
+  /// so a counter that resets on either is an unbounded loop wearing the
+  /// costume of a limit. A manual Resume does not spend it.
+  resumeAttempts?: number | null;
 }
 
 export interface Orchestration {
@@ -1045,6 +1065,24 @@ export function addRail(orch: Orchestration, railId: string, name: string): Orch
 
 export function renameRail(orch: Orchestration, railId: string, name: string): Orchestration {
   return { ...orch, rails: orch.rails.map((r) => (r.id === railId ? { ...r, name } : r)) };
+}
+
+/// The rail's consent to resuming its own broken steps (auto-resume).
+///
+/// A plan mutator like any other, which is the point: the opt-in is part
+/// of the PLAN, so it is written by the same wholesale save, survives the
+/// same way, and is visible to an agent reading the rails over MCP. It is
+/// a decision about this rail, not a preference of whoever is looking at
+/// it.
+export function setRailAutoResume(
+  orch: Orchestration,
+  railId: string,
+  autoResume: boolean
+): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => (r.id === railId ? { ...r, autoResume } : r)),
+  };
 }
 
 /// Re-binding affects steps launched from now on; sessions already

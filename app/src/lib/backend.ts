@@ -362,7 +362,13 @@ export function linkCardSession(
   /// profile with no verified resume argv, which falls back to a written
   /// reconstruction instead.
   conversationId: string | null = null,
-  launchCwd: string | null = null
+  launchCwd: string | null = null,
+  /// How many times gavin has resumed this run BY ITSELF. Unlike
+  /// setStepRun's, this one OVERWRITES: a card binding is upserted whole
+  /// by every call site, so null here means zero rather than "leave it
+  /// alone" -- and zero is right for the fresh launches, which are most
+  /// of them.
+  resumeAttempts: number | null = null
 ): Promise<void> {
   return invoke("link_card_session", {
     workspaceId,
@@ -372,6 +378,7 @@ export function linkCardSession(
     command,
     conversationId,
     launchCwd,
+    resumeAttempts,
   });
 }
 
@@ -415,6 +422,7 @@ export function agentProfiles(): Promise<
     modelFlag: string;
     models: string[];
     failurePatterns: string[];
+    failureCauses: Array<{ pattern: string; cause: string }>;
     sessionIdArgs: string;
     resumeArgs: string;
   }>
@@ -676,7 +684,13 @@ export function setStepRun(
   /// launched, so a stalled step can be resumed as that conversation
   /// rather than reconstructed from an account of it.
   conversationId: string | null = null,
-  launchCwd: string | null = null
+  launchCwd: string | null = null,
+  /// How many times gavin has resumed this run by itself. null LEAVES
+  /// the stored count alone, the way conversationId does, so the dozen
+  /// transitions with nothing to say about the budget -- a stall, a
+  /// done, a rail reset -- do not have to carry it. A launch passes 0
+  /// explicitly: a new conversation is a new run with a fresh budget.
+  resumeAttempts: number | null = null
 ): Promise<void> {
   return invoke("set_step_run", {
     stepId,
@@ -685,6 +699,7 @@ export function setStepRun(
     reason,
     conversationId,
     launchCwd,
+    resumeAttempts,
   });
 }
 

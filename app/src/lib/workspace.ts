@@ -32,6 +32,17 @@ export interface GitViewPrefs {
 export interface AgentCommitRecord {
   sessionId: string;
   cwd: string;
+  /// How many times gavin has RE-RUN this commit prompt by itself after
+  /// a transient failure. A retry, not a resume: a headless run exits and
+  /// holds no conversation, and "commit pending changes" is harmless to
+  /// repeat -- which is why it gets a retry where every other run gets a
+  /// reopened conversation.
+  ///
+  /// On the record rather than in memory because a hidden run outlives
+  /// the window that started it (`adoptAgentCommits`), so a counter in
+  /// the window would reset on the very event the record exists for.
+  /// Absent reads as zero.
+  retries?: number;
 }
 
 export interface Workspace {
@@ -59,6 +70,17 @@ export interface Workspace {
   /// Whether closing a tab asks first; absent means on. Machine-local,
   /// like the notification toggles -- a habit, not a project setting.
   confirmTabClose?: boolean;
+  /// Whether gavin may resume this workspace's standalone CARD runs by
+  /// itself when their agent breaks. Absent means NO -- the opposite of
+  /// every other toggle here, because this one is consent rather than a
+  /// habit: a run that restarts itself hours after the human walked away
+  /// made a decision that was theirs unless they made it in advance.
+  ///
+  /// A rail's own opt-in lives on the rail (`Rail.autoResume`), not here:
+  /// a rail is a durable object the human designed, shared with every
+  /// agent that reads the plan, while a card run is an ad-hoc launch from
+  /// this machine.
+  autoResumeRuns?: boolean;
   /// Git tab preferences (splitters, diff layout, discard-confirm opt-out).
   gitView?: GitViewPrefs;
   /// When this workspace was last switched to, epoch milliseconds.

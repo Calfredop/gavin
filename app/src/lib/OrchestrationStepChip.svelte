@@ -38,6 +38,10 @@
     toolParams: Record<string, string>;
     state: StepState;
     reason: string | null;
+    /// What gavin did to this run without being asked, or null. Shown on
+    /// a step that is RUNNING again after a break, which would otherwise
+    /// be indistinguishable from one that never broke.
+    resumeNote?: string | null;
     /// What this RUNNING step is waiting on a human for, or null when it
     /// is simply working (see stepAttentions). Never a state of its own:
     /// the step is still `running` and the rail is still going, which is
@@ -76,6 +80,7 @@
     toolParams,
     state,
     reason,
+    resumeNote = null,
     attention,
     doneColumnName,
     badges,
@@ -127,7 +132,11 @@
   class:dimmed
   class:attention-asking={attention === "asking"}
   class:attention-ended={attention === "turn-ended"}
-  use:tooltip={state === "stalled" && reason ? reason : attentionTitle || iconTip}>
+  use:tooltip={state === "stalled" && reason
+    ? reason
+    : resumeNote
+      ? resumeNote
+      : attentionTitle || iconTip}>
   <Icon size={13} />
   <span class="title">{title}</span>
   {#if overrides}

@@ -97,8 +97,16 @@ export function runCard(workspaceId: string, card: CardView): Promise<string | n
 // on a card whose bound session has EXITED -- picking that work back up
 // is the whole point -- and the fresh session replaces the dead
 // binding. A live session still just gets a jump: it is the work.
-export function resumeCard(workspaceId: string, card: CardView): Promise<string | null> {
-  return launchCard(workspaceId, card, "resume");
+export function resumeCard(
+  workspaceId: string,
+  card: CardView,
+  /// Whether GAVIN decided this rather than the human pressing Resume.
+  /// Only an automatic resume spends the persisted budget: a human may
+  /// press the button as often as they like, and bounding that was never
+  /// what the budget is for.
+  options: { automatic?: boolean } = {}
+): Promise<string | null> {
+  return launchCard(workspaceId, card, "resume", options);
 }
 
 // Develop (the To Do column's counterpart to Resume): hand a thin card
@@ -158,7 +166,8 @@ export async function developCard(
 async function launchCard(
   workspaceId: string,
   card: CardView,
-  mode: "run" | "resume"
+  mode: "run" | "resume",
+  options: { automatic?: boolean } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
 
@@ -241,6 +250,13 @@ async function launchCard(
       command: resumeCommand,
       conversationId: binding.conversationId,
       launchCwd: resumeCwd,
+      // The budget travels with the conversation, because that is what
+      // it bounds: one AUTOMATIC resume per run. A human's press carries
+      // the count unchanged -- it is not an automatic attempt, so it
+      // neither spends nor refunds one.
+      resumeAttempts: options.automatic
+        ? (binding.resumeAttempts ?? 0) + 1
+        : (binding.resumeAttempts ?? null),
     });
     return null;
   }
@@ -290,6 +306,8 @@ async function launchCard(
     // above because that one follows the session's OSC 7 reports and
     // drifts the moment the agent moves into a worktree.
     launchCwd: cwd,
+    // A fresh conversation is a fresh run, so it gets a fresh budget.
+    resumeAttempts: 0,
   });
   return null;
 }
@@ -394,6 +412,11 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
     sessionId,
     command: fresh.command,
     conversationId: fresh.conversationId,
+    // Re-launch means "run this again from the beginning": a new
+    // conversation, and therefore a new budget. Spreading the old
+    // binding would otherwise carry a spent one into a run that has not
+    // failed yet.
+    resumeAttempts: 0,
   });
   return null;
 }

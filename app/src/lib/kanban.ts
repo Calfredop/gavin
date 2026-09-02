@@ -28,6 +28,10 @@ export interface CardSession {
   /// Optional because every binding recorded before v21 has neither.
   conversationId?: string | null;
   launchCwd?: string | null;
+  /// See orchestration.ts's StepRun again: the persisted budget for
+  /// unattended recovery (v22). Absent reads as zero -- a run gavin has
+  /// never resumed by itself.
+  resumeAttempts?: number | null;
 }
 
 export interface Board {

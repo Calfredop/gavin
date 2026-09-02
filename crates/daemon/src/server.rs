@@ -216,10 +216,7 @@ fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: Sess
 /// design is trying not to raise.
 fn failure_verdict(manager: &Arc<SessionManager>, id: &str) -> Option<String> {
     if let Some(gap) = manager.slept_mid_turn.lock().unwrap().get(id).copied() {
-        return Some(format!(
-            "the machine slept for {} and this agent has not spoken since",
-            humanize_gap(gap)
-        ));
+        return Some(slept_reason(gap));
     }
     let matched = failure_on_screen(manager, id)?;
     // Already on screen when the human last typed here: they have seen
@@ -269,6 +266,23 @@ fn strip_tui_decoration(line: &str) -> String {
         Some((i, _)) => trimmed[i..].trim_end().to_string(),
         None => trimmed.to_string(),
     }
+}
+
+/// The opening of the one failure reason gavin writes ITSELF rather than
+/// quoting from an agent's screen.
+///
+/// It is a fixed prefix because the app has to recognise it: the
+/// auto-resume trigger table classifies a failure by its reason, and
+/// every OTHER reason is the agent's own sentence, matched against the
+/// profile's `failure_causes`. A suspend has no profile behind it, so
+/// `app/src/lib/autoResume.ts` matches this prefix instead, and
+/// `the_slept_reason_keeps_the_prefix_the_app_classifies_on` below is
+/// what stops a copy-edit here from silently turning every wake-up
+/// failure into an unclassifiable one.
+pub const SLEPT_REASON_PREFIX: &str = "the machine slept for";
+
+fn slept_reason(gap: u64) -> String {
+    format!("{SLEPT_REASON_PREFIX} {} and this agent has not spoken since", humanize_gap(gap))
 }
 
 /// "2h 14m", "45m", "90s" -- for a human reading one sentence about why
@@ -1228,6 +1242,7 @@ impl SessionManager {
         reason: Option<String>,
         conversation_id: Option<String>,
         launch_cwd: Option<String>,
+        resume_attempts: Option<u32>,
     ) -> anyhow::Result<()> {
         self.orchestration.lock().unwrap().set_step_run(
             step_id,
@@ -1236,6 +1251,7 @@ impl SessionManager {
             reason.as_deref(),
             conversation_id.as_deref(),
             launch_cwd.as_deref(),
+            resume_attempts,
         )
     }
 
@@ -1248,6 +1264,7 @@ impl SessionManager {
         command: Option<&str>,
         conversation_id: Option<&str>,
         launch_cwd: Option<&str>,
+        resume_attempts: Option<u32>,
     ) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().link_card_session(
             workspace_id,
@@ -1257,6 +1274,7 @@ impl SessionManager {
             command,
             conversation_id,
             launch_cwd,
+            resume_attempts,
         )
     }
 
@@ -2023,8 +2041,24 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetFailurePatterns { id, patterns } => {
             manager.set_failure_patterns(&id, patterns).map(|_| Response::Ok)
         }
-        Request::SetStepRun { step_id, state, session_id, reason, conversation_id, launch_cwd } => manager
-            .set_step_run(&step_id, &state, session_id, reason, conversation_id, launch_cwd)
+        Request::SetStepRun {
+            step_id,
+            state,
+            session_id,
+            reason,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+        } => manager
+            .set_step_run(
+                &step_id,
+                &state,
+                session_id,
+                reason,
+                conversation_id,
+                launch_cwd,
+                resume_attempts,
+            )
             .map(|_| Response::Ok),
         Request::GetTools { workspace_id } => {
             manager.tools(&workspace_id).map(|tools| Response::Tools { tools })
@@ -2127,6 +2161,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             command,
             conversation_id,
             launch_cwd,
+            resume_attempts,
         } => manager
             .link_card_session(
                 &workspace_id,
@@ -2136,6 +2171,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 command.as_deref(),
                 conversation_id.as_deref(),
                 launch_cwd.as_deref(),
+                resume_attempts,
             )
             .map(|_| Response::Ok),
         Request::UnlinkCardSession { workspace_id, path } => manager
@@ -2310,6 +2346,7 @@ mod tests {
             position: 0,
             worktree_path: None,
             branch: None,
+            auto_resume: None,
             page_id: None,
             stages: vec![protocol::Stage {
                 id: "s1".into(),
@@ -2378,6 +2415,7 @@ mod tests {
                 reason: None,
                 conversation_id: None,
                 launch_cwd: None,
+                resume_attempts: None,
             },
         );
         match handle_request(&manager, Request::GetOrchestration { workspace_id: "ws-1".into() }) {
@@ -2523,6 +2561,7 @@ mod tests {
                 reason: None,
                 conversation_id: None,
                 launch_cwd: None,
+                resume_attempts: None,
             },
         );
     }
@@ -2681,6 +2720,7 @@ mod tests {
                 reason: None,
                 conversation_id: None,
                 launch_cwd: None,
+                resume_attempts: None,
             },
         );
         // Deleting the whole rail, which is what the human was doing.
@@ -3520,7 +3560,7 @@ mod tests {
         let before = card.to_string_lossy().to_string();
         let after = plans.join("done").join("ship.md").to_string_lossy().to_string();
 
-        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None).unwrap();
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None).unwrap();
         // The rail's one step points at the card about to move.
         manager
             .set_orchestration(
@@ -3531,6 +3571,7 @@ mod tests {
                     position: 0,
                     worktree_path: None,
                     branch: None,
+                    auto_resume: None,
                     page_id: None,
                     stages: vec![protocol::Stage {
                         id: "st1".into(),
@@ -3585,7 +3626,7 @@ mod tests {
         std::fs::write(&card, "---\ntitle: Ship\nstatus: Done\n---\n").unwrap();
         let before = card.to_string_lossy().to_string();
 
-        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None).unwrap();
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None).unwrap();
         manager
             .set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &before)], vec![])
             .unwrap();
@@ -4017,6 +4058,21 @@ mod tests {
             "a suspend mark published after the quiet timer has already called the \
              session idle is a mark nothing will ever read"
         );
+    }
+
+    /// The app classifies a failure by reading its reason, and a suspend
+    /// is the one reason gavin writes rather than quotes. `autoResume.ts`
+    /// holds this same prefix; a reword here without one there turns
+    /// every wake-up failure into an unknown cause, which never
+    /// auto-resumes -- the feature would go quiet with every test green.
+    #[test]
+    fn the_slept_reason_keeps_the_prefix_the_app_classifies_on() {
+        assert_eq!(SLEPT_REASON_PREFIX, "the machine slept for");
+        assert!(
+            slept_reason(8040).starts_with(SLEPT_REASON_PREFIX),
+            "the sentence and the prefix the app matches on have to be the same string"
+        );
+        assert_eq!(slept_reason(8040), "the machine slept for 2h 14m and this agent has not spoken since");
     }
 
     #[test]

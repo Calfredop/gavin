@@ -53,6 +53,7 @@ vi.mock("./layoutState", () => ({
     launchCommand: "claude --model opus",
     mcpSupported: true,
     failurePatterns: ["API Error:"],
+      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
     sessionIdArgs: "",
     resumeArgs: "",
   })),
@@ -129,6 +130,7 @@ const NO_RESUME_AGENT = {
   launchCommand: "claude --model opus",
   mcpSupported: true,
   failurePatterns: ["API Error:"],
+      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
   sessionIdArgs: "",
   resumeArgs: "",
 };
@@ -435,6 +437,7 @@ describe("relaunchCard", () => {
       launchCommand: "claude",
       mcpSupported: true,
       failurePatterns: ["API Error:"],
+      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
       sessionIdArgs: "--session-id",
       resumeArgs: "--resume",
     } as never);
@@ -562,6 +565,7 @@ describe("a failed binding", () => {
     launchCommand: "claude",
     mcpSupported: true,
     failurePatterns: ["API Error:"],
+      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
     sessionIdArgs: "--session-id",
     resumeArgs: "--resume",
   };

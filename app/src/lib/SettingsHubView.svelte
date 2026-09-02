@@ -157,6 +157,14 @@
   /// what is written -- so the row is disabled with the reason rather
   /// than accepting a choice nothing downstream would honour.
   const prdBlocked = $derived(featureBlockedReason($daemonCompat, "prdPath"));
+
+  /// A v21 daemon parses the widened LinkCardSession perfectly well and
+  /// drops `resumeAttempts` on the floor -- so every automatic resume
+  /// would read the budget back as absent, decide the run had never been
+  /// resumed, and resume it again. An unbounded loop wearing the costume
+  /// of a limit is worse than no feature, so the switch is dark rather
+  /// than merely unreliable.
+  const autoResumeBlocked = $derived(featureBlockedReason($daemonCompat, "autoResume"));
   $effect(() => {
     const prd = prdPath;
     if (focused !== "prd") prdDraft = prd;
@@ -382,6 +390,30 @@
       <p class="hint">
         Ask before closing a tab. Off closes tabs straight away — including the last tab in a pane,
         which takes the pane with it.
+      </p>
+    </section>
+
+    <section>
+      <h3>Unattended recovery</h3>
+      <!-- Off by default, and the only setting on this screen that is.
+           The others are habits; this one is consent -- a run that
+           restarts itself hours after you walked away made a decision
+           that was yours unless you made it in advance. -->
+      <span use:tooltip={autoResumeBlocked ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={autoResumeBlocked !== null}
+            checked={ws.autoResumeRuns ?? false}
+            onchange={(e) => void setWorkspaceFlag(workspaceId, "autoResumeRuns", e.currentTarget.checked)}
+          />
+          Resume a broken card run by itself
+        </label>
+      </span>
+      <p class="hint">
+        When an agent you started from a card stops because its connection died, the machine slept or the
+        API was down, gavin reopens that same conversation once — never after a login prompt, a usage
+        limit or a crash, and never for a run it did not launch. A rail has its own switch, on the rail.
       </p>
     </section>
 

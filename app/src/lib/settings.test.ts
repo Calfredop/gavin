@@ -18,9 +18,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], sessionIdArgs: "--session-id", resumeArgs: "--resume" },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], sessionIdArgs: "", resumeArgs: "" },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], sessionIdArgs: "", resumeArgs: "" },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", resumeArgs: "--resume" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "" },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "" },
 ];
 
 describe("normalizeColor", () => {
@@ -208,6 +208,7 @@ describe("resolveAgentConfig", () => {
       model: "",
       launchCommand: "codex --x",
       failurePatterns: [],
+      failureCauses: [],
       sessionIdArgs: "",
       resumeArgs: "",
     });
@@ -225,7 +226,9 @@ describe("resolveAgentConfig", () => {
       mcpSupported: true, mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --',
       model: "", launchCommand: "claude",
-      failurePatterns: ["API Error:"], sessionIdArgs: "--session-id", resumeArgs: "--resume",
+      failurePatterns: ["API Error:"],
+      failureCauses: [{ pattern: "/login", cause: "auth" }],
+      sessionIdArgs: "--session-id", resumeArgs: "--resume",
     });
     expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES, {}).profileId).toBe(
       "claude-code"
@@ -304,6 +307,7 @@ describe("resolveAgentConfig", () => {
       model: "",
       launchCommand: "my-agent",
       failurePatterns: [],
+      failureCauses: [],
       sessionIdArgs: "",
       resumeArgs: "",
     });

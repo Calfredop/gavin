@@ -1327,6 +1327,70 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    // The suites cannot reach any of this: it needs a real agent, a real
+    // network and a real machine suspend. The trigger table and the
+    // budget ARE unit-tested (autoResume.test.ts) -- what is unverified
+    // is everything downstream of a genuine interruption.
+    title: "Auto-resume an interrupted run",
+    items: [
+      {
+        id: "auto-resume-off-by-default",
+        text: "A brand-new rail's Auto-resume button reads 'off', and Settings' 'Resume a broken card run by itself' is unchecked",
+        hint: "Consent is given in advance or not at all. Every other toggle in Settings defaults ON; this one must not.",
+      },
+      {
+        id: "auto-resume-card-run",
+        text: "With the workspace setting on, break a card run's connection and watch it come back by itself within a minute",
+        hint: "Point the agent at an unreachable ANTHROPIC_BASE_URL mid-turn — the reproducible version of pulling the network.",
+      },
+      {
+        id: "auto-resume-keeps-context",
+        text: "The resumed agent CARRIES ON — it knows what it was doing, rather than starting the card over",
+        hint: "This is the whole point. A resume that silently begins again is the from-scratch second attempt wearing a better name.",
+      },
+      {
+        id: "auto-resume-notifies",
+        text: "An OS notification says it broke and was resumed, naming the agent's own error line",
+        hint: "A resume that leaves no trace is indistinguishable from a run that never failed.",
+      },
+      {
+        id: "auto-resume-trail-on-card",
+        text: "The card detail modal shows 'Recovered on its own: …' with the times, and still says something after a window reload",
+        hint: "The times live in memory; the COUNT is persisted, so after a reload the line is shorter but still there.",
+      },
+      {
+        id: "auto-resume-only-once",
+        text: "Break the SAME run a second time — gavin does not resume it again, and says why",
+        hint: "One automatic attempt per run. If it resumes twice, the budget is not surviving the write.",
+      },
+      {
+        id: "auto-resume-never-on-login",
+        text: "An expired token (an agent asking for /login) is NOT resumed; the notification says so",
+        hint: "Resuming loops against a wall. This is the case a naive 'retry when something broke' gets wrong.",
+      },
+      {
+        id: "auto-resume-rail-sequence",
+        text: "Turn a rail's Auto-resume on, break its running step in a SEQUENCE stage, and watch the step and the rail both come back",
+        hint: "The rail is paused by the stall; a resumed step on a paused rail would finish and advance nothing.",
+      },
+      {
+        id: "auto-resume-parallel-stalls",
+        text: "A two-step PARALLEL stage broken by ONE interruption stays stalled, and says both steps broke together",
+        hint: "This is the deliberate refusal. Putting both back returns each agent to a checkout its sibling had moved on from.",
+      },
+      {
+        id: "auto-resume-lid-closed",
+        text: "Start a two-step parallel stage, close the lid mid-run, reopen on a DIFFERENT network — and check what happened to both steps and to the checkout they share",
+        hint: "The originating case, and the one thing no test can stand in for. Report what actually happened, including anything the design did not predict.",
+      },
+      {
+        id: "auto-resume-commit-retry",
+        text: "Break a 'Commit via agent' run's connection: it re-runs once by itself, and an ordinary refusal ('no user.email') does not",
+        hint: "A retry, not a resume — a headless run exits and holds no conversation.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

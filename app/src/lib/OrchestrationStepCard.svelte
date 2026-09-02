@@ -30,6 +30,10 @@
     state: StepState;
     /// Why the step stalled; null otherwise.
     reason: string | null;
+    /// What gavin did to this run without being asked, or null. Same
+    /// contract as the chip's: a step that is running again after a
+    /// break is otherwise indistinguishable from one that never broke.
+    resumeNote?: string | null;
     /// What this RUNNING step is waiting on a human for -- same contract
     /// as the chip's. Never a state of its own: the step is still
     /// running, and this only stops it looking busy when it isn't.
@@ -64,6 +68,7 @@
     placed,
     state,
     reason,
+    resumeNote = null,
     attention,
     doneColumnName,
     badges,
@@ -111,7 +116,9 @@
     {#snippet adornment()}
       <div class="rail-strip">
         {#if state !== "pending"}
-          <span class="state {state}" use:tooltip={state === "stalled" && reason ? reason : undefined}>
+          <span
+            class="state {state}"
+            use:tooltip={state === "stalled" && reason ? reason : (resumeNote ?? undefined)}>
             {#if state === "done"}<Check size={11} />{/if}
             {#if state === "stalled"}<CircleAlert size={11} />{/if}
             {state}

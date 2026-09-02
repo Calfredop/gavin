@@ -12,8 +12,11 @@
     MessageCircleQuestionMark,
     GripVertical,
     Ellipsis,
+    LifeBuoy,
   } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import { resumeNoteFor } from "./autoResume";
+  import { resumeTrail } from "./autoResumeState";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
   import type { Label } from "./kanban";
@@ -79,6 +82,14 @@
     onStart: () => void;
     onPause: () => void;
     onReset: () => void;
+    /// The rail's consent to resuming its own broken steps, and the
+    /// switch that gives it. Part of the PLAN, not a per-viewer
+    /// preference -- so it rides the same save every other rail edit
+    /// does.
+    onToggleAutoResume: (autoResume: boolean) => void;
+    /// Why this daemon cannot carry that consent, or null. A v21 daemon
+    /// drops the budget field, which would turn one attempt into a loop.
+    autoResumeBlocked?: string | null;
     onDelete: () => void;
     /// Opens the column menu at the pointer -- the parent owns the
     /// board's columns and builds the entries, exactly as it does for a
@@ -145,6 +156,8 @@
     onStart,
     onPause,
     onReset,
+    onToggleAutoResume,
+    autoResumeBlocked = null,
     onDelete,
     onMoveAll,
     onClearDone,
@@ -344,6 +357,27 @@
         onclick={onReorganize}
       />
       <IconButton icon={RotateCcw} label="Reset run state" onclick={onReset} />
+      <!-- Consent, given in advance and per rail. Default off: a rail
+           that resumes itself six hours after you walked away made a
+           decision that was yours unless you made it here first. -->
+      <!-- The reason hangs on the SPAN, not the button. A disabled
+           element dispatches no mouseenter, so a tooltip bound to it can
+           never explain why it is disabled -- which is the one moment
+           the explanation is worth having. -->
+      <span use:tooltip={autoResumeBlocked ?? ""}>
+        <IconButton
+          icon={LifeBuoy}
+          label={rail.autoResume ? "Auto-resume: on" : "Auto-resume: off"}
+          tip={autoResumeBlocked ??
+            (rail.autoResume
+              ? "This rail reopens a step's own conversation once when its agent breaks — never after a login prompt, a usage limit or a crash. Click to turn off."
+              : "Let this rail reopen a broken step's conversation once, without asking. Click to turn on.")}
+          tone={rail.autoResume ? "accent" : "default"}
+          active={rail.autoResume === true}
+          disabled={autoResumeBlocked !== null}
+          onclick={() => onToggleAutoResume(!rail.autoResume)}
+        />
+      </span>
       <IconButton
         icon={SquareStack}
         label="Move all cards to a column…"
@@ -468,6 +502,7 @@
               {placed}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
+              resumeNote={resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts)}
               attention={attentions.get(step.id) ?? null}
               {doneColumnName}
               badges={numbersForStep(numbered, step.id)}
@@ -495,6 +530,7 @@
               toolParams={stepParams(step)}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
+              resumeNote={resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts)}
               attention={attentions.get(step.id) ?? null}
               {doneColumnName}
               badges={numbersForStep(numbered, step.id)}

@@ -39,6 +39,7 @@ vi.mock("./layoutState", () => ({
     launchCommand: "claude",
     mcpSupported: true,
     failurePatterns: ["API Error:"],
+      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
     sessionIdArgs: "--session-id",
     resumeArgs: "--resume",
   })),

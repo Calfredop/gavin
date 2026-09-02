@@ -64,6 +64,12 @@ impl KanbanStore {
                 -- records neither.
                 conversation_id TEXT,
                 launch_cwd TEXT,
+                -- v22: how many times gavin resumed this run BY ITSELF.
+                -- The budget for unattended recovery, on disk because an
+                -- app reload and a daemon restart are the conditions it
+                -- runs under -- an in-memory counter would reset on the
+                -- very events it is supposed to survive.
+                resume_attempts INTEGER,
                 PRIMARY KEY (workspace_id, path)
             );
             DROP TABLE IF EXISTS kanban_card_labels;
@@ -80,6 +86,7 @@ impl KanbanStore {
         for stmt in [
             "ALTER TABLE card_sessions ADD COLUMN conversation_id TEXT",
             "ALTER TABLE card_sessions ADD COLUMN launch_cwd TEXT",
+            "ALTER TABLE card_sessions ADD COLUMN resume_attempts INTEGER",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -159,7 +166,7 @@ impl KanbanStore {
         let mut card_sessions = Vec::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT path, session_id, cwd, command, conversation_id, launch_cwd \
+                "SELECT path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts \
                  FROM card_sessions WHERE workspace_id = ?1",
             )?;
             let rows = stmt.query_map(params![workspace_id], |row| {
@@ -170,6 +177,7 @@ impl KanbanStore {
                     command: row.get(3)?,
                     conversation_id: row.get(4)?,
                     launch_cwd: row.get(5)?,
+                    resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
                 })
             })?;
             for row in rows {
@@ -226,14 +234,25 @@ impl KanbanStore {
         command: Option<&str>,
         conversation_id: Option<&str>,
         launch_cwd: Option<&str>,
+        resume_attempts: Option<u32>,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO card_sessions (workspace_id, path, session_id, cwd, command, conversation_id, launch_cwd)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO card_sessions (workspace_id, path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(workspace_id, path) DO UPDATE SET
                session_id = excluded.session_id, cwd = excluded.cwd, command = excluded.command,
-               conversation_id = excluded.conversation_id, launch_cwd = excluded.launch_cwd",
-            params![workspace_id, path, session_id, cwd, command, conversation_id, launch_cwd],
+               conversation_id = excluded.conversation_id, launch_cwd = excluded.launch_cwd,
+               resume_attempts = excluded.resume_attempts",
+            params![
+                workspace_id,
+                path,
+                session_id,
+                cwd,
+                command,
+                conversation_id,
+                launch_cwd,
+                resume_attempts.map(i64::from)
+            ],
         )?;
         Ok(())
     }
@@ -388,9 +407,9 @@ mod tests {
     fn card_sessions_upsert_unlink_and_ride_the_board() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'"), None, None).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, None, None).unwrap(); // upsert replaces
-        store.link_card_session("ws-2", "/p/t.md", "s-9", "/p", None, None, None).unwrap(); // other workspace
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'"), None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, None, None, None).unwrap(); // upsert replaces
+        store.link_card_session("ws-2", "/p/t.md", "s-9", "/p", None, None, None, None).unwrap(); // other workspace
 
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.card_sessions.len(), 1);
@@ -401,6 +420,34 @@ mod tests {
         store.unlink_card_session("ws-1", "/p/absent.md").unwrap(); // no-op
         assert!(store.get_board("ws-1").unwrap().card_sessions.is_empty());
         assert_eq!(store.get_board("ws-2").unwrap().card_sessions.len(), 1);
+    }
+
+    /// The budget is the one field a resume WRITES rather than merely
+    /// carries, so it has to survive the upsert that replaces the
+    /// session id -- that upsert IS what a resume performs.
+    #[test]
+    fn the_resume_budget_rides_the_binding_through_a_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, Some("conv-1"), Some("/p"), None)
+            .unwrap();
+        assert_eq!(store.get_board("ws-1").unwrap().card_sessions[0].resume_attempts, None);
+
+        // The resume: same conversation, new session, one attempt spent.
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, Some("conv-1"), Some("/p"), Some(1))
+            .unwrap();
+        let cs = store.get_board("ws-1").unwrap().card_sessions;
+        assert_eq!(cs[0].session_id, "s-2");
+        assert_eq!(cs[0].resume_attempts, Some(1));
+
+        // And a fresh launch spends it back down: a new conversation is a
+        // new run, so the budget it carries is a new budget.
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-3", "/p", None, Some("conv-2"), Some("/p"), Some(0))
+            .unwrap();
+        assert_eq!(store.get_board("ws-1").unwrap().card_sessions[0].resume_attempts, Some(0));
     }
 
     /// Every other test here opens a database this build created, which
@@ -439,6 +486,10 @@ mod tests {
         assert_eq!(sessions[0].session_id, "s-1");
         assert_eq!(sessions[0].conversation_id, None, "a row written before v21 has no conversation");
         assert_eq!(sessions[0].launch_cwd, None);
+        // v22's column rides the same list, and for the same reason: a
+        // run that predates the budget has never been resumed, which is
+        // what an absent count has to read as.
+        assert_eq!(sessions[0].resume_attempts, None);
 
         // Idempotent: the ALTERs run on every open, and the second one
         // must swallow the duplicate rather than fail the open.
@@ -451,9 +502,9 @@ mod tests {
     fn rename_card_path_follows_a_moved_card_across_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/plans/t.md", "s-1", "/p", None, None, None).unwrap();
-        store.link_card_session("ws-2", "/p/plans/t.md", "s-2", "/p", None, None, None).unwrap();
-        store.link_card_session("ws-1", "/p/plans/other.md", "s-3", "/p", None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/plans/t.md", "s-1", "/p", None, None, None, None).unwrap();
+        store.link_card_session("ws-2", "/p/plans/t.md", "s-2", "/p", None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/plans/other.md", "s-3", "/p", None, None, None, None).unwrap();
 
         store.rename_card_path("/p/plans/t.md", "/p/plans/done/t.md").unwrap();
 
@@ -469,9 +520,9 @@ mod tests {
     fn unlink_all_clears_a_path_across_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, None, None).unwrap();
-        store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None, None, None).unwrap();
-        store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, None, None, None).unwrap();
+        store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None, None, None, None).unwrap();
 
         store.unlink_card_session_all("/p/t.md").unwrap();
 

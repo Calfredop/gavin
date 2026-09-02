@@ -215,6 +215,30 @@ pub struct AgentProfile {
     /// with one line on screen, and the only thing every one of them
     /// shares is `API Error:`.
     pub failure_patterns: &'static [&'static str],
+    /// What each of those failures MEANS, for the one caller that has to
+    /// act on it without a human: auto-resume.
+    ///
+    /// `failure_patterns` answers "did this agent break"; a rail deciding
+    /// whether to resume itself needs "broke HOW", because the answers
+    /// are opposites. A dead network is worth another try the moment it
+    /// comes back; an expired token loops against a wall until somebody
+    /// runs `/login`; an exhausted usage limit is a wait for a reset that
+    /// no amount of retrying brings forward.
+    ///
+    /// Ordered, and FIRST MATCH WINS -- which is load-bearing, not
+    /// incidental. Claude Code's expired-token line reads "Please run
+    /// /login" followed by "API Error: 401 OAuth token has expired", so
+    /// it carries the generic marker too; the auth row has to be reached
+    /// first or an auth failure classifies as a network one and gavin
+    /// resumes into a login prompt.
+    ///
+    /// It belongs to the PROFILE for the same reason the patterns do:
+    /// this is the agent's own vocabulary, opencode's will differ, and a
+    /// hard-coded table becomes a silent regression the day a CLI rewords
+    /// its errors. A profile with no rows classifies every failure as
+    /// `unknown`, and `unknown` never auto-resumes -- which is today's
+    /// behaviour, and the honest one.
+    pub failure_causes: &'static [FailureCausePattern],
     /// The argv that makes this agent take a conversation id supplied by
     /// the CALLER: `<command> <session_id_args> <uuid>`. Gavin mints the
     /// uuid when it builds the run command, so it holds the id from the
@@ -240,6 +264,20 @@ pub struct AgentProfile {
     pub mcp: Option<McpLayout>,
 }
 
+/// One row of a profile's cause table: a substring of the failure line
+/// the daemon reported, and what that line MEANS.
+///
+/// `cause` is one of the ids `autoResume.ts` knows -- "network",
+/// "outage", "usage-limit", "auth" -- and anything else classifies as
+/// unknown there, which never resumes. Deliberately a plain string
+/// rather than an enum: the app owns the trigger table, and a new cause
+/// invented there must not need a Rust change to be sayable.
+#[derive(Clone, Copy)]
+pub struct FailureCausePattern {
+    pub pattern: &'static str,
+    pub cause: &'static str,
+}
+
 pub const AGENT_PROFILES: &[AgentProfile] = &[
     AgentProfile {
         id: "claude-code",
@@ -258,6 +296,24 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // countdown repaints once a second -- which is why the daemon
         // only reads this at the moment a quiet session would go idle.
         failure_patterns: &["API Error:"],
+        // Drawn from the same measurement session as the pattern above,
+        // and from nowhere else: every string here appeared verbatim on
+        // a real Claude Code screen driven against a fake API. Auth is
+        // FIRST because its line carries "API Error:" as well, and a
+        // token that needs a login back must never read as a network
+        // blip worth retrying.
+        failure_causes: &[
+            FailureCausePattern { pattern: "/login", cause: "auth" },
+            FailureCausePattern { pattern: "OAuth token has expired", cause: "auth" },
+            FailureCausePattern { pattern: "exceeded your usage limit", cause: "usage-limit" },
+            FailureCausePattern { pattern: "usage limit", cause: "usage-limit" },
+            FailureCausePattern { pattern: "529 Overloaded", cause: "outage" },
+            FailureCausePattern { pattern: "Overloaded", cause: "outage" },
+            FailureCausePattern { pattern: "Connection dropped", cause: "network" },
+            FailureCausePattern { pattern: "ECONNRESET", cause: "network" },
+            FailureCausePattern { pattern: "empty or malformed response", cause: "network" },
+            FailureCausePattern { pattern: "Connection error", cause: "network" },
+        ],
         // `claude --session-id <uuid>` (a real UUID; the CLI validates
         // it) and `claude --resume <uuid>`. Verified end to end: the
         // transcript is written to `<uuid>.jsonl`, resume comes back
@@ -316,6 +372,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         prompt_arg: true,
         headless_args: "",
         failure_patterns: &[],
+        failure_causes: &[],
         session_id_args: "",
         resume_args: "",
         mcp: Some(McpLayout {
@@ -338,6 +395,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         prompt_arg: true,
         headless_args: "",
         failure_patterns: &[],
+        failure_causes: &[],
         session_id_args: "",
         resume_args: "",
         mcp: Some(McpLayout {
@@ -361,6 +419,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         prompt_arg: false,
         headless_args: "",
         failure_patterns: &[],
+        failure_causes: &[],
         session_id_args: "",
         resume_args: "",
         mcp: Some(McpLayout {
@@ -383,6 +442,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         prompt_arg: false,
         headless_args: "",
         failure_patterns: &[],
+        failure_causes: &[],
         session_id_args: "",
         resume_args: "",
         mcp: Some(McpLayout {
@@ -402,6 +462,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         prompt_arg: false,
         headless_args: "",
         failure_patterns: &[],
+        failure_causes: &[],
         session_id_args: "",
         resume_args: "",
         mcp: None,
@@ -1049,10 +1110,22 @@ pub struct AgentProfileDto {
     /// detection for the profile (see AgentProfile::failure_patterns);
     /// the app hands these to the daemon per session.
     pub failure_patterns: Vec<String>,
+    /// What each of those failures means, in order (see
+    /// AgentProfile::failure_causes). Read by the app's auto-resume
+    /// trigger table; empty means every failure of this profile
+    /// classifies as unknown, which never resumes itself.
+    pub failure_causes: Vec<FailureCauseDto>,
     /// The launch and resume argv for conversation resume, both empty
     /// where the convention is unverified.
     pub session_id_args: String,
     pub resume_args: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureCauseDto {
+    pub pattern: String,
+    pub cause: String,
 }
 
 /// The dialects a `custom` profile can be pointed at, for the settings
@@ -1096,6 +1169,11 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             model_flag: p.model_flag.to_string(),
             models: p.models.iter().map(|m| m.to_string()).collect(),
             failure_patterns: p.failure_patterns.iter().map(|f| f.to_string()).collect(),
+            failure_causes: p
+                .failure_causes
+                .iter()
+                .map(|c| FailureCauseDto { pattern: c.pattern.to_string(), cause: c.cause.to_string() })
+                .collect(),
             session_id_args: p.session_id_args.to_string(),
             resume_args: p.resume_args.to_string(),
         })
@@ -1280,6 +1358,55 @@ mod tests {
                 assert!(!pattern.trim().is_empty(), "{} carries a blank pattern", p.id);
             }
         }
+    }
+
+    /// A cause table without patterns to classify is dead weight, and a
+    /// pattern list without causes silently downgrades every failure to
+    /// "unknown" -- which reads as "never auto-resume" and would make the
+    /// feature do nothing while looking wired up. They travel together.
+    ///
+    /// The ORDER matters too: every cause row must be reachable, and the
+    /// auth rows must come before any row a Claude Code auth line would
+    /// also match, or an expired token classifies as a network blip and
+    /// gavin resumes into a login prompt.
+    #[test]
+    fn failure_causes_travel_with_patterns_and_put_auth_first() {
+        let classifying: Vec<&str> = AGENT_PROFILES
+            .iter()
+            .filter(|p| !p.failure_causes.is_empty())
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(classifying, ["claude-code"]);
+
+        for p in AGENT_PROFILES {
+            assert_eq!(
+                p.failure_causes.is_empty(),
+                p.failure_patterns.is_empty(),
+                "{} has one half of failure classification without the other",
+                p.id
+            );
+            for row in p.failure_causes {
+                assert!(!row.pattern.trim().is_empty(), "{} carries a blank cause pattern", p.id);
+                assert!(
+                    ["network", "outage", "usage-limit", "auth", "crashed"].contains(&row.cause),
+                    "{} names a cause the app's trigger table does not know: {}",
+                    p.id,
+                    row.cause
+                );
+            }
+        }
+
+        // The real line, verbatim from the measurement session. First
+        // match wins, so this is the whole guard against the ordering
+        // regression.
+        let line = "Please run /login \u{b7} API Error: 401 OAuth token has expired. Please run /login";
+        let claude = profile_by_id("claude-code");
+        let first = claude
+            .failure_causes
+            .iter()
+            .find(|row| line.contains(row.pattern))
+            .expect("claude-code classifies its own expired-token line");
+        assert_eq!(first.cause, "auth");
     }
 
     #[test]

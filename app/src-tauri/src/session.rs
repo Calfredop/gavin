@@ -232,6 +232,7 @@ mod smoketest_tests {
             notify_needs_input: true,
             notify_finished: true,
             confirm_tab_close: true,
+            auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
         }
@@ -277,6 +278,7 @@ mod smoketest_tests {
             notify_needs_input: true,
             notify_finished: true,
             confirm_tab_close: true,
+            auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
         }];
@@ -1448,6 +1450,7 @@ mod resolve_workspaces_tests {
             notify_needs_input: true,
             notify_finished: true,
             confirm_tab_close: true,
+            auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
         }
@@ -1755,6 +1758,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 notify_needs_input: true,
                 notify_finished: true,
                 confirm_tab_close: true,
+            auto_resume_runs: false,
                 git_view: None,
                 last_active_at: None,
             });
@@ -2040,6 +2044,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 notify_needs_input: true,
                 notify_finished: true,
                 confirm_tab_close: true,
+            auto_resume_runs: false,
                 git_view: None,
                 last_active_at: None,
             },
@@ -2451,6 +2456,7 @@ pub fn set_step_run(
     reason: Option<String>,
     conversation_id: Option<String>,
     launch_cwd: Option<String>,
+    resume_attempts: Option<u32>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
@@ -2464,6 +2470,7 @@ pub fn set_step_run(
             reason,
             conversation_id,
             launch_cwd,
+            resume_attempts,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -2993,6 +3000,7 @@ pub fn link_card_session(
     command: Option<String>,
     conversation_id: Option<String>,
     launch_cwd: Option<String>,
+    resume_attempts: Option<u32>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
@@ -3007,6 +3015,7 @@ pub fn link_card_session(
             command,
             conversation_id,
             launch_cwd,
+            resume_attempts,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -3350,6 +3359,7 @@ mod main_session_tests {
             notify_needs_input: true,
             notify_finished: true,
             confirm_tab_close: true,
+            auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
         }
@@ -3579,6 +3589,7 @@ mod gate_tests {
                 command: None,
                 conversation_id: None,
                 launch_cwd: None,
+                resume_attempts: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
@@ -3591,6 +3602,7 @@ mod gate_tests {
                 reason: None,
                 conversation_id: None,
                 launch_cwd: None,
+                resume_attempts: None,
             },
             Request::GetOrchestrationByRoot { root_path: "r".into() },
             Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
@@ -3830,6 +3842,7 @@ mod attach_target_tests {
             notify_needs_input: true,
             notify_finished: true,
             confirm_tab_close: true,
+            auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
         }

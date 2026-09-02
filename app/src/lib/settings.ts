@@ -1,4 +1,5 @@
 import { composeLaunchCommand } from "./agentModel";
+import type { FailureCausePattern } from "./autoResume";
 import type { AgentConfig } from "./gavin";
 import type { EffectiveTheme } from "./ui/theme";
 
@@ -32,6 +33,13 @@ export interface AgentProfileInfo {
   /// failure detection, never as "nothing failed"
   /// (agent_setup.rs's failure_patterns).
   failurePatterns: string[];
+  /// What each of those failures MEANS, in the profile's own order (see
+  /// agent_setup.rs's failure_causes). Read only by the auto-resume
+  /// trigger table, which needs "broke HOW" rather than "broke": a dead
+  /// network and an expired token want opposite answers. Empty means
+  /// every failure of this profile classifies as unknown, which never
+  /// resumes itself.
+  failureCauses: FailureCausePattern[];
   /// Conversation resume: the argv that fixes a session id at launch and
   /// the one that reopens it. Both empty unless BOTH are verified.
   sessionIdArgs: string;
@@ -227,6 +235,11 @@ export interface ResolvedAgent {
   /// rendered screen. Empty means NO failure detection for this
   /// workspace's agent -- never "nothing failed".
   failurePatterns: string[];
+  /// What each of those failures means, for the auto-resume trigger
+  /// table. Travels with the patterns and under the same posture: a
+  /// profile that verified neither classifies every failure as unknown,
+  /// and unknown never resumes itself.
+  failureCauses: FailureCausePattern[];
   /// The argv that fixes a conversation id at launch, and the one that
   /// reopens it. Both empty unless the profile verified BOTH, because
   /// resuming by an id gavin never fixed is a fresh conversation wearing
@@ -298,6 +311,7 @@ export function resolveAgentConfig(
     // same binary, and the alternative is losing failure detection for
     // everyone who pins a path.
     failurePatterns: effective?.failurePatterns ?? [],
+    failureCauses: effective?.failureCauses ?? [],
     sessionIdArgs: effective?.sessionIdArgs ?? "",
     resumeArgs: effective?.resumeArgs ?? "",
   };

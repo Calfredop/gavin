@@ -86,6 +86,18 @@ pub struct GitViewPrefs {
 pub struct AgentCommitRecord {
     pub session_id: String,
     pub cwd: String,
+    /// How many times gavin has RE-RUN this commit prompt by itself after
+    /// a transient failure (v22). A retry, not a resume: a headless run
+    /// exits, holds no conversation, and "commit pending changes" is
+    /// harmless to repeat -- which is exactly why the same budget rule
+    /// applies, bounded at one.
+    ///
+    /// Here rather than in memory because a hidden run is the one piece
+    /// of work in this app that survives the window that started it
+    /// (`adoptAgentCommits`), so a counter in the window would reset on
+    /// the very event the record exists for.
+    #[serde(default)]
+    pub retries: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -133,6 +145,20 @@ pub struct Workspace {
     /// someone who closes tabs constantly.
     #[serde(default = "default_true")]
     pub confirm_tab_close: bool,
+    /// Whether gavin may resume this workspace's standalone CARD runs by
+    /// itself when their agent breaks (v22). Defaults OFF -- the opposite
+    /// of every other toggle here -- because it is CONSENT, not a habit:
+    /// a run that restarts itself hours after the human walked away made
+    /// a decision that was theirs unless they made it in advance.
+    ///
+    /// Machine-local, like the notification toggles and the close
+    /// confirm, and for the same reason: it says what this human wants
+    /// gavin doing while they are away from this machine. A rail's own
+    /// opt-in lives on the rail instead (`Rail::auto_resume`), because a
+    /// rail is a durable object the human designed and its steps are
+    /// shared with every agent that reads the plan.
+    #[serde(default)]
+    pub auto_resume_runs: bool,
     /// Git tab preferences; None until the user changes something.
     #[serde(default)]
     pub git_view: Option<GitViewPrefs>,
@@ -297,6 +323,7 @@ mod tests {
             notify_needs_input: true,
             notify_finished: true,
             confirm_tab_close: true,
+            auto_resume_runs: false,
             git_view: None,
             last_active_at: None,
         }
@@ -479,6 +506,7 @@ mod tests {
                 "notifyNeedsInput": true,
                 "notifyFinished": true,
                 "confirmTabClose": true,
+                "autoResumeRuns": false,
                 "gitView": null,
                 "lastActiveAt": null
             })
@@ -529,6 +557,7 @@ mod tests {
             agent_commit: Some(AgentCommitRecord {
                 session_id: "commit-1".to_string(),
                 cwd: "/r/repo-feature".to_string(),
+                retries: 1,
             }),
         });
         let config = AppConfig {
@@ -737,6 +766,10 @@ mod tests {
         assert!(ws.notify_needs_input, "notifications default on");
         assert!(ws.notify_finished, "notifications default on");
         assert!(ws.confirm_tab_close, "close confirm defaults on");
+        // The one toggle that defaults the other way, because it is
+        // consent rather than a habit: nothing resumes itself unless
+        // this human said in advance that it may.
+        assert!(!ws.auto_resume_runs, "auto-resume defaults OFF");
     }
 
     #[test]
@@ -746,6 +779,7 @@ mod tests {
         ws.color = Some("#a78bfa".to_string());
         ws.notify_finished = false;
         ws.confirm_tab_close = false;
+        ws.auto_resume_runs = true;
         let config = AppConfig {
             workspaces: vec![ws],
             active_workspace_id: Some("workspace-1".to_string()),

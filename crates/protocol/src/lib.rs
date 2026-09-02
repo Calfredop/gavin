@@ -13,6 +13,22 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v22 gave an interrupted run a way back on its own. v21 could tell a
+/// broken agent from a finished one and hand the human a Resume button;
+/// this version lets a rail the human walked away from take that press
+/// itself, and the three fields it adds are what make that bounded and
+/// consented rather than a loop. `Rail.auto_resume` is the per-rail
+/// opt-in, defaulting OFF -- a rail resuming itself six hours later has
+/// made a decision that was the human's unless they made it in advance.
+/// `StepRun.resume_attempts` and `CardSession.resume_attempts` are the
+/// BUDGET, and they are persisted rather than counted in memory because
+/// an app reload and a daemon restart are precisely the conditions this
+/// runs under: an in-memory counter is an unbounded loop wearing the
+/// costume of a limit. All three widen EXISTING requests
+/// (`SetOrchestration`, `SetStepRun`, `LinkCardSession`), which
+/// `min_version_for` gates by TYPE and therefore cannot see, so the gate
+/// that matters is the app's FEATURE_MIN_VERSION.autoResume.
+///
 /// v21 taught gavin what a FAILED agent is. An agent session's `idle` is
 /// only two quiet seconds (`HEURISTIC_QUIET_PERIOD`), so an agent whose
 /// API connection died and one that finished its turn were byte-identical
@@ -68,7 +84,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -293,6 +309,12 @@ pub enum Request {
         /// separately and never rewritten.
         #[serde(default)]
         launch_cwd: Option<String>,
+        /// See `CardSession::resume_attempts`. Unlike `SetStepRun`'s, this
+        /// one OVERWRITES: a card binding is written whole by every call
+        /// site (the row is one upsert of the run as it now stands), so
+        /// None here means zero rather than "leave it alone".
+        #[serde(default)]
+        resume_attempts: Option<u32>,
     },
     UnlinkCardSession {
         workspace_id: String,
@@ -331,6 +353,13 @@ pub enum Request {
         /// See `LinkCardSession::launch_cwd`.
         #[serde(default)]
         launch_cwd: Option<String>,
+        /// See `StepRun::resume_attempts`. None LEAVES the stored count
+        /// alone, the same way `conversation_id` does, so the dozen
+        /// transitions that have nothing to say about the budget do not
+        /// have to carry it. A launch writes 0 explicitly, because a new
+        /// conversation is a new run and its budget is fresh.
+        #[serde(default)]
+        resume_attempts: Option<u32>,
     },
     /// Paths with uncommitted changes in `cwd`, capped at `limit` --
     /// evidence for the reorganize skill (spec §8.1), never used by the
@@ -775,6 +804,11 @@ pub struct CardSession {
     /// and drifts; this one does not.
     #[serde(default)]
     pub launch_cwd: Option<String>,
+    /// How many times gavin resumed this card's run by itself (v22). The
+    /// card-run half of `StepRun::resume_attempts`, persisted for the
+    /// same reason: the budget has to outlive the reload.
+    #[serde(default)]
+    pub resume_attempts: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -805,6 +839,13 @@ pub struct Rail {
     /// this field, so it is defaulted rather than required.
     #[serde(default)]
     pub branch: Option<String>,
+    /// Whether this rail may resume its OWN interrupted steps, without
+    /// being asked (v22). None and false both mean no, which is the
+    /// behaviour that predates the field and the only safe default: an
+    /// automatic resume is a decision the human has to have made in
+    /// advance, for this rail, or it is a decision gavin took for them.
+    #[serde(default)]
+    pub auto_resume: Option<bool>,
     pub page_id: Option<String>,
     pub stages: Vec<Stage>,
 }
@@ -968,6 +1009,17 @@ pub struct StepRun {
     /// `Request::LinkCardSession::launch_cwd`).
     #[serde(default)]
     pub launch_cwd: Option<String>,
+    /// How many times gavin has resumed this run BY ITSELF (v22). The
+    /// budget for unattended recovery, and it lives on the row rather
+    /// than in the app's memory for one reason: an app reload and a
+    /// daemon restart are exactly the conditions auto-resume runs under,
+    /// so a counter that resets on either is not a limit at all.
+    ///
+    /// None reads as zero. A manual Resume does not spend it -- the human
+    /// pressing a button as often as they like is not the thing this
+    /// bounds.
+    #[serde(default)]
+    pub resume_attempts: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1877,7 +1929,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 21);
+        assert_eq!(PROTOCOL_VERSION, 22);
     }
 
     #[test]
@@ -2028,12 +2080,13 @@ mod tests {
                 command: None,
                 conversation_id: None,
                 launch_cwd: None,
+                resume_attempts: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
-            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None, conversation_id: None, launch_cwd: None },
+            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None, conversation_id: None, launch_cwd: None, resume_attempts: None },
             Request::GetOrchestrationByRoot { root_path: "r".into() },
             Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
             Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
@@ -2143,11 +2196,13 @@ mod tests {
             command: None,
             conversation_id: Some("conv-1".to_string()),
             launch_cwd: Some("/p/worktrees/a".to_string()),
+            resume_attempts: Some(1),
         };
         assert_eq!(
             serde_json::to_value(&cs).unwrap(),
             serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p", "command": null,
-                                "conversationId": "conv-1", "launchCwd": "/p/worktrees/a" })
+                                "conversationId": "conv-1", "launchCwd": "/p/worktrees/a",
+                                "resumeAttempts": 1 })
         );
         let mut buf = Vec::new();
         write_message(&mut buf, &Request::LinkCardSession {
@@ -2158,6 +2213,7 @@ mod tests {
             command: Some("claude 'x'".to_string()),
             conversation_id: None,
             launch_cwd: None,
+            resume_attempts: None,
         }).unwrap();
         write_message(&mut buf, &Request::UnlinkCardSession {
             workspace_id: "ws".to_string(),
@@ -2369,6 +2425,7 @@ mod tests {
             position: 0,
             worktree_path: Some("/x/gavin-backend".into()),
             branch: Some("feature/api".into()),
+            auto_resume: Some(true),
             page_id: None,
             stages: vec![Stage {
                 id: "s1".into(),
@@ -2392,6 +2449,7 @@ mod tests {
                 "position": 0,
                 "worktreePath": "/x/gavin-backend",
                 "branch": "feature/api",
+                "autoResume": true,
                 "pageId": null,
                 "stages": [{ "id": "s1", "position": 0, "mode": "parallel", "name": null,
                              "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md",
@@ -2406,11 +2464,12 @@ mod tests {
             reason: None,
             conversation_id: Some("conv-1".into()),
             launch_cwd: Some("/x/wt".into()),
+            resume_attempts: Some(1),
         };
         assert_eq!(
             serde_json::to_value(&run).unwrap(),
             serde_json::json!({ "stepId": "t1", "state": "running", "sessionId": "sess-1", "reason": null,
-                                "conversationId": "conv-1", "launchCwd": "/x/wt" })
+                                "conversationId": "conv-1", "launchCwd": "/x/wt", "resumeAttempts": 1 })
         );
     }
 
@@ -2425,6 +2484,9 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(rail.branch, None);
+        // And the same rail has never opted into resuming itself, which
+        // is the only safe reading of a field it does not carry.
+        assert_eq!(rail.auto_resume, None);
     }
 
     /// The old shape must still parse: an agent that has never heard of

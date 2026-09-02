@@ -1160,7 +1160,7 @@ export async function setWorkspaceColor(workspaceId: string, color: string): Pro
 /// and so no two of them can disagree about how they persist.
 export async function setWorkspaceFlag(
   workspaceId: string,
-  key: "notifyNeedsInput" | "notifyFinished" | "confirmTabClose",
+  key: "notifyNeedsInput" | "notifyFinished" | "confirmTabClose" | "autoResumeRuns",
   value: boolean
 ): Promise<void> {
   const state = get(layoutState);
@@ -1463,9 +1463,36 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
 /// until the reason arrives. See handleSessionStatusChanged.
 const pendingFailureNotice = new Map<string, SessionStatus | undefined>();
 
+/// Told about a failure the moment its reason lands, so the unattended
+/// half of recovery can decide what to do about it.
+///
+/// Registered rather than imported, the same direction and for the same
+/// reason as `setRailNotificationVoice`: auto-resume reads this module
+/// (and orchestration, and card runs), so importing it from here would
+/// close a cycle.
+///
+/// Called only for a LIVE transition -- a failure this app run watched
+/// happen. A failure re-baselined on Attach (a reload finding a session
+/// that broke while the window was gone) deliberately does not fire it:
+/// the previous status is unknown there, so the "never resume a session
+/// that was asking a human something" rule could not be honoured, and
+/// the human is looking at the window anyway.
+export type SessionFailureHook = (
+  sessionId: string,
+  reason: string,
+  previousStatus: SessionStatus | undefined
+) => void;
+
+let sessionFailureHook: SessionFailureHook | null = null;
+
+export function setSessionFailureHook(hook: SessionFailureHook | null): void {
+  sessionFailureHook = hook;
+}
+
 /// @internal - for testing only
 export function __resetFailureNotices(): void {
   pendingFailureNotice.clear();
+  sessionFailureHook = null;
 }
 
 function notifyStatus(
@@ -1513,6 +1540,10 @@ export function handleSessionFailed(sessionId: string, reason: string): void {
   const previousStatus = pendingFailureNotice.get(sessionId);
   pendingFailureNotice.delete(sessionId);
   notifyStatus(state, sessionId, previousStatus, "failed", reason);
+  // After the notification, not before: the tray line is the human's
+  // record that something broke, and it has to go out whether or not
+  // anything can be done about it automatically.
+  sessionFailureHook?.(sessionId, reason, previousStatus);
 }
 
 // Shared by the "git-status-changed" event listener in bootstrap() and

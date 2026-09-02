@@ -32,6 +32,8 @@
   import { runCard, resumeCard, relaunchCard, developCard } from "./cardRunActions";
   import { cardSessionState } from "./columnRunAction";
   import { developAvailable } from "./cardRun";
+  import { resumeNoteFor } from "./autoResume";
+  import { resumeTrail } from "./autoResumeState";
   import { findCardPlacement, stepStateOf } from "./orchestration";
   import {
     orchestrations,
@@ -343,6 +345,13 @@
   /// The agent's own account of what broke, when something did.
   const failureReason = $derived(
     binding ? ($layoutState.failureReasonById[binding.sessionId] ?? null) : null
+  );
+
+  /// What gavin did to this run without being asked. The detail comes
+  /// from the in-memory trail while the window that watched it is open;
+  /// the persisted attempt count keeps the FACT after a reload.
+  const resumeNote = $derived(
+    binding ? resumeNoteFor($resumeTrail[binding.path], binding.resumeAttempts) : null
   );
   // The daemon's status describes whatever occupies the session id NOW,
   // which for an interrupted run is the bare shell that replaced the
@@ -663,6 +672,13 @@
             this agent supports it, by reopening the same conversation rather than
             starting a new one.
           </p>
+        {/if}
+        {#if resumeNote}
+          <!-- A run gavin put back by itself. Without this the card
+               reads as one that never broke -- which is the whole point
+               of the trail: coming back to finished work, you have to be
+               able to find out it was not finished all along. -->
+          <p class="session-note">Recovered on its own: {resumeNote}.</p>
         {/if}
         {#if bindingInterrupted}
           <p class="session-note">
