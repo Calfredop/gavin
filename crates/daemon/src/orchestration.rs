@@ -97,6 +97,13 @@ impl OrchestrationStore {
         add_column_if_missing(&conn, "orch_stages", "name", "TEXT")?;
         // orch_rails predates branch binding for the same reason.
         add_column_if_missing(&conn, "orch_rails", "branch", "TEXT")?;
+        // v21: the agent CLI's own conversation id for this run, and the
+        // directory it was LAUNCHED in. Both nullable, because a profile
+        // with no verified resume argv records neither and a run from
+        // before v21 has neither -- and "no conversation to resume" is
+        // the honest reading of an absent id, not an error.
+        add_column_if_missing(&conn, "orch_step_runs", "conversation_id", "TEXT")?;
+        add_column_if_missing(&conn, "orch_step_runs", "launch_cwd", "TEXT")?;
         Ok(Self { conn })
     }
 
@@ -208,13 +215,15 @@ impl OrchestrationStore {
 
         let step_runs: Vec<StepRun> = self
             .conn
-            .prepare("SELECT step_id, state, session_id, reason FROM orch_step_runs")?
+            .prepare("SELECT step_id, state, session_id, reason, conversation_id, launch_cwd FROM orch_step_runs")?
             .query_map([], |row| {
                 Ok(StepRun {
                     step_id: row.get(0)?,
                     state: row.get(1)?,
                     session_id: row.get(2)?,
                     reason: row.get(3)?,
+                    conversation_id: row.get(4)?,
+                    launch_cwd: row.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -458,17 +467,29 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// `conversation_id` and `launch_cwd` are written on the way IN and
+    /// never cleared by a later write that omits them: the launch records
+    /// them once, and every subsequent transition of the same step (a
+    /// stall, a done) carries None. Losing them there would leave exactly
+    /// the state that most needs a resume -- a stalled step -- with
+    /// nothing to resume.
     pub fn set_step_run(
         &mut self,
         step_id: &str,
         state: &str,
         session_id: Option<&str>,
         reason: Option<&str>,
+        conversation_id: Option<&str>,
+        launch_cwd: Option<&str>,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO orch_step_runs (step_id, state, session_id, reason) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(step_id) DO UPDATE SET state = ?2, session_id = ?3, reason = ?4",
-            params![step_id, state, session_id, reason],
+            "INSERT INTO orch_step_runs (step_id, state, session_id, reason, conversation_id, launch_cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(step_id) DO UPDATE SET
+               state = ?2, session_id = ?3, reason = ?4,
+               conversation_id = COALESCE(?5, orch_step_runs.conversation_id),
+               launch_cwd = COALESCE(?6, orch_step_runs.launch_cwd)",
+            params![step_id, state, session_id, reason, conversation_id, launch_cwd],
         )?;
         Ok(())
     }
@@ -793,7 +814,7 @@ mod tests {
     fn run_state_survives_a_replace_that_keeps_the_step_id() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "done", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "done", Some("sess-1"), None, None, None).unwrap();
         // Same step id, moved into a differently-named rail.
         let mut moved = rail("r9", &[("t1", "/x/a.md")]);
         moved.name = "renamed".into();
@@ -808,7 +829,7 @@ mod tests {
     fn run_state_for_a_vanished_step_is_dropped() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "done", None, None).unwrap();
+        s.set_step_run("t1", "done", None, None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &none()).unwrap();
         assert!(s.get("ws-1").unwrap().step_runs.is_empty());
     }
@@ -817,7 +838,7 @@ mod tests {
     fn deleting_a_running_step_is_refused_and_changes_nothing() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None).unwrap();
         let err = s
             .replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-1"]))
             .unwrap_err()
@@ -836,7 +857,7 @@ mod tests {
     fn deleting_a_running_step_whose_session_is_gone_is_allowed() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-9"]))
             .unwrap();
         let o = s.get("ws-1").unwrap();
@@ -849,7 +870,7 @@ mod tests {
     fn deleting_a_running_step_with_no_session_is_allowed() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", None, None).unwrap();
+        s.set_step_run("t1", "running", None, None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r1", &[("t2", "/x/b.md")])], &[], &live(&["sess-1"]))
             .unwrap();
         assert_eq!(s.get("ws-1").unwrap().rails[0].stages[0].steps[0].id, "t2");
@@ -859,7 +880,7 @@ mod tests {
     fn moving_a_running_step_between_rails_is_allowed() {
         let mut s = store();
         s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
-        s.set_step_run("t1", "running", Some("sess-1"), None).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None).unwrap();
         s.replace_plan("ws-1", &[rail("r2", &[("t1", "/x/a.md")])], &[], &live(&["sess-1"])).unwrap();
         let o = s.get("ws-1").unwrap();
         assert_eq!(o.rails[0].id, "r2");

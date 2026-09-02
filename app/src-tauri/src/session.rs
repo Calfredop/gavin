@@ -1088,10 +1088,16 @@ pub struct SessionBaseline {
     /// per app PROCESS, so a reloaded frontend would otherwise come up
     /// believing every interrupted run is still going.
     pub interrupted: bool,
+    /// Why this session is `failed`, or None. Baselined for the same
+    /// reason `interrupted` is -- the reason arrives only as the
+    /// `session-failed` push, whose baseline rides on Attach -- and it
+    /// matters more here than there: a red session with nothing to say
+    /// for itself is exactly the state this feature exists to replace.
+    pub failure_reason: Option<String>,
 }
 
-/// Every live session's cwd, status, restored and interrupted flags, in
-/// one read.
+/// Every live session's cwd, status, restored, interrupted flags and
+/// failure reason, in one read.
 ///
 /// The frontend only ever learns these from pushes (`cwd-changed`,
 /// `session-status-changed`, `session-restored`), and their baseline is
@@ -1122,6 +1128,7 @@ pub fn get_session_baselines(
             status: s.status,
             restored: s.restored,
             interrupted: s.interrupted,
+            failure_reason: s.failure_reason,
         })
         .collect())
 }
@@ -1518,6 +1525,7 @@ mod resolve_workspaces_tests {
             status: "idle".to_string(),
             restored: false,
             interrupted: false,
+            failure_reason: None,
         }
     }
 
@@ -1529,6 +1537,7 @@ mod resolve_workspaces_tests {
             status: "exited".to_string(),
             restored: false,
             interrupted: false,
+            failure_reason: None,
         }
     }
 
@@ -1910,6 +1919,9 @@ fn attach_and_relay(
                 Response::SessionInterrupted { id } => {
                     let _ = reader_app_handle.emit("session-interrupted", id);
                 }
+                Response::SessionFailed { id, reason } => {
+                    let _ = reader_app_handle.emit("session-failed", (id, reason));
+                }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
                     let _ = reader_app_handle
                         .emit("orchestration-changed", (workspace_id, orchestration));
@@ -2214,6 +2226,38 @@ pub fn snapshot_session(
     .map_err(|e| e.to_string())
 }
 
+/// Tells the daemon what THIS session's agent prints when it has stopped
+/// because something broke.
+///
+/// Sent once, right after the session is created, by whichever surface
+/// launched an agent. The patterns come from the agent profile
+/// (`agent_setup::AGENT_PROFILES`) and never from the daemon: the daemon
+/// hosts every workspace's agents at once and has no idea which CLI any
+/// of them is, while a hard-coded pattern would be a silent regression
+/// the day a CLI reworks its messages -- and opencode's error text is
+/// still unverified.
+///
+/// Best-effort, exactly like `snapshot_session`: against a daemon older
+/// than v21 the gate refuses the request, nothing is sent, and a quiet
+/// agent reads as idle the way it always did. A profile with no verified
+/// patterns sends none, which the daemon reads as "no failure detection
+/// for this session" -- never as "nothing failed".
+#[tauri::command]
+pub fn set_failure_patterns(
+    session_id: String,
+    patterns: Vec<String>,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetFailurePatterns { id: session_id, patterns },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
 #[tauri::command]
 pub fn kill_session(
     session_id: String,
@@ -2405,13 +2449,22 @@ pub fn set_step_run(
     state_value: String,
     session_id: Option<String>,
     reason: Option<String>,
+    conversation_id: Option<String>,
+    launch_cwd: Option<String>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
         &current_compat(&compat),
-        &Request::SetStepRun { step_id, state: state_value, session_id, reason },
+        &Request::SetStepRun {
+            step_id,
+            state: state_value,
+            session_id,
+            reason,
+            conversation_id,
+            launch_cwd,
+        },
     )
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
@@ -2938,13 +2991,23 @@ pub fn link_card_session(
     session_id: String,
     cwd: String,
     command: Option<String>,
+    conversation_id: Option<String>,
+    launch_cwd: Option<String>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = send_command_reconnecting(
         &state.0,
         &current_compat(&compat),
-        &Request::LinkCardSession { workspace_id, path, session_id, cwd, command },
+        &Request::LinkCardSession {
+            workspace_id,
+            path,
+            session_id,
+            cwd,
+            command,
+            conversation_id,
+            launch_cwd,
+        },
     )
     .map_err(|e| e.to_string())?;
     match resp {
@@ -3151,6 +3214,7 @@ mod adopt_session_tests {
             status: "working".to_string(),
             restored: false,
             interrupted: false,
+            failure_reason: None,
         }
     }
 
@@ -3162,6 +3226,7 @@ mod adopt_session_tests {
             status: "exited".to_string(),
             restored: false,
             interrupted: false,
+            failure_reason: None,
         }
     }
 
@@ -3298,6 +3363,7 @@ mod main_session_tests {
             status: status.to_string(),
             restored: false,
             interrupted: false,
+            failure_reason: None,
         }
     }
 
@@ -3511,12 +3577,21 @@ mod gate_tests {
                 session_id: "s".into(),
                 cwd: "c".into(),
                 command: None,
+                conversation_id: None,
+                launch_cwd: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
-            Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None },
+            Request::SetStepRun {
+                step_id: "s".into(),
+                state: "pending".into(),
+                session_id: None,
+                reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+            },
             Request::GetOrchestrationByRoot { root_path: "r".into() },
             Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
             Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },

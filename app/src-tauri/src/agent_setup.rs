@@ -198,6 +198,45 @@ pub struct AgentProfile {
     /// ids that rot -- so those rows ship empty and the user types what
     /// they want. A wrong name here lands in somebody's argv.
     pub models: &'static [&'static str],
+    /// The text this agent prints on screen when it has STOPPED because
+    /// something BROKE, rather than because its turn ended. Handed to the
+    /// daemon per session (`Request::SetFailurePatterns`) and matched
+    /// against the RENDERED screen, which is the only place an error
+    /// banner painted by a TUI is contiguous text.
+    ///
+    /// Verified rows only, and the empty list is the honest default:
+    /// no patterns means NO failure detection for this profile, never
+    /// "nothing failed". A guessed pattern is worse than none -- it
+    /// paints healthy sessions as broken and pauses rails for nothing.
+    ///
+    /// claude-code's was measured, not guessed: a connection reset
+    /// before the response, a stream killed mid-flight, a 429 usage
+    /// limit and an expired token all leave the process ALIVE and quiet
+    /// with one line on screen, and the only thing every one of them
+    /// shares is `API Error:`.
+    pub failure_patterns: &'static [&'static str],
+    /// The argv that makes this agent take a conversation id supplied by
+    /// the CALLER: `<command> <session_id_args> <uuid>`. Gavin mints the
+    /// uuid when it builds the run command, so it holds the id from the
+    /// first byte and never has to scrape the agent's store or guess by
+    /// mtime.
+    ///
+    /// Empty where the convention is unverified -- the same posture
+    /// `headless_args` takes, and for the same reason: a wrong flag puts
+    /// garbage in the agent's argv.
+    pub session_id_args: &'static str,
+    /// The argv that reopens that conversation: `<command> <resume_args>
+    /// <uuid>`, run in the directory the run was LAUNCHED in.
+    ///
+    /// Always empty when `session_id_args` is (see the guard test): an id
+    /// gavin never fixed at launch is an id it cannot resume by, and
+    /// resuming by anything else is how you get a silent fresh
+    /// conversation wearing a better name.
+    ///
+    /// A profile with none keeps today's behaviour and falls back to
+    /// `composeResumeTaskPrompt` -- a written reconstruction instead of
+    /// the conversation itself.
+    pub resume_args: &'static str,
     pub mcp: Option<McpLayout>,
 }
 
@@ -211,6 +250,23 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         command: "claude",
         prompt_arg: true,
         headless_args: "-p --allowedTools \"Bash(git *)\" --",
+        // Measured under a PTY against a fake API (2026-09-02, Claude
+        // Code v2.1.258): a connection reset, a stream killed mid-flight,
+        // a 429 usage limit and a 401 expired token all end with a line
+        // beginning "API Error:" and the process still alive at its
+        // prompt. During the retries the session is NOT quiet -- the
+        // countdown repaints once a second -- which is why the daemon
+        // only reads this at the moment a quiet session would go idle.
+        failure_patterns: &["API Error:"],
+        // `claude --session-id <uuid>` (a real UUID; the CLI validates
+        // it) and `claude --resume <uuid>`. Verified end to end: the
+        // transcript is written to `<uuid>.jsonl`, resume comes back
+        // carrying the conversation, and it APPENDS to that same file
+        // rather than rotating it -- which is why gavin reuses the id
+        // instead of `--fork-session`. The failed attempt stays readable
+        // either way, so the one argument for forking does not apply.
+        session_id_args: "--session-id",
+        resume_args: "--resume",
         mcp: Some(McpLayout {
             config_file: ".mcp.json",
             server_key: "gavin",
@@ -259,6 +315,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // positional PROMPT that starts the session.
         prompt_arg: true,
         headless_args: "",
+        failure_patterns: &[],
+        session_id_args: "",
+        resume_args: "",
         mcp: Some(McpLayout {
             config_file: ".codex/config.toml",
             server_key: "gavin",
@@ -278,6 +337,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // (-p would run it headless and exit.)
         prompt_arg: true,
         headless_args: "",
+        failure_patterns: &[],
+        session_id_args: "",
+        resume_args: "",
         mcp: Some(McpLayout {
             config_file: ".gemini/settings.json",
             server_key: "gavin",
@@ -298,6 +360,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // binary; a user who wants it points `command` at it in Settings.
         prompt_arg: false,
         headless_args: "",
+        failure_patterns: &[],
+        session_id_args: "",
+        resume_args: "",
         mcp: Some(McpLayout {
             config_file: ".cursor/mcp.json",
             server_key: "gavin",
@@ -317,6 +382,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // Prompts go through the `opencode run` subcommand instead.
         prompt_arg: false,
         headless_args: "",
+        failure_patterns: &[],
+        session_id_args: "",
+        resume_args: "",
         mcp: Some(McpLayout {
             config_file: "opencode.json",
             server_key: "gavin",
@@ -333,6 +401,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         command: "",
         prompt_arg: false,
         headless_args: "",
+        failure_patterns: &[],
+        session_id_args: "",
+        resume_args: "",
         mcp: None,
     },
 ];
@@ -974,6 +1045,14 @@ pub struct AgentProfileDto {
     /// Stable model aliases offered as picks; empty where the CLI has
     /// none worth pinning.
     pub models: Vec<String>,
+    /// What this agent prints when it has BROKEN. Empty means no failure
+    /// detection for the profile (see AgentProfile::failure_patterns);
+    /// the app hands these to the daemon per session.
+    pub failure_patterns: Vec<String>,
+    /// The launch and resume argv for conversation resume, both empty
+    /// where the convention is unverified.
+    pub session_id_args: String,
+    pub resume_args: String,
 }
 
 /// The dialects a `custom` profile can be pointed at, for the settings
@@ -1016,6 +1095,9 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             headless_args: p.headless_args.to_string(),
             model_flag: p.model_flag.to_string(),
             models: p.models.iter().map(|m| m.to_string()).collect(),
+            failure_patterns: p.failure_patterns.iter().map(|f| f.to_string()).collect(),
+            session_id_args: p.session_id_args.to_string(),
+            resume_args: p.resume_args.to_string(),
         })
         .collect()
 }
@@ -1157,6 +1239,46 @@ mod tests {
                 "{} must end its headless argv with `--`",
                 p.id
             );
+        }
+    }
+
+    /// Conversation resume is all-or-nothing per profile. Resuming by an
+    /// id gavin never fixed at launch is not resume at all -- the CLI
+    /// would open a picker, or start fresh, which is precisely the
+    /// silent from-scratch second attempt this feature exists to
+    /// prevent. So a row either verifies both halves or ships neither,
+    /// and the app falls back to a written reconstruction.
+    #[test]
+    fn conversation_resume_argv_is_all_or_nothing_per_profile() {
+        let resumable: Vec<&str> =
+            AGENT_PROFILES.iter().filter(|p| !p.resume_args.is_empty()).map(|p| p.id).collect();
+        assert_eq!(resumable, ["claude-code"]);
+        for p in AGENT_PROFILES {
+            assert_eq!(
+                p.resume_args.is_empty(),
+                p.session_id_args.is_empty(),
+                "{} verifies one half of conversation resume and not the other",
+                p.id
+            );
+        }
+    }
+
+    /// The empty pattern list is a real answer -- "nobody has verified
+    /// what this agent says when it breaks" -- and it must read as NO
+    /// detection rather than as a licence to guess. Only rows measured
+    /// against the real CLI carry one.
+    #[test]
+    fn only_verified_profiles_carry_failure_patterns() {
+        let detecting: Vec<&str> = AGENT_PROFILES
+            .iter()
+            .filter(|p| !p.failure_patterns.is_empty())
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(detecting, ["claude-code"]);
+        for p in AGENT_PROFILES {
+            for pattern in p.failure_patterns {
+                assert!(!pattern.trim().is_empty(), "{} carries a blank pattern", p.id);
+            }
         }
     }
 

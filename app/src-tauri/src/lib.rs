@@ -62,6 +62,7 @@ pub fn run() {
             session::kill_session,
             session::adopt_session,
             session::snapshot_session,
+            session::set_failure_patterns,
             session::get_workspaces_state,
             session::set_workspaces_state,
             session::get_theme_pref,

@@ -57,11 +57,32 @@ impl KanbanStore {
                 session_id TEXT NOT NULL,
                 cwd TEXT NOT NULL,
                 command TEXT,
+                -- v21: the agent CLI's own conversation id for this run,
+                -- and the directory it was LAUNCHED in (`cwd` above
+                -- follows OSC 7 and drifts the moment the agent `cd`s).
+                -- Both nullable: a profile with no verified resume argv
+                -- records neither.
+                conversation_id TEXT,
+                launch_cwd TEXT,
                 PRIMARY KEY (workspace_id, path)
             );
             DROP TABLE IF EXISTS kanban_card_labels;
             DROP TABLE IF EXISTS kanban_cards;",
         )?;
+        // The two v21 columns above only reach a database created by
+        // this build: `CREATE TABLE IF NOT EXISTS` is a no-op against the
+        // card_sessions every existing install already has, and
+        // `read_board` selects both by name -- so without this the board
+        // stops loading entirely ("no such column: conversation_id") the
+        // moment a v21 daemon opens a v20 file. Same swallow-the-duplicate
+        // idiom as registry.rs: SQLite has no ADD COLUMN IF NOT EXISTS,
+        // and re-running one is a plain error, not a corruption risk.
+        for stmt in [
+            "ALTER TABLE card_sessions ADD COLUMN conversation_id TEXT",
+            "ALTER TABLE card_sessions ADD COLUMN launch_cwd TEXT",
+        ] {
+            let _ = conn.execute(stmt, []);
+        }
         Ok(Self { conn })
     }
 
@@ -138,7 +159,8 @@ impl KanbanStore {
         let mut card_sessions = Vec::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT path, session_id, cwd, command FROM card_sessions WHERE workspace_id = ?1",
+                "SELECT path, session_id, cwd, command, conversation_id, launch_cwd \
+                 FROM card_sessions WHERE workspace_id = ?1",
             )?;
             let rows = stmt.query_map(params![workspace_id], |row| {
                 Ok(CardSession {
@@ -146,6 +168,8 @@ impl KanbanStore {
                     session_id: row.get(1)?,
                     cwd: row.get(2)?,
                     command: row.get(3)?,
+                    conversation_id: row.get(4)?,
+                    launch_cwd: row.get(5)?,
                 })
             })?;
             for row in rows {
@@ -200,13 +224,16 @@ impl KanbanStore {
         session_id: &str,
         cwd: &str,
         command: Option<&str>,
+        conversation_id: Option<&str>,
+        launch_cwd: Option<&str>,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO card_sessions (workspace_id, path, session_id, cwd, command)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO card_sessions (workspace_id, path, session_id, cwd, command, conversation_id, launch_cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(workspace_id, path) DO UPDATE SET
-               session_id = excluded.session_id, cwd = excluded.cwd, command = excluded.command",
-            params![workspace_id, path, session_id, cwd, command],
+               session_id = excluded.session_id, cwd = excluded.cwd, command = excluded.command,
+               conversation_id = excluded.conversation_id, launch_cwd = excluded.launch_cwd",
+            params![workspace_id, path, session_id, cwd, command, conversation_id, launch_cwd],
         )?;
         Ok(())
     }
@@ -361,9 +388,9 @@ mod tests {
     fn card_sessions_upsert_unlink_and_ride_the_board() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'")).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-2", "/p", None).unwrap(); // upsert replaces
-        store.link_card_session("ws-2", "/p/t.md", "s-9", "/p", None).unwrap(); // other workspace
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'"), None, None).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, None, None).unwrap(); // upsert replaces
+        store.link_card_session("ws-2", "/p/t.md", "s-9", "/p", None, None, None).unwrap(); // other workspace
 
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.card_sessions.len(), 1);
@@ -376,13 +403,57 @@ mod tests {
         assert_eq!(store.get_board("ws-2").unwrap().card_sessions.len(), 1);
     }
 
+    /// Every other test here opens a database this build created, which
+    /// is why the missing v21 ALTER survived: `CREATE TABLE IF NOT
+    /// EXISTS` hands a fresh file the new columns and hides the fact
+    /// that an existing one never gets them. This test starts from the
+    /// v20 shape on purpose -- against the unmigrated table `read_board`
+    /// fails outright with "no such column: conversation_id", taking the
+    /// whole board down, not just the two new fields.
+    #[test]
+    fn opening_a_pre_v21_database_migrates_card_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanban.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE kanban_boards (workspace_id TEXT PRIMARY KEY);
+                 CREATE TABLE card_sessions (
+                     workspace_id TEXT NOT NULL,
+                     path TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     cwd TEXT NOT NULL,
+                     command TEXT,
+                     PRIMARY KEY (workspace_id, path)
+                 );
+                 INSERT INTO kanban_boards VALUES ('ws-1');
+                 INSERT INTO card_sessions VALUES ('ws-1', '/p/t.md', 's-1', '/p', NULL);",
+            )
+            .unwrap();
+        }
+
+        let mut store = KanbanStore::open(&path).unwrap();
+        let sessions = store.get_board("ws-1").unwrap().card_sessions;
+
+        assert_eq!(sessions.len(), 1, "the pre-existing link survives the migration");
+        assert_eq!(sessions[0].session_id, "s-1");
+        assert_eq!(sessions[0].conversation_id, None, "a row written before v21 has no conversation");
+        assert_eq!(sessions[0].launch_cwd, None);
+
+        // Idempotent: the ALTERs run on every open, and the second one
+        // must swallow the duplicate rather than fail the open.
+        drop(store);
+        let mut reopened = KanbanStore::open(&path).unwrap();
+        assert_eq!(reopened.get_board("ws-1").unwrap().card_sessions.len(), 1);
+    }
+
     #[test]
     fn rename_card_path_follows_a_moved_card_across_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/plans/t.md", "s-1", "/p", None).unwrap();
-        store.link_card_session("ws-2", "/p/plans/t.md", "s-2", "/p", None).unwrap();
-        store.link_card_session("ws-1", "/p/plans/other.md", "s-3", "/p", None).unwrap();
+        store.link_card_session("ws-1", "/p/plans/t.md", "s-1", "/p", None, None, None).unwrap();
+        store.link_card_session("ws-2", "/p/plans/t.md", "s-2", "/p", None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/plans/other.md", "s-3", "/p", None, None, None).unwrap();
 
         store.rename_card_path("/p/plans/t.md", "/p/plans/done/t.md").unwrap();
 
@@ -398,9 +469,9 @@ mod tests {
     fn unlink_all_clears_a_path_across_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None).unwrap();
-        store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None).unwrap();
-        store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, None, None).unwrap();
+        store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None, None, None).unwrap();
 
         store.unlink_card_session_all("/p/t.md").unwrap();
 

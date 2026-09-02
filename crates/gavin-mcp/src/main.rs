@@ -968,6 +968,8 @@ mod tests {
                 state: "running".into(),
                 session_id: Some("s-1".into()),
                 reason: None,
+                conversation_id: None,
+                launch_cwd: None,
             }],
         }
     }
