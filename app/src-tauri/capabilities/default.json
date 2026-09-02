@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window. The dialog plugin is narrowed to allow-open deliberately: a file picker is a real OS service, while alerts and confirms are drawn in-app by dialog.ts + AppDialog.svelte, so a reintroduced native message()/confirm() fails here rather than quietly looking foreign.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -15,7 +15,7 @@
       "identifier": "opener:allow-open-path",
       "allow": [{ "path": "/**" }, { "path": "**" }]
     },
-    "dialog:default",
+    "dialog:allow-open",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
     "os:allow-platform",

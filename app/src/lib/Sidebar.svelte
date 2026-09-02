@@ -94,7 +94,7 @@
   import { agentCommitPhase, gitStore } from "./gitState";
   import { hintDigitFor } from "./shortcuts";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import {
     buildWorkspaceMenuEntries,
@@ -506,7 +506,7 @@
 
   function reportMenuError(text: string): void {
     console.error(text);
-    void message(text, { title: "gavin", kind: "error" });
+    void showAlert({ title: "That didn't work", lines: [text] });
   }
 
   function menuHooks(): SidebarMenuHooks {

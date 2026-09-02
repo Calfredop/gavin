@@ -1,6 +1,6 @@
 import { writable, get } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { askConfirm } from "./dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
@@ -821,11 +821,17 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
   const state = get(layoutState);
   const tombstone = workspace.reclaimable(state, workspaceId, rootPath);
   if (tombstone) {
-    const restore = await confirm(
-      `gavin has a board, rails and tools saved for "${tombstone.name}", which was removed from ` +
-        `this folder. Restore them, or start this workspace fresh?`,
-      { title: "gavin", okLabel: "Restore", cancelLabel: "Start fresh" }
-    );
+    const restore = await askConfirm({
+      title: `Restore the saved workspace "${tombstone.name}"?`,
+      lines: [
+        "gavin still has its board, rails and tools from before this folder was removed.",
+        "Start fresh forgets them for good — this is the only moment that record can be spent.",
+      ],
+      confirmLabel: "Restore",
+      // Neither answer is a cancel: both consume the tombstone, so the
+      // dismissing button has to say what dismissing does.
+      cancelLabel: "Start fresh",
+    });
     if (restore) {
       await restoreRemovedWorkspace(state, workspaceId, tombstone, rootPath);
       return;

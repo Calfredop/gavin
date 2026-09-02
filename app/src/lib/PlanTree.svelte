@@ -12,7 +12,7 @@
   import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X, Archive } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { openPath } from "@tauri-apps/plugin-opener";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import {
     contextRowMenuItems,
@@ -128,7 +128,7 @@
     openPath(folderPath).catch((e) => {
       const text = `Couldn't open in Finder: ${e}`;
       console.error(text);
-      void message(text, { title: "gavin", kind: "error" });
+      void showAlert({ title: "Couldn't open in Finder", lines: [String(e)] });
     });
   }
 

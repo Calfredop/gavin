@@ -20,7 +20,7 @@
   import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
   import { dirtyPaths } from "./fileEditing";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
   import { X, Plus, RotateCw, Kanban, Pin, SquareArrowOutUpRight } from "@lucide/svelte";
@@ -192,7 +192,7 @@
 
   function reportMenuError(text: string): void {
     console.error(text);
-    void message(text, { title: "gavin", kind: "error" });
+    void showAlert({ title: "That didn't work", lines: [text] });
   }
 
   function openTabMenu(e: MouseEvent, sessionId: string): void {
