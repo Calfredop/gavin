@@ -932,7 +932,16 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Re-running over a hand-edited config leaves the other servers, settings and TOML comments alone",
         hint: "Put a comment and a second server in .codex/config.toml first.",
       },
-      { id: "wiz-complete", text: "Once all four are done the Home card disappears" },
+      {
+        id: "wiz-complete",
+        text: "The Home card disappears once Agent, Integration and PRD are done — an unlaunched workspace does not nag",
+        hint: "Launch is optional, so it is not part of the condition. Skip it and the card must already be gone.",
+      },
+      {
+        id: "wiz-stop-no-nag",
+        text: "Pressing Stop on the Home tab's Main agent panel does NOT bring the setup banner back",
+        hint: "Same for the agent exiting on its own — type exit in it. Launch's evidence is a live session, the only step that can un-happen; the banner must not read it.",
+      },
       { id: "wiz-unfiled", text: "The Scratchpad workspace never offers the wizard" },
     ],
   },

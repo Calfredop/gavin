@@ -5,9 +5,18 @@ export interface SetupProgress {
   /// The first step not yet done, or null when everything is.
   next: SetupStep | null;
   complete: boolean;
+  /// Every step whose evidence is durable -- everything but `launch`.
+  /// The three of them are configuration that stays configured; launch's
+  /// evidence is a live process, so it is the only step that can
+  /// un-happen, and it is optional besides (W2). A nag must read this,
+  /// never `complete`: keyed off `complete`, pressing Stop on the home
+  /// tab's agent panel -- or the agent simply exiting -- reads as a
+  /// finished workspace coming undone (design §5.4: an unlaunched
+  /// workspace does not nag).
+  configured: boolean;
   /// True while an input the derivation needs has not been read yet.
-  /// The other three fields then describe only the evidence seen so far
-  /// and must not be acted on: a caller that renders "setup unfinished"
+  /// Every other field then describes only the evidence seen so far and
+  /// must not be acted on: a caller that renders "setup unfinished"
   /// while this is true is really rendering "the reads are not back".
   pending: boolean;
 }
@@ -47,7 +56,7 @@ export function setupProgress(input: SetupInput): SetupProgress {
     // Every later step writes under the root, so without one nothing can
     // be done yet -- whatever else happens to be true. Settled, not
     // pending: no pending read could change this answer.
-    return { done: [], next: "agent", complete: false, pending: false };
+    return { done: [], next: "agent", complete: false, configured: false, pending: false };
   }
   const done: SetupStep[] = [];
   if (input.configCommand?.trim()) done.push("agent");
@@ -63,7 +72,8 @@ export function setupProgress(input: SetupInput): SetupProgress {
   const ordered = ORDER.filter((s) => done.includes(s));
   const next = ORDER.find((s) => !done.includes(s)) ?? null;
   const pending = input.agentFileBody === undefined || input.prdBody === undefined;
-  return { done: ordered, next, complete: next === null, pending };
+  const configured = ORDER.every((s) => s === "launch" || done.includes(s));
+  return { done: ordered, next, complete: next === null, configured, pending };
 }
 
 export interface PrdSections {

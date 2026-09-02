@@ -32,6 +32,22 @@ const NOTHING_DONE = {
   mainSessionId: null,
 };
 
+const ALL_DONE = {
+  hasRoot: true,
+  configCommand: "claude",
+  agentFileBody: "<!-- gavin:start -->",
+  prdBody: TEMPLATE.replace(PRD_PLACEHOLDERS.vision, "Real."),
+  mainSessionId: "agent-1",
+};
+
+// The home tab's banner lives entirely in compiled markup, which no other
+// suite can see -- vite hands SSR nothing for a component's template.
+const SOURCES = import.meta.glob("./*.svelte", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
 describe("setupProgress", () => {
   it("reports nothing done for a freshly initialized root", () => {
     const p = setupProgress(NOTHING_DONE);
@@ -64,16 +80,51 @@ describe("setupProgress", () => {
   });
 
   it("counts launch from the session id, and completes at four", () => {
-    const p = setupProgress({
-      hasRoot: true,
-      configCommand: "claude",
-      agentFileBody: "<!-- gavin:start -->",
-      prdBody: TEMPLATE.replace(PRD_PLACEHOLDERS.vision, "Real."),
-      mainSessionId: "agent-1",
-    });
+    const p = setupProgress(ALL_DONE);
     expect(p.done).toEqual(["agent", "integration", "prd", "launch"]);
     expect(p.next).toBeNull();
     expect(p.complete).toBe(true);
+  });
+
+  // Launch is the one step whose evidence is a live process rather than a
+  // file, so it is the one step that can un-happen -- and it is optional
+  // besides (W2). `configured` is the three durable steps, and it is what
+  // the nag is allowed to read; `complete` still means all four.
+  it("counts a workspace as configured before the agent is ever launched", () => {
+    const p = setupProgress({ ...ALL_DONE, mainSessionId: null });
+    expect(p.configured).toBe(true);
+    expect(p.complete).toBe(false);
+    expect(p.next).toBe("launch");
+  });
+
+  it("stays configured when the main agent is stopped", () => {
+    expect(setupProgress(ALL_DONE).configured).toBe(true);
+    expect(setupProgress({ ...ALL_DONE, mainSessionId: null }).configured).toBe(true);
+  });
+
+  it("is not configured while a file-backed step is undone, launched or not", () => {
+    expect(setupProgress({ ...NOTHING_DONE, mainSessionId: "agent-1" }).configured).toBe(false);
+    expect(setupProgress({ ...ALL_DONE, configCommand: null }).configured).toBe(false);
+    expect(setupProgress({ ...ALL_DONE, agentFileBody: "# hand written\n" }).configured).toBe(
+      false
+    );
+    expect(setupProgress({ ...ALL_DONE, prdBody: TEMPLATE }).configured).toBe(false);
+  });
+
+  it("is not configured without a root", () => {
+    expect(setupProgress({ ...ALL_DONE, hasRoot: false }).configured).toBe(false);
+  });
+
+  // Which field the banner reads IS the fix: `complete` puts a live
+  // process in the condition, so Stop on the home agent panel -- or the
+  // agent simply exiting -- re-raised a finished workspace's setup nag.
+  it("keys the home tab's setup banner off `configured`, not `complete`", () => {
+    const src = SOURCES["./HomeHubView.svelte"];
+    expect(src).toBeTruthy();
+    const guard = /\{#if ([^{}]+)\}\s*<button[^>]*class="setup-card"/.exec(src);
+    expect(guard, "no {#if} guarding .setup-card").toBeTruthy();
+    expect(guard?.[1]).toContain("!setup.configured");
+    expect(guard?.[1]).not.toContain("setup.complete");
   });
 
   it("next skips steps already done out of order", () => {

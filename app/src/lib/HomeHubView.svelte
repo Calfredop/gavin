@@ -268,8 +268,11 @@
   <div class="home">
     <!-- Not while pending: an unfinished setup and an unfinished read
          look identical from here, and only one of them is worth a
-         banner. -->
-    {#if root && !setup.pending && !setup.complete}
+         banner. And `configured`, not `complete`: launch is optional and
+         its evidence is a live session, so keyed off `complete` this
+         banner reappeared the moment the agent panel's Stop was pressed
+         (design §5.4 -- an unlaunched workspace does not nag). -->
+    {#if root && !setup.pending && !setup.configured}
       <button type="button" class="setup-card" onclick={() => openWizard(workspaceId)}>
         <b>Finish setting up this workspace</b>
         <span>{setup.done.length} of 4 done — continue</span>
