@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import { contextMenu, closeContextMenu, openContextMenu, openContextMenuFromEvent } from "./contextMenu";
+import {
+  contextMenu,
+  closeContextMenu,
+  openContextMenu,
+  openContextMenuFromEvent,
+  openMenuUnder,
+} from "./contextMenu";
 
 beforeEach(() => closeContextMenu());
 
@@ -35,5 +41,17 @@ describe("openContextMenu", () => {
   it("ignores a list without any actionable item", () => {
     openContextMenu(0, 0, []);
     expect(get(contextMenu)).toBeNull();
+  });
+});
+
+describe("openMenuUnder", () => {
+  function fakeButton(rect: { left: number; bottom: number }) {
+    return { getBoundingClientRect: () => rect } as unknown as HTMLElement;
+  }
+
+  it("anchors the menu at the button's bottom-left, not at the pointer", () => {
+    const entries = [{ label: "Single", onPick: () => {} }];
+    openMenuUnder(fakeButton({ left: 120, bottom: 36 }), entries);
+    expect(get(contextMenu)).toEqual({ x: 120, y: 40, entries });
   });
 });

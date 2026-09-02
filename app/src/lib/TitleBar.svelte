@@ -1,14 +1,24 @@
 <script lang="ts">
+  import { get } from "svelte/store";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { invoke } from "@tauri-apps/api/core";
-  import { layoutState, splitPane, closePane, createPage } from "./layoutState";
-  import { presetSingle, presetSideBySide, presetGrid2x2, type LayoutNode } from "./layout";
+  import {
+    layoutState,
+    splitPane,
+    closePane,
+    createPage,
+    appHubOpen,
+    switchWorkspaceView,
+  } from "./layoutState";
   import { confirmPaneClose } from "./confirmClose";
   import { getActiveWorkspace } from "./workspace";
-  import { Columns2, Rows2, X, Square, Grid2x2 } from "@lucide/svelte";
+  import { contextMenu, openMenuUnder } from "./contextMenu";
+  import { paneControlsApply, newPageEntries, type PagePreset } from "./titleBarActions";
+  import { Columns2, Rows2, X, Plus, ChevronDown } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import WindowControls from "./WindowControls.svelte";
   import { isMacSync } from "./platform";
+  import { tooltip } from "./tooltip";
   import { createDoubleClickTracker, doubleClickAction } from "./titleBarGesture";
 
   // Synchronous: the traffic lights must be on the correct side in the
@@ -28,6 +38,11 @@
   // The spacer deliberately has no data-tauri-drag-region: Tauri's
   // injected script would otherwise fire its own maximize as well.
   const doubleClick = createDoubleClickTracker();
+
+  // The pane controls address the focused pane of the active page, which
+  // only exists on screen in the terminal view -- see titleBarActions.ts.
+  const paneControls = $derived(paneControlsApply($layoutState, $appHubOpen));
+  const activeWorkspace = $derived(getActiveWorkspace($layoutState));
 
   function onBarMouseDown(event: MouseEvent): void {
     if (doubleClick.mousedown(event) === "drag") {
@@ -64,39 +79,74 @@
     }
   }
 
-  // Presets create a new page in the active workspace rather than
-  // replacing the current one -- the one, unified way to add a page,
-  // per this milestone's design.
-  async function createPageWithPreset(
-    buildTree: (freshIds: string[]) => LayoutNode,
-    sessionCount: number
-  ): Promise<void> {
+  // A preset creates a new page in the active workspace rather than
+  // replacing the current one -- the one, unified way to add a page, per
+  // this milestone's design. The view switch is what makes the page
+  // visible: createPage activates the workspace but never its terminal
+  // view, and this button is reachable from every hub tab, where the
+  // click would otherwise look like nothing happened.
+  async function createPresetPage(preset: PagePreset): Promise<void> {
     const ws = getActiveWorkspace($layoutState);
     if (!ws) return;
-    await createPage(ws.id, buildTree, sessionCount, `Page ${ws.pages.length + 1}`);
+    const pageId = await createPage(
+      ws.id,
+      preset.build,
+      preset.sessionCount,
+      `Page ${ws.pages.length + 1}`
+    );
+    if (pageId) await switchWorkspaceView(ws.id, "terminal");
   }
 
-  async function applySingle(): Promise<void> {
-    await createPageWithPreset(([id]) => presetSingle(id), 1);
+  // The shared menu layer closes on any pointerdown outside itself, and
+  // that lands before this button's click: a naive onclick would shut
+  // the dropdown and reopen it in the same press, so the button that
+  // opened the menu could never close it. The press records whether a
+  // menu was already up; the click that follows only opens when none
+  // was -- and a keyboard activation, which has no pointerdown at all,
+  // always opens.
+  let dismissedMenu = false;
+
+  function onNewPagePointerDown(): void {
+    dismissedMenu = get(contextMenu) !== null;
   }
-  async function applySideBySide(): Promise<void> {
-    await createPageWithPreset(([a, b]) => presetSideBySide(a, b), 2);
-  }
-  async function applyGrid(): Promise<void> {
-    await createPageWithPreset(([a, b, c, d]) => presetGrid2x2(a, b, c, d), 4);
+
+  function openNewPageMenu(event: MouseEvent): void {
+    const dismissed = dismissedMenu;
+    dismissedMenu = false;
+    if (dismissed) return;
+    openMenuUnder(
+      event.currentTarget as HTMLElement,
+      newPageEntries((preset) => void createPresetPage(preset))
+    );
   }
 </script>
 
 {#snippet actions()}
-  <IconButton icon={Columns2} label="Split Right" variant="filled" size={16} shortcut="split-right" onclick={() => split("row")} />
-  <IconButton icon={Rows2} label="Split Down" variant="filled" size={16} shortcut="split-down" onclick={() => split("column")} />
-  <IconButton icon={X} label="Close Pane" variant="filled" size={16} onclick={handleClosePane} />
-  <div class="presets">
-    <span>Presets:</span>
-    <IconButton icon={Square} label="Single" text="Single" variant="filled" size={14} onclick={applySingle} />
-    <IconButton icon={Columns2} label="Side by Side" text="Side by Side" variant="filled" size={14} onclick={applySideBySide} />
-    <IconButton icon={Grid2x2} label="2×2 Grid" text="2×2 Grid" variant="filled" size={14} onclick={applyGrid} />
-  </div>
+  {#if paneControls}
+    <IconButton icon={Columns2} label="Split Right" variant="filled" size={16} shortcut="split-right" onclick={() => split("row")} />
+    <IconButton icon={Rows2} label="Split Down" variant="filled" size={16} shortcut="split-down" onclick={() => split("column")} />
+    <IconButton icon={X} label="Close Pane" variant="filled" size={16} onclick={handleClosePane} />
+  {/if}
+  <!-- The tooltip hangs on the wrapper, not the button: a disabled
+       element fires no mouseenter, so the reason it is disabled would
+       never be readable from the button itself. -->
+  <span
+    class="new-page"
+    use:tooltip={activeWorkspace ? "" : "Open a workspace to add a page to"}
+  >
+    <IconButton
+      icon={Plus}
+      label="New page"
+      text="New page"
+      variant="filled"
+      size={14}
+      disabled={!activeWorkspace}
+      onpointerdown={onNewPagePointerDown}
+      onclick={openNewPageMenu}
+    >
+      <ChevronDown size={12} />
+    </IconButton>
+  </span>
 {/snippet}
 
 <div class="titlebar">
@@ -132,10 +182,9 @@
     align-items: center;
     padding: 4px 8px;
   }
-  .presets {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    margin-left: 8px;
+  /* Inline-flex, not the default inline: the wrapper exists only to
+     carry the tooltip, and must measure exactly like the button. */
+  .new-page {
+    display: inline-flex;
   }
 </style>

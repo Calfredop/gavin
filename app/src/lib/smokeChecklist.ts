@@ -904,6 +904,34 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Title bar",
+    items: [
+      {
+        id: "bar-pane-controls-terminal",
+        text: "On a terminal page the bar shows Split Right, Split Down and Close Pane, and all three act on the focused pane",
+      },
+      {
+        id: "bar-pane-controls-hub",
+        text: "Switching to any hub tab (Home, Kanban, Git…) takes those three away; going back to the terminal brings them back",
+        hint: "They address the focused pane of the active page, which a hub tab keeps but never shows — clicking Split there used to spawn a session into a page nowhere on screen. ⌘D already refused from a hub tab.",
+      },
+      {
+        id: "bar-pane-controls-app-hub",
+        text: "Opening the app hub takes them away too, even though the workspace under it was on a terminal page",
+      },
+      {
+        id: "bar-new-page-menu",
+        text: "“New page” stays put on every tab; clicking it drops a menu of the presets — Single, Side by Side, 2×2 Grid",
+        hint: "The menu is the app's one context-menu layer, so Escape, a click elsewhere and the window losing focus all close it, and a second click on the button closes it rather than reopening it.",
+      },
+      {
+        id: "bar-new-page-lands",
+        text: "Picking a preset adds a page with that layout to the current workspace AND brings it on screen — do it from the Kanban tab and from the app hub as well, not only from a terminal",
+        hint: "Sessions start in the workspace's bound root, and the page is named after the count it already had (Page 3, Page 4…).",
+      },
+    ],
+  },
+  {
     title: "Terminal & viewer regressions",
     items: [
       { id: "term-basics", text: "Split/new tab/close still work; sessions survive an app restart" },

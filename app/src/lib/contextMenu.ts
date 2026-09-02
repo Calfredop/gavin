@@ -26,6 +26,9 @@ export interface ContextMenuState {
 
 export const contextMenu = writable<ContextMenuState | null>(null);
 
+// Breathing room between a dropdown button and the menu it opens.
+const MENU_GAP_PX = 4;
+
 export function openContextMenu(x: number, y: number, entries: ContextMenuEntry[]): void {
   const hasAction = entries.some((e) => !("separator" in e));
   contextMenu.set(hasAction ? { x, y, entries } : null);
@@ -46,4 +49,13 @@ export function closeContextMenu(): void {
 
 export function isSeparator(entry: ContextMenuEntry): entry is { separator: true } {
   return "separator" in entry;
+}
+
+// Anchors the shared menu under an element instead of at the pointer:
+// a dropdown BUTTON's menu hangs off the button, wherever inside it the
+// click happened to land. Clamping to the viewport stays ContextMenu's
+// job, so a button near the right edge still gets a menu on screen.
+export function openMenuUnder(el: HTMLElement, entries: ContextMenuEntry[]): void {
+  const rect = el.getBoundingClientRect();
+  openContextMenu(rect.left, rect.bottom + MENU_GAP_PX, entries);
 }
