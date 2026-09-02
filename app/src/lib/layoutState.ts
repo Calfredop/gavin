@@ -1,10 +1,11 @@
-import { writable, get } from "svelte/store";
+import { writable, get, type Writable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
 import * as terminalRegistry from "./terminalRegistry";
+import { hotState } from "./hotState";
 import * as workspace from "./workspace";
 import type { Workspace, WorkspacesData, GitStatus, GitViewPrefs, RemovedWorkspace } from "./workspace";
 import { sessionLabel } from "./paths";
@@ -80,14 +81,42 @@ const initialState: LayoutState = {
   removedWorkspaces: [],
 };
 
-export const layoutState = writable<LayoutState>(initialState);
+/// The bag Vite carries across a re-execution of this module, or
+/// `undefined` outside a dev server (the bundled app, and vitest).
+///
+/// Vite re-executes a module for an edit anywhere in its DEPENDENCY cone,
+/// and nearly everything in `app/src` is in this one's -- so under plain
+/// module-level `const`s every store below was rebuilt EMPTY on almost
+/// every save, while the app around them kept running. For `layoutState`
+/// that means the whole window: workspaces, pages, layout trees, and both
+/// tab maps, replaced by `initialState` and its `"connecting"` status. The
+/// same fix terminalRegistry already carries, for the same reason: what is
+/// parked here is state nothing else can rebuild, or that only a startup
+/// path an HMR remount SKIPS would refill.
+///
+/// Not parked, deliberately: `daemonRequestError` (a refusal that predates
+/// the reload should not outlive it), the three Rust lookup tables
+/// (`bootstrap` re-fetches them unconditionally on every remount), and
+/// `unlisteners`/`tabMapsLoaded`, which belong to one execution of this
+/// module and must not be adopted by the next.
+const hotBag = import.meta.hot?.data;
+
+export const layoutState = hotState("layoutState", () => writable<LayoutState>(initialState), hotBag);
 
 // The compat verdict Rust negotiated with the daemon at connect time.
 // null until the first successful probe -- DaemonCompatBanner
 // stays silent on null the same way compatMessage does. Refreshed
 // wherever this module re-syncs against a (re)connected daemon; see
 // refreshDaemonCompat.
-export const daemonCompat = writable<DaemonCompat | null>(null);
+// Parked (see hotBag): the only paths that refresh it are the two
+// startup ones, and both return early on an HMR remount because the
+// status is already "ready" -- so rebuilding it here would silence the
+// compat banner and open every featureBlockedReason gate.
+export const daemonCompat = hotState<Writable<DaemonCompat | null>>(
+  "daemonCompat",
+  () => writable(null),
+  hotBag
+);
 
 /// The last request the daemon refused on the streaming connection, or
 /// null once nothing is outstanding.
@@ -112,7 +141,7 @@ export const daemonRequestError = writable<string | null>(null);
 /// launcher you happened to have open. It is also not a router: the app
 /// is a single page, and this is the flag +page.svelte branches on ahead
 /// of the workspace it would otherwise render.
-export const appHubOpen = writable(false);
+export const appHubOpen = hotState("appHubOpen", () => writable(false), hotBag);
 
 export function openAppHub(): void {
   appHubOpen.set(true);
@@ -977,7 +1006,11 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
 /// The workspace whose setup wizard is open, or null. A store rather
 /// than a prop because two surfaces open it: the creation modal and the
 /// Home tab's resume card.
-export const wizardWorkspaceId = writable<string | null>(null);
+export const wizardWorkspaceId = hotState<Writable<string | null>>(
+  "wizardWorkspaceId",
+  () => writable(null),
+  hotBag
+);
 
 export function openWizard(workspaceId: string): void {
   wizardWorkspaceId.set(workspaceId);
@@ -1250,7 +1283,7 @@ export async function closeSession(sessionId: string): Promise<void> {
 /// Never pruned by age: an entry is a few bytes and the map only grows
 /// with sessions that actually ended in this app run. Pruning it would
 /// mean a slow rail's finished step could lose its verdict.
-export const sessionExits = writable<Map<string, number>>(new Map());
+export const sessionExits = hotState("sessionExits", () => writable(new Map<string, number>()), hotBag);
 
 export function recordSessionExit(sessionId: string, exitCode: number): void {
   sessionExits.update((m) => new Map(m).set(sessionId, exitCode));
