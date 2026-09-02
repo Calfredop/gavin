@@ -9,6 +9,7 @@ import {
   COMPOSE_KINDS,
   DEFAULT_COMPOSE_KIND,
   composeSlot,
+  composeCloseAction,
   NEW_CARD_STATUS,
 } from "./cardCompose";
 import { isPermanentColumn, type CardView } from "./planBoard";
@@ -352,5 +353,62 @@ describe("composeSlot", () => {
     const merged = board({ "To Do": [a, created, z] });
     const scoped = board({ "To Do": [a, created] });
     expect(composeSlot(merged, scoped, "To Do", NEW)?.index).toBe(1);
+  });
+});
+
+describe("composeCloseAction", () => {
+  const empty = { title: "", body: "", attachments: [] as string[] };
+
+  it("closes an untouched composer on the first gesture", () => {
+    expect(composeCloseAction(empty)).toBe("close");
+  });
+
+  it("confirms once a title has been typed", () => {
+    expect(composeCloseAction({ ...empty, title: "Fix the login flow" })).toBe("confirm");
+  });
+
+  // The prompt is the half worth most: a title is retyped in seconds, a
+  // paragraph of agent instructions is not.
+  it("confirms on a body with no title", () => {
+    expect(composeCloseAction({ ...empty, body: "Read the spec first." })).toBe("confirm");
+  });
+
+  // Picked with a file dialog, and the pick is gone with the modal.
+  it("confirms on attachments alone", () => {
+    expect(composeCloseAction({ ...empty, attachments: ["docs/spec.md"] })).toBe("confirm");
+  });
+
+  // A stray space from a click-through is not content, and prompting
+  // over it would make the confirm feel arbitrary.
+  it("treats whitespace-only fields as empty", () => {
+    expect(composeCloseAction({ title: "  ", body: "\n\t ", attachments: [] })).toBe("close");
+  });
+});
+
+// The policy above is only worth anything if every dismissal route in the
+// template actually goes through it. Read from the source because the
+// wiring IS the template -- there is no rendered assertion that catches an
+// `onClose` handed straight to the backdrop again.
+describe("CardComposeModal dismissal wiring", () => {
+  const source = (
+    import.meta.glob("./CardComposeModal.svelte", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>
+  )["./CardComposeModal.svelte"];
+
+  it("hands Modal the guard, not onClose — Modal's backdrop and Escape both land there", () => {
+    expect(source).toContain("<Modal onClose={requestClose}>");
+    expect(source).not.toContain("<Modal {onClose}>");
+  });
+
+  it("routes the Cancel button through the same guard", () => {
+    expect(source).toContain('class="cancel" onclick={requestClose}');
+  });
+
+  it("offers the discard as the confirm's own choice", () => {
+    expect(source).toContain("<ConfirmPrompt");
+    expect(source).toContain('{ label: "Discard", danger: true, onPick: onClose }');
   });
 });

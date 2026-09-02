@@ -236,3 +236,36 @@ export function composeHint(field: ComposeField, isMac: boolean): string {
   if (field === "title") return "Enter adds and stays · ⇧Enter newline · Esc closes";
   return `${formatChord(COMPOSE_COMMIT_CHORD, isMac)} adds and stays · Enter newline · Esc closes`;
 }
+
+/// What a gesture that would DISMISS the composer should do with it as it
+/// currently stands.
+///
+/// The fields are the only copy of what is in them: nothing is written
+/// until the card is filed, and the composer reopens empty. So a click on
+/// the backdrop -- and a board is mostly backdrop -- destroyed a
+/// half-written prompt with no way back and nothing said. Anything typed
+/// therefore buys a confirm; an untouched composer (⌘N, a look at the
+/// board, dismiss again) still closes on the first gesture, because a
+/// prompt with nothing to lose is only a second click.
+///
+/// Every way out is measured the same way -- backdrop, Escape, Cancel --
+/// rather than only the one the report named. They end the same modal
+/// holding the same text, and a rule that held for two of the three would
+/// read as the third being broken.
+///
+/// A note has no body FIELD, but `body` keeps whatever was typed under
+/// task or plan before the chip was switched, and switching back brings
+/// it straight back. It is still the human's text, so it still counts.
+export interface ComposeDraft {
+  title: string;
+  body: string;
+  attachments: string[];
+}
+
+export type ComposeCloseAction = "close" | "confirm";
+
+export function composeCloseAction(draft: ComposeDraft): ComposeCloseAction {
+  const typed =
+    draft.title.trim() !== "" || draft.body.trim() !== "" || draft.attachments.length > 0;
+  return typed ? "confirm" : "close";
+}

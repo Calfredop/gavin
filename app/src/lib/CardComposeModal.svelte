@@ -16,6 +16,7 @@
   import { untrack } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import type { Column } from "./kanban";
   import type { Rail } from "./orchestration";
   import type { CardView } from "./planBoard";
@@ -27,6 +28,7 @@
   import {
     buildCreatePlanArgs,
     composeHint,
+    composeCloseAction,
     composeKeyAction,
     composeWindowKeyAction,
     railToApply,
@@ -113,6 +115,11 @@
   // Drives the footer hint only: which key files a card depends on
   // where the caret is, so the hint has to follow the caret.
   let focusField = $state<ComposeField>("title");
+  // Raised by a dismissal gesture over a composer with something in it.
+  // The confirm is a sibling modal, drawn over this one, so this flag is
+  // also what tells this modal's own key handlers to keep their hands
+  // off while the question is on screen.
+  let confirmingDiscard = $state(false);
   // Enter keeps the modal open for the next card, so the human needs to
   // see that the last one landed -- the fields clearing is otherwise
   // indistinguishable from the fields being cleared by a failure.
@@ -172,6 +179,21 @@
     titleEl?.focus();
   });
 
+  // Every way out of the composer that is not "file the card" -- the
+  // backdrop, Escape (both via Modal), and the Cancel button. Nothing
+  // typed here exists anywhere else yet, and the composer reopens empty,
+  // so a gesture that would throw the fields away asks first. An
+  // untouched composer closes on the gesture itself: a confirm with
+  // nothing to lose is only a second click.
+  function requestClose(): void {
+    // Escape reaches BOTH modals -- each Modal listens at the window --
+    // so without this the composer would re-raise the question the
+    // confirm is cancelling.
+    if (confirmingDiscard) return;
+    if (composeCloseAction({ title, body, attachments }) === "close") onClose();
+    else confirmingDiscard = true;
+  }
+
   function reset(): void {
     title = "";
     body = "";
@@ -194,8 +216,11 @@
     if ("error" in args) {
       // An empty title with the Add button is a plain "nothing to do":
       // close rather than scold. Empty on Enter stays open and says why.
+      // Through requestClose, because a card can carry a typed prompt or
+      // an attachment with no title yet -- and that is content this
+      // button would otherwise drop on the floor.
       if (title.trim() !== "" || keepOpen) error = args.error;
-      else onClose();
+      else requestClose();
       return;
     }
     error = null;
@@ -290,6 +315,11 @@
   // prompt -- and the chord is what files it. Wired to the pickers too,
   // so the chord does not stop working one Tab away from the textarea.
   function handleKeydown(field: ComposeField, e: KeyboardEvent): void {
+    // Focus stays in this field while the discard confirm sits over the
+    // modal, so a bare Enter would file the very card the human is being
+    // asked about, leaving the question up over a composer that has
+    // already emptied itself.
+    if (confirmingDiscard) return;
     if (composeKeyAction(field, e, isMac) !== "commit") return;
     e.preventDefault();
     void commit(true);
@@ -305,6 +335,9 @@
   // preventDefault, which is what keeps the same keystroke from being
   // filed a second time here on its way up.
   function handleWindowKeydown(e: KeyboardEvent): void {
+    // The confirm is the modal in front; the chord is not the
+    // composer's to act on while a question about it is unanswered.
+    if (confirmingDiscard) return;
     if (composeWindowKeyAction(e, isMac) !== "commit") return;
     e.preventDefault();
     void commit(true);
@@ -313,7 +346,7 @@
 
 <svelte:window onkeydown={handleWindowKeydown} />
 
-<Modal {onClose}>
+<Modal onClose={requestClose}>
   <div class="head">
     <span class="heading">New card</span>
     <span class="chord">{newCardChord}</span>
@@ -469,11 +502,23 @@
       {composeHint(hintField, isMac)}
     </span>
     <div class="actions">
-      <button type="button" class="cancel" onclick={onClose}>Cancel</button>
+      <button type="button" class="cancel" onclick={requestClose}>Cancel</button>
       <button type="button" class="add" onclick={() => void commit(false)}>Add card</button>
     </div>
   </div>
 </Modal>
+
+{#if confirmingDiscard}
+  <ConfirmPrompt
+    title="Discard this card?"
+    lines={[
+      "The card has not been created — nothing is written until it is filed.",
+      "The title, the body and any attachments picked here are lost.",
+    ]}
+    choices={[{ label: "Discard", danger: true, onPick: onClose }]}
+    onCancel={() => (confirmingDiscard = false)}
+  />
+{/if}
 
 <style>
   .head {

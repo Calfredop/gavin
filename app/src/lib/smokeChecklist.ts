@@ -72,8 +72,23 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "column-reorder", text: "Dragging a column by its header lands it exactly at the placeholder, both directions" },
       {
         id: "composer-card",
-        text: "“+ Add card” opens the CENTRED composer modal: Enter adds a FILE in that column and stays open, Esc closes, empty adds nothing",
-        hint: "The modal sits over the middle of the tab however far the board is scrolled; the Column picker starts on the column that was clicked.",
+        text: "“+ Add card” opens the CENTRED composer modal: Enter adds a FILE in that column and stays open, Esc closes an UNTOUCHED one, empty adds nothing",
+        hint: "The modal sits over the middle of the tab however far the board is scrolled; the Column picker starts on the column that was clicked. An untouched composer still closes on the first gesture — no confirm.",
+      },
+      {
+        id: "composer-discard-confirm",
+        text: "Type a title, click the backdrop → “Discard this card?”; Cancel keeps every field exactly as typed, Discard closes the composer",
+        hint: "Nothing is written until the card is filed and the composer reopens empty, so the backdrop used to destroy a half-written prompt silently. Check the fields really survive Cancel — title, body, kind chip, column, rail and attachments.",
+      },
+      {
+        id: "composer-discard-routes",
+        text: "Escape and the Cancel button ask the same question — and so does “Add card” with an empty title but a typed prompt or an attachment",
+        hint: "Every way out of the composer is measured the same way. A prompt or an attachment with no title counts as content on its own.",
+      },
+      {
+        id: "composer-discard-keys",
+        text: "With the question up, Escape answers only it (the composer stays, still typed) and Enter / ⌘Enter file nothing",
+        hint: "Both modals listen at the window, and focus is still in the title field behind the confirm — so an unguarded Enter would file the very card being asked about.",
       },
       {
         id: "composer-shortcut",
