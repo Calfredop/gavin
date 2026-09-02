@@ -466,7 +466,7 @@ export function agentProfiles(): Promise<
     command: string;
     mcpSupported: boolean;
     mcpConfigFile: string;
-    promptArg: boolean;
+    promptArgs: string | null;
     headlessArgs: string;
     modelFlag: string;
     models: string[];

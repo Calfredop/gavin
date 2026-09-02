@@ -20,6 +20,7 @@ import {
   buildRunCommand,
   buildResumeCommand,
   withFreshConversationId,
+  noPromptReason,
   provisionalSessionName,
   runStatusNeeded,
 } from "./cardRun";
@@ -145,8 +146,10 @@ export async function developCard(
   const agent = resolvedAgentFor(workspaceId);
   const command = buildRunCommand(
     agent.launchCommand,
+    agent.promptArgs,
     composeDevelopPrompt(card.id, card.title)
   );
+  if (command === null) return noPromptReason(agent.label);
 
   let sessionId: string;
   try {
@@ -180,10 +183,17 @@ async function launchCard(
   // it, which is the only way a card gets un-stuck from a killed run.
   if (cardSessionState(state, binding) === "live") return null;
 
-  // The attachment gate runs BEFORE the status write below. A refused
-  // launch must leave the card exactly as it was: writing In Progress
-  // and then refusing would move the card on the board for a run that
-  // never happened, and the human would have to put it back by hand.
+  // Both gates run BEFORE the status write below. A refused launch must
+  // leave the card exactly as it was: writing In Progress and then
+  // refusing would move the card on the board for a run that never
+  // happened, and the human would have to put it back by hand.
+  //
+  // The agent gate is first and needs nothing from the card: an agent
+  // that takes no prompt refuses every card, so resolving attachments
+  // for one is work with no possible outcome.
+  const agent = resolvedAgentFor(workspaceId);
+  if (agent.promptArgs === null) return noPromptReason(agent.label);
+
   const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
   if ("error" in resolved) return resolved.error;
 
@@ -202,11 +212,6 @@ async function launchCard(
       return `Couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
     }
   }
-
-  // The launch command lives in .gavin-root/config.toml now (D41), so it
-  // comes from the same resolver the main agent and the settings panel
-  // use rather than a per-workspace field.
-  const agent = resolvedAgentFor(workspaceId);
 
   // Resume, where the CLI can do it, is the agent reopening its OWN
   // conversation -- not a new agent reading an account of what the last
@@ -278,7 +283,17 @@ async function launchCard(
   }
 
   const conversationId = conversationIdForLaunch(agent);
-  const command = buildRunCommand(agent.launchCommand, prompt, agent.sessionIdArgs, conversationId);
+  const command = buildRunCommand(
+    agent.launchCommand,
+    agent.promptArgs,
+    prompt,
+    agent.sessionIdArgs,
+    conversationId
+  );
+  // Cannot be null -- the gate above returned already -- but the null is
+  // the whole point of buildRunCommand's signature, so it is checked
+  // rather than asserted away.
+  if (command === null) return noPromptReason(agent.label);
   const cwd = card.contextFolder;
 
   let sessionId: string;

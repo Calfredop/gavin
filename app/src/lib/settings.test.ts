@@ -18,9 +18,9 @@ import {
 } from "./settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArg: true, headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArg: true, headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: "codex-rollout" },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArg: false, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: null },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: "codex-rollout" },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArgs: null, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: null },
 ];
 
 describe("normalizeColor", () => {
@@ -200,11 +200,13 @@ describe("resolveAgentConfig", () => {
     const r = resolveAgentConfig({ profile: "codex", file: "NOTES.md", command: "codex --x" }, PROFILES, {});
     expect(r).toEqual({
       profileId: "codex",
+      label: "Codex CLI",
       file: "NOTES.md",
       command: "codex --x",
       mcpSupported: true,
       mcpConfigFile: ".codex/config.toml",
       headlessArgs: "",
+      promptArgs: "",
       model: "",
       launchCommand: "codex --x",
       failurePatterns: [],
@@ -222,9 +224,9 @@ describe("resolveAgentConfig", () => {
 
   it("falls back to claude-code for a missing or unknown profile", () => {
     expect(resolveAgentConfig(null, PROFILES, {})).toEqual({
-      profileId: "claude-code", file: "CLAUDE.md", command: "claude",
+      profileId: "claude-code", label: "Claude Code", file: "CLAUDE.md", command: "claude",
       mcpSupported: true, mcpConfigFile: ".mcp.json",
-      headlessArgs: '-p --allowedTools "Bash(git *)" --',
+      headlessArgs: '-p --allowedTools "Bash(git *)" --', promptArgs: "",
       model: "", launchCommand: "claude",
       failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }],
@@ -295,15 +297,38 @@ describe("resolveAgentConfig", () => {
     expect(r.model).toBe("opus");
   });
 
+  // The profile table is fetched asynchronously and its failure is
+  // swallowed, so an empty one is a state the app really reaches. Every
+  // other field already answers it by falling back to claude-code's
+  // literals; the prompt convention has to fall back WITH the command,
+  // or the resolver hands back `claude` and denies it takes a prompt --
+  // which would block every card run in the app.
+  it("falls back to the bare positional when the table has not loaded", () => {
+    const r = resolveAgentConfig(null, [], {});
+    expect(r.command).toBe("claude");
+    expect(r.promptArgs).toBe("");
+  });
+
+  // A row that is THERE and says null keeps its null: the fallback is
+  // for an absent table, never between two rows.
+  it("never lends one profile's prompt convention to another", () => {
+    const r = resolveAgentConfig({ profile: "custom", file: null, command: "my-agent" }, PROFILES, {});
+    expect(r.promptArgs).toBeNull();
+  });
+
   it("keeps custom usable only through its explicit values", () => {
     const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES, {});
     expect(r).toEqual({
       profileId: "custom",
+      label: "Custom…",
       file: "RULES.md",
       command: "my-agent",
       mcpSupported: false,
       mcpConfigFile: "",
       headlessArgs: "",
+      // Null, not "": an unfilled custom profile takes no prompt, which
+      // is a different answer from "its prompt is the bare positional".
+      promptArgs: null,
       model: "",
       launchCommand: "my-agent",
       failurePatterns: [],

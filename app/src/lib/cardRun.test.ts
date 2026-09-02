@@ -11,6 +11,8 @@ import {
   buildResumeCommand,
   mintConversationId,
   withFreshConversationId,
+  noPromptReason,
+  agentPromptBlocker,
   buildHeadlessCommand,
   COMMIT_PROMPT,
   buildToolCommand,
@@ -167,8 +169,57 @@ describe("shellQuote", () => {
 
 describe("buildRunCommand", () => {
   it("appends the quoted prompt to the agent command", () => {
-    expect(buildRunCommand("claude", "do it")).toBe("claude 'do it'");
-    expect(buildRunCommand("claude --model x", "a'b")).toBe("claude --model x 'a'\\''b'");
+    expect(buildRunCommand("claude", "", "do it")).toBe("claude 'do it'");
+    expect(buildRunCommand("claude --model x", "", "a'b")).toBe("claude --model x 'a'\\''b'");
+  });
+
+  // opencode's shape. The `=` lives in the prefix, so the flag and its
+  // value come out ATTACHED -- `--prompt 'x'` is parsed by yargs, which
+  // reads a value beginning with `-` as the next flag and prints its
+  // usage banner instead of starting a session.
+  it("attaches the prompt to a flagged profile's prefix", () => {
+    expect(buildRunCommand("opencode", "--prompt=", "do it")).toBe("opencode --prompt='do it'");
+    expect(buildRunCommand("opencode --model a/b", "--prompt=", "-x")).toBe(
+      "opencode --model a/b --prompt='-x'"
+    );
+  });
+
+  // The quoting is the same either way: one concatenation, one quoter.
+  it("quotes a flagged prompt exactly as it quotes a positional one", () => {
+    const prompt = "O'Brien said \"hi\"\nand left";
+    expect(buildRunCommand("opencode", "--prompt=", prompt)).toBe(
+      `opencode --prompt=${shellQuote(prompt)}`
+    );
+    expect(buildRunCommand("claude", "", prompt)).toBe(`claude ${shellQuote(prompt)}`);
+  });
+
+  // The case this signature exists for. `cursor 'Fix the login flow'`
+  // and `opencode 'Fix the login flow'` both read the prompt as a PATH:
+  // cursor opens a file that is not there, opencode dies with "Failed to
+  // change directory to …". Neither reports anything a card run could
+  // catch, so the refusal has to happen before the launch.
+  it("refuses to build a line for a profile that takes no prompt", () => {
+    expect(buildRunCommand("cursor", null, "Fix the login flow")).toBeNull();
+    expect(buildRunCommand("my-agent", null, "")).toBeNull();
+  });
+});
+
+describe("noPromptReason", () => {
+  // It names the agent and where to change it: the block is never about
+  // the card, and a sentence that only says "cannot start" sends the
+  // human looking at the wrong thing.
+  it("names the agent and points at Settings", () => {
+    const reason = noPromptReason("Cursor");
+    expect(reason).toContain("Cursor");
+    expect(reason).toContain("Settings");
+  });
+});
+
+describe("agentPromptBlocker", () => {
+  it("is null while the profile can carry a prompt, and the reason when it cannot", () => {
+    expect(agentPromptBlocker("", "Claude Code")).toBeNull();
+    expect(agentPromptBlocker("--prompt=", "opencode")).toBeNull();
+    expect(agentPromptBlocker(null, "Cursor")).toBe(noPromptReason("Cursor"));
   });
 });
 
@@ -176,7 +227,7 @@ describe("buildRunCommand with a conversation id", () => {
   // Ahead of the prompt, because the prompt is a positional: anything
   // after it would be read as a second one.
   it("fixes the conversation id at launch, before the prompt", () => {
-    expect(buildRunCommand("claude", "do it", "--session-id", "abc-123")).toBe(
+    expect(buildRunCommand("claude", "", "do it", "--session-id", "abc-123")).toBe(
       "claude --session-id abc-123 'do it'"
     );
   });
@@ -184,15 +235,28 @@ describe("buildRunCommand with a conversation id", () => {
   // Dropped TOGETHER: an id with no argv to carry it, or argv with no
   // id, would each put a stray token in front of the prompt.
   it("drops both halves unless it has both", () => {
-    expect(buildRunCommand("claude", "do it", "--session-id", null)).toBe("claude 'do it'");
-    expect(buildRunCommand("claude", "do it", "", "abc-123")).toBe("claude 'do it'");
-    expect(buildRunCommand("claude", "do it", "   ", "abc-123")).toBe("claude 'do it'");
+    expect(buildRunCommand("claude", "", "do it", "--session-id", null)).toBe("claude 'do it'");
+    expect(buildRunCommand("claude", "", "do it", "", "abc-123")).toBe("claude 'do it'");
+    expect(buildRunCommand("claude", "", "do it", "   ", "abc-123")).toBe("claude 'do it'");
   });
 
   it("composes with the model flag the launch command already carries", () => {
-    expect(buildRunCommand("claude --model opus", "go", "--session-id", "u1")).toBe(
+    expect(buildRunCommand("claude --model opus", "", "go", "--session-id", "u1")).toBe(
       "claude --model opus --session-id u1 'go'"
     );
+  });
+
+  // The id and the prompt prefix are two different conventions on the
+  // same line: the id sits ahead, the prefix stays glued to the prompt.
+  it("keeps the prompt prefix attached when an id is fixed as well", () => {
+    expect(buildRunCommand("opencode", "--prompt=", "go", "--session-id", "u1")).toBe(
+      "opencode --session-id u1 --prompt='go'"
+    );
+  });
+
+  // A profile that takes no prompt is refused whatever else it verified.
+  it("still refuses a no-prompt profile", () => {
+    expect(buildRunCommand("cursor", null, "go", "--session-id", "u1")).toBeNull();
   });
 });
 

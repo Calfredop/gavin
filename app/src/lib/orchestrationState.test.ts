@@ -40,6 +40,8 @@ vi.mock("./layoutState", () => ({
       failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
     sessionIdArgs: "",
     resumeArgs: "",
+    label: "Claude Code",
+    promptArgs: "",
   })),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // Null by default: no conversation id unless a test asks for one, which
@@ -578,6 +580,7 @@ describe("rail controls", () => {
   it("Resume step reopens the conversation in the directory the run was launched in", async () => {
     vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValue({
       launchCommand: "claude",
+      promptArgs: "",
       resumeArgs: "--resume",
       failurePatterns: ["API Error:"],
       failureCauses: [],
@@ -613,6 +616,7 @@ describe("rail controls", () => {
   it("Resume step puts the paused rail back to running", async () => {
     vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValue({
       launchCommand: "claude",
+      promptArgs: "",
       resumeArgs: "--resume",
       failurePatterns: [],
       failureCauses: [],
@@ -632,6 +636,7 @@ describe("rail controls", () => {
   it("Resume step spends the budget only when gavin decided it", async () => {
     vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValue({
       launchCommand: "claude",
+      promptArgs: "",
       resumeArgs: "--resume",
       failurePatterns: [],
       failureCauses: [],

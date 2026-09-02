@@ -126,8 +126,14 @@ export function applyPrdSections(body: string, sections: PrdSections): string {
 /// The agent-driven option is offered only where the positional-prompt
 /// convention is verified (spec §7.2); elsewhere the step says so rather
 /// than risking a launch with garbage in the agent's argv.
-export function agentFlowAvailable(profile: { promptArg: boolean } | undefined): boolean {
-  return Boolean(profile?.promptArg);
+export function agentFlowAvailable(
+  profile: { promptArgs: string | null } | undefined
+): boolean {
+  // `promptArgs` is a PREFIX, and "" is the bare positional -- a working
+  // profile, not an absent one. Only null means the agent takes no
+  // prompt, so this compares rather than coerces: `Boolean("")` would
+  // hide the flow from claude-code, codex and gemini alike.
+  return profile !== undefined && profile.promptArgs !== null;
 }
 
 /// Whether the PRD still carries a placeholder for the three section

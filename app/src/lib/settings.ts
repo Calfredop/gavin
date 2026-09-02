@@ -15,9 +15,15 @@ export interface AgentProfileInfo {
   /// The file this profile's agent reads MCP config from, so copy can name
   /// it. Empty for `custom`, whose path comes from config.toml.
   mcpConfigFile: string;
-  /// Whether the agent takes a positional prompt argument; gates the
-  /// wizard's agent-driven flows (spec §7.2).
-  promptArg: boolean;
+  /// The argv prefix that carries a prompt into a launched session,
+  /// concatenated with the shell-quoted prompt: "" is the bare
+  /// positional, "--prompt=" a flag whose value is attached. Null where
+  /// the agent takes no prompt at all, which is what gates every
+  /// agent-driven flow (spec §7.2).
+  ///
+  /// Null and "" are opposite answers, so nothing here may test it for
+  /// truthiness -- "" is a working profile.
+  promptArgs: string | null;
   /// The argv for a one-shot run with no TUI, empty where unverified;
   /// gates every hidden background run (agent_setup.rs's headless_args).
   headlessArgs: string;
@@ -219,10 +225,20 @@ export function renameDecision(
 
 export interface ResolvedAgent {
   profileId: string;
+  /// The profile's display name, for copy that has to NAME the agent --
+  /// "Cursor takes no prompt", not "cursor takes no prompt". Resolved
+  /// here rather than looked up again at each call site, so a launcher
+  /// that already has the agent never has to reach for the table too.
+  label: string;
   file: string;
   command: string;
   mcpSupported: boolean;
   headlessArgs: string;
+  /// The launched-session prompt argv, or null where this agent takes no
+  /// prompt. Same no-fallback-chain rule as headlessArgs below: this
+  /// describes the BINARY, and claude-code's argv on somebody else's
+  /// agent would be garbage.
+  promptArgs: string | null;
   /// The MCP config file gavin would write for this workspace, or "" when
   /// there is none to write -- which is only ever an unconfigured
   /// `custom` profile.
@@ -285,6 +301,7 @@ export function resolveAgentConfig(
   const model = nonEmpty(config?.model) ?? nonEmpty(globalModels[profileId]) ?? "";
   return {
     profileId,
+    label: effective?.label ?? profileId,
     model,
     launchCommand: composeLaunchCommand(command, effective?.modelFlag ?? "", model),
     // `custom` carries empty defaults, so an unfilled custom profile still
@@ -319,6 +336,17 @@ export function resolveAgentConfig(
     failureCauses: effective?.failureCauses ?? [],
     sessionIdArgs: effective?.sessionIdArgs ?? "",
     resumeArgs: effective?.resumeArgs ?? "",
+    // Same no-fallback-BETWEEN-rows rule: a row that takes no prompt
+    // gets null, and cursor's null never becomes claude-code's "".
+    //
+    // But an ABSENT table is a different case, and it has to answer the
+    // way `command` two fields up already answered it: the table is
+    // fetched asynchronously and its failure is swallowed, so an empty
+    // one is a state the app really reaches -- and there `command` falls
+    // back to the literal "claude". Handing back claude's command while
+    // denying that claude takes a prompt would block every card run in
+    // the app with a sentence naming an agent nobody chose.
+    promptArgs: effective ? effective.promptArgs : "",
   };
 }
 

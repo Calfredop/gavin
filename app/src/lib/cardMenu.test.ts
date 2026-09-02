@@ -34,6 +34,7 @@ vi.mock("./layoutState", () => ({
   setSessionName: vi.fn().mockResolvedValue(undefined),
   resolvedAgentFor: vi.fn(() => ({
     profileId: "claude-code",
+    label: "Claude Code",
     file: "CLAUDE.md",
     command: "claude",
     launchCommand: "claude",
@@ -42,6 +43,7 @@ vi.mock("./layoutState", () => ({
       failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
     sessionIdArgs: "--session-id",
     resumeArgs: "--resume",
+    promptArgs: "",
   })),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // null = no conversation id, which is what a daemon too old to persist

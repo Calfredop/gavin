@@ -104,10 +104,15 @@
 <Modal onClose={running ? () => {} : onClose}>
   <div class="head">
     <span class="title">Delete workspace</span>
-    {#if step && step !== "confirm"}
-      <span class="progress">Step {index + 1} of {steps.length} · {stepTitle(step)}</span>
-    {:else if step}
-      <span class="progress">{stepTitle(step)}</span>
+    <!-- `steps` is derived from the footprint, so a step exists only
+         once the scan has landed; the null check is for the compiler,
+         not for a state that occurs. -->
+    {#if footprint && step && step !== "confirm"}
+      <span class="progress">
+        Step {index + 1} of {steps.length} · {stepTitle(step, footprint)}
+      </span>
+    {:else if footprint && step}
+      <span class="progress">{stepTitle(step, footprint)}</span>
     {/if}
   </div>
 
@@ -179,6 +184,11 @@
         {#each footprint.skills as path (path)}
           <li><code>{path}</code></li>
         {/each}
+        <!-- Last, and labelled: it is not a skill, and a bare path in
+             this list would read as one. -->
+        {#if footprint.agentFile}
+          <li><code>{footprint.agentFile}</code> — the commit agent's permissions</li>
+        {/if}
       </ul>
       <label class="check">
         <input type="checkbox" bind:checked={answers.skills} />

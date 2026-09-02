@@ -84,6 +84,7 @@ import {
   composePlanPrompt,
   buildRunCommand,
   buildResumeCommand,
+  noPromptReason,
   provisionalSessionName,
   buildToolCommand,
   runStatusNeeded,
@@ -597,8 +598,22 @@ async function executeToolLaunch(
   const conversationId = tool.kind === "agent" ? conversationIdForLaunch(agent) : null;
   const command =
     tool.kind === "agent"
-      ? buildRunCommand(agent.launchCommand, body, agent.sessionIdArgs, conversationId)
+      ? buildRunCommand(agent.launchCommand, agent.promptArgs, body, agent.sessionIdArgs, conversationId)
       : buildToolCommand(tool.kind, body, tool.name);
+  // Only an `agent` tool can land here: a command or script tool builds
+  // its own line and never asks the profile for one. Stalled rather
+  // than failed, and the reason names the agent -- a rail that stops
+  // saying "could not start" would send the human looking at the tool.
+  if (command === null) {
+    await setStepRunAction(
+      workspaceId,
+      step.id,
+      "stalled",
+      null,
+      noPromptReason(agent.label)
+    );
+    return;
+  }
 
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
   if (!sessionId) {
@@ -675,7 +690,17 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<void>
 
   const agent = resolvedAgentFor(workspaceId);
   const conversationId = conversationIdForLaunch(agent);
-  const command = buildRunCommand(agent.launchCommand, prompt, agent.sessionIdArgs, conversationId);
+  const command = buildRunCommand(
+    agent.launchCommand,
+    agent.promptArgs,
+    prompt,
+    agent.sessionIdArgs,
+    conversationId
+  );
+  if (command === null) {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, noPromptReason(agent.label));
+    return;
+  }
   const cwd = rail.worktreePath ?? entry.contextFolder;
   const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
   if (!sessionId) {

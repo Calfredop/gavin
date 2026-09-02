@@ -48,6 +48,7 @@ vi.mock("./layoutState", () => ({
   workspaceRootPath: vi.fn(() => "/ws"),
   resolvedAgentFor: vi.fn(() => ({
     profileId: "claude-code",
+    label: "Claude Code",
     file: "CLAUDE.md",
     command: "claude --model opus",
     launchCommand: "claude --model opus",
@@ -56,6 +57,7 @@ vi.mock("./layoutState", () => ({
       failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
     sessionIdArgs: "",
     resumeArgs: "",
+    promptArgs: "",
   })),
 }));
 vi.mock("./workspace", () => {
@@ -128,6 +130,7 @@ const NO_RESUME_AGENT = {
   file: "CLAUDE.md",
   command: "claude --model opus",
   launchCommand: "claude --model opus",
+  promptArgs: "",
   mcpSupported: true,
   failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
@@ -435,6 +438,7 @@ describe("relaunchCard", () => {
       file: "CLAUDE.md",
       command: "claude",
       launchCommand: "claude",
+      promptArgs: "",
       mcpSupported: true,
       failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
@@ -563,6 +567,7 @@ describe("a failed binding", () => {
     file: "CLAUDE.md",
     command: "claude",
     launchCommand: "claude",
+    promptArgs: "",
     mcpSupported: true,
     failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],

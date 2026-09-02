@@ -78,6 +78,7 @@ vi.mock("./layoutState", async () => {
     createSessionForCard: vi.fn().mockResolvedValue("sess-1"),
     resolvedAgentFor: vi.fn(() => ({
       profileId: "claude-code",
+      label: "Claude Code",
       file: "CLAUDE.md",
       command: "claude",
       launchCommand: "claude",
@@ -88,6 +89,7 @@ vi.mock("./layoutState", async () => {
         { pattern: "/login", cause: "auth" },
         { pattern: "Connection dropped", cause: "network" },
       ],
+      promptArgs: "",
     })),
     sessionExits: writable(new Map<string, number>()),
     handleAgentSessionSpawned: vi.fn(),
@@ -639,9 +641,9 @@ describe("commit via agent", () => {
 
   it("refuses an agent with no headless mode, saying so", async () => {
     vi.mocked(resolvedAgentFor).mockReturnValueOnce({
-      profileId: "codex", file: "AGENTS.md", command: "codex",
+      profileId: "codex", label: "Codex CLI", file: "AGENTS.md", command: "codex",
       mcpSupported: false, mcpConfigFile: "", headlessArgs: "",
-      model: "", launchCommand: "codex",
+      promptArgs: "", model: "", launchCommand: "codex",
       failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "",
     });
     ensureGitView("ws", "/r");
