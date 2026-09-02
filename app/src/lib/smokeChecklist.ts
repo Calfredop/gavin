@@ -372,7 +372,12 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "run-develop-card",
         text: "Right-click an unbound To Do card → “Develop into a plan…” spawns an agent that INTERVIEWS you instead of building; the card keeps its status and gains no session dot",
-        hint: "The card detail modal offers the same button above ▶ Run, and by the same rule. The entry is To Do only — confirm it is absent (in BOTH surfaces) on In Progress, on Done, on a note, and on a card that already has a session. The spawned command starts “Use the gavin-develop skill…”; answer its questions and the card comes back as a checklist or nested children, still in To Do and still unbound, so “Start all” can then run it.",
+        hint: "The card detail modal offers the same button above ▶ Run, and by the same rule. The entry is To Do only — confirm it is absent (in BOTH surfaces) on In Progress, on Done, on a note, and on a card that already has a session. The spawned command starts “Use the gavin-develop skill…”; answer its questions and the card comes back as a checklist, nested children or just a sharper prompt, still in To Do and still unbound, so “Start all” can then run it.",
+      },
+      {
+        id: "run-develop-switches-kind",
+        text: "Developing a card that turns out to need steps flips it to kind: plan, and one that does not leaves it kind: task",
+        hint: "Develop a card into a checklist: the board card must gain the n/m progress chip and the detail modal a tickable Checklist section — both are drawn for plans only, so a developed card still marked kind: task looks empty however many “- [ ]” lines it holds. Do it again on a genuinely small card and refuse a decomposition: it should stay kind: task with a rewritten body, since the plan prompt never inlines a body and would hand its agent a checklist that is not there. Read the frontmatter of both afterwards — the agent proposes the switch before it writes, so it is also the one thing you can veto in a word.",
       },
       {
         id: "run-names-its-tab",

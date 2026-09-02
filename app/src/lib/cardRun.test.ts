@@ -98,16 +98,30 @@ describe("composeDevelopPrompt", () => {
   // pointer, what makes THIS job different, then the contract -- and one
   // composer for both kinds, because the skill's first move is to read
   // the card whatever it is.
-  it("points at the skill, names both shapes, and forbids writing before approval", () => {
+  it("names every shape and the kind, and forbids writing before approval", () => {
     const p = composeDevelopPrompt("/p/t.md", "Fix login");
     expect(p).toBe(
       `${NAME_TAB_FIRST}\n\n` +
         'Use the gavin-develop skill on the card at /p/t.md ("Fix login"): develop it into ' +
-        "worked steps — a checklist, nested task cards, or both.\n\n" +
+        "work an agent can execute — a checklist, nested task cards, both, or, when it is " +
+        "really one sitting, a sharper prompt — and set the card's kind to match what you " +
+        "wrote.\n\n" +
         "Interview me in this tab before you decide anything, and write nothing to the card " +
         "until I approve what you propose. Leave the card's status where it is: developing a " +
         "card is not starting it."
     );
+  });
+
+  // The small shape has to be ON the prompt, not only in the skill: this
+  // line is what an agent reads first, and one that offers checklists and
+  // child cards only has already decided the card was big. Same for the
+  // kind -- a developed card whose `kind:` was left behind runs with the
+  // wrong prompt of the two (cardRunActions branches on it), and nothing
+  // on the board says so.
+  it("leaves room for a card that was never big, and orders the kind set", () => {
+    const p = composeDevelopPrompt("/p/t.md", "Fix login");
+    expect(p).toContain("one sitting, a sharper prompt");
+    expect(p).toContain("set the card's kind to match");
   });
 
   // The card's body is the seed idea, not a prompt to execute: inlining

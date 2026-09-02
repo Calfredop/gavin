@@ -70,9 +70,19 @@ export function composePlanPrompt(path: string, attachments: string[] = []): str
 
 // Develop (the To Do column's counterpart to Resume): a thin card that
 // has not been started, handed to the gavin-develop skill so it comes
-// back as worked steps. One composer for both kinds -- the card file is
-// the agent's to read whatever it is, and inlining a task's body is
-// exactly what makes an agent start BUILDING instead of interviewing.
+// back as work an agent can execute. One composer for both kinds -- the
+// card file is the agent's to read whatever it is, and inlining a task's
+// body is exactly what makes an agent start BUILDING instead of
+// interviewing.
+//
+// The shapes are named WITH the small one ("a sharper prompt"), because
+// a prompt that lists only checklists and child cards forecloses the
+// finding that the card was never big: an agent told to produce steps
+// produces steps. And the kind is named because it is the one part of
+// developing that has no visible half -- a card left `kind: task` after
+// gaining a checklist runs with that checklist inlined as its prompt,
+// while one pushed to `kind: plan` without gaining one runs with its
+// body never inlined at all.
 //
 // Nothing here mentions the done column: the run ends when the card is
 // developed, and the card stays where it is. Developing is not starting.
@@ -80,7 +90,9 @@ export function composeDevelopPrompt(path: string, title: string): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Use the gavin-develop skill on the card at ${path} ("${title}"): develop it into ` +
-    `worked steps \u2014 a checklist, nested task cards, or both.\n\n` +
+    `work an agent can execute \u2014 a checklist, nested task cards, both, or, when it is ` +
+    `really one sitting, a sharper prompt \u2014 and set the card's kind to match what you ` +
+    `wrote.\n\n` +
     `Interview me in this tab before you decide anything, and write nothing to the card ` +
     `until I approve what you propose. Leave the card's status where it is: developing a ` +
     `card is not starting it.`
