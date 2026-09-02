@@ -587,6 +587,39 @@ fn trigger_recheck_for_session(manager: &Arc<SessionManager>, id: &str) {
     });
 }
 
+/// How long `end_orphan` gives a signalled process to actually exit
+/// before reporting that it refused.
+///
+/// Long enough for a node-based agent to run its exit handlers, short
+/// enough to stay inside a button press: this blocks the connection
+/// thread serving the app's single command socket.
+const ORPHAN_EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// The one place a registry row becomes the wire's view of a session.
+///
+/// Shared by `list_sessions` and the Attach baseline so the two cannot
+/// drift: an orphan that showed up in one and not the other would be a
+/// session that looks fine until you reload, which is the exact class of
+/// bug `get_session_baselines` exists to prevent.
+fn session_summary(r: SessionRecord) -> SessionSummary {
+    SessionSummary {
+        orphan: r.orphan.map(|o| protocol::OrphanProcess {
+            pid: o.pid,
+            // The command is what makes a confirmation nameable ("end
+            // `claude --model opus`?" rather than "end pid 4172?"). It is
+            // the LAUNCH command, which is what gavin knows; the process
+            // may have exec'd something else since.
+            command: r.command.clone(),
+        }),
+        id: r.id,
+        workspace_path: r.workspace_path,
+        cwd: r.cwd,
+        status: r.status.as_str().to_string(),
+        restored: r.restored,
+        interrupted: r.interrupted,
+    }
+}
+
 pub struct SessionManager {
     registry: Mutex<Registry>,
     kanban: Mutex<KanbanStore>,
@@ -799,6 +832,15 @@ impl SessionManager {
             // inserting -- this one. See SessionRecord::generation.
             generation: 0,
             interrupted: false,
+            // Read BEFORE the session is published, so the row never
+            // exists without the identity a later daemon needs to probe
+            // it. A row that reached the table with no handle would be
+            // permanently un-probeable -- the pid is knowable only here,
+            // while this process still holds the Child.
+            process: pty.process_handle(),
+            // Only recovery can find one, and this is a session being
+            // created, not recovered.
+            orphan: None,
         })?;
 
         self.sessions.lock().unwrap().insert(id.clone(), pty);
@@ -807,17 +849,60 @@ impl SessionManager {
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
         let records = self.registry.lock().unwrap().list()?;
-        Ok(records
-            .into_iter()
-            .map(|r| SessionSummary {
-                id: r.id,
-                workspace_path: r.workspace_path,
-                cwd: r.cwd,
-                status: r.status.as_str().to_string(),
-                restored: r.restored,
-                interrupted: r.interrupted,
-            })
-            .collect())
+        Ok(records.into_iter().map(session_summary).collect())
+    }
+
+    /// Ends the process this session left running, and stops reporting it
+    /// once it is actually gone.
+    ///
+    /// Every guard here is about not killing the wrong thing. The pid
+    /// comes from the daemon's own row, never from the caller, so this
+    /// request cannot be aimed at an arbitrary process. `proc::terminate`
+    /// re-probes the identity immediately before signalling, because the
+    /// gap between recovery finding the orphan and a human deciding to
+    /// end it is unbounded and a pid is a recycled number. And the signal
+    /// is SIGTERM with no SIGKILL behind it -- see `proc::terminate`.
+    ///
+    /// Then it WAITS, rather than assuming the signal worked. A process
+    /// that ignores SIGHUP is exactly the shape of process that might
+    /// ignore SIGTERM, so the row is cleared only once the OS agrees the
+    /// process is gone; otherwise the orphan stays recorded and the app
+    /// keeps showing it, which is the honest outcome. The wait is bounded
+    /// and short: this runs on the connection's own thread, behind a
+    /// confirmation the human is watching.
+    pub fn end_orphan(&self, id: &str) -> anyhow::Result<Response> {
+        let record = self
+            .registry
+            .lock()
+            .unwrap()
+            .get(id)?
+            .ok_or_else(|| anyhow::anyhow!("no such session: {id}"))?;
+        let Some(orphan) = record.orphan else {
+            // Nothing recorded: either there never was an orphan, or a
+            // previous call already cleared it. Not an error -- two
+            // clicks on the same button must not produce a failure the
+            // second time.
+            return Ok(Response::OrphanEnded {
+                id: id.to_string(),
+                ended: false,
+                still_running: false,
+            });
+        };
+
+        crate::proc::terminate(orphan);
+        let deadline = std::time::Instant::now() + ORPHAN_EXIT_GRACE;
+        while crate::proc::still_running(orphan) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let still_running = crate::proc::still_running(orphan);
+        if !still_running {
+            self.registry.lock().unwrap().set_orphan(id, None)?;
+        }
+        Ok(Response::OrphanEnded {
+            id: id.to_string(),
+            ended: !still_running,
+            still_running,
+        })
     }
 
     pub fn get_board(&self, workspace_id: &str) -> anyhow::Result<Board> {
@@ -1208,9 +1293,40 @@ impl SessionManager {
         None
     }
 
+    /// What, if anything, is STILL RUNNING from this inherited row.
+    ///
+    /// The question the epoch cannot answer. `generation` proves the
+    /// daemon that spawned this row is gone; it says nothing about the
+    /// process, because a dying daemon reaches its children only as the
+    /// SIGHUP its closing PTY masters send, and a child that ignores
+    /// SIGHUP survives it, reparented to init. So this asks the OS
+    /// instead of reasoning about it.
+    ///
+    /// A previously recorded orphan is re-checked FIRST, and wins if it
+    /// is still alive. That is what makes a second daemon restart safe:
+    /// by then the row's own `process` is the bare shell the first
+    /// recovery spawned (dead, like every shell, since shells do not
+    /// ignore SIGHUP), so a probe that only looked there would quietly
+    /// drop a survivor that is still running. Re-checking it also clears
+    /// it once it finally exits -- returning `None` is how an orphan
+    /// stops being reported.
+    ///
+    /// Both `still_running` calls fail toward "gone" for an unknown
+    /// handle, which is every row written before v21: those rows carry no
+    /// pid, and inventing liveness for them would be the same
+    /// over-claiming this whole change exists to undo.
+    fn surviving_process(record: &SessionRecord) -> Option<crate::proc::ProcessHandle> {
+        if let Some(known) = record.orphan {
+            if crate::proc::still_running(known) {
+                return Some(known);
+            }
+        }
+        record.process.filter(|p| crate::proc::still_running(*p))
+    }
+
     /// Brings a previous daemon lifetime's sessions back.
     ///
-    /// Two rules, and both of them are about what recovery must NOT
+    /// Three rules now, and all of them are about what recovery must NOT
     /// pretend to be:
     ///
     /// **A row this process inherited is not one it is hosting.** Every
@@ -1242,6 +1358,32 @@ impl SessionManager {
     /// what happened. Reattaching to the real process, or resuming the
     /// agent's conversation, stays out of scope.
     ///
+    /// **A stopped run is not a stopped process.** The clause above --
+    /// "the old daemon's death only reaches its children as a SIGHUP" --
+    /// is the reason the command is not re-run, and it is also a fact
+    /// about THIS run that recovery used to state without checking. So
+    /// every inherited row is probed (`surviving_process`) before
+    /// anything else happens to it, and a survivor is recorded on the row
+    /// as `orphan` for the app to surface and the human to end. The probe
+    /// runs first, ahead of the cwd check, so a row that is about to be
+    /// marked Exited still records what it left behind -- a process does
+    /// not stop existing because the directory it was launched in did.
+    /// (The ROW is truthful either way; the app is a separate question,
+    /// and today `get_session_baselines` filters Exited rows out, so an
+    /// orphan on one reaches only this log line. A session manager that
+    /// lists invisible sessions -- `.gavin-root/plans/sessions-manager.md`
+    /// -- is where that gap closes.) The common answer is "nothing
+    /// survived", which costs one syscall per inherited row and writes
+    /// nothing.
+    ///
+    /// What the probe can see is the process gavin ITSELF launched, and
+    /// only that. A child that agent detached into its own session
+    /// (`setsid`, a background build, a language server) outlives both
+    /// of them and is invisible here -- measured, not assumed. Following
+    /// those would mean scanning the process table the way cmux's
+    /// VaultAgentProcessScanner does, which is a different and much
+    /// larger promise than "remember what we spawned".
+    ///
     /// The cwd is `record.cwd`, not `record.workspace_path`: cwd is where
     /// the session actually was (OSC 7 keeps it current) and the one
     /// `Attach` reports back. `workspace_path` is the fallback for a cwd
@@ -1258,6 +1400,25 @@ impl SessionManager {
             }
             if record.generation >= generation {
                 continue;
+            }
+            // Before anything else touches this row: is the process it
+            // named still out there? Written back only when the answer
+            // CHANGED, so the overwhelmingly common "nothing survived,
+            // nothing was recorded" path does no I/O at all.
+            let orphan = Self::surviving_process(&record);
+            if orphan != record.orphan {
+                if let Err(e) = self.registry.lock().unwrap().set_orphan(&record.id, orphan) {
+                    eprintln!("failed to record the orphan state of session {}: {e}", record.id);
+                }
+            }
+            if let Some(orphan) = orphan {
+                eprintln!(
+                    "session {} left a process behind: pid {} is still running in {} (command: {})",
+                    record.id,
+                    orphan.pid,
+                    record.cwd,
+                    record.command.as_deref().unwrap_or("(none)"),
+                );
             }
             let Some(cwd) = Self::recovery_cwd(&record) else {
                 eprintln!(
@@ -1282,8 +1443,20 @@ impl SessionManager {
             // recovery of every session after it in the list.
             match PtySession::spawn(cwd, None, &record.id) {
                 Ok(pty) => {
+                    // Repointed at the shell that is actually in the PTY
+                    // now, before the pty is moved into the map. Leaving
+                    // the previous lifetime's pid here would make the
+                    // NEXT recovery probe a process this one already
+                    // reported -- and, once that pid was recycled, probe
+                    // a stranger. The orphan (if any) was captured above
+                    // and lives in its own column precisely so this
+                    // overwrite cannot lose it.
+                    let handle = pty.process_handle();
                     sessions.insert(record.id.clone(), pty);
                     let registry = self.registry.lock().unwrap();
+                    if let Err(e) = registry.set_process(&record.id, handle) {
+                        eprintln!("failed to record the new process for session {}: {e}", record.id);
+                    }
                     if let Err(e) = registry.mark_restored(&record.id) {
                         eprintln!("failed to mark session {} restored: {e}", record.id);
                     }
@@ -1368,6 +1541,22 @@ impl SessionManager {
                 let _ = write_message(
                     &mut *writer.lock().unwrap(),
                     &Response::SessionInterrupted { id: id.to_string() },
+                );
+            }
+            // After SessionInterrupted, never instead of it: the run WAS
+            // interrupted as far as gavin is concerned, and this adds the
+            // part the daemon had to go and measure. Like `interrupted`
+            // and unlike `restored` it is not cleared by the human typing
+            // -- a process does not stop surviving because someone used
+            // the shell in front of it -- so it keeps arriving on every
+            // later Attach, and a frontend reload cannot lose it.
+            if let Some(orphan) = record.orphan {
+                let _ = write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::SessionOrphaned {
+                        id: id.to_string(),
+                        orphan: protocol::OrphanProcess { pid: orphan.pid, command: record.command.clone() },
+                    },
                 );
             }
             // Git-status mapping/baseline is skipped for Exited sessions
@@ -1694,6 +1883,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .resize_session(&id, cols, rows)
             .map(|_| Response::Ok),
         Request::KillSession { id } => manager.kill_session(&id).map(|_| Response::Ok),
+        Request::EndOrphan { id } => manager.end_orphan(&id),
         Request::GetBoard { workspace_id } => manager
             .get_board(&workspace_id)
             .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
@@ -4489,6 +4679,8 @@ mod tests {
                     restored: false,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }
@@ -4531,6 +4723,21 @@ mod tests {
         command: Option<&str>,
         status: SessionStatus,
     ) {
+        leftover_row_running(db_path, id, cwd, command, status, None)
+    }
+
+    /// `leftover_row`, plus the process handle the dead daemon would have
+    /// recorded for it. `None` is a row written before v21 (or one whose
+    /// child was gone before its pid could be read); `Some` is what
+    /// recovery's orphan probe actually reads.
+    fn leftover_row_running(
+        db_path: &std::path::Path,
+        id: &str,
+        cwd: &str,
+        command: Option<&str>,
+        status: SessionStatus,
+        process: Option<crate::proc::ProcessHandle>,
+    ) {
         let registry = Registry::open(db_path).unwrap();
         registry
             .insert(&SessionRecord {
@@ -4542,6 +4749,8 @@ mod tests {
                 restored: false,
                 generation: 0,
                 interrupted: false,
+                process,
+                orphan: None,
             })
             .unwrap();
     }
@@ -4728,6 +4937,352 @@ mod tests {
         assert_eq!(summary.id, id);
         assert_eq!(summary.restored, false, "a session this process is hosting was never restored");
         assert_eq!(summary.interrupted, false);
+    }
+
+    /// A process that behaves the way an orphan does: it ignores SIGHUP,
+    /// so closing the PTY master its daemon held would not have killed
+    /// it. Returned with its handle so a test can plant exactly what a
+    /// dead daemon would have left in the registry.
+    ///
+    /// The `Child` comes back too and MUST be kept alive for the duration
+    /// of the test: dropping it leaks the process, and this suite would
+    /// then strew `sleep`s across the developer's machine.
+    fn spawn_survivor() -> (std::process::Child, crate::proc::ProcessHandle) {
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "trap '' HUP; sleep 30"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = crate::proc::identify(child.id()).expect("the survivor must be visible");
+        (child, handle)
+    }
+
+    fn kill_and_reap(mut child: std::process::Child) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn recover_reports_a_process_that_outlived_its_daemon_instead_of_a_clean_interruption() {
+        // The whole card. The daemon is gone and the session's PTY with
+        // it, but the process it launched ignored the SIGHUP that death
+        // sent and is still running in the checkout. Saying "interrupted"
+        // and nothing else describes what gavin did, not what happened.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-1",
+            "/tmp",
+            Some("claude --model opus"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+
+        let manager = recovered_manager(&dir);
+
+        let summary = &manager.list_sessions().unwrap()[0];
+        assert_eq!(summary.interrupted, true, "the run was still interrupted");
+        let orphan = summary.orphan.as_ref().expect("a surviving process must be reported");
+        assert_eq!(orphan.pid, handle.pid);
+        assert_eq!(
+            orphan.command.as_deref(),
+            Some("claude --model opus"),
+            "the confirmation has to be able to name what it would kill"
+        );
+        kill_and_reap(survivor);
+    }
+
+    #[test]
+    fn recover_reports_no_orphan_when_the_process_really_did_die() {
+        // The common path, and the one that must not get noisier: almost
+        // every agent DOES die with its daemon (measured per profile --
+        // claude, gemini and opencode all take the SIGHUP), so a
+        // recovery that cried orphan here would be worse than useless.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        kill_and_reap(survivor);
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "gone-1",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+
+        let manager = recovered_manager(&dir);
+
+        let summary = &manager.list_sessions().unwrap()[0];
+        assert_eq!(summary.interrupted, true);
+        assert!(summary.orphan.is_none(), "a dead pid is not an orphan");
+    }
+
+    #[test]
+    fn recover_never_calls_a_recycled_pid_an_orphan() {
+        // The destructive mistake this must not make. The pid is alive --
+        // it is this test binary -- but it is not the process that was
+        // recorded, and reporting it would put a stranger's process
+        // behind a button labelled "end this agent".
+        let dir = tempfile::tempdir().unwrap();
+        let mut mine = crate::proc::identify(std::process::id()).unwrap();
+        mine.started_at_us -= 1;
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "recycled-1",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(mine),
+        );
+
+        let manager = recovered_manager(&dir);
+
+        assert!(
+            manager.list_sessions().unwrap()[0].orphan.is_none(),
+            "a pid whose identity does not match is gone, the safe direction"
+        );
+    }
+
+    #[test]
+    fn recover_reports_no_orphan_for_a_row_that_never_recorded_a_process() {
+        // Every row written before v22. It cannot be probed, and
+        // "unknown" has to read as gone -- inventing liveness for it
+        // would be the same over-claiming this change exists to undo.
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "legacy-1",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+        );
+
+        let manager = recovered_manager(&dir);
+
+        assert!(manager.list_sessions().unwrap()[0].orphan.is_none());
+    }
+
+    #[test]
+    fn recover_keeps_reporting_an_orphan_across_a_second_daemon_restart() {
+        // The row's own `process` is the bare shell the FIRST recovery
+        // spawned, and shells die with their daemon -- so a probe that
+        // only looked there would drop the survivor on restart number
+        // two, while it kept running. The human restarting twice is not
+        // a reason to stop telling them.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-2",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+
+        let first = recovered_manager(&dir);
+        assert!(first.list_sessions().unwrap()[0].orphan.is_some());
+        drop(first);
+
+        let second = recovered_manager(&dir);
+
+        let summary = &second.list_sessions().unwrap()[0];
+        let orphan = summary.orphan.as_ref().expect("the survivor is still running");
+        assert_eq!(orphan.pid, handle.pid);
+        kill_and_reap(survivor);
+    }
+
+    #[test]
+    fn recover_stops_reporting_an_orphan_once_it_has_exited_on_its_own() {
+        // An orphan that finished its turn and quit is not something to
+        // keep offering to kill. Recovery re-probes what it recorded
+        // earlier, which is the only thing that ever clears it besides
+        // the human.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-3",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+        let first = recovered_manager(&dir);
+        assert!(first.list_sessions().unwrap()[0].orphan.is_some());
+        drop(first);
+        kill_and_reap(survivor);
+
+        let second = recovered_manager(&dir);
+
+        assert!(
+            second.list_sessions().unwrap()[0].orphan.is_none(),
+            "the recorded orphan exited, so there is nothing left to report"
+        );
+    }
+
+    #[test]
+    fn recover_records_the_bare_shell_it_spawned_not_the_process_it_replaced() {
+        // Otherwise the next recovery would probe a pid this one already
+        // reported -- and once that number was recycled, probe a
+        // stranger. The orphan lives in its own column so this overwrite
+        // cannot lose it.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-4",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+
+        let manager = recovered_manager(&dir);
+
+        let record = manager.registry.lock().unwrap().get("orphan-4").unwrap().unwrap();
+        let shell = record.process.expect("the recovered shell must be recorded");
+        assert_ne!(shell.pid, handle.pid, "the row must name the shell, not the orphan");
+        assert!(crate::proc::still_running(shell), "and that shell must really be running");
+        assert_eq!(record.orphan.map(|o| o.pid), Some(handle.pid));
+        kill_and_reap(survivor);
+    }
+
+    #[test]
+    fn end_orphan_kills_the_recorded_process_and_stops_reporting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-5",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+        let manager = recovered_manager(&dir);
+
+        let resp = manager.end_orphan("orphan-5").unwrap();
+
+        match resp {
+            Response::OrphanEnded { ended, still_running, .. } => {
+                assert!(ended, "the survivor takes SIGTERM even though it ignored SIGHUP");
+                assert!(!still_running);
+            }
+            other => panic!("expected OrphanEnded, got {other:?}"),
+        }
+        assert!(!crate::proc::still_running(handle), "the process is actually gone");
+        assert!(
+            manager.list_sessions().unwrap()[0].orphan.is_none(),
+            "and it stops being reported"
+        );
+        kill_and_reap(survivor);
+    }
+
+    #[test]
+    fn end_orphan_is_a_harmless_no_op_when_there_is_nothing_recorded() {
+        // Two presses of the same button, or a press after the orphan
+        // exited by itself. Neither is an error: an error here would
+        // read as "something went wrong" when nothing did.
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "plain-1",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+        );
+        let manager = recovered_manager(&dir);
+
+        match manager.end_orphan("plain-1").unwrap() {
+            Response::OrphanEnded { ended, still_running, .. } => {
+                assert!(!ended);
+                assert!(!still_running, "nothing recorded is not the same as something refusing");
+            }
+            other => panic!("expected OrphanEnded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn end_orphan_refuses_a_session_the_daemon_never_issued() {
+        // The request names a session, never a pid, so this is the only
+        // shape a caller could use to aim it somewhere unexpected.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = recovered_manager(&dir);
+        assert!(manager.end_orphan("no-such-session").is_err());
+    }
+
+    #[test]
+    fn attach_announces_an_orphan_alongside_the_interrupted_marker() {
+        // Alongside, never instead: the run WAS interrupted, and this
+        // adds what the probe went and measured. Both ride Attach, so a
+        // frontend reload gets them again.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-6",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+        let manager = Arc::new(recovered_manager(&dir));
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        manager.attach("orphan-6", Arc::new(Mutex::new(server)));
+
+        let mut reader = BufReader::new(&mut client);
+        let mut saw_interrupted = false;
+        let mut saw_orphan = None;
+        for _ in 0..6 {
+            let next: Result<Option<Response>, _> = read_message(&mut reader);
+            match next {
+                Ok(Some(Response::SessionInterrupted { .. })) => saw_interrupted = true,
+                Ok(Some(Response::SessionOrphaned { orphan, .. })) => {
+                    saw_orphan = Some(orphan);
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(saw_interrupted, "the interrupted marker must still be sent");
+        let orphan = saw_orphan.expect("a surviving process must announce itself on Attach");
+        assert_eq!(orphan.pid, handle.pid);
+        kill_and_reap(survivor);
+    }
+
+    #[test]
+    fn attach_never_calls_an_ordinary_interrupted_session_orphaned() {
+        // The common case. Its process really did die, and an orphan
+        // push here would put a kill button over nothing.
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "plain-2",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+        );
+        let manager = Arc::new(recovered_manager(&dir));
+
+        let (mut client, server) = UnixStream::pair().unwrap();
+        manager.attach("plain-2", Arc::new(Mutex::new(server)));
+
+        let mut reader = BufReader::new(&mut client);
+        for _ in 0..5 {
+            let next: Result<Option<Response>, _> = read_message(&mut reader);
+            match next {
+                Ok(Some(Response::SessionOrphaned { .. })) => {
+                    panic!("an interrupted session whose process died must not report an orphan")
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
     }
 
     #[test]
@@ -5125,6 +5680,8 @@ mod tests {
                     restored: false,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }
@@ -5223,6 +5780,8 @@ mod tests {
                     restored: false,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }
@@ -5262,6 +5821,8 @@ mod tests {
                     restored: false,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }
@@ -5304,6 +5865,8 @@ mod tests {
                     restored: false,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }
@@ -5369,6 +5932,8 @@ mod tests {
                     restored: true,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }
@@ -5408,6 +5973,8 @@ mod tests {
                     restored: false,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }
@@ -5486,6 +6053,8 @@ mod tests {
                     restored: false,
                     generation: 0,
                     interrupted: false,
+                    process: None,
+                    orphan: None,
                 })
                 .unwrap();
         }

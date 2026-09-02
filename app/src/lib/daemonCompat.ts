@@ -116,6 +116,20 @@ export const FEATURE_MIN_VERSION = {
   // the opposite of what happens, and it is the one screen where being
   // wrong costs work. See `restartConfirmLines`.
   interruptedRuns: 20,
+  // Orphan detection: whether the daemon PROBES the process a killed
+  // session named, rather than inferring from its epoch that it must be
+  // gone. Half of it is a request type `min_version_for` does gate
+  // (EndOrphan); this entry exists for the other half, and it gates
+  // something sharper than a disabled button.
+  //
+  // `SessionSummary.orphan` is absent from a v21 daemon because that
+  // daemon never looked -- not because nothing survived. Reading the
+  // absence as "no orphan" would let the app assert a clean stop nobody
+  // measured, next to a Resume button, which is exactly how a second
+  // agent ends up in a checkout that already has one. Every consumer
+  // goes through `orphanDetectionAvailable` in orphan.ts, which turns
+  // this number into "did anyone check".
+  orphanDetection: 22,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

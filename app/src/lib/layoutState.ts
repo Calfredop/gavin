@@ -32,6 +32,7 @@ import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
 import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import type { DaemonCompat } from "./daemonCompat";
+import type { OrphanProcess } from "./orphan";
 
 export type { SessionStatus };
 
@@ -65,6 +66,21 @@ export interface LayoutState {
   /// replaced. Never cleared by typing, unlike `restoredSessionIds` --
   /// the run is still gone.
   interruptedSessionIds: Set<string>;
+  /// The sessions whose agent OUTLIVED the daemon that hosted it: it is
+  /// still running, reparented to init, editing the checkout, with a bare
+  /// shell in the tab where it used to be.
+  ///
+  /// Strictly stronger than `interruptedSessionIds`, and the one place
+  /// where "not in this map" is ambiguous: it means "no survivor" only on
+  /// a daemon that probes (orphan.ts's `orphanDetectionAvailable`). On an
+  /// older one it means nobody looked, which is why the copy softens
+  /// rather than asserting a clean stop.
+  ///
+  /// Keyed by session id and holding the process, because every surface
+  /// that shows it has to be able to NAME what it would kill -- a
+  /// confirmation that says "end the orphaned process?" is not a
+  /// confirmation.
+  orphanBySessionId: Record<string, OrphanProcess>;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
   /// Workspaces the sidebar X removed, newest first. Persisted with the
@@ -85,6 +101,7 @@ const initialState: LayoutState = {
   gitStatusById: {},
   restoredSessionIds: new Set(),
   interruptedSessionIds: new Set(),
+  orphanBySessionId: {},
   fileTabsById: {},
   boardTabsById: {},
   removedWorkspaces: [],
@@ -640,12 +657,18 @@ async function seedSessionBaselines(): Promise<void> {
     const sessionStatusById = { ...s.sessionStatusById };
     const restoredSessionIds = new Set(s.restoredSessionIds);
     const interruptedSessionIds = new Set(s.interruptedSessionIds);
+    const orphanBySessionId = { ...s.orphanBySessionId };
     for (const b of baselines) {
       if (sessionStatusById[b.id] === undefined) sessionStatusById[b.id] = b.status;
       if (b.restored) restoredSessionIds.add(b.id);
       if (b.interrupted) interruptedSessionIds.add(b.id);
+      // Written positively only, like the two above: a baseline that
+      // says nothing must never DELETE an orphan a push already landed.
+      // The only things that clear one are the daemon confirming it
+      // exited (handleOrphanEnded) and the session going away.
+      if (b.orphan) orphanBySessionId[b.id] = b.orphan;
     }
-    return { ...s, sessionStatusById, restoredSessionIds, interruptedSessionIds };
+    return { ...s, sessionStatusById, restoredSessionIds, interruptedSessionIds, orphanBySessionId };
   });
   // Last, and awaited separately: this one shells out to git once per
   // distinct checkout, so it must never hold up the three maps above --
@@ -788,6 +811,11 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(
     await listen<string>("session-interrupted", (event) => {
       handleSessionInterrupted(event.payload);
+    })
+  );
+  unlisteners.push(
+    await listen<[string, OrphanProcess]>("session-orphaned", (event) => {
+      handleSessionOrphaned(event.payload[0], event.payload[1]);
     })
   );
   // An agent naming its own tab (gavin_name_session). Straight into
@@ -1714,6 +1742,33 @@ export function handleSessionInterrupted(sessionId: string): void {
     ...s,
     interruptedSessionIds: new Set(s.interruptedSessionIds).add(sessionId),
   }));
+}
+
+// The stronger half of the above: this session's agent did not stop when
+// the daemon did. Like `interrupted` and unlike `restored` it is not
+// dismissed by typing -- a process does not stop editing the checkout
+// because someone ran `ls` in the shell that replaced its tab -- so it
+// arrives again on every Attach and is cleared only by the two things
+// that actually end it: the daemon confirming the process is gone
+// (handleOrphanEnded) and the session itself going away.
+export function handleSessionOrphaned(sessionId: string, orphan: OrphanProcess): void {
+  layoutState.update((s) => ({
+    ...s,
+    orphanBySessionId: { ...s.orphanBySessionId, [sessionId]: orphan },
+  }));
+}
+
+// Called after the daemon has CONFIRMED the process exited, never merely
+// after it was signalled. A process that ignored SIGTERM is still there,
+// and dropping the badge for it would be the app telling the human a
+// comforting thing it just watched fail to happen.
+export function handleOrphanEnded(sessionId: string): void {
+  layoutState.update((s) => {
+    if (s.orphanBySessionId[sessionId] === undefined) return s;
+    const orphanBySessionId = { ...s.orphanBySessionId };
+    delete orphanBySessionId[sessionId];
+    return { ...s, orphanBySessionId };
+  });
 }
 
 // Called via backend.ts's writeInput hook on every single keystroke and

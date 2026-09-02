@@ -6,6 +6,7 @@
   import BoardPane from "./BoardPane.svelte";
   import {
     layoutState,
+    daemonCompat,
     switchToTab,
     addTab,
     closeSession,
@@ -21,11 +22,13 @@
   import { linkedCardFor, openLinkedCard, type LinkedCard } from "./cardTabLink";
   import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
+  import { restoredBadge, type RestoredBadge } from "./orphan";
+  import { endSessionOrphan } from "./orphanActions";
   import { dirtyPaths } from "./fileEditing";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
-  import { X, Plus, RotateCw, Kanban, Pin, SquareArrowOutUpRight } from "@lucide/svelte";
+  import { X, Plus, RotateCw, TriangleAlert, Kanban, Pin, SquareArrowOutUpRight } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import { hintMode } from "./shortcutHints";
@@ -173,6 +176,20 @@
     if (status === "working") return { class: "status-working", title: "Working" };
     if (status === "waiting_for_input") return { class: "status-waiting", title: "Request attention" };
     return null;
+  }
+
+  // What the ↻/⚠ badge on this tab says, or null for no badge. All three
+  // wordings live in orphan.ts, which is also what SessionDetail and any
+  // later session manager read -- one surface describing a surviving
+  // agent more softly than another is how a human decides the warning is
+  // decorative.
+  function tabBadge(sessionId: string): RestoredBadge | null {
+    return restoredBadge({
+      restored: $layoutState.restoredSessionIds.has(sessionId),
+      interrupted: $layoutState.interruptedSessionIds.has(sessionId),
+      orphan: $layoutState.orphanBySessionId[sessionId] ?? null,
+      compat: $daemonCompat,
+    });
   }
 
   // Filled when dirty, hollow (outlined) when clean, absent entirely when
@@ -438,17 +455,34 @@
              sticky, because the run really is gone, and the card, rail
              step or commit record bound to this session reads it there.
              A tab the human has taken over as a plain shell does not need
-             a permanent warning on it. -->
-        {#if $layoutState.restoredSessionIds.has(sessionId)}
-          {@const interrupted = $layoutState.interruptedSessionIds.has(sessionId)}
+             a permanent warning on it.
+
+             An ORPHAN overrides both, including the dismissal: a live
+             agent editing this checkout does not stop mattering because
+             someone ran `ls` in the shell that replaced its tab. That
+             case is the only one with an action behind it, and all three
+             wordings come from orphan.ts so no second surface can
+             describe them differently. -->
+        {#if tabBadge(sessionId)}
+          {@const badge = tabBadge(sessionId)!}
           <span
             class="restored-badge"
-            class:interrupted
-            title={interrupted
-              ? "The daemon restarted while an agent was working here. It was stopped and NOT restarted — this is a plain shell in the same folder."
-              : "This session's shell was freshly restarted after the daemon restarted"}
+            class:interrupted={badge.tone === "interrupted"}
+            class:orphaned={badge.tone === "orphaned"}
+            role={badge.canEnd ? "button" : undefined}
+            aria-label={badge.canEnd ? "End the process this session left running" : undefined}
+            title={badge.title}
+            onclick={(e) => {
+              if (!badge.canEnd) return;
+              e.stopPropagation();
+              void endSessionOrphan(sessionId);
+            }}
           >
-            <RotateCw size={10} />
+            {#if badge.tone === "orphaned"}
+              <TriangleAlert size={10} />
+            {:else}
+              <RotateCw size={10} />
+            {/if}
           </span>
         {/if}
         {#if !isPinnedTab(sessionId)}
@@ -631,6 +665,18 @@
      amber says "your agent did not". */
   .restored-badge.interrupted {
     color: var(--warning);
+  }
+  /* A different GLYPH, not just a different colour: this one is not a
+     note about what happened, it is a live process still editing the
+     folder, and it is the only badge here that does something when
+     pressed. Danger red and a pointer say both. */
+  .restored-badge.orphaned {
+    color: var(--danger);
+    cursor: pointer;
+  }
+  .restored-badge.orphaned:hover {
+    color: var(--danger);
+    opacity: 0.75;
   }
   .tab-label-input {
     max-width: 120px;

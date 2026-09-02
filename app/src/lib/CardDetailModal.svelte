@@ -43,6 +43,8 @@
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
+  import { interruptedCardNote } from "./orphan";
+  import { endSessionOrphan } from "./orphanActions";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import * as backend from "./backend";
 
@@ -406,6 +408,16 @@
   const sessionState = $derived(cardSessionState($layoutState, binding));
   const bindingLive = $derived(sessionState === "live");
   const bindingInterrupted = $derived(sessionState === "interrupted");
+  // The process this binding's agent left running, if the daemon found
+  // one. Read straight off the store rather than through
+  // `cardSessionState`, deliberately: that function answers "can this
+  // card be jumped to / re-run", which an orphan does not change --
+  // the tab still holds the same bare shell. This is a separate fact
+  // about a process, and folding it into the liveness enum would make
+  // every consumer of that enum re-decide something none of them ask.
+  const bindingOrphan = $derived(
+    binding ? ($layoutState.orphanBySessionId[binding.sessionId] ?? null) : null
+  );
   // The daemon's status describes whatever occupies the session id NOW,
   // which for an interrupted run is the bare shell that replaced the
   // agent -- so it is not consulted at all there.
@@ -745,15 +757,24 @@
           >
           <span class="session-cwd">{binding.cwd}</span>
         </div>
-        {#if bindingInterrupted}
-          <p class="session-note">
-            The daemon restarted while this agent was working, so it was stopped and not
-            restarted — the tab now holds a plain shell. Whatever it had already written
-            is still in the checkout. Resume picks that work up; Re-launch would start the
-            card over from the beginning.
+        {#if bindingInterrupted || bindingOrphan}
+          <p class="session-note" class:orphaned={bindingOrphan !== null}>
+            {interruptedCardNote({ orphan: bindingOrphan, compat: $daemonCompat })}
           </p>
         {/if}
         <div class="session-actions">
+          <!-- First, and ahead of Resume: resuming beside an agent that
+               never stopped is the second-agent-in-one-checkout outcome
+               this card exists to prevent, and it is reached from the
+               button right next to this one. -->
+          {#if bindingOrphan && binding}
+            <button
+              type="button"
+              class="danger"
+              onclick={() => void endSessionOrphan(binding.sessionId)}
+              >End the running process</button
+            >
+          {/if}
           {#if bindingInterrupted}
             <button type="button" onclick={() => void handleResume()}>Resume this card</button>
           {/if}
@@ -1137,6 +1158,13 @@
   }
   .session-status.exited {
     opacity: 0.6;
+  }
+  .session-note.orphaned {
+    color: var(--danger-text);
+  }
+  .session-actions button.danger {
+    border-color: var(--danger);
+    color: var(--danger-text);
   }
   .session-status.interrupted {
     color: var(--warning);

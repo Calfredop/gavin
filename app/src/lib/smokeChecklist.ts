@@ -1209,6 +1209,51 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "A surviving orphan agent",
+    items: [
+      {
+        id: "orphan-none-for-a-normal-agent",
+        text: "Run a card, wait until the agent is working, restart the daemon: the tab's badge is the AMBER ↻, not a red ⚠ — no agent gavin ships survives the restart",
+        hint: "Measured per profile under a temp $HOME: claude, gemini and opencode all take the SIGHUP a closing PTY master sends and die. The probe is still correct and costs one syscall per inherited row; a red ⚠ here would mean an agent version changed its signal handling, which is worth knowing.",
+      },
+      {
+        id: "orphan-detected",
+        text: "In a terminal tab run `trap '' HUP; sleep 900`, restart the daemon: THAT tab comes back with a red ⚠ badge naming the pid",
+        hint: "The only reliable way to produce a real orphan by hand. It is exactly what a future agent that ignores SIGHUP would do, and what the epoch could never detect — the epoch describes a daemon lifetime, not a process.",
+      },
+      {
+        id: "orphan-survives-reload",
+        text: "With that ⚠ up, reload the frontend (⌘R under tauri dev): the badge comes back",
+        hint: "The push is baselined on Attach, which happens once per app PROCESS. Without the get_session_baselines read-back a reload hides a live agent behind an ordinary-looking tab.",
+      },
+      {
+        id: "orphan-survives-second-restart",
+        text: "Restart the daemon a SECOND time without ending it: the ⚠ is still there, still naming the same pid",
+        hint: "By then the row's own process is the bare shell the first recovery spawned, and shells die with their daemon. recover() re-probes the recorded orphan first for exactly this.",
+      },
+      {
+        id: "orphan-confirm-names-it",
+        text: "Click the ⚠: the confirmation names the command and the pid, and says edits already written to disk stay",
+        hint: "Killing something gavin no longer hosts is outside what the session owns and has no undo. A prompt that said “end the orphaned process?” would not be a confirmation.",
+      },
+      {
+        id: "orphan-ended",
+        text: "Confirm: the badge goes away, and `ps -p <pid>` shows nothing",
+        hint: "Success is silent — the badge disappearing is the feedback. The daemon WAITS for the process to actually exit before clearing the row.",
+      },
+      {
+        id: "orphan-refuses-sigterm",
+        text: "Repeat with `trap '' HUP TERM; sleep 900`: after confirming, the badge STAYS and a message says it is ignoring SIGTERM and offers `kill -9`",
+        hint: "Nothing escalates to SIGKILL on its own. Dropping the badge here would be the app reassuring the human about something it just watched fail.",
+      },
+      {
+        id: "orphan-copy-softens-on-an-old-daemon",
+        text: "Against a daemon older than v21, an interrupted tab's tooltip does NOT claim the process is gone — it says the daemon is too old to check",
+        hint: "The setupProgress trap. `orphan: null` from a v21 daemon means nobody looked, not that nothing survived, and min_version_for cannot see the difference — FEATURE_MIN_VERSION.orphanDetection is the only gate there is.",
+      },
+    ],
+  },
+  {
     title: "Git tab",
     items: [
       {

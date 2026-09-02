@@ -8,6 +8,7 @@ import type { ToolRecord } from "./orchestrationTools";
 import type { GroupTemplateRecord } from "./orchestrationGroups";
 import type { DaemonCompat } from "./daemonCompat";
 import type { SessionStatus } from "./notifications";
+import type { OrphanProcess } from "./orphan";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "./workspaceDelete";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
@@ -241,6 +242,12 @@ export interface SessionBaseline {
   /// here rather than only pushed, for the same reason the other three
   /// are -- the push is baselined on Attach, once per app PROCESS.
   interrupted: boolean;
+  /// The process this session left RUNNING when its daemon died, if the
+  /// daemon probed and found one. `null` from a daemon below v21 means
+  /// "never probed" rather than "nothing survived"; see orphan.ts's
+  /// orphanDetectionAvailable, which is the only thing allowed to tell
+  /// those apart.
+  orphan: OrphanProcess | null;
 }
 
 // The frontend learns cwd/status/restored/interrupted from pushes whose
@@ -249,6 +256,17 @@ export interface SessionBaseline {
 // them back; see the Rust command's own doc comment.
 export function getSessionBaselines(): Promise<SessionBaseline[]> {
   return invoke("get_session_baselines");
+}
+
+/// Ends the process a session left running after its daemon died.
+///
+/// Takes a session id and nothing else, deliberately: the daemon looks up
+/// the pid IT recorded and re-probes its identity before signalling, so
+/// no frontend path can aim a signal at an arbitrary process. `ended`
+/// false with `stillRunning` true is a process refusing SIGTERM;
+/// both false means it had already gone.
+export function endOrphan(sessionId: string): Promise<{ ended: boolean; stillRunning: boolean }> {
+  return invoke("end_orphan", { sessionId });
 }
 
 /// The git half of the same read-back, one answer per cwd in the order

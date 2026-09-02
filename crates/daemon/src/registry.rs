@@ -1,5 +1,22 @@
+use crate::proc::ProcessHandle;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+
+/// Rebuilds a handle from the pair of nullable columns that store one.
+///
+/// Both or neither: a pid with no start time is not an identity, and the
+/// only safe reading of a half-written pair is "unknown", which every
+/// caller then treats as gone. Stated once here so no read site can
+/// invent the lenient version.
+fn handle_from(pid: Option<i64>, started_at_us: Option<i64>) -> Option<ProcessHandle> {
+    match (pid, started_at_us) {
+        (Some(pid), Some(started_at_us)) if pid > 0 => Some(ProcessHandle {
+            pid: pid as u32,
+            started_at_us,
+        }),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SessionStatus {
@@ -44,17 +61,58 @@ pub struct SessionRecord {
     ///
     /// This is the epoch recovery reads. A row whose generation is below
     /// the open registry's is one this process INHERITED -- its daemon is
-    /// gone, and with it every PTY master it held, so nothing is hosting
-    /// that session any more. A row at the current generation is one this
-    /// very process is hosting. That distinction used to be implicit in
-    /// "recover() runs once, before the socket is bound"; naming it means
-    /// a consumer can be told rather than left to infer it.
+    /// gone, and with it every PTY master it held, so nothing gavin hosts
+    /// is running that session any more. A row at the current generation
+    /// is one this very process is hosting. That distinction used to be
+    /// implicit in "recover() runs once, before the socket is bound";
+    /// naming it means a consumer can be told rather than left to infer
+    /// it.
+    ///
+    /// What it does NOT say -- and what this comment used to claim by
+    /// running "nothing is hosting that session" one clause too far --
+    /// is that the session's PROCESS is gone. It isn't necessarily.
+    /// Closing a PTY master reaches the child only as a SIGHUP, and a
+    /// child that ignores SIGHUP survives it, reparented to init
+    /// (verified under a temp $HOME; see `proc`). The epoch describes a
+    /// daemon lifetime and cannot answer a question about a process even
+    /// in principle, which is why `process` below exists: recovery
+    /// probes rather than infers.
     pub generation: i64,
     /// This row's process was killed with a previous daemon and the
     /// command it carried was deliberately NOT re-run: what occupies the
     /// session now is a bare shell in the same cwd. Set by `recover`,
     /// never cleared -- see `mark_interrupted`.
+    ///
+    /// "Was killed" is what the daemon INTENDED, not what it verified.
+    /// `orphan` is the verified half.
     pub interrupted: bool,
+    /// The OS process currently sitting in this session's PTY, as far as
+    /// the daemon that spawned it knows.
+    ///
+    /// Written by whoever spawns -- `create_session` for a new session,
+    /// `recover` for the bare shell it puts in an inherited one -- which
+    /// is why, unlike `generation`, this one IS taken from the record
+    /// rather than stamped: only the caller holds the `Child`.
+    ///
+    /// `None` for every row written before v21. That reads as "no
+    /// identity to check", never as "no process", and the two must not
+    /// be confused: an unknown process is exactly the one a probe must
+    /// refuse to make claims about.
+    pub process: Option<ProcessHandle>,
+    /// A process from a PREVIOUS daemon lifetime that recovery probed and
+    /// found still alive: nothing gavin hosts is running it, and it is
+    /// still in the checkout.
+    ///
+    /// Distinct from `process` because both can be true of one row at
+    /// once -- after recovery the row's `process` is the bare shell the
+    /// human is looking at, while this is the agent still editing files
+    /// behind it. Persisted rather than kept in memory for the same
+    /// reason `interrupted` is: the app learns it on Attach, which
+    /// happens once per app process, so a frontend reload must not lose
+    /// it -- and neither must a SECOND daemon restart, which is why
+    /// `recover` re-probes an existing value instead of overwriting it
+    /// blind.
+    pub orphan: Option<ProcessHandle>,
 }
 
 pub struct Registry {
@@ -100,9 +158,18 @@ impl Registry {
         // predates the counter, and 0 is below the first generation this
         // open() writes, so a legacy row reads as inherited -- which it
         // is.
+        // The four v21 columns are NULLable with no default, unlike the
+        // v20 pair above: 0 is a meaningful generation and a meaningful
+        // `interrupted`, but there is no pid that means "we never
+        // recorded one". NULL is that value, and `handle_from` turns it
+        // into the `None` every probe reads as gone.
         for stmt in [
             "ALTER TABLE sessions ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE sessions ADD COLUMN pid INTEGER",
+            "ALTER TABLE sessions ADD COLUMN started_at_us INTEGER",
+            "ALTER TABLE sessions ADD COLUMN orphan_pid INTEGER",
+            "ALTER TABLE sessions ADD COLUMN orphan_started_at_us INTEGER",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -130,8 +197,8 @@ impl Registry {
 
     pub fn insert(&self, record: &SessionRecord) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, workspace_path, cwd, command, status, restored, generation, interrupted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO sessions (id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.id,
                 record.workspace_path,
@@ -142,7 +209,44 @@ impl Registry {
                 // Stamped, not taken from the record: see SessionRecord::generation.
                 self.generation,
                 record.interrupted as i64,
+                // Taken from the record, unlike `generation`: the caller
+                // is the one holding the Child it just spawned.
+                record.process.map(|p| p.pid as i64),
+                record.process.map(|p| p.started_at_us),
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Repoints a row at the process now sitting in its PTY.
+    ///
+    /// `recover` is the only caller that needs it: the row arrives
+    /// carrying the previous lifetime's process, that value is what the
+    /// orphan probe reads, and once the bare shell is spawned the row has
+    /// to describe the shell instead. Writing the pair together (rather
+    /// than offering a pid setter) is what keeps a half-identity
+    /// unrepresentable.
+    pub fn set_process(&self, id: &str, process: Option<ProcessHandle>) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET pid = ?1, started_at_us = ?2 WHERE id = ?3",
+            params![process.map(|p| p.pid as i64), process.map(|p| p.started_at_us), id],
+        )?;
+        Ok(())
+    }
+
+    /// Records -- or clears -- the surviving process this session left
+    /// behind.
+    ///
+    /// `Some` comes from `recover` finding a previous lifetime's process
+    /// still alive. `None` comes from the human ending it, or from
+    /// `recover` re-probing a previously recorded orphan and finding it
+    /// gone. Clearing has to be as easy as setting: an orphan that
+    /// exited on its own must stop being reported, or the app would offer
+    /// to kill a process that no longer exists.
+    pub fn set_orphan(&self, id: &str, orphan: Option<ProcessHandle>) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET orphan_pid = ?1, orphan_started_at_us = ?2 WHERE id = ?3",
+            params![orphan.map(|p| p.pid as i64), orphan.map(|p| p.started_at_us), id],
         )?;
         Ok(())
     }
@@ -190,7 +294,7 @@ impl Registry {
 
     pub fn list(&self) -> anyhow::Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted FROM sessions",
+            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us FROM sessions",
         )?;
         let rows = stmt.query_map([], |row| {
             let status_str: String = row.get(4)?;
@@ -205,6 +309,8 @@ impl Registry {
                 restored: restored != 0,
                 generation: row.get(6)?,
                 interrupted: interrupted != 0,
+                process: handle_from(row.get(8)?, row.get(9)?),
+                orphan: handle_from(row.get(10)?, row.get(11)?),
             })
         })?;
         let mut result = Vec::new();
@@ -224,7 +330,7 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> anyhow::Result<Option<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted FROM sessions WHERE id = ?1",
+            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             let status_str: String = row.get(4)?;
@@ -239,6 +345,8 @@ impl Registry {
                 restored: restored != 0,
                 generation: row.get(6)?,
                 interrupted: interrupted != 0,
+                process: handle_from(row.get(8)?, row.get(9)?),
+                orphan: handle_from(row.get(10)?, row.get(11)?),
             })
         })?;
         match rows.next() {
@@ -264,6 +372,8 @@ mod tests {
             // SessionRecord::generation).
             generation: 0,
             interrupted: false,
+            process: None,
+            orphan: None,
         }
     }
 
@@ -489,6 +599,121 @@ mod tests {
         assert!(record.generation < registry.generation());
         assert_eq!(record.interrupted, false);
         assert_eq!(record.command.as_deref(), Some("claude prompt"));
+    }
+
+    fn handle(pid: u32, started_at_us: i64) -> ProcessHandle {
+        ProcessHandle { pid, started_at_us }
+    }
+
+    #[test]
+    fn a_process_handle_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let mut record = test_record("s1");
+        record.process = Some(handle(4172, 1_756_800_000_123_456));
+
+        registry.insert(&record).unwrap();
+
+        assert_eq!(registry.get("s1").unwrap().unwrap().process, record.process);
+    }
+
+    #[test]
+    fn a_row_that_recorded_no_process_reads_back_as_none() {
+        // Every row written before v21, and every session whose child was
+        // already gone before its pid could be read. `None` is the value
+        // every probe treats as gone.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+
+        let record = registry.get("s1").unwrap().unwrap();
+        assert_eq!(record.process, None);
+        assert_eq!(record.orphan, None);
+    }
+
+    #[test]
+    fn set_process_repoints_a_row_without_touching_its_orphan() {
+        // What recovery does: the row arrives naming the process that
+        // died with the last daemon, the orphan probe reads that, and
+        // then the row has to name the bare shell instead. Losing the
+        // orphan in the process would undo the entire point.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let mut record = test_record("s1");
+        record.process = Some(handle(100, 111));
+        registry.insert(&record).unwrap();
+        registry.set_orphan("s1", Some(handle(100, 111))).unwrap();
+
+        registry.set_process("s1", Some(handle(200, 222))).unwrap();
+
+        let after = registry.get("s1").unwrap().unwrap();
+        assert_eq!(after.process, Some(handle(200, 222)));
+        assert_eq!(after.orphan, Some(handle(100, 111)));
+    }
+
+    #[test]
+    fn set_orphan_clears_as_easily_as_it_sets() {
+        // An orphan that exited on its own, or that the human ended, must
+        // stop being reported -- otherwise the app keeps offering to kill
+        // a process that is not there.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+
+        registry.set_orphan("s1", Some(handle(4172, 999))).unwrap();
+        assert_eq!(registry.get("s1").unwrap().unwrap().orphan, Some(handle(4172, 999)));
+
+        registry.set_orphan("s1", None).unwrap();
+        assert_eq!(registry.get("s1").unwrap().unwrap().orphan, None);
+    }
+
+    #[test]
+    fn a_half_written_handle_reads_as_unknown_rather_than_as_a_pid() {
+        // The lenient reading -- "we have a pid, close enough" -- is what
+        // would put an unverifiable number behind a kill button. A pid
+        // with no start time cannot be matched against anything, so the
+        // only safe value is None.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        let registry = Registry::open(&db_path).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry
+            .conn
+            .execute("UPDATE sessions SET pid = 4172 WHERE id = 's1'", [])
+            .unwrap();
+
+        assert_eq!(registry.get("s1").unwrap().unwrap().process, None);
+    }
+
+    #[test]
+    fn a_database_written_before_v21_gains_the_columns_without_losing_its_rows() {
+        // The migration, exercised the way it will actually run: a table
+        // created by an older daemon, reopened by this one.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    workspace_path TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    command TEXT,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    restored INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO sessions (id, workspace_path, cwd, command)
+                VALUES ('old-1', '/tmp/ws', '/tmp/ws', 'claude')",
+            )
+            .unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+
+        let record = registry.get("old-1").unwrap().unwrap();
+        assert_eq!(record.command.as_deref(), Some("claude"));
+        assert_eq!(record.process, None, "an unmigrated row knows no process");
+        assert_eq!(record.orphan, None);
     }
 
     #[test]

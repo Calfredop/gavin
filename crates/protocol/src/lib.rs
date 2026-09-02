@@ -13,6 +13,23 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v22 taught recovery to PROBE instead of infer. The daemon records the
+/// pid and start time of every process it spawns, and on recovery asks
+/// the OS whether a previous lifetime's process is still alive -- because
+/// killing a daemon reaches its children only as a SIGHUP, and one that
+/// ignores SIGHUP survives, reparented to init. A survivor travels as
+/// `SessionSummary.orphan` and the `SessionOrphaned` push, and
+/// `Request::EndOrphan` is how the human ends it.
+///
+/// `EndOrphan` is a new Request variant, so `min_version_for` gates it by
+/// type. The REPORTING half is invisible to that gate -- it widens what
+/// is said about a session -- and it is worse than the usual silent-drop
+/// case: `orphan: None` from a v21 daemon does not mean "no orphan", it
+/// means the daemon never looked. Only the app's
+/// FEATURE_MIN_VERSION.orphanDetection can tell those apart, which is why
+/// the interrupted copy softens below v22 instead of asserting the
+/// process is gone.
+///
 /// v21 added `Request::ClaimCardForSession`: an agent telling the daemon
 /// it is working the card it just wrote, so a card the workspace agent
 /// picked up on the Home tab stops looking startable on the board. A new
@@ -60,7 +77,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -80,6 +97,14 @@ pub enum Request {
         command: Option<String>,
     },
     ListSessions,
+    /// Ends the surviving process recorded on this session, if it is
+    /// still the process that was recorded.
+    ///
+    /// Named for the session rather than taking a pid, deliberately: a
+    /// request that carried a pid would let any client turn the daemon
+    /// into a way to signal arbitrary processes. The daemon looks up what
+    /// IT recorded, re-probes the identity, and signals only that.
+    EndOrphan { id: String },
     WriteInput {
         id: String,
         data: String,
@@ -467,6 +492,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         // what it did before any of this existed.
         Request::Snapshot { .. } => 18,
 
+        // Ending a surviving orphan. A new request TYPE, so this match
+        // does gate it -- but it is only half the feature: the REPORTING
+        // side widens SessionSummary and adds a push, neither of which
+        // this match can see. daemonCompat.ts owes the other half an
+        // `orphanDetection: 22` entry, and for a sharper reason than
+        // usual: absence of an orphan from an older daemon is unknown,
+        // not negative.
+        Request::EndOrphan { .. } => 22,
+
         // An agent claiming the card it just put In Progress. A new
         // request TYPE, so this match is the whole gate and no
         // daemonCompat.ts mirror is owed: the app never sends it (only
@@ -574,6 +608,26 @@ pub enum Response {
     /// ever restored, and every surface that already reads `restored`
     /// keeps working untouched.
     SessionInterrupted { id: String },
+    /// The stronger half of `SessionInterrupted`, and the one that costs
+    /// the human work: this session's agent was NOT stopped by the daemon
+    /// dying. It is still running, reparented to init, editing the same
+    /// checkout with nothing in front of it. Sent on Attach after
+    /// `SessionInterrupted`, never instead of it -- the run really was
+    /// interrupted as far as gavin is concerned, and this only adds what
+    /// the probe found.
+    ///
+    /// Re-sent on every Attach, like `SessionInterrupted` and unlike
+    /// `SessionRestored`: the process does not stop surviving because the
+    /// frontend reloaded.
+    SessionOrphaned { id: String, orphan: OrphanProcess },
+    /// The outcome of `EndOrphan`. `ended` is false when the process was
+    /// signalled and had not exited by the time the daemon gave up
+    /// waiting -- a process that ignores SIGTERM is exactly the kind that
+    /// ignored SIGHUP to get here -- and the orphan stays recorded so the
+    /// app keeps showing it. False is also what an already-gone or
+    /// never-recorded orphan gets, which is why `still_running` rides
+    /// along: it separates "it refused" from "there was nothing to end".
+    OrphanEnded { id: String, ended: bool, still_running: bool },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
@@ -654,6 +708,36 @@ pub struct SessionSummary {
     /// is the honest reading there: it never marks one.
     #[serde(default)]
     pub interrupted: bool,
+    /// A process from a previous daemon lifetime that this session's
+    /// command was launched as, which the daemon probed and found STILL
+    /// RUNNING -- reparented to init, with no tab in front of it and
+    /// still in the checkout. `interrupted` says gavin stopped hosting
+    /// the run; this says the run did not stop.
+    ///
+    /// `serde(default)` for the wire, but None is NOT self-describing
+    /// here, unlike `interrupted`: from a v21 daemon it means "probed,
+    /// nothing survived", and from a v20 one it means "never probed".
+    /// Only the client's version check separates those, and a client
+    /// that reads None as "no orphan" against an older daemon is
+    /// asserting something nobody measured.
+    #[serde(default)]
+    pub orphan: Option<OrphanProcess>,
+}
+
+/// A surviving process, as much of it as the app needs to talk about it.
+///
+/// The pid and the command, and deliberately not the start time the
+/// daemon matches on: that is an identity token for the reuse guard, and
+/// a client that held it might be tempted to act on the pid itself. Every
+/// action goes back through `EndOrphan`, which re-probes -- so the app
+/// never needs, and never gets, enough to signal a process directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrphanProcess {
+    pub pid: u32,
+    /// The command line the session was launched with, so a confirmation
+    /// can name what it is about to kill rather than showing a bare
+    /// number. `None` for a session that never carried one.
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1762,10 +1846,22 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v22: recovery PROBES the process a killed session named rather
+        // than inferring from the epoch that it must be gone.
+        // Request::EndOrphan is a new variant this match does gate; the
+        // reporting half (SessionSummary.orphan, the SessionOrphaned
+        // push) is not, and it is worse than the usual silent drop --
+        // `orphan: None` from a v21 daemon means "never looked", not "no
+        // orphan", so daemonCompat.ts's `orphanDetection` is what keeps
+        // the app from asserting a clean stop nobody measured.
         // v21: Request::ClaimCardForSession -- an agent binding the card
         // it just put In Progress to its own session. A new request
         // TYPE, so min_version_for is the whole gate and daemonCompat.ts
         // owes it nothing: the app never sends it.
+        // v20: the recovery epoch -- SessionRecord.generation, the
+        // `interrupted` flag, SessionSummary.interrupted and the
+        // SessionInterrupted push. No new Request variant; the field is
+        // serde(default), so a v19 daemon's SessionList still parses.
         // v19: card attachments -- PlanFileInfo.attachments, a seventh
         // SetPlanFrontmatterField key, and CreatePlan.attachments. No
         // new variant, which is exactly why daemonCompat.ts owes it a
@@ -1801,7 +1897,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 21);
+        assert_eq!(PROTOCOL_VERSION, 22);
     }
 
     #[test]

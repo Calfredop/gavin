@@ -116,6 +116,8 @@ import {
   handleGitStatusChanged,
   handleSessionRestored,
   handleSessionInterrupted,
+  handleSessionOrphaned,
+  handleOrphanEnded,
   reconcileLayoutSessions,
   restartDaemonInPlace,
   clearRestoredMarker,
@@ -196,6 +198,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
+    orphanBySessionId: {},
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -224,6 +227,7 @@ beforeEach(() => {
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
+    orphanBySessionId: {},
     fileTabsById: {},
     boardTabsById: {},
     removedWorkspaces: [],
@@ -1123,6 +1127,46 @@ describe("handleSessionInterrupted", () => {
   });
 });
 
+// The half `interrupted` could never state: the agent did not stop. Kept
+// until the daemon CONFIRMS the process is gone, because everything else
+// -- typing in the tab, reloading the frontend, restarting the daemon
+// again -- leaves it running in the checkout.
+describe("handleSessionOrphaned", () => {
+  it("records the process, so a surface can name what it would kill", () => {
+    handleSessionOrphaned("a", { pid: 4172, command: "claude" });
+    expect(get(layoutState).orphanBySessionId["a"]).toEqual({ pid: 4172, command: "claude" });
+  });
+
+  it("survives the write that clears the restored marker", () => {
+    // Same reason `interrupted` does, only more so: a live agent editing
+    // this checkout does not stop mattering because someone ran `ls` in
+    // the shell that replaced its tab.
+    handleSessionRestored("a");
+    handleSessionOrphaned("a", { pid: 4172, command: "claude" });
+
+    clearRestoredMarker("a");
+
+    expect(get(layoutState).restoredSessionIds.has("a")).toBe(false);
+    expect(get(layoutState).orphanBySessionId["a"]).toBeDefined();
+  });
+
+  it("is cleared only by handleOrphanEnded, and only for the session named", () => {
+    handleSessionOrphaned("a", { pid: 1, command: null });
+    handleSessionOrphaned("b", { pid: 2, command: null });
+
+    handleOrphanEnded("a");
+
+    expect(get(layoutState).orphanBySessionId["a"]).toBeUndefined();
+    expect(get(layoutState).orphanBySessionId["b"]).toEqual({ pid: 2, command: null });
+  });
+
+  it("leaves the store untouched when ending something it never had", () => {
+    const before = get(layoutState);
+    handleOrphanEnded("never-seen");
+    expect(get(layoutState)).toBe(before);
+  });
+});
+
 // Both liveness checks in the app read the persisted LAYOUT TREE, not
 // the daemon's session list -- so a tab id a failed recovery left behind
 // reads as a running agent forever, and its rail step can never be
@@ -1141,7 +1185,7 @@ describe("reconcileLayoutSessions", () => {
   it("clears a tab the daemon has no session for, and leaves the live ones", async () => {
     setState([pageWith(["s-live", "ghost"])], "ws-1", "s-live");
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
     ]);
 
     await reconcileLayoutSessions();
@@ -1153,7 +1197,7 @@ describe("reconcileLayoutSessions", () => {
     setState([pageWith(["s-live", "file-1"])], "ws-1", "s-live");
     layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/ws/README.md" } } }));
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
     ]);
 
     await reconcileLayoutSessions();
@@ -1179,7 +1223,7 @@ describe("reconcileLayoutSessions", () => {
           })),
         })),
       }));
-      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false }];
+      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null }];
     });
 
     await reconcileLayoutSessions();
@@ -2306,8 +2350,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
   it("fills cwd, status and the restored badge from the daemon", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false },
-      { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false, orphan: null },
+      { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
     ]);
 
     await bootstrapReady();
@@ -2324,8 +2368,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
   });
   it("fills the interrupted set, which the restored one does not speak for", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true },
-      { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false },
+      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null },
+      { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false, orphan: null },
     ]);
 
     await bootstrapReady();
@@ -2337,12 +2381,57 @@ describe("bootstrap seeds the push-fed session maps", () => {
     expect(state.interruptedSessionIds.has("s-shell")).toBe(false);
   });
 
+  it("fills the orphan map, so a reload cannot hide a live agent", async () => {
+    // The push that carries this is baselined on Attach, which happens
+    // once per app PROCESS -- so without the read-back a frontend reload
+    // comes up showing an ordinary interrupted tab over an agent that is
+    // still editing the checkout. Under `tauri dev` that is every edit.
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      {
+        id: "s-orphan",
+        cwd: "/ws",
+        status: "idle",
+        restored: true,
+        interrupted: true,
+        orphan: { pid: 4172, command: "claude" },
+      },
+      { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() =>
+      expect(get(layoutState).orphanBySessionId["s-orphan"]).toEqual({ pid: 4172, command: "claude" })
+    );
+    // Both lost their run; only one of them left something running.
+    const state = get(layoutState);
+    expect(state.interruptedSessionIds).toEqual(new Set(["s-orphan", "s-agent"]));
+    expect(state.orphanBySessionId["s-agent"]).toBeUndefined();
+  });
+
+  it("never lets a silent baseline delete an orphan a push already landed", async () => {
+    // Positive-only, like restored and interrupted. A daemon too old to
+    // probe reports `orphan: null` for everything, and treating that as
+    // "nothing survived" would erase a warning the app had already been
+    // given -- the exact absent-vs-unknown confusion this feature is
+    // about.
+    vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
+      handleSessionOrphaned("s-1", { pid: 4172, command: "claude" });
+      return [{ id: "s-1", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null }];
+    });
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).restoredSessionIds.has("s-1")).toBe(true));
+    expect(get(layoutState).orphanBySessionId["s-1"]).toEqual({ pid: 4172, command: "claude" });
+  });
+
 
   it("never overwrites a push that already landed", async () => {
     vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
       // A live push beats the snapshot this call is about to return.
       handleCwdChanged("s-1", "/ws/live");
-      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false }];
+      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false, orphan: null }];
     });
 
     await bootstrapReady();
@@ -2367,8 +2456,8 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // when the status actually CHANGES.
   it("fills the git status the sidebar's repo chip reads", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false },
-      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false, orphan: null },
+      { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false, orphan: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockResolvedValue([
       { repoRoot: "/ws", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
@@ -2397,7 +2486,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   it("never overwrites a git push that already landed", async () => {
     const live = { repoRoot: "/ws", branch: "live", dirty: false, ahead: 0, behind: 0, hasUpstream: false };
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockImplementation(async () => {
       handleGitStatusChanged("s-1", live);
@@ -2413,7 +2502,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // git can be missing, slow, or refuse a repo outright.
   it("keeps the cwd seed when the git half fails", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
-      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false },
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null },
     ]);
     vi.mocked(backend.getGitBaselines).mockRejectedValue(new Error("git was not found on PATH"));
 
@@ -2785,6 +2874,7 @@ describe("runningSessionCount", () => {
       gitStatusById: {},
       restoredSessionIds: new Set(),
       interruptedSessionIds: new Set(),
+      orphanBySessionId: {},
       fileTabsById: {},
       boardTabsById: {},
       removedWorkspaces: [],

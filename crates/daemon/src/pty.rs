@@ -125,6 +125,25 @@ impl PtySession {
         Ok(())
     }
 
+    /// A handle to the OS process in this PTY, for the registry to store
+    /// so a LATER daemon can ask whether it is still there (see `proc`).
+    ///
+    /// Two ways to get `None`, and both mean the same thing to a caller:
+    /// portable-pty declines to expose a pid, or the child had already
+    /// exited by the time this was asked -- a command that fails to exec
+    /// is gone in microseconds. Either way there is no process to
+    /// remember, which is the correct thing to record.
+    ///
+    /// There is a theoretical window between `spawn` and this call in
+    /// which the child could exit AND its pid be recycled, which would
+    /// record a stranger's start time. Closing it would need the kernel
+    /// to hand back pid and start time atomically at fork, which no API
+    /// here offers; it needs the entire pid space to wrap inside a few
+    /// microseconds, and the same uid to win the race.
+    pub fn process_handle(&self) -> Option<crate::proc::ProcessHandle> {
+        crate::proc::identify(self.child.process_id()?)
+    }
+
     pub fn try_wait(&mut self) -> anyhow::Result<Option<i32>> {
         match self.child.try_wait()? {
             Some(status) => Ok(Some(status.exit_code() as i32)),

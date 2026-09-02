@@ -1333,6 +1333,17 @@ pub struct SessionBaseline {
     /// per app PROCESS, so a reloaded frontend would otherwise come up
     /// believing every interrupted run is still going.
     pub interrupted: bool,
+    /// The process this session left running after the daemon that
+    /// hosted it died -- probed, not inferred (daemon `proc`). Read back
+    /// here for the same reason as the four above, and with more at
+    /// stake: losing this on a reload would hide a live agent editing the
+    /// checkout behind a tab that looks like an ordinary shell.
+    ///
+    /// `None` from a daemon below v21 means "never probed", not "nothing
+    /// survived". The frontend separates the two on the compat verdict
+    /// (orphan.ts's `orphanDetectionAvailable`), never on this field
+    /// alone.
+    pub orphan: Option<protocol::OrphanProcess>,
 }
 
 /// Every live session's cwd, status, restored and interrupted flags, in
@@ -1367,8 +1378,50 @@ pub fn get_session_baselines(
             status: s.status,
             restored: s.restored,
             interrupted: s.interrupted,
+            orphan: s.orphan,
         })
         .collect())
+}
+
+/// Ends the process a session left running after its daemon died.
+///
+/// A thin pass-through on purpose: every guard that matters is the
+/// daemon's, because the daemon is the only side that knows which
+/// process it recorded and can re-probe its identity before signalling.
+/// This command carries a session id and nothing else, so nothing
+/// reachable from the frontend can aim a signal at an arbitrary pid.
+///
+/// The two booleans are distinct outcomes and the caller says different
+/// things about them: `ended` false with `still_running` true is a
+/// process refusing SIGTERM -- the same stubbornness that got it here --
+/// while both false means it had already gone.
+#[tauri::command]
+pub fn end_orphan(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+    session_id: String,
+) -> Result<OrphanEndResult, String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::EndOrphan { id: session_id },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::OrphanEnded { ended, still_running, .. } => {
+            Ok(OrphanEndResult { ended, still_running })
+        }
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected OrphanEnded, got {other:?}")),
+    }
+}
+
+/// camelCase because it crosses to the frontend, like SessionBaseline.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanEndResult {
+    pub ended: bool,
+    pub still_running: bool,
 }
 
 fn list_valid_session_ids(
@@ -1767,6 +1820,7 @@ mod resolve_workspaces_tests {
             status: "idle".to_string(),
             restored: false,
             interrupted: false,
+            orphan: None,
         }
     }
 
@@ -1778,6 +1832,7 @@ mod resolve_workspaces_tests {
             status: "exited".to_string(),
             restored: false,
             interrupted: false,
+            orphan: None,
         }
     }
 
@@ -2162,6 +2217,9 @@ fn attach_and_relay(
                 }
                 Response::SessionInterrupted { id } => {
                     let _ = reader_app_handle.emit("session-interrupted", id);
+                }
+                Response::SessionOrphaned { id, orphan } => {
+                    let _ = reader_app_handle.emit("session-orphaned", (id, orphan));
                 }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
                     let _ = reader_app_handle
@@ -3412,6 +3470,7 @@ mod adopt_session_tests {
             status: "working".to_string(),
             restored: false,
             interrupted: false,
+            orphan: None,
         }
     }
 
@@ -3423,6 +3482,7 @@ mod adopt_session_tests {
             status: "exited".to_string(),
             restored: false,
             interrupted: false,
+            orphan: None,
         }
     }
 
@@ -3563,6 +3623,7 @@ mod main_session_tests {
             status: status.to_string(),
             restored: false,
             interrupted: false,
+            orphan: None,
         }
     }
 

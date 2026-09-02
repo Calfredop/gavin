@@ -3,6 +3,7 @@ mod git_status;
 mod kanban;
 mod orchestration;
 mod osc;
+mod proc;
 mod pty;
 mod registry;
 mod screen;
