@@ -84,6 +84,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "composer-column-pick",
         text: "The composer's Column picker files the card into the column it names, not the one that opened it",
       },
+      {
+        id: "composer-last-position",
+        text: "A card the composer files lands at the BOTTOM of its column, whatever its title starts with — file three in a row and they stack up in the order they were typed",
+        hint: "Try a title starting with “a” into a column whose cards start later in the alphabet. A new card carries no order:, and unordered cards sort by file name — so without the placement write it appears mid-column. The first card filed into a never-dragged column materializes order: for that whole block, exactly as the first drag there does.",
+      },
       { id: "composer-column", text: "“+ Add column” behaves the same way — no more literal “New column”" },
       {
         id: "save-failure",
@@ -543,7 +548,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "exp-select", text: "Clicking a file opens it in the editor on the right" },
       {
         id: "exp-new-plan",
-        text: "+ → Plans → title → Enter creates the file, selects it, and it appears on the board (~3s)",
+        text: "+ → Plans → title → Enter creates the file, selects it, and it appears LAST in To Do on the board (~3s)",
+        hint: "The status is written explicitly here, so the file says “To Do” and the card is placed at the end of that column — the same rule the board's own composer follows.",
       },
       {
         id: "exp-new-doc",
@@ -898,6 +904,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "board-page-compose",
         text: "On a rail-bound page, ⌘N offers no “note” chip and a fixed “Rail” row instead of the picker; the card it makes lands on that rail and STAYS on this board",
+      },
+      {
+        id: "board-page-compose-last",
+        text: "That card lands at the bottom of the column on THIS board, and the Kanban tab's order of the cards this page hides is unchanged",
+        hint: "Same translation the drag path uses (pageBoard.translateDropIndex): the end of what the page shows is a slot in the middle of the whole column, not the end of it.",
       },
       {
         id: "board-page-compose-refused",

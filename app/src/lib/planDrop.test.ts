@@ -10,7 +10,7 @@ vi.mock("./backend", () => ({
 
 import * as backend from "./backend";
 import { gavinTrees } from "./gavinState";
-import { applyPlanDrop, planCommitFromMerged } from "./planDrop";
+import { applyPlanDrop, placeCardAtColumnEnd, planCommitFromMerged } from "./planDrop";
 import { dropHold } from "./kanbanDrag";
 import type { GavinTree, PlanFileInfo } from "./gavin";
 import type { CardView } from "./planBoard";
@@ -404,5 +404,89 @@ describe("nest drops", () => {
     }
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
     expect(get(dropHold)).toBeNull();
+  });
+});
+
+describe("placeCardAtColumnEnd", () => {
+  function view(path: string, status: string, order: number | null): CardView {
+    return {
+      id: path,
+      title: path,
+      status,
+      priority: null,
+      order,
+      kind: "task",
+      parent: null,
+      parentTitle: null,
+      parentBroken: false,
+      labels: [],
+      checklistDone: 0,
+      checklistTotal: 0,
+      contextName: "p",
+      contextFolder: "/p",
+      fileName: path.split("/").at(-1) ?? path,
+      parseWarning: false,
+      nestedChildren: [],
+    };
+  }
+  function todo(cards: CardView[]) {
+    return {
+      columns: [{ column: { id: "col1", name: "To Do", position: 0 }, planCards: cards }],
+      autoColumns: [],
+    };
+  }
+
+  it("writes one order past the column's last card", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    seed([planInfo("/p/a.md", "To Do", 1024), planInfo("/p/new.md", "To Do", null)]);
+    const err = await placeCardAtColumnEnd(
+      "ws",
+      "/p/new.md",
+      "To Do",
+      todo([view("/p/a.md", "To Do", 1024), view("/p/new.md", "To Do", null)])
+    );
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([["/p/new.md", "order", "2048"]]);
+    expect(planByPath("/p/new.md")?.order).toBe(2048);
+  });
+
+  // The board's sort key puts unordered cards in an alphabetical tail,
+  // so "last" is unreachable until the block has real orders -- which is
+  // exactly what a drop at the foot of the column materializes.
+  it("materializes an all-unordered column so the new card can be last", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    seed([planInfo("/p/b.md", "To Do", null), planInfo("/p/z.md", "To Do", null), planInfo("/p/a.md", "To Do", null)]);
+    const err = await placeCardAtColumnEnd(
+      "ws",
+      "/p/a.md",
+      "To Do",
+      todo([view("/p/b.md", "To Do", null), view("/p/z.md", "To Do", null), view("/p/a.md", "To Do", null)])
+    );
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/p/b.md", "order", "1024"],
+      ["/p/z.md", "order", "2048"],
+      ["/p/a.md", "order", "3072"],
+    ]);
+  });
+
+  it("is a no-op with no board projection and with a status no column carries", async () => {
+    expect(await placeCardAtColumnEnd("ws", "/p/new.md", "To Do", null)).toBeNull();
+    expect(await placeCardAtColumnEnd("ws", "/p/new.md", "Shipped", todo([]))).toBeNull();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed write without pretending the card moved", async () => {
+    vi.mocked(backend.setPlanFrontmatterField).mockRejectedValue(new Error("disk full"));
+    seed([planInfo("/p/a.md", "To Do", 1024), planInfo("/p/new.md", "To Do", null)]);
+    const err = await placeCardAtColumnEnd(
+      "ws",
+      "/p/new.md",
+      "To Do",
+      todo([view("/p/a.md", "To Do", 1024), view("/p/new.md", "To Do", null)])
+    );
+    expect(err).toContain("new.md");
+    expect(err).toContain("disk full");
+    expect(planByPath("/p/new.md")?.order).toBeNull();
   });
 });

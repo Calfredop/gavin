@@ -1,7 +1,9 @@
 import * as backend from "./backend";
+import { composeSlot } from "./cardCompose";
 import { patchPlanField } from "./gavinState";
 import { computeOrderWrites, type OrderedPlanCard } from "./planOrder";
 import { dropHold } from "./kanbanDrag";
+import type { MergedBoard } from "./boardSearch";
 import type { Column } from "./kanban";
 import type { CardView, DisplayColumn, AutoColumn } from "./planBoard";
 import type { DropTarget } from "./pointerDrag";
@@ -36,6 +38,38 @@ export async function applyPlanDrop(spec: PlanDropSpec): Promise<string | null> 
     const fileName = current.split("/").at(-1) ?? current;
     return `Couldn't update ${fileName}: ${e instanceof Error ? e.message : e}`;
   }
+}
+
+/// A card the app has just filed, given the `order:` that puts it at the
+/// END of the column it was filed into.
+///
+/// Card creation writes no `order:` at all, and the board's sort key
+/// puts unordered cards in an alphabetical tail -- so a card the human
+/// had just typed landed wherever its file name fell, halfway up a
+/// column they were not looking at. This is deliberately the SAME write
+/// set as dragging it to the foot of that column: one rule for where a
+/// card sits, whether it got there by gesture or by being typed.
+///
+/// Null on success and when there is nothing to place against (no board
+/// projection yet, or a status no column on it carries). The card
+/// exists either way -- placement is the last step of filing it, never
+/// a reason to refuse.
+export async function placeCardAtColumnEnd(
+  workspaceId: string,
+  path: string,
+  status: string,
+  merged: MergedBoard | null,
+  scoped: MergedBoard | null = null
+): Promise<string | null> {
+  const slot = merged ? composeSlot(merged, scoped, status, path) : null;
+  if (!slot) return null;
+  return applyPlanDrop({
+    workspaceId,
+    path,
+    statusTarget: null, // the card was created carrying this status
+    targetColumn: slot.cards,
+    targetIndex: slot.index,
+  });
 }
 
 export const AUTO_COLUMN_PREFIX = "auto:";

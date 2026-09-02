@@ -535,6 +535,7 @@
       {workspaceId}
       columns={board.columns}
       initialStatus={composeStatus}
+      {merged}
       onRunCard={handleRun}
       onClose={() => (composeStatus = null)}
     />

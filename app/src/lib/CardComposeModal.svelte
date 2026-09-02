@@ -22,6 +22,8 @@
   import type { PlanFileInfo } from "./gavin";
   import { gavinTrees, patchPlanCreated } from "./gavinState";
   import { orchestrations, sendCardToRailAction } from "./orchestrationState";
+  import { placeCardAtColumnEnd } from "./planDrop";
+  import type { MergedBoard } from "./boardSearch";
   import {
     buildCreatePlanArgs,
     composeHint,
@@ -60,6 +62,14 @@
     /// rail pins it and hides the picker, the way pinnedContext does.
     /// Null leaves the picker offering every rail.
     pageRails?: Rail[] | null;
+    /// The board's own merged projection, UNFILTERED, and -- on a
+    /// page-scoped board -- the page's view of it. A filed card is given
+    /// an `order:` that puts it at the END of the column it was filed
+    /// into, and that slot is measured against these two (composeSlot).
+    /// Null on either leaves the card unordered, which is where a new
+    /// card used to land: somewhere in the column's alphabetical tail.
+    merged?: MergedBoard | null;
+    scoped?: MergedBoard | null;
     /// Offered only when the board can actually run a card.
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
     onClose: () => void;
@@ -70,6 +80,8 @@
     initialStatus,
     pinnedContext = null,
     pageRails = null,
+    merged = null,
+    scoped = null,
     onRunCard = null,
     onClose,
   }: Props = $props();
@@ -215,6 +227,14 @@
         parseWarning: false,
       };
       patchPlanCreated(workspaceId, contextFolder, created);
+      // A card carries no `order:`, and unordered cards sort into an
+      // alphabetical tail -- so without this the card the human just
+      // typed appears wherever its file name falls. Placed at the end of
+      // the column it was filed into instead, which is where they were
+      // looking. Reads `merged` AFTER the optimistic patch on purpose:
+      // the new card is filtered back out of its own block, so the block
+      // is the one the human is about to see either way.
+      const placeError = await placeCardAtColumnEnd(workspaceId, path, args.status, merged, scoped);
       // Before Run now, so a failure to place the card is not buried
       // under a spawning agent.
       const rail = railToApply(
@@ -248,10 +268,14 @@
       }
       added += 1;
       reset();
-      // The card IS created; the rail is what failed. Said after the
-      // reset so the next card starts from a clean field but the human
-      // still learns this one is sitting off the rails.
+      // The card IS created; the rail or its placement is what failed.
+      // Said after the reset so the next card starts from a clean field
+      // but the human still learns this one is sitting off the rails --
+      // the worse of the two, since a card off the rail leaves a
+      // page-scoped board entirely while a misplaced one is merely in
+      // the wrong row.
       if (railError) error = `Card created, but it isn't on the rail: ${railError}`;
+      else if (placeError) error = `Card created, but not at the end of the column: ${placeError}`;
       runNow = false;
       if (!keepOpen) onClose();
       else titleEl?.focus();

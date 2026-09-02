@@ -352,6 +352,8 @@
       initialStatus={composeStatus}
       pinnedContext={contextFolder}
       pageRails={composerRails}
+      {merged}
+      {scoped}
       onRunCard={handleRun}
       onClose={() => (composeStatus = null)}
     />

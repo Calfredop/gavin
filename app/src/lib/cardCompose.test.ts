@@ -8,7 +8,11 @@ import {
   railToApply,
   COMPOSE_KINDS,
   DEFAULT_COMPOSE_KIND,
+  composeSlot,
+  NEW_CARD_STATUS,
 } from "./cardCompose";
+import { isPermanentColumn, type CardView } from "./planBoard";
+import type { MergedBoard } from "./boardSearch";
 
 describe("COMPOSE_KINDS", () => {
   it("opens on task, so ⌘N files runnable work by default", () => {
@@ -229,5 +233,124 @@ describe("composeHint", () => {
   it("always says how to get out", () => {
     for (const field of ["title", "body"] as const)
       for (const mac of [true, false]) expect(composeHint(field, mac)).toContain("Esc closes");
+  });
+});
+
+describe("NEW_CARD_STATUS", () => {
+  // A card filed with a status no column carries lands in an auto
+  // column, and composeSlot would place it at the end of THAT -- fine,
+  // but not what the Plans tab means by filing a card. A permanent
+  // column is the only status guaranteed to be on every board.
+  it("names a column every board carries", () => {
+    expect(isPermanentColumn(NEW_CARD_STATUS)).toBe(true);
+  });
+});
+
+describe("composeSlot", () => {
+  const NEW = "/ws/.gavin-root/plans/new.md";
+  function card(fileName: string, over: Partial<CardView> = {}): CardView {
+    return {
+      id: `/ws/.gavin-root/plans/${fileName}`,
+      title: fileName,
+      status: "To Do",
+      priority: null,
+      order: null,
+      kind: "task",
+      parent: null,
+      parentTitle: null,
+      parentBroken: false,
+      labels: [],
+      checklistDone: 0,
+      checklistTotal: 0,
+      contextName: "root",
+      contextFolder: "/ws",
+      fileName,
+      parseWarning: false,
+      nestedChildren: [],
+      ...over,
+    };
+  }
+  function board(cards: Record<string, CardView[]>, auto: Record<string, CardView[]> = {}): MergedBoard {
+    return {
+      columns: Object.entries(cards).map(([name, planCards], i) => ({
+        column: { id: `col-${name}`, name, position: i },
+        planCards,
+      })),
+      autoColumns: Object.entries(auto).map(([status, planCards]) => ({ status, planCards })),
+    };
+  }
+
+  it("appends to the end of the named column", () => {
+    const merged = board({ "To Do": [card("a.md", { order: 1024 }), card("b.md", { order: 2048 })] });
+    expect(composeSlot(merged, null, "To Do", NEW)).toEqual({
+      cards: [
+        { path: "/ws/.gavin-root/plans/a.md", order: 1024 },
+        { path: "/ws/.gavin-root/plans/b.md", order: 2048 },
+      ],
+      index: 2,
+    });
+  });
+
+  it("gives an empty column slot 0", () => {
+    expect(composeSlot(board({ "To Do": [] }), null, "To Do", NEW)).toEqual({ cards: [], index: 0 });
+  });
+
+  it("matches the column by slug, not by spelling", () => {
+    const merged = board({ "In Progress": [card("a.md")] });
+    expect(composeSlot(merged, null, "in-progress", NEW)?.index).toBe(1);
+  });
+
+  it("finds an auto column when no real column carries the status", () => {
+    const merged = board({ "To Do": [card("a.md")] }, { Blocked: [card("b.md"), card("c.md")] });
+    expect(composeSlot(merged, null, "Blocked", NEW)?.index).toBe(2);
+  });
+
+  it("is null when the status resolves to no column at all", () => {
+    expect(composeSlot(board({ "To Do": [] }), null, "Shipped", NEW)).toBeNull();
+  });
+
+  // A page-scoped board renumbers the WHOLE column (pageBoard.ts), so
+  // "the end of what I can see" has to be translated into a slot in it.
+  it("page-scoped: lands after the last card the page shows, not after the column", () => {
+    const a = card("a.md");
+    const b = card("b.md");
+    const c = card("c.md");
+    const merged = board({ "To Do": [a, b, c] });
+    const scoped = board({ "To Do": [a, b] });
+    expect(composeSlot(merged, scoped, "To Do", NEW)).toEqual({
+      cards: [
+        { path: a.id, order: null },
+        { path: b.id, order: null },
+        { path: c.id, order: null },
+      ],
+      index: 2,
+    });
+  });
+
+  it("page-scoped: an empty page view appends to the whole column", () => {
+    const merged = board({ "To Do": [card("a.md"), card("b.md")] });
+    expect(composeSlot(merged, board({ "To Do": [] }), "To Do", NEW)?.index).toBe(2);
+  });
+
+  // The caller may read the projection after the optimistic patch has
+  // already put the new card into it; handing it back to the order math
+  // as one of its own neighbours would write it twice.
+  it("leaves the card being placed out of its own block", () => {
+    const merged = board({ "To Do": [card("a.md"), card("new.md"), card("z.md")] });
+    const slot = composeSlot(merged, null, "To Do", NEW);
+    expect(slot?.cards.map((c) => c.path)).toEqual([
+      "/ws/.gavin-root/plans/a.md",
+      "/ws/.gavin-root/plans/z.md",
+    ]);
+    expect(slot?.index).toBe(2);
+  });
+
+  it("page-scoped: excludes it from the page view too", () => {
+    const a = card("a.md");
+    const created = card("new.md");
+    const z = card("z.md");
+    const merged = board({ "To Do": [a, created, z] });
+    const scoped = board({ "To Do": [a, created] });
+    expect(composeSlot(merged, scoped, "To Do", NEW)?.index).toBe(1);
   });
 });

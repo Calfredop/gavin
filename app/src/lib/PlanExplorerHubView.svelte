@@ -16,6 +16,8 @@
     type CreatableGroup,
   } from "./planExplorer";
   import { mergePlanCards, type CardView } from "./planBoard";
+  import { NEW_CARD_STATUS } from "./cardCompose";
+  import { placeCardAtColumnEnd } from "./planDrop";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import { executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
@@ -146,8 +148,16 @@
     }
     try {
       if (group === "plans") {
-        // Same daemon path agents use: validated, never overwrites.
-        selectedPath = await backend.createPlan(context.folderPath, fileName, title);
+        // Same daemon path agents use: validated, never overwrites. The
+        // status is passed rather than defaulted so this and the
+        // placement below cannot name two different columns.
+        selectedPath = await backend.createPlan(context.folderPath, fileName, title, NEW_CARD_STATUS);
+        // A card is born with no `order:`, and unordered cards sort
+        // into their column's alphabetical tail -- so a card filed from
+        // this tree turned up halfway down To Do on the Kanban tab.
+        // Same rule as the board's own composer: a new card goes last.
+        const placeError = await placeCardAtColumnEnd(workspaceId, selectedPath, NEW_CARD_STATUS, merged);
+        if (placeError) error = placeError;
       } else {
         const path = newFilePath(context.gavinDir, group, fileName);
         await backend.writeFileForEditor(path, `# ${title}\n`);

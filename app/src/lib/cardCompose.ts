@@ -4,8 +4,12 @@
 // and forwards.
 
 import { formatAttachments } from "./attachments";
+import { translateDropIndex } from "./pageBoard";
 import { slugFileName } from "./planExplorer";
+import { slugStatus, type CardView } from "./planBoard";
 import { formatChord, matchesChord, type Chord, type ChordEvent } from "./shortcuts";
+import type { MergedBoard } from "./boardSearch";
+import type { OrderedPlanCard } from "./planOrder";
 
 export type ComposeKind = "note" | "task" | "plan";
 
@@ -74,6 +78,15 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
   };
 }
 
+/// The status a card is filed with when no picker offered one -- the
+/// Plans tab's "new file in this context", which creates a card from a
+/// tree that shows no columns at all. It is the daemon's own default in
+/// `create_plan_file`, spelled out here and PASSED rather than left to
+/// be defaulted, so the file on disk and the column the app then places
+/// the card at the end of cannot name two different things. A permanent
+/// column, so there is always one to land in (guard test).
+export const NEW_CARD_STATUS = "To Do";
+
 /// Which column a freshly opened composer starts in. The column that
 /// asked wins while it is still on the board -- a rename or a delete
 /// between the click and the render must not leave the picker showing a
@@ -84,6 +97,63 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
 export function defaultComposeStatus(columnNames: string[], preferred: string | null): string | null {
   if (preferred !== null && columnNames.includes(preferred)) return preferred;
   return columnNames[0] ?? null;
+}
+
+/// Where a card the app has just filed belongs: the END of the column it
+/// was filed into.
+///
+/// A card is born with no `order:` at all, and the board's sort key --
+/// (order ?? +infinity, contextFolder, fileName) -- puts unordered cards
+/// in an alphabetical tail behind the ordered ones. So a card the human
+/// had just typed appeared wherever its FILE NAME happened to fall,
+/// which is nowhere near the bottom of the column they were looking at.
+/// The fix is the one the drag path already has: give the new card the
+/// order writes a drop at the foot of that column would produce
+/// (computeOrderWrites), materializing the block on the first one.
+///
+/// `scoped` is the PAGE lens, when the board carries one. It is passed
+/// for the same reason the drop path passes it (pageBoard.ts): the order
+/// writes land on the whole column, so "after everything I can see" has
+/// to be translated into a slot among the cards this board hides too.
+///
+/// Null when the status resolves to no column on this board. The card is
+/// filed either way -- a status with no column has no end to be placed
+/// at, and refusing to file the card over that would be a far worse
+/// trade.
+export interface ComposeSlot {
+  /// The target column's plan block in visual order, as the order math
+  /// takes it.
+  cards: OrderedPlanCard[];
+  index: number;
+}
+
+/// `path` is the card just created. It is FILTERED OUT of the block it
+/// is being placed in, the same way the drop path excludes the dragged
+/// card -- which is what lets a caller read the projection either side
+/// of the optimistic patch that puts the new card into it. Leaving it in
+/// would hand computeOrderWrites a list containing the very card it is
+/// asked to splice, and it would write two different orders to it.
+export function composeSlot(
+  merged: MergedBoard,
+  scoped: MergedBoard | null,
+  status: string,
+  path: string
+): ComposeSlot | null {
+  const full = columnCards(merged, status, path);
+  if (!full) return null;
+  const visible = scoped ? (columnCards(scoped, status, path) ?? []) : null;
+  const index = visible ? translateDropIndex(visible, full, visible.length) : full.length;
+  return { cards: full.map((c) => ({ path: c.id, order: c.order })), index };
+}
+
+/// The plan block a card with this status lands in -- a real column
+/// first, then an auto column, both matched by slug the way the board's
+/// own projection matches them.
+function columnCards(board: MergedBoard, status: string, exclude: string): CardView[] | null {
+  const slug = slugStatus(status);
+  const dc = board.columns.find((c) => slugStatus(c.column.name) === slug);
+  const cards = dc?.planCards ?? board.autoColumns.find((a) => slugStatus(a.status) === slug)?.planCards;
+  return cards ? cards.filter((c) => c.id !== exclude) : null;
 }
 
 /// The rail a newly created card should be sent to. A note never rides a
