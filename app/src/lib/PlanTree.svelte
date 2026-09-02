@@ -11,6 +11,8 @@
   // SplitSquareHorizontal.
   import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X, Archive } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { priorityIndicator } from "./ui/indicators";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
@@ -150,8 +152,11 @@
     <button type="button" class="file" title={file.path} onclick={() => onSelect(file.path)}>
       <span class="glyph"><FileText size={11} /></span>
       <span class="label">{file.label}</span>
-      {#if file.priority && file.priority !== "none"}
-        <span class="priority priority-{file.priority}" title="Priority: {file.priority}"></span>
+      {#if file.priority}
+        {@const priority = priorityIndicator(file.priority)}
+        <!-- The one priority badge (ui/indicators.ts), so a card reads
+             the same here as on the board it came from. -->
+        {#if priority}<StatusBadge indicator={priority} size={11} />{/if}
       {/if}
       {#if file.status}
         <span class="status">{file.status}</span>
@@ -368,24 +373,6 @@
     color: var(--text-subtle);
     font-size: 0.85em;
     flex: 0 0 auto;
-  }
-  .priority {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-  }
-  .priority-low {
-    background: var(--surface-success);
-  }
-  .priority-medium {
-    background: var(--warning);
-  }
-  .priority-high {
-    background: var(--warning);
-  }
-  .priority-urgent {
-    background: var(--danger);
   }
   .warn {
     display: flex;

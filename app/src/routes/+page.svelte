@@ -349,9 +349,13 @@
       transform: rotate(360deg);
     }
   }
-  /* Warning tone, matching the rail header, the chip ring and the
-     sidebar count it stands in for. Positioned off .tab, which is
-     already `position: relative` for the hold-⌘ hint. */
+  /* Amber, the app's one colour for "this wants a human"
+     (ui/indicators.ts) -- the same tone the rail header, the chip ring
+     and the sidebar count it stands in for now wear. A corner pip rather
+     than an inline badge because the tab already carries a label and an
+     icon of its own, and its aria-label and tooltip both name the fact,
+     so nothing here rests on the colour alone. Positioned off .tab,
+     which is already `position: relative` for the hold-⌘ hint. */
   .tab-attention {
     position: absolute;
     top: 4px;

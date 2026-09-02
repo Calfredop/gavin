@@ -28,6 +28,8 @@
     type AttachmentStatus,
   } from "./attachments";
   import { isViewableInApp } from "./fileTypes";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { agentExitedIndicator, agentIndicator } from "./ui/indicators";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
   import { runCard, relaunchCard, developCard } from "./cardRunActions";
   import { developAvailable } from "./cardRun";
@@ -342,6 +344,15 @@
   const bindingStatus = $derived(
     binding && bindingLive ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle") : "exited"
   );
+  // The same badge the board card, the terminal tab and the sidebar row
+  // draw for this very session -- the detail modal used to say the state
+  // in a bare word, which is accurate but shares nothing with the three
+  // surfaces the human just came from.
+  const bindingBadge = $derived(
+    binding && bindingLive
+      ? agentIndicator($layoutState.sessionStatusById[binding.sessionId])
+      : agentExitedIndicator()
+  );
 
   async function handleRun(): Promise<void> {
     errorMessage = null;
@@ -620,7 +631,7 @@
       <div class="section-title">Agent session</div>
       {#if binding}
         <div class="session-info">
-          <span class="session-status" class:exited={!bindingLive}>{bindingStatus}</span>
+          <StatusBadge indicator={bindingBadge} size={12} text={bindingStatus} class="session-status" />
           <span class="session-cwd">{binding.cwd}</span>
         </div>
         <div class="session-actions">
@@ -928,8 +939,10 @@
     opacity: 0.85;
     margin-bottom: 6px;
   }
-  .session-status.exited {
-    opacity: 0.6;
+  /* Positioning only -- the badge owns its own tone, exited included
+     (a neutral, struck-through circle). */
+  .session-info :global(.session-status) {
+    flex: 0 0 auto;
   }
   .session-cwd {
     overflow: hidden;
