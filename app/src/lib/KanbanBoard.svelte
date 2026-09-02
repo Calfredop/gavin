@@ -15,7 +15,7 @@
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
-  import { fetchOrchestration } from "./orchestrationState";
+  import { fetchOrchestration, orchestrations } from "./orchestrationState";
   import { cardSessionFor } from "./kanbanState";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "./composeRequest";
@@ -33,6 +33,20 @@
   import { featureBlockedReason } from "./daemonCompat";
   import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
   import { isSearching } from "./search";
+  import { railIndex } from "./planFilter";
+  import { dropAgainstWholeBoard } from "./pageBoard";
+  import {
+    ANY,
+    KIND_FACETS,
+    NO_FACETS,
+    NO_RAIL,
+    contextFacets,
+    facetsActive,
+    filterBoardByFacets,
+    filterCards,
+    pruneFacets,
+    type BoardFacets,
+  } from "./boardFilters";
   import { flip } from "svelte/animate";
   import { tooltip } from "./tooltip";
   import type { DropTarget } from "./pointerDrag";
@@ -75,20 +89,58 @@
 
   const board = $derived($kanbanState[workspaceId]);
   const error = $derived(boardError(workspaceId));
-  const merged = $derived(board ? mergePlanCards(board, $gavinTrees[workspaceId]) : null);
+  const tree = $derived($gavinTrees[workspaceId]);
+  const merged = $derived(board ? mergePlanCards(board, tree) : null);
 
-  // The search lens. `merged` stays UNFILTERED -- the delete cascade, the
+  // --- the facet lens (boardFilters.ts) --------------------------------
+  // Three dropdowns over the whole workspace's cards: which context, which
+  // kind, which rail. `merged` stays UNFILTERED -- the delete cascade, the
   // detail modal and the drop path all commit against the whole board --
-  // and only the rendered columns come from `view`.
+  // and the lenses compose facets first, then search, so a column's
+  // "hidden" count keeps meaning "hidden by your query".
+  let facets = $state<BoardFacets>({ ...NO_FACETS });
+  const orch = $derived($orchestrations[workspaceId]);
+  const rails = $derived(railIndex(orch ?? null));
+  const contexts = $derived(contextFacets(tree));
+  const filtering = $derived(facetsActive(facets));
+  const faceted = $derived(merged ? filterBoardByFacets(merged, facets, rails) : null);
+
+  // A facet whose option disappeared (the rail was deleted, the context
+  // folder renamed) filters on a value the dropdown no longer offers, so
+  // the board reads as empty for no stated reason. Each vocabulary is
+  // passed only once its store has actually answered -- a null there
+  // means "not loaded", never "the option is gone".
+  $effect(() => {
+    const next = pruneFacets(
+      facets,
+      tree && !tree.rootMissing ? contexts : null,
+      orch === undefined ? null : rails
+    );
+    if (next.context !== facets.context || next.rail !== facets.rail) facets = next;
+  });
+
+  // The search lens, over what the facets left standing.
   let search = $state("");
   const searching = $derived(isSearching(search));
-  const view = $derived(merged ? filterBoard(merged, search) : null);
+  const view = $derived(faceted ? filterBoard(faceted, search) : null);
+
+  // What a column is NOT showing, across both lenses. A column header
+  // reads this to say "3 / 11", and its Clear, Delete and Archive-all
+  // refuse while it is non-zero -- so it has to count every card the
+  // column is holding back, not just the ones a query hid. Summing is
+  // exact rather than approximate: the search ran over what the facets
+  // had already left, so the two counts are disjoint.
+  function hiddenIn(columnKey: string): number {
+    return (faceted?.hiddenIn(columnKey) ?? 0) + (view?.hiddenIn(columnKey) ?? 0);
+  }
 
   // The archive lens. A toggle rather than a tab: it is the same board's
   // cards under the same search box, so switching must not cost the
-  // human their query or their place in the workspace.
+  // human their query or their place in the workspace. The facets reach
+  // it too -- an archive that ignored the context dropdown while the
+  // board obeyed it would be two answers to one question.
   let showingArchive = $state(false);
-  const archive = $derived(archiveView(merged?.archived ?? [], search));
+  const archive = $derived(archiveView(filterCards(merged?.archived ?? [], facets, rails), search));
   const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
 
   // --- the card composer (CardComposeModal) ----------------------------
@@ -102,9 +154,12 @@
     // Nothing to file a card into until the board has loaded; the
     // error line below only renders once it has.
     if (!board) return;
-    // A card composed while the archive lens is up would be filed onto a
-    // board the human cannot see; the lens comes off with the composer.
+    // A card composed under a lens would be filed onto a board the human
+    // cannot see -- the archive toggle, and equally a facet the new card
+    // will not match (its context, its kind, and a card is born on no
+    // rail at all). Every lens comes off with the composer.
     showingArchive = false;
+    facets = { ...NO_FACETS };
     composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);
     if (composeStatus === null) planWriteError = "Add a column first — a card needs a status to live in";
   }
@@ -224,7 +279,12 @@
       void reorderColumnAction(workspaceId, drag.id, drag.target.index);
     } else if (drag.kind === "plan" && board && merged) {
       planWriteError = null;
-      void planCommitFromMerged(workspaceId, drag, board.columns, merged).then((err) => {
+      // The drop names the slot the human saw, among the cards the facets
+      // left standing; planDrop renumbers the WHOLE column.
+      // dropAgainstWholeBoard reconciles the two -- without it a filtered
+      // drop would reorder cards this board never showed.
+      const commit = dropAgainstWholeBoard(drag, filtering ? faceted : null, merged);
+      void planCommitFromMerged(workspaceId, commit, board.columns, merged).then((err) => {
         if (err) planWriteError = err;
       });
     }
@@ -331,6 +391,59 @@
           : null}
       hint={showingArchive ? null : "filtered: clear to drag cards"}
     />
+    <!-- The three facets, in the order a human narrows: WHERE the card
+         lives, WHAT it is, WHICH rail runs it. Every one is always
+         rendered, the way the Plans tab renders its own two -- a control
+         that comes and goes with the workspace's shape is a control the
+         human has to go looking for. -->
+    <div class="facets">
+      <select
+        bind:value={facets.context}
+        aria-label="Filter by context"
+        use:tooltip={"Show only the cards in one context and its subfolders — the root is every card"}
+      >
+        {#each contexts as ctx (ctx.value)}
+          <option value={ctx.value} title={ctx.folderPath}>{ctx.label}</option>
+        {/each}
+      </select>
+      <select bind:value={facets.kind} aria-label="Filter by kind" use:tooltip={"Show only one kind of card"}>
+        <option value={ANY}>Any kind</option>
+        {#each KIND_FACETS as facet (facet.value)}
+          <option value={facet.value}>{facet.label}</option>
+        {/each}
+      </select>
+      <select
+        bind:value={facets.rail}
+        aria-label="Filter by rail"
+        use:tooltip={"Show only the cards one orchestration rail carries"}
+      >
+        <option value={ANY}>Any rail</option>
+        <option value={NO_RAIL}>On no rail</option>
+        {#each rails.rails as rail (rail.id)}
+          <option value={rail.id}>{rail.name}</option>
+        {/each}
+      </select>
+      {#if filtering}
+        <!-- Says how much the facets took off the BOARD, so a board that
+             went short has a stated reason. Not shown over the archive,
+             where that number would be about the cards behind it. -->
+        {#if faceted && !showingArchive}
+          <span class="facet-count" class:none={faceted.shown === 0}>{faceted.shown} / {faceted.total}</span>
+        {/if}
+        <!-- Clears the query too, the way the Plans tab's Reset does: the
+             lenses stack, so a Reset that left one of them on would look
+             like it had failed. -->
+        <button
+          type="button"
+          class="reset"
+          use:tooltip={"Clear the search and every filter"}
+          onclick={() => {
+            facets = { ...NO_FACETS };
+            search = "";
+          }}>Reset</button
+        >
+      {/if}
+    </div>
     <IconButton
       icon={Archive}
       label={showingArchive ? "Back to the board" : "Open the archive"}
@@ -372,7 +485,7 @@
             {column}
             labels={board.labels}
             planCards={view?.columns.find((dc) => dc.column.id === column.id)?.planCards ?? []}
-            hiddenCount={view?.hiddenIn(column.id) ?? 0}
+            hiddenCount={hiddenIn(column.id)}
             onOpenPlanCard={(path) => (openPlanPath = path)}
             onRunCard={handleRun}
             onResumeCard={handleResume}
@@ -389,7 +502,7 @@
       </div>
     {/each}
     {#each view?.autoColumns ?? [] as auto (auto.status)}
-      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} hiddenCount={view?.hiddenIn(AUTO_KEY_PREFIX + auto.status) ?? 0} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
+      <AutoKanbanColumn status={auto.status} planCards={auto.planCards} hiddenCount={hiddenIn(AUTO_KEY_PREFIX + auto.status)} labels={board.labels} {workspaceId} onOpenPlan={(path) => (openPlanPath = path)} onRunCard={handleRun} onSendToAgent={handleSendToAgent} {agentAvailable} onDeleteCard={(card) => (pendingDelete = card)} onCardContextMenu={handleCardContextMenu} />
     {/each}
     {#if addingColumn}
       <input
@@ -443,6 +556,8 @@
   .board-bar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
     padding: 8px 16px 0;
     flex: 0 0 auto;
   }
@@ -450,8 +565,50 @@
     max-width: 520px;
   }
   .board-bar :global(.archive-toggle) {
-    margin-left: 10px;
     flex: 0 0 auto;
+  }
+  .facets {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .facets select {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 160px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 0.72rem;
+    padding: 2px 4px;
+  }
+  .facet-count {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-family: monospace;
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .facet-count.none {
+    color: var(--warning-text);
+  }
+  .reset {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: monospace;
+    font-size: 0.72rem;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  .reset:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .archive-count {
     font-family: monospace;

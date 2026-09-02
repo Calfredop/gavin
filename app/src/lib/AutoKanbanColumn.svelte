@@ -53,7 +53,7 @@
   </div>
   <div class="cards" data-kb-cards>
     {#if filtered && planCards.length === 0}
-      <div class="no-match">No match in this column</div>
+      <div class="no-match">Nothing in this column passes the filter</div>
     {/if}
     {#each slots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>

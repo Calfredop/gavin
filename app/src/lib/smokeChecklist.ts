@@ -1292,6 +1292,42 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       { id: "search-board-esc", text: "Esc in the box clears it and the whole board comes back" },
       {
+        id: "filter-board-context",
+        text: "Kanban: the context dropdown reads “All contexts” first, then every context by its path under the root; picking one leaves only its cards — a context nested under it included",
+        hint: "“All contexts” IS the root: every context is a subfolder of it, so the root and “all cards” are one answer. A context outside the workspace reads “<name> (outside)”.",
+      },
+      {
+        id: "filter-board-kind",
+        text: "The kind dropdown (Plans / Tasks / Notes) narrows to that kind; picking Tasks keeps a plan card that holds a nested task, showing just that child",
+      },
+      {
+        id: "filter-board-rail",
+        text: "The rail dropdown lists every rail plus “On no rail”; picking a rail leaves only the cards it carries, and “On no rail” only the cards no rail holds",
+      },
+      {
+        id: "filter-board-compose",
+        text: "The three facets AND with each other and with the search; the count beside them reads “n / total” and Reset clears all four at once",
+      },
+      {
+        id: "filter-board-drag",
+        text: "With a facet set (search empty), drag a card between columns → its status changes and the cards the filter hides keep their order on the unfiltered board",
+        hint: "The visual slot is translated into the whole column (pageBoard.dropAgainstWholeBoard) — without that, one drop renumbers only the cards the filter left showing.",
+      },
+      {
+        id: "filter-board-archive",
+        text: "The archive obeys the facets too: its badge count and its grid narrow with the board, and “+ Add card” or ⌘N clears every filter so the new card is visible where it lands",
+      },
+      {
+        id: "filter-board-column-guard",
+        text: "A column that lost cards to a facet reads “3 / 11” in its header, and its ✕ and “Archive all” go disabled saying to clear the board's search and filters first",
+        hint: "The guard is hiddenCount, and it counts BOTH lenses: a column saying 3 while holding 11 would otherwise offer to clear or delete the 8 the human cannot see.",
+      },
+      {
+        id: "filter-board-prune",
+        text: "Delete the rail a facet is filtering on → the dropdown falls back to “Any rail” and the board fills in, rather than staying blank",
+        hint: "Only once the orchestration has actually loaded: an unloaded plan must read as “not known yet”, never as “that rail is gone”.",
+      },
+      {
         id: "search-orch",
         text: "Orchestration: a query keeps only the rails holding a hit, rings the matching chips and fades the rest",
         hint: "A rail also matches on its own name and its bound worktree path.",

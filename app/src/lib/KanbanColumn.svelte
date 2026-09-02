@@ -82,14 +82,19 @@
   const filtered = $derived(hiddenCount > 0);
   const totalCount = $derived(planCards.length + hiddenCount);
   const countText = $derived(filtered ? `${planCards.length} / ${totalCount}` : String(planCards.length));
+  // Deliberately says LENS, not "search": the board narrows through more
+  // than one of them (the search box, and the context / kind / rail
+  // facets beside it), and this column is only told how many cards it is
+  // not showing. Naming one lens here would tell the human to clear a
+  // box that is already empty.
   const countTip = $derived(
     filtered
-      ? `${planCards.length} of ${totalCount} cards match the search`
+      ? `${planCards.length} of ${totalCount} cards pass the board's filters`
       : planCards.length + (planCards.length === 1 ? " card" : " cards") + " in this column"
   );
   // Deleting or clearing while filtered would silently act on cards the
-  // human cannot see -- the search has to come off first.
-  const FILTERED_TIP = "Clear the board search first — this column is only showing its matches";
+  // human cannot see -- the lens has to come off first.
+  const FILTERED_TIP = "Clear the board's search and filters first — this column is only showing part of itself";
 
   let editingName = $state(false);
   // Filled by startRename when editing begins -- initializing from
@@ -359,7 +364,7 @@
   </div>
   <div class="cards" data-kb-cards>
     {#if filtered && planCards.length === 0}
-      <div class="no-match">No match in this column</div>
+      <div class="no-match">Nothing in this column passes the filter</div>
     {/if}
     {#each planSlots as slot (slot.type === "item" ? slot.item.id : "__ph__")}
       <div animate:flip={{ duration: 150 }}>
