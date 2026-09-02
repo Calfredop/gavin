@@ -2,7 +2,7 @@
 order: 14336
 kind: task
 title: unify tab first row
-status: To Do
+status: Done
 ---
 kanban:
 - make the search input wider (same size as in orchestration)
