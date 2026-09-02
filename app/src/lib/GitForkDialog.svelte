@@ -20,6 +20,13 @@
     /// binding -- creating a rail's fork should not move the user's Git
     /// tab out from under them.
     switchAfter?: boolean;
+    /// What the branch field opens with. Set by callers that already
+    /// know what this worktree is FOR -- a rail binding seeds its rail's
+    /// name -- so the folder default, which follows the branch, lands on
+    /// something meaningful too. Read once at mount: the dialog is
+    /// created fresh each time it is opened, and after that the field
+    /// belongs to whoever is typing in it.
+    branchSeed?: string;
   }
   let {
     workspaceId,
@@ -29,6 +36,7 @@
     onPicked,
     allowSpawn = true,
     switchAfter = true,
+    branchSeed = "",
   }: Props = $props();
 
   const view = $derived($gitStore[workspaceId] ?? null);
@@ -39,7 +47,7 @@
   const currentHead = $derived(view?.refs?.headBranch ?? null);
 
   let mode = $state<"new" | "existing">("new");
-  let branch = $state("");
+  let branch = $state(branchSeed);
   let existing = $state("");
   let from = $state("HEAD");
   let folder = $state("");

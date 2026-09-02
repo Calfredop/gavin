@@ -1480,6 +1480,35 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Rail branch/worktree defaults",
+    items: [
+      {
+        id: "rail-seed-new-branch",
+        text: "Bind a rail → “New branch…”: the field opens already holding the rail's name, slugged (“Auth rework” → auth-rework)",
+        hint: "The old field opened empty on a “feature/thing” placeholder. Rename the rail and reopen — the seed must follow the new name. Cancel after typing over it, reopen: the seed is back, not your half-typed name.",
+      },
+      {
+        id: "rail-seed-branch-dedupe",
+        text: "With that branch already in the repo, the field opens on “…-2” instead, and Create and bind is enabled from the start",
+        hint: "The point of the dedupe: no default may open on “Branch already exists — pick it above”. Make auth-rework and auth-rework-2, reopen — it should offer auth-rework-3.",
+      },
+      {
+        id: "rail-seed-new-worktree",
+        text: "Bind a rail → “New worktree…”: the branch field carries the same seed, and the folder line under it follows with <repo>-<seed>",
+        hint: "One seed feeds both, because the folder tracks the branch until you edit it. Type in the folder and then change the branch: your folder must stay yours.",
+      },
+      {
+        id: "rail-seed-git-tab-unseeded",
+        text: "The Git tab's own Switcher → “New worktree…” still opens EMPTY on its placeholder",
+        hint: "There is no rail there to name it after. A seed leaking into this dialog would name every worktree after whichever rail was bound last.",
+      },
+      {
+        id: "rail-seed-unslugabble",
+        text: "A rail named only in symbols (“???”) leaves both fields empty on their placeholders rather than seeding junk",
+      },
+    ],
+  },
+  {
     title: "Auto commit",
     items: [
       {

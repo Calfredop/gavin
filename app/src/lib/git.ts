@@ -199,6 +199,43 @@ export function defaultWorktreePath(root: string, branch: string): string {
   return `${parent}/${name}-${branch.replace(/\//g, "-")}`;
 }
 
+/// A branch name derived from free text -- an orchestration rail's name,
+/// in practice -- that `validateBranchName` always accepts. Everything
+/// outside `[a-z0-9]` becomes a hyphen, which is what keeps the result
+/// legal by construction: no `..`, no `.lock` tail, no `@{`, no space.
+/// `/` survives as the hierarchy separator branch names conventionally
+/// use, so a rail called "Feature/Auth" stays two segments instead of
+/// collapsing into one word.
+///
+/// Returns "" when nothing legal survives (a rail named "???"). Callers
+/// seed the input with that empty string rather than a placeholder-ish
+/// stand-in: an empty field lets the input's own placeholder speak, and
+/// never asks the human to delete a name gavin invented.
+export function branchNameFrom(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9/]+/g, "-")
+    .split("/")
+    .map((segment) => segment.replace(/^-+|-+$/g, ""))
+    .filter((segment) => segment !== "")
+    .join("/");
+}
+
+/// `branchNameFrom` again, skipped past the branches the repo already
+/// has: `auth-rework`, then `auth-rework-2`, `auth-rework-3`, the same
+/// way `pageToSpawnForRail` numbers a rail's page. A seeded default that
+/// is already taken is not a default -- the field would open on an error
+/// and leave the human to invent the suffix -- so the dedupe is part of
+/// producing one, not a nicety on top.
+export function freeBranchNameFrom(text: string, taken: Iterable<string>): string {
+  const base = branchNameFrom(text);
+  if (!base) return "";
+  const used = new Set(taken);
+  let name = base;
+  for (let n = 2; used.has(name); n++) name = `${base}-${n}`;
+  return name;
+}
+
 /// A subset of git-check-ref-format, enough to catch typos before git does.
 export function validateBranchName(name: string): string | null {
   if (!name.trim()) return "Branch name is required";

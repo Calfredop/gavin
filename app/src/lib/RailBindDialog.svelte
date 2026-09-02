@@ -6,7 +6,7 @@
   import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "./layoutState";
   import { bindRailAction } from "./orchestrationState";
   import { presetSingle } from "./layout";
-  import { validateBranchName } from "./git";
+  import { freeBranchNameFrom, validateBranchName } from "./git";
   import { featureBlockedReason } from "./daemonCompat";
   import type { Rail } from "./orchestration";
 
@@ -59,6 +59,24 @@
   let draftFrom = $state("HEAD");
   let creating = $state(false);
 
+  /// What a branch made HERE is for: this rail. Seeding both name fields
+  /// with it is the whole point of making a branch or a worktree from
+  /// the bind dialog rather than from the Git tab -- gavin already knows
+  /// the answer, so it should not make the human retype it. Numbered
+  /// past the branches that exist, because both fields reject a name the
+  /// repo already has and a default that opens on an error is none.
+  /// Empty when the rail's name slugs to nothing, which leaves each
+  /// input's own placeholder to speak.
+  const seedBranch = $derived(freeBranchNameFrom(rail.name, branches.map((b) => b.name)));
+
+  /// Opens the form with the seed in place. Re-seeded on every open, so
+  /// Cancel discards a half-typed name rather than preserving it: the
+  /// form is a fresh question each time it is asked.
+  function startNaming(): void {
+    draftBranch = seedBranch;
+    naming = true;
+  }
+
   const draftError = $derived.by(() => {
     const v = validateBranchName(draftBranch);
     if (v) return v;
@@ -94,6 +112,7 @@
   <GitForkDialog
     {workspaceId}
     agentCommand={resolvedAgentFor(workspaceId).launchCommand}
+    branchSeed={seedBranch}
     onSpawnAgent={() => {}}
     allowSpawn={false}
     switchAfter={false}
@@ -217,7 +236,7 @@
             type="button"
             class="secondary"
             disabled={Boolean(branchBlocked)}
-            onclick={() => (naming = true)}>New branch…</button
+            onclick={startNaming}>New branch…</button
           >
         {/if}
       </section>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, type RepoInfo } from "./git";
+import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, branchNameFrom, freeBranchNameFrom, type RepoInfo } from "./git";
 
 const repo: RepoInfo = {
   notARepo: false, root: "/r", branch: "main", detached: false, unborn: false,
@@ -56,5 +56,66 @@ describe("validateBranchName", () => {
     expect(validateBranchName("-lead")).toMatch(/start/i);
     expect(validateBranchName("x.lock")).toMatch(/lock/i);
     expect(validateBranchName("bad~name")).toMatch(/character/i);
+  });
+});
+
+describe("branchNameFrom", () => {
+  it("slugifies a rail's name into a branch segment", () => {
+    expect(branchNameFrom("Auth rework")).toBe("auth-rework");
+    expect(branchNameFrom("Rail 1")).toBe("rail-1");
+    expect(branchNameFrom("  Spaces  &  Symbols!! ")).toBe("spaces-symbols");
+    expect(branchNameFrom("already-kebab")).toBe("already-kebab");
+  });
+
+  it("keeps / as the hierarchy separator, trimming each segment", () => {
+    expect(branchNameFrom("Feature/Auth")).toBe("feature/auth");
+    expect(branchNameFrom("/ leading / trailing /")).toBe("leading/trailing");
+  });
+
+  // The point of the helper: whatever a rail is called, the seeded
+  // input must not open already-invalid.
+  it("produces a name validateBranchName accepts, for every shape git forbids", () => {
+    for (const railName of [
+      "Auth rework",
+      "a..b",
+      "-leading dash",
+      "x.lock",
+      "bad~name^with:every?forbidden*char[\\]",
+      "at@{brace}",
+      "Feature / Auth",
+      "trailing dot.",
+      "UPPER_snake_Case",
+      "emoji 🎉 rail",
+    ]) {
+      const seeded = branchNameFrom(railName);
+      expect(seeded).not.toBe("");
+      expect(validateBranchName(seeded)).toBeNull();
+    }
+  });
+
+  it("returns empty when nothing legal survives, so the caller shows a placeholder", () => {
+    expect(branchNameFrom("")).toBe("");
+    expect(branchNameFrom("   ")).toBe("");
+    expect(branchNameFrom("!!!")).toBe("");
+    expect(branchNameFrom("///")).toBe("");
+  });
+});
+
+describe("freeBranchNameFrom", () => {
+  it("numbers past the branches that already exist", () => {
+    expect(freeBranchNameFrom("Auth rework", [])).toBe("auth-rework");
+    expect(freeBranchNameFrom("Auth rework", ["auth-rework"])).toBe("auth-rework-2");
+    expect(freeBranchNameFrom("Auth rework", ["auth-rework", "auth-rework-2"])).toBe("auth-rework-3");
+    // A near-miss is not a collision.
+    expect(freeBranchNameFrom("Auth rework", ["auth-reworked"])).toBe("auth-rework");
+  });
+
+  it("stays empty when the name slugs to nothing, however crowded the repo", () => {
+    expect(freeBranchNameFrom("???", ["a", "b"])).toBe("");
+  });
+
+  it("numbers a name git still accepts", () => {
+    expect(validateBranchName(freeBranchNameFrom("Feature/Auth", ["feature/auth"]))).toBeNull();
+    expect(freeBranchNameFrom("Feature/Auth", ["feature/auth"])).toBe("feature/auth-2");
   });
 });
