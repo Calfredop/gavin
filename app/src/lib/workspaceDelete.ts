@@ -23,8 +23,21 @@ export interface GavinFootprint {
   root: string;
   /// `.gavin-root/` and what is in it, or null when there is none.
   gavinRoot: GavinRootFootprint | null;
-  /// Installed gavin skill directories (`.claude/skills/gavin*`).
+  /// Installed gavin skill directories, under whichever root the
+  /// workspace's profile uses (`.claude/skills/gavin*` for Claude Code,
+  /// `.opencode/skills/gavin*` for opencode).
   skills: string[];
+  /// The gavin-owned agent definition, where the profile installs one --
+  /// opencode's `.opencode/agent/gavin-commit.md`, which carries the
+  /// git-only permission grant its hidden commit run launches against.
+  /// Null for every profile whose grant rides the argv instead.
+  ///
+  /// Its own field rather than another entry in `skills`, because that
+  /// list is directories under one skill root and a file from elsewhere
+  /// in the tree hiding in it is how a scanner starts lying about what
+  /// it found. It shares the skills SCREEN, since both are whole files
+  /// gavin wrote and would otherwise leave behind.
+  agentFile: string | null;
   /// The agent's MCP config, but only when it actually carries gavin's
   /// server entry. A config file that never mentioned gavin is not this
   /// wizard's business.
@@ -95,7 +108,10 @@ export function applicableSteps(footprint: GavinFootprint): DeleteStep[] {
       case "plans":
         return footprint.gavinRoot !== null;
       case "skills":
-        return footprint.skills.length > 0;
+        // Either half is enough to make the screen worth showing: a
+        // profile can install an agent file and no skills, or the other
+        // way round, and the screen answers for both.
+        return footprint.skills.length > 0 || footprint.agentFile !== null;
       case "mcp":
         return footprint.mcp !== null;
       case "instructions":
@@ -112,12 +128,16 @@ export function applicableSteps(footprint: GavinFootprint): DeleteStep[] {
 /// The heading each screen carries. Data rather than markup so the
 /// wizard's shape is testable and so the order in DELETE_STEPS and the
 /// words on screen cannot drift apart.
-export function stepTitle(step: DeleteStep): string {
+export function stepTitle(step: DeleteStep, footprint: GavinFootprint): string {
   switch (step) {
     case "plans":
       return "Plans and cards";
     case "skills":
-      return "Agent skills";
+      // The heading names what the screen actually lists. A workspace
+      // whose profile installs an agent definition sees that file's path
+      // here, and "Agent skills" over it would be a heading that does
+      // not describe its own list.
+      return footprint.agentFile === null ? "Agent skills" : "Agent files";
     case "mcp":
       return "MCP server entry";
     case "instructions":
@@ -145,7 +165,9 @@ export function stepQuestion(step: DeleteStep, footprint: GavinFootprint): strin
       return `Remove the gavin root — ${cards}${archived}, the PRD, and this workspace's config. It goes to the Trash, so it can be put back.`;
     }
     case "skills":
-      return "Remove the gavin skill files installed for this workspace's agent. Skills that are not gavin's are left alone.";
+      return footprint.agentFile === null
+        ? "Remove the gavin skill files installed for this workspace's agent. Skills that are not gavin's are left alone."
+        : "Remove the gavin skill files installed for this workspace's agent, and the agent definition its hidden commit run launches against. Files that are not gavin's are left alone.";
     case "mcp":
       return "Remove gavin's entry from the agent's MCP config. The file itself stays, along with every other server in it.";
     case "instructions":
@@ -233,7 +255,13 @@ export interface RemovalPlan {
 export function plannedRemovals(footprint: GavinFootprint, answers: DeleteAnswers): RemovalPlan {
   const trash: string[] = [];
   if (answers.plans && footprint.gavinRoot) trash.push(footprint.gavinRoot.path);
-  if (answers.skills) trash.push(...footprint.skills);
+  // One answer covers both, matching the one screen that asked: they
+  // are the same kind of thing -- files gavin wrote outright -- and
+  // splitting them would add a screen with nothing new to decide.
+  if (answers.skills) {
+    trash.push(...footprint.skills);
+    if (footprint.agentFile !== null) trash.push(footprint.agentFile);
+  }
   // Intersected with the scan rather than taken on trust: an answer is a
   // list of strings, and the only paths this wizard may ever remove are
   // the ones it found and showed. Rust checks this again on its side --

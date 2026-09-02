@@ -43,6 +43,14 @@ pub struct GavinFootprint {
     pub root: String,
     pub gavin_root: Option<GavinRootFootprint>,
     pub skills: Vec<String>,
+    /// The gavin-owned agent definition, where the profile installs one
+    /// (opencode's `.opencode/agent/gavin-commit.md`). Its own field
+    /// rather than another entry in `skills`: that list is directories
+    /// under one skill root, and a file from elsewhere in the tree
+    /// hiding in it is how a scanner starts lying about what it found.
+    /// The wizard answers for both on one screen, since both are whole
+    /// files gavin wrote and leaves.
+    pub agent_file: Option<String>,
     pub mcp: Option<McpFootprint>,
     pub instructions: Option<String>,
     pub contexts: Vec<ContextFootprint>,
@@ -259,6 +267,14 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
     skills.sort();
     let skills: Vec<String> = skills.iter().map(|p| p.to_string_lossy().to_string()).collect();
 
+    // Reported only when it is really there, the same rule the MCP and
+    // instructions entries follow: a screen offering to remove a file
+    // that does not exist can only be answered wrong.
+    let agent_file = install
+        .agent_file
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string());
+
     let mcp = install.mcp.and_then(|(path, server_key)| {
         agent_setup::mcp_entry_present(root)
             .then(|| McpFootprint { path: path.to_string_lossy().to_string(), server_key })
@@ -290,6 +306,7 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
         root: root.to_string_lossy().to_string(),
         gavin_root,
         skills,
+        agent_file,
         mcp,
         instructions,
         contexts,
@@ -306,6 +323,7 @@ fn removable_paths(footprint: &GavinFootprint) -> Vec<String> {
         paths.push(gr.path.clone());
     }
     paths.extend(footprint.skills.iter().cloned());
+    paths.extend(footprint.agent_file.iter().cloned());
     paths.extend(footprint.contexts.iter().map(|c| c.path.clone()));
     paths
 }
@@ -452,6 +470,91 @@ mod tests {
         let f = scan(dir.path()).unwrap();
 
         assert!(f.skills.iter().any(|s| s.ends_with("gavin-write-prd")));
+    }
+
+    /// The same workspace on the opencode profile. The sweep is written
+    /// against `gavin_install`, so it follows the profile table to a
+    /// different skill root without being told -- but "follows for free"
+    /// is exactly the kind of claim that stops being true the first time
+    /// somebody hardcodes a path, so it is pinned rather than trusted.
+    /// The agent definition rides along: it is a whole file gavin wrote,
+    /// and leaving it behind would leave the workspace claiming a
+    /// permission grant for a tool that is gone.
+    fn opencode_workspace(dir: &Path) {
+        let gavin_root = dir.join(GAVIN_ROOT_DIR);
+        std::fs::create_dir_all(gavin_root.join("plans")).unwrap();
+        std::fs::write(gavin_root.join("config.toml"), "[agent]\nprofile = \"opencode\"\n")
+            .unwrap();
+        for skill in ["gavin", "gavin-orchestrate", "gavin-resume", "gavin-develop"] {
+            let d = dir.join(".opencode").join("skills").join(skill);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), "skill").unwrap();
+        }
+        let agent = dir.join(".opencode").join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(agent.join("gavin-commit.md"), "---\nmode: primary\n---\n").unwrap();
+        std::fs::write(
+            dir.join("opencode.json"),
+            "{\n  \"mcp\": {\n    \"gavin\": { \"type\": \"local\", \"command\": [\"/bin/gavin-mcp\"] },\n    \"other\": { \"type\": \"local\", \"command\": [\"/bin/other\"] }\n  }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            "# Project\n\n<!-- gavin:start -->\nblah\n<!-- gavin:end -->\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_scan_follows_the_profile_to_the_opencode_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        opencode_workspace(dir.path());
+        // A step skill, which appears in no table, and somebody else's
+        // agent, which is not gavin's to remove.
+        std::fs::create_dir_all(dir.path().join(".opencode/skills/gavin-write-prd")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".opencode/skills/my-own")).unwrap();
+        std::fs::write(dir.path().join(".opencode/agent/mine.md"), "mine").unwrap();
+
+        let f = scan(dir.path()).unwrap();
+
+        assert_eq!(f.skills.len(), 5, "four table skills plus the step skill: {:?}", f.skills);
+        assert!(f.skills.iter().all(|s| s.contains(".opencode/skills/gavin")));
+        assert!(f.agent_file.as_ref().unwrap().ends_with(".opencode/agent/gavin-commit.md"));
+        assert_eq!(f.mcp.as_ref().unwrap().path, dir.path().join("opencode.json").to_string_lossy());
+        assert!(f.instructions.as_ref().unwrap().ends_with("AGENTS.md"));
+        // Nothing of Claude Code's was invented, and nothing of the
+        // user's was claimed.
+        assert!(!f.skills.iter().any(|s| s.contains(".claude")));
+        assert!(!f.skills.iter().any(|s| s.ends_with("my-own")));
+        assert_ne!(f.agent_file.as_ref().unwrap(), &dir.path().join(".opencode/agent/mine.md").to_string_lossy().to_string());
+    }
+
+    /// The agent file is removable BECAUSE the scan reported it -- the
+    /// same intersection every other path goes through. Without the
+    /// entry in `removable_paths` the plan would name a file the
+    /// remover then refuses, and the wizard would silently do less than
+    /// it said.
+    #[test]
+    fn the_agent_file_is_trashed_when_the_plan_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        opencode_workspace(dir.path());
+        let agent_file = dir.path().join(".opencode/agent/gavin-commit.md");
+        std::fs::write(dir.path().join(".opencode/agent/mine.md"), "mine").unwrap();
+
+        let report = remove(
+            dir.path(),
+            &RemovalPlan {
+                trash: vec![agent_file.to_string_lossy().to_string()],
+                strip_mcp_key: vec![],
+                cut_block: vec![],
+            },
+        )
+        .unwrap();
+
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert!(!agent_file.exists());
+        // Its neighbour, which gavin never wrote, is untouched.
+        assert!(dir.path().join(".opencode/agent/mine.md").is_file());
     }
 
     /// A neighbouring skill that is not gavin's must never be offered.

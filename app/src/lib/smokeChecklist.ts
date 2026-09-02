@@ -1260,6 +1260,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Delete .claude/skills/gavin* by hand first — the skills screen should then not appear at all.",
       },
       {
+        id: "delete-lists-the-agent-file",
+        text: "On an opencode workspace the skills screen is headed “Agent files” and lists .opencode/agent/gavin-commit.md alongside the four skills; answering Yes trashes it too",
+        hint: "It is a whole file gavin wrote. Leaving it behind leaves the repo claiming a permission grant for a tool that is gone.",
+      },
+      {
         id: "delete-outside-context-unticked",
         text: "A context registered from outside the root appears under a warning and starts unticked",
         hint: "Add one with the Plans tab's “Add outside context…” before starting.",
