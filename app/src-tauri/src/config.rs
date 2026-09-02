@@ -232,6 +232,35 @@ pub struct AppConfig {
     /// it silently resets on the next save.
     #[serde(default)]
     pub removed_workspaces: Vec<RemovedWorkspace>,
+    /// What the human told gavin about Superpowers, keyed by workspace
+    /// root path. The seventh carry-through field.
+    ///
+    /// Machine-local on purpose (spec S9): a repo can travel to a machine
+    /// that has no Superpowers, so an assertion made here must not vouch
+    /// for a checkout somewhere else. That is also why this is not an
+    /// `[agent].superpowers` key in `.gavin-root/config.toml` -- besides
+    /// travelling, a new root-config key widens `SetRootConfigField`,
+    /// which `min_version_for` gates by request TYPE and therefore cannot
+    /// see, so it would have cost a protocol bump to store a fact that
+    /// should never have left this machine.
+    #[serde(default)]
+    pub superpowers: HashMap<String, SuperpowersMark>,
+}
+
+/// The human's word about Superpowers for one workspace. A distinct type
+/// rather than a `String` so it cannot be transposed with the three
+/// same-shaped `HashMap<String, String>` fields it travels beside through
+/// `persist_workspaces` -- that argument list is already long enough to
+/// swap silently, and the comment there says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuperpowersMark {
+    /// "I've installed it" -- taken on trust where gavin cannot check.
+    Installed,
+    /// "Not now". Finishes the setup step without claiming anything is
+    /// installed, so declining once stops the Home banner nagging for
+    /// ever (spec S6).
+    Skipped,
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -337,6 +366,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -358,6 +388,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -393,6 +424,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -502,6 +534,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -540,6 +573,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -566,6 +600,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -609,6 +644,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -627,6 +663,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(&nested, &config).unwrap();
 
@@ -653,6 +690,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -704,6 +742,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -755,6 +794,7 @@ mod tests {
             theme: None,
             agent_models: HashMap::new(),
             removed_workspaces: Vec::new(),
+            superpowers: HashMap::new(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

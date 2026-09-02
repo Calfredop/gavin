@@ -63,6 +63,11 @@ fn persist_workspaces(
     // same-shaped maps in a row is an argument list you can transpose
     // without the compiler noticing.
     agent_models: HashMap<String, String>,
+    // Safe to sit beside them only because its value type is not String:
+    // transposing it with any of the three above is a type error, which
+    // is the guarantee the comment on `agent_models` had to ask for in
+    // prose.
+    superpowers: HashMap<String, crate::config::SuperpowersMark>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -75,6 +80,7 @@ fn persist_workspaces(
             theme,
             agent_models,
             removed_workspaces: data.removed_workspaces.clone(),
+            superpowers,
         },
     )
 }
@@ -91,6 +97,12 @@ pub struct FileTabs(pub Mutex<HashMap<String, String>>);
 /// command that saves must carry it along, exactly as `SessionNames`
 /// describes.
 pub struct AgentModels(pub Mutex<HashMap<String, String>>);
+
+/// The human's Superpowers word per workspace root. Same carry-through
+/// contract as `AgentModels` above; the value type differs from the
+/// String maps so a transposed argument is a compile error rather than a
+/// silently wiped field.
+pub struct SuperpowersMarks(pub Mutex<HashMap<String, crate::config::SuperpowersMark>>);
 
 #[cfg(test)]
 mod workspaces_data_tests {
@@ -127,6 +139,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             Some("light".to_string()),
             models.clone(),
+            HashMap::new(),
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
@@ -159,9 +172,59 @@ mod workspaces_data_tests {
             HashMap::new(),
             None,
             HashMap::new(),
+            HashMap::new(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().removed_workspaces, vec![tombstone]);
+    }
+
+    /// The seventh carry-through field. Its loss is quiet rather than
+    /// loud: a wiped marker does not break anything, it just starts the
+    /// Home banner nagging again about a step the human already declined.
+    #[test]
+    fn persist_workspaces_carries_superpowers_marks_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let mut marks = HashMap::new();
+        marks.insert("/repo/one".to_string(), crate::config::SuperpowersMark::Skipped);
+        marks.insert("/repo/two".to_string(), crate::config::SuperpowersMark::Installed);
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            marks.clone(),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().superpowers, marks);
+    }
+
+    /// The marker is the human's word, so it has to survive a round trip
+    /// through JSON by NAME -- a config.json hand-edited to say
+    /// "installed" must load, and a renamed variant must not silently
+    /// become the other one.
+    #[test]
+    fn superpowers_marks_serialize_as_lowercase_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let mut marks = HashMap::new();
+        marks.insert("/repo".to_string(), crate::config::SuperpowersMark::Installed);
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            marks,
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(crate::config::config_path(dir.path())).unwrap();
+        assert!(raw.contains("\"installed\""), "{raw}");
     }
 
     /// A config.json written before the field existed must still load --
@@ -175,6 +238,29 @@ mod workspaces_data_tests {
         )
         .unwrap();
         assert!(crate::config::load(dir.path()).unwrap().removed_workspaces.is_empty());
+    }
+
+    /// Every config.json on every machine was written before this field
+    /// existed. An absent map must load as empty rather than failing the
+    /// whole parse -- `config::load` swallows a parse error into
+    /// `AppConfig::default()`, so the failure mode here is not an error
+    /// message, it is every workspace silently vanishing.
+    #[test]
+    fn a_config_written_before_superpowers_existed_still_loads_its_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            crate::config::config_path(dir.path()),
+            // snake_case, because that is what AppConfig actually writes:
+            // it carries no `rename_all`, unlike the structs that cross to
+            // the frontend. A camelCase key here would silently parse as
+            // absent and the test would pass for the wrong reason.
+            r#"{"workspaces":[],"active_workspace_id":"ws-1","theme":"dark"}"#,
+        )
+        .unwrap();
+        let loaded = crate::config::load(dir.path()).unwrap();
+        assert!(loaded.superpowers.is_empty());
+        assert_eq!(loaded.active_workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(loaded.theme.as_deref(), Some("dark"));
     }
 
     /// The regression D48 exists to prevent: theme is a fourth field on
@@ -192,6 +278,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             HashMap::new(),
             Some("light".to_string()),
+            HashMap::new(),
             HashMap::new(),
         )
         .unwrap();
@@ -397,6 +484,7 @@ pub fn set_workspaces_state(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
@@ -406,6 +494,7 @@ pub fn set_workspaces_state(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -414,6 +503,7 @@ pub fn set_workspaces_state(
         board_tabs,
         theme,
         agent_models,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -434,6 +524,7 @@ pub fn set_agent_model_default(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     // An empty model removes the entry rather than storing "": the
     // picker's unset row must be able to UNDO a default, not just
@@ -453,6 +544,7 @@ pub fn set_agent_model_default(
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -462,6 +554,67 @@ pub fn set_agent_model_default(
         board_tabs,
         theme,
         agent_models,
+        superpowers,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// What the human has told gavin about Superpowers, keyed by workspace
+/// root path. Machine-local, so it answers only for this machine -- see
+/// `AppConfig::superpowers`.
+#[tauri::command]
+pub fn get_superpowers_marks(
+    state: State<SuperpowersMarks>,
+) -> HashMap<String, crate::config::SuperpowersMark> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Records "I've installed it" / "Not now" for one workspace root, or --
+/// with `mark: None` -- forgets what was said. Forgetting matters: a
+/// human who asserted an install and then removed it needs a way back to
+/// the honest "absent", and overwriting with the other marker would say
+/// something they did not mean.
+#[tauri::command]
+pub fn set_superpowers_mark(
+    root_path: String,
+    mark: Option<crate::config::SuperpowersMark>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    superpowers_state: State<SuperpowersMarks>,
+) -> Result<(), String> {
+    let superpowers = {
+        let mut current = superpowers_state.0.lock().unwrap();
+        match mark {
+            Some(m) => {
+                current.insert(root_path, m);
+            }
+            None => {
+                current.remove(&root_path);
+            }
+        }
+        current.clone()
+    };
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        theme,
+        agent_models,
+        superpowers,
     )
     .map_err(|e| e.to_string())
 }
@@ -481,6 +634,7 @@ pub fn set_theme_pref(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -496,6 +650,7 @@ pub fn set_theme_pref(
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -504,6 +659,7 @@ pub fn set_theme_pref(
         board_tabs,
         theme,
         agent_models,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -524,6 +680,7 @@ pub fn set_session_name(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -544,6 +701,7 @@ pub fn set_session_name(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -552,6 +710,7 @@ pub fn set_session_name(
         board_tabs,
         theme,
         agent_models,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -576,6 +735,7 @@ pub fn set_file_tabs(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -584,6 +744,7 @@ pub fn set_file_tabs(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -592,6 +753,7 @@ pub fn set_file_tabs(
         board_tabs,
         theme,
         agent_models,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -622,6 +784,7 @@ pub fn set_board_tabs(
     board_tabs_state: State<BoardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
+    superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -630,6 +793,7 @@ pub fn set_board_tabs(
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -638,6 +802,7 @@ pub fn set_board_tabs(
         board_tabs,
         theme,
         agent_models,
+        superpowers,
     )
         .map_err(|e| e.to_string())
 }
@@ -2065,6 +2230,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         board_tabs.clone(),
         config.theme.clone(),
         config.agent_models.clone(),
+        config.superpowers.clone(),
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -2077,6 +2243,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(BoardTabs(Mutex::new(board_tabs)));
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.manage(AgentModels(Mutex::new(config.agent_models)));
+    app_handle.manage(SuperpowersMarks(Mutex::new(config.superpowers)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;

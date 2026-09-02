@@ -345,7 +345,7 @@ pub fn profile_by_id(id: &str) -> &'static AgentProfile {
 /// Read directly rather than routed through the daemon: this is a
 /// one-shot read on a user-initiated action, and agent_setup already
 /// touches the root's files directly.
-fn read_profile_id(root: &Path) -> String {
+pub fn read_profile_id(root: &Path) -> String {
     root_agent_key(root, "profile").unwrap_or_else(|| "claude-code".to_string())
 }
 
@@ -356,7 +356,7 @@ fn resolved_instructions_file(root: &Path, profile: &AgentProfile) -> String {
         .unwrap_or_else(|| profile.instructions_file.to_string())
 }
 
-fn root_agent_key(root: &Path, key: &str) -> Option<String> {
+pub fn root_agent_key(root: &Path, key: &str) -> Option<String> {
     let path = root.join(".gavin-root").join("config.toml");
     let content = std::fs::read_to_string(path).ok()?;
     let table = content.parse::<toml::Table>().ok()?;
