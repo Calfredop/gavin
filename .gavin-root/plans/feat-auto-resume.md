@@ -1,7 +1,7 @@
 ---
 kind: plan
 title: "[feat] auto-resume an interrupted run"
-status: To Do
+status: In Progress
 priority: medium
 ---
 The unattended half of `.gavin-root/plans/bug-agent-connection-failure.md`.

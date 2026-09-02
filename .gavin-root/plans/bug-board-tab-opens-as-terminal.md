@@ -2,7 +2,7 @@
 order: 1024
 kind: task
 title: [bug] a new board tab opens as a terminal
-status: To Do
+status: In Progress
 priority: medium
 ---
 Opening a context board into a page (the Kanban icon at the end of a pane's
