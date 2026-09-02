@@ -1251,6 +1251,57 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Badges & indicators",
+    items: [
+      {
+        id: "badge-no-bare-dots",
+        text: "No coloured dot anywhere carries a meaning on its own: every badge is a glyph, and hovering it names its axis first (“Agent · …”, “Priority · …”, “Git · …”)",
+        hint: "The point of the whole section. If you meet a dot you have to guess about, that is the bug.",
+      },
+      {
+        id: "badge-priority-ramp",
+        text: "A card's priority is a signal-bar ramp, and medium and high are visibly different",
+        hint: "They used to be the SAME amber dot. Set four cards to low / medium / high / urgent and look at them side by side.",
+      },
+      {
+        id: "badge-priority-low-visible",
+        text: "A low-priority card's badge is actually visible on the card, in both themes",
+        hint: "It used to be painted in --surface-success, a near-black tint, so it simply was not there.",
+      },
+      {
+        id: "badge-agent-one-vocabulary",
+        text: "One running agent looks the same in all four places at once: its board card, its terminal tab, its sidebar row, and the card's detail modal",
+        hint: "Run a card, then put the board and the terminal side by side. Working spins; waiting is an amber question mark; idle is a dashed ring.",
+      },
+      {
+        id: "badge-waiting-is-amber",
+        text: "An agent waiting on you is amber everywhere — badge, card spine, the sidebar's page and workspace counts, the hub tab's corner pip",
+        hint: "The counts used to be filled red while the row below them was amber for the same fact. Red is now only for broken and for urgent.",
+      },
+      {
+        id: "badge-tab-bar-three-axes",
+        text: "A terminal tab can show three badges at once and each is readable: a spinning agent, a branch glyph for the checkout, a pencil for unsaved edits",
+        hint: "Open a file tab with an unsaved edit beside a running agent in a dirty repo. These were three near-identical dots.",
+      },
+      {
+        id: "badge-git-clean-is-quiet",
+        text: "A clean checkout's branch glyph is muted, not an amber ring — on the tab bar and in the sidebar's expanded tab rows",
+      },
+      {
+        id: "badge-sidebar-one-branch-glyph",
+        text: "An expanded page's tab row shows ONE branch glyph, toned with the branch name beside it, not a glyph plus a separate dot",
+      },
+      {
+        id: "badge-reduced-motion",
+        text: "With System Settings → Accessibility → Display → Reduce motion on, the working badge stops spinning but stays blue and readable",
+      },
+      {
+        id: "badge-both-themes",
+        text: "Every badge above still reads in the light theme — especially amber-on-white and the priority ramp",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {
