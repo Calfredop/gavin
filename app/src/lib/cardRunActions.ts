@@ -59,6 +59,21 @@ export async function resolveAttachmentsForRun(
   return { paths: resolvedAttachmentPaths(statuses) };
 }
 
+/// Put the human in front of a session: the terminal view, on whichever
+/// page holds it, with its tab active. False when no page holds the id
+/// -- the session exited, or handleAgentSessionSpawned refused it.
+///
+/// Best effort by design. Every caller has ALREADY spawned by the time
+/// it gets here, so a layout that has no place for the session is a
+/// missed jump, never a failed launch.
+export async function revealSession(sessionId: string): Promise<boolean> {
+  const location = findSessionLocation(get(layoutState), sessionId);
+  if (!location) return false;
+  await switchWorkspaceView(location.workspaceId, "terminal");
+  await switchToSessionInPage(location.workspaceId, location.pageId, sessionId);
+  return true;
+}
+
 // Focus a card's bound live session (card-model spec §3): "jumped" on
 // success, "exited" when the binding's session is gone (Re-launch lives
 // in the card detail), "interrupted" when the tab is there but holds the
@@ -75,11 +90,7 @@ export async function jumpToBoundSession(
   if (!binding) return "none";
   const state = cardSessionState(get(layoutState), binding);
   if (state !== "live") return state === "none" ? "none" : state;
-  const location = findSessionLocation(get(layoutState), binding.sessionId);
-  if (!location) return "exited";
-  await switchWorkspaceView(location.workspaceId, "terminal");
-  await switchToSessionInPage(location.workspaceId, location.pageId, binding.sessionId);
-  return "jumped";
+  return (await revealSession(binding.sessionId)) ? "jumped" : "exited";
 }
 
 // Returns an error string for the board's error strip, or null.
@@ -141,6 +152,14 @@ export async function developCard(
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
   handleAgentSessionSpawned(workspaceId, sessionId);
+  // Jump to it. Develop is the one launch with NO binding and no status
+  // write (see above), so the board it was started from shows nothing at
+  // all afterwards -- no session dot, no column change -- and the agent's
+  // first move is to ask the human a question. Left on the board they
+  // would be waiting for an answer they cannot see, in a tab they have to
+  // go find on the Agents page. Before the rename below, so a failed
+  // rename (cosmetic) cannot swallow the jump (the point of the action).
+  await revealSession(sessionId);
   const provisional = provisionalSessionName(card.title);
   if (provisional) await setSessionName(sessionId, provisional);
   return null;

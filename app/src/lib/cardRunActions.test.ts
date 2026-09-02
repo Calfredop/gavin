@@ -324,6 +324,51 @@ describe("developCard", () => {
     expect(backend.linkCardSession).not.toHaveBeenCalled();
   });
 
+  // Develop is the one launch with no binding and no status write, so
+  // the board it was started from shows nothing at all afterwards -- and
+  // the agent's first move is to ask a question. Left on the board the
+  // human waits for an answer they cannot see, in a tab they have to go
+  // find on the Agents page.
+  it("jumps to the spawned session's tab on the page it landed on", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(findSessionLocation).mockImplementation((_state, id) =>
+      id === "s-9" ? { workspaceId: "ws-1", pageId: "pg-1" } : null
+    );
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "terminal");
+    expect(switchToSessionInPage).toHaveBeenCalledWith("ws-1", "pg-1", "s-9");
+  });
+
+  // The jump is the point of the action; the provisional name is
+  // cosmetic, and the agent's own gavin_name_session replaces it anyway.
+  // Ordered so the cosmetic one cannot swallow the point.
+  it("jumps before it renames the tab", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(findSessionLocation).mockImplementation((_state, id) =>
+      id === "s-9" ? { workspaceId: "ws-1", pageId: "pg-1" } : null
+    );
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    expect(vi.mocked(switchToSessionInPage).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(setSessionName).mock.invocationCallOrder[0]
+    );
+  });
+
+  // handleAgentSessionSpawned kills a session it has no workspace for,
+  // so "no page holds it" is a real outcome -- and a missed jump, never
+  // a failed launch: the spawn already happened.
+  it("reports no error when no page holds the session", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    expect(switchToSessionInPage).not.toHaveBeenCalled();
+  });
+
   it("never reads the body: the card file is the agent's to read", async () => {
     vi.mocked(backend.createSession).mockResolvedValue("s-9");
 

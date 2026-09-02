@@ -306,6 +306,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Run & bindings",
     items: [
       {
+        id: "develop-jumps-to-tab",
+        text: "“Develop into a plan…” lands you IN the spawned agent's tab (terminal view, Agents page) rather than leaving you on the board",
+        hint: "From both surfaces that offer it — the card menu and the detail modal. Develop writes no status and binds no session, so the board it was started from shows nothing at all afterwards; the agent's first move is a question, and the jump is what puts you in front of it. The tab is named after the card until the agent renames itself.",
+      },
+      {
         id: "run-task",
         text: "Hover pills: blue ▶ session spawns a dedicated bound agent (Agents page, attached, no focus steal) and sets In Progress",
         hint: "The composed command is agentCommand + the quoted prompt; cwd = the card's context folder.",
