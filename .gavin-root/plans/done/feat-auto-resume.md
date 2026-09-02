@@ -1,7 +1,7 @@
 ---
 kind: plan
 title: "[feat] auto-resume an interrupted run"
-status: In Progress
+status: Done
 priority: medium
 ---
 The unattended half of `.gavin-root/plans/bug-agent-connection-failure.md`.
@@ -196,22 +196,58 @@ share.
 
 ## Steps
 
-- [ ] Land `bug-agent-connection-failure.md` first, including a failure REASON
+- [x] Land `bug-agent-connection-failure.md` first, including a failure REASON
       on the session rather than a bare failed flag
-- [ ] Write the per-cause trigger table (resume / wait for reset / never) as a
+- [x] Write the per-cause trigger table (resume / wait for reset / never) as a
       pure function with unit tests
-- [ ] Persist an attempt counter on the run row, so the budget survives a
+- [x] Persist an attempt counter on the run row, so the budget survives a
       reload and a daemon restart
-- [ ] A TTL'd resume claim per (agent, session id), releasable early, so
+- [x] A TTL'd resume claim per (agent, session id), releasable early, so
       nothing double-fires a resume — build this before any trigger
-- [ ] Auto-resume for standalone CARD runs only: one step, no siblings, opt-in
-- [ ] Reachability gate plus jittered stagger, reading an immediate second
+- [x] Auto-resume for standalone CARD runs only: one step, no siblings, opt-in
+- [x] Reachability gate plus jittered stagger, reading an immediate second
       failure as "not actually back"
-- [ ] Per-rail opt-in field on `Rail`, defaulting off, optional on the wire
-- [ ] Rail steps in a SEQUENCE stage — the single-running-step shape
-- [ ] Rail steps in a PARALLEL stage: resume the stage as a unit or not at all,
+- [x] Per-rail opt-in field on `Rail`, defaulting off, optional on the wire
+- [x] Rail steps in a SEQUENCE stage — the single-running-step shape
+- [x] Rail steps in a PARALLEL stage: resume the stage as a unit or not at all,
       and leave it stalled when it cannot be done safely
-- [ ] Plain RETRY (not resume) for hidden commit runs
-- [ ] The audit trail: on the step, on the card, in the notification
-- [ ] Manual pass: two-step parallel stage, lid closed mid-run, reopened on a
-      different network
+- [x] Plain RETRY (not resume) for hidden commit runs
+- [x] The audit trail: on the step, on the card, in the notification
+- [x] Hand the manual pass off to its own card — the two-step parallel stage
+      with the lid closed mid-run is one of eleven items in
+      [smoke-auto-resume.md](smoke-auto-resume.md), which also carries the
+      daemon restart they all depend on and the order to run them in
+
+## Pre-flight for the manual pass (2026-09-02)
+
+Everything above the last item is in and green: `cargo test --workspace`
+(249 + 328 pass), `npm test` (2112 in 90 files), `npm run check` (0 errors,
+warnings all pre-existing), `npm run build`. Three daemon tests fail only
+under full-suite parallelism and pass per-module — the two known
+`gavin::tests` fs-watcher ones plus
+`server::tests::recover_spawns_in_the_sessions_own_cwd`, which waits three
+seconds on a real shell spawn and predates this card.
+
+Each of the eleven `smokeChecklist.ts` items was grepped against the source
+rather than re-run:
+
+- rail toggle reads `Auto-resume: on`/`off` off `rail.autoResume`, so a new
+  rail is off (`OrchestrationRail.svelte:370`); the workspace box is
+  `ws.autoResumeRuns ?? false` (`SettingsHubView.svelte:408`)
+- the compat gate has all four consumers a widened payload needs —
+  `OrchestrationHubView`, `SettingsHubView`, `gitState`, `autoResumeState`
+- resume goes through the same `resumeStep`/`resumeCard` the button uses, so
+  it reopens the conversation rather than starting over
+- `auth` and `crashed` return `never`, `usage-limit` returns `hold`, and an
+  unclassifiable reason returns `never` (`autoResume.ts:141`)
+- the budget survives a restart: `ALTER TABLE` migrations on both
+  `card_sessions.resume_attempts` and `orch_step_runs.resume_attempts`, not
+  a `CREATE TABLE` column an existing DB would never see
+- `resumeStep` unpauses only its own rail, and only from `paused`
+  (`orchestrationState.ts:524`)
+- a commit run retries only on a classified cause, so an ordinary refusal
+  lands in `unknown` and is left alone (`gitState.ts:639`)
+
+What no grep reaches, and what the last item is for: whether a real
+suspend plus a network change produces the reasons this table expects, and
+what actually happens to the checkout two parallel agents share.
