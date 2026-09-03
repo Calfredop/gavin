@@ -7,6 +7,7 @@ mod fileviewer;
 mod git;
 mod layout;
 mod mac_window;
+mod pull_request;
 mod session;
 mod superpowers;
 mod workspace_delete;
@@ -41,6 +42,7 @@ pub fn run() {
         .manage(git::GitWatchers::default())
         .manage(git::GitOps::default())
         .manage(agent_usage::UsageCache::new())
+        .manage(pull_request::PrCache::new())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -136,6 +138,7 @@ pub fn run() {
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
             agent_usage::agent_usage,
+            pull_request::pr_status,
             session::get_agent_pause,
             session::set_agent_pause,
             agent_setup::mcp_formats,

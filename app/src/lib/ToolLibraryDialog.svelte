@@ -2,7 +2,7 @@
   // The tool library: one modal, two modes. List mode shows what exists,
   // grouped by scope; edit mode is the form. Built-ins are read-only and
   // offer Duplicate rather than Edit (tools spec T4).
-  import { Bot, Terminal, FileCode2, Zap, Plus, Copy, Pencil, Trash2, Group } from "@lucide/svelte";
+  import { Bot, Terminal, FileCode2, Zap, Repeat, GitPullRequest, Plus, Copy, Pencil, Trash2, Group } from "@lucide/svelte";
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import {
@@ -112,7 +112,17 @@
   }
 
   const iconFor = (kind: ToolKind) =>
-    kind === "agent" ? Bot : kind === "command" ? Terminal : kind === "gavin" ? Zap : FileCode2;
+    kind === "agent"
+      ? Bot
+      : kind === "command"
+        ? Terminal
+        : kind === "gavin"
+          ? Zap
+          : kind === "until"
+            ? Repeat
+            : kind === "pr"
+              ? GitPullRequest
+              : FileCode2;
 
   const SECTIONS: Array<{ scope: ToolScope; title: string; blurb: string }> = [
     { scope: "workspace", title: "This workspace", blurb: "Only this workspace sees these." },
@@ -244,6 +254,19 @@
                            offers only the three kinds a human can write.
                            A duplicate would be a tool whose kind chip
                            highlights nothing. -->
+                      <span class="readonly">gavin's own</span>
+                    {:else if tool.kind === "until"}
+                      <!-- Same reason, different fact: an until tool's
+                           body IS shell source, but its kind is a
+                           scheduler rule the edit form cannot express, so
+                           a duplicate would come back as a plain
+                           command that never loops. -->
+                      <span class="readonly">gavin's own</span>
+                    {:else if tool.kind === "pr"}
+                      <!-- And the third: a pr tool has no body to run at
+                           all. gavin reads GitHub itself, so a duplicate
+                           would be a command whose text is the word
+                           "await-pr". -->
                       <span class="readonly">gavin's own</span>
                     {:else if tool.scope === "builtin"}
                       <IconButton

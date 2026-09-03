@@ -10,6 +10,8 @@
     Terminal,
     FileCode2,
     Zap,
+    Repeat,
+    GitPullRequest,
     Sliders,
   } from "@lucide/svelte";
   import { tooltip } from "./tooltip";
@@ -107,7 +109,11 @@
           ? Terminal
           : tool.kind === "gavin"
             ? Zap
-            : FileCode2
+            : tool.kind === "until"
+              ? Repeat
+              : tool.kind === "pr"
+                ? GitPullRequest
+                : FileCode2
       : toolId
         ? Terminal
         : kind === "plan"

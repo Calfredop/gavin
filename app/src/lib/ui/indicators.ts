@@ -45,6 +45,7 @@ import {
   OctagonAlert,
   Pause,
   Pencil,
+  Repeat,
   RotateCw,
   Signal,
   SignalHigh,
@@ -375,6 +376,18 @@ export function railIndicator(state: RailState): Indicator {
 
 export const RAIL_STATES = ["idle", "running", "paused"] as const;
 
+/// A rail going ROUND rather than forward: an `until` step's check
+/// failed and the step before it is being re-run (orchestrationLoop.ts).
+///
+/// Not a RailState -- the rail is `running` the whole time, and saying
+/// otherwise beside the Pause button would contradict it, exactly as the
+/// attention badge does not replace the state word. What this adds is the
+/// direction: forward is the ChevronsRight the state badge already
+/// draws, and this says the rail is repeating itself.
+export function railRetryIndicator(): Indicator {
+  return make("rail", "retrying", Repeat, "accent", "re-running a step until a check passes");
+}
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // both answers are facts about the agent, so they are agent badges, and
@@ -398,6 +411,7 @@ export function allIndicators(): Indicator[] {
     ...PRIORITY_LEVELS.map((p) => PRIORITY[p]),
     ...STEP_STATES.map(stepIndicator),
     ...RAIL_STATES.map(railIndicator),
+    railRetryIndicator(),
     gitIndicator(true),
     gitIndicator(false),
     unsavedEditsIndicator(),

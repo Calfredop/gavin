@@ -71,6 +71,7 @@ import {
 } from "./orchestration";
 import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "./orchestration";
 import { BUILTIN_TOOLS } from "./orchestrationTools";
+import { prKey } from "./pullRequest";
 import type { WorktreeInfo } from "./git";
 import type { Action, Orchestration, Rail, RailState, Stage, StageMode, Step, StepState } from "./orchestration";
 import type { Board } from "./kanban";
@@ -3385,6 +3386,81 @@ describe("every built-in tool can finish", () => {
         );
         expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
       });
+    } else if (tool.kind === "until") {
+      // Exit 0 is still the pass. A non-zero one is NOT a stall about the
+      // code: it is a verdict on the rail, and on a rail where this step
+      // is the only one there is nothing behind it to send the rail back
+      // to. The loop proper is covered in orchestrationLoop.test.ts.
+      it(`${tool.id} finishes when its check exits 0`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 0]])
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
+
+      it(`${tool.id} stalls when its check fails with nothing before it`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 3]])
+        );
+        expect(actions).toContainEqual({
+          kind: "stall",
+          stepId: "t1",
+          reason: "nothing runs before this step, so the check has nothing to send the rail back to",
+        });
+      });
+    } else if (tool.kind === "pr") {
+      // It has no session at all: gavin waits on GitHub itself, so the
+      // verdict comes off the poll's report rather than off an exit code.
+      // A rail with no branch has no pull request, so this arm binds one.
+      // The wait proper is covered in pullRequest.test.ts.
+      const bound = (): Orchestration => {
+        const orch = armed(tool.id);
+        return { ...orch, rails: [{ ...orch.rails[0], branch: "feat/x" }] };
+      };
+      const reports = (checks: Array<{ name: string; state: "success" | "failure" }>) => ({
+        [prKey("/ws", "feat/x")]: {
+          state: "ready" as const,
+          number: 9,
+          url: "https://example.test/pr/9",
+          title: "t",
+          prState: "OPEN",
+          isDraft: false,
+          reviewDecision: "",
+          mergeable: "MERGEABLE",
+          createdAt: 0,
+          checks: checks.map((c) => ({ ...c, url: "" })),
+          observedAt: 1000,
+          cached: false,
+        },
+      });
+
+      it(`${tool.id} finishes when the pull request's checks pass`, () => {
+        const actions = nextActions(
+          bound(), BOARD, CARDS, [], new Set(), summary, new Map(), new Map(),
+          new Set(), new Map(), reports([{ name: "build", state: "success" }]), 1000
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
+
+      it(`${tool.id} stalls when a check fails with nothing before it`, () => {
+        const actions = nextActions(
+          bound(), BOARD, CARDS, [], new Set(), summary, new Map(), new Map(),
+          new Set(), new Map(), reports([{ name: "build", state: "failure" }]), 1000
+        );
+        expect(actions.some((a) => a.kind === "stall" && a.stepId === "t1")).toBe(true);
+      });
+
+      /// The refusal that keeps a wait step from waiting on nothing: an
+      /// unbound rail has no branch, so there is no pull request for it.
+      it(`${tool.id} refuses to launch on a rail with no branch`, () => {
+        const orch = running(toolRail("r1", [[["t1", tool.id]]]), "r1-s0");
+        const actions = nextActions(orch, BOARD, CARDS, [], new Set(), summary);
+        expect(actions).toContainEqual({
+          kind: "stall",
+          stepId: "t1",
+          reason: "this rail binds no branch, so there is no pull request to wait for",
+        });
+      });
     } else {
       // Its session really does exit, and the code is the whole verdict.
       it(`${tool.id} finishes when its session exits 0`, () => {
@@ -3406,6 +3482,137 @@ describe("every built-in tool can finish", () => {
       });
     }
   }
+});
+
+// A `pr` step waits on GitHub rather than on a session, which makes it
+// the one running step no session rule can speak for. These are the
+// answers the poll's report produces -- the wait itself, the pass, the
+// loop backwards, and the two ways it gives up.
+describe("nextActions — a pr step", () => {
+  const PR_TOOL: ToolSummary[] = [
+    { id: "builtin:await-pr", name: "Wait for the pull request", kind: "pr", params: [{ name: "max", default: "3" }] },
+    { id: "builtin:run-tests", name: "Run tests", kind: "command" },
+  ];
+
+  function report(over: Record<string, unknown> = {}) {
+    return {
+      [prKey("/ws", "feat/x")]: {
+        state: "ready" as const,
+        number: 9,
+        url: "https://example.test/pr/9",
+        title: "t",
+        prState: "OPEN",
+        isDraft: false,
+        reviewDecision: "",
+        mergeable: "MERGEABLE",
+        createdAt: 0,
+        checks: [] as Array<{ name: string; state: string; url: string }>,
+        observedAt: 1000,
+        cached: false,
+        ...over,
+      },
+    } as Parameters<typeof nextActions>[10];
+  }
+
+  /// A rail bound to feat/x whose second step waits on the PR, with the
+  /// wait already running -- which is the state every rule below reads.
+  function waiting(stepRuns: Orchestration["stepRuns"]): Orchestration {
+    const r = toolRail("r1", [[["work", "builtin:run-tests"]], [["wait", "builtin:await-pr"]]]);
+    const orch = running({ ...r, branch: "feat/x" }, "r1-s1", stepRuns);
+    return orch;
+  }
+
+  const WAIT_RUNNING: Orchestration["stepRuns"] = [
+    { stepId: "work", state: "done", sessionId: "s0", reason: null },
+    // No session id, which is the whole point: gavin does the waiting.
+    { stepId: "wait", state: "running", sessionId: null, reason: null },
+  ];
+
+  const act = (orch: Orchestration, reports: Parameters<typeof nextActions>[10]) =>
+    nextActions(orch, BOARD, CARDS, [], new Set(), PR_TOOL, new Map(), new Map(), new Set(), new Map(), reports, 1000);
+
+  it("emits nothing at all while the checks are still running", () => {
+    const actions = act(waiting(WAIT_RUNNING), report({ checks: [{ name: "b", state: "pending", url: "" }] }));
+    expect(actions).toEqual([]);
+  });
+
+  /// Not asked yet is not "no pull request": the poll may not have
+  /// answered, and passing here would advance the rail on nothing.
+  it("waits when the poll has said nothing yet", () => {
+    expect(act(waiting(WAIT_RUNNING), {})).toEqual([]);
+  });
+
+  it("marks the step done when the checks pass", () => {
+    const actions = act(waiting(WAIT_RUNNING), report({ checks: [{ name: "b", state: "success", url: "" }] }));
+    expect(actions).toContainEqual({ kind: "markDone", stepId: "wait" });
+  });
+
+  /// The rule this whole card exists for: a failing check does not stall
+  /// the rail, it sends it back over the work that broke.
+  it("sends the rail backwards over the previous step when a check fails", () => {
+    const actions = act(waiting(WAIT_RUNNING), report({ checks: [{ name: "b", state: "failure", url: "" }] }));
+    expect(actions).toContainEqual({
+      kind: "loopBack",
+      stepId: "wait",
+      previousStepId: "work",
+      attempt: 1,
+      max: 3,
+    });
+  });
+
+  it("gives up once the budget is spent, quoting what failed", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "work", state: "done", sessionId: "s0", reason: null },
+      { stepId: "wait", state: "running", sessionId: null, reason: null, resumeAttempts: 3 },
+    ];
+    const actions = act(waiting(runs), report({ checks: [{ name: "build", state: "failure", url: "" }] }));
+    const exhausted = actions.find((a) => a.kind === "loopExhausted");
+    expect(exhausted).toMatchObject({ stepId: "wait", max: 3 });
+    // The note travels with the action: this verdict came from reading
+    // GitHub, so there is no log on disk for the executor to find.
+    expect(exhausted?.kind === "loopExhausted" && exhausted.note).toContain("build");
+  });
+
+  it("stalls on a pull request that was closed without merging", () => {
+    const actions = act(waiting(WAIT_RUNNING), report({ prState: "CLOSED" }));
+    expect(actions.some((a) => a.kind === "stall" && a.stepId === "wait")).toBe(true);
+  });
+
+  /// Before the library lands there are no kinds to read, so a running
+  /// tool step with no session cannot be told from any other -- and
+  /// reporting a session that ended while gavin was not watching about a
+  /// step that never had one would be a lie on a cold start.
+  it("says nothing about a session-less step while the library is still loading", () => {
+    const r = toolRail("r1", [[["wait", "builtin:await-pr"]]]);
+    const orch: Orchestration = {
+      rails: [{ ...r, branch: "feat/x" }],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "r1-s0" }],
+      stepRuns: [{ stepId: "wait", state: "running", sessionId: null, reason: null }],
+    };
+    // `null` tools, not `[]`: the library has not loaded.
+    expect(nextActions(orch, BOARD, CARDS, [], new Set(), null)).toEqual([]);
+  });
+
+  /// A rail that is not running never consults the poll, so a wait step
+  /// left `running` under one is waiting on nothing that will ever look
+  /// -- and a running step is what wedges a rail shut.
+  it("stalls a waiting step when its rail has stopped", () => {
+    const r = toolRail("r1", [[["wait", "builtin:await-pr"]]]);
+    const orch: Orchestration = {
+      rails: [{ ...r, branch: "feat/x" }],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: "r1-s0" }],
+      stepRuns: [{ stepId: "wait", state: "running", sessionId: null, reason: null }],
+    };
+    expect(act(orch, report())).toEqual([
+      {
+        kind: "stall",
+        stepId: "wait",
+        reason: "the rail stopped while this step was waiting on the pull request",
+      },
+    ]);
+  });
 });
 
 // A `running` step says nothing about WHY it is running. Every other

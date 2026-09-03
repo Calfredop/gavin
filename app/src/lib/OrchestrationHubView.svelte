@@ -41,6 +41,7 @@
     findStep,
     findStage,
     runnableIdleRails,
+    conflictCheckout,
   } from "./orchestration";
   import type { Rail } from "./orchestration";
   import {
@@ -777,6 +778,7 @@
           onMoveAll={(e) => handleMoveAll(rail, e)}
           onClearDone={() => (railPrompt = { kind: "clear", railId: rail.id })}
           pageName={ws?.pages.find((p) => p.id === rail.pageId)?.name ?? null}
+          checkout={conflictCheckout(rail, tree)}
           editing={editingRailId === rail.id}
           onStartEdit={() => (editingRailId = rail.id)}
           onRename={(name) => {

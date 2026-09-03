@@ -1,5 +1,6 @@
 import type { PauseCycle } from "./agentPause";
 import type { AgentUsageReport } from "./agentUsage";
+import type { PrReport } from "./pullRequest";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
@@ -540,6 +541,16 @@ export function agentProfiles(): Promise<
 /// pressing refresh cannot un-anger the endpoint.
 export function agentUsage(profileId: string, force = false): Promise<AgentUsageReport> {
   return invoke("agent_usage", { profileId, force });
+}
+
+/// What GitHub says about `branch`'s pull request, read with `gh` in the
+/// checkout at `cwd`. Honours a freshness floor host-side, so a caller
+/// asking every few seconds costs one request a minute.
+///
+/// `force` is a human's explicit refresh. The scheduler never passes it:
+/// a rail polling a PR on every tick is a rail hammering GitHub.
+export function prStatus(cwd: string, branch: string, force = false): Promise<PrReport> {
+  return invoke("pr_status", { cwd, branch, force });
 }
 
 export function mcpFormats(): Promise<Array<{ id: string; label: string }>> {

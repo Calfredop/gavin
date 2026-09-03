@@ -82,7 +82,18 @@
     <!-- The resolved body, so the human can see exactly what will run
          BEFORE the rail reaches this step -- literal substitution (T3)
          means a stray quote is visible here and nowhere else. -->
-    <p class="preview-label">{tool.kind === "gavin" ? "This step will do:" : "This step will run:"}</p>
+    <p class="preview-label">
+      <!-- An `until` step's body IS what runs, so the preview stays the
+           resolved command -- but the command alone does not say that
+           failing it sends the rail backwards, which is the whole tool. -->
+      {tool.kind === "gavin"
+        ? "This step will do:"
+        : tool.kind === "until"
+          ? "This step will run, and re-run the step before it until this passes:"
+          : tool.kind === "pr"
+            ? "This step will wait on this rail's pull request, re-running the step before it while a check fails:"
+            : "This step will run:"}
+    </p>
     <pre class="preview">{preview}</pre>
 
     <footer>
