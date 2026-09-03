@@ -629,6 +629,29 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Open a file tab, switch to a sibling tab and back — the editor is full height, not collapsed",
       },
       {
+        id: "md-bar-shows",
+        text: "A markdown file in Edit shows a formatting bar at the left of the mode strip; Plain and Formatted hide it, and a .rs file never has one",
+        hint: "Narrow the pane: the bar wraps and the Formatted/Plain/Edit switch drops to a second row — nothing clips.",
+      },
+      {
+        id: "md-bar-inline",
+        text: "Select a word, click B → **word** with the word still selected; click B again → the stars go. With the caret inside a word the word is wrapped; on a space, an empty pair with the caret between",
+      },
+      {
+        id: "md-bar-blocks",
+        text: "Select three lines, click the bullet button → each gets “- ”; the numbered button renumbers them 1. 2. 3.; the same button again strips the marks",
+        hint: "Quote adds “> ” to every line; H2 on a line already H2 clears it; the rule and table land on their own lines with a blank above and below.",
+      },
+      {
+        id: "md-bar-chords",
+        text: "⌘B / ⌘I / ⌘⇧X / ⌘E / ⌘K toggle bold / italic / strikethrough / code / link from the keyboard, and each button's tooltip names its chord",
+        hint: "In Plain mode the chords do nothing to the text. In a .rs file in Edit, ⌘B leaves the source alone.",
+      },
+      {
+        id: "md-bar-focus",
+        text: "Clicking a bar button keeps the caret in the editor — typing continues right where the action left it, and the action is one ⌘Z away",
+      },
+      {
         id: "prd-pick",
         text: "The PRD tab's Pick… points the tab at another markdown file in the repo, and the strip shows the new path",
         hint: "Make a docs/PRD.md first. The Home tile's excerpt and gavin_read_prd must follow it too.",

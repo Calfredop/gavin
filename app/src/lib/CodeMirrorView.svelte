@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { createEditor, type EditorHandle } from "./codeMirror";
+  import type { FormatAction } from "./markdownFormatting";
   import { themeState } from "./ui/themeState.svelte";
 
   interface Props {
@@ -36,6 +37,10 @@
 
   export function measure(): void {
     handle?.measure();
+  }
+
+  export function format(action: FormatAction): void {
+    handle?.format(action);
   }
 
   $effect(() => {

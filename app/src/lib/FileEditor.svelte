@@ -14,6 +14,9 @@
     type EditorMode,
   } from "./fileEditing";
   import CodeMirrorView from "./CodeMirrorView.svelte";
+  import MarkdownToolbar from "./MarkdownToolbar.svelte";
+  import { isMarkdown } from "./fileTypes";
+  import type { FormatAction } from "./markdownFormatting";
   import * as backend from "./backend";
 
   interface Props {
@@ -61,7 +64,11 @@
   // INITIAL content only, so mounting it before the first read resolves
   // would leave an editor holding "" with no path back to the real file.
   let loaded = $state(false);
-  let editor = $state<{ setDoc: (t: string) => void; measure: () => void } | null>(null);
+  let editor = $state<{
+    setDoc: (t: string) => void;
+    measure: () => void;
+    format: (action: FormatAction) => void;
+  } | null>(null);
   let unlisten: UnlistenFn | null = null;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -69,6 +76,9 @@
   const availableModes = $derived(modesFor(path));
   // Never leave the user stranded in Edit on a file that can't be edited.
   const effectiveMode = $derived<EditorMode>(mode === "edit" && !editable ? "plain" : mode);
+  // The formatting bar belongs to markdown in Edit and nowhere else: a
+  // .rs file has no bold, and Plain is read-only by definition.
+  const showFormatBar = $derived(isMarkdown(path) && effectiveMode === "edit");
 
   const rendered = $derived.by(() => {
     if (error !== null || effectiveMode !== "formatted") return "";
@@ -265,20 +275,25 @@
 
 <div class="pane" class:document={layout === "document"}>
   <div class="modes">
-    {#each availableModes as m (m)}
-      <button
-        type="button"
-        class:active={effectiveMode === m}
-        disabled={m === "edit" && !editable}
-        title={m === "edit" && !editable ? "This file can't be edited" : ""}
-        onclick={() => switchMode(m)}
-      >
-        {m === "formatted" ? "Formatted" : m === "plain" ? "Plain" : "Edit"}
-      </button>
-    {/each}
-    {#if dirty}
-      <span class="dirty" title="Unsaved changes">●</span>
+    {#if showFormatBar}
+      <MarkdownToolbar onFormat={(action) => editor?.format(action)} />
     {/if}
+    <div class="segments">
+      {#each availableModes as m (m)}
+        <button
+          type="button"
+          class:active={effectiveMode === m}
+          disabled={m === "edit" && !editable}
+          title={m === "edit" && !editable ? "This file can't be edited" : ""}
+          onclick={() => switchMode(m)}
+        >
+          {m === "formatted" ? "Formatted" : m === "plain" ? "Plain" : "Edit"}
+        </button>
+      {/each}
+      {#if dirty}
+        <span class="dirty" title="Unsaved changes">●</span>
+      {/if}
+    </div>
   </div>
 
   {#if conflict !== null}
@@ -345,16 +360,26 @@
     display: flex;
     flex-direction: column;
   }
+  /* One strip: the formatting bar (markdown in Edit only) at the left,
+     the mode switch at the right. Wrapping, so a narrow split pane puts
+     the switch on a second row rather than clipping the bar. */
   .modes {
     display: flex;
     align-items: center;
-    gap: 4px;
+    flex-wrap: wrap;
+    gap: 2px 8px;
     padding: 4px 8px;
     justify-content: flex-end;
     flex: 0 0 auto;
     border-bottom: 1px solid var(--border);
   }
-  .modes button {
+  .segments {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+  }
+  .segments button {
     background: transparent;
     border: 1px solid transparent;
     color: var(--text-muted);
@@ -364,11 +389,11 @@
     border-radius: 4px;
     cursor: pointer;
   }
-  .modes button.active {
+  .segments button.active {
     background: var(--surface-overlay);
     color: var(--text);
   }
-  .modes button:disabled {
+  .segments button:disabled {
     opacity: 0.4;
     cursor: default;
   }

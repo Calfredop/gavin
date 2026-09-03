@@ -2,6 +2,7 @@ import { fileExtension } from "./fileTypes";
 // Type-only import: erased at compile time, so it does not violate the
 // no-runtime-CodeMirror-imports rule below.
 import type { Extension } from "@codemirror/state";
+import { applyFormat, chordToKeyName, FORMAT_GROUPS, type FormatAction } from "./markdownFormatting";
 
 // NO top-level runtime @codemirror imports in this module. Every one of
 // them is dynamic, inside a function, so codeMirror.test.ts can import
@@ -72,6 +73,9 @@ export interface EditorHandle {
   scrollToLine(line: number): void;
   /// Dispatches state effects (used by decoration extensions).
   dispatchEffects(effects: unknown[]): void;
+  /// Applies one of the markdown bar's actions at the current selection
+  /// and returns focus to the editor. A no-op while read-only.
+  format(action: FormatAction): void;
   measure(): void;
   destroy(): void;
 }
@@ -103,6 +107,36 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
 
   const readOnlyCompartment = new Compartment();
   const themeCompartment = new Compartment();
+
+  // The bar's transforms are pure over (doc, selection); this is the one
+  // place they meet a live view. Returns whether it acted, which is what
+  // a keymap binding needs: in Plain mode the chord falls through to
+  // whatever CodeMirror bound it to.
+  const format = (view: InstanceType<typeof EditorView>, action: FormatAction): boolean => {
+    if (view.state.readOnly) return false;
+    const { anchor, head } = view.state.selection.main;
+    const result = applyFormat(action, view.state.doc.toString(), { anchor, head });
+    view.dispatch({
+      changes: result.changes,
+      selection: result.selection,
+      scrollIntoView: true,
+      userEvent: "input.format",
+    });
+    return true;
+  };
+  // Only a markdown file gets the chords: ⌘B in a .rs file means nothing
+  // and must not put stars in the source. The table that draws the bar
+  // is the table that binds the keys.
+  const formatKeymap =
+    languageIdForPath(options.path) === "markdown"
+      ? FORMAT_GROUPS.flat()
+          .filter((button) => button.chord)
+          .map((button) => ({
+            key: chordToKeyName(button.chord!),
+            preventDefault: true,
+            run: (view: InstanceType<typeof EditorView>) => format(view, button.action),
+          }))
+      : [];
 
   /// oneDark bundles its own HighlightStyle, and it is the ONLY source of
   /// syntax colour here -- there is no defaultHighlightStyle in the
@@ -139,7 +173,8 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
       highlightActiveLine(),
       drawSelection(),
       commands.history(),
-      // Mod-s first so it wins over any default binding.
+      // Mod-s and the format chords first so they win over any default
+      // binding (defaultKeymap has Mod-i as "select parent syntax").
       keymap.of([
         {
           key: "Mod-s",
@@ -149,6 +184,7 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
             return true;
           },
         },
+        ...formatKeymap,
         ...commands.defaultKeymap,
         ...commands.historyKeymap,
       ]),
@@ -198,6 +234,12 @@ export async function createEditor(options: CreateEditorOptions): Promise<Editor
     },
     dispatchEffects(effects: unknown[]) {
       editorView.dispatch({ effects: effects as never[] });
+    },
+    format(action: FormatAction) {
+      format(editorView, action);
+      // A bar click took focus even with mousedown prevented on some
+      // WebKit paths; typing must continue in the editor either way.
+      editorView.focus();
     },
     measure() {
       editorView.requestMeasure();
