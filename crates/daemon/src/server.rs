@@ -182,6 +182,7 @@ struct RepoPollerInner {
 /// the heuristic timer).
 fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: SessionStatus) {
     let status_str = status.as_str();
+    let went_idle = status == SessionStatus::Idle;
     if let Err(e) = manager.registry.lock().unwrap().update_status(id, status) {
         eprintln!("failed to persist status for session {id}: {e}");
     }
@@ -190,6 +191,145 @@ fn persist_and_emit_status(manager: &Arc<SessionManager>, id: &str, status: Sess
         let _ = write_message(
             &mut *w.lock().unwrap(),
             &Response::StatusChanged { id: id.to_string(), status: status_str.to_string() },
+        );
+    }
+    // The one trigger the whole follow-up queue hangs off, placed here
+    // rather than at each `Idle` call site so that the OSC 133 prompt
+    // marker, the quiet timer and anything added later all deliver
+    // through the same door. AFTER the status is persisted and pushed:
+    // a delivery makes the session busy again within milliseconds, and
+    // a client that saw the follow-up leave the queue before it saw the
+    // session go idle would be watching the effect precede the cause.
+    if went_idle {
+        deliver_next_queued(manager, id);
+    }
+}
+
+/// The envelope a queued follow-up is delivered in: one bracketed paste
+/// and a carriage return.
+///
+/// Bracketed so a multi-line message arrives as ONE block instead of
+/// line-by-line submissions -- the same envelope `pasteToMainAgent` uses
+/// on the app side, and for the same reason. It is applied here, at
+/// delivery, rather than stored: the stored string is what the tab shows
+/// the human back, and a list of escape sequences is not a list of
+/// messages.
+fn bracketed_paste(text: &str) -> String {
+    format!("\x1b[200~{text}\x1b[201~\r")
+}
+
+/// Why this session cannot be handed a follow-up right now, or `None` if
+/// it can.
+///
+/// The `interrupted` clause is the one that matters most and is the
+/// least obvious: after a daemon restart the tab holds a bare shell in
+/// the agent's old cwd, not the agent. Pasting the human's English there
+/// would hand a shell a line of prose and press Enter -- and the queue
+/// exists precisely because the human walked away, so nobody would be
+/// watching when it happened. The follow-up stays queued instead, and
+/// becomes deliverable again once a real session is running.
+fn queue_delivery_refusal(manager: &SessionManager, id: &str) -> Option<String> {
+    let record = match manager.registry.lock().unwrap().get(id) {
+        Ok(Some(r)) => r,
+        Ok(None) => return Some(format!("unknown session: {id}")),
+        Err(e) => return Some(format!("couldn't read session {id}: {e}")),
+    };
+    if record.interrupted {
+        return Some(
+            "this session's agent was stopped and what is running now is a plain shell — \
+             relaunch it before sending, or the message would be run as a command"
+                .to_string(),
+        );
+    }
+    if !manager.sessions.lock().unwrap().contains_key(id) {
+        return Some(format!("session {id} is not running"));
+    }
+    None
+}
+
+/// Hands this session the head of its queue, if it has one and is in a
+/// state to take it.
+///
+/// Peek, write, then take -- deliberately in that order. The failure
+/// this sequence is chosen for is the plausible one: the session exits
+/// between the peek and the write, and a take-first ordering would have
+/// already destroyed a message that was never delivered. Taking last
+/// risks re-delivering only if a DELETE by primary key fails immediately
+/// after the row was read, which is not a failure this database has.
+fn deliver_next_queued(manager: &SessionManager, id: &str) {
+    // Refuse before claiming the delivery slot, so a session that can
+    // never take a follow-up (an interrupted one, most of all) does not
+    // shut out a delivery that later becomes possible.
+    if queue_delivery_refusal(manager, id).is_some() {
+        return;
+    }
+    if !manager.delivering_queued.lock().unwrap().insert(id.to_string()) {
+        return;
+    }
+    let result = deliver_head(manager, id);
+    manager.delivering_queued.lock().unwrap().remove(id);
+    match result {
+        Ok(true) => emit_queued_inputs_changed(manager, id),
+        Ok(false) => {}
+        Err(e) => eprintln!("failed to deliver a queued follow-up to session {id}: {e}"),
+    }
+}
+
+/// The body of a delivery, split out so `deliver_next_queued` can clear
+/// its in-flight marker on every path including the error one.
+/// `Ok(false)` means the queue was empty -- not a failure, and not a
+/// reason to push a change nobody made.
+fn deliver_head(manager: &SessionManager, id: &str) -> anyhow::Result<bool> {
+    let head = {
+        let registry = manager.registry.lock().unwrap();
+        registry.queued_inputs_for(id)?.into_iter().next()
+    };
+    let Some(head) = head else { return Ok(false) };
+    manager.write_input(id, bracketed_paste(&head.text).as_bytes())?;
+    manager.registry.lock().unwrap().take_queued_input(id, &head.id)?;
+    Ok(true)
+}
+
+/// Delivers only if the session is sitting `Idle`. The trigger for the
+/// human queueing onto an agent that already finished its turn.
+///
+/// `Idle` and nothing else, which is the load-bearing half of the whole
+/// feature. Not `WaitingForInput`: that session is asking the human a
+/// question, and answering it with an unrelated follow-up would put the
+/// answer to a different question at its prompt. Not `Failed`: there is
+/// no turn to follow up on, and a message sent into a broken agent is a
+/// message spent. Not `Exited`, for the obvious reason.
+fn deliver_next_queued_if_idle(manager: &SessionManager, id: &str) {
+    let idle = matches!(
+        manager.registry.lock().unwrap().get(id),
+        Ok(Some(ref r)) if r.status == SessionStatus::Idle
+    );
+    if idle {
+        deliver_next_queued(manager, id);
+    }
+}
+
+/// Pushes this session's queue, as it now stands, to whoever is attached
+/// to it.
+///
+/// The whole list rather than a delta, so a client that missed one push
+/// cannot drift -- and routed to the attached writer exactly like
+/// `StatusChanged`, which is precisely why `Request::ListQueuedInputs`
+/// has to exist as well: a frontend that reloaded was attached to
+/// nothing when this fired.
+fn emit_queued_inputs_changed(manager: &SessionManager, id: &str) {
+    let queued = match manager.registry.lock().unwrap().queued_inputs_for(id) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("failed to read the follow-up queue for session {id}: {e}");
+            return;
+        }
+    };
+    let target = manager.attached_writers.lock().unwrap().get(id).cloned();
+    if let Some(w) = target {
+        let _ = write_message(
+            &mut *w.lock().unwrap(),
+            &Response::QueuedInputsChanged { id: id.to_string(), queued },
         );
     }
 }
@@ -951,6 +1091,16 @@ pub struct SessionManager {
     /// watcher for the root they actually chose. Locked before
     /// `gavin_watchers`, never after.
     gavin_watch_generation: Mutex<HashMap<String, u64>>,
+    /// Sessions with a queued follow-up being delivered right now.
+    ///
+    /// Delivery is peek -> write -> take, and that middle step cannot be
+    /// held under the registry lock (it writes to a PTY). Two triggers
+    /// can therefore reach the same session at once -- the quiet timer
+    /// firing `Idle` at the instant the human queues something -- and
+    /// without this both would peek the same head and paste it twice.
+    /// A session already in here is skipped, never queued behind:
+    /// whatever the other delivery is doing ends the idleness anyway.
+    delivering_queued: Mutex<std::collections::HashSet<String>>,
 }
 
 impl SessionManager {
@@ -973,6 +1123,7 @@ impl SessionManager {
             session_repo_root: Mutex::new(HashMap::new()),
             gavin_watchers: Mutex::new(HashMap::new()),
             gavin_watch_generation: Mutex::new(HashMap::new()),
+            delivering_queued: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -1694,6 +1845,92 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Holds a follow-up for this session and, if the session happens to
+    /// be idle already, delivers it straight away.
+    ///
+    /// Queueing onto an idle agent and sending to one are the same act,
+    /// so this is not two entry points: the human writing a message for
+    /// an agent that finished its turn a second ago means it to go now.
+    /// The wait only exists because the agent is busy.
+    pub fn queue_input(&self, id: &str, text: &str) -> anyhow::Result<Response> {
+        // A message that is only whitespace delivers as a bare carriage
+        // return -- an empty turn submitted to the agent, which is worse
+        // than nothing because it costs a round trip and says nothing.
+        if text.trim().is_empty() {
+            anyhow::bail!("a queued follow-up needs some text");
+        }
+        // Refused rather than stored: a queue for a session that does
+        // not exist can never be delivered from, and the row would
+        // survive in every listing with nothing able to drain it.
+        if self.registry.lock().unwrap().get(id)?.is_none() {
+            anyhow::bail!("unknown session: {id}");
+        }
+        self.registry.lock().unwrap().queue_input(id, text)?;
+        deliver_next_queued_if_idle(self, id);
+        let queued = self.registry.lock().unwrap().queued_inputs_for(id)?;
+        emit_queued_inputs_changed(self, id);
+        Ok(Response::QueuedInputs { queued })
+    }
+
+    /// Every session's pending follow-ups -- the read-back a frontend
+    /// that reloaded uses to recover what the pushes already told
+    /// somebody else.
+    pub fn list_queued_inputs(&self) -> anyhow::Result<Response> {
+        let queued = self.registry.lock().unwrap().queued_inputs()?;
+        Ok(Response::QueuedInputs { queued })
+    }
+
+    /// The queue this session should have from now on. Reorder, cancel
+    /// and clear are all this one write.
+    pub fn set_queued_inputs(&self, id: &str, queued_ids: &[String]) -> anyhow::Result<Response> {
+        self.registry.lock().unwrap().set_queued_inputs(id, queued_ids)?;
+        let queued = self.registry.lock().unwrap().queued_inputs_for(id)?;
+        emit_queued_inputs_changed(self, id);
+        Ok(Response::QueuedInputs { queued })
+    }
+
+    /// Deliver one queued follow-up now, whatever the session's status.
+    ///
+    /// The status is the only thing the override skips. A session whose
+    /// agent was replaced by a bare shell still refuses, because "send
+    /// it anyway" is a decision about waiting, not a decision to run the
+    /// human's prose as a shell command.
+    pub fn send_queued_input(&self, id: &str, queued_id: &str) -> anyhow::Result<Response> {
+        if let Some(reason) = queue_delivery_refusal(self, id) {
+            anyhow::bail!("{reason}");
+        }
+        let found = self
+            .registry
+            .lock()
+            .unwrap()
+            .queued_inputs_for(id)?
+            .into_iter()
+            .find(|q| q.id == queued_id);
+        // Gone between the human's click and this request -- the queue
+        // drained on its own while they were reaching for the button.
+        // An error, not a silent success: the message they meant to send
+        // HAS been sent, and telling them nothing happened would be a
+        // lie in the other direction.
+        let Some(entry) = found else {
+            anyhow::bail!("that follow-up is no longer queued — it may have just been delivered");
+        };
+        // Same peek -> write -> take ordering as an idle delivery, and
+        // through the same in-flight marker, so an override that lands
+        // at the instant the session goes idle cannot double-paste.
+        if !self.delivering_queued.lock().unwrap().insert(id.to_string()) {
+            anyhow::bail!("a queued follow-up is already being delivered to this session");
+        }
+        let written = self.write_input(id, bracketed_paste(&entry.text).as_bytes());
+        if written.is_ok() {
+            let _ = self.registry.lock().unwrap().take_queued_input(id, queued_id);
+        }
+        self.delivering_queued.lock().unwrap().remove(id);
+        written?;
+        let queued = self.registry.lock().unwrap().queued_inputs_for(id)?;
+        emit_queued_inputs_changed(self, id);
+        Ok(Response::QueuedInputs { queued })
+    }
+
     /// What this session's agent prints when it has stopped because
     /// something broke (`Request::SetFailurePatterns`).
     ///
@@ -2095,6 +2332,26 @@ impl SessionManager {
                         &Response::GitStatusChanged { id: id.to_string(), status: Some(status) },
                     );
                 }
+                // The follow-up queue's baseline, and the fifth push-fed
+                // map to need one. Sent unconditionally rather than only
+                // when non-empty: "this session has nothing queued" is
+                // an answer a reattaching client has to be able to
+                // receive, or a queue drained while it was away would
+                // stay on screen until something else changed it.
+                //
+                // `ListQueuedInputs` covers the other half -- a frontend
+                // reload learns about sessions it has not attached yet
+                // -- because a baseline that only rides on Attach is
+                // exactly what left the git chip blank after a reload.
+                match self.registry.lock().unwrap().queued_inputs_for(id) {
+                    Ok(queued) => {
+                        let _ = write_message(
+                            &mut *writer.lock().unwrap(),
+                            &Response::QueuedInputsChanged { id: id.to_string(), queued },
+                        );
+                    }
+                    Err(e) => eprintln!("failed to read the follow-up queue for session {id}: {e}"),
+                }
             }
         }
 
@@ -2387,6 +2644,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::WriteInput { id, data } => manager
             .write_input(&id, data.as_bytes())
             .map(|_| Response::Ok),
+        Request::QueueInput { id, text } => manager.queue_input(&id, &text),
+        Request::ListQueuedInputs => manager.list_queued_inputs(),
+        Request::SetQueuedInputs { id, queued_ids } => {
+            manager.set_queued_inputs(&id, &queued_ids)
+        }
+        Request::SendQueuedInput { id, queued_id } => manager.send_queued_input(&id, &queued_id),
         Request::ResizeSession { id, cols, rows } => manager
             .resize_session(&id, cols, rows)
             .map(|_| Response::Ok),
@@ -7065,5 +7328,461 @@ mod tests {
             sessions[0].restored, true,
             "session should have been recovered despite its stale live-tracked cwd"
         );
+    }
+
+    // ---- the follow-up queue (v26) ----
+
+    /// A registry row with no PTY behind it. Enough for every property
+    /// of the queue that is decided BEFORE anything is written to a
+    /// terminal -- which is all of the refusals, and they are the half
+    /// that has to be right.
+    fn queue_test_record(id: &str, status: SessionStatus, interrupted: bool) -> SessionRecord {
+        SessionRecord {
+            id: id.to_string(),
+            workspace_path: "/tmp/ws".to_string(),
+            cwd: "/tmp/ws".to_string(),
+            command: Some("claude".to_string()),
+            status,
+            restored: false,
+            generation: 0,
+            interrupted,
+            process: None,
+            orphan: None,
+            failure_reason: None,
+        }
+    }
+
+    fn queued_texts(manager: &SessionManager, id: &str) -> Vec<String> {
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .queued_inputs_for(id)
+            .unwrap()
+            .into_iter()
+            .map(|q| q.text)
+            .collect()
+    }
+
+    #[test]
+    fn queueing_a_follow_up_for_a_session_that_does_not_exist_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        // Not stored-and-ignored: a queue for a session nobody hosts can
+        // never be drained, so the row would sit in every listing
+        // forever with no way to deliver or explain it.
+        assert!(manager.queue_input("nope", "hello").is_err());
+        assert!(manager.registry.lock().unwrap().queued_inputs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_whitespace_only_follow_up_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Working, false))
+            .unwrap();
+
+        // It would deliver as a bare carriage return: an empty turn,
+        // which costs the agent a round trip and says nothing.
+        assert!(manager.queue_input("s1", "   \n  ").is_err());
+        assert!(queued_texts(&manager, "s1").is_empty());
+    }
+
+    #[test]
+    fn a_busy_session_keeps_its_follow_up_queued_instead_of_being_typed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Working, false))
+            .unwrap();
+
+        manager.queue_input("s1", "and then run the tests").unwrap();
+
+        // The whole point of the feature: mid-turn, the message waits.
+        assert_eq!(queued_texts(&manager, "s1"), ["and then run the tests"]);
+    }
+
+    #[test]
+    fn an_agent_waiting_on_the_human_is_not_answered_with_an_unrelated_follow_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::WaitingForInput, false))
+            .unwrap();
+
+        manager.queue_input("s1", "carry on").unwrap();
+
+        // `waiting_for_input` means the agent asked a QUESTION. Handing
+        // it the human's next instruction would submit that instruction
+        // as the answer to something else entirely.
+        assert_eq!(queued_texts(&manager, "s1"), ["carry on"]);
+    }
+
+    #[test]
+    fn a_failed_agent_is_not_handed_a_follow_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Failed, false))
+            .unwrap();
+
+        manager.queue_input("s1", "carry on").unwrap();
+
+        // A failure is a verdict on a turn that BROKE. There is no
+        // finished turn to follow up on, and a message sent into a dead
+        // API connection is a message spent.
+        assert_eq!(queued_texts(&manager, "s1"), ["carry on"]);
+    }
+
+    #[test]
+    fn an_interrupted_session_refuses_delivery_because_its_shell_would_run_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Idle, true))
+            .unwrap();
+
+        let refusal = queue_delivery_refusal(&manager, "s1").expect("an interrupted session refuses");
+
+        // The specific hazard, asserted specifically rather than via the
+        // "not running" clause that also happens to be true here: after
+        // a daemon restart the tab holds a bare shell, and the human is
+        // not watching -- that is why they queued.
+        assert!(
+            refusal.contains("plain shell"),
+            "the refusal must name the shell hazard, got {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn the_send_now_override_still_refuses_an_interrupted_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Working, false))
+            .unwrap();
+        let queued = manager.registry.lock().unwrap().queue_input("s1", "carry on").unwrap();
+        manager.registry.lock().unwrap().mark_interrupted("s1").unwrap();
+
+        assert!(manager.send_queued_input("s1", &queued.id).is_err());
+        // Held, not consumed: the human can relaunch and send it then.
+        assert_eq!(queued_texts(&manager, "s1"), ["carry on"]);
+    }
+
+    #[test]
+    fn sending_a_follow_up_that_is_no_longer_queued_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Working, false))
+            .unwrap();
+
+        // Silence would be the wrong answer in both directions: the
+        // human pressed a button, and either it sent something or it did
+        // not.
+        assert!(manager.send_queued_input("s1", "never-existed").is_err());
+    }
+
+    #[test]
+    fn setting_the_queue_answers_with_the_list_that_survived() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Working, false))
+            .unwrap();
+        manager.queue_input("s1", "a").unwrap();
+        manager.queue_input("s1", "b").unwrap();
+        let ids: Vec<String> = manager
+            .registry
+            .lock()
+            .unwrap()
+            .queued_inputs_for("s1")
+            .unwrap()
+            .into_iter()
+            .map(|q| q.id)
+            .collect();
+
+        // The reply carries the result, so a caller never has to wait
+        // for the push to learn what its own write did.
+        match manager.set_queued_inputs("s1", &[ids[1].clone()]).unwrap() {
+            Response::QueuedInputs { queued } => {
+                assert_eq!(queued.len(), 1);
+                assert_eq!(queued[0].text, "b");
+            }
+            other => panic!("expected QueuedInputs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_queued_inputs_answers_for_every_session_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        for id in ["s1", "s2"] {
+            manager
+                .registry
+                .lock()
+                .unwrap()
+                .insert(&queue_test_record(id, SessionStatus::Working, false))
+                .unwrap();
+            manager.queue_input(id, "hold on").unwrap();
+        }
+
+        // The read-back a reloaded frontend depends on: it has attached
+        // to nothing, so it has missed every push the daemon sent.
+        match manager.list_queued_inputs().unwrap() {
+            Response::QueuedInputs { queued } => assert_eq!(queued.len(), 2),
+            other => panic!("expected QueuedInputs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_queue_change_is_pushed_to_whoever_is_attached_to_that_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&queue_test_record("s1", SessionStatus::Working, false))
+            .unwrap();
+
+        // The writer is registered directly rather than through
+        // `attach`, which would spawn a pump for a session that has no
+        // PTY and tear the registration straight back down again.
+        let (client, server_side) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        manager
+            .attached_writers
+            .lock()
+            .unwrap()
+            .insert("s1".to_string(), Arc::new(Mutex::new(server_side)));
+
+        manager.queue_input("s1", "hold on").unwrap();
+
+        let mut reader = BufReader::new(client);
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::QueuedInputsChanged { id, queued } => {
+                assert_eq!(id, "s1");
+                assert_eq!(queued.len(), 1, "the push carries the whole list, not a delta");
+            }
+            other => panic!("expected QueuedInputsChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attach_sends_the_follow_up_queue_baseline() {
+        // The fifth push-fed map to need one. Without it a frontend
+        // reload shows an empty queue for a session that has three
+        // messages waiting -- the git-chip bug, one map along.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&queue_test_record("queued-1", SessionStatus::Working, false))
+                .unwrap();
+            registry.queue_input("queued-1", "still waiting").unwrap();
+        }
+        let manager = Arc::new(SessionManager::new(
+            Registry::open(&db_path).unwrap(),
+            KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
+            test_orchestration_store(),
+        ));
+
+        let (client, server_side) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        manager.attach("queued-1", Arc::new(Mutex::new(server_side)));
+
+        let mut reader = BufReader::new(client);
+        let mut seen = None;
+        // The baseline rides among CwdChanged / StatusChanged / the
+        // screen snapshot, so the assertion is on arrival, not position.
+        for _ in 0..10 {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::QueuedInputsChanged { id, queued })) => {
+                    seen = Some((id, queued));
+                    break;
+                }
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+        let (id, queued) = seen.expect("Attach must re-send the follow-up queue");
+        assert_eq!(id, "queued-1");
+        assert_eq!(queued.len(), 1);
+    }
+
+    #[test]
+    fn a_follow_up_queued_mid_turn_reaches_the_terminal_once_the_session_goes_idle() {
+        // The end-to-end promise, through a real PTY: queued while the
+        // session is producing output, delivered after it stops.
+        //
+        // The assertion is on the PTY's own echo of the delivered bytes
+        // rather than on the marker being EXECUTED, and deliberately so:
+        // delivery wraps the message in a bracketed paste, which a plain
+        // `sh` has never enabled and therefore reads as literal
+        // characters. The agents this feature is for do enable it (the
+        // same envelope `pasteToMainAgent` already ships), and what this
+        // test is here to prove is that the bytes arrive at the right
+        // MOMENT.
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            match request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            ) {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut streaming = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut streaming, &Request::Attach { id: id.clone() }).unwrap();
+        // Chatty for about two and a half seconds -- longer than one
+        // HEURISTIC_QUIET_PERIOD, so the session is unambiguously
+        // Working while the follow-up is queued, and unambiguously Idle
+        // afterwards.
+        write_message(
+            &mut streaming,
+            &Request::WriteInput {
+                id: id.clone(),
+                data: "i=0; while [ $i -lt 6 ]; do echo tick; sleep 0.4; i=$((i+1)); done\n"
+                    .to_string(),
+            },
+        )
+        .unwrap();
+
+        streaming.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        let mut reader = BufReader::new(streaming.try_clone().unwrap());
+
+        // Wait for the loop to actually be producing output before
+        // queueing, so the request cannot land while the session is
+        // still Idle and be delivered straight through -- which would
+        // pass the marker assertion while proving nothing.
+        let started = std::time::Instant::now() + Duration::from_secs(5);
+        let mut working = false;
+        while std::time::Instant::now() < started && !working {
+            if let Ok(Some(Response::StatusChanged { id: rid, status })) =
+                read_message::<_, Response>(&mut reader)
+            {
+                working = rid == id && status == "working";
+            }
+        }
+        assert!(working, "the shell never reported working");
+
+        let mut queue_stream = UnixStream::connect(&socket_path).unwrap();
+        match request(
+            &mut queue_stream,
+            &Request::QueueInput { id: id.clone(), text: "QUEUED_MARK_OK".to_string() },
+        ) {
+            Response::QueuedInputs { queued } => assert_eq!(
+                queued.len(),
+                1,
+                "a follow-up for a busy session must WAIT, not go straight through"
+            ),
+            other => panic!("expected QueuedInputs, got {other:?}"),
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut delivered = false;
+        while std::time::Instant::now() < deadline && !delivered {
+            if let Ok(Some(Response::Output { id: rid, data })) =
+                read_message::<_, Response>(&mut reader)
+            {
+                delivered = rid == id && data.contains("QUEUED_MARK_OK");
+            }
+        }
+        assert!(delivered, "the queued follow-up never reached the terminal");
+
+        let mut check = UnixStream::connect(&socket_path).unwrap();
+        match request(&mut check, &Request::ListQueuedInputs) {
+            Response::QueuedInputs { queued } => assert!(
+                queued.is_empty(),
+                "a delivered follow-up leaves the queue, got {queued:?}"
+            ),
+            other => panic!("expected QueuedInputs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_follow_up_for_an_idle_session_goes_straight_through() {
+        // Queueing onto an agent that finished its turn a second ago and
+        // sending to it are the same act. The wait exists only because
+        // the agent is busy.
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            match request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: Some("/bin/sh".to_string()),
+                },
+            ) {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut streaming = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut streaming, &Request::Attach { id: id.clone() }).unwrap();
+        streaming.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        let mut reader = BufReader::new(streaming.try_clone().unwrap());
+
+        let mut queue_stream = UnixStream::connect(&socket_path).unwrap();
+        match request(
+            &mut queue_stream,
+            &Request::QueueInput { id: id.clone(), text: "STRAIGHT_THROUGH_OK".to_string() },
+        ) {
+            Response::QueuedInputs { queued } => {
+                assert!(queued.is_empty(), "an idle session takes it now, got {queued:?}")
+            }
+            other => panic!("expected QueuedInputs, got {other:?}"),
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut delivered = false;
+        while std::time::Instant::now() < deadline && !delivered {
+            if let Ok(Some(Response::Output { id: rid, data })) =
+                read_message::<_, Response>(&mut reader)
+            {
+                delivered = rid == id && data.contains("STRAIGHT_THROUGH_OK");
+            }
+        }
+        assert!(delivered, "an idle session never received its follow-up");
     }
 }
