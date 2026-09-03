@@ -1366,6 +1366,31 @@ impl SessionManager {
         self.set_orchestration(&watcher.workspace_id, rails, conflict_notes)
     }
 
+    /// `set_rail_run` for a caller that knows a root and not a workspace
+    /// id -- gavin-mcp's `gavin_start_rail`, and nothing else.
+    ///
+    /// The push is the point. The plain request writes the row and tells
+    /// nobody, so a rail armed from outside the app stayed idle on screen
+    /// until the Orchestration tab was next mounted -- the half-adopted
+    /// state five rails armed over the raw socket left behind on
+    /// 2026-09-03. Resolving the root gives the push the workspace id it
+    /// needs, and makes an unwatched root a refusal rather than a write
+    /// nobody will ever see.
+    pub fn set_rail_run_by_root(
+        &self,
+        root_path: &str,
+        rail_id: &str,
+        state: &str,
+        current_stage_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.set_rail_run(rail_id, state, current_stage_id)?;
+        self.push_orchestration(&watcher.workspace_id);
+        Ok(())
+    }
+
     /// Best-effort push of the whole orchestration on the watching app
     /// connection. Silent when the workspace is not watched (a headless
     /// agent with the app closed) or the writer is dead -- the app's next
@@ -2436,6 +2461,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetRailRun { rail_id, state, current_stage_id } => manager
             .set_rail_run(&rail_id, &state, current_stage_id)
             .map(|_| Response::Ok),
+        Request::SetRailRunByRoot { root_path, rail_id, state, current_stage_id } => manager
+            .set_rail_run_by_root(&root_path, &rail_id, &state, current_stage_id)
+            .map(|_| Response::Ok),
         Request::SetFailurePatterns { id, patterns } => {
             manager.set_failure_patterns(&id, patterns).map(|_| Response::Ok)
         }
@@ -3101,6 +3129,93 @@ mod tests {
                 assert_eq!(orchestration.rails[0].stages[0].steps[0].id, "t1");
             }
             other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    /// Arming a rail from outside the app. Two things the plain
+    /// `SetRailRun` cannot do: name the workspace, and therefore tell the
+    /// app -- without which the row lands in SQLite and the rail keeps
+    /// reading idle on screen.
+    #[test]
+    fn set_rail_run_by_root_writes_the_row_and_pushes_it() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+
+        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut watcher,
+            &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut reader = BufReader::new(watcher.try_clone().unwrap());
+        let first: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        // The plan first, and its own push read off the watcher, so the
+        // push asserted below is the one the run-state write produced.
+        request(
+            &mut cmd,
+            &Request::SetOrchestrationByRoot {
+                root_path: root.clone(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap(),
+            Some(Response::OrchestrationChanged { .. })
+        ));
+
+        let resp = request(
+            &mut cmd,
+            &Request::SetRailRunByRoot {
+                root_path: root.clone(),
+                rail_id: "r1".into(),
+                state: "running".into(),
+                current_stage_id: Some("s1".into()),
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        match request(&mut cmd, &Request::GetOrchestration { workspace_id: "ws-1".into() }) {
+            Response::Orchestration { rail_runs, .. } => {
+                assert_eq!(rail_runs[0].rail_id, "r1");
+                assert_eq!(rail_runs[0].state, "running");
+                assert_eq!(rail_runs[0].current_stage_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+        match read_message(&mut reader).unwrap() {
+            Some(Response::OrchestrationChanged { workspace_id, orchestration }) => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(orchestration.rail_runs[0].state, "running");
+                assert_eq!(orchestration.rail_runs[0].current_stage_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    /// A root gavin does not have open is refused rather than written
+    /// blind: the row would name a rail in a database nobody is watching,
+    /// and the agent would be told its rail was armed.
+    #[test]
+    fn set_rail_run_by_root_errors_when_the_workspace_is_not_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        match handle_request(
+            &manager,
+            Request::SetRailRunByRoot {
+                root_path: "/nowhere".into(),
+                rail_id: "r1".into(),
+                state: "running".into(),
+                current_stage_id: Some("s1".into()),
+            },
+        ) {
+            Response::Error { message } => assert!(message.contains("not open in gavin"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

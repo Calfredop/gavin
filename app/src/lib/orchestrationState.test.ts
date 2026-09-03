@@ -2274,6 +2274,105 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
   });
 });
 
+// The other half of `gavin_start_rail`: the daemon writes the row and
+// pushes it, and this app has to ADOPT it. The push handler keeps its own
+// run state on purpose (the daemon's copy lags every optimistic local
+// write), so before this the pushed `running` row was dropped on arrival
+// and the rail went on reading idle -- exactly the half-adopted state the
+// five socket-armed rails were left in on 2026-09-03.
+describe("a rail armed from outside the app (a push carrying run state)", () => {
+  let stop: (() => void) | null = null;
+
+  const armed = (): Orchestration => ({
+    ...boundRail(),
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+  });
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    // The rail is idle here, and stays idle unless the push is adopted.
+    vi.mocked(backend.getOrchestration).mockResolvedValue(boundRail());
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+  });
+
+  afterEach(() => {
+    stop?.();
+    stop = null;
+  });
+
+  it("adopts the running row and launches the rail's first step", async () => {
+    // The re-read is what adopts it -- the payload is not trusted, the
+    // daemon is asked again -- so the mock has to answer with the row too.
+    vi.mocked(backend.getOrchestration).mockResolvedValue(armed());
+    tauriEvents.handlers.get("orchestration-changed")?.({ payload: ["ws-1", armed()] });
+
+    await vi.waitFor(() =>
+      expect(get(orchestrations)["ws-1"].railRuns).toEqual([
+        { railId: "r1", state: "running", currentStageId: "s1" },
+      ])
+    );
+    await vi.waitFor(() =>
+      expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+        "ws-1",
+        "p1",
+        "/x/wt",
+        expect.stringContaining("claude")
+      )
+    );
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
+  });
+
+  // The scheduler ticks the ACTIVE workspace and nothing else, so in any
+  // other workspace the handler's own tick is the only thing that can
+  // start the rail. An agent arming a rail in the workspace the human is
+  // not looking at is the ordinary case, not the exotic one.
+  it("starts it in a workspace the scheduler is not ticking", async () => {
+    layoutStore.update((s) => ({ ...s, activeWorkspaceId: "ws-2" }));
+    vi.mocked(backend.getOrchestration).mockResolvedValue(armed());
+    tauriEvents.handlers.get("orchestration-changed")?.({ payload: ["ws-1", armed()] });
+
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith(
+        "t1",
+        "running",
+        "sess-9",
+        null,
+        null,
+        "/x/wt",
+        0
+      )
+    );
+  });
+
+  // The merge guard is still the rule, and this is what says it survived:
+  // a push that agrees about run state must not send the app back to the
+  // daemon, or every plan write an agent makes would cost a re-read and
+  // the daemon's lagging copy would get a chance to overwrite a local
+  // optimistic write between the two.
+  it("does not re-read when the push says nothing new about run state", async () => {
+    vi.mocked(backend.getOrchestration).mockClear();
+    tauriEvents.handlers.get("orchestration-changed")?.({ payload: ["ws-1", boundRail()] });
+    await settle();
+    expect(backend.getOrchestration).not.toHaveBeenCalled();
+  });
+});
+
 // ---- What a running step says about itself ---------------------------------
 // A card step is done when its card reaches the done column, and stalled
 // when its session dies first. But an interactive agent does not die: it

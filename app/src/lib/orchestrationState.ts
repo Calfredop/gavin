@@ -48,6 +48,7 @@ import {
   findStep,
   insertStageWithSteps,
   startRailVerdict,
+  railRunsDiffer,
 } from "./orchestration";
 import type {
   Action,
@@ -1182,13 +1183,25 @@ function cardTitleFor(workspaceId: string, step: Step): string | null {
 ///
 /// The payload REPLACES the plan but preserves whatever run state this
 /// app already holds: the daemon's copy can lag an optimistic local write
-/// by a round trip, and the agent never authors run state anyway.
+/// by a round trip.
+///
+/// It no longer follows that the agent never authors run state.
+/// `gavin_start_rail` arms a rail through the daemon, which pushes the
+/// row it just wrote -- and the merge below would drop it, leaving the
+/// rail idle on screen with a `running` row in SQLite until some later
+/// read. So when the push DISAGREES about a rail's run state, re-read
+/// rather than merge: `refreshOrchestration` asks the daemon (skipping
+/// while a save is in flight, and re-checking after), which is right in
+/// both directions -- a push that crossed a local write still lands on
+/// what the daemon actually holds now.
 export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   const unlisten = await listen<[string, Orchestration]>("orchestration-changed", (event) => {
     const [workspaceId, incoming] = event.payload;
+    let runStateMoved = false;
     orchestrations.update((m) => {
       const current = m[workspaceId];
       if (!current) return { ...m, [workspaceId]: incoming };
+      runStateMoved = railRunsDiffer(current, incoming);
       // The preserved run state may name steps the agent just deleted.
       // The daemon has already dropped those rows; this keeps the
       // in-memory copy honest without waiting for the next fetch.
@@ -1206,9 +1219,12 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
         },
       };
     });
+    if (runStateMoved) void refreshOrchestration(workspaceId);
     // A plan arrival like any other (an agent editing rails over MCP),
     // so it ticks like the other two: a step added to the stage a rail
-    // is running must start, not wait for the human to come back.
+    // is running must start, not wait for the human to come back. This
+    // is also the ONLY thing that starts a rail armed in a workspace the
+    // human is not looking at -- the scheduler ticks the active one.
     void tick(workspaceId);
   });
   const stop = startScheduler();

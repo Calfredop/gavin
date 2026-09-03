@@ -13,6 +13,19 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v28 added `Request::SetRailRunByRoot`: `SetRailRun` addressed by root
+/// path, so gavin-mcp's `gavin_start_rail` can arm a rail the way the
+/// human's Start button does. The plain request names no workspace, so
+/// the daemon cannot push the row it just wrote -- an agent arming a
+/// rail over the socket left the app showing it idle until some later
+/// read. Resolving the root fixes both halves: the write is refused for
+/// a workspace gavin does not have open, and the app watching it is told
+/// at once.
+///
+/// A new request TYPE, so `min_version_for` is the whole gate and no
+/// `FEATURE_MIN_VERSION` entry is owed: the app never sends it (it has a
+/// workspace id already) and gavin-mcp fails closed on skew.
+///
 /// v25 added `Request::SessionProcesses`: one sample of what each live
 /// session is costing, as a cumulative CPU counter, a resident-memory
 /// total and the instant they were read. A new request variant, so
@@ -116,7 +129,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -443,6 +456,18 @@ pub enum Request {
         #[serde(default)]
         conflict_notes: Vec<ConflictNote>,
     },
+    /// `SetRailRun` addressed by ROOT -- the only way to arm a rail from
+    /// outside the app (v28), and it does one thing the plain request
+    /// cannot: the root resolves to a workspace id, so the write is
+    /// PUSHED to the app watching that workspace instead of sitting in
+    /// SQLite until the next read. An unwatched root is refused, like
+    /// every other ByRoot request.
+    SetRailRunByRoot {
+        root_path: String,
+        rail_id: String,
+        state: String,
+        current_stage_id: Option<String>,
+    },
     /// This workspace's tools PLUS every global one (tools spec §2).
     /// Never an error for an unknown workspace -- an empty list.
     GetTools {
@@ -536,6 +561,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::PromoteChecklistItem { .. } | Request::SetChecklistItem { .. } => 4,
 
         Request::LinkCardSession { .. } | Request::UnlinkCardSession { .. } => 5,
+
+        // Arming a rail from gavin-mcp (`gavin_start_rail`). A new request
+        // TYPE, so this match is the whole gate and no daemonCompat.ts
+        // mirror is owed: the app never sends it -- it writes run state
+        // for a workspace whose id it already has -- and against an older
+        // daemon it never reaches the wire, which leaves the agent with a
+        // refusal naming the version rather than a rail armed with no
+        // push behind it.
+        Request::SetRailRunByRoot { .. } => 28,
 
         Request::DeleteCardFile { .. } => 6,
 
@@ -2122,6 +2156,8 @@ mod tests {
         // again", answered from the daemon's per-session terminal
         // parser. A new request TYPE, which is what min_version_for
         // actually gates, so unlike v15/v16/v17 below it owes
+        // v28: SetRailRunByRoot -- arming a rail from gavin-mcp. A new
+        // request TYPE, so min_version_for is the entire gate and
         // daemonCompat.ts nothing.
         // v17: a top-level `prd` in the root config -- a sixth key name
         // SetRootConfigField accepts, plus GavinContext.prd. The key
@@ -2149,7 +2185,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 25);
+        assert_eq!(PROTOCOL_VERSION, 28);
     }
 
     #[test]
@@ -2172,6 +2208,22 @@ mod tests {
         // with no screen model must never be sent the request, and the app
         // must fall back to leaving the terminal as it found it.
         assert_eq!(min_version_for(&Request::Snapshot { id: "s".into() }), 18);
+    }
+
+    /// The gate is the whole compatibility story here too: the app never
+    /// sends this one, so nothing but this match stands between
+    /// gavin-mcp and a daemon that would drop the connection on it.
+    #[test]
+    fn set_rail_run_by_root_is_a_v28_request() {
+        assert_eq!(
+            min_version_for(&Request::SetRailRunByRoot {
+                root_path: "/ws".into(),
+                rail_id: "r1".into(),
+                state: "running".into(),
+                current_stage_id: Some("s1".into()),
+            }),
+            PROTOCOL_VERSION
+        );
     }
 
     #[test]
@@ -2316,6 +2368,12 @@ mod tests {
             Request::SetStepRun { step_id: "s".into(), state: "pending".into(), session_id: None, reason: None, conversation_id: None, launch_cwd: None, resume_attempts: None },
             Request::GetOrchestrationByRoot { root_path: "r".into() },
             Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
+            Request::SetRailRunByRoot {
+                root_path: "r".into(),
+                rail_id: "r1".into(),
+                state: "running".into(),
+                current_stage_id: None,
+            },
             Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
             Request::NameSession { session_id: "s".into(), name: "n".into() },
             Request::GetProtocolVersion,
@@ -2382,7 +2440,7 @@ mod tests {
     /// v11=4, v12=1 (Shutdown), v13=2 (the archive), v15=3 (group
     /// templates), v18=1 (Snapshot), v21=1 (SetFailurePatterns), v23=1
     /// (ClaimCardForSession), v24=1 (EndOrphan), v25=1 (SessionProcesses),
-    /// plus Unknown.
+    /// v28=1 (SetRailRunByRoot), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -2409,6 +2467,7 @@ mod tests {
         expected.insert(23, 1);
         expected.insert(24, 1);
         expected.insert(25, 1);
+        expected.insert(28, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
