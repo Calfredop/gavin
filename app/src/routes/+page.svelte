@@ -17,6 +17,7 @@
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import AppDialog from "$lib/AppDialog.svelte";
+  import ReviewDialog from "$lib/ReviewDialog.svelte";
   import { askConfirm } from "$lib/dialog";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
@@ -273,6 +274,12 @@
      z-index, so tree order is what decides, and a question raised from
      inside one of them (archiving a card from its detail modal) has to
      land on top of it rather than behind it. -->
+<!-- The review base question, drawn once for the two surfaces that ask
+     it (the Git toolbar, and a card's menu on any of the three boards).
+     Before AppDialog for the same tree-order reason: an alert raised
+     from inside this one has to land on top of it. -->
+<ReviewDialog />
+
 <AppDialog />
 
 <style>

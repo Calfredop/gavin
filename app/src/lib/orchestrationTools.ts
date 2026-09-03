@@ -3,10 +3,18 @@
 // orchestrationState.ts owns launching. TS mirrors of crates/protocol's
 // ToolDef/ToolParam (camelCase on the wire).
 //
+// The one import is codeReview.ts, also pure: the review step's body is
+// COMPOSED from the same function the Git tab and the card menu use, so
+// a review files its findings the same way wherever it was started from.
+// Two hand-kept copies of that instruction would drift into two card
+// shapes on one board.
+//
 // A tool is a reusable unit of work droppable onto a rail: an agent
 // prompt, a shell command line, or a bash script. Built-ins are
 // constants here and never reach the daemon; everything else is stored
 // per workspace or global to the machine.
+
+import { composeReviewPrompt, REVIEW_RULES_LABEL } from "./codeReview";
 
 /// `gavin` is the odd one out: an action the APP performs, with no
 /// session and no checkout (tools spec T9). It is built-in-only -- the
@@ -248,16 +256,27 @@ export const BUILTIN_TOOLS: Tool[] = [
   {
     id: "builtin:code-review",
     name: "Review this branch",
-    description: "An agent reviews the branch's diff and reports findings. Changes nothing.",
+    description:
+      "An agent reviews the branch's diff and files each finding as a card. Changes no code.",
     kind: "agent",
     scope: "builtin",
     params: [{ name: "base", label: "Compare against", default: "main" }],
-    body:
-      "Review the changes on this branch against `{{base}}`.\n\n" +
-      "Look for correctness bugs first, then reuse and simplification opportunities. " +
-      "For each finding give the file:line, what breaks, and a concrete failing case. " +
-      "Rank most-severe first, and say plainly if you find nothing.\n\n" +
-      "Do NOT change any code — this is a review, not a fix.",
+    // Composed, not written out: the same instruction the Git tab and
+    // the card menu hand their agents. `{{base}}` survives composition
+    // because substitution is literal and happens at LAUNCH -- the body
+    // stored here is a template like every other tool's.
+    //
+    // The context folder is null and the rules path relative, because
+    // this one body is shared by every workspace: a step runs in the
+    // rail's own checkout, so `.gavin-root/REVIEW.md` resolves there,
+    // and the context to file into is the agent's to look up.
+    body: composeReviewPrompt({
+      base: "{{base}}",
+      rulesPath: REVIEW_RULES_LABEL,
+      contextFolder: null,
+      plansFolder: null,
+      nameTab: false,
+    }),
   },
   {
     id: "builtin:notify",

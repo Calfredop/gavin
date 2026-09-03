@@ -100,6 +100,31 @@ visible to the human on the Agents page. Never run long-lived background
 agents any other way — visibility is the contract. (If a tool says the
 workspace isn't open in gavin, ask the human to open it.)
 
+## 7. Proposing a memory
+
+Learned something durable about this repo that no card records — a trap, a
+convention, a command that only works one particular way? File it as a
+**memory**: `kind: note`, `labels: memory`, and a body of one sentence-sized
+fact plus an optional `Why:` line. The body IS the fact; nothing else belongs
+in it.
+
+```
+---
+kind: note
+title: The daemon is shared
+labels: memory
+---
+Never pkill gavin-daemon.
+
+Why: every other session loses its PTYs with it.
+```
+
+You are proposing, not deciding. The human adopts it from the card's detail
+modal — "Adopt into CLAUDE.md" (or whichever instructions file this workspace
+uses) — which appends the body under a `### Learned` heading inside that file,
+where every future agent reads it, and files the card done. Nothing is adopted
+automatically, so keep each memory to one fact worth carrying.
+
 ## Notes
 
 - `gavin_get_tree` is the canonical parse of every context and card (kinds,

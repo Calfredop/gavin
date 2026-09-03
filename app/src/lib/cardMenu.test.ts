@@ -52,6 +52,11 @@ vi.mock("./layoutState", () => ({
   // fallback rather than a reopened conversation.
   conversationIdForLaunch: vi.fn(() => null),
 }));
+// The review flow owns its own suite; here it only has to be reachable
+// from the menu, so the request function is the seam.
+vi.mock("./codeReviewActions", () => ({
+  requestCardReview: vi.fn().mockResolvedValue(null),
+}));
 vi.mock("./workspace", () => {
   const findSessionLocation = vi.fn();
   return {
@@ -77,6 +82,7 @@ vi.mock("./workspace", () => {
 
 import * as backend from "./backend";
 import { findSessionLocation } from "./workspace";
+import { requestCardReview } from "./codeReviewActions";
 import { layoutState } from "./layoutState";
 import { kanbanState } from "./kanbanState";
 import { orchestrations } from "./orchestrationState";
@@ -109,7 +115,7 @@ function card(kind: "note" | "task" | "plan", status: string | null, extra: Part
   };
 }
 
-function hooks(): CardMenuHooks {
+function hooks(over: Partial<CardMenuHooks> = {}): CardMenuHooks {
   return {
     workspaceId: "ws-1",
     columns: [
@@ -122,6 +128,7 @@ function hooks(): CardMenuHooks {
     sendToAgent: vi.fn(),
     agentAvailable: false,
     reportError: vi.fn(),
+    ...over,
   };
 }
 
@@ -215,6 +222,43 @@ describe("buildCardMenuEntries", () => {
     expect(labels(buildCardMenuEntries(card("task", "To Do"), hooks())).join()).not.toContain(
       "Develop"
     );
+  });
+
+  it("offers Review with agent on runnable cards, never on a note", () => {
+    for (const kind of ["task", "plan"] as const) {
+      expect(labels(buildCardMenuEntries(card(kind, "To Do"), hooks()))).toContain(
+        "Review with agent…"
+      );
+    }
+    expect(labels(buildCardMenuEntries(card("note", "To Do"), hooks()))).not.toContain(
+      "Review with agent…"
+    );
+  });
+
+  // A card is worth reviewing BECAUSE work happened on it, so the entry
+  // has to survive the states that replace the run entries with a jump.
+  it("offers Review with agent whatever the binding state", () => {
+    kanbanState.set({
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
+    const live = labels(buildCardMenuEntries(card("task", "In Progress"), hooks()));
+    expect(live).toContain("Jump to session");
+    expect(live).toContain("Review with agent…");
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    const exited = labels(buildCardMenuEntries(card("task", "In Progress"), hooks()));
+    expect(exited).toContain("Re-launch agent");
+    expect(exited).toContain("Review with agent…");
+  });
+
+  it("picking Review hands the card to the review flow and reports a refusal", async () => {
+    vi.mocked(requestCardReview).mockResolvedValue("nope");
+    const errors: string[] = [];
+    const c = card("plan", "Done");
+    const entries = buildCardMenuEntries(c, hooks({ reportError: (m) => errors.push(m) }));
+    item(entries, "Review with agent…")?.onPick?.();
+    await vi.waitFor(() => expect(errors).toEqual(["nope"]));
+    expect(requestCardReview).toHaveBeenCalledWith("ws-1", c);
   });
 
   it("picking Develop spawns the skill's agent and leaves the card's status alone", async () => {

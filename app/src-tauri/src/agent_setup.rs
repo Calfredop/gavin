@@ -907,20 +907,50 @@ fn write_skills(root: &Path, layout: &ResolvedMcp, prd: &str) -> anyhow::Result<
     layout.skills.iter().map(|skill| write_managed_file(root, skill, prd)).collect()
 }
 
+/// The heading that opens the memories the human has adopted off
+/// `memory` note cards. Gavin authors the rest of the block and rewrites
+/// it wholesale, but this section is the human's: it is carried across
+/// every re-merge untouched.
+///
+/// Spelled identically in app/src/lib/memoryCard.ts, which is what
+/// writes it. A drift between the two spellings does not fail anywhere:
+/// it silently drops every adopted memory on the next setup run.
+const LEARNED_HEADING: &str = "### Learned";
+
+/// The adopted-memory section of an existing block: from its heading to
+/// the end of the block, byte for byte. Last-thing-in-the-block by
+/// construction (memoryCard.ts only ever appends), so there is no
+/// following heading to stop at -- and taking everything after it is the
+/// safe reading anyway, since the alternative is deleting text nobody
+/// can get back.
+fn learned_section(block_body: &str) -> Option<&str> {
+    let mut offset = 0usize;
+    for line in block_body.split_inclusive('\n') {
+        if line.trim_end() == LEARNED_HEADING {
+            return Some(block_body[offset..].trim_end());
+        }
+        offset += line.len();
+    }
+    None
+}
+
 /// Replaces the marker block in place, appends it otherwise (creating the
-/// file if absent). Nothing outside the markers is ever touched.
+/// file if absent). Nothing outside the markers is ever touched, and the
+/// one thing INSIDE them that gavin does not author -- the `### Learned`
+/// section -- is carried over verbatim.
 fn write_instructions_block(
     root: &Path,
     instructions_file: &str,
     block_body: &str,
 ) -> anyhow::Result<PathBuf> {
     let path = root.join(instructions_file);
-    let block = format!("{MARKER_START}\n{block_body}{MARKER_END}\n");
     let content = if path.exists() {
         let existing = std::fs::read_to_string(&path)?;
         match (existing.find(MARKER_START), existing.find(MARKER_END)) {
             (Some(start), Some(end)) if end >= start => {
                 let after = existing[end + MARKER_END.len()..].trim_start_matches('\n');
+                let learned = learned_section(&existing[start + MARKER_START.len()..end]);
+                let block = block_with(block_body, learned);
                 format!("{}{}{}", &existing[..start], block, after)
             }
             _ => {
@@ -931,14 +961,25 @@ fn write_instructions_block(
                 } else {
                     "\n\n"
                 };
-                format!("{existing}{sep}{block}")
+                format!("{existing}{sep}{}", block_with(block_body, None))
             }
         }
     } else {
-        block
+        block_with(block_body, None)
     };
     std::fs::write(&path, content)?;
     Ok(path)
+}
+
+/// The marker block as it goes to disk: gavin's guidance, then whatever
+/// the previous block had adopted. Trimmed and re-terminated rather than
+/// spliced raw, so re-running setup twice over the same file produces
+/// the same bytes both times.
+fn block_with(block_body: &str, learned: Option<&str>) -> String {
+    match learned {
+        Some(section) => format!("{MARKER_START}\n{block_body}\n{section}\n{MARKER_END}\n"),
+        None => format!("{MARKER_START}\n{block_body}{MARKER_END}\n"),
+    }
 }
 
 /// What a setup run wrote, and what it could not. Rendered verbatim by
@@ -2359,6 +2400,62 @@ mod tests {
         assert!(replaced.starts_with("# My rules"));
         assert!(replaced.contains("tail text"));
         assert_eq!(replaced.matches(MARKER_START).count(), 1);
+    }
+
+    /// The whole point of adopting a memory INTO the block: gavin
+    /// rewrites its own guidance on every "Set up / update", and a
+    /// memory that did not survive that would last until the next
+    /// profile change and then quietly vanish.
+    #[test]
+    fn re_merging_the_block_keeps_the_adopted_memories_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("CLAUDE.md");
+        // The exact shape memoryCard.ts's `appendLearned` emits --
+        // heading, blank line, one bullet per adopted memory, the
+        // optional "Why" line indented into its bullet. Copied from that
+        // function's output rather than invented here: this test is the
+        // only place the two languages' idea of the section meets.
+        let learned = "### Learned\n\n- The daemon is shared; never pkill it.\n  Why: every other session loses its PTYs.\n- `cargo test -p daemon` is flaky in parallel.";
+        std::fs::write(
+            &p,
+            format!("# My rules\n\n{MARKER_START}\nold guidance\n\n{learned}\n{MARKER_END}\n\n## After\n\ntail\n"),
+        )
+        .unwrap();
+
+        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        let merged = std::fs::read_to_string(&p).unwrap();
+        assert!(merged.contains(learned), "the adopted section survived unchanged: {merged}");
+        assert!(!merged.contains("old guidance"), "gavin's own half WAS rewritten: {merged}");
+        assert!(merged.contains("## Gavin workspace"), "{merged}");
+        // Still inside the block -- outside it, the next re-merge would
+        // have no reason to look for it at all.
+        let inner = &merged[merged.find(MARKER_START).unwrap()..merged.find(MARKER_END).unwrap()];
+        assert!(inner.contains(learned), "{inner}");
+        assert!(merged.starts_with("# My rules") && merged.contains("tail"), "{merged}");
+        assert_eq!(merged.matches(LEARNED_HEADING).count(), 1, "not duplicated: {merged}");
+
+        // Idempotent: a second run must not drift the bytes, or every
+        // setup would add another blank line to the file forever.
+        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), merged);
+    }
+
+    #[test]
+    fn a_learned_heading_outside_the_block_is_not_the_block_s_business() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("CLAUDE.md");
+        // The human's own "### Learned" prose, below the block: gavin
+        // neither adopts into it nor moves it.
+        std::fs::write(
+            &p,
+            format!("{MARKER_START}\nold\n{MARKER_END}\n\n### Learned\n\n- mine, not gavin's\n"),
+        )
+        .unwrap();
+        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        let merged = std::fs::read_to_string(&p).unwrap();
+        let inner = &merged[..merged.find(MARKER_END).unwrap()];
+        assert!(!inner.contains(LEARNED_HEADING), "not pulled into the block: {merged}");
+        assert!(merged.contains("- mine, not gavin's"), "and not lost either: {merged}");
     }
 
     #[test]

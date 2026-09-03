@@ -1696,6 +1696,55 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Review with agent",
+    items: [
+      {
+        id: "review-git-tab-dialog",
+        text: "The Git toolbar's “Review” opens the base dialog, seeded with the repo's trunk rather than the branch you are standing on",
+        hint: "On a topic branch it should say main (or master). Standing ON main it falls back to the upstream — reviewing a branch against itself has an empty diff.",
+      },
+      {
+        id: "review-rules-row",
+        text: "That dialog says whether the workspace has review rules, and “Create .gavin-root/REVIEW.md” writes a starter file and flips the row",
+        hint: "Re-open it after creating: the row now names the file and offers nothing. A workspace that already has one must never see the Create link.",
+      },
+      {
+        id: "review-visible-session",
+        text: "Starting the review opens a VISIBLE session, jumps to it, and names the tab “review”",
+        hint: "Unlike Commit via agent, which is hidden. Nothing on the board changes: no card moves, no session dot appears.",
+      },
+      {
+        id: "review-files-cards",
+        text: "The review's findings arrive on the board as cards — one per finding, titled by the defect, in the first column",
+        hint: "Review a branch that has a real bug in it. A clean review must file NOTHING and say so.",
+      },
+      {
+        id: "review-card-menu",
+        text: "A card's “Review with agent…” reviews that card's work and files findings NESTED inside it when the card is a plan",
+        hint: "A task card's findings stand on their own instead (only a plan can be a parent) and name the card in the body.",
+      },
+      {
+        id: "review-card-menu-always",
+        text: "That entry is on a card whatever its session state — running, exited, Done — and never on a note",
+        hint: "A card is worth reviewing because work happened on it; the states that hide Run are exactly the interesting ones.",
+      },
+      {
+        id: "review-card-untouched",
+        text: "A card review leaves the card alone: no status change, no binding, and its own agent keeps running undisturbed",
+      },
+      {
+        id: "review-rail-step",
+        text: "The rail step “Review this branch” files cards too, not just a paragraph in its terminal",
+        hint: "Drop it on a rail and run it. Its findings should look like the ones the Git tab produced.",
+      },
+      {
+        id: "review-blocked-explains",
+        text: "With an agent that takes no prompt (Cursor), the toolbar's Review is greyed out AND hovering it says why",
+        hint: "The reason hangs on the wrapping span — a disabled button never fires mouseenter.",
+      },
+    ],
+  },
+  {
     title: "Git tab — sync & branches",
     items: [
       {
@@ -2190,6 +2239,29 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "hub-two-columns",
         text: "Narrowing the window stacks the two columns instead of squashing them, and long card titles and root paths ellipse rather than widening the panel",
       },
+      {
+        id: "hub-inbox-quiet",
+        text: "With nothing waiting, the hub shows one quiet line — “Nothing is waiting on you.” — above the two columns, with no panel, border or heading around it",
+      },
+      {
+        id: "hub-inbox-three-reasons",
+        text: "An agent asking a question, one the daemon marked failed, and a rail step whose turn ended with the card unmoved all appear in “Waiting on you”, each with its own badge",
+        hint: "The badges are ui/indicators.ts's: a question mark for asking, a red octagon for failed, an enclosed pause for a turn that ended. A plain idle terminal must NOT appear — that is the case the list exists to exclude.",
+      },
+      {
+        id: "hub-inbox-order",
+        text: "Rows are ordered longest wait first, and the wait column ticks up when you close and reopen the hub",
+        hint: "The clock is sampled once per render, not polled — reopening the hub is what re-samples it.",
+      },
+      {
+        id: "hub-inbox-relaunch-bound",
+        text: "After quitting with an agent waiting and relaunching, its row reads “since launch”, then “≥5m” and so on — never a plain “5m”",
+        hint: "The daemon reports that a status changed, never when it began, so a status found already in place can only be a floor. A plain duration there would be a claim gavin cannot make.",
+      },
+      {
+        id: "hub-inbox-jumps",
+        text: "Clicking a row activates that workspace and lands on the waiting session's own tab; a row for a workspace's Home agent lands on its Home tab instead",
+      },
     ],
   },
   {
@@ -2559,6 +2631,26 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "orch-no-rails-drawer-inert",
         text: "With no rails, no drawer row drags and none click-adds; press “+ Rail” and the same rows light up, click-add to the new rail and drag onto it",
         hint: "Pressing and moving on a greyed card row must show no drag ghost — the rows carry no drag handle at all in this state, not merely a disabled look. The new rail is the drawer's click-to-add target the moment it exists.",
+      },
+    ],
+  },
+  {
+    title: "Proposed memories",
+    items: [
+      {
+        id: "memory-adopt-offered",
+        text: "A `kind: note` card labelled `memory` shows “Adopt into CLAUDE.md” in the detail modal's action row; the same label on a task or plan shows nothing",
+        hint: "The button is named for the workspace's own instructions file — on a workspace whose agent is codex it must read “Adopt into AGENTS.md”. The label comes off the card's frontmatter (`labels: memory`); the modal's label chip toggles it wherever the board's vocabulary carries `memory`.",
+      },
+      {
+        id: "memory-adopt-writes",
+        text: "Pressing it appends the card body as a bullet under a “### Learned” heading INSIDE CLAUDE.md's <!-- gavin:start --> block, and the card lands in the board's last column",
+        hint: "The body's second line (“Why: …”) rides along indented under the same bullet. Nothing opens — no editor, no tab, and the modal stays put; check the file on disk. Pressing Adopt on a second memory adds a bullet under the SAME heading.",
+      },
+      {
+        id: "memory-survives-setup",
+        text: "Settings → agent → “Set up / update” rewrites the gavin block and the “### Learned” bullets are still inside it, unchanged",
+        hint: "This is the whole reason the section lives inside the markers. Change the agent profile first so the block's text visibly differs afterwards — the guidance above the heading should be new, the bullets below it identical.",
       },
     ],
   },

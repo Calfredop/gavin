@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore, Bot, Check, Eye } from "@lucide/svelte";
+  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore, Bot, Check, Eye, ScanSearch } from "@lucide/svelte";
   import {
     gitStore,
     refresh,
@@ -20,8 +20,10 @@
   } from "./gitState";
   import { branchLabel } from "./git";
   import { gavinTrees } from "./gavinState";
-  import { agentProfilesStore, agentModelDefaultsStore} from "./layoutState";
+  import { agentProfilesStore, agentModelDefaultsStore, layoutState } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
+  import { reviewBlocker } from "./codeReview";
+  import { requestBranchReview } from "./codeReviewActions";
   import { tooltip } from "./tooltip";
   import IconButton from "./ui/IconButton.svelte";
   import GitPromptDialog from "./GitPromptDialog.svelte";
@@ -57,7 +59,26 @@
   const agentBusy = $derived(agentPhase === "starting" || agentPhase === "running");
   const agentBlocker = $derived(agentCommitBlocker(view, agent.headlessArgs));
 
+  // Reviewing needs a gavin context to file findings into, so the root
+  // context is the gate -- not the repository. A rooted workspace whose
+  // tree has not arrived yet still names its root folder, which is where
+  // `.gavin-root` is; codeReviewActions falls back to it for the same
+  // reason.
+  const reviewContext = $derived(
+    $gavinTrees[workspaceId]?.contexts.find((c) => c.kind === "root")?.folderPath ??
+      $layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ??
+      null
+  );
+  const reviewDisabled = $derived(
+    reviewBlocker({ promptArgs: agent.promptArgs, agentLabel: agent.label, contextFolder: reviewContext })
+  );
+
   let stashDialog = $state(false);
+  let reviewError = $state<string | null>(null);
+
+  async function startReview(): Promise<void> {
+    reviewError = await requestBranchReview(workspaceId, view?.cwd ?? "");
+  }
 
   function tip(base: string, enabled: boolean): string {
     return enabled || !sync.reason ? base : `${base} — ${sync.reason}`;
@@ -185,8 +206,31 @@
       onclick={() => void commitViaAgent(workspaceId)}
     />
   {/if}
+  <!-- The reason hangs on the SPAN, not the button: a disabled element
+       never fires mouseenter, so a tooltip bound to one can never
+       appear. Null while the action is available, so the button's own
+       tooltip is the only one on screen. -->
+  <span use:tooltip={reviewDisabled}>
+    <IconButton
+      icon={ScanSearch}
+      label="Review with agent"
+      text="Review"
+      tip="Review this branch against a base — every finding is filed as a card on the board"
+      variant="outlined"
+      size={13}
+      disabled={reviewDisabled !== null || view?.cwd == null}
+      onclick={() => void startReview()}
+    />
+  </span>
   <IconButton icon={RefreshCw} label="Refresh" variant="outlined" size={13} disabled={locked} onclick={() => refresh(workspaceId)} />
 </div>
+
+{#if reviewError}
+  <div class="review-error" role="alert">
+    <span>{reviewError}</span>
+    <button type="button" use:tooltip={"Dismiss"} onclick={() => (reviewError = null)}>✕</button>
+  </div>
+{/if}
 
 {#if stashDialog}
   <GitPromptDialog
@@ -267,6 +311,28 @@
   }
   .agent-state.done {
     color: var(--success-text);
+  }
+  /* A refused review has no session and no banner of its own -- the Git
+     tab's own error strip belongs to git operations. */
+  .review-error {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 10px;
+    background: var(--surface-danger);
+    border-bottom: 1px solid var(--border-danger);
+    color: var(--danger-text);
+    font-size: 0.75em;
+  }
+  .review-error span {
+    flex: 1 1 auto;
+    white-space: pre-wrap;
+  }
+  .review-error button {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
   }
   .spinner {
     width: 9px;

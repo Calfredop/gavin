@@ -44,7 +44,8 @@
   import { developAvailable, agentPromptBlocker } from "./cardRun";
   import { resumeNoteFor } from "./autoResume";
   import { resumeTrail } from "./autoResumeState";
-  import { findCardPlacement, stepStateOf } from "./orchestration";
+  import { doneColumnOf, findCardPlacement, stepStateOf } from "./orchestration";
+  import { adoptMemory, isMemoryCard } from "./memoryCard";
   import {
     orchestrations,
     sendCardToRailAction,
@@ -191,14 +192,22 @@
     try {
       const moved = await backend.setPlanFrontmatterField(card.id, key, value);
       patchPlanField(workspaceId, card.id, key, value);
-      if (moved && moved !== card.id) {
-        patchPlanPath(workspaceId, card.id, moved);
-        onPathChange?.(moved);
-      }
+      followMove(moved);
       return true;
     } catch (e) {
       errorMessage = String(e);
       return false;
+    }
+  }
+
+  /// A status write can move the card's file (Done files it under
+  /// `plans/done/`), and the host holds the OLD path as this modal's
+  /// identity. Shared with the adopt action, which ends in exactly such
+  /// a write but does not go through `writeField`.
+  function followMove(moved: string): void {
+    if (moved && moved !== card.id) {
+      patchPlanPath(workspaceId, card.id, moved);
+      onPathChange?.(moved);
     }
   }
 
@@ -583,6 +592,54 @@
     onClose();
   }
 
+  // --- adopt a proposed memory (memoryCard.ts) --------------------------
+  // An agent proposes a durable fact as a `memory` note; this is the one
+  // action that makes it permanent. Named for the file it writes,
+  // because that file is the whole point: after this, every agent the
+  // workspace launches reads the fact without anyone re-teaching it.
+  const isMemory = $derived(isMemoryCard(card));
+  const instructionsFile = $derived($resolvedAgents(workspaceId).file);
+  const done = $derived(doneColumnOf(columns));
+  // Read off the store rather than through `workspaceRootPath`: that
+  // one-shot `get` is right for a click handler and wrong for a control
+  // whose enabled state has to follow the workspace being rooted.
+  const adoptRoot = $derived(
+    $layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath || null
+  );
+  // Both halves named rather than assumed: the instructions file hangs
+  // off the root, and the last column is the human's to call whatever
+  // they like -- adopting has to file the card into THAT one.
+  const adoptBlocked = $derived(
+    adoptRoot === null
+      ? "This workspace has no root folder, so it has no instructions file to adopt into."
+      : done === null
+        ? "This board has no columns, so there is no done column to file the card into."
+        : null
+  );
+  let adopting = $state(false);
+
+  async function handleAdopt(): Promise<void> {
+    errorMessage = null;
+    if (adoptRoot === null || done === null) return;
+    adopting = true;
+    try {
+      const result = await adoptMemory(card, `${adoptRoot}/${instructionsFile}`, done.name);
+      if ("error" in result) {
+        errorMessage = result.error;
+        return;
+      }
+      // The card is Done now, so the board has to say so before the
+      // watcher gets round to it -- and the file moved under the modal.
+      patchPlanField(workspaceId, card.id, "status", done.name);
+      followMove(result.movedTo);
+      // Opens nothing, deliberately: adopting is a filing gesture, and
+      // dropping the human into an editor would make them close it
+      // again. The modal stays put so the card's new column is visible.
+    } finally {
+      adopting = false;
+    }
+  }
+
   // Lands on the Plans tab with this card's file selected and its editor
   // in Edit mode: the action is named for the editor, so the human
   // arrives ready to type rather than one mode-click away from it.
@@ -918,6 +975,17 @@
   {/if}
   <div class="actions">
     <button type="button" class="danger" onclick={() => (confirmingDelete = true)}>Delete</button>
+    {#if isMemory}
+      <button
+        type="button"
+        disabled={adoptBlocked !== null || adopting}
+        title={adoptBlocked ??
+          `Appends this note under “Learned” in ${instructionsFile} and files the card as done`}
+        onclick={() => void handleAdopt()}
+      >
+        Adopt into {instructionsFile}
+      </button>
+    {/if}
     <button
       type="button"
       disabled={archiveBlocked !== null}
