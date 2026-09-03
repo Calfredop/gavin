@@ -2485,7 +2485,7 @@ mod tests {
                 state: "running".into(),
                 current_stage_id: Some("s1".into()),
             }),
-            PROTOCOL_VERSION
+            28
         );
     }
 
@@ -2495,7 +2495,7 @@ mod tests {
     }
 
     #[test]
-    fn the_follow_up_queue_requests_are_all_v26() {
+    fn the_follow_up_queue_requests_are_all_v29() {
         // All four, not just the writer: `ListQueuedInputs` is the
         // read-back a reloaded frontend depends on, and a client that
         // gated the writes but sent the read to a v25 daemon would drop
@@ -2507,7 +2507,7 @@ mod tests {
             Request::SetQueuedInputs { id: "s".into(), queued_ids: vec!["q1".into()] },
             Request::SendQueuedInput { id: "s".into(), queued_id: "q1".into() },
         ] {
-            assert_eq!(min_version_for(&req), 26, "{req:?}");
+            assert_eq!(min_version_for(&req), 29, "{req:?}");
         }
     }
 
