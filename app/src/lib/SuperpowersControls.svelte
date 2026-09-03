@@ -158,10 +158,9 @@
     flex: none;
     align-self: center;
   }
-  /* A check that found it: filled and lit. */
+  /* A check that found it: filled. */
   .led.on {
     background: #8bc98b;
-    box-shadow: 0 0 6px #8bc98b88;
   }
   /* The human's word: the same colour, hollow. Believed present, but not
      by gavin — and a hollow ring says so without needing a legend. */
