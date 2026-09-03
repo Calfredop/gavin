@@ -1,18 +1,43 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { CircleDashed, CircleDot, SquareArrowOutUpRight, TriangleAlert, X } from "@lucide/svelte";
+  import {
+    ChevronDown,
+    ChevronUp,
+    CircleDashed,
+    CircleDot,
+    SquareArrowOutUpRight,
+    TriangleAlert,
+    X,
+  } from "@lucide/svelte";
   import * as backend from "./backend";
   import { daemonCompat, layoutState } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
+  import { cmdHeld, isMacSync } from "./platform";
   import {
+    DEFAULT_SORT,
+    NO_SELECTION,
     formatCpu,
     formatMemory,
     managerSummary,
+    nextSort,
+    selectRow,
+    selectedRows,
+    selectionHint,
     sessionRows,
+    sortRows,
     type ManagedSessions,
+    type Selection,
     type SessionRow,
+    type SortKey,
+    type SortOrder,
   } from "./sessionsManager";
-  import { endAllSessions, endSession, jumpToSession } from "./sessionsManagerActions";
+  import {
+    endAllSessions,
+    endSelectedSessions,
+    endSession,
+    endStaleSessions,
+    jumpToSession,
+  } from "./sessionsManagerActions";
   import Modal from "./Modal.svelte";
   import { tooltip } from "./tooltip";
 
@@ -26,6 +51,8 @@
   /// with scheduler noise, longer makes a burst of work invisible.
   const POLL_MS = 2000;
 
+  const isMac = isMacSync();
+
   let sample = $state<ManagedSessions | null>(null);
   let previous = $state<ManagedSessions | null>(null);
   let error = $state<string | null>(null);
@@ -33,6 +60,10 @@
   /// sessions" -- which is the one answer a task manager must never give
   /// wrongly.
   let loaded = $state(false);
+  let sort = $state<SortOrder>(DEFAULT_SORT);
+  /// Ids, not rows: the rows are rebuilt on every poll, and what the
+  /// human picked has to survive that.
+  let selection = $state<Selection>(NO_SELECTION);
   let timer: ReturnType<typeof setInterval> | null = null;
   /// Guards against a slow poll landing after a faster later one, and
   /// against one landing after the panel closed. Identity comparison is
@@ -41,14 +72,22 @@
 
   const rows = $derived(
     sample
-      ? sessionRows({
-          sample,
-          previous,
-          workspaces: $layoutState.workspaces,
-          sessionNames: $layoutState.sessionNames,
-        })
+      ? sortRows(
+          sessionRows({
+            sample,
+            previous,
+            workspaces: $layoutState.workspaces,
+            sessionNames: $layoutState.sessionNames,
+          }),
+          sort
+        )
       : []
   );
+  /// Derived rather than pruned in an effect: a row killed or gone
+  /// between polls simply stops being counted, with no state write.
+  const picked = $derived(selectedRows(rows, selection));
+  const pickedIds = $derived(new Set(picked.map((r) => r.id)));
+  const staleCount = $derived(rows.filter((r) => r.stale).length);
 
   const metricsBlocked = $derived(featureBlockedReason($daemonCompat, "sessionMetrics"));
 
@@ -101,23 +140,93 @@
     if ((await endAllSessions(rows)) > 0) await refresh();
   }
 
+  async function killSelected(): Promise<void> {
+    if ((await endSelectedSessions(picked)) > 0) {
+      selection = NO_SELECTION;
+      await refresh();
+    }
+  }
+
+  async function clearStale(): Promise<void> {
+    if ((await endStaleSessions(rows)) > 0) await refresh();
+  }
+
   async function jump(row: SessionRow): Promise<void> {
     if (await jumpToSession(row)) onClose();
   }
 
+  function pick(row: SessionRow, e: MouseEvent): void {
+    selection = selectRow(
+      selection,
+      rows.map((r) => r.id),
+      row.id,
+      { shift: e.shiftKey, cmd: cmdHeld(e) }
+    );
+  }
+
+  /// A click on the grid's own background -- below the last row -- lets
+  /// go of everything, the one gesture a list needs that a modal has no
+  /// empty desktop for.
+  function clearPick(e: MouseEvent): void {
+    if (e.target === e.currentTarget) selection = NO_SELECTION;
+  }
+
+  function sortBy(key: SortKey): void {
+    sort = nextSort(sort, key);
+  }
+
+  function ariaSort(key: SortKey): "ascending" | "descending" | undefined {
+    if (sort.key !== key) return undefined;
+    return sort.dir === "asc" ? "ascending" : "descending";
+  }
+
   function place(row: SessionRow): string {
-    const parts = [row.workspaceName ?? "no workspace", row.where ?? "no tab"];
-    if (row.status === "exited") parts.push("exited");
-    else if (row.processCount > 1) parts.push(`${row.processCount} processes`);
-    return parts.join(" · ");
+    return `${row.workspaceName ?? "no workspace"} · ${row.where ?? "no tab"}`;
+  }
+
+  /// What the name cell says on hover: the command when the label is not
+  /// already it, then the folder -- the two facts the grid has no column
+  /// for.
+  function detail(row: SessionRow): string {
+    const command = row.command?.trim();
+    return command && command !== row.label ? `${command}\n${row.cwd}` : row.cwd;
+  }
+
+  function processes(row: SessionRow): string {
+    if (row.processCount === 0) return "Nothing running to measure";
+    return `${row.processCount} ${row.processCount === 1 ? "process" : "processes"} in this session’s tree`;
   }
 </script>
 
-<Modal {onClose} wide>
+{#snippet heading(key: SortKey, label: string)}
+  <button type="button" class="sort" class:active={sort.key === key} onclick={() => sortBy(key)}>
+    {label}
+    {#if sort.key === key}
+      {#if sort.dir === "asc"}
+        <ChevronUp size={10} />
+      {:else}
+        <ChevronDown size={10} />
+      {/if}
+    {/if}
+  </button>
+{/snippet}
+
+<Modal {onClose} wide innerScroll>
   <div class="manager">
     <header>
       <h2>Task manager</h2>
       <span class="count">{loaded ? managerSummary(rows) : "reading…"}</span>
+      <button type="button" disabled={staleCount === 0} onclick={() => void clearStale()}>
+        Clear stale{staleCount > 0 ? ` (${staleCount})` : ""}
+      </button>
+      <button
+        type="button"
+        class="danger"
+        disabled={picked.length === 0}
+        onclick={() => void killSelected()}
+      >
+        Kill {picked.length > 0 ? `${picked.length} ` : ""}selected…
+      </button>
       <button
         type="button"
         class="danger"
@@ -138,60 +247,105 @@
     {#if loaded && rows.length === 0}
       <p class="hint">No sessions. Nothing is running in any workspace.</p>
     {:else}
-      <ul>
-        {#each rows as row (row.id)}
-          <li class:stale={row.stale} class:survivor={row.staleness === "orphaned"}>
-            <!-- Shape carries the question, colour the answer: a triangle
-                 for the one case with a live process nobody is hosting, a
-                 hollow ring for a row whose run is over, a filled dot for
-                 a session that is simply working. -->
-            <span class="mark">
-              {#if row.staleness === "orphaned"}
-                <TriangleAlert size={12} />
-              {:else if row.stale}
-                <CircleDashed size={12} />
-              {:else}
-                <CircleDot size={12} />
-              {/if}
-            </span>
-            <span class="label" use:tooltip={row.command ?? row.label}>{row.label}</span>
-            <span class="figure">{formatCpu(row.cpuPercent)}</span>
-            <span class="figure">{formatMemory(row.memBytes)}</span>
-            <span class="actions">
-              <button
-                type="button"
-                use:tooltip={row.visible ? "Go to this session" : "Open this session in a tab"}
-                aria-label="Go to this session"
-                onclick={() => void jump(row)}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="grid" onclick={clearPick}>
+        <table>
+          <colgroup>
+            <col class="c-mark" />
+            <col />
+            <col class="c-state" />
+            <col class="c-where" />
+            <col class="c-cpu" />
+            <col class="c-mem" />
+            <col class="c-actions" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th></th>
+              <th aria-sort={ariaSort("name")}>{@render heading("name", "Name")}</th>
+              <th aria-sort={ariaSort("state")}>{@render heading("state", "State")}</th>
+              <th>Where</th>
+              <th class="num">CPU</th>
+              <th class="num" aria-sort={ariaSort("mem")}>{@render heading("mem", "Mem")}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each rows as row (row.id)}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+              <tr
+                class:selected={pickedIds.has(row.id)}
+                class:stale={row.stale}
+                class:survivor={row.staleness === "orphaned"}
+                aria-selected={pickedIds.has(row.id)}
+                onclick={(e) => pick(row, e)}
               >
-                <SquareArrowOutUpRight size={12} />
-              </button>
-              <button
-                type="button"
-                class="danger-icon"
-                use:tooltip={"End this session"}
-                aria-label="End this session"
-                onclick={() => void kill(row)}
-              >
-                <X size={12} />
-              </button>
-            </span>
-            <span class="place">{place(row)}</span>
-            <span class="cwd" use:tooltip={row.cwd}>{row.cwd}</span>
-            {#if row.note}
-              <p class="note">{row.note}</p>
-            {/if}
-          </li>
-        {/each}
-      </ul>
+                <!-- Shape carries the question, colour the answer: a
+                     triangle for the one case with a live process nobody
+                     is hosting, a hollow ring for a row whose run is over,
+                     a filled dot for a session that is simply working. -->
+                <td class="mark">
+                  {#if row.staleness === "orphaned"}
+                    <TriangleAlert size={12} />
+                  {:else if row.stale}
+                    <CircleDashed size={12} />
+                  {:else}
+                    <CircleDot size={12} />
+                  {/if}
+                </td>
+                <td class="name">
+                  <span class="label" use:tooltip={detail(row)}>{row.label}</span>
+                  {#if row.note}
+                    <p class="note">{row.note}</p>
+                  {/if}
+                </td>
+                <td class="state">{row.state}</td>
+                <td class="where" use:tooltip={place(row)}>{place(row)}</td>
+                <td class="figure">{formatCpu(row.cpuPercent)}</td>
+                <td class="figure" use:tooltip={processes(row)}>{formatMemory(row.memBytes)}</td>
+                <td class="actions">
+                  <button
+                    type="button"
+                    use:tooltip={row.visible ? "Go to this session" : "Open this session in a tab"}
+                    aria-label="Go to this session"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      void jump(row);
+                    }}
+                  >
+                    <SquareArrowOutUpRight size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    class="danger-icon"
+                    use:tooltip={"End this session"}
+                    aria-label="End this session"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      void kill(row);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
 
     <div class="foot">
-      <p class="hint">
-        Every session the daemon is holding, including the ones no tab is showing. CPU is a share of
-        one core over the last {POLL_MS / 1000} seconds, across the session’s process and everything
-        it started.
-      </p>
+      <div class="hints">
+        <p class="hint">
+          Every session the daemon is holding, including the ones no tab is showing. CPU is a share
+          of one core over the last {POLL_MS / 1000} seconds, across the session’s process and
+          everything it started.
+        </p>
+        <p class="keys">{selectionHint(isMac)}</p>
+      </div>
       <button type="button" onclick={onClose}>Done</button>
     </div>
   </div>
@@ -207,6 +361,11 @@
     gap: 12px;
     font-size: 0.85em;
     width: 100%;
+    /* The modal hands its height down (innerScroll); the grid is the
+       one child allowed to give way, so the header and the foot keep
+       their place while it scrolls. */
+    flex: 1 1 auto;
+    min-height: 0;
   }
   header {
     display: flex;
@@ -223,48 +382,126 @@
     color: var(--text-subtle);
     flex: 1 1 auto;
   }
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
+  .grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
     border: 1px solid var(--border);
     border-radius: 4px;
-    overflow: hidden;
   }
-  li {
-    display: grid;
-    /* mark | label | cpu | mem | actions -- the two figures are fixed
-       and right-aligned so they stay a column the eye can scan, rather
-       than moving with the label beside them. */
-    grid-template-columns: 16px minmax(0, 1fr) 62px 76px auto;
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    /* Fixed, so the figure columns stay a column the eye can scan
+       rather than moving with the longest name beside them. */
+    table-layout: fixed;
+  }
+  .c-mark {
+    width: 26px;
+  }
+  .c-state {
+    width: 96px;
+  }
+  .c-where {
+    width: 26%;
+  }
+  .c-cpu {
+    width: 64px;
+  }
+  .c-mem {
+    width: 78px;
+  }
+  .c-actions {
+    width: 58px;
+  }
+  th,
+  td {
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  thead th {
+    /* Stays put while the rows scroll under it: the sort it names has
+       to be visible for the order below to be readable. */
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface-raised);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-subtle);
+    font-weight: normal;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+  th.num {
+    text-align: right;
+  }
+  .sort {
+    display: inline-flex;
     align-items: center;
-    column-gap: 8px;
-    padding: 6px 10px;
+    gap: 2px;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .sort:hover,
+  .sort.active {
+    color: var(--text);
+  }
+  tbody tr {
+    /* Shift-click ranges must not double as a text selection. */
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+  tbody td {
     border-top: 1px solid var(--border);
   }
-  li:first-child {
+  tbody tr:first-child td {
     border-top: none;
   }
-  li.stale {
+  tr.stale td {
     background: var(--surface-warning);
   }
-  li.survivor {
+  tr.survivor td {
     background: var(--surface-danger);
   }
-  .mark {
-    display: flex;
-    color: var(--text-subtle);
+  tbody tr:hover td {
+    background: var(--surface-hover);
   }
-  li.stale .mark {
+  /* Selection wins over the stale tints: the mark keeps the colour
+     that says stale, and the row has to show it is picked. */
+  tr.selected td,
+  tr.selected:hover td {
+    background: var(--surface-selected);
+  }
+  .mark {
+    color: var(--text-subtle);
+    padding-right: 0;
+  }
+  .mark :global(svg) {
+    display: block;
+    margin-top: 2px;
+  }
+  tr.stale .mark {
     color: var(--warning-text);
   }
-  li.survivor .mark {
+  tr.survivor .mark {
     color: var(--danger-text);
   }
   .label {
+    display: block;
     color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .state,
+  .where {
+    color: var(--text-subtle);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -273,13 +510,14 @@
     text-align: right;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .actions {
-    display: flex;
-    gap: 2px;
+    padding-left: 0;
+    padding-right: 6px;
   }
   .actions button {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     background: none;
     border: none;
@@ -295,28 +533,10 @@
   .actions button.danger-icon:hover {
     color: var(--danger);
   }
-  /* The second line: everything that identifies the row rather than
-     measuring it, under the label and out of the figure columns. */
-  .place,
-  .cwd,
   .note {
-    grid-column: 2 / -1;
-    color: var(--text-subtle);
-    margin: 0;
-  }
-  .place {
-    margin-top: 2px;
-  }
-  .cwd {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    direction: rtl;
-    text-align: left;
-  }
-  .note {
-    margin-top: 4px;
+    margin: 4px 0 0;
     color: var(--text-muted);
+    white-space: normal;
   }
   .problem {
     margin: 0;
@@ -331,8 +551,18 @@
     align-items: flex-end;
     gap: 16px;
   }
-  .foot .hint {
+  .hints {
     flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  /* The same voice and place as the card composer's shortcut line. */
+  .keys {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.9em;
   }
   button {
     background: var(--surface-overlay);

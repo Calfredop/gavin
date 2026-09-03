@@ -8,10 +8,14 @@
 // surface -- it is outside what the session owns, and there is no undo --
 // so it is always confirmed, and the confirmation always names the
 // process rather than the category.
+//
+// Asked through dialog.ts, never @tauri-apps/plugin-dialog: that plugin
+// is narrowed to the file picker, and its confirm() rejects at the
+// permission layer -- which made this button do nothing at all.
 
-import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { get } from "svelte/store";
 import * as backend from "./backend";
+import { askConfirm, showAlert } from "./dialog";
 import { layoutState, handleOrphanEnded } from "./layoutState";
 import { describeOrphan, endOrphanConfirm, endOrphanOutcome } from "./orphan";
 
@@ -30,20 +34,20 @@ import { describeOrphan, endOrphanConfirm, endOrphanOutcome } from "./orphan";
 export async function endSessionOrphan(sessionId: string): Promise<void> {
   const orphan = get(layoutState).orphanBySessionId[sessionId];
   if (!orphan) return;
-  if (!(await confirm(endOrphanConfirm(orphan), { title: "gavin", kind: "warning" }))) return;
+  if (!(await askConfirm(endOrphanConfirm(orphan)))) return;
 
   let result: { ended: boolean; stillRunning: boolean };
   try {
     result = await backend.endOrphan(sessionId);
   } catch (e) {
-    await message(`Couldn't end ${describeOrphan(orphan)}: ${e}`, {
-      title: "gavin",
-      kind: "error",
+    await showAlert({
+      title: `Couldn’t end ${describeOrphan(orphan)}`,
+      lines: [e instanceof Error ? e.message : String(e)],
     });
     return;
   }
 
   if (!result.stillRunning) handleOrphanEnded(sessionId);
   const note = endOrphanOutcome(orphan, result);
-  if (note) await message(note, { title: "gavin", kind: "warning" });
+  if (note) await showAlert(note);
 }

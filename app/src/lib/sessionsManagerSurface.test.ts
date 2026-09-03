@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 // assert "this handler was called" tests the harness, and a component
 // `<style>` is compiled away anyway.
 
-const SOURCES = import.meta.glob("./*.svelte", {
+const SOURCES = import.meta.glob(["./*.svelte", "./sessionsManagerActions.ts", "./orphanActions.ts"], {
   query: "?raw",
   import: "default",
   eager: true,
@@ -85,9 +85,55 @@ describe("the panel", () => {
   it("routes every action through the shared confirmations", () => {
     const text = source(PANEL);
     expect(text).toContain("endAllSessions");
+    expect(text).toContain("endStaleSessions");
+    expect(text).toContain("endSelectedSessions");
     expect(text).toContain("endSession");
     expect(text).toContain("jumpToSession");
   });
+
+  it("sorts and selects through the pure module, never in the template", () => {
+    const text = source(PANEL);
+    expect(text).toContain("sortRows(");
+    expect(text).toContain("nextSort(sort, key)");
+    expect(text).toContain("selectRow(");
+    expect(text).toContain("selectedRows(rows, selection)");
+  });
+
+  it("keeps the row buttons out of the selection gesture", () => {
+    // A click on ↗ or ✕ is on the row too; without this it would also
+    // pick the row, and the next "Kill selected" would count it.
+    const text = source(PANEL);
+    const first = text.indexOf("e.stopPropagation();");
+    expect(first).toBeGreaterThan(-1);
+    expect(text.indexOf("e.stopPropagation();", first + 1)).toBeGreaterThan(first);
+  });
+
+  it("reads the modifier through the platform helper, not metaKey", () => {
+    // ⌘ on macOS, Ctrl elsewhere -- the same rule every chord obeys.
+    expect(source(PANEL)).toContain("cmd: cmdHeld(e)");
+    expect(source(PANEL)).toContain("selectionHint(isMac)");
+  });
+
+  it("keeps the column headings in place while the rows scroll", () => {
+    const style = source(PANEL).slice(source(PANEL).indexOf("<style>"));
+    const head = style.slice(style.indexOf("thead th {"));
+    expect(head.slice(0, head.indexOf("}"))).toContain("position: sticky");
+  });
+});
+
+describe("the dialogs it asks with", () => {
+  // @tauri-apps/plugin-dialog is capability-narrowed to the file picker,
+  // so a native confirm() rejects at the permission layer before
+  // anything is drawn -- and an awaited rejection inside a void-ed
+  // click handler is a button that does nothing. That was "kill all
+  // does nothing", and the orphan button had the same fault.
+  for (const name of ["sessionsManagerActions.ts", "orphanActions.ts"]) {
+    it(`${name} asks through dialog.ts, never the OS`, () => {
+      const text = source(name);
+      expect(text).not.toMatch(/from "@tauri-apps\/plugin-dialog"/);
+      expect(text).toContain('from "./dialog"');
+    });
+  }
 });
 
 describe("the modal it sits in", () => {
@@ -95,6 +141,16 @@ describe("the modal it sits in", () => {
     // The cap lives on Modal's own `.panel`, which is scoped -- a child
     // wider than 480px otherwise just overflows the panel it is inside.
     expect(source(MODAL)).toContain("wide = false");
-    expect(source(PANEL)).toContain("<Modal {onClose} wide>");
+    expect(source(PANEL)).toContain("<Modal {onClose} wide innerScroll>");
+  });
+
+  it("hands scrolling to the panel, so its header and foot stay put", () => {
+    // The panel's own scroller would carry the title, the buttons and
+    // the foot away with the rows; with innerScroll it clips instead,
+    // and only the grid between them moves.
+    expect(source(MODAL)).toContain("innerScroll = false");
+    const style = source(MODAL).slice(source(MODAL).indexOf("<style>"));
+    const rule = style.slice(style.indexOf(".panel.inner-scroll {"));
+    expect(rule.slice(0, rule.indexOf("}"))).toContain("overflow: hidden");
   });
 });

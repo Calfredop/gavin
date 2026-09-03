@@ -13,7 +13,13 @@
 // for -- an invisible session with a stale indicator -- and describing it
 // twice is how the two surfaces end up disagreeing.
 
+import type { AlertOptions, ConfirmOptions } from "./dialog";
 import { describeOrphan, type OrphanProcess } from "./orphan";
+
+/// dialog.ts lets a prompt omit its lines; every prompt here has some,
+/// and saying so in the type is what lets a test read them.
+export type KillPrompt = ConfirmOptions & { lines: string[] };
+export type KillAlert = AlertOptions & { lines: string[] };
 import { findSessionLocation, type Workspace } from "./workspace";
 
 /// One row as the Rust host hands it over (session::ManagedSession):
@@ -58,6 +64,20 @@ export interface ManagedSessions {
 /// daemon restart is how a stale indicator stops meaning anything.
 export type Staleness = "orphaned" | "exited" | "interrupted";
 
+/// The one word in the State column. Staleness first, because a stale
+/// row is the reason the panel exists; then whether anything is showing
+/// it; then what the daemon says it is doing. A hidden session that is
+/// working reads "hidden" rather than "active" on purpose -- the fact
+/// that nobody can see it is the fact that matters about it.
+export type SessionState =
+  | Staleness
+  | "hidden"
+  | "failed"
+  | "waiting"
+  | "active"
+  | "idle"
+  | "unknown";
+
 export interface SessionRow {
   id: string;
   /// What to call it: the human's own name for the tab, else the command
@@ -75,6 +95,7 @@ export interface SessionRow {
   visible: boolean;
   staleness: Staleness | null;
   stale: boolean;
+  state: SessionState;
   /// One line saying what the staleness means, or null.
   note: string | null;
   /// Share of one CPU over the interval between the last two samples, so
@@ -167,18 +188,37 @@ function owningWorkspace(workspaces: Workspace[], s: ManagedSession): Workspace 
   return best;
 }
 
-/// How far up the list a row sits. Deliberately built only from things
-/// that do not change between polls: sorting on CPU would make rows swap
-/// places under the pointer every couple of seconds, in a panel whose
-/// buttons kill processes.
-const STALE_RANK: Record<Staleness, number> = { orphaned: 0, exited: 1, interrupted: 2 };
-
-function rank(row: SessionRow): number {
-  if (row.staleness) return STALE_RANK[row.staleness];
-  // A session nobody can see comes before one already on screen: the
-  // visible ones have a tab of their own to be managed from.
-  return row.visible ? 5 : 4;
+function stateOf(status: string, tone: Staleness | null, visible: boolean): SessionState {
+  if (tone) return tone;
+  if (!visible) return "hidden";
+  switch (status) {
+    case "working":
+      return "active";
+    case "waiting_for_input":
+      return "waiting";
+    case "idle":
+    case "failed":
+      return status;
+    default:
+      return "unknown";
+  }
 }
+
+/// How far up the list a state sits under the default order: the rows
+/// that need attention first, then the ones nobody can see (the visible
+/// ones have a tab of their own to be managed from), then the rest by
+/// how much they are asking of the human.
+const STATE_RANK: Record<SessionState, number> = {
+  orphaned: 0,
+  exited: 1,
+  interrupted: 2,
+  hidden: 3,
+  failed: 4,
+  waiting: 5,
+  active: 6,
+  idle: 7,
+  unknown: 8,
+};
 
 export function sessionRows(args: {
   sample: ManagedSessions;
@@ -218,6 +258,7 @@ export function sessionRows(args: {
       visible: Boolean(at || asMain),
       staleness: tone,
       stale: tone !== null,
+      state: stateOf(s.status, tone, Boolean(at || asMain)),
       note: note(s, tone),
       cpuPercent: sample.metrics ? cpuShare(s, before.get(s.id) ?? null) : null,
       memBytes: measured ? s.rssBytes : null,
@@ -227,13 +268,138 @@ export function sessionRows(args: {
     };
   });
 
-  return rows.sort(
-    (a, b) =>
-      rank(a) - rank(b) ||
-      (a.workspaceName ?? "").localeCompare(b.workspaceName ?? "") ||
-      a.label.localeCompare(b.label) ||
-      a.id.localeCompare(b.id)
+  return sortRows(rows, DEFAULT_SORT);
+}
+
+export type SortKey = "name" | "state" | "mem";
+export type SortDirection = "asc" | "desc";
+export interface SortOrder {
+  key: SortKey;
+  dir: SortDirection;
+}
+
+/// State, attention first: what the list has always opened on. The
+/// default is deliberately built only from things that do not change
+/// between polls. Memory is offered because the card asked for it, but
+/// it is a choice the human makes, not the order they are handed --
+/// rows that swap places under the pointer every two seconds, in a
+/// panel whose buttons kill processes, must be something they opted
+/// into.
+export const DEFAULT_SORT: SortOrder = { key: "state", dir: "asc" };
+
+/// What a click on a column heading does to the order: the same column
+/// flips, a new one starts ascending -- except memory, which starts
+/// with the biggest, because nobody sorts by memory to find the
+/// smallest shell.
+export function nextSort(current: SortOrder, key: SortKey): SortOrder {
+  if (current.key === key) return { key, dir: current.dir === "asc" ? "desc" : "asc" };
+  return { key, dir: key === "mem" ? "desc" : "asc" };
+}
+
+/// The tie-break chain under every key, always ascending: same
+/// workspace together, then by name, then by id so two unnamed shells
+/// keep a fixed order between polls.
+function byIdentity(a: SessionRow, b: SessionRow): number {
+  return (
+    (a.workspaceName ?? "").localeCompare(b.workspaceName ?? "") ||
+    a.label.localeCompare(b.label) ||
+    a.id.localeCompare(b.id)
   );
+}
+
+function primary(key: SortKey): (a: SessionRow, b: SessionRow) => number {
+  switch (key) {
+    case "name":
+      return (a, b) => a.label.localeCompare(b.label);
+    case "state":
+      return (a, b) => STATE_RANK[a.state] - STATE_RANK[b.state];
+    case "mem":
+      // Nulls are handled outside this comparison so they stay last in
+      // BOTH directions: "nothing measured" is not the smallest figure.
+      return (a, b) => (a.memBytes ?? 0) - (b.memBytes ?? 0);
+  }
+}
+
+/// A new array in the asked-for order. Only the column itself reverses
+/// under "desc"; the tie-break chain stays ascending so that rows equal
+/// on the sorted column are always in the same, readable order.
+export function sortRows(rows: SessionRow[], order: SortOrder): SessionRow[] {
+  const compare = primary(order.key);
+  const sign = order.dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    if (order.key === "mem") {
+      const aNone = a.memBytes === null;
+      const bNone = b.memBytes === null;
+      if (aNone !== bNone) return aNone ? 1 : -1;
+    }
+    return sign * compare(a, b) || byIdentity(a, b);
+  });
+}
+
+/// Which rows the human has picked, and the one a shift click measures
+/// its range from. Ids rather than rows: the rows are rebuilt every
+/// poll, and the selection has to survive that.
+export interface Selection {
+  ids: string[];
+  anchor: string | null;
+}
+
+export const NO_SELECTION: Selection = { ids: [], anchor: null };
+
+/// The platform's list-selection grammar, as a reducer: a plain click
+/// picks one row (and a second plain click on the only picked row lets
+/// go of it, because a modal has no empty space to click on); the
+/// command key toggles a row; shift takes the range from the anchor to
+/// the clicked row, and with the command key held too, adds that range
+/// to what is already picked.
+///
+/// `ordered` is the list AS DISPLAYED, so a range under a memory sort
+/// is the rows the human can see between the two clicks, not the rows
+/// the default order would put there.
+export function selectRow(
+  current: Selection,
+  ordered: string[],
+  id: string,
+  mods: { shift: boolean; cmd: boolean }
+): Selection {
+  if (mods.shift) {
+    const from = current.anchor !== null && ordered.includes(current.anchor) ? current.anchor : id;
+    const a = ordered.indexOf(from);
+    const b = ordered.indexOf(id);
+    if (a < 0 || b < 0) return { ids: [id], anchor: id };
+    const range = ordered.slice(Math.min(a, b), Math.max(a, b) + 1);
+    if (!mods.cmd) return { ids: range, anchor: from };
+    const merged = new Set(current.ids);
+    for (const x of range) merged.add(x);
+    return { ids: [...merged], anchor: from };
+  }
+  if (mods.cmd) {
+    if (current.ids.includes(id)) {
+      return {
+        ids: current.ids.filter((x) => x !== id),
+        anchor: current.anchor === id ? null : current.anchor,
+      };
+    }
+    return { ids: [...current.ids, id], anchor: id };
+  }
+  if (current.ids.length === 1 && current.ids[0] === id) return NO_SELECTION;
+  return { ids: [id], anchor: id };
+}
+
+/// The picked rows, in display order, with any id the latest poll no
+/// longer has silently dropped -- a killed row must not stay counted in
+/// "Kill 3 selected".
+export function selectedRows(rows: SessionRow[], selection: Selection): SessionRow[] {
+  const picked = new Set(selection.ids);
+  return rows.filter((r) => picked.has(r.id));
+}
+
+/// The footer's one line on how to pick rows, in the platform's own
+/// keys -- the same place and voice as the card composer's hint.
+export function selectionHint(isMac: boolean): string {
+  return isMac
+    ? "Click selects · ⇧Click extends · ⌘Click toggles · Click a heading to sort"
+    : "Click selects · Shift+Click extends · Ctrl+Click toggles · Click a heading to sort";
 }
 
 /// What ending a row actually does.
@@ -250,55 +416,137 @@ export function killPlan(row: SessionRow): { endOrphan: boolean; killSession: bo
   return { endOrphan: row.orphan !== null, killSession: true };
 }
 
+const DISK_STAYS = "Anything already written to disk stays, and nothing that was done is undone.";
+
 /// What one kill press asks first.
 ///
 /// It names the session and the folder rather than describing the
 /// category, because the rows in this panel look alike and the ones
 /// worth killing are the ones nothing else is showing -- so the prompt is
 /// the only place the human can check they picked the right one.
-export function killConfirm(row: SessionRow): string {
+///
+/// `danger`, always: ConfirmPrompt keeps focus on the dismissing button
+/// for a danger choice, so Enter cannot fire a kill by reflex.
+export function killConfirm(row: SessionRow): KillPrompt {
   const where = row.workspaceName ? `${row.workspaceName} — ${row.cwd}` : row.cwd;
-  const lines = [`End “${row.label}”?`, "", `In ${where}.`];
+  const lines = [`In ${where}.`];
   if (row.orphan) {
     lines.push(
-      "",
       `This also ends ${describeOrphan(row.orphan)}, the process that outlived the daemon ` +
         `and is still running there.`
     );
   }
-  lines.push(
-    "",
-    "Anything it has already written to disk stays, and nothing it did is undone."
-  );
-  return lines.join("\n");
+  lines.push(DISK_STAYS);
+  return { title: `End “${row.label}”?`, lines, confirmLabel: "End session", danger: true };
 }
 
-/// What a kill-all press asks, or null when there is nothing to end.
-///
-/// The stale count is called out separately because it is the reason
+/// Which button a batch came from. The rows are already the batch --
+/// the caller has filtered them -- and the scope only decides how the
+/// prompt talks about them.
+export type KillScope = "all" | "stale" | "selected";
+
+const NAMES_SHOWN = 6;
+
+function plural(n: number, word: string): string {
+  return `${n} ${n === 1 ? word : `${word}s`}`;
+}
+
+/// The line that separates the stale rows from the rest of a batch, or
+/// null when there are none. Called out because it is the reason
 /// someone opens this panel and the reason the button is dangerous: the
 /// rows nothing is showing are exactly the ones whose loss is hardest to
 /// notice afterwards.
-export function killAllConfirm(rows: SessionRow[]): string | null {
-  if (rows.length === 0) return null;
+function staleLine(rows: SessionRow[]): string | null {
   const stale = rows.filter((r) => r.stale).length;
+  if (stale === 0) return null;
   const orphans = rows.filter((r) => r.orphan).length;
-  const lines = [
-    `End all ${rows.length} ${rows.length === 1 ? "session" : "sessions"}?`,
-    "",
-    "Every terminal in every workspace closes, and every agent running in one stops.",
-  ];
-  if (stale > 0) {
-    lines.push(
-      "",
-      `${stale} of them ${stale === 1 ? "is" : "are"} already stale` +
-        (orphans > 0
-          ? `, and ${orphans} ${orphans === 1 ? "has a process" : "have processes"} still running outside gavin.`
-          : ".")
-    );
+  return (
+    `${stale} of them ${stale === 1 ? "is" : "are"} already stale` +
+    (orphans > 0
+      ? `, and ${orphans} ${orphans === 1 ? "has a process" : "have processes"} still running outside gavin.`
+      : ".")
+  );
+}
+
+/// What a batch press asks, or null when there is nothing to end.
+///
+/// One prompt for the batch, matching how every other batch close in the
+/// app behaves: a prompt per session would train the human to click
+/// through prompts, which is worse than the single honest one that names
+/// the count. A batch of one is asked about as that one row, so the
+/// prompt names it instead of saying "1 session".
+///
+/// The stale scope spells out what clearing each kind does, because the
+/// kinds are not alike: clearing an exited row deletes a record, and
+/// clearing an orphan sends SIGTERM to a live process.
+export function killBatchConfirm(rows: SessionRow[], scope: KillScope): KillPrompt | null {
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return killConfirm(rows[0]);
+  const n = rows.length;
+
+  if (scope === "stale") {
+    const kinds: Array<[Staleness, string]> = [
+      ["exited", "only the row is left, and clearing it removes the record"],
+      ["interrupted", "a plain shell holding a run's place closes"],
+      ["orphaned", "a process still running outside gavin is sent SIGTERM"],
+    ];
+    const lines: string[] = [];
+    for (const [kind, what] of kinds) {
+      const count = rows.filter((r) => r.staleness === kind).length;
+      if (count > 0) lines.push(`${count} ${kind}: ${what}.`);
+    }
+    lines.push(DISK_STAYS);
+    return { title: `Clear ${n} stale sessions?`, lines, confirmLabel: "Clear stale", danger: true };
   }
-  lines.push("", "Anything they have written to disk stays, and nothing they did is undone.");
-  return lines.join("\n");
+
+  const lines: string[] = [];
+  if (scope === "all") {
+    lines.push("Every terminal in every workspace closes, and every agent running in one stops.");
+  } else {
+    const names = rows.slice(0, NAMES_SHOWN).map((r) => `“${r.label}”`);
+    const more = n - names.length;
+    lines.push(names.join(", ") + (more > 0 ? ` and ${more} more` : "") + ".");
+  }
+  const stale = staleLine(rows);
+  if (stale) lines.push(stale);
+  lines.push(DISK_STAYS);
+  return scope === "all"
+    ? { title: `End all ${plural(n, "session")}?`, lines, confirmLabel: "End all", danger: true }
+    : { title: `End ${n} selected sessions?`, lines, confirmLabel: "End selected", danger: true };
+}
+
+/// The daemon refused, or the request never got there.
+export function killFailedAlert(row: SessionRow, error: unknown): KillAlert {
+  return {
+    title: `Couldn’t end “${row.label}”`,
+    lines: [error instanceof Error ? error.message : String(error)],
+  };
+}
+
+/// The survivor was asked to stop and did not. The row stays because it
+/// is where the pid is recorded, and the alert hands that pid over.
+export function refusedOrphanAlert(row: SessionRow): KillAlert {
+  const what = row.orphan ? describeOrphan(row.orphan) : row.label;
+  return {
+    title: `“${row.label}” is still running`,
+    lines: [
+      `${what} was asked to stop and ignored SIGTERM, which is how it survived the daemon in the first place.`,
+      `The session is left in place so you keep the pid: end it from Activity Monitor, or with ` +
+        `\`kill -9 ${row.orphan?.pid ?? row.pid}\`.`,
+    ],
+  };
+}
+
+/// One report at the end of a batch, rather than a modal between every
+/// pair of sessions.
+export function survivorsAlert(survived: string[], total: number): KillAlert {
+  return {
+    title: `${survived.length} of ${total} could not be ended`,
+    lines: [
+      survived.join(", "),
+      "A process that ignores SIGTERM is the usual reason — those are still listed, with the pid to end from Activity Monitor.",
+    ],
+  };
 }
 
 /// The one-line count under the sidebar's Task manager row.

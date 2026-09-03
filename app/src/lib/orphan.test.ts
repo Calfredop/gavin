@@ -152,11 +152,19 @@ describe("interruptedCardNote", () => {
 
 describe("endOrphanConfirm", () => {
   it("names the process it is about to kill", () => {
-    expect(endOrphanConfirm(ORPHAN)).toContain("claude --model opus (pid 4172)");
+    expect(endOrphanConfirm(ORPHAN).title).toContain("claude --model opus (pid 4172)");
   });
 
   it("says what survives, so the prompt is not read as an undo", () => {
-    expect(endOrphanConfirm(ORPHAN)).toContain("stays");
+    expect(endOrphanConfirm(ORPHAN).lines.join(" ")).toContain("stays");
+  });
+
+  it("is a danger prompt with a verb on the button", () => {
+    // ConfirmPrompt parks focus on Cancel for a danger choice, so Enter
+    // cannot end a process gavin no longer hosts by reflex.
+    const prompt = endOrphanConfirm(ORPHAN);
+    expect(prompt.danger).toBe(true);
+    expect(prompt.confirmLabel).not.toMatch(/^ok$/i);
   });
 });
 
@@ -168,14 +176,14 @@ describe("endOrphanOutcome", () => {
   });
 
   it("speaks up when the process ignored the signal, and offers the escape hatch", () => {
-    const message = endOrphanOutcome(ORPHAN, { ended: false, stillRunning: true });
-    expect(message).toContain("still running");
-    expect(message).toContain("kill -9 4172");
+    const alert = endOrphanOutcome(ORPHAN, { ended: false, stillRunning: true })!;
+    expect(alert.title).toContain("still running");
+    expect(alert.lines.join(" ")).toContain("kill -9 4172");
   });
 
   it("distinguishes an already-gone process from one that refused", () => {
-    const message = endOrphanOutcome(ORPHAN, { ended: false, stillRunning: false });
-    expect(message).toContain("already gone");
-    expect(message).not.toContain("kill -9");
+    const alert = endOrphanOutcome(ORPHAN, { ended: false, stillRunning: false })!;
+    expect(alert.title).toContain("already gone");
+    expect(alert.lines.join(" ")).not.toContain("kill -9");
   });
 });

@@ -1,14 +1,24 @@
 import { describe, it, expect } from "vitest";
 import {
+  NO_SELECTION,
   cpuShare,
   formatCpu,
   formatMemory,
-  killAllConfirm,
+  killBatchConfirm,
   killConfirm,
+  killFailedAlert,
   killPlan,
   managerSummary,
+  nextSort,
+  refusedOrphanAlert,
+  selectRow,
+  selectedRows,
+  selectionHint,
   sessionRows,
+  sortRows,
+  survivorsAlert,
   type ManagedSession,
+  type SessionRow,
 } from "./sessionsManager";
 import type { Workspace } from "./workspace";
 
@@ -273,14 +283,24 @@ describe("killPlan", () => {
 describe("confirmations", () => {
   it("names what is about to die, not the category", () => {
     const [row] = rowsFor([session({ command: "claude --model opus" })]);
-    const text = killConfirm(row);
-    expect(text).toContain("claude --model opus");
-    expect(text).toContain("/repo");
+    const prompt = killConfirm(row);
+    expect(prompt.title).toContain("claude --model opus");
+    expect(prompt.lines.join(" ")).toContain("/repo");
+  });
+
+  it("is a danger prompt whose button names the verb", () => {
+    // ConfirmPrompt keeps focus on the dismissing button for a danger
+    // choice, so Enter cannot fire a kill by reflex; and "OK" would be
+    // the one word that says nothing about what just happened.
+    const [row] = rowsFor([session()]);
+    const prompt = killConfirm(row);
+    expect(prompt.danger).toBe(true);
+    expect(prompt.confirmLabel).not.toMatch(/^ok$/i);
   });
 
   it("says a surviving process is part of what ends", () => {
     const [row] = rowsFor([session({ orphan: { pid: 4471, command: "claude" } })]);
-    expect(killConfirm(row)).toContain("4471");
+    expect(killConfirm(row).lines.join(" ")).toContain("4471");
   });
 
   it("counts what a kill-all press covers, and separates the stale ones", () => {
@@ -289,13 +309,79 @@ describe("confirmations", () => {
       session({ id: "b", cwd: "/repo/x" }),
       session({ id: "c", orphan: { pid: 3, command: null } }),
     ]);
-    const text = killAllConfirm(rows);
-    expect(text).toContain("3 sessions");
-    expect(text).toContain("1");
+    const prompt = killBatchConfirm(rows, "all")!;
+    expect(prompt.title).toContain("3 sessions");
+    expect(prompt.lines.join(" ")).toContain("1 of them is already stale");
+    expect(prompt.danger).toBe(true);
+  });
+
+  it("names the selected rows, so a mis-click shows in the prompt", () => {
+    const rows = rowsFor(
+      [session({ id: "a" }), session({ id: "b" })],
+      { sessionNames: { a: "commit agent", b: "tests" } } as never
+    );
+    const prompt = killBatchConfirm(rows, "selected")!;
+    expect(prompt.title).toContain("2 selected");
+    expect(prompt.lines.join(" ")).toContain("commit agent");
+    expect(prompt.lines.join(" ")).toContain("tests");
+  });
+
+  it("caps the list of names rather than growing a modal to the ceiling", () => {
+    const rows = rowsFor(Array.from({ length: 12 }, (_, i) => session({ id: `s${i}` })));
+    const prompt = killBatchConfirm(rows, "selected")!;
+    expect(prompt.lines.join(" ")).toMatch(/and \d+ more/);
+  });
+
+  it("asks about a single selected row with the single-row wording", () => {
+    const rows = rowsFor([session({ command: "claude" })]);
+    expect(killBatchConfirm(rows, "selected")).toEqual(killConfirm(rows[0]));
+  });
+
+  it("explains what clearing each kind of stale row does", () => {
+    // Clearing an exited row deletes a record; clearing an orphan sends a
+    // signal to a live process. One word covering both would hide the
+    // one that matters.
+    const rows = rowsFor([
+      session({ id: "gone", status: "exited" }),
+      session({ id: "shell", interrupted: true }),
+      session({ id: "alive", orphan: { pid: 9, command: "claude" } }),
+    ]);
+    const prompt = killBatchConfirm(rows, "stale")!;
+    expect(prompt.title).toContain("3 stale");
+    const text = prompt.lines.join(" ");
+    expect(text).toContain("1 exited");
+    expect(text).toContain("1 interrupted");
+    expect(text).toContain("1 orphaned");
+    expect(text).toContain("SIGTERM");
+    expect(prompt.confirmLabel).toBe("Clear stale");
   });
 
   it("has nothing to ask when there is nothing to end", () => {
-    expect(killAllConfirm([])).toBe(null);
+    expect(killBatchConfirm([], "all")).toBe(null);
+    expect(killBatchConfirm([], "stale")).toBe(null);
+    expect(killBatchConfirm([], "selected")).toBe(null);
+  });
+});
+
+describe("alerts", () => {
+  it("names the row that could not be ended, and carries the reason", () => {
+    const [row] = rowsFor([session({ command: "claude" })]);
+    const alert = killFailedAlert(row, new Error("no such session"));
+    expect(alert.title).toContain("claude");
+    expect(alert.lines.join(" ")).toContain("no such session");
+  });
+
+  it("hands over the pid when a process refused to stop", () => {
+    const [row] = rowsFor([session({ orphan: { pid: 4471, command: "claude" } })]);
+    const alert = refusedOrphanAlert(row);
+    expect(alert.title).toContain("still running");
+    expect(alert.lines.join(" ")).toContain("kill -9 4471");
+  });
+
+  it("lists the survivors of a batch once, by name", () => {
+    const alert = survivorsAlert(["stuck", "also stuck"], 5);
+    expect(alert.title).toContain("2 of 5");
+    expect(alert.lines.join(" ")).toContain("stuck, also stuck");
   });
 });
 
@@ -323,5 +409,190 @@ describe("managerSummary", () => {
 
   it("says so when there are none", () => {
     expect(managerSummary([])).toBe("no sessions");
+  });
+});
+
+describe("state", () => {
+  it("gives every row one word, staleness first, then visibility, then what it is doing", () => {
+    const rows = sessionRows({
+      sample: {
+        sessions: [
+          session({ id: "orphan", orphan: { pid: 1, command: null } }),
+          session({ id: "gone", status: "exited" }),
+          session({ id: "shell", interrupted: true }),
+          session({ id: "hidden", status: "working" }),
+          session({ id: "busy", status: "working" }),
+          session({ id: "quiet", status: "idle" }),
+          session({ id: "asking", status: "waiting_for_input" }),
+          session({ id: "broken", status: "failed" }),
+        ],
+        metrics: true,
+      },
+      previous: null,
+      workspaces: [showing("busy", "quiet", "asking", "broken")],
+      sessionNames: {},
+    });
+    const state = Object.fromEntries(rows.map((r) => [r.id, r.state]));
+    expect(state).toEqual({
+      orphan: "orphaned",
+      gone: "exited",
+      shell: "interrupted",
+      hidden: "hidden",
+      busy: "active",
+      quiet: "idle",
+      asking: "waiting",
+      broken: "failed",
+    });
+  });
+});
+
+describe("sortRows", () => {
+  const rows = sessionRows({
+    sample: {
+      sessions: [
+        session({ id: "b-big", rssBytes: 900, status: "idle" }),
+        session({ id: "a-small", rssBytes: 100, status: "working" }),
+        session({ id: "c-none", rssBytes: 500, processCount: 0, pid: null }),
+        session({ id: "d-gone", status: "exited", rssBytes: 300 }),
+      ],
+      metrics: true,
+    },
+    previous: null,
+    workspaces: [showing("b-big", "a-small", "c-none", "d-gone")],
+    sessionNames: { "b-big": "beta", "a-small": "alpha", "c-none": "gamma", "d-gone": "delta" },
+  });
+  const ids = (sorted: SessionRow[]) => sorted.map((r) => r.id);
+
+  it("sorts by name in both directions", () => {
+    expect(ids(sortRows(rows, { key: "name", dir: "asc" }))).toEqual([
+      "a-small",
+      "b-big",
+      "d-gone",
+      "c-none",
+    ]);
+    expect(ids(sortRows(rows, { key: "name", dir: "desc" }))).toEqual([
+      "c-none",
+      "d-gone",
+      "b-big",
+      "a-small",
+    ]);
+  });
+
+  it("sorts by memory with the unmeasured rows always last", () => {
+    // A row nothing measured has no memory figure, not a memory of zero:
+    // putting it first under ascending would read as "the smallest".
+    expect(ids(sortRows(rows, { key: "mem", dir: "desc" }))).toEqual([
+      "b-big",
+      "d-gone",
+      "a-small",
+      "c-none",
+    ]);
+    expect(ids(sortRows(rows, { key: "mem", dir: "asc" }))).toEqual([
+      "a-small",
+      "d-gone",
+      "b-big",
+      "c-none",
+    ]);
+  });
+
+  it("sorts by state with the rows that need attention first, and ties on name", () => {
+    expect(ids(sortRows(rows, { key: "state", dir: "asc" }))).toEqual([
+      "d-gone",
+      "a-small",
+      "b-big",
+      "c-none",
+    ]);
+    expect(ids(sortRows(rows, { key: "state", dir: "desc" }))).toEqual([
+      "b-big",
+      "c-none",
+      "a-small",
+      "d-gone",
+    ]);
+  });
+
+  it("does not touch the rows it was given", () => {
+    const before = ids(rows);
+    sortRows(rows, { key: "name", dir: "desc" });
+    expect(ids(rows)).toEqual(before);
+  });
+});
+
+describe("nextSort", () => {
+  it("flips the direction on the column already sorted", () => {
+    expect(nextSort({ key: "name", dir: "asc" }, "name")).toEqual({ key: "name", dir: "desc" });
+    expect(nextSort({ key: "name", dir: "desc" }, "name")).toEqual({ key: "name", dir: "asc" });
+  });
+
+  it("starts a new column ascending, except memory, which starts with the biggest", () => {
+    // Nobody sorts by memory to find the smallest shell.
+    expect(nextSort({ key: "state", dir: "asc" }, "name")).toEqual({ key: "name", dir: "asc" });
+    expect(nextSort({ key: "state", dir: "asc" }, "mem")).toEqual({ key: "mem", dir: "desc" });
+  });
+});
+
+describe("selection", () => {
+  const ordered = ["a", "b", "c", "d", "e"];
+  const plain = { shift: false, cmd: false };
+  const shift = { shift: true, cmd: false };
+  const cmd = { shift: false, cmd: true };
+
+  it("selects one row on a plain click, and clears it on a second", () => {
+    const one = selectRow(NO_SELECTION, ordered, "b", plain);
+    expect(one).toEqual({ ids: ["b"], anchor: "b" });
+    expect(selectRow(one, ordered, "b", plain)).toEqual(NO_SELECTION);
+  });
+
+  it("replaces a wider selection with the plainly clicked row", () => {
+    const many = { ids: ["a", "b", "c"], anchor: "a" };
+    expect(selectRow(many, ordered, "b", plain)).toEqual({ ids: ["b"], anchor: "b" });
+  });
+
+  it("toggles one row under the command key without touching the rest", () => {
+    const one = selectRow(NO_SELECTION, ordered, "a", plain);
+    const two = selectRow(one, ordered, "d", cmd);
+    expect(two.ids).toEqual(["a", "d"]);
+    expect(two.anchor).toBe("d");
+    expect(selectRow(two, ordered, "a", cmd).ids).toEqual(["d"]);
+  });
+
+  it("selects the range from the anchor under shift, in either direction", () => {
+    const from = selectRow(NO_SELECTION, ordered, "d", plain);
+    expect(selectRow(from, ordered, "b", shift)).toEqual({ ids: ["b", "c", "d"], anchor: "d" });
+    expect(selectRow(from, ordered, "e", shift)).toEqual({ ids: ["d", "e"], anchor: "d" });
+  });
+
+  it("keeps the anchor across shift clicks, so the range can be re-aimed", () => {
+    const from = selectRow(NO_SELECTION, ordered, "c", plain);
+    const wide = selectRow(from, ordered, "e", shift);
+    expect(selectRow(wide, ordered, "a", shift).ids).toEqual(["a", "b", "c"]);
+  });
+
+  it("adds the range to what is there when both keys are held", () => {
+    const one = selectRow(NO_SELECTION, ordered, "a", plain);
+    const far = selectRow(one, ordered, "d", cmd);
+    expect(selectRow(far, ordered, "e", { shift: true, cmd: true }).ids).toEqual(["a", "d", "e"]);
+  });
+
+  it("treats a shift click with no usable anchor as a plain click", () => {
+    expect(selectRow(NO_SELECTION, ordered, "c", shift)).toEqual({ ids: ["c"], anchor: "c" });
+    // The anchor was killed or scrolled out of the sample: not in `ordered`.
+    const gone = { ids: ["z"], anchor: "z" };
+    expect(selectRow(gone, ordered, "c", shift)).toEqual({ ids: ["c"], anchor: "c" });
+  });
+
+  it("resolves to rows in display order, dropping ids that have gone", () => {
+    const rows = rowsFor([session({ id: "a" }), session({ id: "b" }), session({ id: "c" })]);
+    const picked = selectedRows(rows, { ids: ["c", "gone", "a"], anchor: "c" });
+    expect(picked.map((r) => r.id)).toEqual(["a", "c"]);
+  });
+});
+
+describe("selectionHint", () => {
+  it("names the platform's own keys", () => {
+    expect(selectionHint(true)).toContain("⌘");
+    expect(selectionHint(true)).toContain("⇧");
+    expect(selectionHint(false)).toContain("Ctrl");
+    expect(selectionHint(false)).toContain("Shift");
+    expect(selectionHint(false)).not.toContain("⌘");
   });
 });

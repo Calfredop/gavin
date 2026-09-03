@@ -6,13 +6,15 @@
 // destructive path here goes through a confirmation built there, so the
 // panel cannot ask more softly than the text those tests pin down.
 //
-// `confirm`/`message` come from @tauri-apps/plugin-dialog, matching
-// orphanActions.ts and every other action module in this tree. They
-// convert with the rest when a shared in-app modal lands.
+// The prompts are dialog.ts's own, never @tauri-apps/plugin-dialog. That
+// plugin is capability-narrowed to the file picker, so its confirm()
+// rejects at the permission layer before anything is drawn -- and an
+// awaited rejection inside a `void`-ed click handler is a button that
+// does nothing at all. "Kill all does nothing" was exactly that.
 
-import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { get } from "svelte/store";
 import * as backend from "./backend";
+import { askConfirm, showAlert } from "./dialog";
 import {
   handleAgentSessionSpawned,
   handleOrphanEnded,
@@ -22,7 +24,16 @@ import {
   switchWorkspaceView,
 } from "./layoutState";
 import { findSessionLocation } from "./workspace";
-import { killAllConfirm, killConfirm, killPlan, type SessionRow } from "./sessionsManager";
+import {
+  killBatchConfirm,
+  killConfirm,
+  killFailedAlert,
+  killPlan,
+  refusedOrphanAlert,
+  survivorsAlert,
+  type KillScope,
+  type SessionRow,
+} from "./sessionsManager";
 
 /// Put the human in front of a session, giving it a tab first if nothing
 /// is showing it.
@@ -70,12 +81,31 @@ export async function jumpToSession(row: SessionRow): Promise<boolean> {
 /// the whole action rather than being stepped over, because carrying on
 /// would erase the only handle the human has on it.
 export async function endSession(row: SessionRow): Promise<boolean> {
-  if (!(await confirm(killConfirm(row), { title: "gavin", kind: "warning" }))) return false;
+  if (!(await askConfirm(killConfirm(row)))) return false;
   return runKill(row, true);
 }
 
 /// Ends every row in the list, after asking once.
-///
+export function endAllSessions(rows: SessionRow[]): Promise<number> {
+  return endBatch(rows, "all");
+}
+
+/// Ends the stale rows -- orphaned, exited, interrupted -- and nothing
+/// else, after asking once. The filter lives here rather than in the
+/// panel so the prompt and the kills can never disagree about which
+/// rows "stale" meant.
+export function endStaleSessions(rows: SessionRow[]): Promise<number> {
+  return endBatch(
+    rows.filter((r) => r.stale),
+    "stale"
+  );
+}
+
+/// Ends the rows the human picked, after asking once with their names.
+export function endSelectedSessions(rows: SessionRow[]): Promise<number> {
+  return endBatch(rows, "selected");
+}
+
 /// One confirmation for the batch, matching how every other batch close
 /// in the app behaves: a prompt per session would train the human to
 /// click through prompts, which is worse than the single honest one that
@@ -86,10 +116,10 @@ export async function endSession(row: SessionRow): Promise<boolean> {
 /// its session for up to the daemon's grace period -- doing these in
 /// parallel would interleave those waits with unrelated deletions for no
 /// gain on a list this size.
-export async function endAllSessions(rows: SessionRow[]): Promise<number> {
-  const prompt = killAllConfirm(rows);
+async function endBatch(rows: SessionRow[], scope: KillScope): Promise<number> {
+  const prompt = killBatchConfirm(rows, scope);
   if (!prompt) return 0;
-  if (!(await confirm(prompt, { title: "gavin", kind: "warning" }))) return 0;
+  if (!(await askConfirm(prompt))) return 0;
 
   let ended = 0;
   const survived: string[] = [];
@@ -99,14 +129,7 @@ export async function endAllSessions(rows: SessionRow[]): Promise<number> {
     if (await runKill(row, false)) ended += 1;
     else survived.push(row.label);
   }
-  if (survived.length > 0) {
-    await message(
-      `${survived.length} of ${rows.length} could not be ended: ${survived.join(", ")}. ` +
-        `A process that ignores SIGTERM is the usual reason — those are still listed, ` +
-        `with the pid to end from Activity Monitor.`,
-      { title: "gavin", kind: "warning" }
-    );
-  }
+  if (survived.length > 0) await showAlert(survivorsAlert(survived, rows.length));
   return ended;
 }
 
@@ -121,19 +144,11 @@ async function runKill(row: SessionRow, announce: boolean): Promise<boolean> {
     try {
       result = await backend.endOrphan(row.id);
     } catch (e) {
-      if (announce) await message(`Couldn't end ${row.label}: ${e}`, { title: "gavin", kind: "error" });
+      if (announce) await showAlert(killFailedAlert(row, e));
       return false;
     }
     if (result.stillRunning) {
-      if (announce) {
-        await message(
-          `${row.label} was asked to stop and is still running — it is ignoring SIGTERM, ` +
-            `which is how it survived the daemon in the first place. The session is left in ` +
-            `place so you keep the pid; end it from Activity Monitor, or with ` +
-            `\`kill -9 ${row.orphan?.pid}\`.`,
-          { title: "gavin", kind: "warning" }
-        );
-      }
+      if (announce) await showAlert(refusedOrphanAlert(row));
       return false;
     }
     handleOrphanEnded(row.id);
@@ -141,7 +156,7 @@ async function runKill(row: SessionRow, announce: boolean): Promise<boolean> {
   try {
     await backend.killSession(row.id);
   } catch (e) {
-    if (announce) await message(`Couldn't end ${row.label}: ${e}`, { title: "gavin", kind: "error" });
+    if (announce) await showAlert(killFailedAlert(row, e));
     return false;
   }
   // The daemon's own `session-exited` push does this too, but only for a

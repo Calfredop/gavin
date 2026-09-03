@@ -7,6 +7,7 @@
 // two places.
 import type { DaemonCompat } from "./daemonCompat";
 import { FEATURE_MIN_VERSION } from "./daemonCompat";
+import type { AlertOptions, ConfirmOptions } from "./dialog";
 
 /// A process the daemon found still running with no tab in front of it.
 /// The pid is for the human to recognise in Activity Monitor; the
@@ -149,13 +150,18 @@ export function interruptedCardNote(args: {
 /// rather than describing the category, and says what will and will not
 /// happen: the work it has already written to disk stays, and nothing is
 /// undone.
-export function endOrphanConfirm(orphan: OrphanProcess): string {
-  return (
-    `End ${describeOrphan(orphan)}?\n\n` +
-    `This agent outlived the daemon and is still running in this folder. ` +
-    `Ending it sends SIGTERM — any edit it has already written to disk stays, ` +
-    `and nothing it did is undone.`
-  );
+export function endOrphanConfirm(orphan: OrphanProcess): ConfirmOptions & { lines: string[] } {
+  return {
+    title: `End ${describeOrphan(orphan)}?`,
+    lines: [
+      "This agent outlived the daemon and is still running in this folder.",
+      "Ending it sends SIGTERM — any edit it has already written to disk stays, and nothing it did is undone.",
+    ],
+    confirmLabel: "End process",
+    // Focus stays on Cancel: a process gavin no longer hosts is outside
+    // what the session owns, and there is no undo.
+    danger: true,
+  };
 }
 
 /// The outcome line after a press, or null when there is nothing worth
@@ -169,14 +175,19 @@ export function endOrphanConfirm(orphan: OrphanProcess): string {
 export function endOrphanOutcome(
   orphan: OrphanProcess,
   result: { ended: boolean; stillRunning: boolean }
-): string | null {
+): (AlertOptions & { lines: string[] }) | null {
   if (result.ended) return null;
   if (result.stillRunning) {
-    return (
-      `${describeOrphan(orphan)} was asked to stop and is still running. ` +
-      `It is ignoring SIGTERM, which is how it survived the daemon in the first place. ` +
-      `Ending it will have to be done from Activity Monitor, or with \`kill -9 ${orphan.pid}\`.`
-    );
+    return {
+      title: `${describeOrphan(orphan)} is still running`,
+      lines: [
+        "It was asked to stop and ignored SIGTERM, which is how it survived the daemon in the first place.",
+        `Ending it will have to be done from Activity Monitor, or with \`kill -9 ${orphan.pid}\`.`,
+      ],
+    };
   }
-  return `${describeOrphan(orphan)} was already gone — nothing needed ending.`;
+  return {
+    title: `${describeOrphan(orphan)} was already gone`,
+    lines: ["Nothing needed ending."],
+  };
 }

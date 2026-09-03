@@ -15,9 +15,16 @@
     // is scoped here, so a child wider than 480px otherwise just
     // overflows the panel it is inside.
     wide?: boolean;
+    // Hands scrolling to the child. The panel then clips instead of
+    // scrolling and lays its content out as a column, so a child that
+    // keeps a header and a footer in place can scroll only the part
+    // between them. Opt-in for the same reason as `wide`: position:
+    // sticky inside the panel's own scroller would stick to its padding
+    // edge, with the padding sliding past underneath.
+    innerScroll?: boolean;
     children?: import("svelte").Snippet;
   }
-  let { onClose, scrollKey, wide = false, children }: Props = $props();
+  let { onClose, scrollKey, wide = false, innerScroll = false, children }: Props = $props();
 
   let panel = $state<HTMLDivElement | null>(null);
   $effect(() => {
@@ -49,7 +56,14 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="backdrop" onclick={handleBackdropClick} role="presentation">
-  <div class="panel" class:wide role="dialog" aria-modal="true" bind:this={panel}>
+  <div
+    class="panel"
+    class:wide
+    class:inner-scroll={innerScroll}
+    role="dialog"
+    aria-modal="true"
+    bind:this={panel}
+  >
     {@render children?.()}
   </div>
 </div>
@@ -78,5 +92,10 @@
   }
   .panel.wide {
     max-width: min(880px, 92vw);
+  }
+  .panel.inner-scroll {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 </style>

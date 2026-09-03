@@ -1431,13 +1431,38 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "tasks-stale-rows-sort-first",
-        text: "With an orphan present (`trap '' HUP; sleep 900`, then restart the daemon), its row is at the TOP with a red ⚠ and a line saying it did not stop",
-        hint: "Sorted on staleness and visibility only — never on CPU, which would make rows swap places under the pointer every two seconds in a panel whose buttons kill processes.",
+        text: "With an orphan present (`trap '' HUP; sleep 900`, then restart the daemon), its row is at the TOP with a red ⚠, State reads “orphaned”, and a line under the name says it did not stop",
+        hint: "The default order is State, attention first — never CPU, which would make rows swap places under the pointer every two seconds in a panel whose buttons kill processes.",
+      },
+      {
+        id: "tasks-grid-sorts-by-heading",
+        text: "Click the Name heading: rows go A→Z with a ▲ beside it; click again for Z→A. Click Mem: the biggest tree is FIRST on the first click. Click State to get the default back",
+        hint: "Memory starts descending because nobody sorts by memory to find the smallest shell. Only the sorted column reverses — rows equal on it keep one readable order.",
+      },
+      {
+        id: "tasks-multi-select",
+        text: "Click a row (highlighted), ⇧click three rows down (the range is selected), ⌘click one of them (it drops out): the header button reads “Kill N selected…” with the right N, and the foot names the keys",
+        hint: "The platform's list grammar, reduced in sessionsManager.ts (selectRow). The range follows the DISPLAYED order, so under a Mem sort it is the rows you can see between the clicks.",
+      },
+      {
+        id: "tasks-kill-selected-names-them",
+        text: "Press “Kill N selected…”: ONE in-app confirmation lists the picked sessions by name; confirming ends only those and the selection clears",
+        hint: "The prompt is the only place a mis-click shows. With one row picked it is worded as that row's own ✕ would be.",
+      },
+      {
+        id: "tasks-clear-stale",
+        text: "With an exited row and a live one, “Clear stale (1)” is enabled; pressing it asks once, spelling out what clearing an exited row does, and leaves the live row alone",
+        hint: "Clearing an exited row deletes a record; clearing an orphan sends SIGTERM to a live process. One word covering both would hide the one that matters, so the prompt lists each kind present.",
+      },
+      {
+        id: "tasks-grid-scrolls-inside",
+        text: "Open ~30 terminals and open the panel: the title row, the buttons and the foot stay in place; only the grid scrolls, and the column headings stay at its top",
+        hint: "Modal's innerScroll opt-in: the panel clips instead of scrolling, and the grid is the one child allowed to give way. A sticky header inside the panel's own scroller would stick to its padding edge.",
       },
       {
         id: "tasks-kill-confirms-and-names",
-        text: "Press ✕ on any row: the confirmation names that session and its folder, and says disk edits stay",
-        hint: "The rows look alike and the interesting ones are the ones nothing else is showing, so the prompt is the only place to check you picked the right one.",
+        text: "Press ✕ on any row: gavin's OWN confirmation (not an OS sheet) names that session and its folder, says disk edits stay, and Enter does NOT fire the red button",
+        hint: "The rows look alike and the interesting ones are the ones nothing else is showing, so the prompt is the only place to check you picked the right one. It is dialog.ts's ConfirmPrompt: plugin-dialog is narrowed to the file picker, and its confirm() used to reject silently, which is why ✕ and Kill all did nothing.",
       },
       {
         id: "tasks-kill-takes-the-tab",
@@ -1456,8 +1481,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "tasks-kill-all-asks-once",
-        text: "Press “Kill all…”: ONE confirmation naming the count and how many are stale; every terminal in every workspace closes",
-        hint: "A prompt per session trains the human to click through prompts. One honest prompt that names the count is the whole safeguard.",
+        text: "Press “Kill all…”: ONE in-app confirmation naming the count and how many are stale, with an “End all” button; confirming closes every terminal in every workspace, cancelling ends nothing",
+        hint: "A prompt per session trains the human to click through prompts. One honest prompt that names the count is the whole safeguard — and it has to actually appear: the native confirm it used to call rejected at the permission layer, so the button did nothing.",
       },
       {
         id: "tasks-poll-stops-on-close",

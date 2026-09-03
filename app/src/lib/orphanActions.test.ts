@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { writable } from "svelte/store";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  confirm: vi.fn().mockResolvedValue(true),
-  message: vi.fn().mockResolvedValue(undefined),
+vi.mock("./dialog", () => ({
+  askConfirm: vi.fn().mockResolvedValue(true),
+  showAlert: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./backend", () => ({
   endOrphan: vi.fn(),
@@ -13,7 +13,7 @@ vi.mock("./layoutState", () => ({
   handleOrphanEnded: vi.fn(),
 }));
 
-import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { askConfirm, showAlert } from "./dialog";
 import * as backend from "./backend";
 import { layoutState, handleOrphanEnded } from "./layoutState";
 import { endSessionOrphan } from "./orphanActions";
@@ -21,14 +21,26 @@ import type { OrphanProcess } from "./orphan";
 
 const ORPHAN: OrphanProcess = { pid: 4172, command: "claude --model opus" };
 
+function askedTitle(): string {
+  const call = vi.mocked(askConfirm).mock.calls[0];
+  if (!call) throw new Error("askConfirm was not called");
+  return call[0].title;
+}
+
+function alertedTitle(): string {
+  const call = vi.mocked(showAlert).mock.calls[0];
+  if (!call) throw new Error("showAlert was not called");
+  return call[0].title;
+}
+
 function withOrphan(orphan: OrphanProcess | null): void {
   layoutState.set({ orphanBySessionId: orphan ? { "s-1": orphan } : {} } as never);
 }
 
 describe("endSessionOrphan", () => {
   beforeEach(() => {
-    vi.mocked(confirm).mockClear().mockResolvedValue(true);
-    vi.mocked(message).mockClear();
+    vi.mocked(askConfirm).mockClear().mockResolvedValue(true);
+    vi.mocked(showAlert).mockClear();
     vi.mocked(backend.endOrphan).mockReset();
     vi.mocked(handleOrphanEnded).mockClear();
     withOrphan(ORPHAN);
@@ -37,7 +49,7 @@ describe("endSessionOrphan", () => {
   it("does nothing at all for a session with no orphan recorded", async () => {
     withOrphan(null);
     await endSessionOrphan("s-1");
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
     expect(backend.endOrphan).not.toHaveBeenCalled();
   });
 
@@ -47,11 +59,11 @@ describe("endSessionOrphan", () => {
     // confirmation that does not say WHICH process is not one.
     vi.mocked(backend.endOrphan).mockResolvedValue({ ended: true, stillRunning: false });
     await endSessionOrphan("s-1");
-    expect(vi.mocked(confirm).mock.calls[0][0]).toContain("claude --model opus (pid 4172)");
+    expect(askedTitle()).toContain("claude --model opus (pid 4172)");
   });
 
   it("sends nothing when the human declines", async () => {
-    vi.mocked(confirm).mockResolvedValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
     await endSessionOrphan("s-1");
     expect(backend.endOrphan).not.toHaveBeenCalled();
   });
@@ -69,7 +81,7 @@ describe("endSessionOrphan", () => {
     vi.mocked(backend.endOrphan).mockResolvedValue({ ended: true, stillRunning: false });
     await endSessionOrphan("s-1");
     expect(handleOrphanEnded).toHaveBeenCalledWith("s-1");
-    expect(message).not.toHaveBeenCalled();
+    expect(showAlert).not.toHaveBeenCalled();
   });
 
   it("keeps the badge and speaks up when the process ignored the signal", async () => {
@@ -79,7 +91,7 @@ describe("endSessionOrphan", () => {
     vi.mocked(backend.endOrphan).mockResolvedValue({ ended: false, stillRunning: true });
     await endSessionOrphan("s-1");
     expect(handleOrphanEnded).not.toHaveBeenCalled();
-    expect(vi.mocked(message).mock.calls[0][0]).toContain("still running");
+    expect(alertedTitle()).toContain("still running");
   });
 
   it("clears the badge when the daemon reports nothing was there to end", async () => {
@@ -89,7 +101,7 @@ describe("endSessionOrphan", () => {
     vi.mocked(backend.endOrphan).mockResolvedValue({ ended: false, stillRunning: false });
     await endSessionOrphan("s-1");
     expect(handleOrphanEnded).toHaveBeenCalledWith("s-1");
-    expect(vi.mocked(message).mock.calls[0][0]).toContain("already gone");
+    expect(alertedTitle()).toContain("already gone");
   });
 
   it("keeps the badge and names the process when the request itself fails", async () => {
@@ -98,6 +110,6 @@ describe("endSessionOrphan", () => {
     vi.mocked(backend.endOrphan).mockRejectedValue(new Error("daemon went away"));
     await endSessionOrphan("s-1");
     expect(handleOrphanEnded).not.toHaveBeenCalled();
-    expect(vi.mocked(message).mock.calls[0][0]).toContain("pid 4172");
+    expect(alertedTitle()).toContain("pid 4172");
   });
 });

@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { writable } from "svelte/store";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  confirm: vi.fn().mockResolvedValue(true),
-  message: vi.fn().mockResolvedValue(undefined),
+// The in-app dialog, never @tauri-apps/plugin-dialog: that plugin is
+// capability-narrowed to the file picker, so a native confirm() here
+// rejects at the permission layer and the button silently does nothing
+// -- which is exactly the bug "kill all does nothing" turned out to be.
+vi.mock("./dialog", () => ({
+  askConfirm: vi.fn().mockResolvedValue(true),
+  showAlert: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./backend", () => ({
   endOrphan: vi.fn(),
@@ -18,7 +22,7 @@ vi.mock("./layoutState", () => ({
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { askConfirm, showAlert } from "./dialog";
 import * as backend from "./backend";
 import {
   handleAgentSessionSpawned,
@@ -28,8 +32,29 @@ import {
   switchToSessionInPage,
   switchWorkspaceView,
 } from "./layoutState";
-import { endAllSessions, endSession, jumpToSession } from "./sessionsManagerActions";
-import type { SessionRow } from "./sessionsManager";
+import {
+  endAllSessions,
+  endSelectedSessions,
+  endSession,
+  endStaleSessions,
+  jumpToSession,
+} from "./sessionsManagerActions";
+import type { KillAlert, KillPrompt, SessionRow } from "./sessionsManager";
+
+/// The prompt the first ask carried. Throws rather than returning
+/// undefined so a test that expected a prompt fails on THAT, not on a
+/// property of nothing.
+function asked(): KillPrompt {
+  const call = vi.mocked(askConfirm).mock.calls[0];
+  if (!call) throw new Error("askConfirm was not called");
+  return call[0] as KillPrompt;
+}
+
+function alerted(): KillAlert {
+  const call = vi.mocked(showAlert).mock.calls[0];
+  if (!call) throw new Error("showAlert was not called");
+  return call[0] as KillAlert;
+}
 
 function row(over: Partial<SessionRow> = {}): SessionRow {
   return {
@@ -43,6 +68,7 @@ function row(over: Partial<SessionRow> = {}): SessionRow {
     visible: true,
     staleness: null,
     stale: false,
+    state: "active",
     note: null,
     cpuPercent: 12,
     memBytes: 1000,
@@ -70,8 +96,8 @@ function withLayout(tabbed: string[], over: Record<string, unknown> = {}): void 
 }
 
 beforeEach(() => {
-  vi.mocked(confirm).mockClear().mockResolvedValue(true);
-  vi.mocked(message).mockClear();
+  vi.mocked(askConfirm).mockClear().mockResolvedValue(true);
+  vi.mocked(showAlert).mockClear();
   vi.mocked(backend.endOrphan).mockReset().mockResolvedValue({ ended: true, stillRunning: false });
   vi.mocked(backend.killSession).mockReset().mockResolvedValue(undefined);
   vi.mocked(handleAgentSessionSpawned).mockClear();
@@ -120,7 +146,7 @@ describe("jumpToSession", () => {
 
 describe("endSession", () => {
   it("asks first, and does nothing when the answer is no", async () => {
-    vi.mocked(confirm).mockResolvedValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
     expect(await endSession(row())).toBe(false);
     expect(backend.killSession).not.toHaveBeenCalled();
   });
@@ -150,32 +176,32 @@ describe("endSession", () => {
     vi.mocked(backend.endOrphan).mockResolvedValue({ ended: false, stillRunning: true });
     expect(await endSession(row({ orphan: { pid: 4471, command: "claude" } }))).toBe(false);
     expect(backend.killSession).not.toHaveBeenCalled();
-    expect(vi.mocked(message).mock.calls[0][0]).toContain("4471");
+    expect(alerted().lines.join(" ")).toContain("4471");
   });
 
   it("says so when the daemon refuses the kill", async () => {
     vi.mocked(backend.killSession).mockRejectedValue(new Error("no such session"));
     expect(await endSession(row())).toBe(false);
-    expect(message).toHaveBeenCalled();
+    expect(showAlert).toHaveBeenCalled();
   });
 });
 
 describe("endAllSessions", () => {
   it("asks once for the batch, not once per session", async () => {
     await endAllSessions([row({ id: "a" }), row({ id: "b" }), row({ id: "c" })]);
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(askConfirm).toHaveBeenCalledTimes(1);
     expect(backend.killSession).toHaveBeenCalledTimes(3);
   });
 
   it("does nothing at all when the answer is no", async () => {
-    vi.mocked(confirm).mockResolvedValue(false);
+    vi.mocked(askConfirm).mockResolvedValue(false);
     expect(await endAllSessions([row()])).toBe(0);
     expect(backend.killSession).not.toHaveBeenCalled();
   });
 
   it("has nothing to ask about an empty list", async () => {
     expect(await endAllSessions([])).toBe(0);
-    expect(confirm).not.toHaveBeenCalled();
+    expect(askConfirm).not.toHaveBeenCalled();
   });
 
   it("carries on past one that refuses, and names the survivors once", async () => {
@@ -185,6 +211,57 @@ describe("endAllSessions", () => {
       if (id === "b") throw new Error("nope");
     });
     expect(await endAllSessions([row({ id: "a" }), row({ id: "b", label: "stuck" }), row({ id: "c" })])).toBe(2);
-    expect(vi.mocked(message).mock.calls[0][0]).toContain("stuck");
+    expect(alerted().lines.join(" ")).toContain("stuck");
+  });
+
+  it("asks as a danger prompt, so Enter cannot fire it by reflex", async () => {
+    await endAllSessions([row({ id: "a" }), row({ id: "b" })]);
+    expect(asked().danger).toBe(true);
+  });
+});
+
+describe("endStaleSessions", () => {
+  it("ends only the stale rows, and leaves the live ones alone", async () => {
+    const ended = await endStaleSessions([
+      row({ id: "live" }),
+      row({ id: "gone", stale: true, staleness: "exited", state: "exited", status: "exited" }),
+      row({ id: "shell", stale: true, staleness: "interrupted", state: "interrupted" }),
+    ]);
+    expect(ended).toBe(2);
+    expect(vi.mocked(backend.killSession).mock.calls.map((c) => c[0])).toEqual(["gone", "shell"]);
+  });
+
+  it("has nothing to ask when nothing is stale", async () => {
+    expect(await endStaleSessions([row()])).toBe(0);
+    expect(askConfirm).not.toHaveBeenCalled();
+  });
+
+  it("asks once, with the stale wording", async () => {
+    await endStaleSessions([
+      row({ id: "gone", stale: true, staleness: "exited", state: "exited" }),
+      row({ id: "gone-2", stale: true, staleness: "exited", state: "exited" }),
+    ]);
+    expect(askConfirm).toHaveBeenCalledTimes(1);
+    expect(asked().confirmLabel).toBe("Clear stale");
+  });
+});
+
+describe("endSelectedSessions", () => {
+  it("ends the given rows after one prompt that names them", async () => {
+    const ended = await endSelectedSessions([row({ id: "a", label: "one" }), row({ id: "b", label: "two" })]);
+    expect(ended).toBe(2);
+    expect(askConfirm).toHaveBeenCalledTimes(1);
+    expect(asked().lines.join(" ")).toContain("one");
+  });
+
+  it("asks about one selected row exactly as the row's own button would", async () => {
+    await endSelectedSessions([row({ label: "solo" })]);
+    expect(asked().title).toContain("solo");
+  });
+
+  it("does nothing when the answer is no", async () => {
+    vi.mocked(askConfirm).mockResolvedValue(false);
+    expect(await endSelectedSessions([row({ id: "a" }), row({ id: "b" })])).toBe(0);
+    expect(backend.killSession).not.toHaveBeenCalled();
   });
 });
