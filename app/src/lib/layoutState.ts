@@ -34,6 +34,7 @@ import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
+import type { StatusSince } from "./attentionInbox";
 
 export type { SessionStatus };
 
@@ -93,6 +94,24 @@ export interface LayoutState {
   /// is read by a dozen surfaces that only ever compare it, and widening
   /// it into an object would make every one of those comparisons wrong.
   failureReasonById: Record<string, string>;
+  /// When each session entered the status it now holds, by session id.
+  ///
+  /// The daemon reports that a status CHANGED, never when the one it is
+  /// reporting began, so this is the only clock the app has for "how
+  /// long has this agent been waiting on me" -- the question the hub's
+  /// attention inbox is ordered by. Stamped here rather than derived
+  /// because a duration cannot be recovered after the fact: a status
+  /// that landed and was never written down is a wait with no start.
+  ///
+  /// `watched: false` marks a stamp taken when the app first SAW the
+  /// status (a baseline from Attach) rather than when it changed. That
+  /// distinction is the whole honesty of the column: after a relaunch
+  /// every session is unwatched, and a row that read "3m" for an agent
+  /// that has been stuck since yesterday would be worse than one that
+  /// admits it is a lower bound.
+  ///
+  /// Never cleared on exit, like the sibling maps above.
+  statusSinceById: Record<string, StatusSince>;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
   /// Workspaces the sidebar X removed, newest first. Persisted with the
@@ -115,6 +134,7 @@ const initialState: LayoutState = {
   interruptedSessionIds: new Set(),
   orphanBySessionId: {},
   failureReasonById: {},
+  statusSinceById: {},
   fileTabsById: {},
   boardTabsById: {},
   removedWorkspaces: [],
@@ -668,12 +688,20 @@ async function seedSessionBaselines(): Promise<void> {
   }
   layoutState.update((s) => {
     const sessionStatusById = { ...s.sessionStatusById };
+    const statusSinceById = { ...s.statusSinceById };
     const restoredSessionIds = new Set(s.restoredSessionIds);
     const interruptedSessionIds = new Set(s.interruptedSessionIds);
     const orphanBySessionId = { ...s.orphanBySessionId };
     const failureReasonById = { ...s.failureReasonById };
     for (const b of baselines) {
-      if (sessionStatusById[b.id] === undefined) sessionStatusById[b.id] = parseSessionStatus(b.status);
+      if (sessionStatusById[b.id] === undefined) {
+        sessionStatusById[b.id] = parseSessionStatus(b.status);
+        // `watched: false`: this status was already in place when the
+        // app attached, and the daemon does not say since when. The
+        // stamp is when gavin met it, which is a floor on the wait and
+        // is labelled as one.
+        statusSinceById[b.id] ??= { at: Date.now(), watched: false };
+      }
       if (b.restored) restoredSessionIds.add(b.id);
       if (b.interrupted) interruptedSessionIds.add(b.id);
       // Written positively only, like the two above: a baseline that
@@ -693,6 +721,7 @@ async function seedSessionBaselines(): Promise<void> {
     return {
       ...s,
       sessionStatusById,
+      statusSinceById,
       restoredSessionIds,
       interruptedSessionIds,
       orphanBySessionId,
@@ -1853,9 +1882,18 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
     // thing that broke.
     const failureReasonById = { ...s.failureReasonById };
     if (status !== "failed") delete failureReasonById[sessionId];
+    // Only a CHANGE restarts the clock. The daemon re-reports a status
+    // it has already sent (a re-Attach, a heuristic re-fire), and
+    // re-stamping on those would reset every wait the inbox is ordered
+    // by -- the same trap the pause anchor has to avoid.
+    const statusSinceById =
+      previousStatus === status
+        ? s.statusSinceById
+        : { ...s.statusSinceById, [sessionId]: { at: Date.now(), watched: true } };
     return {
       ...s,
       sessionStatusById: { ...s.sessionStatusById, [sessionId]: status },
+      statusSinceById,
       failureReasonById,
     };
   });

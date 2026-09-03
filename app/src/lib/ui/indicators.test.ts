@@ -186,6 +186,15 @@ describe("attentionIndicator", () => {
       glyphClass(attentionIndicator("turn-ended"))
     );
   });
+
+  // The third answer is not amber at all. A rail marks a step `failed`
+  // when the agent stopped because something BROKE, and that is the very
+  // state the danger badge exists for -- drawing it as an ended turn
+  // would put the app's quietest "come and look" over its loudest fact.
+  it("draws failed as the badge every other surface draws a broken agent with", () => {
+    expect(attentionIndicator("failed")).toBe(agentIndicator("failed"));
+    expect(attentionIndicator("failed").tone).toBe("danger");
+  });
 });
 
 describe("agentIndicator", () => {

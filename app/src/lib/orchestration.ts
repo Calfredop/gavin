@@ -224,8 +224,17 @@ export interface CardEntry {
 /// last array element (spec O6). Null for a board with no columns, in
 /// which case nothing can ever complete and the rail header says so.
 export function doneColumn(board: Board): Column | null {
+  return doneColumnOf(board.columns);
+}
+
+/// The same rule for a surface that holds a column list rather than a
+/// whole board -- the card detail modal takes `columns` as a prop. One
+/// function so "done is the highest position" is decided once: a second
+/// copy is what lets one surface adopt a memory into "Done" while
+/// another files it under "Shipped".
+export function doneColumnOf(columns: Column[]): Column | null {
   let best: Column | null = null;
-  for (const c of board.columns) {
+  for (const c of columns) {
     if (!best || c.position > best.position) best = c;
   }
   return best;

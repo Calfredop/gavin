@@ -390,14 +390,21 @@ export function railRetryIndicator(): Indicator {
 
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
-// both answers are facts about the agent, so they are agent badges, and
-// `asking` is literally the same badge the board card, the terminal tab
-// and the sidebar row already draw for `waiting_for_input`. That identity
-// is the point -- one agent stuck on a question looked like three
-// different things depending on which surface you found it on.
+// all three answers are facts about the agent, so they are agent badges,
+// and `asking` is literally the same badge the board card, the terminal
+// tab and the sidebar row already draw for `waiting_for_input`. That
+// identity is the point -- one agent stuck on a question looked like
+// three different things depending on which surface you found it on.
+//
+// Which is why `failed` maps to the agent's own failed badge rather than
+// sharing the amber pause with `turn-ended`: a rail marks a step failed
+// when something BROKE, and "the agent stopped talking" is true of that
+// too and useless. Same fact, same badge, everywhere it is drawn.
 
 export function attentionIndicator(attention: StepAttention): Indicator {
-  return attention === "asking" ? AGENT.waiting_for_input : AGENT.turn_ended;
+  if (attention === "asking") return AGENT.waiting_for_input;
+  if (attention === "failed") return AGENT.failed;
+  return AGENT.turn_ended;
 }
 
 /// Every indicator the app can draw. Exists for the invariant tests --

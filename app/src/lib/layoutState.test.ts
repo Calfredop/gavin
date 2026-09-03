@@ -205,6 +205,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     cwdBySessionId: {},
     sessionNames: {},
     sessionStatusById: {},
+    statusSinceById: {},
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
@@ -235,6 +236,7 @@ beforeEach(() => {
     cwdBySessionId: {},
     sessionNames: {},
     sessionStatusById: {},
+    statusSinceById: {},
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
@@ -1045,6 +1047,35 @@ describe("handleSessionStatusChanged", () => {
     // instead, because that is the only call that holds one.
     expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a", bothOn, undefined);
     expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a", bothOn, undefined);
+  });
+
+  // The inbox on the hub is ordered by how long each agent has been
+  // waiting, and the daemon never says when a status began -- only that
+  // it changed. This stamp is the only clock there is for it.
+  it("stamps when a session entered the status, as a transition it watched", () => {
+    const before = Date.now();
+    handleSessionStatusChanged("a", "waiting_for_input");
+    const stamp = get(layoutState).statusSinceById["a"];
+    expect(stamp.watched).toBe(true);
+    expect(stamp.at).toBeGreaterThanOrEqual(before);
+  });
+
+  it("restarts the clock when the status actually changes", () => {
+    handleSessionStatusChanged("a", "working");
+    // Backdated by hand rather than with fake timers: what is under
+    // test is which branch the handler takes, not the clock.
+    layoutState.update((st) => ({ ...st, statusSinceById: { a: { at: 0, watched: true } } }));
+    handleSessionStatusChanged("a", "waiting_for_input");
+    expect(get(layoutState).statusSinceById["a"].at).toBeGreaterThan(0);
+  });
+
+  // The daemon re-reports a status it has already sent; re-stamping on
+  // one of those would reset a wait the human is watching grow.
+  it("leaves the clock alone when the same status is reported twice", () => {
+    handleSessionStatusChanged("a", "waiting_for_input");
+    layoutState.update((st) => ({ ...st, statusSinceById: { a: { at: 0, watched: true } } }));
+    handleSessionStatusChanged("a", "waiting_for_input");
+    expect(get(layoutState).statusSinceById["a"].at).toBe(0);
   });
 
   it("resolves the notification label via sessionNames, falling back the same way tab labels do", () => {
@@ -2443,6 +2474,36 @@ describe("bootstrap seeds the push-fed session maps", () => {
     // re-reading a status the human has already seen is not a transition.
     expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
   });
+
+  // A status the app found already in place has no start time -- the
+  // daemon reports the change, never the moment. So it is stamped when
+  // gavin met it and marked unwatched, and the hub's inbox reads the
+  // duration built from it as a floor rather than a measurement.
+  it("stamps a baselined status as one it did not watch begin", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-1", cwd: "/ws", status: "waiting_for_input", restored: false, interrupted: false, orphan: null, failureReason: null },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).statusSinceById["s-1"]).toBeDefined());
+    expect(get(layoutState).statusSinceById["s-1"].watched).toBe(false);
+  });
+
+  // A push that has landed is newer than the snapshot, and its stamp is
+  // the one that was actually watched -- overwriting it would throw away
+  // the better answer for the worse one.
+  it("never overwrites a stamp a live transition already set", async () => {
+    handleSessionStatusChanged("s-1", "waiting_for_input");
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+      { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(layoutState).cwdBySessionId["s-1"]).toBe("/ws"));
+    expect(get(layoutState).statusSinceById["s-1"].watched).toBe(true);
+  });
   it("fills the interrupted set, which the restored one does not speak for", async () => {
     vi.mocked(backend.getSessionBaselines).mockResolvedValue([
       { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null },
@@ -2970,6 +3031,7 @@ describe("runningSessionCount", () => {
       cwdBySessionId: {},
       sessionNames: {},
       sessionStatusById: {},
+      statusSinceById: {},
       gitStatusById: {},
       restoredSessionIds: new Set(),
       interruptedSessionIds: new Set(),

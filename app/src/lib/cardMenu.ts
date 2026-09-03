@@ -10,6 +10,7 @@ import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
 import { patchPlanField } from "./gavinState";
 import { requestedExplorerFile } from "./planExplorer";
 import { jumpToBoundSession, relaunchCard, developCard, resumeCard } from "./cardRunActions";
+import { requestCardReview } from "./codeReviewActions";
 import { developAvailable } from "./cardRun";
 import { cardSessionState } from "./columnRunAction";
 import { findCardPlacement } from "./orchestration";
@@ -128,6 +129,20 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
         onPick: () => hooks.sendToAgent(card),
       });
     }
+
+    // Offered whatever the binding state: a card is worth reviewing
+    // BECAUSE work happened on it, so the interesting cases are exactly
+    // the ones the block above treats as "already running" -- and a
+    // review neither touches the card nor disturbs its session. The
+    // ellipsis is honest: the dialog asks what to compare against.
+    entries.push({
+      label: "Review with agent…",
+      onPick: () => {
+        void requestCardReview(workspaceId, card).then((err) => {
+          if (err) hooks.reportError(err);
+        });
+      },
+    });
 
     // The rails, in the order the Orchestration tab shows them. The card
     // lands as the rail's trailing stage; the rail it is already on is

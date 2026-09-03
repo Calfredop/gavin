@@ -20,6 +20,7 @@
   import {
     layoutState,
     switchWorkspace,
+    switchWorkspaceView,
     switchToSessionInPage,
     daemonCompat,
   } from "./layoutState";
@@ -30,6 +31,7 @@
     agentIndicator,
     agentIndicatorByState,
     agentInterruptedIndicator,
+    attentionIndicator,
     gitIndicator,
     type Indicator,
   } from "./ui/indicators";
@@ -50,7 +52,15 @@
     commitNewWorkspace,
     cancelNewWorkspace,
   } from "./workspaceCreate";
+  import {
+    attentionInbox,
+    rowTip,
+    waitLabel,
+    REASON_LABEL,
+    type AttentionRow,
+  } from "./attentionInbox";
   import { openLinkedCard } from "./cardTabLink";
+  import { revealSession } from "./cardRunActions";
   import { kanbanState } from "./kanbanState";
   import { gavinTrees } from "./gavinState";
   import { orchestrations, stepAttentionsByWorkspace } from "./orchestrationState";
@@ -125,6 +135,23 @@
 
   const stats: FleetSummary = $derived(fleetSummary(fleet));
   const running: WorkspaceRunning[] = $derived(runningTasks(fleet));
+
+  // The same stores the fleet reads, plus the rails' raw step marks --
+  // `attention` above is those marks already folded down to rail ids,
+  // which is what the strip counts and not what a row needs. Nothing new
+  // is fetched for either.
+  const inbox: AttentionRow[] = $derived(
+    attentionInbox(
+      {
+        state: $layoutState,
+        boards: $kanbanState,
+        trees: $gavinTrees,
+        orchestrations: $orchestrations,
+        stepAttentions: $stepAttentionsByWorkspace,
+      },
+      now
+    )
+  );
 
   function recap(workspaceId: string): string {
     const ws = $layoutState.workspaces.find((w) => w.id === workspaceId);
@@ -204,6 +231,23 @@
   function openTerminal(task: RunningTask): void {
     if (!task.pageId || !task.pageWorkspaceId) return;
     void switchToSessionInPage(task.pageWorkspaceId, task.pageId, task.sessionId);
+  }
+
+  /// An inbox row's click: the session that is waiting, in the tab that
+  /// holds it. `revealSession` activates the workspace, its page and the
+  /// tab in one go -- the same jump the tab bar's ↗ and the sidebar's
+  /// session rows make.
+  ///
+  /// A row with no page is the workspace's own Home agent, which lives
+  /// outside every page tree; adopting it onto a page would move it out
+  /// of the panel that owns it, so that one lands on the Home tab.
+  async function openWaiting(row: AttentionRow): Promise<void> {
+    if (row.pageId === null) {
+      await switchWorkspace(row.workspaceId);
+      await switchWorkspaceView(row.workspaceId, "home");
+      return;
+    }
+    await revealSession(row.sessionId);
   }
 </script>
 
@@ -322,6 +366,51 @@
   </section>
 
   <div class="columns">
+    <!-- What has stopped and is waiting for you, fleet-wide, longest
+         wait first. A sibling of the running column and built from the
+         same stores; the difference is the question -- that one asks
+         what is moving, this one asks what needs you.
+
+         Full width because a row carries six facts. When there is
+         nothing in it the panel goes away entirely and leaves one quiet
+         line: an empty bordered box is a thing to read, and "nobody is
+         waiting" should cost a glance. -->
+    {#if inbox.length === 0}
+      <p class="inbox-quiet">Nothing is waiting on you.</p>
+    {:else}
+      <section class="panel inbox">
+        <h2>Waiting on you<span class="tally live">{inbox.length}</span></h2>
+        <div class="inbox-rows">
+          {#each inbox as row (row.sessionId)}
+            <button
+              type="button"
+              class="waiting-row reason-{row.reason}"
+              onclick={() => void openWaiting(row)}
+              use:tooltip={rowTip(row)}
+              aria-label={rowTip(row)}
+            >
+              <StatusBadge indicator={attentionIndicator(row.reason)} size={11} tip={null} />
+              <span class="reason">{REASON_LABEL[row.reason]}</span>
+              <span class="where">
+                <span class="ws">{row.workspaceName}</span>
+                <span class="sep" aria-hidden="true">·</span>
+                <span class="page">{row.pageName}</span>
+                <span class="sep" aria-hidden="true">·</span>
+                <span class="tab">{row.tabName}</span>
+              </span>
+              <!-- Empty rather than absent for a session nobody filed a
+                   card for: the column has to stay in place or every row
+                   below it shifts under the pointer. -->
+              <span class="card">{row.cardTitle ?? ""}</span>
+              <span class="waited" class:bounded={!row.watched}>
+                {waitLabel(row.waitedMs, row.watched)}
+              </span>
+            </button>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     <section class="panel recents">
       <h2>Recent workspaces<span class="tally">{stats.workspaces}</span></h2>
       <div class="rows">
@@ -633,8 +722,105 @@
     /* minmax(0, …) on both, or a long root path in the left column
        stretches the track instead of ellipsing inside it. */
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    /* The inbox takes only the height its rows need; the two panels
+       under it take the rest. An `auto auto` pair would have the grid
+       hand the inbox half the hub for two rows. */
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 16px;
     align-items: stretch;
+  }
+  /* Full width: an inbox row carries six facts, and a third of the hub
+     is not enough for any of them. */
+  .inbox,
+  .inbox-quiet {
+    grid-column: 1 / -1;
+  }
+  /* The empty state. One line, no border, no heading -- the same
+     register as a page's own "nothing here" note rather than a card
+     announcing that it has nothing to say. */
+  .inbox-quiet {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: 0.82em;
+  }
+  .inbox {
+    /* Never taller than a third of the hub: the recents and running
+       columns underneath must stay reachable however long the queue
+       gets, and the rows scroll inside instead. */
+    max-height: 34vh;
+  }
+  .inbox-rows {
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .waiting-row {
+    display: grid;
+    /* Column tracks rather than a flex row, so the reason, the location
+       and the card line up down the list and the eye can run one column
+       instead of re-parsing every row. Every text track is minmax(0, …)
+       so a long name ellipses inside its own cell. */
+    grid-template-columns: auto minmax(0, 0.85fr) minmax(0, 1fr) minmax(0, 1.15fr) auto;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 5px;
+    /* The tone lives on the badge, not on the row: a list where every
+       row is amber says nothing, and the glyph is what carries which of
+       the three reasons this is. */
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.82em;
+    text-align: left;
+    cursor: pointer;
+  }
+  .waiting-row:hover {
+    background: var(--surface-raised);
+  }
+  .waiting-row:focus-visible {
+    outline: 1px solid var(--border-accent);
+    outline-offset: -1px;
+  }
+  .waiting-row .reason,
+  .waiting-row .where,
+  .waiting-row .card {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .waiting-row .where,
+  .waiting-row .card {
+    color: var(--text-muted);
+  }
+  .waiting-row .tab {
+    color: var(--text);
+  }
+  .waiting-row .sep {
+    margin: 0 4px;
+    color: var(--text-subtle);
+  }
+  /* Only the broken rows get colour of their own. `asking` and
+     `turn-ended` are ordinary waits and read in the body colour; a
+     failure is the one row in the list that is not merely patient. */
+  .waiting-row.reason-failed .reason {
+    color: var(--danger-text);
+  }
+  .waited {
+    justify-self: end;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  /* A wait gavin did not watch begin. Quieter than a measured one, and
+     the "≥" it carries is spelled out in the row's own bubble. */
+  .waited.bounded {
+    color: var(--text-subtle);
   }
   /* One column under a narrow window, and the page scrolls again. The
      hub shares the width with the sidebar, so this fires earlier than
@@ -645,6 +831,10 @@
     }
     .columns {
       grid-template-columns: minmax(0, 1fr);
+      /* Back to implicit auto rows: stacked, the inbox is the first of
+         three panels rather than a band across the top, and the wide
+         layout's `auto minmax(0, 1fr)` would squash the second one. */
+      grid-template-rows: none;
       align-items: start;
     }
     .panel {
