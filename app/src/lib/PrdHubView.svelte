@@ -42,7 +42,7 @@
          rebuild the editor against the new file rather than leave the
          previous buffer mounted. -->
     {#key path}
-      <FileEditor {path} initialMode="edit" />
+      <FileEditor {path} initialMode="edit" layout="document" />
     {/key}
   </div>
 {:else}

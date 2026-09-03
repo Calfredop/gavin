@@ -24,8 +24,15 @@
     /// to remember it across a remount (the Plans tab) hears about
     /// changes here rather than reaching in.
     onModeChange?: (mode: EditorMode) => void;
+    /// How the text sits in the pane. "fill" (the default) is a file
+    /// tab: the editor runs edge to edge and Formatted caps itself at
+    /// 900px, left-aligned. "document" is the PRD and agent-file hub
+    /// tabs: the pane still spans the viewport, but the text -- prose
+    /// and editor lines alike -- sits in a centred A4-ish column, the
+    /// way a Google Doc sits on its canvas, and the prose is set smaller.
+    layout?: "fill" | "document";
   }
-  let { path, initialMode, onModeChange }: Props = $props();
+  let { path, initialMode, onModeChange, layout = "fill" }: Props = $props();
 
   const AUTOSAVE_MS = 1000;
 
@@ -256,7 +263,7 @@
   });
 </script>
 
-<div class="pane">
+<div class="pane" class:document={layout === "document"}>
   <div class="modes">
     {#each availableModes as m (m)}
       <button
@@ -313,7 +320,7 @@
       <div class="notice">This file doesn't exist yet — saving will create it.</div>
     {/if}
     {#if effectiveMode === "formatted"}
-      <div class="markdown">{@html rendered}</div>
+      <div class="markdown"><div class="prose">{@html rendered}</div></div>
     {:else if loaded}
       <div class="editor">
         <CodeMirrorView
@@ -427,6 +434,40 @@
     /* Prose reads better proportional; the app is otherwise monospace.
        Code blocks inside stay monospace via the :global(code) rule below. */
     font-family: sans-serif;
+  }
+  /* Document layout. The scroll container keeps the whole pane -- so its
+     bar sits at the pane's edge and a click anywhere lands in the text --
+     and only the column the text occupies is capped and centred. A4 is
+     794px at 96dpi; the column is 800px INCLUDING its side gutters, so
+     the measure is 720px, and the editor's lines wrap at that same 720px
+     so that switching modes does not re-flow the text. */
+  .document {
+    --document-column: 800px;
+    --document-gutter: 40px;
+  }
+  .document .markdown {
+    max-width: none;
+    padding: 0;
+  }
+  .document .prose {
+    box-sizing: border-box;
+    max-width: var(--document-column);
+    margin: 0 auto;
+    padding: 24px var(--document-gutter) 48px;
+    /* 14px against the 16px a file tab's Formatted view inherits: prose
+       at the app's chrome scale rather than the browser's reading one. */
+    font-size: 0.875em;
+  }
+  /* CodeMirror lays the line-number gutter and the content out as a
+     flex row inside its scroller. Auto margins on the row's two ends
+     absorb the free width equally, so the pair is centred as one block;
+     the content's cap is what makes there be free width at all. */
+  .document .editor :global(.cm-gutters) {
+    margin-left: auto;
+  }
+  .document .editor :global(.cm-content) {
+    max-width: calc(var(--document-column) - 2 * var(--document-gutter));
+    margin-right: auto;
   }
   .markdown :global(pre) {
     background: var(--surface-raised);

@@ -614,6 +614,17 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "With no CLAUDE.md, its tab opens empty and the first save creates the file",
       },
       {
+        id: "edit-hub-document",
+        text: "On a wide window the PRD and CLAUDE.md tabs centre the text in an A4-ish column — Formatted prose and the Edit/Plain editor alike — with the scrollbar at the pane's right edge",
+        hint:
+          "Narrow the window: the column shrinks with it and never leaves a gap. A file tab and the " +
+          "Plans editor are untouched — edge to edge, Formatted still left-aligned under its 900px cap.",
+      },
+      {
+        id: "edit-hub-prose-size",
+        text: "Formatted on those two tabs is set smaller than a file tab's Formatted view; Edit keeps the editor's usual size",
+      },
+      {
         id: "edit-hidden-pane",
         text: "Open a file tab, switch to a sibling tab and back — the editor is full height, not collapsed",
       },
