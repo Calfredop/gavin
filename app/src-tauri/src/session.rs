@@ -2692,6 +2692,13 @@ fn attach_and_relay(
                 Response::SessionFailed { id, reason } => {
                     let _ = reader_app_handle.emit("session-failed", (id, reason));
                 }
+                Response::QueuedInputsChanged { id, queued } => {
+                    // Carries the whole queue, never a delta, so a
+                    // frontend that missed one of these cannot drift --
+                    // and so the Attach baseline and this push are the
+                    // same message with the same handler.
+                    let _ = reader_app_handle.emit("queued-inputs-changed", (id, queued));
+                }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
                     let _ = reader_app_handle
                         .emit("orchestration-changed", (workspace_id, orchestration));
@@ -2892,6 +2899,85 @@ pub fn write_input(
         &current_compat(&compat),
     )
     .map_err(|e| e.to_string())
+}
+
+/// The four follow-up-queue commands, which all answer with the queue
+/// they left behind.
+///
+/// They ride the COMMAND connection, not the streaming one `write_input`
+/// uses: each has a reply the caller needs, and the streaming connection
+/// is where pushes arrive. The matching `QueuedInputsChanged` push comes
+/// back on the streaming connection independently -- which is a feature,
+/// not a duplication: it is how a second surface showing the same
+/// session's queue learns about a change it did not make.
+fn queued_inputs_request(
+    conn: &Mutex<UnixStream>,
+    compat: &DaemonCompatState,
+    req: &Request,
+) -> Result<Vec<protocol::QueuedInput>, String> {
+    match send_command_reconnecting(conn, &current_compat(compat), req).map_err(|e| e.to_string())? {
+        Response::QueuedInputs { queued } => Ok(queued),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected QueuedInputs, got {other:?}")),
+    }
+}
+
+/// Holds a follow-up for a session and, if that session is already idle,
+/// delivers it at once. The daemon decides which -- the app never has to
+/// know a session's status to queue for it.
+#[tauri::command]
+pub fn queue_input(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+    session_id: String,
+    text: String,
+) -> Result<Vec<protocol::QueuedInput>, String> {
+    queued_inputs_request(&state.0, &compat, &Request::QueueInput { id: session_id, text })
+}
+
+/// Every session's pending follow-ups.
+///
+/// The read-back for a push-fed map. `QueuedInputsChanged` reaches only
+/// whoever is attached to a session, so a frontend that reloaded has
+/// missed every one -- and a baseline that rides only on Attach is what
+/// left the git chip blank after a reload.
+#[tauri::command]
+pub fn list_queued_inputs(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Vec<protocol::QueuedInput>, String> {
+    queued_inputs_request(&state.0, &compat, &Request::ListQueuedInputs)
+}
+
+/// The queue this session should have from now on, in order. One writer
+/// for reorder, cancel and clear.
+#[tauri::command]
+pub fn set_queued_inputs(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+    session_id: String,
+    queued_ids: Vec<String>,
+) -> Result<Vec<protocol::QueuedInput>, String> {
+    queued_inputs_request(
+        &state.0,
+        &compat,
+        &Request::SetQueuedInputs { id: session_id, queued_ids },
+    )
+}
+
+/// Deliver one queued follow-up now, whatever the session is doing.
+#[tauri::command]
+pub fn send_queued_input(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+    session_id: String,
+    queued_id: String,
+) -> Result<Vec<protocol::QueuedInput>, String> {
+    queued_inputs_request(
+        &state.0,
+        &compat,
+        &Request::SendQueuedInput { id: session_id, queued_id },
+    )
 }
 
 #[tauri::command]

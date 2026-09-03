@@ -1,6 +1,20 @@
 use crate::proc::ProcessHandle;
+use protocol::QueuedInput;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+
+/// The daemon's clock, in microseconds since the epoch.
+///
+/// Saturates at 0 rather than panicking on a pre-epoch clock: a machine
+/// whose date is wrong should not take the daemon down, and a timestamp
+/// only ever decorates a queued follow-up ("waiting 4m") -- ordering is
+/// the list's job, never this number's.
+fn now_us() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0)
+}
 
 /// Rebuilds a handle from the pair of nullable columns that store one.
 ///
@@ -182,7 +196,27 @@ impl Registry {
             CREATE TABLE IF NOT EXISTS registry_meta (
                 key TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
-            )",
+            );
+            -- v26: follow-ups the human wrote for a busy session, held
+            -- here until it goes idle. In the registry rather than a
+            -- store of its own because the row this hangs off is a
+            -- session, and `remove` below has to be able to take the
+            -- queue with it in the same transaction-free breath.
+            --
+            -- `position` is a sparse ordering, not an index: nothing
+            -- renumbers on a delete, and `set_queued_inputs` rewrites
+            -- the whole run. The reader orders by it and by rowid, so
+            -- two rows that somehow share a position still come back in
+            -- a stable, repeatable order rather than an arbitrary one.
+            CREATE TABLE IF NOT EXISTS queued_inputs (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at_us INTEGER NOT NULL,
+                position INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS queued_inputs_by_session
+                ON queued_inputs (session_id, position)",
         )?;
         // Migrations for a database written before v20. `ALTER TABLE ADD
         // COLUMN` has no IF NOT EXISTS in SQLite, and re-running it is a
@@ -343,8 +377,155 @@ impl Registry {
 
     pub fn remove(&self, id: &str) -> anyhow::Result<()> {
         self.conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        // The queue goes with the session. A follow-up outliving the
+        // session it was written for is not a message waiting to be
+        // delivered -- it is a message that can never be delivered, and
+        // keeping it would put an undeliverable row in front of the
+        // human on every listing forever. Session ids are uuids, so it
+        // cannot be inherited by a later session either.
+        self.conn.execute("DELETE FROM queued_inputs WHERE session_id = ?1", params![id])?;
         Ok(())
     }
+
+    /// Appends a follow-up to this session's queue and hands back the
+    /// row as stored.
+    ///
+    /// The position is `max + 1` over this session's rows rather than a
+    /// count: `set_queued_inputs` leaves gaps and delivery removes from
+    /// the front, so a count would collide with a row that is still
+    /// there.
+    pub fn queue_input(&self, session_id: &str, text: &str) -> anyhow::Result<QueuedInput> {
+        let next: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM queued_inputs WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let queued = QueuedInput {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            text: text.to_string(),
+            created_at_us: now_us(),
+        };
+        self.conn.execute(
+            "INSERT INTO queued_inputs (id, session_id, text, created_at_us, position)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![queued.id, queued.session_id, queued.text, queued.created_at_us, next],
+        )?;
+        Ok(queued)
+    }
+
+    /// Every session's pending follow-ups, in delivery order -- the
+    /// answer to `ListQueuedInputs`.
+    pub fn queued_inputs(&self) -> anyhow::Result<Vec<QueuedInput>> {
+        self.read_queued("SELECT id, session_id, text, created_at_us FROM queued_inputs ORDER BY session_id, position, rowid", params![])
+    }
+
+    /// One session's pending follow-ups, in delivery order.
+    pub fn queued_inputs_for(&self, session_id: &str) -> anyhow::Result<Vec<QueuedInput>> {
+        self.read_queued(
+            "SELECT id, session_id, text, created_at_us FROM queued_inputs
+             WHERE session_id = ?1 ORDER BY position, rowid",
+            params![session_id],
+        )
+    }
+
+    fn read_queued(
+        &self,
+        sql: &str,
+        args: impl rusqlite::Params,
+    ) -> anyhow::Result<Vec<QueuedInput>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(args, |row| {
+            Ok(QueuedInput {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                text: row.get(2)?,
+                created_at_us: row.get(3)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// Rewrites this session's queue to exactly `ids`, in that order.
+    /// Anything of this session's the caller did not name is deleted --
+    /// that is how a cancel and a clear are expressed.
+    ///
+    /// An id belonging to a DIFFERENT session is ignored rather than
+    /// stolen: the `session_id` guard on the update is what stops a
+    /// client that muddled two lists from silently moving one human's
+    /// follow-up onto another agent.
+    pub fn set_queued_inputs(&self, session_id: &str, ids: &[String]) -> anyhow::Result<()> {
+        for (position, id) in ids.iter().enumerate() {
+            self.conn.execute(
+                "UPDATE queued_inputs SET position = ?1 WHERE id = ?2 AND session_id = ?3",
+                params![position as i64, id, session_id],
+            )?;
+        }
+        // Everything of this session's that survived the caller's list
+        // goes. Done AFTER the repositioning, and by exclusion rather
+        // than by diffing what was read a moment ago, so a follow-up
+        // queued between the client's read and this write is dropped
+        // exactly once instead of being left behind at a stale position.
+        let mut sql = String::from("DELETE FROM queued_inputs WHERE session_id = ?1");
+        if !ids.is_empty() {
+            sql.push_str(" AND id NOT IN (");
+            for i in 0..ids.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push_str(&format!("?{}", i + 2));
+            }
+            sql.push(')');
+        }
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&session_id];
+        for id in ids {
+            args.push(id);
+        }
+        self.conn.execute(&sql, args.as_slice())?;
+        Ok(())
+    }
+
+    /// Removes one queued follow-up and hands it back -- the read and
+    /// the delete together, because a delivery that read the head and
+    /// then failed to remove it would deliver the same message on every
+    /// subsequent idle.
+    ///
+    /// `None` when this session's queue does not hold that id, which is
+    /// what makes a double delivery a no-op instead of a second paste.
+    pub fn take_queued_input(
+        &self,
+        session_id: &str,
+        queued_id: &str,
+    ) -> anyhow::Result<Option<QueuedInput>> {
+        let found = self
+            .read_queued(
+                "SELECT id, session_id, text, created_at_us FROM queued_inputs
+                 WHERE session_id = ?1 AND id = ?2",
+                params![session_id, queued_id],
+            )?
+            .into_iter()
+            .next();
+        let Some(queued) = found else { return Ok(None) };
+        let removed = self.conn.execute(
+            "DELETE FROM queued_inputs WHERE id = ?1 AND session_id = ?2",
+            params![queued_id, session_id],
+        )?;
+        // Someone else took it between the read and the delete. Saying
+        // so is what keeps two deliveries racing on one session from
+        // both pasting the same follow-up.
+        if removed == 0 {
+            return Ok(None);
+        }
+        Ok(Some(queued))
+    }
+
 
     pub fn list(&self) -> anyhow::Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
@@ -771,6 +952,225 @@ mod tests {
         assert_eq!(record.command.as_deref(), Some("claude"));
         assert_eq!(record.process, None, "an unmigrated row knows no process");
         assert_eq!(record.orphan, None);
+    }
+
+    fn queue_texts(registry: &Registry, session_id: &str) -> Vec<String> {
+        registry
+            .queued_inputs_for(session_id)
+            .unwrap()
+            .into_iter()
+            .map(|q| q.text)
+            .collect()
+    }
+
+    #[test]
+    fn queued_follow_ups_come_back_in_the_order_they_were_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+
+        registry.queue_input("s1", "first").unwrap();
+        registry.queue_input("s1", "second").unwrap();
+        registry.queue_input("s1", "third").unwrap();
+
+        assert_eq!(queue_texts(&registry, "s1"), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn a_queue_is_per_session_and_the_global_read_carries_every_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.insert(&test_record("s2")).unwrap();
+
+        registry.queue_input("s1", "for one").unwrap();
+        registry.queue_input("s2", "for two").unwrap();
+
+        assert_eq!(queue_texts(&registry, "s1"), ["for one"]);
+        assert_eq!(queue_texts(&registry, "s2"), ["for two"]);
+        // ListQueuedInputs is what a reloaded frontend re-reads, so it
+        // has to answer for sessions whose tabs it has not attached yet.
+        assert_eq!(registry.queued_inputs().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn setting_the_queue_reorders_what_it_names_and_drops_what_it_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        let a = registry.queue_input("s1", "a").unwrap();
+        let b = registry.queue_input("s1", "b").unwrap();
+        let c = registry.queue_input("s1", "c").unwrap();
+
+        // The drag and the cancel in one write, which is the whole
+        // reason there is one writer: "c, a" says both that c leads now
+        // and that b is gone.
+        registry.set_queued_inputs("s1", &[c.id.clone(), a.id.clone()]).unwrap();
+
+        assert_eq!(queue_texts(&registry, "s1"), ["c", "a"]);
+        assert!(
+            registry.queued_inputs().unwrap().iter().all(|q| q.id != b.id),
+            "an entry the caller did not name is deleted, not left at a stale position"
+        );
+    }
+
+    #[test]
+    fn an_empty_set_clears_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.queue_input("s1", "a").unwrap();
+        registry.queue_input("s1", "b").unwrap();
+
+        registry.set_queued_inputs("s1", &[]).unwrap();
+
+        assert!(queue_texts(&registry, "s1").is_empty());
+    }
+
+    #[test]
+    fn setting_one_sessions_queue_cannot_move_another_sessions_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.insert(&test_record("s2")).unwrap();
+        registry.queue_input("s1", "mine").unwrap();
+        let theirs = registry.queue_input("s2", "theirs").unwrap();
+
+        // A client that muddled two lists. The foreign id is ignored;
+        // "s1 now holds nothing I named" still empties s1, and s2's
+        // follow-up is untouched rather than stolen.
+        registry.set_queued_inputs("s1", &[theirs.id.clone()]).unwrap();
+
+        assert!(queue_texts(&registry, "s1").is_empty());
+        assert_eq!(queue_texts(&registry, "s2"), ["theirs"]);
+    }
+
+    #[test]
+    fn taking_a_follow_up_removes_it_and_taking_it_twice_yields_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        let a = registry.queue_input("s1", "a").unwrap();
+        registry.queue_input("s1", "b").unwrap();
+
+        let taken = registry.take_queued_input("s1", &a.id).unwrap();
+        assert_eq!(taken.map(|q| q.text), Some("a".to_string()));
+        assert_eq!(queue_texts(&registry, "s1"), ["b"]);
+
+        // The double-delivery guard: two idle transitions racing on one
+        // session must not paste the same follow-up twice.
+        assert!(registry.take_queued_input("s1", &a.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn taking_a_named_follow_up_skips_the_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.queue_input("s1", "a").unwrap();
+        let b = registry.queue_input("s1", "b").unwrap();
+
+        // "Send now" on the second entry: one request, rather than a
+        // reorder racing a send.
+        let taken = registry.take_queued_input("s1", &b.id).unwrap();
+
+        assert_eq!(taken.map(|q| q.text), Some("b".to_string()));
+        assert_eq!(queue_texts(&registry, "s1"), ["a"]);
+    }
+
+    #[test]
+    fn reading_an_empty_queue_is_an_empty_list_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+
+        // What every idle transition on a session nobody queued
+        // anything for hits, which is nearly all of them.
+        assert!(registry.queued_inputs_for("s1").unwrap().is_empty());
+        assert!(registry.take_queued_input("s1", "nothing").unwrap().is_none());
+    }
+
+    #[test]
+    fn queueing_after_a_delivery_does_not_reuse_the_delivered_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        let a = registry.queue_input("s1", "a").unwrap();
+        registry.queue_input("s1", "b").unwrap();
+
+        // Delivery removes from the FRONT, so a position derived from a
+        // count would land on top of "b" and make the order arbitrary.
+        registry.take_queued_input("s1", &a.id).unwrap();
+        registry.queue_input("s1", "c").unwrap();
+
+        assert_eq!(queue_texts(&registry, "s1"), ["b", "c"]);
+    }
+
+    #[test]
+    fn removing_a_session_takes_its_queue_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.insert(&test_record("s2")).unwrap();
+        registry.queue_input("s1", "goes").unwrap();
+        registry.queue_input("s2", "stays").unwrap();
+
+        registry.remove("s1").unwrap();
+
+        // Not tidiness: a follow-up whose session is gone can never be
+        // delivered, and would sit in every listing forever.
+        assert!(queue_texts(&registry, "s1").is_empty());
+        assert_eq!(queue_texts(&registry, "s2"), ["stays"]);
+    }
+
+    #[test]
+    fn a_queue_survives_the_registry_being_reopened() {
+        // The whole reason the queue lives in the daemon: the human
+        // queues a follow-up BECAUSE the agent will be busy a while, and
+        // an app they close in the meantime must not take it with them.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry.insert(&test_record("s1")).unwrap();
+            registry.queue_input("s1", "still here").unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+
+        assert_eq!(queue_texts(&registry, "s1"), ["still here"]);
+    }
+
+    #[test]
+    fn a_database_written_before_v26_gains_the_queue_table() {
+        // The trap this exists for: `CREATE TABLE IF NOT EXISTS` is a
+        // no-op against a database that already has the OTHER tables, so
+        // a new table has to be proved against a real older DB rather
+        // than against the fresh tempdir every other test here uses.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    workspace_path TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    command TEXT,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    restored INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+                INSERT INTO sessions (id, workspace_path, cwd, command)
+                VALUES ('old-1', '/tmp/ws', '/tmp/ws', 'claude')",
+            )
+            .unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+        registry.queue_input("old-1", "works on an old db").unwrap();
+
+        assert_eq!(queue_texts(&registry, "old-1"), ["works on an old db"]);
     }
 
     #[test]

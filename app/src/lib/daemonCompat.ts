@@ -202,6 +202,20 @@ export const FEATURE_MIN_VERSION = {
   // as "this card has never been run" about a card the human watched an
   // agent work.
   runHistory: 27,
+  // Queued follow-ups. All four requests are new TYPES, so the wire gate
+  // in `min_version_for` genuinely stops every one of them -- nothing is
+  // silently stored or silently dropped, and against a v25 daemon the
+  // app behaves exactly as it did before the feature existed.
+  //
+  // The entry exists because refusing to send is not the same as saying
+  // why. The failure this gates is a compose box that accepts a
+  // follow-up, reports nothing, and never delivers it -- and the human
+  // wrote it precisely because they were about to walk away, so the
+  // silence would last until they came back to an agent that never got
+  // the message. Every surface that can queue (the terminal pane's queue
+  // strip, and "Send to workspace agent" when the agent is busy) reads
+  // this through `featureBlockedReason`.
+  queuedFollowUps: 29,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

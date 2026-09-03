@@ -13,6 +13,21 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v29 added the follow-up queue: `Request::QueueInput`,
+/// `ListQueuedInputs`, `SetQueuedInputs` and `SendQueuedInput`, answered
+/// with `Response::QueuedInputs` and pushed as
+/// `Response::QueuedInputsChanged`. A message the human writes for a busy
+/// agent, held by the DAEMON until that session goes idle, rather than
+/// bracket-pasted into the middle of its turn.
+///
+/// Four new request TYPES and no widened payload anywhere, which is the
+/// whole reason the shape is four rather than one: `min_version_for`
+/// gates by type, so against an older daemon not one byte of this
+/// reaches the wire. `daemonCompat.ts` still owes a
+/// `queuedFollowUps: 29` entry, because a gate that only stops the send
+/// leaves the human looking at a compose box that accepts a message and
+/// silently never delivers it -- the surfaces have to say why instead.
+///
 /// v28 added `Request::SetRailRunByRoot`: `SetRailRun` addressed by root
 /// path, so gavin-mcp's `gavin_start_rail` can arm a rail the way the
 /// human's Start button does. The plain request names no workspace, so
@@ -158,7 +173,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -200,6 +215,54 @@ pub enum Request {
     WriteInput {
         id: String,
         data: String,
+    },
+    /// Holds `text` for this session and delivers it the next time the
+    /// session goes idle -- the non-interrupting counterpart to
+    /// `WriteInput`, which types over whatever turn is in progress.
+    ///
+    /// The queue lives in the daemon rather than the app for the reason
+    /// every PTY does: the human queues a follow-up precisely because
+    /// the agent will be busy for a while, and an app they close in the
+    /// meantime must not take the message with it.
+    ///
+    /// `text` is the message, plain. The escape sequences that make it
+    /// arrive as one paste are added at DELIVERY, because this same
+    /// string is what the tab shows the human back, and a list of
+    /// bracketed-paste envelopes is not a list of messages.
+    QueueInput {
+        id: String,
+        text: String,
+    },
+    /// Every session's pending queue, in delivery order.
+    ///
+    /// Global rather than per-session, and it exists at all, because
+    /// `QueuedInputsChanged` is routed to a session's attached writer
+    /// like `StatusChanged` is: a frontend that reloaded has already
+    /// missed every push the daemon sent. A push-fed map with no
+    /// read-back is the `gitStatusById` bug, and this is the read-back.
+    ListQueuedInputs,
+    /// The queue this session should have from now on, named by id and
+    /// in order. Anything omitted is dropped.
+    ///
+    /// One writer for reorder, cancel and clear, rather than three
+    /// requests: all three are the human saying what the queue should
+    /// be, and expressing them as one whole-list write is what makes a
+    /// drag that lands while a delivery fires resolve to a queue that
+    /// existed rather than to a merge of two half-applied edits.
+    SetQueuedInputs {
+        id: String,
+        queued_ids: Vec<String>,
+    },
+    /// Deliver one queued message NOW, whatever the session's status --
+    /// the human's override for an agent they have decided not to wait
+    /// for.
+    ///
+    /// Names the message rather than meaning "the head", so that sending
+    /// the third item is one request instead of a reorder racing a send.
+    /// Refused for an id this session's queue does not hold.
+    SendQueuedInput {
+        id: String,
+        queued_id: String,
     },
     ResizeSession {
         id: String,
@@ -689,6 +752,22 @@ pub fn min_version_for(req: &Request) -> u32 {
         // WHY its two columns are empty rather than showing them blank.
         Request::SessionProcesses => 25,
 
+        // The follow-up queue. Four new request TYPES and nothing
+        // widened, so this match really is the whole WIRE gate: against
+        // a v25 daemon none of them is ever sent, no message is silently
+        // stored somewhere it will never be delivered from, and the app
+        // behaves exactly as it did before the feature existed.
+        //
+        // daemonCompat.ts still carries `queuedFollowUps: 29`, for the
+        // reason `SessionProcesses` carries a mirror: refusing to send
+        // is not the same as telling the human why. A compose box that
+        // takes a follow-up and drops it is worse than one that is
+        // greyed out with the daemon version in the tooltip.
+        Request::ListQueuedInputs
+        | Request::QueueInput { .. }
+        | Request::SendQueuedInput { .. }
+        | Request::SetQueuedInputs { .. } => 29,
+
         // Ending a surviving orphan. A new request TYPE, so this match
         // does gate it -- but it is only half the feature: the REPORTING
         // side widens SessionSummary and adds a push, neither of which
@@ -852,6 +931,25 @@ pub enum Response {
     /// auto-resume that cannot tell a dead network from an expired token
     /// would retry into both.
     SessionFailed { id: String, reason: String },
+    /// Pending follow-ups, in delivery order. The answer to
+    /// `ListQueuedInputs` (every session's) and to each of the three
+    /// writers (that session's, as it stands after the write).
+    ///
+    /// One variant for both because every entry names its own session:
+    /// a client that asked about one session can read the reply the same
+    /// way it reads the global one, and a writer that answers with the
+    /// resulting queue means no caller has to wait for the push to learn
+    /// what its own request did.
+    QueuedInputs { queued: Vec<QueuedInput> },
+    /// Push: this session's queue changed -- the human added, reordered
+    /// or cancelled something, or the daemon delivered the head because
+    /// the session went idle. Carries the whole queue rather than a
+    /// delta, so a client that missed one can never drift.
+    ///
+    /// Routed to the session's attached writer, exactly like
+    /// `StatusChanged`, and re-sent on `Attach` for the same reason
+    /// `CwdChanged` is: a frontend reload has to get its baseline back.
+    QueuedInputsChanged { id: String, queued: Vec<QueuedInput> },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     CardRuns { runs: Vec<CardRun> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
@@ -1022,6 +1120,34 @@ pub struct SessionProcess {
     /// of these. The daemon's, not the client's, so a rate is not
     /// distorted by however long the reply spent in transit.
     pub sampled_at_us: i64,
+}
+
+/// One follow-up waiting for a session to finish its turn.
+///
+/// Crosses straight through to the frontend the way `GitStatus` does
+/// rather than being reconciled Rust-side, so the field names are
+/// camelCase and the roundtrip test below is what holds them there.
+///
+/// There is no `position` field: the Vec's order IS the delivery order,
+/// on the wire and in `SetQueuedInputs`. A number that has to agree with
+/// an array index is a second source of truth for one fact, and the one
+/// that goes stale is always the number.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedInput {
+    /// Stable for the life of the entry -- what `SetQueuedInputs` and
+    /// `SendQueuedInput` name, so a drag or a send survives the queue
+    /// shifting underneath it when a delivery fires mid-gesture.
+    pub id: String,
+    pub session_id: String,
+    /// The message as the human wrote it. No paste envelope, no trailing
+    /// CR: those belong to delivery, and this string is also what the
+    /// tab renders.
+    pub text: String,
+    /// When it was queued, in microseconds since the epoch, by the
+    /// daemon's clock. For showing the human how long something has been
+    /// waiting -- never for ordering, which is the list's job.
+    pub created_at_us: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2240,6 +2366,13 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v26: the follow-up queue -- Request::QueueInput,
+        // ListQueuedInputs, SetQueuedInputs and SendQueuedInput, plus
+        // Response::QueuedInputs and the QueuedInputsChanged push. Four
+        // new request TYPES and nothing widened, so min_version_for is
+        // the whole WIRE gate; daemonCompat.ts's `queuedFollowUps` is
+        // owed anyway, because a compose box that accepts a message and
+        // never delivers it is worse than one that is greyed out.
         // v23: Request::SessionProcesses -- one sample of what every
         // live session costs, for the task manager. A new request TYPE,
         // so min_version_for is the real gate; daemonCompat.ts mirrors it
@@ -2315,7 +2448,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 28);
+        assert_eq!(PROTOCOL_VERSION, 29);
     }
 
     #[test]
@@ -2359,6 +2492,90 @@ mod tests {
     #[test]
     fn shutdown_is_a_v12_request() {
         assert_eq!(min_version_for(&Request::Shutdown), 12);
+    }
+
+    #[test]
+    fn the_follow_up_queue_requests_are_all_v26() {
+        // All four, not just the writer: `ListQueuedInputs` is the
+        // read-back a reloaded frontend depends on, and a client that
+        // gated the writes but sent the read to a v25 daemon would drop
+        // that connection on an unparseable request instead of quietly
+        // showing no queue.
+        for req in [
+            Request::QueueInput { id: "s".into(), text: "carry on".into() },
+            Request::ListQueuedInputs,
+            Request::SetQueuedInputs { id: "s".into(), queued_ids: vec!["q1".into()] },
+            Request::SendQueuedInput { id: "s".into(), queued_id: "q1".into() },
+        ] {
+            assert_eq!(min_version_for(&req), 26, "{req:?}");
+        }
+    }
+
+    #[test]
+    fn a_queued_input_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        // This struct crosses to TypeScript unreconciled, so the field
+        // names ARE the contract -- a snake_case leak here reaches the
+        // frontend as `undefined`, and an undefined `text` renders an
+        // empty row the human cannot tell from a blank message.
+        let q = QueuedInput {
+            id: "q-1".to_string(),
+            session_id: "s-1".to_string(),
+            text: "and then run the tests".to_string(),
+            created_at_us: 1_725_000_000_000_000,
+        };
+        assert_eq!(
+            serde_json::to_value(&q).unwrap(),
+            serde_json::json!({
+                "id": "q-1",
+                "sessionId": "s-1",
+                "text": "and then run the tests",
+                "createdAtUs": 1_725_000_000_000_000i64,
+            })
+        );
+    }
+
+    #[test]
+    fn follow_up_queue_messages_roundtrip_through_json_line() {
+        let queued = vec![QueuedInput {
+            id: "q-1".to_string(),
+            session_id: "s-1".to_string(),
+            // A newline in the text is the ordinary case, not an edge
+            // one: the whole feature exists so a multi-line follow-up
+            // arrives as one paste. It must survive the line protocol.
+            text: "first\nsecond".to_string(),
+            created_at_us: 7,
+        }];
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::QueueInput {
+            id: "s-1".to_string(),
+            text: "first\nsecond".to_string(),
+        })
+        .unwrap();
+        write_message(&mut buf, &Response::QueuedInputs { queued: queued.clone() }).unwrap();
+        write_message(
+            &mut buf,
+            &Response::QueuedInputsChanged { id: "s-1".to_string(), queued },
+        )
+        .unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::QueueInput { id, text } => {
+                assert_eq!(id, "s-1");
+                assert_eq!(text, "first\nsecond");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Response>(&mut cursor).unwrap().unwrap() {
+            Response::QueuedInputs { queued } => assert_eq!(queued[0].text, "first\nsecond"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Response>(&mut cursor).unwrap().unwrap() {
+            Response::QueuedInputsChanged { id, queued } => {
+                assert_eq!(id, "s-1");
+                assert_eq!(queued.len(), 1);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]
@@ -2445,6 +2662,14 @@ mod tests {
             Request::Snapshot { id: "s".into() },
             Request::SessionProcesses,
             Request::EndOrphan { id: "s".into() },
+            // v26's follow-up queue. Four variants, listed here as well
+            // as in min_version_for, because the comment further down is
+            // right: only the match is compiler-enforced, and the
+            // band-count test cannot catch what never reaches this Vec.
+            Request::QueueInput { id: "s".into(), text: "carry on".into() },
+            Request::ListQueuedInputs,
+            Request::SetQueuedInputs { id: "s".into(), queued_ids: vec!["q1".into()] },
+            Request::SendQueuedInput { id: "s".into(), queued_id: "q1".into() },
             Request::SetFailurePatterns { id: "s".into(), patterns: vec!["API Error:".into()] },
             Request::GetGavinTree { workspace_id: "w".into() },
             Request::InitGavinRoot { root_path: "r".into(), workspace_name: "n".into() },
@@ -2572,7 +2797,8 @@ mod tests {
     /// v11=4, v12=1 (Shutdown), v13=2 (the archive), v15=3 (group
     /// templates), v18=1 (Snapshot), v21=1 (SetFailurePatterns), v23=1
     /// (ClaimCardForSession), v24=1 (EndOrphan), v25=1 (SessionProcesses),
-    /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), plus Unknown.
+    /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), v29=4 (the
+    /// follow-up queue), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -2601,6 +2827,7 @@ mod tests {
         expected.insert(25, 1);
         expected.insert(27, 1);
         expected.insert(28, 1);
+        expected.insert(29, 4);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
