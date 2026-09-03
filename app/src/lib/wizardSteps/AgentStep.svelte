@@ -246,7 +246,11 @@
     font-family: monospace;
     font-size: 1em;
     padding: 3px 8px;
-    min-width: 260px;
+    /* A preferred width, not a floor: the row has to fit whatever width
+       the modal ends up with, and a 260px floor beside an 80px label is
+       what pushed the wizard past its panel. */
+    flex: 0 1 260px;
+    min-width: 0;
   }
   .actions {
     display: flex;

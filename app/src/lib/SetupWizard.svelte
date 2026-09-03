@@ -106,7 +106,12 @@
 <!-- Held until the reads settle: the modal's first frame is the one
      that picks the step, so showing it early shows the wrong step. -->
 {#if ws && !progress.pending}
-  <Modal onClose={closeWizard}>
+  <!-- `wide`: the panel's default cap is 480px, and this column of five
+       steps plus a form row (label, control, Pick) needs more than that.
+       The wizard itself only sets a preferred width and lets the panel's
+       cap win on a narrow window -- a min-width above the cap is how it
+       used to scroll sideways inside the modal. -->
+  <Modal wide onClose={closeWizard}>
     <div class="wizard">
       <ol class="steps">
         {#each STEPS as step, i (step.id)}
@@ -151,12 +156,14 @@
 
 <style>
   .wizard {
-    min-width: 520px;
-    max-width: 640px;
+    width: 640px;
+    max-width: 100%;
+    min-width: 0;
   }
   .steps {
     display: flex;
-    gap: 14px;
+    flex-wrap: wrap;
+    gap: 6px 14px;
     list-style: none;
     margin: 0 0 18px;
     padding: 0 0 12px;

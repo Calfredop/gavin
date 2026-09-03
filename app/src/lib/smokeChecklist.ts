@@ -934,6 +934,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "wiz-skip-create", text: "Skip setup leaves a usable, unrooted workspace — exactly as before" },
       { id: "wiz-steps", text: "The wizard opens on the first unfinished step and walks Agent → Integration → Superpowers → PRD → Launch" },
       {
+        id: "wiz-no-sideways-scroll",
+        text: "No step of the wizard scrolls sideways — at a normal window width and with the window narrowed until the step strip wraps",
+        hint: "It used to force a 520px minimum inside a 480px panel, so every step scrolled. The wizard now sizes to the panel; the controls shrink and the strip wraps.",
+      },
+      {
+        id: "wiz-prd-pick-big-repo",
+        text: "In a LARGE repository (tens of GB, thousands of folders), the PRD step's Pick… shows the picked path within a few seconds — and so does Settings after navigating away and back",
+        hint: "Needs the rebuilt daemon. Arming the watcher used to register one FSEvents watch per folder (minutes on a big tree) on the app's streaming connection, so no tree push — and no Attach for a launched agent — got through until it finished.",
+      },
+      {
+        id: "wiz-launch-big-repo",
+        text: "In that same large repository, “Start agent →” on the Launch step lands on a Home tab whose terminal shows the agent, not a blank pane",
+        hint: "Same cause as the item above: the Attach sat behind the watcher start on the streaming connection.",
+      },
+      {
         id: "wiz-resume",
         text: "Closing the wizard mid-way leaves the workspace usable; the Home tab offers “n of 5 done — continue”",
       },
