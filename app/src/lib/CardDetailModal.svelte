@@ -847,7 +847,10 @@
           <button type="button" onclick={() => void handleUnlink()}>Unlink</button>
         </div>
       {:else}
-        <div class="session-actions">
+        <!-- Stacked, not side by side: both labels are sentences rather
+             than verbs, so on one row they wrap mid-label and the two
+             actions read as one ragged block. -->
+        <div class="session-actions stacked">
           {#if canDevelop}
             <button
               type="button"
@@ -1256,6 +1259,12 @@
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+  }
+  /* Each button keeps its own row and stays sized to its label -- a
+     stretched button would read as a banner, not as an action. */
+  .session-actions.stacked {
+    flex-direction: column;
+    align-items: flex-start;
   }
   .session-actions button {
     background: var(--surface-overlay);

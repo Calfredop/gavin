@@ -310,6 +310,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Run & bindings",
     items: [
       {
+        id: "session-actions-own-row",
+        text: "On an unbound card, the detail modal stacks “Develop into a plan…” and “▶ Run …” one per row, each still only as wide as its own label",
+        hint: "Both labels are sentences, so side by side they wrapped mid-label. Check a plan and a task (the Run label differs), and a card with no Develop button — the lone Run button must not stretch across the modal.",
+      },
+      {
         id: "develop-jumps-to-tab",
         text: "“Develop into a plan…” lands you IN the spawned agent's tab (terminal view, Agents page) rather than leaving you on the board",
         hint: "From both surfaces that offer it — the card menu and the detail modal. Develop writes no status and binds no session, so the board it was started from shows nothing at all afterwards; the agent's first move is a question, and the jump is what puts you in front of it. The tab is named after the card until the agent renames itself.",
