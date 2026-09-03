@@ -943,6 +943,14 @@ pub struct SessionManager {
     /// and how a restarted app's fresh connection takes over pushes).
     /// Never persisted, like repo_pollers.
     gavin_watchers: Mutex<HashMap<String, Arc<crate::gavin::GavinWatcher>>>,
+    /// Per workspace, the number of watch/unwatch requests seen so far.
+    /// A watcher is started off the requesting connection's thread (see
+    /// handle_connection) and installed only if no later request for the
+    /// same workspace arrived while it was starting -- otherwise a slow
+    /// start for a root the human has since re-picked would win over the
+    /// watcher for the root they actually chose. Locked before
+    /// `gavin_watchers`, never after.
+    gavin_watch_generation: Mutex<HashMap<String, u64>>,
 }
 
 impl SessionManager {
@@ -964,6 +972,7 @@ impl SessionManager {
             repo_pollers: Mutex::new(HashMap::new()),
             session_repo_root: Mutex::new(HashMap::new()),
             gavin_watchers: Mutex::new(HashMap::new()),
+            gavin_watch_generation: Mutex::new(HashMap::new()),
         }
     }
 
@@ -977,6 +986,7 @@ impl SessionManager {
         root_path: &str,
         writer: Arc<Mutex<UnixStream>>,
     ) {
+        let generation = manager.begin_gavin_watch(workspace_id);
         let weak = Arc::downgrade(manager);
         let hook: crate::gavin::ScanHook = Box::new(move |workspace_id, tree| {
             weak.upgrade()?.recover_moved_card_paths(workspace_id, tree)
@@ -987,9 +997,49 @@ impl SessionManager {
             writer,
             Some(hook),
         );
-        // Insert AFTER start: the old watcher (if any) drops here, tearing
-        // down its debouncer thread.
-        manager.gavin_watchers.lock().unwrap().insert(workspace_id.to_string(), watcher);
+        manager.install_gavin_watcher(workspace_id, generation, watcher);
+    }
+
+    /// Claims the next watch of `workspace_id`. The value has to come back
+    /// through `install_gavin_watcher`, which refuses it once a later
+    /// watch or unwatch of the same workspace has moved on.
+    fn begin_gavin_watch(&self, workspace_id: &str) -> u64 {
+        let mut generations = self.gavin_watch_generation.lock().unwrap();
+        let next = generations.get(workspace_id).copied().unwrap_or(0) + 1;
+        generations.insert(workspace_id.to_string(), next);
+        next
+    }
+
+    /// Installs a started watcher, replacing the workspace's previous one,
+    /// unless the workspace was watched again or unwatched while this one
+    /// was starting. Returns whether it went in; a refused watcher is
+    /// simply dropped, which tears down its debouncer thread.
+    fn install_gavin_watcher(
+        &self,
+        workspace_id: &str,
+        generation: u64,
+        watcher: Arc<crate::gavin::GavinWatcher>,
+    ) -> bool {
+        // Whatever is replaced (or refused) drops after both locks are
+        // released: dropping a watcher joins its debouncer thread, which
+        // may be mid-scan, and a concurrent watch or snapshot must not
+        // wait on that scan.
+        let superseded;
+        let installed;
+        {
+            let generations = self.gavin_watch_generation.lock().unwrap();
+            if generations.get(workspace_id) == Some(&generation) {
+                // Insert AFTER start: the old watcher (if any) is what drops.
+                superseded =
+                    self.gavin_watchers.lock().unwrap().insert(workspace_id.to_string(), watcher);
+                installed = true;
+            } else {
+                superseded = Some(watcher);
+                installed = false;
+            }
+        }
+        drop(superseded);
+        installed
     }
 
     /// Re-keys everything holding the path of a card whose file moved
@@ -1027,7 +1077,17 @@ impl SessionManager {
     }
 
     pub fn unwatch_gavin_root(&self, workspace_id: &str) {
-        self.gavin_watchers.lock().unwrap().remove(workspace_id);
+        // Bumped so a watch still starting for this workspace installs
+        // nothing when it finishes: an unwatch that a slow start could
+        // undo would not be an unwatch.
+        let removed;
+        {
+            let mut generations = self.gavin_watch_generation.lock().unwrap();
+            let next = generations.get(workspace_id).copied().unwrap_or(0) + 1;
+            generations.insert(workspace_id.to_string(), next);
+            removed = self.gavin_watchers.lock().unwrap().remove(workspace_id);
+        }
+        drop(removed);
     }
 
     pub fn gavin_tree_snapshot(&self, workspace_id: &str) -> Option<protocol::GavinTree> {
@@ -2635,12 +2695,20 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
         // so it can't go through handle_request. No reply -- the initial
         // scan arrives as the first GavinTreeChanged push.
         if let Request::WatchGavinRoot { workspace_id, root_path } = req {
-            SessionManager::watch_gavin_root(
-                &manager,
-                &workspace_id,
-                &root_path,
-                Arc::clone(&writer),
-            );
+            // Off this thread. Starting a watcher scans the root, and on
+            // a large repo that held every later request on this
+            // connection -- Attach for a freshly launched agent, the
+            // Snapshot its terminal asked for, every keystroke -- behind
+            // a scan that took minutes (gavin::ONE_RECURSIVE_WATCH has the
+            // numbers). Nothing a client sends next depends on the watcher
+            // being up: the initial scan was always delivered as a push,
+            // and a GetGavinTree that lands first answers "not watched",
+            // which the app already treats as "ask again later".
+            let manager = Arc::clone(&manager);
+            let writer = Arc::clone(&writer);
+            std::thread::spawn(move || {
+                SessionManager::watch_gavin_root(&manager, &workspace_id, &root_path, writer);
+            });
             continue;
         }
 
@@ -3184,6 +3252,48 @@ mod tests {
             &Request::GetGavinTree { workspace_id: "never-watched".to_string() },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn a_watch_superseded_while_starting_is_never_installed() {
+        // Watchers start off the connection thread now, so two answers
+        // can be in flight for one workspace. The generation guard is
+        // what makes the LAST request win regardless of which start
+        // finishes first -- and what makes an unwatch stick even when a
+        // start it interrupted lands afterwards.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let manager = test_manager(&dir);
+        let root = ws.path().to_path_buf();
+        let start = |id: &str| {
+            let (_ours, theirs) = UnixStream::pair().unwrap();
+            crate::gavin::GavinWatcher::start(
+                id.to_string(),
+                root.clone(),
+                Arc::new(Mutex::new(theirs)),
+                None,
+            )
+        };
+
+        // Unwatched while starting: nothing may be left behind.
+        let g1 = manager.begin_gavin_watch("ws-1");
+        manager.unwatch_gavin_root("ws-1");
+        assert!(!manager.install_gavin_watcher("ws-1", g1, start("ws-1")));
+        assert!(manager.gavin_tree_snapshot("ws-1").is_none());
+
+        // Re-watched while starting: the later request wins even though
+        // it is installed first, and the earlier one is refused.
+        let g2 = manager.begin_gavin_watch("ws-1");
+        let g3 = manager.begin_gavin_watch("ws-1");
+        assert!(manager.install_gavin_watcher("ws-1", g3, start("ws-1")));
+        assert!(!manager.install_gavin_watcher("ws-1", g2, start("ws-1")));
+        assert!(manager.gavin_tree_snapshot("ws-1").is_some());
+
+        // A plain watch still replaces the previous one.
+        let g4 = manager.begin_gavin_watch("ws-1");
+        assert!(manager.install_gavin_watcher("ws-1", g4, start("ws-1")));
+        assert!(manager.gavin_tree_snapshot("ws-1").is_some());
     }
 
     #[test]

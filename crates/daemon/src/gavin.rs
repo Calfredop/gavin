@@ -1385,6 +1385,29 @@ pub fn scan_root(root: &Path) -> GavinTree {
     GavinTree { root_path: root_str, root_missing: false, contexts }
 }
 
+/// Whether the whole root is watched with ONE recursive registration
+/// instead of one non-recursive registration per directory.
+///
+/// FSEvents has no non-recursive mode: a stream reports everything under
+/// each of its paths, and `notify` emulates `NonRecursive` by dropping
+/// the deeper events in-process -- so the per-directory set never kept a
+/// single event out of this process on macOS. What it did cost is a
+/// full stream stop-and-restart per `watch()` call (notify's
+/// `FsEventWatcher::watch_inner` is `stop(); append_path(); run()`),
+/// and `watch_targets` registers every directory the scanner would
+/// descend into. A 48 GB monorepo with ~3000 such directories took over
+/// five minutes to arm -- during which the app's streaming connection,
+/// whose thread ran the registration, processed nothing: no Attach for
+/// a freshly launched agent (a blank terminal), no tree push for the
+/// PRD the human had just picked. One recursive watch on the root arms
+/// in milliseconds, and `tree_relevant` already rejects the churn the
+/// per-directory set was meant to keep out.
+///
+/// inotify is genuinely non-recursive and a recursive watch there means
+/// one descriptor per directory, node_modules included, so the
+/// per-directory set stays the right answer on Linux.
+const ONE_RECURSIVE_WATCH: bool = cfg!(target_os = "macos");
+
 /// The directories worth watching, and how deeply. Mirrors `scan_root`'s
 /// own walk exactly, because watching what the scanner reads -- and
 /// nothing else -- is the whole performance story: this repo holds 3587
@@ -1399,8 +1422,18 @@ pub fn scan_root(root: &Path) -> GavinTree {
 /// PARENT's watch can see them. A `.gavin*` marker directory is watched
 /// recursively instead, since `plans/`, `docs/` and `specs/` all churn
 /// below it and every one of those changes is the tree.
+///
+/// All of which describes inotify. On FSEvents the churn crosses into the
+/// daemon either way and the per-directory set only multiplies the cost
+/// of arming it, so there the whole root is one recursive watch -- see
+/// `ONE_RECURSIVE_WATCH`.
 pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
     use notify::RecursiveMode::{NonRecursive, Recursive};
+    if ONE_RECURSIVE_WATCH {
+        // See the constant: on FSEvents the per-directory set below buys
+        // nothing and costs a stream rebuild per directory.
+        return vec![(root.to_path_buf(), Recursive)];
+    }
     // The root's own watch is permanent, and listed even while the root
     // is missing. It is what reports the root being renamed away (that
     // event's path IS the root, which is why `tree_relevant` has an arm
@@ -1462,10 +1495,12 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
 /// - the path is gone, and a context we already know about lived at or
 ///   under it: that context's folder was deleted or moved away.
 ///
-/// Anything the scanner would never descend into is rejected first. Those
-/// directories are outside the watch set now, so in practice their events
-/// never arrive at all -- this stays as the second line of defence, and
-/// as the rule the unit tests pin.
+/// Anything the scanner would never descend into is rejected first. Where
+/// the watch set is per directory (inotify) their events never arrive at
+/// all and this is the second line of defence; under a single recursive
+/// watch (FSEvents, see `ONE_RECURSIVE_WATCH`) every event under the root
+/// reaches here and this check is the only thing keeping a `node_modules`
+/// install from rescanning the tree a hundred thousand times.
 pub fn tree_relevant(root: &Path, last_tree: Option<&GavinTree>, path: &Path) -> bool {
     if path == root {
         return true; // the root itself renamed away, or back
@@ -2743,6 +2778,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn watch_targets_covers_the_scanned_dirs_and_skips_the_churny_ones() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -2771,6 +2807,22 @@ mod tests {
         // A marker directory is watched recursively, so its children are
         // covered without their own entries.
         assert!(!targets.iter().any(|(p, _)| p == ".gavin-root/plans"), "{targets:?}");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn on_fsevents_the_root_is_one_recursive_watch_and_nothing_else() {
+        // The per-directory set is what made a large repo take minutes
+        // to arm (see ONE_RECURSIVE_WATCH): every directory the scanner
+        // descends into became its own `watch()` call, each one a stream
+        // rebuild. One recursive registration covers the same events.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
+        std::fs::create_dir_all(root.join("packages").join("api").join(GAVIN_DIR)).unwrap();
+        std::fs::create_dir_all(root.join("node_modules").join("deep")).unwrap();
+
+        assert_eq!(names(&root), vec![(".".to_string(), true)]);
     }
 
     #[test]
@@ -2995,6 +3047,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn under_one_recursive_watch_a_new_folder_needs_no_watch_of_its_own() {
+        // The FSEvents counterpart of the two tests below: the root's
+        // recursive watch already covers a folder that appears later, so
+        // a rescan must not start registering per-directory watches --
+        // that is the slow path this platform left.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+
+        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
+        assert_eq!(watcher.watched_paths(), vec![root.clone()]);
+
+        std::fs::create_dir(root.join("services")).unwrap();
+        watcher.rescan_and_push();
+        assert_eq!(watcher.watched_paths(), vec![root.clone()]);
+
+        std::fs::remove_dir(root.join("services")).unwrap();
+        watcher.rescan_and_push();
+        assert_eq!(watcher.watched_paths(), vec![root]);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_new_folder_picks_up_its_own_watch_on_the_next_rescan() {
         // The watch set is non-recursive per directory, so a folder that
         // appears after the watcher started must be armed by the very
@@ -3026,6 +3104,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn a_folder_that_left_gives_its_watch_back() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
