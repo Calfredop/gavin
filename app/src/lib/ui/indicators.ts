@@ -273,6 +273,15 @@ export function gitIndicator(dirty: boolean): Indicator {
     : make("git", "clean", GitBranch, "neutral", "clean");
 }
 
+/// A linked worktree gavin has finished with: its branch landed, nothing
+/// is running in it and nothing is uncommitted (worktreeSweep.ts owns
+/// that rule). Success rather than warning, because it is the tone for
+/// "finished, clean" and that is precisely the claim -- an amber badge
+/// here would read as work in trouble rather than work that is over.
+export function worktreeStaleIndicator(): Indicator {
+  return make("git", "stale", GitBranch, "success", "merged and idle — safe to sweep");
+}
+
 // ---- edits -------------------------------------------------------------
 // Unsaved changes in a file tab's editor. Its own glyph rather than the
 // editor world's filled dot, because a filled dot is precisely the shape
@@ -400,6 +409,7 @@ export function allIndicators(): Indicator[] {
     ...RAIL_STATES.map(railIndicator),
     gitIndicator(true),
     gitIndicator(false),
+    worktreeStaleIndicator(),
     unsavedEditsIndicator(),
     shellRestartedIndicator(),
     shellRestartedIndicator(true),

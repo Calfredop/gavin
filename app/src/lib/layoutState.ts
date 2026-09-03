@@ -34,6 +34,7 @@ import type { BoardTab, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
+import { candidateAgentConfig, type Candidate } from "./bestOfN";
 
 export type { SessionStatus };
 
@@ -285,7 +286,7 @@ export function workspaceRootPath(workspaceId: string): string | null {
 // incrementally: handleSessionExited already keeps every tree pruned to
 // only sessions that are still alive, so there is nothing stale here to
 // filter by status.
-export function runningSessionCount(state: LayoutState): number {
+export function liveSessionIds(state: LayoutState): Set<string> {
   const ids = new Set<string>();
   for (const ws of state.workspaces) {
     if (ws.mainSessionId) ids.add(ws.mainSessionId);
@@ -295,7 +296,11 @@ export function runningSessionCount(state: LayoutState): number {
       }
     }
   }
-  return ids.size;
+  return ids;
+}
+
+export function runningSessionCount(state: LayoutState): number {
+  return liveSessionIds(state).size;
 }
 
 // Shared by every action that creates exactly one fresh session before
@@ -1265,6 +1270,33 @@ export function resolvedAgentFor(workspaceId: string) {
   const rootContext = tree?.contexts.find((c) => c.kind === "root");
   return resolveAgentConfig(
     rootContext?.agent ?? null,
+    get(agentProfilesStore),
+    get(agentModelDefaultsStore)
+  );
+}
+
+/// The workspace's own `[agent]` block, unresolved. What a per-run
+/// override is laid over (`candidateAgentConfig`), and the one thing
+/// `resolvedAgentFor` cannot hand back: resolution has already folded
+/// the profile table's defaults in by then, so a resolved agent read as
+/// a config would pin every inherited value as if the workspace had
+/// chosen it.
+export function workspaceAgentConfig(workspaceId: string) {
+  return get(gavinTrees)[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null;
+}
+
+/// One best-of-N candidate's agent: the workspace's own settings with
+/// this candidate's profile and model laid over them, resolved by the
+/// same rules as every other agent in the app.
+///
+/// Through `resolveAgentConfig` deliberately. A candidate is not a
+/// special kind of launch -- it needs the same fallbacks, the same
+/// `promptArgs` refusal, the same failure patterns and the same
+/// conversation argv as a board Run, and a second resolution path here
+/// is how those four quietly stop matching.
+export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
+  return resolveAgentConfig(
+    candidateAgentConfig(workspaceAgentConfig(workspaceId), candidate),
     get(agentProfilesStore),
     get(agentModelDefaultsStore)
   );
@@ -2370,6 +2402,63 @@ export async function createPage(
   }));
   await persistWorkspaces(workspaces, data.activeWorkspaceId);
   return pageId;
+}
+
+/// A page of N panes where every pane runs its OWN command in its OWN
+/// directory -- what a best-of-N run is, and the one thing `createPage`
+/// above cannot express: it opens `sessionCount` bare shells that all
+/// share one cwd, which is right for the "New page" presets and wrong
+/// for candidates living in N different worktrees.
+///
+/// Tiled by `presetTiled`, so the shape agrees with the hand-written
+/// presets wherever they overlap.
+///
+/// All-or-nothing: a session that fails to start takes the ones already
+/// created down with it and returns null, rather than leaving a page
+/// with a hole in it. The caller owns the worktrees those sessions were
+/// going to run in, and a half-built page would leave it guessing which
+/// of them are still needed.
+export async function createTiledPage(
+  workspaceId: string,
+  name: string,
+  specs: readonly { cwd: string; command: string }[],
+  opts: { activate?: boolean } = {}
+): Promise<{ pageId: string; sessionIds: string[] } | null> {
+  const state = get(layoutState);
+  const target = state.workspaces.find((w) => w.id === workspaceId);
+  if (!target || specs.length === 0) return null;
+  const previousPageId = target.activePageId;
+
+  const sessionIds: string[] = [];
+  try {
+    // Sequential, not Promise.all: each session is a real process in a
+    // directory that was created moments ago, and starting them in order
+    // means a failure names the candidate it belongs to.
+    for (const spec of specs) {
+      sessionIds.push(await backend.createSession(spec.cwd, spec.command));
+    }
+  } catch (e) {
+    setError(String(e));
+    for (const id of sessionIds) void backend.killSession(id).catch(() => {});
+    return null;
+  }
+
+  const pageId = crypto.randomUUID();
+  const created = workspace.createPage(state, workspaceId, pageId, name, layout.presetTiled(sessionIds));
+  const focusedSessionId = sessionIds[0] ?? null;
+  const data = workspace.setPageFocus(created, workspaceId, pageId, focusedSessionId);
+  const activate = opts.activate !== false;
+  const workspaces = activate
+    ? data.workspaces
+    : data.workspaces.map((w) => (w.id === workspaceId ? { ...w, activePageId: previousPageId } : w));
+  layoutState.update((s) => ({
+    ...s,
+    workspaces,
+    activeWorkspaceId: activate ? workspaceId : s.activeWorkspaceId,
+    focusedSessionId: activate ? focusedSessionId : s.focusedSessionId,
+  }));
+  await persistWorkspaces(workspaces, data.activeWorkspaceId);
+  return { pageId, sessionIds };
 }
 
 // Creates a fresh session for a kanban card link, homing it in the given

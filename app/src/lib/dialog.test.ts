@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import { askConfirm, showAlert, answerDialog, dialogRequest, resetDialogs } from "./dialog";
+import { askConfirm, askConfirmChecked, showAlert, answerDialog, dialogRequest, resetDialogs } from "./dialog";
 
 beforeEach(() => {
   resetDialogs();
@@ -35,6 +35,38 @@ describe("askConfirm", () => {
     resetDialogs();
     void askConfirm({ title: "a", confirmLabel: "Restore", cancelLabel: "Start fresh" });
     expect(current().cancelLabel).toBe("Start fresh");
+  });
+});
+
+// One prompt, two answers: the follow-up ("also delete the branches")
+// rides on the confirm rather than becoming a second dialog nobody
+// reads.
+describe("askConfirmChecked", () => {
+  it("carries the tick-box to the modal and its value back", async () => {
+    const answer = askConfirmChecked({
+      title: "Remove 2 stale worktrees?",
+      confirmLabel: "Remove 2 worktrees",
+      check: { label: "Also delete the 2 merged branches", default: true },
+    });
+    const req = current();
+    expect(req.check).toEqual({ label: "Also delete the 2 merged branches", default: true });
+    answerDialog(req.id, true, true);
+    expect(await answer).toEqual({ confirmed: true, checked: true });
+  });
+
+  it("reports the box untouched when the human unticked it", async () => {
+    const answer = askConfirmChecked({
+      title: "a",
+      confirmLabel: "Go",
+      check: { label: "and the branch", default: true },
+    });
+    answerDialog(current().id, true, false);
+    expect(await answer).toEqual({ confirmed: true, checked: false });
+  });
+
+  it("leaves a plain confirm with no tick-box at all", () => {
+    void askConfirm({ title: "a", confirmLabel: "Go" });
+    expect(current().check).toBeNull();
   });
 });
 

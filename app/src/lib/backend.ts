@@ -649,6 +649,13 @@ export function gitDeleteBranch(cwd: string, name: string, force: boolean): Prom
   return invoke("git_delete_branch", { cwd, name, force });
 }
 
+/// Local branch names already fully merged into `base` — the first of
+/// the sweep's four disqualifiers, and the only one git alone can
+/// answer. Includes `base` itself.
+export function gitMergedBranches(cwd: string, base: string): Promise<string[]> {
+  return invoke("git_merged_branches", { cwd, base });
+}
+
 export function gitMerge(cwd: string, branch: string): Promise<void> {
   return invoke("git_merge", { cwd, branch });
 }
@@ -701,6 +708,14 @@ export function gitWorktreeRemove(cwd: string, path: string, force: boolean): Pr
 
 export function gitWorktreePrune(cwd: string): Promise<void> {
   return invoke("git_worktree_prune", { cwd });
+}
+
+/// `[worktree] setup` from the workspace's `.gavin-root/config.toml`: what
+/// a freshly created worktree has to run before it is usable. Read by the
+/// host straight off disk rather than fetched from the daemon, so it needs
+/// no protocol version and no compat gate to work.
+export function worktreeSetup(rootPath: string): Promise<string[]> {
+  return invoke("worktree_setup", { rootPath });
 }
 
 // --- Git tab SP4: history ---------------------------------------------------

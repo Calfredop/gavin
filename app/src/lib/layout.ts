@@ -395,3 +395,39 @@ export function presetGrid2x2(
     sizes: [0.5, 0.5],
   };
 }
+
+/// N panes on one page, for a layout gavin builds rather than one the
+/// human picked from the "New page" menu -- a best-of-N run, where the
+/// pane count is however many agents were entered.
+///
+/// One row up to three, rows of two beyond. Terminals are read down, so
+/// width is the scarce dimension: a fourth agent in a fourth column
+/// leaves each one about 350px on a laptop, which is narrower than the
+/// agents' own output. Two per row keeps every candidate readable and
+/// costs only vertical space, which scrolls anyway.
+///
+/// Agrees with the three hand-written presets at 1, 2 and 4 -- there is
+/// no second answer to "two panes side by side" in this app, and the
+/// tests hold that. An empty list is `presetSingle("")`'s shape rather
+/// than a null: every caller here has already created its sessions, so
+/// zero is unreachable, and a tree-shaped return keeps it that way.
+export function presetTiled(sessionIds: string[]): LayoutNode {
+  if (sessionIds.length <= 1) return presetSingle(sessionIds[0] ?? "");
+  const perRow = sessionIds.length <= 3 ? sessionIds.length : 2;
+  const rows: LayoutNode[] = [];
+  for (let i = 0; i < sessionIds.length; i += perRow) {
+    const slice = sessionIds.slice(i, i + perRow);
+    rows.push(
+      slice.length === 1
+        ? presetSingle(slice[0])
+        : {
+            type: "split",
+            direction: "row",
+            children: slice.map(presetSingle),
+            sizes: slice.map(() => 1 / slice.length),
+          }
+    );
+  }
+  if (rows.length === 1) return rows[0];
+  return { type: "split", direction: "column", children: rows, sizes: rows.map(() => 1 / rows.length) };
+}

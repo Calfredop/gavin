@@ -20,6 +20,7 @@
     workspaceRootPath,
     openFileInSplit,
     resolvedAgents,
+    liveSessionIds,
   } from "./layoutState";
   import {
     addAttachment,
@@ -38,8 +39,10 @@
     agentIndicator,
     agentInterruptedIndicator,
   } from "./ui/indicators";
+  import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "./bestOfNState";
+  import { pickCandidate, abandonRun } from "./bestOfNActions";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
-  import { runCard, resumeCard, relaunchCard, developCard } from "./cardRunActions";
+  import { runCard, resumeCard, relaunchCard, developCard, revealSession } from "./cardRunActions";
   import { cardSessionState } from "./columnRunAction";
   import { developAvailable, agentPromptBlocker } from "./cardRun";
   import { resumeNoteFor } from "./autoResume";
@@ -507,6 +510,36 @@
     else onClose();
   }
 
+  // --- best-of-N ------------------------------------------------------
+  // A run is the card's agent situation while it lasts: N sessions, no
+  // binding, and one decision to make. It replaces the binding block
+  // above rather than sitting beside it.
+  const bestOfNRun = $derived(runForCard($bestOfNRuns[workspaceId], card.id));
+  const liveIds = $derived(liveSessionIds($layoutState));
+  const candidateRows = $derived(bestOfNRun ? candidateLiveness(bestOfNRun, liveIds) : []);
+
+  function startBestOfN(): void {
+    // Closed first: both are fixed layers at the same z-index, and this
+    // modal is mounted inside whichever board is showing, so tree order
+    // would otherwise draw the dialog behind it.
+    onClose();
+    bestOfNRequest.set({ workspaceId, card });
+  }
+
+  async function handlePick(sessionId: string): Promise<void> {
+    errorMessage = null;
+    if (!bestOfNRun) return;
+    const err = await pickCandidate(workspaceId, bestOfNRun, sessionId);
+    if (err) errorMessage = err;
+  }
+
+  async function handleAbandon(): Promise<void> {
+    errorMessage = null;
+    if (!bestOfNRun) return;
+    const err = await abandonRun(workspaceId, bestOfNRun);
+    if (err) errorMessage = err;
+  }
+
   async function handleRelaunch(): Promise<void> {
     errorMessage = null;
     const err = await relaunchCard(workspaceId, card.id);
@@ -798,8 +831,35 @@
   {/if}
   {#if card.kind !== "note"}
     <div class="section">
-      <div class="section-title">Agent session</div>
-      {#if binding}
+      <div class="section-title">{bestOfNRun ? `Best of ${bestOfNRun.candidates.length}` : "Agent session"}</div>
+      {#if bestOfNRun}
+        <!-- A run replaces the binding block entirely: the card has N
+             agents and no binding at all until one is picked, so every
+             control here is about deciding between them. -->
+        <p class="quiet">{runSummary(bestOfNRun, liveIds)} — each in its own worktree. Picking one keeps its
+          branch and closes the rest; merging is still yours.</p>
+        {#each candidateRows as row (row.candidate.sessionId)}
+          <div class="candidate-row">
+            <StatusBadge
+              indicator={row.live ? agentIndicator($layoutState.sessionStatusById[row.candidate.sessionId]) : agentExitedIndicator()}
+              size={12}
+              text={row.live ? "running" : "stopped"}
+            />
+            <span class="candidate-label" title={row.candidate.worktreePath}>{row.candidate.label}</span>
+            <code class="candidate-branch">{row.candidate.branch}</code>
+            <button
+              type="button"
+              title="Jump to this candidate's terminal"
+              disabled={!row.live}
+              onclick={() => void revealSession(row.candidate.sessionId)}>Watch</button
+            >
+            <button type="button" class="pick" onclick={() => void handlePick(row.candidate.sessionId)}>Keep this one</button>
+          </div>
+        {/each}
+        <div class="session-actions">
+          <button type="button" class="danger" onclick={() => void handleAbandon()}>Discard the run…</button>
+        </div>
+      {:else if binding}
         <div class="session-info">
           <StatusBadge indicator={bindingBadge} size={12} text={bindingStatus} class="session-status" />
           <span class="session-cwd">{binding.cwd}</span>
@@ -865,6 +925,13 @@
           {/if}
           <button type="button" disabled={runBlocked !== null} onclick={() => void handleRun()}>
             ▶ Run {card.kind === "plan" ? "this plan" : "this task"} with the agent
+          </button>
+          <!-- The same card on several agents at once. The modal closes
+               as it opens the dialog: both are fixed layers at one
+               z-index, so tree order decides, and this one is mounted
+               inside whichever board is showing. -->
+          <button type="button" disabled={runBlocked !== null} onclick={() => startBestOfN()}>
+            Run it on several agents…
           </button>
         </div>
         <!-- Inline rather than a tooltip: a disabled button fires no
@@ -1264,6 +1331,51 @@
     white-space: nowrap;
     margin-left: 10px;
   }
+  /* One row per candidate: state, who it is, its branch, and the two
+     things there are to do with it. The label takes the slack and
+     ellipsizes, because the branch beside it is the shorter, more
+     identifying half once two candidates share a profile. */
+  .candidate-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, auto) auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 0.85em;
+  }
+  .candidate-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .candidate-branch {
+    color: var(--text-subtle);
+    font-family: monospace;
+    font-size: 0.85em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .candidate-row button {
+    background: var(--surface-overlay);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.95em;
+    padding: 3px 9px;
+  }
+  .candidate-row button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .candidate-row button.pick {
+    background: var(--surface-success);
+    border-color: var(--border-success);
+    color: var(--success-text);
+  }
+
   .session-actions {
     display: flex;
     gap: 6px;

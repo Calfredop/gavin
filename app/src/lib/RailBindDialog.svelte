@@ -4,7 +4,7 @@
   import { gitStore, createBranch } from "./gitState";
   import { gavinTrees } from "./gavinState";
   import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "./layoutState";
-  import { bindRailAction } from "./orchestrationState";
+  import { bindRailAction, runOnRailPage } from "./orchestrationState";
   import { presetSingle } from "./layout";
   import { freeBranchNameFrom, validateBranchName } from "./git";
   import { featureBlockedReason } from "./daemonCompat";
@@ -113,13 +113,17 @@
     {workspaceId}
     agentCommand={resolvedAgentFor(workspaceId).launchCommand}
     branchSeed={seedBranch}
-    onSpawnAgent={() => {}}
+    onRunInWorktree={(path, command) => void runOnRailPage(workspaceId, rail.id, path, command)}
     allowSpawn={false}
     switchAfter={false}
-    onPicked={(path) => {
-      void bindRailAction(workspaceId, rail.id, { worktreePath: path });
+    onPicked={async (path) => {
+      // Closed first, awaited second: the dialog must not hang on a save
+      // round trip, but the fork dialog does have to wait for the binding
+      // before it opens the setup session, so that session's page is
+      // created in the new worktree.
       forking = false;
       onClose();
+      await bindRailAction(workspaceId, rail.id, { worktreePath: path });
     }}
     onClose={() => (forking = false)}
   />

@@ -1737,6 +1737,81 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       { id: "wt-remove-force", text: "Removing a dirty worktree asks again with “Force remove”; “Also delete branch” deletes it" },
       { id: "wt-prune", text: "rm -rf a worktree folder → it shows “(missing)” and Prune clears it" },
+      {
+        id: "wt-setup-notice",
+        text: "With `[worktree] setup = [\"npm install\"]` in .gavin-root/config.toml, New worktree… names the command it will run — and names nothing when the block is absent",
+        hint: "The dialog shows the exact line, agent chained on the end when “Start agent here” is ticked. Untick it and the line is the setup alone. A config.toml with no [worktree] block, or one that doesn't parse, must show no notice and still create the worktree.",
+      },
+      {
+        id: "wt-setup-runs",
+        text: "Creating that worktree opens ONE session in it running the setup, with the agent starting only after the setup succeeds",
+        hint: "Make setup a command you can watch (`sleep 5 && npm install`). One tab, not two: the agent's prompt must not appear until the setup has finished. Then point setup at a command that FAILS (`false`) — the agent must never start, and the failure stays on screen.",
+      },
+      {
+        id: "wt-sweep-badge",
+        text: "Opening the switcher marks every finished fork with a green “stale” badge — and marks none of the four kinds that must be kept",
+        hint: "Make four forks off a merged branch and disqualify one each: leave an untracked file in the first, bind a rail to the second, open a terminal in the third, and leave the fourth's branch unmerged. Only the untouched one carries the badge. Then commit nothing and just SAVE a file in the badged one — reopen the menu and the badge is gone, because the facts are re-read on open.",
+      },
+      {
+        id: "wt-sweep-run",
+        text: "“Sweep stale (N)” lists exactly those N folders with their reasons, asks ONCE, and removes them all — with “Also delete the N merged branches” ticked by default",
+        hint: "The button says “Remove N worktrees”, red, with focus on “Keep them” so Enter cannot fire it. Untick the checkbox on a second run: the folders go, the branches stay (check `git branch`). With nothing stale the button says so in an alert naming what it kept, rather than doing nothing.",
+      },
+      {
+        id: "wt-sweep-current",
+        text: "Sweeping the worktree the Git tab is currently POINTED at moves the tab back to the root checkout instead of leaving it on a deleted folder",
+        hint: "Switch to a stale fork first, then sweep. No “directory not found” banner should appear.",
+      },
+      {
+        id: "wt-setup-rail",
+        text: "Orchestration → bind a rail → New worktree…: the setup session opens on the RAIL's page, in the new worktree",
+        hint: "This is the path with no “Start agent here” checkbox at all, and the one that used to hand the dialog a no-op. Check the session's cwd is the fork (not the workspace root) and that it landed on the page named after the rail rather than on the page you were looking at. The rail itself stays idle — this is not a run row.",
+      },
+    ],
+  },
+  {
+    title: "Best-of-N card run",
+    items: [
+      {
+        id: "bon-dialog-preview",
+        text: "Card menu → “Run on several agents…” opens on two rows — one agent at two models where the workspace's agent has them — and each row names the branch it will create",
+        hint: "The branch column is derived from the card TITLE plus the agent and model, and skips past names the repo already has: make a branch called `<card-slug>-<profile>-<model>` by hand first and the row must offer `…-2`. Add rows up to six; the × is disabled at two, because one candidate is just Run. Two identical rows must refuse with a sentence, not a silent disabled button.",
+      },
+      {
+        id: "bon-launch",
+        text: "Starting the run creates one worktree per candidate and opens them tiled on ONE page named after the card, each terminal in its own folder",
+        hint: "Two candidates side by side, three in a row, four as a 2×2. Check each pane's cwd is its own fork (`pwd`), and that with `[worktree] setup` declared each pane runs the setup BEFORE its agent. The card goes In Progress once, not once per candidate. Point the Git tab at some OTHER worktree first and start a run: the dialog must say it forks from the main checkout's branch, and `git log <candidate-branch>` must not carry that other fork's commits.",
+      },
+      {
+        id: "bon-tab-names",
+        text: "Each candidate's tab is named for its agent and model, and the agent's own rename keeps that label at the front",
+        hint: "Before any agent has drawn a frame the tabs already read “Claude Code · opus” and “Claude Code · sonnet”. After they name themselves the labels must still start with the candidate — that is the only thing telling the panes apart.",
+      },
+      {
+        id: "bon-no-second-run",
+        text: "While a run is in flight the card's menu offers only “Best of N — pick a candidate…”, never a second Run",
+        hint: "The candidates are not bound to the card, so this is the guard that stops a second run replacing the first one's record and orphaning its folders. The entry opens the card detail, where the run's panel is.",
+      },
+      {
+        id: "bon-pick",
+        text: "“Keep this one” asks once, naming every folder it will delete, then closes the losing tabs, removes their worktrees and binds the winner to the card",
+        hint: "Red button, focus on “Keep watching” so Enter cannot fire it. Afterwards: the losing folders are gone (`git worktree list`), the winner's is not, and the card's Agent session block shows the winner with a working Jump. Merging must NOT have happened — the branch is still unmerged on the Git tab. Untick the branches box and the losing branches survive in `git branch`. Then run it once more with the Git tab POINTED at a loser: the tab moves back to the root checkout and the removal still succeeds, because git refuses to remove the worktree it is run from.",
+      },
+      {
+        id: "bon-pick-from-tab",
+        text: "The same pick is on each candidate tab's right-click menu, from the page where they are being watched",
+        hint: "Right-click a candidate's tab: “Keep this candidate, discard the other…”. A tab that is not part of a run must show nothing of the sort.",
+      },
+      {
+        id: "bon-discard",
+        text: "“Discard the run…” in the card detail throws all of them away and leaves the card's status where the run put it",
+        hint: "The card stays In Progress and gains no binding. Every fork's folder is gone.",
+      },
+      {
+        id: "bon-survives-reload",
+        text: "The run survives a frontend reload: the card detail still lists its candidates and can still pick one",
+        hint: "⌘R with a run in flight. The record is in localStorage, so the panel comes back with the same candidates. Close one candidate's tab by hand first — it must come back listed as stopped rather than dropped, because its folder is still on disk.",
+      },
     ],
   },
   {

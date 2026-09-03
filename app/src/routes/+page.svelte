@@ -27,6 +27,9 @@
   } from "$lib/layoutState";
   import SetupWizard from "$lib/SetupWizard.svelte";
   import WorkspaceCreateModal from "$lib/WorkspaceCreateModal.svelte";
+  import BestOfNDialog from "$lib/BestOfNDialog.svelte";
+  import { bestOfNRequest, hydrateRuns } from "$lib/bestOfNState";
+  import { showAlert } from "$lib/dialog";
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
@@ -71,6 +74,20 @@
     )
   );
   const accent = $derived(accentVar(activeWorkspace?.color, themeState.effective));
+
+  // Best-of-N runs come back from localStorage, once per workspace. Here
+  // rather than in a board component because the card context menu reads
+  // the store on every open and this page is the only thing always
+  // mounted; hydrating from a hub view would mean a menu built before
+  // that view was ever visited offers a second run over a live one.
+  const hydratedRuns = new Set<string>();
+  $effect(() => {
+    for (const ws of $layoutState.workspaces) {
+      if (hydratedRuns.has(ws.id)) continue;
+      hydratedRuns.add(ws.id);
+      hydrateRuns(ws.id);
+    }
+  });
   // What the tab strip can report as running. The commit agent is a
   // HIDDEN session with no tab of its own, so its Git tab is the only
   // place the app can show it from while another tab is on screen.
@@ -266,6 +283,20 @@
 
 {#if $wizardWorkspaceId}
   <SetupWizard workspaceId={$wizardWorkspaceId} />
+{/if}
+
+<!-- The best-of-N dialog, mounted once for the same reason as the
+     workspace modal above: three surfaces build the card context menu
+     that opens it, and a copy inside each of them would be three
+     dialogs whose lifetime is tied to whichever board is still
+     rendered. The card comes in through the store. -->
+{#if $bestOfNRequest}
+  <BestOfNDialog
+    workspaceId={$bestOfNRequest.workspaceId}
+    card={$bestOfNRequest.card}
+    onClose={() => bestOfNRequest.set(null)}
+    onError={(message) => showAlert({ title: "Couldn't start the run", lines: [message] })}
+  />
 {/if}
 
 <!-- The app's alerts and confirms, drawn once, here. Last in the

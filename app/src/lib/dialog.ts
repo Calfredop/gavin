@@ -18,6 +18,28 @@
 
 import { writable, type Readable } from "svelte/store";
 
+/// A second, smaller answer carried by the same prompt: not "are you
+/// sure" again, but a variation on the one action ("also delete the
+/// branches"). It exists so a flow that would otherwise ask twice asks
+/// once -- two prompts in a row is how a human learns to dismiss the
+/// second without reading it.
+export interface ConfirmCheck {
+  /// What ticking it does, in the same voice as the confirm button.
+  label: string;
+  /// Ticked when the prompt opens. Default on is for the answer the
+  /// caller expects; it is never allowed to make the prompt MORE
+  /// destructive than its title says.
+  default?: boolean;
+}
+
+/// Both halves of the answer. `checked` is meaningless when `confirmed`
+/// is false, and is reported as the value the box was left at rather
+/// than reset -- nobody reads it after a cancel.
+export interface ConfirmAnswer {
+  confirmed: boolean;
+  checked: boolean;
+}
+
 export interface ConfirmOptions {
   /// The question, as a question -- the modal's heading.
   title: string;
@@ -33,6 +55,10 @@ export interface ConfirmOptions {
   /// Styles the confirm button red AND leaves keyboard focus on the
   /// dismissing button, so Enter cannot fire it by reflex.
   danger?: boolean;
+  /// An optional tick-box above the buttons. Only `askConfirmChecked`
+  /// reads its value back; `askConfirm` still resolves to a plain
+  /// boolean, so no existing call site has to care.
+  check?: ConfirmCheck;
 }
 
 export interface AlertOptions {
@@ -52,11 +78,12 @@ export interface DialogRequest {
   confirmLabel: string | null;
   cancelLabel: string;
   danger: boolean;
+  check: ConfirmCheck | null;
 }
 
 interface Pending {
   request: DialogRequest;
-  resolve: (confirmed: boolean) => void;
+  resolve: (answer: ConfirmAnswer) => void;
 }
 
 // FIFO, not last-one-wins: two failures in a row (a menu action that
@@ -72,24 +99,36 @@ const head = writable<DialogRequest | null>(null);
 /// through answerDialog so the promise is settled exactly once.
 export const dialogRequest: Readable<DialogRequest | null> = { subscribe: head.subscribe };
 
-function enqueue(request: DialogRequest): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+function enqueue(request: DialogRequest): Promise<ConfirmAnswer> {
+  return new Promise<ConfirmAnswer>((resolve) => {
     queue.push({ request, resolve });
     if (queue.length === 1) head.set(request);
   });
 }
 
-/// Asks the question and resolves to whether the human said yes.
-/// Drop-in for the native `confirm()` these call sites used to await.
-export function askConfirm(options: ConfirmOptions): Promise<boolean> {
-  return enqueue({
+function confirmRequest(options: ConfirmOptions): DialogRequest {
+  return {
     id: nextId++,
     title: options.title,
     lines: options.lines ?? [],
     confirmLabel: options.confirmLabel,
     cancelLabel: options.cancelLabel ?? "Cancel",
     danger: options.danger ?? false,
-  });
+    check: options.check ?? null,
+  };
+}
+
+/// Asks the question and resolves to whether the human said yes.
+/// Drop-in for the native `confirm()` these call sites used to await.
+export async function askConfirm(options: ConfirmOptions): Promise<boolean> {
+  return (await enqueue(confirmRequest(options))).confirmed;
+}
+
+/// The same prompt, for a caller that also needs the tick-box back --
+/// one question that settles both halves of what will happen, rather
+/// than a confirm followed by a second prompt asking the follow-up.
+export function askConfirmChecked(options: ConfirmOptions & { check: ConfirmCheck }): Promise<ConfirmAnswer> {
+  return enqueue(confirmRequest(options));
 }
 
 /// States something and resolves when it has been dismissed. Drop-in
@@ -103,6 +142,7 @@ export async function showAlert(options: AlertOptions): Promise<void> {
     confirmLabel: null,
     cancelLabel: options.dismissLabel ?? "OK",
     danger: false,
+    check: null,
   });
 }
 
@@ -110,12 +150,15 @@ export async function showAlert(options: AlertOptions): Promise<void> {
 /// is not the current head is ignored, which is what makes a
 /// double-answer harmless -- Escape and a click on the same dialog both
 /// land here, and only the first one counts.
-export function answerDialog(id: number, confirmed: boolean): void {
+///
+/// `checked` is whatever the tick-box was left at; a prompt without one
+/// answers false and nobody reads it.
+export function answerDialog(id: number, confirmed: boolean, checked = false): void {
   const current = queue[0];
   if (!current || current.request.id !== id) return;
   queue = queue.slice(1);
   head.set(queue[0]?.request ?? null);
-  current.resolve(confirmed);
+  current.resolve({ confirmed, checked });
 }
 
 /// Test-only reset: drops every queued request without settling it, so

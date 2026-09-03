@@ -1064,6 +1064,113 @@ export function pruneWorktrees(workspaceId: string): Promise<boolean> {
   return run(workspaceId, "Prune worktrees", (cwd) => backend.gitWorktreePrune(cwd));
 }
 
+/// The half of a sweep verdict that only git can answer: which branches
+/// have landed on `base`, and which worktrees still hold uncommitted
+/// work. The rails and the sessions are the caller's to supply; the rule
+/// that joins the four lives in worktreeSweep.ts.
+///
+/// Deliberately outside `run()`: it is read-only, and marking the whole
+/// tab busy (and clearing its error banner) merely because a menu opened
+/// would be a lie about what gavin is doing.
+///
+/// A checkout whose status will not read counts as DIRTY. Every failure
+/// mode here — a folder half-deleted, a permissions problem, a git that
+/// exited non-zero — is a reason not to know what is in it, and "we
+/// could not look" must never be recorded as "there was nothing there".
+export async function sweepFacts(
+  rootPath: string,
+  base: string,
+  paths: readonly string[]
+): Promise<{ merged: Set<string>; dirty: Set<string> }> {
+  const merged = await backend
+    .gitMergedBranches(rootPath, base)
+    .then((names) => new Set(names))
+    .catch(() => new Set<string>());
+  const dirty = new Set<string>();
+  await Promise.all(
+    paths.map(async (path) => {
+      const clean = await backend
+        .gitStatus(path)
+        .then((s) => s.staged.length === 0 && s.unstaged.length === 0)
+        .catch(() => false);
+      if (!clean) dirty.add(path.replace(/\/+$/, ""));
+    })
+  );
+  return { merged, dirty };
+}
+
+/// Remove a batch of worktrees in one busy cycle, never forced: `git
+/// worktree remove` refusing is the last line of defence under the
+/// staleness rule, and a sweep that passed `--force` would delete
+/// exactly the work the rule exists to protect. The first refusal stops
+/// the batch and lands in the error banner with git's own words.
+export function sweepWorktrees(
+  workspaceId: string,
+  entries: readonly { path: string; branch: string | null }[],
+  deleteBranches: boolean
+): Promise<boolean> {
+  return run(workspaceId, "Sweep worktrees", async (cwd) => {
+    for (const entry of entries) {
+      await backend.gitWorktreeRemove(cwd, entry.path, false);
+      // Never forced either: `branch -d` refuses anything unmerged, and
+      // the sweep only ever offers this for branches git already agreed
+      // had landed.
+      if (deleteBranches && entry.branch) await backend.gitDeleteBranch(cwd, entry.branch, false);
+    }
+  });
+}
+
+/// Remove the worktrees a best-of-N run is throwing away, FORCED --
+/// the one place in this file that passes `--force` to either command.
+///
+/// The sweep above refuses to, and must: it deletes checkouts nobody
+/// explicitly chose, so git's own refusal is its last line of defence.
+/// Here the opposite is true. A losing candidate's worktree is dirty by
+/// definition -- an agent worked in it for twenty minutes -- and its
+/// branch holds commits that were never merged anywhere, so an unforced
+/// `worktree remove` and an unforced `branch -d` would BOTH refuse, on
+/// every candidate, every time. The human has already been shown each
+/// folder by name and told the work in it is going.
+///
+/// Best-effort per entry, unlike the sweep's stop-at-the-first-refusal:
+/// the losers have already had their sessions closed by the time this
+/// runs, so stopping halfway would leave folders with nothing in the app
+/// still pointing at them. The last failure is reported once everything
+/// else is gone.
+export async function discardWorktrees(
+  workspaceId: string,
+  entries: readonly { path: string; branch: string | null }[],
+  deleteBranches: boolean
+): Promise<boolean> {
+  // The Git tab may be POINTED at one of these -- reading a candidate's
+  // diff is exactly how a human decides which to keep -- and `run` takes
+  // its cwd from that view. git refuses to remove the worktree it is
+  // being run from, so without this the pick fails on the one folder the
+  // human was looking at. Moved back to the root first, which is where
+  // the tab has to end up anyway once the folder is gone.
+  //
+  // Inside this function rather than at its call sites: the sweep learnt
+  // the same lesson in its own component, and two copies of a guard is
+  // one copy that gets forgotten.
+  const view = current(workspaceId);
+  const doomed = new Set(entries.map((e) => e.path.replace(/\/+$/, "")));
+  if (view && doomed.has(view.cwd.replace(/\/+$/, ""))) {
+    await switchWorktree(workspaceId, rootPathOf(view));
+  }
+  return run(workspaceId, "Discard worktrees", async (cwd) => {
+    let failure: unknown = null;
+    for (const entry of entries) {
+      try {
+        await backend.gitWorktreeRemove(cwd, entry.path, true);
+        if (deleteBranches && entry.branch) await backend.gitDeleteBranch(cwd, entry.branch, true);
+      } catch (e) {
+        failure = e;
+      }
+    }
+    if (failure) throw failure;
+  });
+}
+
 /// Merge a fork's branch into the ROOT checkout (G12). "conflict" means the
 /// root now has MERGE_HEAD and the banner's Abort is the way out.
 export async function mergeBack(workspaceId: string, rootPath: string, branch: string): Promise<"merged" | "conflict" | "failed"> {

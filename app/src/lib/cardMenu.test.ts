@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { writable } from "svelte/store";
+import { get, writable } from "svelte/store";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
@@ -82,6 +82,7 @@ import { kanbanState } from "./kanbanState";
 import { orchestrations } from "./orchestrationState";
 import { emptyOrchestration, addRail, addStage, addStep } from "./orchestration";
 import { buildCardMenuEntries, type CardMenuHooks } from "./cardMenu";
+import { bestOfNRequest, bestOfNRuns } from "./bestOfNState";
 import { isSeparator, type ContextMenuItem } from "./contextMenu";
 import type { CardView } from "./planBoard";
 import type { Board } from "./kanban";
@@ -150,6 +151,8 @@ function rails(on?: "backend" | "ui"): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  bestOfNRuns.set({});
+  bestOfNRequest.set(null);
   kanbanState.set({ "ws-1": board() });
   orchestrations.set({ "ws-1": emptyOrchestration() });
   layoutState.update((s) => ({
@@ -327,5 +330,69 @@ describe("buildCardMenuEntries", () => {
     expect(labels(buildCardMenuEntries(card("task", null, { parent: "p.md" }), hooks()))).toContain("Un-parent");
     expect(labels(buildCardMenuEntries(card("task", null), hooks()))).not.toContain("Un-parent");
     expect(labels(buildCardMenuEntries(card("plan", "To Do"), hooks()))).not.toContain("Un-parent");
+  });
+});
+
+describe("best-of-N entries", () => {
+  it("offers a run on several agents beside the ordinary Run", () => {
+    const l = labels(buildCardMenuEntries(card("task", "To Do"), hooks()));
+    expect(l).toContain("Run on several agents…");
+    expect(l.indexOf("Run on several agents…")).toBe(l.indexOf("Run in dedicated session") + 1);
+  });
+
+  it("asks the app-level dialog for it rather than running anything itself", () => {
+    // Three surfaces build this menu; the dialog is mounted once, in
+    // +page.svelte, and this store is how they reach it.
+    const c = card("task", "To Do");
+    const entries = buildCardMenuEntries(c, hooks());
+    item(entries, "Run on several agents…")?.onPick();
+    expect(get(bestOfNRequest)).toEqual({ workspaceId: "ws-1", card: c });
+  });
+
+  it("never offers it for a note", () => {
+    expect(labels(buildCardMenuEntries(card("note", "To Do"), hooks())).join()).not.toContain("several agents");
+  });
+
+  it("replaces every run action with a pick while a run is in flight", () => {
+    // The candidates are not bound to the card, so without this the menu
+    // would offer to start a SECOND run over the top of the first.
+    bestOfNRuns.set({
+      "ws-1": [
+        {
+          cardPath: "/p/t.md",
+          cardTitle: "T",
+          pageId: "pg",
+          startedAt: 0,
+          candidates: [
+            { sessionId: "a", label: "A", profileId: "claude-code", model: "", branch: "b1", worktreePath: "/w1", command: "", conversationId: null },
+            { sessionId: "b", label: "B", profileId: "codex", model: "", branch: "b2", worktreePath: "/w2", command: "", conversationId: null },
+          ],
+        },
+      ],
+    });
+    const l = labels(buildCardMenuEntries(card("plan", "In Progress"), hooks()));
+    expect(l).toContain("Best of 2 — pick a candidate…");
+    expect(l).not.toContain("Run in dedicated session");
+    expect(l).not.toContain("Run on several agents…");
+  });
+
+  it("sends the pick to the card detail, where the run's panel lives", () => {
+    bestOfNRuns.set({
+      "ws-1": [
+        {
+          cardPath: "/p/t.md",
+          cardTitle: "T",
+          pageId: "pg",
+          startedAt: 0,
+          candidates: [
+            { sessionId: "a", label: "A", profileId: "claude-code", model: "", branch: "b1", worktreePath: "/w1", command: "", conversationId: null },
+          ],
+        },
+      ],
+    });
+    const h = hooks();
+    const entries = buildCardMenuEntries(card("plan", "In Progress"), h);
+    item(entries, "Best of 1 — pick a candidate…")?.onPick();
+    expect(h.openDetail).toHaveBeenCalledWith("/p/t.md");
   });
 });

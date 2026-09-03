@@ -6,6 +6,9 @@ import { setTabPinned, splitPane, closeSession } from "./layoutState";
 import { closeTabs } from "./tabActions";
 import { confirmTabClose } from "./confirmClose";
 import { bulkCloseTargets } from "./layout";
+import { bestOfNRuns, runForSessionAnywhere } from "./bestOfNState";
+import { pickCandidate } from "./bestOfNActions";
+import { get } from "svelte/store";
 import type { ContextMenuEntry } from "./contextMenu";
 
 export interface TabMenuContext {
@@ -43,6 +46,30 @@ export function buildTabMenuEntries(ctx: TabMenuContext, hooks: TabMenuHooks): C
     { separator: true },
     { label: ctx.pinned ? "Unpin" : "Pin", onPick: () => void setTabPinned(ctx.tabId, !ctx.pinned) },
   ];
+
+  // A best-of-N candidate, decided from where the human is actually
+  // watching them: the pane. The card detail modal has the same action
+  // in a considered list, but a run is watched in the terminals, and
+  // making the human find the card to end one they have already judged
+  // is the friction this entry removes. Confirm-gated like the modal's
+  // -- the same prompt, naming every folder it deletes.
+  const inRun = ctx.kind === "terminal" ? runForSessionAnywhere(get(bestOfNRuns), ctx.tabId) : null;
+  if (inRun) {
+    entries.push(
+      { separator: true },
+      {
+        label:
+          inRun.run.candidates.length === 2
+            ? "Keep this candidate, discard the other…"
+            : `Keep this candidate, discard the other ${inRun.run.candidates.length - 1}…`,
+        onPick: () => {
+          void pickCandidate(inRun.workspaceId, inRun.run, ctx.tabId).then((err) => {
+            if (err) hooks.reportError(err);
+          });
+        },
+      }
+    );
+  }
 
   if (ctx.kind === "terminal") {
     entries.push(
