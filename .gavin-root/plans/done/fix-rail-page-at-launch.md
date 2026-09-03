@@ -1,7 +1,7 @@
 ---
 kind: task
 title: [fix] a rail armed without Start runs on the workspace's active page
-status: To Do
+status: Done
 priority: high
 ---
 Make a rail's own page a LAUNCH-time invariant instead of an arm-time one, so a rail's sessions land on a page named after the rail however the rail came to be running.
@@ -25,3 +25,7 @@ Also: reword spec O16 and §4.1 so the page is made "at arming, or at the first 
 Out of scope: an MCP start-rail tool (a protocol addition — file separately if wanted); moving Grimoria's existing tabs (the human can drag them).
 
 Done when: the new tests are green, `cd app && npm test && npm run check && npm run build` pass, the spec and smoke item are updated.
+
+<!-- gavin:auto-commit -->
+When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.
+<!-- /gavin:auto-commit -->
