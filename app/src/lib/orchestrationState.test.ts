@@ -237,7 +237,21 @@ beforeEach(() => {
   boardStore.set({});
   layoutStore.set({ workspaces: [], sessionStatusById: {}, failureReasonById: {} });
   cardAttachments.a = [];
+  // Every launch now asks for the rail's page before making its session,
+  // so this mock is reached from far more tests than Start and Resume --
+  // and `clearAllMocks` keeps implementations, so a describe that made
+  // it answer "p-new" would otherwise re-bind every later test's rail.
+  vi.mocked(layoutStateModule.createPage).mockResolvedValue(null);
 });
+
+/// The layout a rail bound to "p1" is entitled to: the page it names,
+/// live. Since a launch checks that binding before it makes a session,
+/// a fixture whose rail says "p1" over an EMPTY layout is the closed-page
+/// case (spec O16) and gets a fresh page -- which is not what a test
+/// asserting `"p1"` means to exercise.
+function setRailPageLive(): void {
+  setLayoutState({ workspaces: [{ id: "ws-1", pages: [{ id: "p1", name: "backend" }] }] });
+}
 
 function setLayoutState(value: { workspaces: unknown[] }): void {
   layoutStore.set({ ...value, sessionStatusById: {}, failureReasonById: {} });
@@ -578,6 +592,7 @@ describe("rail controls", () => {
   // fresh agent over a checkout that already carries the first attempt's
   // edits.
   it("Resume step reopens the conversation in the directory the run was launched in", async () => {
+    setRailPageLive();
     vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValue({
       launchCommand: "claude",
       promptArgs: "",
@@ -818,6 +833,198 @@ describe("a rail spawns its own page when armed (spec O16)", () => {
   });
 });
 
+/// A rail whose run row already says `running` and whose `pageId` is
+/// null: what an agent writing SetRailRun straight to the daemon socket
+/// leaves behind, and what fetchOrchestration adopts after a restart.
+/// Neither path passes through startRail, so nothing armed a page. Two
+/// stages, so a SECOND launch on the same rail is observable.
+function adoptedRail(pageId: string | null = null): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        pageId,
+        stages: [
+          { id: "s1", position: 0, steps: [{ id: "t1", position: 0, cardPath: "/x/a.md" }] },
+          { id: "s2", position: 1, steps: [{ id: "t2", position: 0, cardPath: "/x/b.md" }] },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+  };
+}
+
+// Spec O16, enforced at LAUNCH rather than only at arming. The Grimoria
+// failure: five rails armed over the socket, every step of every rail
+// stacked on the workspace's active page, because ensureRailPage was
+// reachable only from Start and Resume.
+describe("a rail armed without Start gets its page at its first launch (spec O16)", () => {
+  const PAGE_ARGS = ["ws-1", expect.any(Function), 1, "backend", { cwd: "/x/wt", activate: false }];
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.getOrchestration).mockResolvedValue(adoptedRail());
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createPage).mockResolvedValue("pg-rail");
+    setLayoutState({ workspaces: [{ id: "ws-1", pages: [] }] });
+    await fetchOrchestration("ws-1");
+  });
+
+  it("the first launch lands on a page named after the rail, and binds it", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
+    // The NEW page, not the null the rail carried when the launch began:
+    // the binding is an optimistic mutatePlan, and a rail read once at
+    // the top of the launch is stale by the time the session is made.
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "pg-rail",
+      "/x/wt",
+      expect.stringContaining("claude")
+    );
+    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("pg-rail");
+  });
+
+  it("the rail's second launch reuses that page", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    // The mocked createPage puts nothing in the layout; the real one does.
+    setLayoutState({ workspaces: [{ id: "ws-1", pages: [{ id: "pg-rail", name: "backend" }] }] });
+    vi.mocked(layoutStateModule.createPage).mockClear();
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t2" }]);
+    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenLastCalledWith(
+      "ws-1",
+      "pg-rail",
+      "/x/wt",
+      expect.any(String)
+    );
+  });
+
+  it("a rail whose page was closed gets a fresh one at the next launch", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue(adoptedRail("p-gone"));
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    setLayoutState({ workspaces: [{ id: "ws-1", pages: [{ id: "p-other", name: "Page 1" }] }] });
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "pg-rail",
+      "/x/wt",
+      expect.any(String)
+    );
+  });
+
+  // Spec §4.3 step 4: a page is where agents land, not a precondition
+  // for running them. The step goes to the fallback and the rail keeps
+  // advancing -- a page failure must never read as a stalled step.
+  it("a page that cannot be created still launches the step on the fallback and leaves the rail running", async () => {
+    vi.mocked(layoutStateModule.createPage).mockResolvedValue(null);
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      null,
+      "/x/wt",
+      expect.any(String)
+    );
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
+    expect(backend.setRailRun).not.toHaveBeenCalled();
+    expect(get(orchestrations)["ws-1"].railRuns).toEqual([
+      { railId: "r1", state: "running", currentStageId: "s1" },
+    ]);
+  });
+
+  it("a tool step launches onto the rail's page the same way", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...toolRail(),
+      rails: toolRail().rails.map((r) => ({ ...r, pageId: null })),
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "pg-rail",
+      "/x/wt",
+      expect.stringContaining("git push -u origin HEAD")
+    );
+  });
+
+  // A `gavin` action has no session, so it has nothing to put on a page
+  // -- the rail carrying it must not gain one on its account.
+  it("a gavin action spawns no page for the rail carrying it", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...toolRail(),
+      rails: toolRail().rails.map((r) => ({
+        ...r,
+        pageId: null,
+        stages: [
+          {
+            id: "s1",
+            position: 0,
+            steps: [
+              {
+                id: "t1",
+                position: 0,
+                cardPath: "",
+                toolId: "builtin:start-rail",
+                toolParams: { rail: "no such rail" },
+              },
+            ],
+          },
+        ],
+      })),
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  it("resuming a stalled step reopens it on the rail's page too", async () => {
+    vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValueOnce({
+      launchCommand: "claude",
+      promptArgs: "",
+      resumeArgs: "--resume",
+      failurePatterns: [],
+      failureCauses: [],
+      sessionIdArgs: "--session-id",
+    } as never);
+    await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "broke", "conv-1", "/x/wt");
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    expect(await resumeStep("ws-1", "t1")).toBeNull();
+    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "pg-rail",
+      "/x/wt",
+      "claude --resume conv-1"
+    );
+  });
+});
+
 describe("executeActions", () => {
   beforeEach(async () => {
     vi.mocked(backend.getOrchestration).mockResolvedValue({
@@ -826,6 +1033,7 @@ describe("executeActions", () => {
     });
     vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
     vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    setRailPageLive();
     await fetchOrchestration("ws-1");
   });
 
@@ -1244,6 +1452,7 @@ describe("launching a tool step", () => {
     vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
     vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
     vi.mocked(backend.getOrchestration).mockResolvedValue(toolRail());
+    setRailPageLive();
     await fetchOrchestration("ws-1");
     // An EMPTY library, which still contains the built-ins.
     toolRecords.set({ "ws-1": [] });
@@ -1426,7 +1635,15 @@ function armWorkspace(): void {
     // sess-9 is what createSessionOnPage is mocked to return: a step
     // this tick launches has to read as LIVE on the next one, or rule 3
     // would call its session dead and stall the rail.
-    workspaces: [{ pages: [{ layout: { type: "leaf", tabs: ["sess-1", "sess-9"] } }] }],
+    // "p1", because every fixture here binds its rail to "p1": a launch
+    // checks that page is still live before making a session, and an
+    // id-less page would read as closed and spawn a fresh one.
+    workspaces: [
+      {
+        id: "ws-1",
+        pages: [{ id: "p1", name: "backend", layout: { type: "leaf", tabs: ["sess-1", "sess-9"] } }],
+      },
+    ],
     // No status reported for either: a session the daemon has said
     // nothing about is not a finished one.
     sessionStatusById: {},

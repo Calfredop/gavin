@@ -39,7 +39,7 @@ because of a detected conflict.
 | O13 | **Separate worktrees are never a conflict**, same rail or different rails — sharing a checkout is the whole criterion. There is no step-level worktree, so a parallel stage always shares its rail's checkout; the box flags it and offers **Make sequential**. |
 | O15 | A rail binds to a **checkout and a branch, orthogonally**: `worktreePath` says *which* checkout, `branch` says which branch gavin puts it on before launching. A branch with no worktree is the root checkout on that branch — **branches are a first-class alternative to a folder each**. Gavin switches only when no step of that rail is running, refuses on a dirty checkout, and never switches back. |
 | O14 | A **card step renders the kanban card itself** — one `BoardCard`, with every board feature it has anywhere else. A **tool step keeps the chip**: a tool is not a card. On a rail the card wears the one fact the board leaves implicit — **which column it sits in**. |
-| O16 | **Starting a rail spawns its own page**, named after it, when the rail has none. An explicit binding is never overridden, and a page that still exists is reused — only an unbound or closed-page rail gets a fresh one. The page is made **without being switched to**: the human stays on the tab they pressed Start in. A failed creation is not a stall: the rail arms onto the Agents-page fallback. |
+| O16 | **A rail runs on a page of its own**, named after it, made at arming — or at the first launch of a rail that was armed some other way (a run row written straight to the daemon socket, adopted on a refresh or across a restart). An explicit binding is never overridden, and a page that still exists is reused — only an unbound or closed-page rail gets a fresh one, whichever launch finds it so. The page is made **without being switched to**: the human stays on the tab they were on. A failed creation is not a stall: the step launches onto the Agents-page fallback. |
 | O17 | The tab's agent surface is **two scoped buttons, not one**. **Generate with agent…** in the tab header is about the cards *nobody has placed* — it hands the agent the unplaced list and asks for rails to hold it. A **wand in each rail header** is about *that rail's arrangement* — reorder, split, merge, and nothing else. Both drive the same `gavin-orchestrate` skill and both still write the WHOLE plan: the scope is what the agent may change, not what it sends. |
 
 ---
@@ -272,7 +272,8 @@ idle ──Start──▶ running ──all stages complete──▶ idle (rende
   touches card statuses — the board is the human's record, not the
   scheduler's scratch space.
 
-**Arming spawns the rail's page (O16).** Both Start and Resume, before
+**The rail's page is made at arming, or at the first launch of a rail
+that was armed some other way (O16).** Both Start and Resume, before
 writing `running`, ask `pageToSpawnForRail(rail, pages)` for the page this
 rail should have: `null` when `rail.pageId` names a page that still
 exists, otherwise the rail's own name, deduped against the workspace's
@@ -280,17 +281,27 @@ page names (`backend`, `backend 2`, …) so two same-named rails never
 produce two indistinguishable tabs. A name means `createPage(workspaceId,
 presetSingle, 1, name, { cwd, activate: false })` followed by
 `bindRail(railId, { pageId })` — so the very first launch of the very
-first tick already lands there. The page's own blank shell opens in the
-rail's checkout (`worktreePath ?? root`, spelled as §4.3 spells it), so
-the page is the rail's in the way that matters and not just by name. It
-is **not** switched to: the human pressed Start on the Orchestration tab
+first tick already lands there, and the rail's chip names the page before
+that tick. But arming is not the only way a run row reaches the store: an
+agent can write `SetRailRun { state: running }` straight to the daemon
+socket, a rail left running across a restart arrives with the plan, and
+a push can carry one for a workspace not loaded yet. None of those pass
+through Start, so **every launch that makes a session — a card step, a
+tool step, a step resume — asks the same question again first**, through
+one helper (`createSessionOnRailPage`), and re-reads the rail's binding
+after it: a rail armed over the socket gets its page at its first launch,
+and a rail whose page was closed mid-run gets a fresh one at the next. A
+`gavin` action makes no session and so asks for no page. The page's own
+blank shell opens in the rail's checkout (`worktreePath ?? root`, spelled
+as §4.3 spells it), so the page is the rail's in the way that matters and
+not just by name. It is **not** switched to: the human pressed Start on
+the Orchestration tab, or is elsewhere entirely when a launch makes it,
 and stays there, exactly as §4.3's own placement leaves the screen alone.
 The sidebar and the rail's page chip are where the new page announces
-itself. A rail whose page was
-closed while it sat paused gets a new one on Resume for the same reason.
-Creation failing is **not** a stall: the rail arms anyway and its launches
-take §4.3's Agents-page fallback. A page is where agents land, not a
-precondition for running them.
+itself. Creation failing is **not** a stall: the rail arms anyway, the
+step launches onto §4.3's Agents-page fallback, and the next launch
+simply asks again. A page is where agents land, not a precondition for
+running them.
 
 ### 4.2 Per-tick rules, in order
 
@@ -367,11 +378,14 @@ never disagree about what is running:
 2. `buildRunCommand(resolvedAgentFor(workspaceId).command, prompt)`.
 3. `createSession(cwd, command)` where `cwd = rail.worktreePath ??
    card.contextFolder`.
-4. Place it: `switchToPage`-style insert into `rail.pageId` when that page
-   still exists, otherwise `handleAgentSessionSpawned`'s Agents-page posture.
-   By the first launch `rail.pageId` normally names a page of the rail's
-   own — arming created it (§4.1) — so the fallback is for the rail whose
-   page creation failed, not the ordinary case.
+4. Place it: first `ensureRailPage` (§4.1) — a no-op when `rail.pageId`
+   names a page that still exists, otherwise the rail's own page is made
+   and bound now — then a `switchToPage`-style insert into the binding
+   read back AFTER that, or `handleAgentSessionSpawned`'s Agents-page
+   posture when there is none. Arming normally did this already, so the
+   launch-time call is for the rail armed without Start and the page
+   closed mid-run; the fallback is for the rail whose page creation
+   failed, not the ordinary case.
 5. `linkCardSessionAction(...)` — the same `card_sessions` binding the
    board's Run button uses, so **Run** on the board jumps to the rail's
    session instead of double-spawning.
@@ -774,8 +788,8 @@ when it is armed.
 **Page.** `Bind page…` lists the workspace's pages and offers "New page
 named after the rail", created through the existing page actions. Leaving
 it unbound is not "the Agents page" but "a page of its own, made at
-Start" (O16, §4.1) — which is what the option and the rail's page chip
-say.
+Start — or at its first launch" (O16, §4.1) — which is what the option
+and the rail's page chip say.
 
 **Re-binding** rewrites the binding only. Sessions already running keep the
 cwd they were spawned with; their chips show the worktree they actually ran

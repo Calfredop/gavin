@@ -328,12 +328,17 @@ function railOwning(orch: Orchestration, stepId: string): Rail | null {
 
 const spawningPages = new Set<string>();
 
-/// Arming a rail gives it a page of its OWN, named after it (spec O16):
-/// the human pressed Start, so this rail's agents get a home they can be
-/// found in rather than piling into the shared Agents page with everyone
-/// else's. Only when the rail has no live page binding -- an explicit
-/// one is never overridden, and re-arming returns to the page the rail
-/// already has.
+/// A running rail gets a page of its OWN, named after it (spec O16): its
+/// agents get a home they can be found in rather than piling onto the
+/// workspace's active page with everyone else's. Only when the rail has
+/// no live page binding -- an explicit one is never overridden, and
+/// re-arming returns to the page the rail already has.
+///
+/// Called at arming (Start, Resume), so the chip names the page before
+/// the first tick -- and again before every launch that makes a session
+/// (createSessionOnRailPage), because arming is not the only way a run
+/// row reaches the store. Idempotent by construction: a bound page that
+/// still exists answers null from pageToSpawnForRail and nothing is made.
 ///
 /// Failing to create one is not fatal, and deliberately not a stall: the
 /// rail arms anyway and its launches fall back to the Agents-page
@@ -371,6 +376,37 @@ async function ensureRailPage(workspaceId: string, railId: string): Promise<void
   } finally {
     spawningPages.delete(railId);
   }
+}
+
+/// The rail's page, then the session on it. The ONE seam every launch
+/// that makes a session goes through -- card launch, tool launch, step
+/// resume -- so a rail's own page is a launch-time invariant and not
+/// merely an arming-time one. Start and Resume still call ensureRailPage
+/// themselves, but a run row can reach the store without either: an
+/// agent writing SetRailRun straight to the daemon socket, a rail left
+/// running across a restart, a push for a workspace not loaded yet.
+/// Before this, every such rail launched onto the workspace's ACTIVE
+/// page (createSessionOnPage's null fallback) and kept doing so for
+/// every later stage, retry and resume -- twenty tabs on "Page 1".
+///
+/// The binding is RE-READ after the page is made: bindRail is an
+/// optimistic mutatePlan, so the `rail` a caller captured at its top
+/// still says null. Passing that would land the very first session on
+/// the fallback and leave the new page empty.
+///
+/// Not a stall when the page cannot be made: ensureRailPage swallows
+/// that, the binding stays null, and the session takes the fallback
+/// (spec §4.3 step 4).
+async function createSessionOnRailPage(
+  workspaceId: string,
+  railId: string,
+  cwd: string,
+  command: string | null
+): Promise<string | null> {
+  await ensureRailPage(workspaceId, railId);
+  const pageId =
+    get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId)?.pageId ?? null;
+  return createSessionOnPage(workspaceId, pageId, cwd, command);
 }
 
 export async function startRail(workspaceId: string, railId: string): Promise<void> {
@@ -485,7 +521,7 @@ export async function resumeStep(
 
   let sessionId: string | null;
   try {
-    sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
+    sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   } catch (e) {
     return `Couldn't reopen the conversation: ${e instanceof Error ? e.message : e}`;
   }
@@ -689,7 +725,7 @@ async function executeToolLaunch(
     return false;
   }
 
-  const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
+  const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
     await setStepRunAction(workspaceId, step.id, "stalled", null, `could not start ${tool.name}`);
     return false;
@@ -777,7 +813,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
   const cwd = rail.worktreePath ?? entry.contextFolder;
-  const sessionId = await createSessionOnPage(workspaceId, rail.pageId, cwd, command);
+  const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
     return false;

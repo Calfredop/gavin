@@ -404,6 +404,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The page chip reads “page at Start” beforehand and the rail's name afterwards; a new blank shell on that page opens in the rail's checkout, not $HOME. Re-arming it, or pressing Resume, must not make a second page — close the page while it is paused and Resume is the one case that should.",
       },
       {
+        id: "run-rail-page-at-launch",
+        text: "A rail armed WITHOUT Start — its run row written straight to the daemon socket while the workspace is active — still lands its first step on a page named after the rail",
+        hint: "Leave the rail unbound, stand on the workspace's active page, and write `SetRailRun { state: \"running\" }` for it to the daemon socket (the way the Grimoria agent did when it found no start tool). The Orchestration tab adopts the row on its next refresh and the step launches: its tab must appear on a NEW page carrying the rail's name, the chip must read that name, and the page you were standing on must gain nothing. Then let the rail advance, press Retry on a stalled step, and Resume one — every launch keeps landing there. Close the page mid-run and the next launch makes a fresh one.",
+      },
+      {
         id: "run-merge-into",
         text: "“Merge this rail into a branch” on a rail bound to a worktree LANDS that branch on main; “Update from a branch” is the other direction and leaves main where it was",
         hint: "Bind a rail to a fork carrying a commit, drop each tool on a stage in turn and read `git log main` between them — the landing one adds the merge there, the inbound one only moves the fork. The step must run the merge in the ROOT checkout, so watch that the rail's own tab stays on its branch. Then make the root dirty on a file the merge touches: the step has to report git's refusal and leave that WIP alone, never stash or commit it. On a rail with NO worktree it should stop and say the rail has no branch of its own.",

@@ -111,11 +111,13 @@ export interface Rail {
   /// has made a decision that was theirs; a per-rail opt-in dissolves it
   /// only if the human actually made it, in advance, for this rail.
   autoResume?: boolean;
-  /// Workspace page its sessions land on. Null until the rail is armed:
-  /// Start gives an unbound rail a page of its own, named after it (spec
-  /// O16, pageToSpawnForRail). Still null if that creation failed, and
-  /// then the launch falls back to the Agents-page posture
-  /// handleAgentSessionSpawned already applies.
+  /// Workspace page its sessions land on. Null until the rail is armed
+  /// -- or, for a rail armed some other way than Start (a run row
+  /// written to the daemon socket, one adopted across a restart), until
+  /// its first launch: both give an unbound rail a page of its own,
+  /// named after it (spec O16, pageToSpawnForRail). Still null if that
+  /// creation failed, and then the launch falls back to the Agents-page
+  /// posture handleAgentSessionSpawned already applies.
   pageId: string | null;
   stages: Stage[];
 }
