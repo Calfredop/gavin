@@ -1864,6 +1864,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "With enough rails to scroll the strip sideways and a legacy horizontal scrollbar showing, the foot of a long rail — the whole “+ Add step” button — sits above the bar, not under it",
         hint: "A legacy bar needs a mouse plugged in, or System Settings → Appearance → Show scroll bars: Always; a trackpad's overlay bar takes no space and cannot show this. WebKit sized the old grid's row track without subtracting its own bar, so every rail ran 17px under it and the button lost its bottom edge.",
       },
+      {
+        id: "group-head-wraps-under-long-name",
+        text: "A group whose name is too long for one row beside its sequence/parallel toggle drops the toggle and ⋯ to a second row; the name keeps its one row and ellipsises only when even the full width is too narrow",
+        hint: "Narrow the window until the rails are 280px and give a group a long name — a short name keeps the single row, and the controls sit at the right edge on either row. The drag grip stays on the name's row.",
+      },
     ],
   },
   {

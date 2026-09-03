@@ -449,38 +449,46 @@
              per-control hint), but the header itself is what a blocked
              human actually gets to hover. -->
         <div class="group-head" title={groupsBlocked ?? undefined}>
-          <button
-            type="button"
-            class="grip"
-            data-orch-stage-handle={stage.id}
-            disabled={Boolean(groupsBlocked)}
-            title={groupsBlocked ?? "Drag to move this group"}
-            aria-label="Move this group"
-          >
-            <GripVertical size={12} />
-          </button>
-          {#if renamingStage === stage.id}
-            <input
-              class="group-name-input"
-              bind:value={groupDraft}
-              use:focusAndSelect
-              onblur={() => commitGroupName(stage.id)}
-              onkeydown={(e) => {
-                if (e.key === "Enter") commitGroupName(stage.id);
-                if (e.key === "Escape") renamingStage = null;
-              }}
-            />
-          {:else}
+          <!-- The grip and the name are ONE flex item, so the toggle and
+               the menu wrap to a second row as a pair exactly when the
+               name's full text would otherwise be cut -- and the name
+               keeps to one row regardless (its own ellipsis), rather
+               than a 280px rail showing "Merge a…" beside a toggle that
+               is never truncated. -->
+          <div class="group-title">
             <button
               type="button"
-              class="group-name"
+              class="grip"
+              data-orch-stage-handle={stage.id}
               disabled={Boolean(groupsBlocked)}
-              title={groupsBlocked ?? "Rename this group"}
-              onclick={() => startGroupRename(stage)}
+              title={groupsBlocked ?? "Drag to move this group"}
+              aria-label="Move this group"
             >
-              {stageLabel(stage, i)}
+              <GripVertical size={12} />
             </button>
-          {/if}
+            {#if renamingStage === stage.id}
+              <input
+                class="group-name-input"
+                bind:value={groupDraft}
+                use:focusAndSelect
+                onblur={() => commitGroupName(stage.id)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") commitGroupName(stage.id);
+                  if (e.key === "Escape") renamingStage = null;
+                }}
+              />
+            {:else}
+              <button
+                type="button"
+                class="group-name"
+                disabled={Boolean(groupsBlocked)}
+                title={groupsBlocked ?? "Rename this group"}
+                onclick={() => startGroupRename(stage)}
+              >
+                {stageLabel(stage, i)}
+              </button>
+            {/if}
+          </div>
           <div class="mode-toggle" title={groupsBlocked ?? undefined}>
             <button
               type="button"
@@ -739,13 +747,33 @@
     border-radius: 8px;
     background: var(--surface-accent);
   }
+  /* Wraps: the controls drop to a second row when the name needs the
+     first one (the `.group-title` rule below decides when). The 4px gap
+     is the row gap too. */
   .group-head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 4px;
     margin-bottom: 6px;
     font-size: 11px;
     color: var(--text-muted);
+  }
+  /* The grip and the name as one flex item sized to the name's FULL
+     text (`flex-basis: auto`, no shrink): the head's flex line then
+     breaks before the toggle exactly when that text plus the controls
+     overflow the rail, and never when a shorter name leaves room for
+     all of it on one row. The block is capped at the head's width, so a
+     name longer than the whole row still takes ONE row -- the name's
+     own ellipsis cuts it there -- instead of the grip and the name
+     landing on separate lines. */
+  .group-title {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1 0 auto;
+    min-width: 0;
+    max-width: 100%;
   }
   .grip {
     display: flex;
@@ -805,6 +833,11 @@
   .mode-toggle {
     display: flex;
     flex: none;
+    /* At the row's end on either row: the title block absorbs the free
+       space on a one-row head anyway, and on a two-row head this is
+       what keeps the toggle and the menu at the right edge instead of
+       hanging under the grip. */
+    margin-left: auto;
     border: 1px solid var(--border);
     border-radius: 4px;
     overflow: hidden;
