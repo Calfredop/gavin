@@ -11,6 +11,7 @@ mod pull_request;
 mod session;
 mod superpowers;
 mod workspace_delete;
+mod worktree_setup;
 
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -168,6 +169,7 @@ pub fn run() {
             git::git_checkout,
             git::git_create_branch,
             git::git_delete_branch,
+            git::git_merged_branches,
             git::git_merge,
             git::git_abort_in_progress,
             git::git_continue_rebase,
@@ -193,7 +195,8 @@ pub fn run() {
             git::git_resolve_whole,
             git::git_resolve_deleted,
             git::git_restore_conflict,
-            git::git_merge_tool_name
+            git::git_merge_tool_name,
+            worktree_setup::worktree_setup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

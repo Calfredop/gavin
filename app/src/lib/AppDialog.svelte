@@ -20,9 +20,16 @@
     title={req.title}
     lines={req.lines}
     cancelLabel={req.cancelLabel}
+    check={req.check}
     choices={req.confirmLabel === null
       ? []
-      : [{ label: req.confirmLabel, danger: req.danger, onPick: () => answerDialog(req.id, true) }]}
+      : [
+          {
+            label: req.confirmLabel,
+            danger: req.danger,
+            onPick: (_picked, checked) => answerDialog(req.id, true, checked),
+          },
+        ]}
     onCancel={() => answerDialog(req.id, false)}
   />
 {/if}

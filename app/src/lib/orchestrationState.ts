@@ -422,6 +422,24 @@ async function createSessionOnRailPage(
   return createSessionOnPage(workspaceId, pageId, cwd, command);
 }
 
+/// A session on the rail's page that is not a step: the `[worktree] setup`
+/// a freshly forked worktree runs when a rail is bound to it. It goes
+/// through the same seam every step launch does, because the alternative
+/// is the one this seam exists to prevent — the setup for THIS rail's
+/// worktree landing as another tab on the workspace's active page, beside
+/// everyone else's work, while the rail's own page sits empty.
+///
+/// No run row and no step: nothing in the plan is running, so the rail
+/// stays idle and its Start still begins at the first stage.
+export async function runOnRailPage(
+  workspaceId: string,
+  railId: string,
+  cwd: string,
+  command: string
+): Promise<void> {
+  await createSessionOnRailPage(workspaceId, railId, cwd, command);
+}
+
 export async function startRail(workspaceId: string, railId: string): Promise<void> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);

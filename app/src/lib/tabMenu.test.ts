@@ -12,12 +12,15 @@ vi.mock("./layoutState", () => ({
 }));
 vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
+vi.mock("./bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
 
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { setTabPinned, splitPane, closeSession } from "./layoutState";
 import { closeTabs } from "./tabActions";
 import { buildTabMenuEntries, type TabMenuContext, type TabMenuHooks } from "./tabMenu";
+import { bestOfNRuns } from "./bestOfNState";
+import { pickCandidate } from "./bestOfNActions";
 import { isSeparator, type ContextMenuItem } from "./contextMenu";
 
 function ctx(extra: Partial<TabMenuContext> = {}): TabMenuContext {
@@ -134,5 +137,50 @@ describe("buildTabMenuEntries", () => {
     await flush();
     await flush();
     expect(h.reportError).toHaveBeenCalledWith(expect.stringContaining("nope"));
+  });
+});
+
+describe("a best-of-N candidate's tab", () => {
+  const run = {
+    cardPath: "/p/auth.md",
+    cardTitle: "Auth",
+    pageId: "pg",
+    startedAt: 0,
+    candidates: ["a", "b", "c"].map((id) => ({
+      sessionId: id,
+      label: id.toUpperCase(),
+      profileId: "claude-code",
+      model: "",
+      branch: `auth-${id}`,
+      worktreePath: `/repos/gavin-auth-${id}`,
+      command: "",
+      conversationId: null,
+    })),
+  };
+
+  beforeEach(() => bestOfNRuns.set({}));
+
+  it("offers the pick from the pane, where the run is actually watched", () => {
+    bestOfNRuns.set({ "ws-1": [run] });
+    const entries = buildTabMenuEntries(ctx(), hooks());
+    find(entries, "Keep this candidate, discard the other 2…").onPick();
+    expect(pickCandidate).toHaveBeenCalledWith("ws-1", run, "b");
+  });
+
+  it("says nothing on a tab that is not in a run", () => {
+    const labels = buildTabMenuEntries(ctx(), hooks())
+      .filter((e) => !isSeparator(e))
+      .map((e) => (e as ContextMenuItem).label);
+    expect(labels.join()).not.toContain("Keep this candidate");
+  });
+
+  it("says nothing on a file tab that happens to share the id space", () => {
+    // File and board tab ids live in the same space as session ids, and a
+    // run record is keyed by session id alone.
+    bestOfNRuns.set({ "ws-1": [run] });
+    const labels = buildTabMenuEntries(ctx({ kind: "file", path: "/repo/a.md" }), hooks())
+      .filter((e) => !isSeparator(e))
+      .map((e) => (e as ContextMenuItem).label);
+    expect(labels.join()).not.toContain("Keep this candidate");
   });
 });

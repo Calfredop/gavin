@@ -7,7 +7,9 @@
     // True when this choice consumes the picker's value: disabled while
     // the picker has nothing to offer.
     needsPick?: boolean;
-    onPick: (picked: string | null) => void;
+    // `checked` is the tick-box's value, false whenever the prompt has
+    // no tick-box -- every existing choice simply ignores the argument.
+    onPick: (picked: string | null, checked: boolean) => void;
   }
 
   interface PickerOption {
@@ -23,6 +25,11 @@
     // Optional destination picker (e.g. where a deleted column's cards
     // should go); its value is handed to the chosen action.
     picker?: { label: string; options: PickerOption[] } | null;
+    // A variation on the one action ("also delete the merged
+    // branches"), so a flow with a follow-up question asks once. Never
+    // a second "are you sure": the title still has to describe what the
+    // confirm button does with the box left alone.
+    check?: { label: string; default?: boolean } | null;
     choices: Choice[];
     // The dismissing button's word. "Cancel" reads right when the other
     // answer is the action, but some prompts have two actions and no
@@ -31,9 +38,10 @@
     cancelLabel?: string;
     onCancel: () => void;
   }
-  let { title, lines, picker = null, choices, cancelLabel = "Cancel", onCancel }: Props = $props();
+  let { title, lines, picker = null, check = null, choices, cancelLabel = "Cancel", onCancel }: Props = $props();
 
   let picked = $state<string | null>(null);
+  let checked = $state(check?.default ?? false);
   let cancelButton = $state<HTMLButtonElement | null>(null);
   let choiceButtons = $state<Array<HTMLButtonElement | null>>([]);
 
@@ -88,6 +96,9 @@
       </select>
     </label>
   {/if}
+  {#if check}
+    <label class="check"><input type="checkbox" bind:checked /> {check.label}</label>
+  {/if}
   <div class="actions">
     <button type="button" bind:this={cancelButton} onclick={onCancel}>{cancelLabel}</button>
     {#each choices as choice, i (choice.label)}
@@ -96,7 +107,7 @@
         bind:this={choiceButtons[i]}
         class:danger={choice.danger}
         disabled={choice.needsPick && picked === null}
-        onclick={() => choice.onPick(picked)}
+        onclick={() => choice.onPick(picked, checked)}
       >
         {choice.label}
       </button>
@@ -129,6 +140,16 @@
     font-size: 0.85em;
     color: var(--text-muted);
     margin-bottom: 14px;
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+    cursor: pointer;
   }
   .picker select {
     background: var(--surface-sunken);

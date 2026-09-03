@@ -1,18 +1,30 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
+  import * as backend from "./backend";
   import { gitStore, forkWorktree, switchWorktree, rootPathOf } from "./gitState";
+  import { gavinTrees } from "./gavinState";
   import { defaultWorktreePath, validateBranchName } from "./git";
+  import { setupPlan, setupNotice } from "./worktreeSetup";
 
   interface Props {
     workspaceId: string;
     /// The workspace's resolved agent command (same resolution as Home).
     agentCommand: string;
-    onSpawnAgent: (path: string, command: string) => void;
+    /// Runs one command line in a visible session in the NEW worktree.
+    /// Named for the session rather than for the agent because the line it
+    /// is handed is the workspace's `[worktree] setup` with the agent
+    /// chained onto the end — every caller has to provide it, including
+    /// the ones that never offer to start an agent, or their worktree gets
+    /// no setup.
+    onRunInWorktree: (path: string, command: string) => void;
     onClose: () => void;
     /// Called with the created worktree's path. Set by callers that want
     /// the worktree for something other than starting an agent in it --
-    /// an orchestration rail binding, for instance.
-    onPicked?: (path: string) => void;
+    /// an orchestration rail binding, for instance. AWAITED before the
+    /// setup session is opened: a rail that is told about its worktree
+    /// first gets the page that session lands on opened in the worktree
+    /// too, rather than in the workspace root.
+    onPicked?: (path: string) => void | Promise<void>;
     /// Offer "Start agent here". Off for rail binding: the rail's own
     /// Start is what launches agents there.
     allowSpawn?: boolean;
@@ -31,7 +43,7 @@
   let {
     workspaceId,
     agentCommand,
-    onSpawnAgent,
+    onRunInWorktree,
     onClose,
     onPicked,
     allowSpawn = true,
@@ -54,6 +66,33 @@
   let folderTouched = $state(false);
   let startAgent = $state(true);
   let submitting = $state(false);
+
+  /// The workspace's `[worktree] setup`. Read off disk by the host, not
+  /// fetched from the daemon, so a workspace whose daemon is mid-upgrade
+  /// still gets its worktrees set up. `.gavin-root` sits at the WORKSPACE
+  /// root, which is not always the git toplevel this dialog forks from.
+  const gavinRoot = $derived($gavinTrees[workspaceId]?.rootPath ?? "");
+  let setup = $state<string[]>([]);
+  $effect(() => {
+    const root = gavinRoot;
+    if (!root) return;
+    // A stale reply must not overwrite a newer one; the dialog is built
+    // fresh on each open, but the root can arrive after mount.
+    let live = true;
+    void backend
+      .worktreeSetup(root)
+      .then((list) => {
+        if (live) setup = list;
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  });
+
+  /// What the new worktree's one session will run. Null means nothing is
+  /// to be run and no session should open at all.
+  const plan = $derived(setupPlan(setup, allowSpawn && startAgent ? agentCommand : null));
 
   // The folder follows the branch name until the user edits it (G11).
   const effectiveBranch = $derived(mode === "new" ? branch : existing);
@@ -78,6 +117,9 @@
     if (!valid) return;
     submitting = true;
     const path = folder.trim();
+    // Captured before the awaits below unmount this component: what the
+    // human agreed to is the plan as it stood when they pressed Create.
+    const run = plan;
     const ok = await forkWorktree(workspaceId, {
       path,
       branch: effectiveBranch,
@@ -88,8 +130,10 @@
     if (!ok) return; // the error banner shows git's message; keep the dialog
     onClose();
     if (switchAfter) await switchWorktree(workspaceId, path);
-    onPicked?.(path);
-    if (allowSpawn && startAgent) onSpawnAgent(path, agentCommand);
+    await onPicked?.(path);
+    // Last, and after the binding above has landed: the session is the
+    // one thing here that outlives this dialog.
+    if (run) onRunInWorktree(path, run.line);
   }
 </script>
 
@@ -140,6 +184,15 @@
         <input type="checkbox" bind:checked={startAgent} />
         Start agent here <span class="cmd">({agentCommand})</span>
       </label>
+    {/if}
+
+    <!-- Only where setup was actually declared: a plan carrying nothing
+         but the agent command would just repeat the checkbox above it. -->
+    {#if plan && plan.commands > 0}
+      <div class="setup">
+        <span>{setupNotice(plan)}</span>
+        <code>{plan.line}</code>
+      </div>
     {/if}
 
     <div class="actions">
@@ -216,6 +269,32 @@
   }
   .cmd {
     color: var(--text-subtle);
+  }
+  .setup {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.78em;
+    color: var(--text-muted);
+    /* Both min-widths: a flex item's floor is its min-content width, and
+       an unbroken command line's min-content width is the whole line. */
+    min-width: 0;
+  }
+  .setup code {
+    /* block, not inline: overflow does nothing to an inline box, so an
+       inline <code> would widen the modal instead of scrolling. */
+    display: block;
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: monospace;
+    padding: 5px 8px;
+    /* The line is shown verbatim, and a long one must not widen the
+       modal past the fields above it. */
+    overflow-x: auto;
+    white-space: pre;
+    min-width: 0;
   }
   .actions {
     display: flex;

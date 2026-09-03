@@ -25,6 +25,7 @@ import {
   unpinTab,
   clampReorderIndex,
   bulkCloseTargets,
+  presetTiled,
 } from "./layout";
 import type { LayoutNode, Leaf } from "./layout";
 
@@ -701,5 +702,42 @@ describe("bulkCloseTargets", () => {
     expect(bulkCloseTargets(tabs, pinned, "ghost", "right")).toEqual([]);
     expect(bulkCloseTargets(tabs, pinned, "ghost", "left")).toEqual([]);
     expect(bulkCloseTargets(tabs, pinned, "ghost", "others")).toEqual([]);
+  });
+});
+
+describe("presetTiled", () => {
+  it("agrees with the hand-written presets at one, two and four panes", () => {
+    // There is one right answer to "two side by side" in this app, and a
+    // second one drawn slightly differently is a bug nobody would report.
+    expect(presetTiled(["a"])).toEqual(presetSingle("a"));
+    expect(presetTiled(["a", "b"])).toEqual(presetSideBySide("a", "b"));
+    expect(presetTiled(["a", "b", "c", "d"])).toEqual(presetGrid2x2("a", "b", "c", "d"));
+  });
+
+  it("keeps three in one row, because three terminals still read", () => {
+    const tree = presetTiled(["a", "b", "c"]);
+    expect(tree).toEqual({
+      type: "split",
+      direction: "row",
+      children: [presetSingle("a"), presetSingle("b"), presetSingle("c")],
+      sizes: [1 / 3, 1 / 3, 1 / 3],
+    });
+  });
+
+  it("wraps to rows of two beyond three, so no candidate is narrower than its own output", () => {
+    const tree = presetTiled(["a", "b", "c", "d", "e"]);
+    expect(tree.type).toBe("split");
+    const rows = (tree as Extract<LayoutNode, { type: "split" }>).children;
+    expect(rows).toHaveLength(3);
+    // The odd one out gets a full-width row rather than half a row with a
+    // hole in it.
+    expect(rows[2]).toEqual(presetSingle("e"));
+  });
+
+  it("puts every session in the tree exactly once, at any count", () => {
+    for (let n = 1; n <= 9; n++) {
+      const ids = Array.from({ length: n }, (_, i) => `s${i}`);
+      expect(allSessionIds(presetTiled(ids))).toEqual(ids);
+    }
   });
 });

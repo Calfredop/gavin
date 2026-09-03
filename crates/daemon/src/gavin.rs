@@ -21,7 +21,17 @@ const PRD_TEMPLATE: &str = "# {workspace} — Product Requirements\n\n\
 ## Current focus\n\n_The active goals, roughly ordered._\n\n\
 ## Out of scope\n\n_Explicit non-goals._\n";
 
-const ROOT_CONFIG_TEMPLATE: &str = "version = 1\n\n[agent]\nprofile = \"claude-code\"\n";
+/// The `[worktree]` block is scaffolded COMMENTED OUT: it is the one key
+/// here that gavin cannot guess, and a config.toml that never mentions it
+/// leaves the feature undiscoverable to anyone who hasn't read the source.
+/// Left commented rather than seeded with `setup = []` so that "no setup
+/// declared" stays the absence of a declaration and not an empty one.
+const ROOT_CONFIG_TEMPLATE: &str = "version = 1\n\n[agent]\nprofile = \"claude-code\"\n\n\
+# What a worktree gavin creates has to run before anyone can work in it.\n\
+# The commands run chained with `&&` in one visible session in the new\n\
+# worktree, and an agent started there waits for them to finish.\n\
+# [worktree]\n\
+# setup = [\"npm install\"]\n";
 
 /// Flat `key: value` frontmatter, parsed line-by-line. `fields` keeps only
 /// the recognized pairs; anything else in the block is untouched by
@@ -2284,6 +2294,13 @@ mod tests {
         let g = dir.path().join(GAVIN_ROOT_DIR);
         assert!(g.join("config.toml").is_file());
         assert!(g.join("PRD.md").is_file());
+        // The scaffolded config still parses with the `[worktree]` hint in
+        // it, and the hint stays a hint -- a live block here would be a
+        // declaration nobody made.
+        let config = std::fs::read_to_string(g.join("config.toml")).unwrap();
+        assert!(config.contains("# [worktree]"));
+        let table = config.parse::<toml::Table>().unwrap();
+        assert!(table.get("worktree").is_none());
         for sub in ["plans", "docs", "specs"] {
             assert!(g.join(sub).join(".gitkeep").is_file());
         }

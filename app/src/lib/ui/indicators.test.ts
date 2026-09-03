@@ -19,6 +19,7 @@ import {
   shellOrphanIndicator,
   shellRestartedIndicator,
   unsavedEditsIndicator,
+  worktreeStaleIndicator,
   type Indicator,
 } from "./indicators";
 
@@ -111,6 +112,9 @@ describe("the indicator vocabulary", () => {
     // Not an amber ring: "nothing to report" must not be drawn in the
     // colour the app uses for "come and look at this".
     expect(gitIndicator(false).tone).toBe("neutral");
+    // Finished, clean -- the same word "success" carries everywhere. A
+    // worktree nothing needs any more is over, not in trouble.
+    expect(worktreeStaleIndicator().tone).toBe("success");
     expect(unsavedEditsIndicator().tone).toBe("accent");
     expect(shellRestartedIndicator().tone).toBe("success");
     // A rail and a step both borrow the app's one meaning of accent:

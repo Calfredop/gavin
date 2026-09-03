@@ -411,6 +411,27 @@ pub fn delete_branch(cwd: &str, name: &str, force: bool) -> Result<(), String> {
     ok(run_git(cwd, &["branch", if force { "-D" } else { "-d" }, name], None)?).map(|_| ())
 }
 
+/// Local branches whose every commit is already on `base` — `git branch
+/// --merged`, which is exactly the question "would deleting this lose
+/// anything". `base` itself comes back in the list (a branch is merged
+/// into itself); the caller decides what to do with that.
+///
+/// `--format` rather than parsing the plain listing: the bare output
+/// prefixes the current branch with `* ` and a branch checked out in
+/// another worktree with `+ `, and a sweep that silently skipped
+/// whichever branch happened to be checked out is the kind of bug that
+/// only shows up on the machine that has the worktree.
+pub fn merged_branches(cwd: &str, base: &str) -> Result<Vec<String>, String> {
+    let out = ok(run_git_ro(cwd, &["branch", "--merged", base, "--format=%(refname:short)"])?)?;
+    Ok(out
+        .stdout_str()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// `merge --no-edit <branch>`; a conflict exits non-zero with MERGE_HEAD
 /// left behind, which `repo_info` reports as `in_progress: "merge"`.
 pub fn merge(cwd: &str, branch: &str) -> Result<(), String> {
@@ -502,6 +523,11 @@ pub fn git_create_branch(cwd: String, name: String, from: Option<String>, checko
 #[tauri::command]
 pub fn git_delete_branch(cwd: String, name: String, force: bool) -> Result<(), String> {
     delete_branch(&cwd, &name, force)
+}
+
+#[tauri::command]
+pub fn git_merged_branches(cwd: String, base: String) -> Result<Vec<String>, String> {
+    merged_branches(&cwd, &base)
 }
 
 #[tauri::command]
@@ -1129,5 +1155,36 @@ mod ref_tests {
         assert!(refs(cwd(&dir)).unwrap().worktrees[1].prunable);
         worktree_prune(cwd(&dir)).unwrap();
         assert_eq!(refs(cwd(&dir)).unwrap().worktrees.len(), 1);
+    }
+
+    /// The sweep's first disqualifier. The listing has to survive both
+    /// decorations git puts in front of a branch name — `*` for the
+    /// current one, `+` for one checked out in another worktree — which
+    /// is exactly the case a sweep runs into.
+    #[test]
+    fn merged_branches_lists_landed_work_including_checked_out_ones() {
+        let dir = temp_repo();
+        let base = repo_info(cwd(&dir)).unwrap().branch.unwrap();
+
+        create_branch(cwd(&dir), "landed", None, false).unwrap();
+        create_branch(cwd(&dir), "ahead", None, true).unwrap();
+        std::fs::write(dir.path().join("new.txt"), "x").unwrap();
+        stage_files(cwd(&dir), &["new.txt".into()]).unwrap();
+        commit(cwd(&dir), "work", false).unwrap();
+        checkout(cwd(&dir), &base, None).unwrap();
+
+        let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
+        let wt = dir.path().parent().unwrap().join(format!("{name}-landed"));
+        let wt_s = wt.to_str().unwrap().to_string();
+        worktree_add(cwd(&dir), &wt_s, "landed", None, false).unwrap();
+
+        let merged = merged_branches(cwd(&dir), &base).unwrap();
+        // `landed` is checked out in the linked worktree, so git decorates
+        // it with "+ " in the undecorated listing.
+        assert!(merged.contains(&"landed".to_string()), "{merged:?}");
+        assert!(merged.contains(&base), "{merged:?}");
+        assert!(!merged.contains(&"ahead".to_string()), "{merged:?}");
+
+        worktree_remove(cwd(&dir), &wt_s, true).unwrap();
     }
 }

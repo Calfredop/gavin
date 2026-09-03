@@ -20,6 +20,7 @@ import {
   removeCardFromRailAction,
 } from "./orchestrationState";
 import { executeArchive, executeUnarchive } from "./archiveActions";
+import { bestOfNRequest, bestOfNRuns, runForCard } from "./bestOfNState";
 import { featureBlockedReason } from "./daemonCompat";
 import { isArchivedCard, slugStatus, type CardView } from "./planBoard";
 import type { Column } from "./kanban";
@@ -61,7 +62,19 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
     entries.push({ separator: true });
     const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
     const sessionState = cardSessionState(get(layoutState), binding);
-    if (sessionState === "live") {
+    const run = runForCard(get(bestOfNRuns)[workspaceId], card.id);
+    // A run in flight replaces every run action, and there is exactly one
+    // thing to do with it: go and decide. The candidates are not bound to
+    // the card (the winner becomes its binding at the pick), so without
+    // this the menu would offer to start a SECOND run over the top of the
+    // first -- which the launch refuses, but only after the human has
+    // been offered it.
+    if (run) {
+      entries.push({
+        label: `Best of ${run.candidates.length} — pick a candidate…`,
+        onPick: () => hooks.openDetail(card.id),
+      });
+    } else if (sessionState === "live") {
       entries.push({
         label: "Jump to session",
         onPick: () => void jumpToBoundSession(workspaceId, card.id),
@@ -122,6 +135,14 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       entries.push({
         label: "Run in dedicated session",
         onPick: () => hooks.run(card),
+      });
+      // Beside the ordinary Run, because that is what it is a variant
+      // of: the same card, the same prompt, N agents instead of one. The
+      // ellipsis is honest -- the dialog asks which agents before
+      // anything is created.
+      entries.push({
+        label: "Run on several agents…",
+        onPick: () => bestOfNRequest.set({ workspaceId, card }),
       });
       entries.push({
         label: "Send to workspace agent",

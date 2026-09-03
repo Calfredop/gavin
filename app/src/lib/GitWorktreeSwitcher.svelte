@@ -1,10 +1,15 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import { ChevronDown, FolderGit2, Play, GitMerge, Trash2, Plus, Eraser } from "@lucide/svelte";
+  import { BrushCleaning, ChevronDown, FolderGit2, Play, GitMerge, Trash2, Plus, Eraser } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
-  import { agentProfilesStore, createSessionForCard, agentModelDefaultsStore} from "./layoutState";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { worktreeStaleIndicator } from "./ui/indicators";
+  import { agentProfilesStore, createSessionForCard, agentModelDefaultsStore, layoutState } from "./layoutState";
+  import { allSessionIdsInWorkspace } from "./workspace";
+  import { orchestrations } from "./orchestrationState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig } from "./settings";
+  import { askConfirmChecked, showAlert } from "./dialog";
   import {
     gitStore,
     rootPathOf,
@@ -12,9 +17,17 @@
     mergeBack,
     removeWorktree,
     pruneWorktrees,
+    sweepFacts,
+    sweepWorktrees,
     dismissError,
     noteError,
   } from "./gitState";
+  import {
+    classifyWorktrees,
+    nothingToSweepLines,
+    sweepConfirm,
+    type SweepVerdict,
+  } from "./worktreeSweep";
   import { splitPath, type WorktreeInfo } from "./git";
   import { tooltip } from "./tooltip";
   import GitForkDialog from "./GitForkDialog.svelte";
@@ -42,8 +55,53 @@
     ).launchCommand
   );
 
+  // Every rail in the app, not only this workspace's: a rail is bound to
+  // a PATH, and nothing stops a second workspace's rail pointing at a
+  // fork of this repo. Sweeping a checkout out from under it would be
+  // the same accident either way.
+  const railBindings = $derived(
+    Object.values($orchestrations)
+      .flatMap((o) => o.rails)
+      .flatMap((r) => (r.worktreePath ? [{ name: r.name, worktreePath: r.worktreePath }] : []))
+  );
+  // Same reasoning for sessions, and read off the LAYOUT rather than
+  // cwdBySessionId directly: that map is never pruned, so a session that
+  // closed an hour ago still has a cwd in it and would keep its worktree
+  // alive forever.
+  const sessionCwds = $derived(
+    $layoutState.workspaces
+      .flatMap((w) => allSessionIdsInWorkspace(w))
+      .flatMap((id) => {
+        const cwd = $layoutState.cwdBySessionId[id];
+        return cwd ? [cwd] : [];
+      })
+  );
+
   let open = $state(false);
   let fork = $state(false);
+  // What git said last time we asked: which branches have landed, and
+  // which of these folders still hold uncommitted work. Null until the
+  // menu has been opened once -- with nothing to go on, no row claims to
+  // be stale, which is the right way round for a delete button.
+  let facts = $state<{ merged: Set<string>; dirty: Set<string> } | null>(null);
+  // Supersession guard, not an identity check: `facts` is a $state proxy,
+  // so comparing what came back against what we sent is always unequal
+  // (see the app's Svelte 5 notes). A counter is what actually says
+  // whether a slower answer belongs to an older question.
+  let factsToken = 0;
+  const verdicts = $derived<SweepVerdict[]>(
+    facts === null
+      ? []
+      : classifyWorktrees(worktrees, {
+          base: rootBranch,
+          merged: facts.merged,
+          dirty: facts.dirty,
+          rails: railBindings,
+          sessionCwds,
+        })
+  );
+  const staleCount = $derived(verdicts.filter((v) => v.stale).length);
+  const staleByPath = $derived(new Set(verdicts.filter((v) => v.stale).map((v) => v.path)));
   let confirm = $state<{
     title: string;
     body: string;
@@ -117,6 +175,53 @@
     };
   }
 
+  /// Re-reads the two git facts and returns the verdicts they imply.
+  /// Awaited before the confirmation as well as on open, because the
+  /// badge may have been drawn a minute ago and an agent can have dirtied
+  /// a checkout since -- the list a human agrees to has to be the one git
+  /// would give now, not the one that opened the menu.
+  async function loadFacts(): Promise<SweepVerdict[]> {
+    if (!rootPath || worktrees.length === 0) return [];
+    const token = ++factsToken;
+    const fresh = await sweepFacts(
+      rootPath,
+      rootBranch,
+      worktrees.filter((w) => !w.prunable).map((w) => w.path)
+    );
+    if (token !== factsToken) return [];
+    facts = fresh;
+    return classifyWorktrees(worktrees, {
+      base: rootBranch,
+      merged: fresh.merged,
+      dirty: fresh.dirty,
+      rails: railBindings,
+      sessionCwds,
+    });
+  }
+
+  async function onSweep(): Promise<void> {
+    open = false;
+    const all = await loadFacts();
+    const stale = all.filter((v) => v.stale);
+    if (stale.length === 0) {
+      // Not silence: an action that looked at every worktree and decided
+      // against all of them has to say what it found, or it reads as
+      // broken.
+      await showAlert({ title: "Nothing to sweep.", lines: nothingToSweepLines(all), dismissLabel: "Close" });
+      return;
+    }
+    const answer = await askConfirmChecked(sweepConfirm(stale, rootBranch));
+    if (!answer.confirmed) return;
+    // The tab may be POINTED at one of these, which is not a session and
+    // so never blocked the sweep. Move it home before the folder goes.
+    if (stale.some((v) => v.path === view?.cwd)) await switchWorktree(workspaceId, rootPath);
+    await sweepWorktrees(
+      workspaceId,
+      stale.map((v) => ({ path: v.path, branch: v.branch })),
+      answer.checked
+    );
+  }
+
   function runConfirm(checked: boolean): void {
     const c = confirm;
     confirm = null;
@@ -129,6 +234,17 @@
     const el = e.target as HTMLElement | null;
     if (!el?.closest(".switcher")) open = false;
   }
+
+  // Opening the menu is what asks git, so the badges are there to be read
+  // rather than only after pressing Sweep. Keyed on the worktree list too:
+  // a sweep, a fork or a prune changes the rows under an open menu, and
+  // stale verdicts about worktrees that no longer exist are worse than
+  // none.
+  $effect(() => {
+    const signature = worktrees.map((w) => w.path).join("\n");
+    if (!open || signature === "") return;
+    void loadFacts();
+  });
 
   // A selected worktree that vanished on disk: fall back to the root.
   $effect(() => {
@@ -157,6 +273,14 @@
             <span class="dot">{w.path === current?.path ? "●" : ""}</span>
             <span class="lbl">{label(w)}{w.prunable ? " (missing)" : ""}{w.locked ? " 🔒" : ""}</span>
           </button>
+          {#if staleByPath.has(w.path)}
+            <StatusBadge
+              indicator={worktreeStaleIndicator()}
+              text="stale"
+              class="stale"
+              tip={`Merged into ${rootBranch}, nothing running in it, nothing uncommitted — Sweep stale removes it`}
+            />
+          {/if}
           <span class="acts">
             {#if !w.prunable}
               <IconButton icon={Play} label={`Open an agent in ${splitPath(w.path).name}`} size={11} disabled={locked} onclick={() => { open = false; spawnAgent(w.path, agentCommand); }} />
@@ -172,6 +296,16 @@
       {/each}
       <div class="foot">
         <button type="button" disabled={locked || !view?.refs} onclick={() => { open = false; fork = true; }}><Plus size={12} /> New worktree…</button>
+        {#if worktrees.length > 1}
+          <button
+            type="button"
+            disabled={locked}
+            use:tooltip={"Remove the worktrees whose branch has landed and that nothing is using"}
+            onclick={() => void onSweep()}
+          >
+            <BrushCleaning size={12} /> Sweep stale{staleCount > 0 ? ` (${staleCount})` : ""}
+          </button>
+        {/if}
         {#if anyPrunable}
           <button type="button" disabled={locked} use:tooltip={"git worktree prune"} onclick={() => { open = false; void pruneWorktrees(workspaceId); }}><Eraser size={12} /> Prune</button>
         {/if}
@@ -181,7 +315,7 @@
 </span>
 
 {#if fork}
-  <GitForkDialog {workspaceId} {agentCommand} onSpawnAgent={spawnAgent} onClose={() => (fork = false)} />
+  <GitForkDialog {workspaceId} {agentCommand} onRunInWorktree={spawnAgent} onClose={() => (fork = false)} />
 {/if}
 
 {#if confirm}
@@ -279,6 +413,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Always visible, unlike .acts: the badge is the row's answer to
+     "can this go?", and a fact you have to hover to learn is a fact
+     nobody reads. */
+  .row :global(.status-badge.stale) {
+    font-size: 0.8em;
+    padding-right: 4px;
+    flex: 0 0 auto;
   }
   .acts {
     display: none;
