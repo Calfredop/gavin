@@ -616,6 +616,19 @@ tail dragged every other rail's steps off the top and left the sticky
 headers as the only thing saying which column you were in. Rails advance
 independently; so should their scrollbars.
 
+**Amended 2026-09-03:** the strip is a **flex row**, not the grid above,
+and the horizontal scrollbar is why. WebKit resolves a grid's row track
+against the grid's height *without* subtracting the grid's own horizontal
+scrollbar, so the `minmax(0, 1fr)` row made every rail 17px taller than
+the space above a legacy (mouse, or "always show") bar once the rails
+overflowed sideways, and `overflow-y: hidden` clipped each rail's foot —
+the **+ Add step** button — under it. `overflow-x: scroll` and a `100%`
+row came out the same; flex cross-axis stretch subtracts the bar, and is
+how the kanban's own strip was always laid out. Measured in a WKWebView
+probe, not inferred. The 280px column minimum is the rail's own flex
+basis; the "stage index as rows" alignment was already nominal and is
+unchanged in what the human sees.
+
 A **single-step stage** draws bare — the card plus a connector to the next
 stage. A **multi-step stage** draws a labelled band spanning the rail width
 with its steps side by side, wrapping to a stack once a card-sized step no

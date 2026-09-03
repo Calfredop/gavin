@@ -10,10 +10,22 @@ import { describe, it, expect } from "vitest";
 // It now follows the kanban: the strip scrolls sideways, and each rail is
 // exactly one viewport tall and scrolls its own stages under a header
 // fixed by layout. None of that is reachable from a unit test -- it is
-// four CSS declarations and one data attribute spread across three files,
-// and a browser is the only thing that can see it -- so this pins the
-// declarations themselves, the way autoCommitSurfaces.test.ts pins its
-// four surfaces.
+// a handful of CSS declarations and one data attribute spread across
+// three files, and a browser is the only thing that can see it -- so this
+// pins the declarations themselves, the way autoCommitSurfaces.test.ts
+// pins its four surfaces.
+//
+// The strip was a CSS grid with one `minmax(0, 1fr)` row until 2026-09-03.
+// WebKit resolves a grid's row track against the grid's height WITHOUT
+// subtracting the grid's own horizontal scrollbar, so once the rails
+// overflowed sideways under a legacy (mouse, or "always show") scrollbar,
+// every rail was 17px taller than the space above the bar and
+// `overflow-y: hidden` clipped its foot -- the Add step button -- under
+// it. Measured in a WKWebView probe, not inferred: a 460px grid with a
+// 17px bar resolved its 1fr row to 460px (so did `overflow-x: scroll`
+// and a `100%` row), while the same strip as a flex row put the rail's
+// bottom at 443px. Flex cross-axis stretch does subtract the bar, which
+// is also how the kanban's own `.board` strip has always been laid out.
 
 const SVELTE = import.meta.glob("./*.svelte", {
   query: "?raw",
@@ -58,39 +70,65 @@ const GRID = "OrchestrationHubView.svelte";
 const RAIL = "OrchestrationRail.svelte";
 const GLUE = "orchestrationDragGlue.ts";
 const COLUMN = "KanbanColumn.svelte";
+const COLUMN_STRIP = "KanbanBoard.svelte";
 
-describe("the rail grid", () => {
+describe("the rail strip", () => {
   it("scrolls sideways only", () => {
-    const grid = ruleFor(GRID, ".grid");
-    expect(grid).toContain("overflow-x: auto");
-    expect(grid).toContain("overflow-y: hidden");
+    const strip = ruleFor(GRID, ".grid");
+    expect(strip).toContain("overflow-x: auto");
+    expect(strip).toContain("overflow-y: hidden");
     // The shorthand is what brought the shared vertical scroll back.
-    expect(grid).not.toMatch(/overflow: /);
+    expect(strip).not.toMatch(/overflow: /);
   });
 
-  it("pins its one row track to its own height", () => {
-    // Without a definite row track a rail taller than the viewport grows
-    // the row instead of scrolling, and `overflow-y: hidden` then CLIPS
-    // its steps rather than making them reachable -- strictly worse than
-    // the shared scroll it replaced.
-    expect(ruleFor(GRID, ".grid")).toContain("grid-template-rows: minmax(0, 1fr)");
+  it("is a flex row, not a grid", () => {
+    // The scrollbar bug above lives in grid track sizing: any row track
+    // (`1fr`, `100%`, or a rail's own `height: 100%` inside the grid)
+    // comes out the height of the grid INCLUDING its horizontal bar.
+    // A flex row stretches its items to the height above the bar.
+    const strip = ruleFor(GRID, ".grid");
+    expect(strip).toContain("display: flex");
+    expect(strip).not.toContain("display: grid");
+    expect(strip).not.toContain("grid-template-rows");
+    expect(strip).not.toContain("grid-auto-columns");
   });
 
-  it("lets the rails stretch to that track", () => {
-    // `align-items: start` is the content-height rule; a rail that does
-    // not fill the row cannot hand a full-height scroller to its body.
-    expect(ruleFor(GRID, ".grid")).not.toContain("align-items: start");
+  it("lets the rails stretch to its height", () => {
+    // `align-items: start` (or `flex-start`) is the content-height rule;
+    // a rail that does not fill the strip cannot hand a full-height
+    // scroller to its body, and one that outgrows it is clipped.
+    expect(ruleFor(GRID, ".grid")).not.toMatch(/align-items: (flex-)?start/);
+  });
+
+  it("scrolls on the same rule the kanban's column strip does", () => {
+    // Follow the board literally, not a grid that happens to resemble it.
+    const board = ruleFor(COLUMN_STRIP, ".board");
+    const strip = ruleFor(GRID, ".grid");
+    for (const decl of ["display: flex", "overflow-x: auto"]) {
+      expect(board).toContain(decl);
+      expect(strip).toContain(decl);
+    }
   });
 });
 
 describe("a rail", () => {
-  it("is a flex column that refuses to outgrow its track", () => {
+  it("is a flex column that refuses to outgrow the strip", () => {
     const rail = ruleFor(RAIL, ".rail");
     expect(rail).toContain("flex-direction: column");
     // The one declaration that makes the body scroll rather than the
     // column stretch -- flex items floor at their content height without
     // it, which is the same overflow by another route.
     expect(rail).toContain("min-height: 0");
+  });
+
+  it("carries the strip's 280px column minimum as its own flex basis", () => {
+    // The grid's `minmax(280px, 1fr)` column, spelled for a flex item: at
+    // least 280px, growing equally with its siblings, never shrinking
+    // below it -- the strip scrolls instead. Border-box, because the grid
+    // track was the rail's outer width too.
+    const rail = ruleFor(RAIL, ".rail");
+    expect(rail).toContain("flex: 1 0 280px");
+    expect(rail).toContain("box-sizing: border-box");
   });
 
   it("keeps its header out of the scroller entirely", () => {

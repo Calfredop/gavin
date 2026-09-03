@@ -1119,25 +1119,32 @@
     min-height: 0;
     display: flex;
   }
-  /* Rails are grid columns and stage index is the row track, so a
-     horizontal band across the grid reads as roughly concurrent
-     (orchestration spec O8).
+  /* Rails are the columns of one strip that scrolls sideways ONLY, and
+     each rail is exactly as tall as the strip and scrolls its own stages
+     (`.rail-body`) -- the kanban's rule, where `.board` scrolls x and
+     each column scrolls its own cards. `auto`-height rails plus
+     `align-items: start` was the shared vertical scroll this replaces.
+     A horizontal band across the strip still reads as roughly
+     concurrent (orchestration spec O8); rails advance independently, so
+     that alignment is nominal.
 
-     The grid scrolls sideways ONLY. `grid-template-rows: minmax(0, 1fr)`
-     is the whole trick: it gives the single row a definite height equal
-     to the grid's, so a rail taller than the viewport scrolls its own
-     stages (`.rail-body`) instead of growing the row and taking every
-     other rail's header off-screen with it -- the kanban's rule, where
-     the strip scrolls x and each column scrolls its own cards. `auto`
-     rows plus `align-items: start` was the shared vertical scroll this
-     replaces. */
+     A flex row, not a grid, and the horizontal scrollbar is why. WebKit
+     resolves a grid's row track against the grid's height WITHOUT
+     subtracting the grid's own horizontal scrollbar, so the
+     `grid-template-rows: minmax(0, 1fr)` this used to carry made every
+     rail 17px taller than the space above a legacy (mouse, or "always
+     show") bar once the rails overflowed sideways -- and `overflow-y:
+     hidden` then clipped each rail's foot, the Add step button, under
+     it. `overflow-x: scroll` and a `100%` row track came out the same.
+     Flex cross-axis stretch does subtract the bar. Measured in a
+     WKWebView probe (2026-09-03), not inferred: the same strip as a grid
+     put the rail's bottom at the strip's border edge, under the bar; as
+     a flex row, at the bar's top edge. The 280px column minimum lives on
+     the rail's own `flex` basis now. */
   .grid {
     flex: 1;
     min-width: 0;
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(280px, 1fr);
-    grid-template-rows: minmax(0, 1fr);
+    display: flex;
     overflow-x: auto;
     overflow-y: hidden;
   }

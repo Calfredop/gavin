@@ -573,10 +573,19 @@
 </div>
 
 <style>
-  /* The rail fills the grid's row track and never grows past it, so its
-     own body is what scrolls -- min-height: 0 is what stops a tall stack
-     of stages from pushing the column past the viewport instead. */
+  /* One column of the strip: at least 280px, growing equally with its
+     siblings and never shrinking below that -- the strip scrolls
+     sideways instead. Border-box, so 280px is the column's outer width,
+     the way the grid track it replaces was (see the strip's own comment
+     in OrchestrationHubView for why it is no longer a grid).
+
+     The rail is stretched to the strip's height and never grows past
+     it, so its own body is what scrolls -- min-height: 0 is what stops a
+     tall stack of stages from pushing the column past the viewport
+     instead. */
   .rail {
+    flex: 1 0 280px;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-width: 0;

@@ -1852,12 +1852,17 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "rail-scroll-no-page-scroll",
         text: "No vertical scrollbar on the grid itself, and “+ Add step” is reachable at the foot of a long rail",
-        hint: "The grid keeps only its horizontal bar. If the tail of a long rail is CLIPPED rather than scrollable, the row track lost its height — that is the failure this replaced the shared scroll with.",
+        hint: "The strip keeps only its horizontal bar. If the tail of a long rail is CLIPPED rather than scrollable, the rail lost its height — that is the failure this replaced the shared scroll with.",
       },
       {
         id: "rail-scroll-drag-autoscroll",
         text: "Dragging a step to the bottom edge of a long rail auto-scrolls THAT rail, and the drop lands where the indicator sat",
         hint: "Hold the chip near the rail body's lower edge: its stages should creep up under the pointer. Dragging past the left or right edge still scrolls the grid sideways.",
+      },
+      {
+        id: "rail-scroll-foot-above-hbar",
+        text: "With enough rails to scroll the strip sideways and a legacy horizontal scrollbar showing, the foot of a long rail — the whole “+ Add step” button — sits above the bar, not under it",
+        hint: "A legacy bar needs a mouse plugged in, or System Settings → Appearance → Show scroll bars: Always; a trackpad's overlay bar takes no space and cannot show this. WebKit sized the old grid's row track without subtracting its own bar, so every rail ran 17px under it and the button lost its bottom edge.",
       },
     ],
   },
