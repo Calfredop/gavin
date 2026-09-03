@@ -385,6 +385,15 @@
   const unplaced = $derived(lens.filterUnplaced(allUnplacedGroups));
   const unplacedGroups = $derived(unplaced.groups);
   const shownRails = $derived(rails.filter((r) => lens.railShown(r.id)));
+
+  /// The drawer's click-to-add appends to the FIRST rail. The drawer is
+  /// rendered with no rails too (it disables every row then, on the null
+  /// target it is handed), so a stray call in that state does nothing
+  /// rather than throw on `rails[0].id`.
+  function onFirstRail(place: (rail: Rail) => void): void {
+    const rail = rails[0];
+    if (rail) place(rail);
+  }
   // A plain boolean, not `lens.filtering`: `lens` is a fresh object on
   // every keystroke, and the drag effect below would then tear down and
   // re-attach the engine on each one. A derived primitive only notifies
@@ -730,14 +739,21 @@
     {:else}
       <p class="empty">Loading…</p>
     {/if}
-  {:else if rails.length === 0}
-    <p class="empty">
-      No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
-    </p>
   {:else}
+    <!-- The body is gated on the plan having LOADED, never on the rail
+         count: it holds the drawer as well as the grid, and the drawer
+         -- the list a first rail is built from -- has to be on screen
+         exactly when there are no rails yet. So the empty-state line
+         stands INSIDE the grid, beside the drawer, where the filtered
+         "no rail matches" line already does; with no rails the drawer
+         gets a null target and draws its rows inert. -->
     <div class="body" bind:this={bodyEl}>
       <div class="grid" bind:this={gridEl}>
-      {#if lens.filtering && shownRails.length === 0}
+      {#if rails.length === 0}
+        <p class="empty">
+          No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.
+        </p>
+      {:else if lens.filtering && shownRails.length === 0}
         <p class="empty">No rail matches this search.</p>
       {/if}
       {#each shownRails as rail (rail.id)}
@@ -799,15 +815,19 @@
         {templates}
         {nestedCounts}
         targetRailId={rails[0]?.id ?? null}
-        onAdd={(cardPath) => void addStepAsStageAction(workspaceId, rails[0].id, cardPath)}
-        onAddTool={(toolId) => void addToolAsStepAction(workspaceId, rails[0].id, toolId)}
+        onAdd={(cardPath) =>
+          onFirstRail((rail) => void addStepAsStageAction(workspaceId, rail.id, cardPath))}
+        onAddTool={(toolId) =>
+          onFirstRail((rail) => void addToolAsStepAction(workspaceId, rail.id, toolId))}
         onAddTemplate={(templateId) => {
           // The click-to-add path every drawer row gets: appended as its
           // own new group at this rail's end, the same "past the end"
           // append addToolAsStepAction gives a clicked tool.
           const template = templates.find((t) => t.id === templateId);
           if (template) {
-            void addTemplateAsStageAction(workspaceId, rails[0].id, rails[0].stages.length, template);
+            onFirstRail(
+              (rail) => void addTemplateAsStageAction(workspaceId, rail.id, rail.stages.length, template)
+            );
           }
         }}
         onManageTools={() => {

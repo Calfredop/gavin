@@ -2483,6 +2483,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Orchestration with no rails",
+    items: [
+      {
+        id: "orch-no-rails-drawer-shown",
+        text: "On a workspace with no rails the Orchestration tab still shows the Unplaced drawer at its right edge — its cards, Groups and Tools listed, greyed — and “No rails yet” stands in the empty strip beside it",
+        hint: "Delete every rail, or open a fresh workspace. Before this the whole lower half was that one line and the drawer — the list a first rail is built from — was nowhere. The drawer's hint should read “No rail to place these on yet — add one with “+ Rail””.",
+      },
+      {
+        id: "orch-no-rails-drawer-inert",
+        text: "With no rails, no drawer row drags and none click-adds; press “+ Rail” and the same rows light up, click-add to the new rail and drag onto it",
+        hint: "Pressing and moving on a greyed card row must show no drag ghost — the rows carry no drag handle at all in this state, not merely a disabled look. The new rail is the drawer's click-to-add target the moment it exists.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

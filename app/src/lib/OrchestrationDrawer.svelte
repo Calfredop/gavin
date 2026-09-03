@@ -33,7 +33,11 @@
     /// carries rather than letting them look lost.
     nestedCounts: Map<string, number>;
     /// Clicking a row adds it to this rail as its own stage; null when
-    /// there is no rail to add to yet.
+    /// there is no rail to add to yet. The tab renders this drawer with
+    /// no rails too (it used to withhold it with the whole body), so null
+    /// is a state the rows are SEEN in: they stay listed but inert -- no
+    /// drag handle, click-to-add disabled -- the same degradation
+    /// toolsBlocked gives a tool row, and the hint says to add a rail.
     targetRailId: string | null;
     onAdd: (cardPath: string) => void;
     /// The tab's search box holds a query: the rows below are the
@@ -125,7 +129,13 @@
   </button>
 
   {#if !collapsed}
-    {#if filtering}
+    {#if !targetRailId}
+      <!-- No rail means nothing to place onto: the rows below stay
+           listed, so the human can see what a first rail would be built
+           from, but carry no drag handle and no click-to-add. The tab
+           keeps this drawer on screen with no rails on purpose. -->
+      <p class="hint quiet">No rail to place these on yet — add one with “+ Rail”.</p>
+    {:else if filtering}
       <p class="hint quiet">Filtered — clear the search to drag.</p>
     {:else if dragging && $orchDragState?.kind === "step"}
       <p class="hint">Drop here to take a step off its rail.</p>
@@ -148,7 +158,7 @@
           <li>
             <button
               type="button"
-              data-orch-template={groupsBlocked ? undefined : t.id}
+              data-orch-template={groupsBlocked || !targetRailId ? undefined : t.id}
               class:dragging={$orchDragState?.id === t.id}
               disabled={Boolean(groupsBlocked) || !targetRailId}
               title={groupsBlocked ??
@@ -191,7 +201,7 @@
           <li>
             <button
               type="button"
-              data-orch-tool={toolsBlocked ? undefined : tool.id}
+              data-orch-tool={toolsBlocked || !targetRailId ? undefined : tool.id}
               class:dragging={$orchDragState?.id === tool.id}
               disabled={Boolean(toolsBlocked) || !targetRailId}
               title={toolsBlocked ??
@@ -235,7 +245,7 @@
             <li>
               <button
                 type="button"
-                data-orch-card={entry.plan.path}
+                data-orch-card={targetRailId ? entry.plan.path : undefined}
                 class:dragging={$orchDragState?.id === entry.plan.path}
                 disabled={!targetRailId}
                 title={nested > 0

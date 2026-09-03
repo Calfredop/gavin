@@ -670,6 +670,14 @@ gone. A child with a `status:` of its own is free-standing and unaffected.
 Placing one deliberately is still possible from the child's own card menu;
 `nested-with-parent` (§5) is what says the plan is on a rail too.
 
+**Amended 2026-09-03:** the drawer is on screen whenever the plan has loaded,
+**including with no rails**. It used to be withheld together with the whole
+body behind the "No rails yet" line, which hid the very list a first rail is
+built from exactly when the workspace had nothing built yet. That line now
+stands in the empty strip beside the drawer, whose rows stay listed but inert
+— no drag handle, click-to-add disabled, the degradation a blocked tool row
+already gets — and whose hint says to add a rail, until one exists.
+
 ### 6.3 Conflicts box
 
 Pinned under the header, collapsible, and **absent entirely** when there are
