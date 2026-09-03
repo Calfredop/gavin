@@ -158,7 +158,12 @@ export function linkCardSessionAction(workspaceId: string, binding: CardSession)
         // zero rather than preserving what was there -- which is right:
         // every call site builds the binding it means, and the sites
         // that mean "a fresh run" are the majority.
-        binding.resumeAttempts ?? null
+        binding.resumeAttempts ?? null,
+        // Same rule for the baseline: a caller that leaves it out is
+        // saying this run has none, not "keep the last one" -- which
+        // matters most for the caller that means it, a re-launch in a
+        // checkout that is no longer a repository.
+        binding.baseSha ?? null
       )
   );
 }

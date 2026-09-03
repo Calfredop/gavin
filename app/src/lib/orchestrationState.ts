@@ -49,6 +49,7 @@ import {
   insertStageWithSteps,
   startRailVerdict,
   conflictCheckout,
+  railRunsDiffer,
 } from "./orchestration";
 import type {
   Action,
@@ -79,13 +80,14 @@ import { failingChecksNote, prExhaustedReason } from "./pullRequest";
 import { stepsFromTemplate } from "./orchestrationGroups";
 import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
-import { kanbanState, linkCardSessionAction } from "./kanbanState";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore, refresh as refreshGit } from "./gitState";
 import {
   layoutState,
   resolvedAgentFor,
   armFailureDetection,
+  baseShaForLaunch,
   conversationIdForLaunch,
   createSessionOnPage,
   createPage,
@@ -593,6 +595,10 @@ export async function resumeStep(
       conversationId: run.conversationId ?? null,
       launchCwd: cwd,
       resumeAttempts: options.automatic ? (run.resumeAttempts ?? 0) + 1 : (run.resumeAttempts ?? null),
+      // Carried, never re-resolved: this is the same run continuing, and
+      // a baseline moved to the resume's HEAD would credit everything
+      // the first attempt did to nobody.
+      baseSha: cardSessionFor(get(kanbanState)[workspaceId], step.cardPath)?.baseSha ?? null,
     });
   }
 
@@ -978,6 +984,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
   const cwd = rail.worktreePath ?? entry.contextFolder;
+  const baseSha = await baseShaForLaunch(cwd);
   const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
@@ -1005,6 +1012,10 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     command,
     conversationId,
     launchCwd: cwd,
+    // The rail's checkout as it stood before this step ran. Resolved
+    // above, before the session, for the reason baseShaForLaunch
+    // documents: a step that has started cannot be asked where it began.
+    baseSha,
   });
   // See executeToolLaunch: a fresh conversation is a fresh budget.
   await setStepRunAction(workspaceId, stepId, "running", sessionId, null, conversationId, cwd, 0);
@@ -1497,13 +1508,25 @@ function cardTitleFor(workspaceId: string, step: Step): string | null {
 ///
 /// The payload REPLACES the plan but preserves whatever run state this
 /// app already holds: the daemon's copy can lag an optimistic local write
-/// by a round trip, and the agent never authors run state anyway.
+/// by a round trip.
+///
+/// It no longer follows that the agent never authors run state.
+/// `gavin_start_rail` arms a rail through the daemon, which pushes the
+/// row it just wrote -- and the merge below would drop it, leaving the
+/// rail idle on screen with a `running` row in SQLite until some later
+/// read. So when the push DISAGREES about a rail's run state, re-read
+/// rather than merge: `refreshOrchestration` asks the daemon (skipping
+/// while a save is in flight, and re-checking after), which is right in
+/// both directions -- a push that crossed a local write still lands on
+/// what the daemon actually holds now.
 export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   const unlisten = await listen<[string, Orchestration]>("orchestration-changed", (event) => {
     const [workspaceId, incoming] = event.payload;
+    let runStateMoved = false;
     orchestrations.update((m) => {
       const current = m[workspaceId];
       if (!current) return { ...m, [workspaceId]: incoming };
+      runStateMoved = railRunsDiffer(current, incoming);
       // The preserved run state may name steps the agent just deleted.
       // The daemon has already dropped those rows; this keeps the
       // in-memory copy honest without waiting for the next fetch.
@@ -1521,9 +1544,12 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
         },
       };
     });
+    if (runStateMoved) void refreshOrchestration(workspaceId);
     // A plan arrival like any other (an agent editing rails over MCP),
     // so it ticks like the other two: a step added to the stage a rail
-    // is running must start, not wait for the human to come back.
+    // is running must start, not wait for the human to come back. This
+    // is also the ONLY thing that starts a rail armed in a workspace the
+    // human is not looking at -- the scheduler ticks the active one.
     void tick(workspaceId);
   });
   const stop = startScheduler();

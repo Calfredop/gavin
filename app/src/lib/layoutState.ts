@@ -1292,6 +1292,30 @@ export function conversationIdForLaunch(agent: { sessionIdArgs: string }): strin
   return mintConversationId(agent.sessionIdArgs);
 }
 
+/// The commit a run about to be launched in `cwd` will be diffed
+/// against, or null.
+///
+/// Two gates, like `conversationIdForLaunch` above, and the daemon one
+/// comes first: a v25 daemon parses the widened `LinkCardSession` fine
+/// and drops the sha, so resolving one would cost a git call and then
+/// leave a Changes button diffing against nothing. The second gate is
+/// git's own answer -- a launch directory in no repository, or a
+/// repository with no commit yet, has no baseline, and that is a fact
+/// about the checkout rather than a failure.
+///
+/// Resolved at LAUNCH because it cannot be resolved later: an agent's
+/// first minutes move HEAD and dirty the tree, and nothing afterwards
+/// can say where it began. Never throws -- a run must not fail to start
+/// because git was slow to answer a question about its history.
+export async function baseShaForLaunch(cwd: string): Promise<string | null> {
+  if (featureBlockedReason(get(daemonCompat), "runChanges")) return null;
+  try {
+    return await backend.gitHeadSha(cwd);
+  } catch {
+    return null;
+  }
+}
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
 export function resolvedAgentFor(workspaceId: string) {

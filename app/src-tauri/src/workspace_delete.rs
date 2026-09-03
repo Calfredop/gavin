@@ -19,6 +19,7 @@
 //!   tampered with) removes less than it asked for, never more.
 
 use crate::agent_setup;
+use crate::trash::trash_path;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -108,28 +109,6 @@ pub struct RemovalReport {
     pub done: Vec<String>,
     /// `(path, reason)` for everything that did not.
     pub failed: Vec<(String, String)>,
-}
-
-/// Moves one path to the OS Trash.
-///
-/// On macOS the crate offers two routes and neither is free. The default
-/// asks Finder over Apple events: it plays the sound and fills in "Put
-/// Back", but it needs the Automation permission, and a delete wizard
-/// that dies on an unrelated TCC prompt is worse than one without a
-/// context-menu entry. `NsFileManager` needs no grant and is markedly
-/// faster; the files land in the same Trash and can still be dragged
-/// back out, which is the promise this feature actually makes.
-#[cfg(target_os = "macos")]
-fn trash_path(path: &str) -> Result<(), String> {
-    use trash::macos::{DeleteMethod, TrashContextExtMacos};
-    let mut ctx = trash::TrashContext::default();
-    ctx.set_delete_method(DeleteMethod::NsFileManager);
-    ctx.delete(path).map_err(|e| e.to_string())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn trash_path(path: &str) -> Result<(), String> {
-    trash::delete(path).map_err(|e| e.to_string())
 }
 
 fn md_count(dir: &Path) -> usize {

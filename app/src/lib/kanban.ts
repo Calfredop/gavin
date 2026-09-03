@@ -32,6 +32,12 @@ export interface CardSession {
   /// unattended recovery (v22). Absent reads as zero -- a run gavin has
   /// never resumed by itself.
   resumeAttempts?: number | null;
+  /// The commit this run's checkout sat on when the agent started
+  /// (v26) -- what the Changes view diffs against and what a discard
+  /// resets to. Absent for a run launched outside a repository, on an
+  /// unborn HEAD, or against a daemon that could not store it: "no
+  /// baseline", never "no changes".
+  baseSha?: string | null;
 }
 
 export interface Board {

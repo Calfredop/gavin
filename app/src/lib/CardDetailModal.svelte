@@ -46,6 +46,10 @@
   import { cardSessionState } from "./columnRunAction";
   import { developAvailable, agentPromptBlocker } from "./cardRun";
   import { resumeNoteFor } from "./autoResume";
+  import { runBaseline } from "./runChanges";
+  import RunChangesModal from "./RunChangesModal.svelte";
+  import { historyBlockedReason } from "./runHistory";
+  import RunHistoryModal from "./RunHistoryModal.svelte";
   import { resumeTrail } from "./autoResumeState";
   import { doneColumnOf, findCardPlacement, stepStateOf } from "./orchestration";
   import { adoptMemory, isMemoryCard } from "./memoryCard";
@@ -441,6 +445,16 @@
     binding ? ($layoutState.orphanBySessionId[binding.sessionId] ?? null) : null
   );
   const bindingFailed = $derived(sessionState === "failed");
+  /// Where this run started, or why nobody knows. Never "no changes":
+  /// an absent baseline is a run nobody measured (runChanges.ts).
+  const baseline = $derived(runBaseline(binding, $daemonCompat));
+  let showingChanges = $state(false);
+  /// Why the run history cannot be opened, or null when it can. An older
+  /// daemon kept no history at all -- `card_sessions` was upserted, so
+  /// every run but the last was overwritten -- and the panel must say
+  /// that about the DAEMON rather than let it read as a card nobody ran.
+  const historyBlocked = $derived(historyBlockedReason($daemonCompat));
+  let showingHistory = $state(false);
   /// The agent's own account of what broke, when something did.
   const failureReason = $derived(
     binding ? ($layoutState.failureReasonById[binding.sessionId] ?? null) : null
@@ -966,6 +980,20 @@
           <button type="button" disabled={bindingLive} onclick={() => void handleRelaunch()}>Re-launch</button>
           <button type="button" onclick={() => void handleUnlink()}>Unlink</button>
         </div>
+        <!-- What this run has done to its checkout, from the commit it
+             started on. Its own row rather than a sixth button, because
+             the interesting half is the SENTENCE when there is no
+             baseline: a Changes button that quietly diffs against
+             nothing is the one outcome this feature must not have. -->
+        <div class="changes-row">
+          {#if baseline.kind === "ready"}
+            <button type="button" onclick={() => (showingChanges = true)}>
+              Changes since {baseline.baseSha.slice(0, 7)}…
+            </button>
+          {:else}
+            <p class="quiet">{baseline.reason}</p>
+          {/if}
+        </div>
       {:else}
         <!-- Stacked, not side by side: both labels are sentences rather
              than verbs, so on one row they wrap mid-label and the two
@@ -997,6 +1025,23 @@
           <p class="quiet">{runBlocked}</p>
         {/if}
       {/if}
+      <!-- Outside the bound/unbound split on purpose. The Changes view
+           above is about the LIVE run and belongs to the binding; the
+           history is about every run the card has had, and a card whose
+           binding was unlinked -- or replaced, or never survived a
+           daemon restart -- is exactly the one whose history somebody
+           wants. Hiding it there would have made the feature reachable
+           only while it was least interesting.
+           The reason rides the WRAPPER, like the attachments section
+           above: a disabled control fires no mouseenter, so a title on
+           the button itself could never be read. -->
+      <div class="changes-row">
+        <span title={historyBlocked ?? undefined}>
+          <button type="button" disabled={historyBlocked !== null} onclick={() => (showingHistory = true)}>
+            Run history…
+          </button>
+        </span>
+      </div>
     </div>
     <div class="section">
       <div class="section-title">Orchestration rail</div>
@@ -1090,7 +1135,41 @@
   />
 {/if}
 
+<!-- A second modal over this one rather than a section inside it: a
+     file list and a diff need the room, and modalStack means Escape
+     closes this one first and leaves the card open underneath. -->
+{#if showingChanges && baseline.kind === "ready"}
+  <RunChangesModal
+    path={card.id}
+    title={card.title}
+    cwd={baseline.cwd}
+    baseSha={baseline.baseSha}
+    sessionIsLive={bindingLive}
+    onClose={() => (showingChanges = false)}
+  />
+{/if}
+
+<!-- Every run the card has had, not just the live one. Stacked over this
+     modal like the Changes view, so Escape closes it and leaves the card
+     open underneath. -->
+{#if showingHistory}
+  <RunHistoryModal
+    path={card.id}
+    title={card.title}
+    {workspaceId}
+    profileId={$resolvedAgents(workspaceId).profileId}
+    onOpenSession={(sessionId) => void revealSession(sessionId)}
+    onClose={() => (showingHistory = false)}
+  />
+{/if}
+
 <style>
+  .changes-row {
+    margin-top: 8px;
+  }
+  .changes-row .quiet {
+    margin: 0;
+  }
   .attachment-chips {
     margin-bottom: 6px;
   }

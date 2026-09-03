@@ -1,12 +1,13 @@
 import type { PauseCycle } from "./agentPause";
 import type { AgentUsageReport } from "./agentUsage";
 import type { PrReport } from "./pullRequest";
+import type { CardRun, TokenReport } from "./runHistory";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
 import type { BoardTab, GavinTree } from "./gavin";
-import type { ApplyMode, CommitDetail, ConflictInfo, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, StatusResult } from "./git";
+import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { ToolRecord } from "./orchestrationTools";
 import type { GroupTemplateRecord } from "./orchestrationGroups";
@@ -472,7 +473,13 @@ export function linkCardSession(
   /// by every call site, so null here means zero rather than "leave it
   /// alone" -- and zero is right for the fresh launches, which are most
   /// of them.
-  resumeAttempts: number | null = null
+  resumeAttempts: number | null = null,
+  /// The commit this run's checkout was on at launch (v26). Null when
+  /// the run has no baseline -- outside a repo, on an unborn HEAD, or
+  /// against a daemon too old to keep it (`baseShaForLaunch`). Written
+  /// whole like the count above: a resume passes the one it found, a
+  /// re-launch passes the one it just resolved.
+  baseSha: string | null = null
 ): Promise<void> {
   return invoke("link_card_session", {
     workspaceId,
@@ -483,11 +490,32 @@ export function linkCardSession(
     conversationId,
     launchCwd,
     resumeAttempts,
+    baseSha,
   });
 }
 
 export function unlinkCardSession(workspaceId: string, path: string): Promise<void> {
   return invoke("unlink_card_session", { workspaceId, path });
+}
+
+/// Every run this card has had, newest first (v27). Empty for a card
+/// nobody has launched -- never an error. Gate on
+/// FEATURE_MIN_VERSION.runHistory before calling: an older daemon
+/// refuses the request, and "your daemon does not keep run history" is a
+/// different sentence from "this card has never been run".
+export function cardRuns(workspaceId: string, path: string): Promise<CardRun[]> {
+  return invoke("card_runs", { workspaceId, path });
+}
+
+/// What one run cost, read out of the agent CLI's own transcript by the
+/// conversation id gavin minted for it. No daemon involved and no gate:
+/// these are files on this machine, and the report names its own reason
+/// when there is nothing to read.
+export function cardRunTokens(
+  profileId: string,
+  conversationId: string | null
+): Promise<TokenReport> {
+  return invoke("card_run_tokens", { profileId, conversationId });
 }
 
 export function deleteBoard(workspaceId: string): Promise<void> {
@@ -584,6 +612,42 @@ export function gitDiff(
   rev: string | null = null
 ): Promise<FileDiff> {
   return invoke("git_diff", { cwd, path, oldPath, staged, untracked, rev });
+}
+
+/// The commit `cwd`'s checkout is on right now, or null when it is in
+/// no repository and when HEAD is unborn. One git call, and the only
+/// one a launch makes: see `baseShaForLaunch`.
+export function gitHeadSha(cwd: string): Promise<string | null> {
+  return invoke("git_head_sha", { cwd });
+}
+
+/// What one card run changed, against the commit its checkout was on
+/// when it started. `cwd` is the run's LAUNCH directory: the command
+/// resolves the repository root from it and answers in root-relative
+/// paths.
+export function gitRunChanges(cwd: string, baseSha: string): Promise<RunChanges> {
+  return invoke("git_run_changes", { cwd, baseSha });
+}
+
+export function gitDiffSince(
+  cwd: string,
+  baseSha: string,
+  path: string,
+  oldPath: string | null,
+  untracked: boolean
+): Promise<FileDiff> {
+  return invoke("git_diff_since", { cwd, baseSha, path, oldPath, untracked });
+}
+
+/// Resets the run's checkout to its baseline and moves the named
+/// untracked files to the Trash. `untracked` is exactly what the human
+/// was shown and agreed to -- never a `git clean`.
+export function gitDiscardRun(
+  cwd: string,
+  baseSha: string,
+  untracked: string[]
+): Promise<DiscardReport> {
+  return invoke("git_discard_run", { cwd, baseSha, untracked });
 }
 
 export function gitStageFiles(cwd: string, paths: string[]): Promise<void> {

@@ -165,14 +165,41 @@ reaches it, the named rail arms itself — no human waiting for the first
 to finish, and no session of its own.
 
 Use it only for a real ordering constraint. Two rails that could run at
-once should both just be started; chaining them serializes work the whole
-tab exists to parallelize. And say in a `conflict_notes` entry which fact
+once should both just be started (§2c); chaining them serializes work the
+whole tab exists to parallelize. And say in a `conflict_notes` entry which fact
 made the second rail wait for the first.
 
 It names the rail by NAME, so a rail you rename in the same write has to
 be renamed in the parameter too. It refuses rather than guesses: an
 unknown name, a name two rails share, the rail the step is itself on, and
 a paused rail all stall the step.
+
+## 2c. Arming a rail yourself
+
+`gavin_start_rail({ rail: "<name>" })` arms a rail exactly as the human's
+Start button does: gavin runs it from its **first unfinished stage**, on
+the rail's own page. Use it when the human asked you to get work moving,
+not only to arrange it.
+
+**Never write run state to the daemon socket yourself.** A `SetRailRun`
+row written by hand names no workspace, so gavin cannot tell the open app
+about it — the rail sits armed in the database and idle on screen — and
+nothing computes the stage or checks what the rail is doing first.
+
+It decides before it writes, and says which happened:
+
+- **refuses** a name no rail carries, a name two rails share, and a
+  **paused** rail — a pause is the human's or a stalled step's, and
+  resuming it would re-launch the step that failed. Fix the cause and
+  tell them; Resume is theirs to press.
+- **leaves alone**, and says so, a rail that is already running (starting
+  it would REWIND it to its first unfinished stage) and one with nothing
+  unfinished left. Neither is an error.
+
+Start the rails a change actually makes runnable, one call each, and say
+which you started. A rail chained behind another with the `Start rail`
+tool step (§2a) arms itself when the first finishes — do not also start
+it by hand.
 
 ## 3. Record your reasoning
 

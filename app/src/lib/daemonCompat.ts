@@ -176,6 +176,32 @@ export const FEATURE_MIN_VERSION = {
   // workspace setting for card runs) are disabled with the reason, and
   // the driver itself refuses to arm.
   autoResume: 22,
+  // The per-run Changes view. v26 widened `LinkCardSession` with
+  // `base_sha` -- the commit a run's checkout was on when the agent
+  // started -- so `min_version_for` (which gates request TYPES) is
+  // structurally blind to it, and this entry is the only gate there is.
+  //
+  // A v25 daemon parses the launch perfectly well and drops the sha,
+  // which is the worst shape a missing field can take here: the button
+  // would still be there, and it would diff against nothing. So the
+  // consumer is the LAUNCH -- `baseShaForLaunch` does not ask git for a
+  // sha it knows cannot be persisted -- and both surfaces read the
+  // absence back as "no baseline was recorded", with this reason
+  // attached, rather than as a run that changed nothing.
+  runChanges: 26,
+  // A card's run history. v27 added `Request::CardRuns`, a new request
+  // TYPE, so `min_version_for` already refuses it against an older
+  // daemon and nothing can be silently dropped -- this entry is not
+  // guarding a widened payload.
+  //
+  // It earns its place for the sentence instead. An older daemon keeps
+  // no history at all: `card_sessions` is upserted, so every run but the
+  // last was overwritten the moment the next one launched. Without the
+  // gate the panel would open, ask, take the version error and have to
+  // render it -- or worse, catch it and show an empty list, which reads
+  // as "this card has never been run" about a card the human watched an
+  // agent work.
+  runHistory: 27,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

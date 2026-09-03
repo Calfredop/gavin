@@ -306,6 +306,29 @@ pub struct AgentProfile {
     /// - `opencode` -- provider keys are the user's own, so there is no
     ///   single limit to report. No row.
     pub usage_probe: Option<UsageProbe>,
+    /// Where this agent writes the per-CONVERSATION transcript gavin
+    /// reads token totals out of -- the sibling `usage_probe` explicitly
+    /// is not: that one reports the account's windows, this one reports
+    /// what one run of one card actually burned.
+    ///
+    /// Keyed on the conversation id gavin already mints at launch and
+    /// records on the run, so nothing has to be matched by cwd or by
+    /// time. `None` means gavin cannot cost this profile's runs and the
+    /// panel says exactly that.
+    ///
+    /// What was checked, 2026-09-03:
+    ///
+    /// - `gemini` -- `~/.gemini/tmp/*/chats/session-*.json` does carry
+    ///   per-session token totals (see `usage_probe` above, where the
+    ///   same file was rejected for being a burn estimate rather than a
+    ///   quota -- a burn estimate is precisely what this field wants).
+    ///   No row anyway: nothing here could verify the file's shape or
+    ///   that its name carries gavin's conversation id, and a parser
+    ///   copied from a description is how a panel starts inventing
+    ///   numbers.
+    /// - `cursor`, `opencode` -- no per-conversation transcript on disk
+    ///   that gavin mints the id for. No row.
+    pub token_log: Option<TokenLog>,
     /// A gavin-owned agent DEFINITION this profile's headless run names
     /// by `--agent`, when its CLI grants tool permissions through a file
     /// rather than a flag. Written and removed exactly like a skill --
@@ -377,6 +400,39 @@ impl UsageProbe {
     }
 }
 
+/// Where a profile's per-conversation token totals are read from. Like
+/// `UsageProbe`, one variant per VERIFIED shape rather than a generic
+/// "parse a log": the two differ in file layout, in what a record means
+/// and in how a total is arrived at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TokenLog {
+    /// Claude Code. `~/.claude/projects/<slugged cwd>/<session id>.jsonl`,
+    /// one JSON record per line, where a record of type `assistant`
+    /// carries `message.usage` with `input_tokens`,
+    /// `cache_creation_input_tokens`, `cache_read_input_tokens` and
+    /// `output_tokens`.
+    ///
+    /// Found by GLOBBING the project directories for `<id>.jsonl` rather
+    /// than by slugging a cwd: the file is named for the session, the
+    /// slug rule is Claude Code's and undocumented, and the launch cwd on
+    /// the run is where gavin STARTED the agent -- which is not
+    /// necessarily the directory the transcript was filed under.
+    ///
+    /// The totals are summed per DISTINCT `message.id`, not per record:
+    /// one assistant message is written once per content block and every
+    /// copy repeats the same `usage`, so a naive sum over lines reports
+    /// roughly three times the real cost (measured, 2026-09-03: 39
+    /// records for 15 messages).
+    ClaudeSessionJsonl,
+    /// Codex CLI. The same rollout files under `~/.codex/sessions` that
+    /// `UsageProbe::CodexRollout` reads, and the same `token_count`
+    /// event -- a different field on it. `info.total_token_usage` is
+    /// CUMULATIVE for the conversation, so the answer is the LAST such
+    /// event rather than a sum, and a sum would multiply the transcript
+    /// by its own length.
+    CodexRollout,
+}
+
 /// One row of a profile's cause table: a substring of the failure line
 /// the daemon reported, and what that line MEANS.
 ///
@@ -438,6 +494,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         session_id_args: "--session-id",
         resume_args: "--resume",
         usage_probe: Some(UsageProbe::AnthropicOauth),
+        token_log: Some(TokenLog::ClaudeSessionJsonl),
         // The allow-list rides claude's own argv, so there is no file.
         agent_file: None,
         mcp: Some(McpLayout {
@@ -493,6 +550,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         session_id_args: "",
         resume_args: "",
         usage_probe: Some(UsageProbe::CodexRollout),
+        token_log: Some(TokenLog::CodexRollout),
         agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".codex/config.toml",
@@ -518,6 +576,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         session_id_args: "",
         resume_args: "",
         usage_probe: None,
+        token_log: None,
         agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".gemini/settings.json",
@@ -544,6 +603,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         session_id_args: "",
         resume_args: "",
         usage_probe: None,
+        token_log: None,
         agent_file: None,
         mcp: Some(McpLayout {
             config_file: ".cursor/mcp.json",
@@ -591,6 +651,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         session_id_args: "",
         resume_args: "",
         usage_probe: None,
+        token_log: None,
         // opencode reads `.claude/skills/` too, but a workspace that
         // never chose Claude Code should not grow a `.claude/`
         // directory. Its own validator accepts gavin's existing
@@ -643,6 +704,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         session_id_args: "",
         resume_args: "",
         usage_probe: None,
+        token_log: None,
         agent_file: None,
         mcp: None,
     },

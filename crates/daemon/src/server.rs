@@ -1366,6 +1366,31 @@ impl SessionManager {
         self.set_orchestration(&watcher.workspace_id, rails, conflict_notes)
     }
 
+    /// `set_rail_run` for a caller that knows a root and not a workspace
+    /// id -- gavin-mcp's `gavin_start_rail`, and nothing else.
+    ///
+    /// The push is the point. The plain request writes the row and tells
+    /// nobody, so a rail armed from outside the app stayed idle on screen
+    /// until the Orchestration tab was next mounted -- the half-adopted
+    /// state five rails armed over the raw socket left behind on
+    /// 2026-09-03. Resolving the root gives the push the workspace id it
+    /// needs, and makes an unwatched root a refusal rather than a write
+    /// nobody will ever see.
+    pub fn set_rail_run_by_root(
+        &self,
+        root_path: &str,
+        rail_id: &str,
+        state: &str,
+        current_stage_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        self.set_rail_run(rail_id, state, current_stage_id)?;
+        self.push_orchestration(&watcher.workspace_id);
+        Ok(())
+    }
+
     /// Best-effort push of the whole orchestration on the watching app
     /// connection. Silent when the workspace is not watched (a headless
     /// agent with the app closed) or the writer is dead -- the app's next
@@ -1448,6 +1473,7 @@ impl SessionManager {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn link_card_session(
         &self,
         workspace_id: &str,
@@ -1458,6 +1484,7 @@ impl SessionManager {
         conversation_id: Option<&str>,
         launch_cwd: Option<&str>,
         resume_attempts: Option<u32>,
+        base_sha: Option<&str>,
     ) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().link_card_session(
             workspace_id,
@@ -1468,11 +1495,56 @@ impl SessionManager {
             conversation_id,
             launch_cwd,
             resume_attempts,
+            base_sha,
         )
     }
 
     pub fn unlink_card_session(&self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().unlink_card_session(workspace_id, path)
+    }
+
+    /// A card's run history (v27). Never an error for a card nobody has
+    /// launched: an empty list is the answer.
+    ///
+    /// Reconciled against the registry before it is returned, because
+    /// `running` is a claim and this is the only place that can check it.
+    /// The pump closes a run where it already reports `SessionExited`,
+    /// and that covers every session something was attached to -- but a
+    /// session that ends UNATTACHED has no pump, so its row would sit
+    /// open, and a panel would show a run that has been over for days as
+    /// still going. A row whose session the registry no longer counts as
+    /// live is `abandoned`: over, at a time nobody recorded.
+    pub fn card_runs(&self, workspace_id: &str, path: &str) -> anyhow::Result<Vec<protocol::CardRun>> {
+        let runs = self.kanban.lock().unwrap().card_runs(workspace_id, path)?;
+        let claimed: Vec<&str> = runs
+            .iter()
+            .filter(|r| r.outcome == "running")
+            .map(|r| r.session_id.as_str())
+            .collect();
+        if claimed.is_empty() {
+            return Ok(runs);
+        }
+        let registry = self.registry.lock().unwrap();
+        let gone: Vec<String> = claimed
+            .into_iter()
+            .filter(|id| {
+                // Absent from the registry counts as gone, the same as
+                // Exited: a session the daemon has no record of is not
+                // one it is hosting.
+                !matches!(
+                    registry.get(id),
+                    Ok(Some(ref record)) if record.status != SessionStatus::Exited
+                )
+            })
+            .map(|id| id.to_string())
+            .collect();
+        drop(registry);
+        if gone.is_empty() {
+            return Ok(runs);
+        }
+        let mut kanban = self.kanban.lock().unwrap();
+        kanban.abandon_runs_for_sessions(&gone)?;
+        kanban.card_runs(workspace_id, path)
     }
 
     /// An agent session claiming the card it just wrote. The app binds a
@@ -1550,24 +1622,41 @@ impl SessionManager {
 
         let workspace_id = watcher.workspace_id.clone();
         let held = self.kanban.lock().unwrap().card_session(&workspace_id, path)?;
-        if let Some(held) = held {
+        if let Some(held) = &held {
             if held.session_id != session_id
                 && self.sessions.lock().unwrap().contains_key(&held.session_id)
             {
                 return Ok(false);
             }
         }
+        // The held row's run record is CARRIED, not overwritten. A claim
+        // is a status write, not a launch: the agent that sends it is
+        // very often the one gavin itself started (its prompt tells it to
+        // keep the card's status current), and re-linking with None would
+        // then erase the conversation id its Resume needs, the launch cwd
+        // that id has to be resumed in, the budget bounding automatic
+        // resumes, and the baseline the Changes view diffs against --
+        // four fields destroyed by an agent doing exactly as it was told.
+        //
+        // A claim with no held row is the case this branch was written
+        // for: work the human's own agent picked up. It has no
+        // conversation gavin can name, but it does have a checkout, so
+        // the baseline is resolved here -- the only moment anyone can
+        // still see where that run began.
+        let base_sha = match &held {
+            Some(held) => held.base_sha.clone(),
+            None => crate::git_status::head_sha(&record.cwd),
+        };
         self.kanban.lock().unwrap().link_card_session(
             &workspace_id,
             path,
             session_id,
             &record.cwd,
             record.command.as_deref(),
-            // The agent's own session, not one gavin launched: there is no
-            // conversation id or launch cwd to carry, and no budget to touch.
-            None,
-            None,
-            None,
+            held.as_ref().and_then(|h| h.conversation_id.as_deref()),
+            held.as_ref().and_then(|h| h.launch_cwd.as_deref()),
+            held.as_ref().and_then(|h| h.resume_attempts),
+            base_sha.as_deref(),
         )?;
         Ok(true)
     }
@@ -2351,6 +2440,17 @@ impl SessionManager {
             if let Err(e) = manager.registry.lock().unwrap().update_status(&id, SessionStatus::Exited) {
                 eprintln!("failed to persist exited status for session {id}: {e}");
             }
+            // Close whatever card run this session WAS (v27), here rather
+            // than anywhere else because this block runs for both a
+            // natural exit and a kill_session -- the two ways a run
+            // actually ends. A failure to write history must not affect
+            // the teardown below, so it is logged and stepped over: the
+            // row simply stays open and the next daemon reads it as
+            // `abandoned`, which is the honest thing for a run whose end
+            // was not recorded.
+            if let Err(e) = manager.kanban.lock().unwrap().finish_runs_for_session(&id, Some(exit_code)) {
+                eprintln!("failed to close card runs for session {id}: {e}");
+            }
             // Same atomic take-and-remove as the error path above, and for the same
             // reason: a single `.remove()` call closes the race window a separate
             // get-then-remove would leave open.
@@ -2435,6 +2535,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok),
         Request::SetRailRun { rail_id, state, current_stage_id } => manager
             .set_rail_run(&rail_id, &state, current_stage_id)
+            .map(|_| Response::Ok),
+        Request::SetRailRunByRoot { root_path, rail_id, state, current_stage_id } => manager
+            .set_rail_run_by_root(&root_path, &rail_id, &state, current_stage_id)
             .map(|_| Response::Ok),
         Request::SetFailurePatterns { id, patterns } => {
             manager.set_failure_patterns(&id, patterns).map(|_| Response::Ok)
@@ -2560,6 +2663,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             conversation_id,
             launch_cwd,
             resume_attempts,
+            base_sha,
         } => manager
             .link_card_session(
                 &workspace_id,
@@ -2570,6 +2674,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 conversation_id.as_deref(),
                 launch_cwd.as_deref(),
                 resume_attempts,
+                base_sha.as_deref(),
             )
             .map(|_| Response::Ok),
         Request::ClaimCardForSession { root_path, path, session_id } => manager
@@ -2578,6 +2683,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::UnlinkCardSession { workspace_id, path } => manager
             .unlink_card_session(&workspace_id, &path)
             .map(|_| Response::Ok),
+        Request::CardRuns { workspace_id, path } => {
+            manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
+        }
         Request::DeleteCardFile { path } => {
             manager.delete_card_file(&path).map(|_| Response::Ok)
         }
@@ -3101,6 +3209,93 @@ mod tests {
                 assert_eq!(orchestration.rails[0].stages[0].steps[0].id, "t1");
             }
             other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    /// Arming a rail from outside the app. Two things the plain
+    /// `SetRailRun` cannot do: name the workspace, and therefore tell the
+    /// app -- without which the row lands in SQLite and the rail keeps
+    /// reading idle on screen.
+    #[test]
+    fn set_rail_run_by_root_writes_the_row_and_pushes_it() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+
+        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut watcher,
+            &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut reader = BufReader::new(watcher.try_clone().unwrap());
+        let first: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        // The plan first, and its own push read off the watcher, so the
+        // push asserted below is the one the run-state write produced.
+        request(
+            &mut cmd,
+            &Request::SetOrchestrationByRoot {
+                root_path: root.clone(),
+                rails: vec![orch_rail("r1", "t1")],
+                conflict_notes: vec![],
+            },
+        );
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap(),
+            Some(Response::OrchestrationChanged { .. })
+        ));
+
+        let resp = request(
+            &mut cmd,
+            &Request::SetRailRunByRoot {
+                root_path: root.clone(),
+                rail_id: "r1".into(),
+                state: "running".into(),
+                current_stage_id: Some("s1".into()),
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        match request(&mut cmd, &Request::GetOrchestration { workspace_id: "ws-1".into() }) {
+            Response::Orchestration { rail_runs, .. } => {
+                assert_eq!(rail_runs[0].rail_id, "r1");
+                assert_eq!(rail_runs[0].state, "running");
+                assert_eq!(rail_runs[0].current_stage_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected Orchestration, got {other:?}"),
+        }
+        match read_message(&mut reader).unwrap() {
+            Some(Response::OrchestrationChanged { workspace_id, orchestration }) => {
+                assert_eq!(workspace_id, "ws-1");
+                assert_eq!(orchestration.rail_runs[0].state, "running");
+                assert_eq!(orchestration.rail_runs[0].current_stage_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    /// A root gavin does not have open is refused rather than written
+    /// blind: the row would name a rail in a database nobody is watching,
+    /// and the agent would be told its rail was armed.
+    #[test]
+    fn set_rail_run_by_root_errors_when_the_workspace_is_not_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        match handle_request(
+            &manager,
+            Request::SetRailRunByRoot {
+                root_path: "/nowhere".into(),
+                rail_id: "r1".into(),
+                state: "running".into(),
+                current_stage_id: Some("s1".into()),
+            },
+        ) {
+            Response::Error { message } => assert!(message.contains("not open in gavin"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 
@@ -4011,7 +4206,7 @@ mod tests {
         let before = card.to_string_lossy().to_string();
         let after = plans.join("done").join("ship.md").to_string_lossy().to_string();
 
-        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None).unwrap();
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None, None).unwrap();
         // The rail's one step points at the card about to move.
         manager
             .set_orchestration(
@@ -4092,6 +4287,83 @@ mod tests {
         manager.create_session("/tmp/ws", "/tmp", Some("/bin/sh")).unwrap()
     }
 
+    // --- the run history (v27) ---------------------------------------
+
+    #[test]
+    fn card_runs_answers_over_the_wire_for_a_card_that_has_been_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude"), None, None, None, None)
+            .unwrap();
+
+        let resp = handle_request(
+            &manager,
+            Request::CardRuns { workspace_id: "ws-1".into(), path: "/p/t.md".into() },
+        );
+
+        match resp {
+            Response::CardRuns { runs } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].session_id, "s-1");
+            }
+            other => panic!("expected CardRuns, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn card_runs_is_an_empty_list_for_a_card_nobody_has_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        match handle_request(
+            &manager,
+            Request::CardRuns { workspace_id: "ws-1".into(), path: "/p/never.md".into() },
+        ) {
+            Response::CardRuns { runs } => assert!(runs.is_empty()),
+            other => panic!("expected CardRuns, got {other:?}"),
+        }
+    }
+
+    /// `running` is a claim, and this is the only layer that can check
+    /// it. The pump closes a run where it reports `SessionExited`, but a
+    /// pump only exists while something is attached -- so a session that
+    /// ends unattached would leave a run reading as live indefinitely.
+    #[test]
+    fn a_run_whose_session_the_registry_no_longer_has_stops_claiming_to_be_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .link_card_session("ws-1", "/p/t.md", "s-gone", "/p", None, None, None, None, None)
+            .unwrap();
+        assert_eq!(manager.kanban.lock().unwrap().card_runs("ws-1", "/p/t.md").unwrap()[0].outcome, "running");
+
+        let runs = manager.card_runs("ws-1", "/p/t.md").unwrap();
+
+        assert_eq!(runs[0].outcome, "abandoned");
+        assert_eq!(runs[0].ended_at, None, "nobody watched it end, so nobody can say when");
+        // Written back, not computed per read: the next reader gets the
+        // same answer without re-deriving it.
+        assert_eq!(
+            manager.kanban.lock().unwrap().card_runs("ws-1", "/p/t.md").unwrap()[0].outcome,
+            "abandoned"
+        );
+    }
+
+    #[test]
+    fn a_run_whose_session_is_still_live_keeps_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let session = live_session(&manager);
+        manager
+            .link_card_session("ws-1", "/p/t.md", &session, "/tmp", None, None, None, None, None)
+            .unwrap();
+
+        assert_eq!(manager.card_runs("ws-1", "/p/t.md").unwrap()[0].outcome, "running");
+
+        manager.kill_session(&session).unwrap();
+    }
+
     #[test]
     fn claiming_binds_an_in_progress_card_to_the_session_that_wrote_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -4132,7 +4404,7 @@ mod tests {
         let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
         let owner = live_session(&manager);
         let bystander = live_session(&manager);
-        manager.link_card_session("ws-1", &card, &owner, "/p", None, None, None, None).unwrap();
+        manager.link_card_session("ws-1", &card, &owner, "/p", None, None, None, None, None).unwrap();
 
         assert!(!manager.claim_card_for_session(&root, &card, &bystander).unwrap());
         assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].session_id, owner);
@@ -4147,11 +4419,121 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
         let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
-        manager.link_card_session("ws-1", &card, "s-long-gone", "/p", None, None, None, None).unwrap();
+        manager.link_card_session("ws-1", &card, "s-long-gone", "/p", None, None, None, None, None).unwrap();
         let session = live_session(&manager);
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
         assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].session_id, session);
+    }
+
+    /// The claim is a STATUS write, and the agent sending it is very
+    /// often the one gavin launched -- its prompt tells it to keep the
+    /// card's status current. Re-linking with None for the run fields
+    /// therefore erased, from a card being worked correctly, the
+    /// conversation its Resume needs, the directory that conversation
+    /// has to reopen in, the budget bounding automatic resumes, and the
+    /// baseline the Changes view diffs against.
+    #[test]
+    fn claiming_carries_the_run_record_it_found_instead_of_wiping_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
+        let session = live_session(&manager);
+        let base = "3333333333333333333333333333333333333333";
+        manager
+            .link_card_session(
+                "ws-1",
+                &card,
+                &session,
+                "/p",
+                Some("claude 'run it'"),
+                Some("conv-1"),
+                Some("/p/wt"),
+                Some(1),
+                Some(base),
+            )
+            .unwrap();
+
+        assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
+
+        let bound = &manager.get_board("ws-1").unwrap().card_sessions[0];
+        assert_eq!(bound.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(bound.launch_cwd.as_deref(), Some("/p/wt"));
+        assert_eq!(bound.resume_attempts, Some(1));
+        assert_eq!(bound.base_sha.as_deref(), Some(base));
+        // What the claim IS still lands: the session record's cwd and
+        // command, which is how a card an agent picked up gets a
+        // Re-launch at all.
+        assert_eq!(bound.cwd, "/tmp");
+        assert_eq!(bound.command.as_deref(), Some("/bin/sh"));
+    }
+
+    /// The one baseline nobody else can take. Every gavin-launched run
+    /// gets its sha from the app, before there is a session; a card the
+    /// human's own agent picked up has only this moment.
+    #[test]
+    fn a_first_claim_records_the_baseline_of_the_sessions_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().to_str().unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "T"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["commit", "-q", "--allow-empty", "-m", "base"],
+        ] {
+            std::process::Command::new("git").args(&args).current_dir(repo_path).status().unwrap();
+        }
+        let head = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
+        let session = manager.create_session("/tmp/ws", repo_path, Some("/bin/sh")).unwrap();
+
+        assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
+        assert_eq!(
+            manager.get_board("ws-1").unwrap().card_sessions[0].base_sha.as_deref(),
+            Some(head.as_str())
+        );
+    }
+
+    /// An agent working outside a repository is not an error and not a
+    /// refusal: it binds, with no baseline, and the Changes surfaces say
+    /// there is nothing to diff against.
+    #[test]
+    fn a_claim_from_outside_a_repository_binds_with_no_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_path = outside.path().to_str().unwrap();
+        // Only meaningful if the tempdir really is outside a checkout --
+        // a machine whose temp dir sits inside one would prove nothing.
+        let inside_a_repo = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(outside_path)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if inside_a_repo {
+            return;
+        }
+
+        let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
+        let session = manager.create_session("/tmp/ws", outside_path, Some("/bin/sh")).unwrap();
+
+        assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
+        assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].base_sha, None);
     }
 
     #[test]
@@ -4202,7 +4584,7 @@ mod tests {
         std::fs::write(&card, "---\ntitle: Ship\nstatus: Done\n---\n").unwrap();
         let before = card.to_string_lossy().to_string();
 
-        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None).unwrap();
+        manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None, None).unwrap();
         manager
             .set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &before)], vec![])
             .unwrap();

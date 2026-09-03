@@ -1,4 +1,4 @@
-use protocol::{Board, CardSession, Column, Label};
+use protocol::{Board, CardRun, CardSession, Column, Label};
 use rusqlite::{params, Connection};
 
 /// The three canonical statuses (D6's vocabulary). Permanent: the board
@@ -6,6 +6,16 @@ use rusqlite::{params, Connection};
 /// so "permanent" holds even against an older board or a stale client,
 /// not just the current UI.
 const PERMANENT_COLUMNS: [&str; 3] = ["To Do", "In Progress", "Done"];
+
+/// Wall-clock seconds, for the run history's own timestamps. Saturated
+/// at 0 rather than propagating an error: a clock set before 1970 is not
+/// a reason to refuse a card launch.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 /// Mirrors the frontend's slugStatus: lowercase, every run of
 /// non-alphanumerics collapsed to one "-", trimmed.
@@ -70,8 +80,49 @@ impl KanbanStore {
                 -- runs under -- an in-memory counter would reset on the
                 -- very events it is supposed to survive.
                 resume_attempts INTEGER,
+                -- v26: the commit this run's checkout was on when the
+                -- agent started. The baseline the Changes view diffs
+                -- against and the commit a discard resets to; nullable
+                -- because a run outside a repo, on an unborn HEAD, or
+                -- launched against a daemon that could not store it has
+                -- none -- an absent baseline, never an empty diff.
+                base_sha TEXT,
                 PRIMARY KEY (workspace_id, path)
             );
+            -- v27: the run history `card_sessions` above cannot keep.
+            -- That table is upserted by (workspace_id, path), so it holds
+            -- the LIVE binding and the previous run is gone the instant
+            -- the next one launches. This one is append-only: a row per
+            -- session a card was ever bound to, opened and closed by the
+            -- daemon off the links and exits it already sees.
+            --
+            -- Its own started_at/ended_at rather than a join onto the
+            -- registry: the registry's `started_at_us` is a process start
+            -- time kept as a pid-reuse guard, not a wall clock, and it
+            -- has no end time at all.
+            CREATE TABLE IF NOT EXISTS card_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                command TEXT,
+                conversation_id TEXT,
+                launch_cwd TEXT,
+                base_sha TEXT,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                exit_code INTEGER,
+                -- running | exited | replaced | unlinked | abandoned.
+                -- Never null. An end nobody observed is spelled
+                -- `abandoned`, which is a fact about the daemon, not an
+                -- absence of one about the run.
+                outcome TEXT NOT NULL,
+                resume_attempts INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS card_runs_by_card
+                ON card_runs (workspace_id, path, id);
+            CREATE INDEX IF NOT EXISTS card_runs_by_session
+                ON card_runs (session_id);
             DROP TABLE IF EXISTS kanban_card_labels;
             DROP TABLE IF EXISTS kanban_cards;",
         )?;
@@ -87,9 +138,20 @@ impl KanbanStore {
             "ALTER TABLE card_sessions ADD COLUMN conversation_id TEXT",
             "ALTER TABLE card_sessions ADD COLUMN launch_cwd TEXT",
             "ALTER TABLE card_sessions ADD COLUMN resume_attempts INTEGER",
+            "ALTER TABLE card_sessions ADD COLUMN base_sha TEXT",
         ] {
             let _ = conn.execute(stmt, []);
         }
+        // Every run still open belongs to a daemon that is gone: this
+        // runs once per process, before any launch of this lifetime has
+        // reached the store, so an open row here is by construction one
+        // this process inherited. `ended_at` stays NULL rather than being
+        // back-filled with now() -- the run ended when its daemon did,
+        // and nobody watched that happen.
+        conn.execute(
+            "UPDATE card_runs SET outcome = 'abandoned' WHERE ended_at IS NULL AND outcome = 'running'",
+            [],
+        )?;
         Ok(Self { conn })
     }
 
@@ -166,7 +228,7 @@ impl KanbanStore {
         let mut card_sessions = Vec::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts \
+                "SELECT path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts, base_sha \
                  FROM card_sessions WHERE workspace_id = ?1",
             )?;
             let rows = stmt.query_map(params![workspace_id], |row| {
@@ -178,6 +240,7 @@ impl KanbanStore {
                     conversation_id: row.get(4)?,
                     launch_cwd: row.get(5)?,
                     resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
+                    base_sha: row.get(7)?,
                 })
             })?;
             for row in rows {
@@ -234,7 +297,7 @@ impl KanbanStore {
         path: &str,
     ) -> anyhow::Result<Option<CardSession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts
+            "SELECT path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts, base_sha
              FROM card_sessions WHERE workspace_id = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query_map(params![workspace_id, path], |row| {
@@ -246,6 +309,7 @@ impl KanbanStore {
                 conversation_id: row.get(4)?,
                 launch_cwd: row.get(5)?,
                 resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
+                    base_sha: row.get(7)?,
             })
         })?;
         Ok(rows.next().transpose()?)
@@ -263,14 +327,25 @@ impl KanbanStore {
         conversation_id: Option<&str>,
         launch_cwd: Option<&str>,
         resume_attempts: Option<u32>,
+        base_sha: Option<&str>,
     ) -> anyhow::Result<()> {
+        self.record_run_for_link(
+            workspace_id,
+            path,
+            session_id,
+            command,
+            conversation_id,
+            launch_cwd,
+            resume_attempts,
+            base_sha,
+        )?;
         self.conn.execute(
-            "INSERT INTO card_sessions (workspace_id, path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO card_sessions (workspace_id, path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts, base_sha)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(workspace_id, path) DO UPDATE SET
                session_id = excluded.session_id, cwd = excluded.cwd, command = excluded.command,
                conversation_id = excluded.conversation_id, launch_cwd = excluded.launch_cwd,
-               resume_attempts = excluded.resume_attempts",
+               resume_attempts = excluded.resume_attempts, base_sha = excluded.base_sha",
             params![
                 workspace_id,
                 path,
@@ -279,14 +354,194 @@ impl KanbanStore {
                 command,
                 conversation_id,
                 launch_cwd,
-                resume_attempts.map(i64::from)
+                resume_attempts.map(i64::from),
+                base_sha
             ],
         )?;
         Ok(())
     }
 
+    /// The run-history half of `link_card_session` (v27).
+    ///
+    /// A link is one of two things and the session id is what tells them
+    /// apart. A DIFFERENT session is a new run: whatever was open for
+    /// this card is `replaced` -- which is the truth of what the upsert
+    /// below does to it -- and a fresh row opens. The SAME session is the
+    /// same run, re-stated: a resume budget spent, an id learned late.
+    /// That must UPDATE the row, or every auto-resume would file a run
+    /// the human never started.
+    ///
+    /// A row this session left `abandoned` is reopened rather than
+    /// duplicated. Abandoned means "the daemon that was watching went
+    /// away", and a session that links again is the same work still
+    /// going -- filing a second row for it would turn every daemon
+    /// restart into a phantom run.
+    #[allow(clippy::too_many_arguments)]
+    fn record_run_for_link(
+        &mut self,
+        workspace_id: &str,
+        path: &str,
+        session_id: &str,
+        command: Option<&str>,
+        conversation_id: Option<&str>,
+        launch_cwd: Option<&str>,
+        resume_attempts: Option<u32>,
+        base_sha: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        let existing: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM card_runs
+                 WHERE workspace_id = ?1 AND path = ?2 AND session_id = ?3
+                   AND outcome IN ('running', 'abandoned')
+                 ORDER BY id DESC LIMIT 1",
+                params![workspace_id, path, session_id],
+                |row| row.get(0),
+            )
+            .ok();
+        match existing {
+            Some(id) => {
+                tx.execute(
+                    "UPDATE card_runs SET command = ?2, conversation_id = ?3, launch_cwd = ?4,
+                       base_sha = ?5, resume_attempts = ?6, outcome = 'running',
+                       ended_at = NULL, exit_code = NULL
+                     WHERE id = ?1",
+                    params![
+                        id,
+                        command,
+                        conversation_id,
+                        launch_cwd,
+                        base_sha,
+                        resume_attempts.map(i64::from)
+                    ],
+                )?;
+            }
+            None => {
+                tx.execute(
+                    "UPDATE card_runs SET outcome = 'replaced', ended_at = ?3
+                     WHERE workspace_id = ?1 AND path = ?2 AND outcome = 'running'",
+                    params![workspace_id, path, now_secs()],
+                )?;
+                tx.execute(
+                    "INSERT INTO card_runs (workspace_id, path, session_id, command, conversation_id,
+                       launch_cwd, base_sha, started_at, outcome, resume_attempts)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'running', ?9)",
+                    params![
+                        workspace_id,
+                        path,
+                        session_id,
+                        command,
+                        conversation_id,
+                        launch_cwd,
+                        base_sha,
+                        now_secs(),
+                        resume_attempts.map(i64::from)
+                    ],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every run this card has had, NEWEST FIRST. Ordered by id rather
+    /// than `started_at`: a relaunch can land in the same second as the
+    /// run it replaced, and the row id is the only total order there is.
+    pub fn card_runs(&self, workspace_id: &str, path: &str) -> anyhow::Result<Vec<CardRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, session_id, command, conversation_id, launch_cwd, base_sha,
+                    started_at, ended_at, exit_code, outcome, resume_attempts
+             FROM card_runs WHERE workspace_id = ?1 AND path = ?2 ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id, path], |row| {
+            Ok(CardRun {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                session_id: row.get(2)?,
+                command: row.get(3)?,
+                conversation_id: row.get(4)?,
+                launch_cwd: row.get(5)?,
+                base_sha: row.get(6)?,
+                started_at: row.get(7)?,
+                ended_at: row.get(8)?,
+                exit_code: row.get(9)?,
+                outcome: row.get(10)?,
+                resume_attempts: row.get::<_, Option<i64>>(11)?.map(|v| v.max(0) as u32),
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Closes whatever run a session was the run OF, wherever it was
+    /// bound. Called from the one place that runs for both a natural exit
+    /// and a kill, so the row is closed by the same event that already
+    /// tells the app the session is gone -- rather than by a sweep that
+    /// would have to guess.
+    ///
+    /// Keyed on the session alone: the daemon watching a PTY die knows
+    /// which session it was and nothing about which card, and a session
+    /// bound to two cards ended for both of them.
+    pub fn finish_runs_for_session(&mut self, session_id: &str, exit_code: Option<i32>) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE card_runs SET outcome = 'exited', ended_at = ?2, exit_code = ?3
+             WHERE session_id = ?1 AND outcome = 'running'",
+            params![session_id, now_secs(), exit_code],
+        )?;
+        Ok(())
+    }
+
+    /// Downgrades runs that still CLAIM to be running but whose session
+    /// is gone.
+    ///
+    /// The pump closes a run where it already reports `SessionExited`,
+    /// which is the right seam for every session the app has attached --
+    /// but the pump only exists while something is attached, so a session
+    /// that ends unattached leaves its row open with nobody to close it.
+    /// `abandoned` is exactly that state, and it is the same word the
+    /// reopen sweep uses, so the vocabulary stays at five outcomes rather
+    /// than growing a sixth for a difference the reader cannot act on.
+    ///
+    /// `ended_at` is left alone: nobody watched these end, and now() is
+    /// the time somebody LOOKED, which is not the same fact.
+    pub fn abandon_runs_for_sessions(&mut self, session_ids: &[String]) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        for id in session_ids {
+            tx.execute(
+                "UPDATE card_runs SET outcome = 'abandoned' WHERE session_id = ?1 AND outcome = 'running'",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Closes a card's open run because its BINDING went away -- an
+    /// unlink, a delete, an archive. Distinct from `exited` on purpose:
+    /// the session may well still be running, and a history that called
+    /// this an exit would be inventing one.
+    fn finish_runs_for_card(&mut self, workspace_id: Option<&str>, path: &str) -> anyhow::Result<()> {
+        match workspace_id {
+            Some(ws) => self.conn.execute(
+                "UPDATE card_runs SET outcome = 'unlinked', ended_at = ?3
+                 WHERE workspace_id = ?1 AND path = ?2 AND outcome = 'running'",
+                params![ws, path, now_secs()],
+            )?,
+            None => self.conn.execute(
+                "UPDATE card_runs SET outcome = 'unlinked', ended_at = ?2
+                 WHERE path = ?1 AND outcome = 'running'",
+                params![path, now_secs()],
+            )?,
+        };
+        Ok(())
+    }
+
     /// Removes a deleted card's bindings in EVERY workspace.
     pub fn unlink_card_session_all(&mut self, path: &str) -> anyhow::Result<()> {
+        self.finish_runs_for_card(None, path)?;
         self.conn.execute("DELETE FROM card_sessions WHERE path = ?1", params![path])?;
         Ok(())
     }
@@ -302,11 +557,23 @@ impl KanbanStore {
             "UPDATE OR REPLACE card_sessions SET path = ?2 WHERE path = ?1",
             params![old_path, new_path],
         )?;
+        // The history follows the card for the same reason the binding
+        // does: it belongs to the card, not to the path the card had
+        // while the agent was running. A card archived into `plans/done/`
+        // that lost its runs would look like one nobody ever worked.
+        // Plain UPDATE, not OR REPLACE: run rows have no uniqueness to
+        // collide on, and two cards' histories merging is the correct
+        // outcome when their files did.
+        self.conn.execute(
+            "UPDATE card_runs SET path = ?2 WHERE path = ?1",
+            params![old_path, new_path],
+        )?;
         Ok(())
     }
 
     /// Removes a binding; absent is a no-op.
     pub fn unlink_card_session(&mut self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
+        self.finish_runs_for_card(Some(workspace_id), path)?;
         self.conn.execute(
             "DELETE FROM card_sessions WHERE workspace_id = ?1 AND path = ?2",
             params![workspace_id, path],
@@ -337,6 +604,199 @@ mod tests {
 
     fn column(id: &str, name: &str, position: i64) -> Column {
         Column { id: id.to_string(), name: name.to_string(), position }
+    }
+
+    // --- the run history (v27) ---------------------------------------
+    //
+    // Every test here exists because `card_sessions` cannot answer the
+    // question: it is upserted by (workspace_id, path), so the run it
+    // holds is always the last one and never the history.
+
+    fn link(store: &mut KanbanStore, path: &str, session: &str) {
+        store
+            .link_card_session("ws-1", path, session, "/p", Some("claude"), Some("conv-1"), Some("/p"), None, None)
+            .unwrap();
+    }
+
+    fn store() -> (tempfile::TempDir, KanbanStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn a_card_with_no_runs_reports_an_empty_history_rather_than_erroring() {
+        let (_dir, store) = store();
+        assert!(store.card_runs("ws-1", "/p/t.md").unwrap().is_empty());
+    }
+
+    /// The whole point of the table. Three launches used to leave one
+    /// `card_sessions` row; they leave three runs.
+    #[test]
+    fn every_launch_of_a_card_keeps_its_own_run_newest_first() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+        link(&mut store, "/p/t.md", "s-2");
+        link(&mut store, "/p/t.md", "s-3");
+
+        let runs = store.card_runs("ws-1", "/p/t.md").unwrap();
+
+        assert_eq!(
+            runs.iter().map(|r| r.session_id.as_str()).collect::<Vec<_>>(),
+            vec!["s-3", "s-2", "s-1"],
+            "newest first"
+        );
+        assert_eq!(runs[0].outcome, "running");
+        assert_eq!(runs[1].outcome, "replaced", "the launch that took the binding ended the run that had it");
+        assert_eq!(runs[2].outcome, "replaced");
+        assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap().len(), 3);
+    }
+
+    /// A relink of the SAME session is the same run re-stated -- an
+    /// auto-resume spending its budget, an id learned late. Filing a
+    /// second row for it would invent a run the human never started.
+    #[test]
+    fn relinking_the_same_session_updates_its_run_instead_of_opening_another() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude"), Some("conv-1"), Some("/p"), Some(2), Some("abc"))
+            .unwrap();
+
+        let runs = store.card_runs("ws-1", "/p/t.md").unwrap();
+
+        assert_eq!(runs.len(), 1, "one session is one run, however often it is linked");
+        assert_eq!(runs[0].resume_attempts, Some(2));
+        assert_eq!(runs[0].base_sha.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn a_session_exiting_closes_its_run_with_the_exit_code() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+
+        store.finish_runs_for_session("s-1", Some(0)).unwrap();
+
+        let runs = store.card_runs("ws-1", "/p/t.md").unwrap();
+        assert_eq!(runs[0].outcome, "exited");
+        assert_eq!(runs[0].exit_code, Some(0));
+        assert!(runs[0].ended_at.is_some());
+        assert!(runs[0].ended_at.unwrap() >= runs[0].started_at);
+    }
+
+    /// `unlinked` rather than `exited`: the session may well still be
+    /// running, and a history that called this an exit would be
+    /// inventing one.
+    #[test]
+    fn unlinking_a_card_closes_its_run_without_claiming_the_session_exited() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+
+        store.unlink_card_session("ws-1", "/p/t.md").unwrap();
+
+        let runs = store.card_runs("ws-1", "/p/t.md").unwrap();
+        assert_eq!(runs.len(), 1, "the run survives the binding it outlived");
+        assert_eq!(runs[0].outcome, "unlinked");
+        assert_eq!(runs[0].exit_code, None);
+    }
+
+    #[test]
+    fn deleting_a_card_everywhere_closes_the_runs_it_had() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+
+        store.unlink_card_session_all("/p/t.md").unwrap();
+
+        assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap()[0].outcome, "unlinked");
+    }
+
+    /// The history belongs to the CARD, not to the path it had while the
+    /// agent ran. A card archived into `plans/done/` that lost its runs
+    /// would read as one nobody ever worked -- and archiving is what
+    /// happens to every card that was.
+    #[test]
+    fn a_cards_runs_follow_its_file_when_it_moves() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/plans/t.md", "s-1");
+
+        store.rename_card_path("/p/plans/t.md", "/p/plans/done/t.md").unwrap();
+
+        assert!(store.card_runs("ws-1", "/p/plans/t.md").unwrap().is_empty());
+        let moved = store.card_runs("ws-1", "/p/plans/done/t.md").unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].path, "/p/plans/done/t.md");
+    }
+
+    /// A run still open when the store is reopened belonged to a daemon
+    /// that is gone. `abandoned`, not `exited` -- and `ended_at` stays
+    /// None, because nobody watched it end and now() would be a lie.
+    #[test]
+    fn a_run_left_open_by_a_dead_daemon_reads_as_abandoned_with_no_end_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kanban.sqlite");
+        {
+            let mut first = KanbanStore::open(&file).unwrap();
+            link(&mut first, "/p/t.md", "s-1");
+        }
+
+        let second = KanbanStore::open(&file).unwrap();
+
+        let runs = second.card_runs("ws-1", "/p/t.md").unwrap();
+        assert_eq!(runs[0].outcome, "abandoned");
+        assert_eq!(runs[0].ended_at, None);
+    }
+
+    /// ...and a session that links again after that restart is the same
+    /// work still going. Duplicating its row would turn every daemon
+    /// restart into a phantom run.
+    #[test]
+    fn a_session_that_links_again_after_a_restart_reopens_its_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kanban.sqlite");
+        {
+            let mut first = KanbanStore::open(&file).unwrap();
+            link(&mut first, "/p/t.md", "s-1");
+        }
+        let mut second = KanbanStore::open(&file).unwrap();
+
+        link(&mut second, "/p/t.md", "s-1");
+
+        let runs = second.card_runs("ws-1", "/p/t.md").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, "running");
+    }
+
+    #[test]
+    fn one_cards_runs_are_not_another_cards() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/a.md", "s-1");
+        link(&mut store, "/p/b.md", "s-2");
+
+        assert_eq!(store.card_runs("ws-1", "/p/a.md").unwrap().len(), 1);
+        assert_eq!(store.card_runs("ws-1", "/p/b.md").unwrap()[0].session_id, "s-2");
+    }
+
+    /// The v27 table reaches a database created before it, which
+    /// `CREATE TABLE IF NOT EXISTS` in `open` handles -- unlike a COLUMN
+    /// added the same way, which would never arrive (see the v21 ALTERs
+    /// above and the test below them).
+    #[test]
+    fn the_run_history_table_is_created_in_a_database_that_predates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kanban.sqlite");
+        {
+            let conn = Connection::open(&file).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE kanban_boards (workspace_id TEXT PRIMARY KEY);
+                 INSERT INTO kanban_boards VALUES ('ws-1');",
+            )
+            .unwrap();
+        }
+
+        let mut store = KanbanStore::open(&file).unwrap();
+        link(&mut store, "/p/t.md", "s-1");
+
+        assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap().len(), 1);
     }
 
     #[test]
@@ -435,9 +895,9 @@ mod tests {
     fn card_sessions_upsert_unlink_and_ride_the_board() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'"), None, None, None).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, None, None, None).unwrap(); // upsert replaces
-        store.link_card_session("ws-2", "/p/t.md", "s-9", "/p", None, None, None, None).unwrap(); // other workspace
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'"), None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, None, None, None, None).unwrap(); // upsert replaces
+        store.link_card_session("ws-2", "/p/t.md", "s-9", "/p", None, None, None, None, None).unwrap(); // other workspace
 
         let board = store.get_board("ws-1").unwrap();
         assert_eq!(board.card_sessions.len(), 1);
@@ -458,13 +918,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
         store
-            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, Some("conv-1"), Some("/p"), None)
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, Some("conv-1"), Some("/p"), None, None)
             .unwrap();
         assert_eq!(store.get_board("ws-1").unwrap().card_sessions[0].resume_attempts, None);
 
         // The resume: same conversation, new session, one attempt spent.
         store
-            .link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, Some("conv-1"), Some("/p"), Some(1))
+            .link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, Some("conv-1"), Some("/p"), Some(1), None)
             .unwrap();
         let cs = store.get_board("ws-1").unwrap().card_sessions;
         assert_eq!(cs[0].session_id, "s-2");
@@ -473,9 +933,41 @@ mod tests {
         // And a fresh launch spends it back down: a new conversation is a
         // new run, so the budget it carries is a new budget.
         store
-            .link_card_session("ws-1", "/p/t.md", "s-3", "/p", None, Some("conv-2"), Some("/p"), Some(0))
+            .link_card_session("ws-1", "/p/t.md", "s-3", "/p", None, Some("conv-2"), Some("/p"), Some(0), None)
             .unwrap();
         assert_eq!(store.get_board("ws-1").unwrap().card_sessions[0].resume_attempts, Some(0));
+    }
+
+    /// The baseline is written once, at launch, and then has to survive
+    /// every later write to the same row -- a resume, a rename, a claim.
+    /// It is unrecoverable if lost: nothing afterwards can say where a
+    /// run began.
+    #[test]
+    fn the_baseline_rides_the_binding_and_is_replaced_only_by_a_fresh_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let base = "1111111111111111111111111111111111111111";
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, Some("conv-1"), Some("/p"), Some(0), Some(base))
+            .unwrap();
+        assert_eq!(store.get_board("ws-1").unwrap().card_sessions[0].base_sha.as_deref(), Some(base));
+
+        // A resume: same run, same baseline, new session.
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-2", "/p", None, Some("conv-1"), Some("/p"), Some(1), Some(base))
+            .unwrap();
+        assert_eq!(store.get_board("ws-1").unwrap().card_sessions[0].base_sha.as_deref(), Some(base));
+
+        // A re-launch: a new run, so a new baseline -- the checkout has
+        // moved on and diffing against where the LAST run started would
+        // credit this one with the previous one's work.
+        let later = "2222222222222222222222222222222222222222";
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-3", "/p", None, Some("conv-2"), Some("/p"), Some(0), Some(later))
+            .unwrap();
+        let cs = store.card_session("ws-1", "/p/t.md").unwrap().unwrap();
+        assert_eq!(cs.base_sha.as_deref(), Some(later));
+        assert_eq!(cs.session_id, "s-3");
     }
 
     /// Every other test here opens a database this build created, which
@@ -518,6 +1010,11 @@ mod tests {
         // run that predates the budget has never been resumed, which is
         // what an absent count has to read as.
         assert_eq!(sessions[0].resume_attempts, None);
+        // v26's column rides the same list. A run from before the
+        // baseline existed has none, which every surface has to read as
+        // "nobody recorded where this started" -- never as "it changed
+        // nothing".
+        assert_eq!(sessions[0].base_sha, None);
 
         // Idempotent: the ALTERs run on every open, and the second one
         // must swallow the duplicate rather than fail the open.
@@ -530,9 +1027,9 @@ mod tests {
     fn rename_card_path_follows_a_moved_card_across_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/plans/t.md", "s-1", "/p", None, None, None, None).unwrap();
-        store.link_card_session("ws-2", "/p/plans/t.md", "s-2", "/p", None, None, None, None).unwrap();
-        store.link_card_session("ws-1", "/p/plans/other.md", "s-3", "/p", None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/plans/t.md", "s-1", "/p", None, None, None, None, None).unwrap();
+        store.link_card_session("ws-2", "/p/plans/t.md", "s-2", "/p", None, None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/plans/other.md", "s-3", "/p", None, None, None, None, None).unwrap();
 
         store.rename_card_path("/p/plans/t.md", "/p/plans/done/t.md").unwrap();
 
@@ -548,9 +1045,9 @@ mod tests {
     fn unlink_all_clears_a_path_across_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
-        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, None, None, None).unwrap();
-        store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None, None, None, None).unwrap();
-        store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, None, None, None, None).unwrap();
+        store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None, None, None, None, None).unwrap();
+        store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None, None, None, None, None).unwrap();
 
         store.unlink_card_session_all("/p/t.md").unwrap();
 

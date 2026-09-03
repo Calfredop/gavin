@@ -39,6 +39,7 @@ import {
   CircleQuestionMark,
   CircleSlash2,
   GitBranch,
+  History,
   LoaderCircle,
   MessageCircleQuestionMark,
   Minus,
@@ -56,6 +57,7 @@ import {
   SquareDot,
   SquareX,
   TriangleAlert,
+  Unlink2,
 } from "@lucide/svelte";
 import type { SessionStatus } from "../notifications";
 // The rails already own these three; re-declaring them here would be a
@@ -69,7 +71,7 @@ export type IndicatorTone = "neutral" | "accent" | "success" | "warning" | "dang
 
 /// The questions the app's badges answer. One glyph family each; the
 /// test enforces that no glyph is shared between two of them.
-export type IndicatorAxis = "agent" | "priority" | "git" | "edits" | "shell" | "step" | "rail";
+export type IndicatorAxis = "agent" | "priority" | "git" | "edits" | "shell" | "step" | "rail" | "run";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
 /// which is the whole point: the old badges said "amber" and left the
@@ -82,6 +84,7 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   shell: "Shell",
   step: "Step",
   rail: "Rail",
+  run: "Run",
 };
 
 export interface Indicator {
@@ -397,6 +400,48 @@ export function railRetryIndicator(): Indicator {
   return make("rail", "retrying", Repeat, "accent", "re-running a step until a check passes");
 }
 
+// ---- run ---------------------------------------------------------------
+// How one PAST run of a card ended (`CardRun.outcome`). Mostly one glyph
+// with the tone carrying the answer, which is the vocabulary's own rule:
+// shape says which question is being asked.
+//
+// `unlinked` is the exception and earns a second glyph honestly -- it and
+// `replaced` are both neutral, because nothing went wrong in either, and
+// two states that render identically are two states the reader cannot
+// tell apart. The glyph is the distinction the tone cannot make.
+//
+// The tones are the honest reading, not a severity ramp: a non-zero exit
+// is danger because it is the one outcome that says the agent stopped
+// badly, and `abandoned` is warning because what it describes is gavin's
+// ignorance rather than the run's failure.
+//
+// Nothing here spins, `running` included. Motion belongs to the agent
+// axis: a row in a history is a record of a run, and the live one has an
+// agent badge of its own elsewhere saying what it is doing right now.
+
+const RUN_OUTCOMES = ["running", "exited", "failed", "replaced", "unlinked", "abandoned"] as const;
+export type RunOutcomeState = (typeof RUN_OUTCOMES)[number];
+
+const RUN: Record<RunOutcomeState, Indicator> = {
+  running: make("run", "running", History, "accent", "still running"),
+  exited: make("run", "exited", History, "success", "finished"),
+  failed: make("run", "failed", History, "danger", "ended with a non-zero exit code"),
+  replaced: make("run", "replaced", History, "neutral", "superseded by a later run"),
+  unlinked: make("run", "unlinked", Unlink2, "neutral", "unbound from the card"),
+  abandoned: make("run", "abandoned", History, "warning", "end not recorded"),
+};
+
+/// The badge for a run, off its `outcome` and its exit code. The exit
+/// code is what splits `exited` in two: the daemon records one state for
+/// "the session ended", and whether that was a clean finish or a crash is
+/// the reader's first question.
+export function runIndicator(outcome: string, exitCode: number | null): Indicator {
+  if (outcome === "exited" && exitCode !== null && exitCode !== 0) return RUN.failed;
+  return RUN[outcome as RunOutcomeState] ?? RUN.abandoned;
+}
+
+export const RUN_OUTCOME_STATES = RUN_OUTCOMES;
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // all three answers are facts about the agent, so they are agent badges,
@@ -428,6 +473,7 @@ export function allIndicators(): Indicator[] {
     ...STEP_STATES.map(stepIndicator),
     ...RAIL_STATES.map(railIndicator),
     railRetryIndicator(),
+    ...RUN_OUTCOME_STATES.map((state) => RUN[state]),
     gitIndicator(true),
     gitIndicator(false),
     worktreeStaleIndicator(),

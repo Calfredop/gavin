@@ -49,6 +49,8 @@ vi.mock("./layoutState", () => ({
   // Null by default: no conversation id unless a test asks for one, which
   // is what an unverified profile OR a pre-v21 daemon looks like.
   conversationIdForLaunch: vi.fn(() => null as string | null),
+  // Same default for the run baseline: absent unless a test asks.
+  baseShaForLaunch: vi.fn(async () => null as string | null),
   createSessionOnPage: vi.fn(),
   createPage: vi.fn().mockResolvedValue(null),
   // The card-attachment run gate resolves relative paths against the
@@ -69,6 +71,11 @@ vi.mock("./layoutState", () => ({
 vi.mock("./kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
+  // The real lookup rather than a stub: a resume READS the binding it is
+  // about to rewrite (for the baseline it must carry, not re-resolve),
+  // and a stub returning nothing would make that carrying untestable.
+  cardSessionFor: (board: { cardSessions?: { path: string }[] } | undefined, path: string) =>
+    board?.cardSessions?.find((cs) => cs.path === path),
 }));
 // /x/a.md's `attachments:` line, settable per test: every OTHER launch
 // test in this file must keep launching without the attachment gate
@@ -1215,9 +1222,42 @@ describe("executeActions", () => {
       // would need, and unlike `cwd` it never drifts.
       conversationId: null,
       launchCwd: "/x/wt",
+      // The commit the rail's checkout was on before the step ran. Null
+      // here for the same reason as the id above: the mocked launch
+      // resolves none (no repo, or a daemon too old to keep it).
+      baseSha: null,
     });
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
+  });
+
+  /// A rail step is a card run like any other, so it records the same
+  /// baseline -- resolved in the RAIL's checkout, which is what makes a
+  /// per-run diff worth having at all: several rails edit several
+  /// worktrees at once and the workspace Git tab shows one of them.
+  it("a launch records the baseline of the rail's own checkout, before the session", async () => {
+    const BASE = "4444444444444444444444444444444444444444";
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.baseShaForLaunch).mockResolvedValue(BASE);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(layoutStateModule.baseShaForLaunch).toHaveBeenCalledWith("/x/wt");
+    // Before the agent exists: a sha resolved afterwards would already
+    // carry whatever it had done by then.
+    expect(vi.mocked(layoutStateModule.baseShaForLaunch).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(layoutStateModule.createSessionOnPage).mock.invocationCallOrder[0]
+    );
+    expect(kanbanStateModule.linkCardSessionAction).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ baseSha: BASE })
+    );
   });
 });
 
@@ -2654,6 +2694,105 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
     await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+});
+
+// The other half of `gavin_start_rail`: the daemon writes the row and
+// pushes it, and this app has to ADOPT it. The push handler keeps its own
+// run state on purpose (the daemon's copy lags every optimistic local
+// write), so before this the pushed `running` row was dropped on arrival
+// and the rail went on reading idle -- exactly the half-adopted state the
+// five socket-armed rails were left in on 2026-09-03.
+describe("a rail armed from outside the app (a push carrying run state)", () => {
+  let stop: (() => void) | null = null;
+
+  const armed = (): Orchestration => ({
+    ...boundRail(),
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+  });
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    // The rail is idle here, and stays idle unless the push is adopted.
+    vi.mocked(backend.getOrchestration).mockResolvedValue(boundRail());
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+  });
+
+  afterEach(() => {
+    stop?.();
+    stop = null;
+  });
+
+  it("adopts the running row and launches the rail's first step", async () => {
+    // The re-read is what adopts it -- the payload is not trusted, the
+    // daemon is asked again -- so the mock has to answer with the row too.
+    vi.mocked(backend.getOrchestration).mockResolvedValue(armed());
+    tauriEvents.handlers.get("orchestration-changed")?.({ payload: ["ws-1", armed()] });
+
+    await vi.waitFor(() =>
+      expect(get(orchestrations)["ws-1"].railRuns).toEqual([
+        { railId: "r1", state: "running", currentStageId: "s1" },
+      ])
+    );
+    await vi.waitFor(() =>
+      expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+        "ws-1",
+        "p1",
+        "/x/wt",
+        expect.stringContaining("claude")
+      )
+    );
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
+  });
+
+  // The scheduler ticks the ACTIVE workspace and nothing else, so in any
+  // other workspace the handler's own tick is the only thing that can
+  // start the rail. An agent arming a rail in the workspace the human is
+  // not looking at is the ordinary case, not the exotic one.
+  it("starts it in a workspace the scheduler is not ticking", async () => {
+    layoutStore.update((s) => ({ ...s, activeWorkspaceId: "ws-2" }));
+    vi.mocked(backend.getOrchestration).mockResolvedValue(armed());
+    tauriEvents.handlers.get("orchestration-changed")?.({ payload: ["ws-1", armed()] });
+
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith(
+        "t1",
+        "running",
+        "sess-9",
+        null,
+        null,
+        "/x/wt",
+        0
+      )
+    );
+  });
+
+  // The merge guard is still the rule, and this is what says it survived:
+  // a push that agrees about run state must not send the app back to the
+  // daemon, or every plan write an agent makes would cost a re-read and
+  // the daemon's lagging copy would get a chance to overwrite a local
+  // optimistic write between the two.
+  it("does not re-read when the push says nothing new about run state", async () => {
+    vi.mocked(backend.getOrchestration).mockClear();
+    tauriEvents.handlers.get("orchestration-changed")?.({ payload: ["ws-1", boundRail()] });
+    await settle();
+    expect(backend.getOrchestration).not.toHaveBeenCalled();
   });
 });
 

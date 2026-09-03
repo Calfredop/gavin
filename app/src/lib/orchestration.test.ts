@@ -9,6 +9,7 @@ import {
   firstUnfinishedStageId,
   runnableIdleRails,
   startRailVerdict,
+  railRunsDiffer,
   nextActions,
   addRail,
   renameRail,
@@ -354,6 +355,52 @@ describe("startRailVerdict", () => {
       kind: "refuse",
       reason: expect.stringContaining("paused"),
     });
+  });
+});
+
+// The question the daemon's push handler asks before it decides whether
+// to keep this app's run state or go back and re-read. Until
+// `gavin_start_rail` there was no such thing as the daemon knowing more
+// about run state than the app did.
+describe("railRunsDiffer", () => {
+  function orch(railRuns: Orchestration["railRuns"]): Orchestration {
+    return { rails: [rail("r1", [[["t1", "/x/a.md"]]])], conflictNotes: [], railRuns, stepRuns: [] };
+  }
+
+  it("sees a rail the push says is running that this app calls idle", () => {
+    const local = orch([]);
+    const incoming = orch([{ railId: "r1", state: "running", currentStageId: "r1-s0" }]);
+    expect(railRunsDiffer(local, incoming)).toBe(true);
+  });
+
+  // Both directions, because the answer is only ever "go and ask the
+  // daemon", and a local row the daemon has dropped is as much a reason
+  // to ask as one it has added.
+  it("sees a rail the push says is idle that this app calls running", () => {
+    const local = orch([{ railId: "r1", state: "running", currentStageId: "r1-s0" }]);
+    expect(railRunsDiffer(local, orch([]))).toBe(true);
+  });
+
+  it("sees a rail that moved to another stage", () => {
+    const local = orch([{ railId: "r1", state: "running", currentStageId: "r1-s0" }]);
+    const incoming = orch([{ railId: "r1", state: "running", currentStageId: "r1-s1" }]);
+    expect(railRunsDiffer(local, incoming)).toBe(true);
+  });
+
+  // The ordinary push -- an agent rewriting the plan -- must not cost a
+  // re-read, or the daemon's lagging copy gets a chance to overwrite an
+  // optimistic local write on every write an agent makes.
+  it("says nothing changed when the two agree", () => {
+    const runs = [{ railId: "r1", state: "running" as const, currentStageId: "r1-s0" }];
+    expect(railRunsDiffer(orch(runs), orch([...runs]))).toBe(false);
+    expect(railRunsDiffer(orch([]), orch([]))).toBe(false);
+  });
+
+  // Run state for a rail the push has already deleted is not news: the
+  // handler drops those rows itself.
+  it("ignores a rail the incoming plan no longer has", () => {
+    const local = orch([{ railId: "gone", state: "running", currentStageId: "s9" }]);
+    expect(railRunsDiffer(local, orch([]))).toBe(false);
   });
 });
 

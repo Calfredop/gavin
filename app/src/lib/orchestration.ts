@@ -315,6 +315,32 @@ export function railStateOf(orch: Orchestration, railId: string): RailState {
   return orch.railRuns.find((r) => r.railId === railId)?.state ?? "idle";
 }
 
+/// Does the daemon's copy of RUN STATE say something this app's does not?
+///
+/// The push handler keeps its own run state and takes only the plan
+/// (`initOrchestrationListeners`), because the daemon's copy normally
+/// LAGS: every run-state write here is optimistic and the daemon is told
+/// a round trip later. `gavin_start_rail` inverts that for the first
+/// time -- an agent arms a rail, the daemon writes the row and pushes it,
+/// and the app is the one that is behind. This is the question that tells
+/// the two apart, and its answer is a reason to re-read, never a reason
+/// to trust the payload: `refreshOrchestration` asks the daemon again, so
+/// a push that crossed a local write in flight still lands on the truth.
+///
+/// Asked per rail in the INCOMING plan, over both directions of
+/// disagreement, so a missing row (which means `idle`) counts as much as
+/// a differing one.
+export function railRunsDiffer(local: Orchestration, incoming: Orchestration): boolean {
+  return incoming.rails.some((rail) => {
+    const here = local.railRuns.find((r) => r.railId === rail.id);
+    const there = incoming.railRuns.find((r) => r.railId === rail.id);
+    return (
+      (here?.state ?? "idle") !== (there?.state ?? "idle") ||
+      (here?.currentStageId ?? null) !== (there?.currentStageId ?? null)
+    );
+  });
+}
+
 /// The stage a RUNNING rail is on right now, or null. Distinct from
 /// `firstUnfinishedStageId`, which asks where a rail WOULD start: this
 /// asks where it already is, and only a rail actually advancing has an
@@ -391,6 +417,14 @@ export type StartRailVerdict =
 /// `name` is matched case- and space-insensitively: a human typed it
 /// into a step parameter, and a rail called "Deploy" not matching
 /// "deploy " would be a stall with no visible cause.
+///
+/// PORTED into `start_rail_verdict` in `crates/gavin-mcp/src/main.rs`,
+/// which is what `gavin_start_rail` decides with -- minus the
+/// self-reference case, since no rail is running the MCP's call. The two
+/// have to answer the same, in the same words: the human reads this
+/// one's refusal on the Orchestration tab and an agent reads that one's,
+/// and a rule that differed between them would make "start the rail"
+/// mean two things. A change here owes that one.
 export function startRailVerdict(
   orch: Orchestration,
   fromRailId: string,

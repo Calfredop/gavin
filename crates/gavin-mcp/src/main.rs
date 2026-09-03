@@ -196,6 +196,9 @@ fn tool_definitions() -> Value {
             "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, branch, pageId, stages: [{ id, position, mode, name, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. Stages run one after another. A stage's `mode` is \"parallel\" (its steps run at once in the rail's checkout) or \"sequence\" (one at a time, in position order); a stage of two or more steps is what the app calls a GROUP, and `name` is what it is called. `mode` defaults to \"parallel\" when omitted. `worktreePath` says WHICH CHECKOUT (null = the workspace root), `branch` says WHICH BRANCH gavin puts that checkout on before launching a step (null = whatever is checked out) — so a branch with no worktree means the root checkout on that branch, no separate folder.", "items": { "type": "object" } },
             "conflict_notes": { "type": "array", "description": "Your judgements, shown to the human in the Conflicts box. Each: { id, stepIds: [...], note }.", "items": { "type": "object" } }
         }, "required": ["rails"] } },
+        { "name": "gavin_start_rail", "description": "Arm a rail by NAME, exactly as the human's Start button does: gavin runs it from its first unfinished stage, on the rail's own page. Refuses a name no rail has, a name two rails share, and a PAUSED rail (a pause is a human's or a stalled step's, and resuming it is theirs). A rail already running is left alone — starting it would rewind it — and so is one with nothing unfinished; both answer with what they are, not an error. Never write run state to the daemon socket yourself. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
+            "rail": { "type": "string", "description": "The rail's name as gavin_get_orchestration reports it; matched case- and space-insensitively" }
+        }, "required": ["rail"] } },
         { "name": "gavin_spawn_session", "description": "Spawn a terminal session in the gavin app (visible to the human on the Agents page). Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
             "command": { "type": "string", "description": "Program to run, e.g. claude" },
             "cwd": { "type": "string", "description": "Defaults to the workspace root" }
@@ -260,6 +263,12 @@ fn dispatch_tool(
 
     if name == "gavin_get_orchestration" {
         return get_orchestration(root, transport);
+    }
+
+    // Its own path for the same reason `gavin_get_orchestration` has
+    // one: it is not one request but a read, a decision and a write.
+    if name == "gavin_start_rail" {
+        return start_rail(root, &require_arg(args, "rail")?, transport);
     }
 
     let req = match name {
@@ -702,6 +711,178 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
     }))?)
 }
 
+// ---------- arming a rail ----------
+
+/// What `gavin_start_rail` should do about the rail it names.
+///
+/// A PORT of `startRailVerdict` in `app/src/lib/orchestration.ts`, minus
+/// its self-reference case (nothing here is running on a rail, so there
+/// is no rail this call could loop back onto). That function carries the
+/// reasoning; this one must answer the same, in the same words, because
+/// the human reads its verdict on the Orchestration tab and the agent
+/// reads this one -- a change to either owes the other.
+enum StartVerdict {
+    /// Arm this rail at this stage.
+    Start { rail_id: String, rail_name: String, stage_id: String, stage_label: String },
+    /// The rail is fine as it is, and saying so is the whole answer.
+    Noop { text: String },
+    Refuse { reason: String },
+}
+
+/// Where Start arms a rail: the first stage (by position) holding a step
+/// whose run row is not `done`. Card statuses play no part -- the app's
+/// `firstUnfinishedStageId`, which this mirrors, leaves that to the
+/// scheduler's own first tick.
+fn first_unfinished_stage(
+    rail: &protocol::Rail,
+    step_runs: &[protocol::StepRun],
+) -> Option<protocol::Stage> {
+    let mut stages = rail.stages.clone();
+    stages.sort_by_key(|s| s.position);
+    stages.into_iter().find(|stage| {
+        !stage.steps.iter().all(|step| {
+            step_runs.iter().any(|r| r.step_id == step.id && r.state == "done")
+        })
+    })
+}
+
+/// A stage said the way the human sees it: its name when it has one, and
+/// its place in the rail either way -- an agent that reads "stage 2 of 4"
+/// can check the arming against what it just wrote.
+fn stage_label(rail: &protocol::Rail, stage: &protocol::Stage) -> String {
+    let total = rail.stages.len();
+    let mut ordered = rail.stages.clone();
+    ordered.sort_by_key(|s| s.position);
+    let nth = ordered.iter().position(|s| s.id == stage.id).map(|i| i + 1).unwrap_or(1);
+    match stage.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => format!("stage {nth} of {total} (\u{201c}{name}\u{201d})"),
+        None => format!("stage {nth} of {total}"),
+    }
+}
+
+fn start_rail_verdict(
+    rails: &[protocol::Rail],
+    rail_runs: &[protocol::RailRun],
+    step_runs: &[protocol::StepRun],
+    name: &str,
+) -> StartVerdict {
+    let wanted = name.trim().to_lowercase();
+    // The app's wording here names a step's Rail parameter, which is
+    // where a blank reaches IT. A blank reaches this one as an argument,
+    // so the sentence says argument.
+    if wanted.is_empty() {
+        return StartVerdict::Refuse {
+            reason: "no rail named — pass the name of the rail to start".to_string(),
+        };
+    }
+    let matches: Vec<&protocol::Rail> =
+        rails.iter().filter(|r| r.name.trim().to_lowercase() == wanted).collect();
+    let named = name.trim();
+    if matches.is_empty() {
+        return StartVerdict::Refuse {
+            reason: format!("no rail called \u{201c}{named}\u{201d} in this workspace"),
+        };
+    }
+    // Rail names are not unique -- nothing in the app makes them so --
+    // and arming an arbitrary one of two would be worse than saying
+    // which fact is missing.
+    if matches.len() > 1 {
+        return StartVerdict::Refuse {
+            reason: format!(
+                "\u{201c}{named}\u{201d} names {} rails — rename one of them",
+                matches.len()
+            ),
+        };
+    }
+    let target = matches[0];
+    let state = rail_runs
+        .iter()
+        .find(|r| r.rail_id == target.id)
+        .map(|r| r.state.as_str())
+        .unwrap_or("idle");
+    // A pause is a human's, or a stalled step's (rule 5). Resuming it
+    // would re-launch the very step that failed.
+    if state == "paused" {
+        return StartVerdict::Refuse {
+            reason: format!("\u{201c}{}\u{201d} is paused — resume it yourself", target.name),
+        };
+    }
+    // Not an error, and not a start either: Start REWINDS a rail to its
+    // first unfinished stage, so arming one that is already going three
+    // stages in would restart it from behind whatever stalled.
+    if state == "running" {
+        return StartVerdict::Noop {
+            text: format!(
+                "\u{201c}{}\u{201d} is already running — left alone (starting it would rewind it to its first unfinished stage)",
+                target.name
+            ),
+        };
+    }
+    match first_unfinished_stage(target, step_runs) {
+        None => StartVerdict::Noop {
+            text: format!(
+                "\u{201c}{}\u{201d} has no unfinished steps — nothing to arm",
+                target.name
+            ),
+        },
+        Some(stage) => StartVerdict::Start {
+            rail_id: target.id.clone(),
+            rail_name: target.name.clone(),
+            stage_label: stage_label(target, &stage),
+            stage_id: stage.id,
+        },
+    }
+}
+
+/// Arms a rail the way the human's Start button does: read the whole
+/// orchestration, decide here, and only then write.
+///
+/// The decision is the MCP's on purpose. The daemon stores run state and
+/// has no opinion about it, so an agent writing `running` straight to the
+/// socket -- which is what happened before this tool existed -- guessed
+/// the stage and could rewind a running rail or resume a paused one
+/// without knowing it.
+fn start_rail(
+    root: &Path,
+    name: &str,
+    transport: &mut dyn DaemonTransport,
+) -> anyhow::Result<String> {
+    let root_str = root.to_string_lossy().to_string();
+    let (rails, rail_runs, step_runs) = match transport
+        .request(&Request::GetOrchestrationByRoot { root_path: root_str.clone() })?
+    {
+        Response::Orchestration { rails, rail_runs, step_runs, .. } => (rails, rail_runs, step_runs),
+        Response::Error { message } => return Err(anyhow::anyhow!(message)),
+        other => return Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    };
+
+    let (rail_id, rail_name, stage_id, stage_label) =
+        match start_rail_verdict(&rails, &rail_runs, &step_runs, name) {
+            StartVerdict::Refuse { reason } => return Err(anyhow::anyhow!(reason)),
+            // A success, never an error: the agent asked for a rail to be
+            // going and it is going, or there is nothing left for it to do.
+            StartVerdict::Noop { text } => return Ok(text),
+            StartVerdict::Start { rail_id, rail_name, stage_id, stage_label } => {
+                (rail_id, rail_name, stage_id, stage_label)
+            }
+        };
+
+    // SetRailRunByRoot rather than SetRailRun: only the ByRoot form
+    // resolves a workspace, and only a resolved workspace can be told --
+    // without the push the row sits in SQLite and the rail reads idle in
+    // the app until something else makes it re-read.
+    match transport.request(&Request::SetRailRunByRoot {
+        root_path: root_str,
+        rail_id,
+        state: "running".to_string(),
+        current_stage_id: Some(stage_id),
+    })? {
+        Response::Ok => Ok(format!("armed \u{201c}{rail_name}\u{201d} at {stage_label}")),
+        Response::Error { message } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    }
+}
+
 // ---------- JSON-RPC ----------
 
 fn rpc_result(id: &Value, result: Value) -> String {
@@ -1099,6 +1280,246 @@ mod tests {
         let titles = unplaced_titles(nesting_tree());
         assert!(titles.contains(&"Free child".to_string()), "{titles:?}");
         assert!(titles.contains(&"Orphan".to_string()), "{titles:?}");
+    }
+
+    // ---- gavin_start_rail ----------------------------------------------
+    // The route this tool replaces: an orchestrating agent that found no
+    // start action among the gavin_* tools wrote `SetRailRun` rows to the
+    // daemon socket by hand -- naming no workspace (so nothing was
+    // pushed), guessing the stage, and rewinding or resuming rails that
+    // said not to.
+
+    fn a_step(id: &str, position: i64) -> protocol::Step {
+        protocol::Step {
+            id: id.into(),
+            position,
+            card_path: format!("/ws/.gavin-root/plans/{id}.md"),
+            tool_id: None,
+            tool_params: Default::default(),
+        }
+    }
+
+    fn a_stage(id: &str, position: i64, steps: Vec<protocol::Step>) -> protocol::Stage {
+        protocol::Stage {
+            id: id.into(),
+            position,
+            mode: protocol::default_stage_mode(),
+            name: None,
+            steps,
+        }
+    }
+
+    fn a_rail(id: &str, name: &str, stages: Vec<protocol::Stage>) -> protocol::Rail {
+        protocol::Rail {
+            id: id.into(),
+            name: name.into(),
+            position: 0,
+            worktree_path: None,
+            branch: None,
+            auto_resume: None,
+            page_id: None,
+            stages,
+        }
+    }
+
+    fn done(step_id: &str) -> protocol::StepRun {
+        protocol::StepRun {
+            step_id: step_id.into(),
+            state: "done".into(),
+            session_id: None,
+            reason: None,
+            conversation_id: None,
+            launch_cwd: None,
+            resume_attempts: None,
+        }
+    }
+
+    /// Two stages, the first already finished: "the first unfinished
+    /// stage" is only a real answer when there is a finished one in front
+    /// of it to skip.
+    fn two_stage_rail() -> Vec<protocol::Rail> {
+        vec![a_rail(
+            "r1",
+            "Backend",
+            vec![
+                a_stage("s1", 0, vec![a_step("t1", 0)]),
+                a_stage("s2", 1, vec![a_step("t2", 0), a_step("t3", 1)]),
+            ],
+        )]
+    }
+
+    fn orchestration(
+        rails: Vec<protocol::Rail>,
+        rail_runs: Vec<protocol::RailRun>,
+        step_runs: Vec<protocol::StepRun>,
+    ) -> Response {
+        Response::Orchestration { rails, conflict_notes: vec![], rail_runs, step_runs }
+    }
+
+    fn running(rail_id: &str, stage_id: &str) -> protocol::RailRun {
+        protocol::RailRun {
+            rail_id: rail_id.into(),
+            state: "running".into(),
+            current_stage_id: Some(stage_id.into()),
+        }
+    }
+
+    /// `call_tool` with arguments. Goes through `handle_line` like every
+    /// other tool test, so the JSON-RPC shaping is exercised too, and
+    /// returns the text WITH the error flag -- a refusal and a no-op read
+    /// alike in the text alone, and the difference between them is the
+    /// whole point of two of these tests.
+    fn call_start_rail(rail: &str, transport: &mut dyn DaemonTransport) -> (String, bool) {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"gavin_start_rail","arguments":{{"rail":"{rail}"}}}}}}"#
+        );
+        let reply = handle_line(&line, Some(Path::new("/ws")), transport).unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        (
+            v.pointer("/result/content/0/text").unwrap().as_str().unwrap().to_string(),
+            v.pointer("/result/isError").unwrap().as_bool().unwrap(),
+        )
+    }
+
+    #[test]
+    fn start_rail_arms_an_idle_rail_at_its_first_unfinished_stage() {
+        let mut t = mock(vec![
+            orchestration(two_stage_rail(), vec![], vec![done("t1")]),
+            Response::Ok,
+        ]);
+        // Case- and space-insensitively, exactly as the app matches it.
+        let (text, is_error) = call_start_rail(" backend ", &mut t);
+        assert!(!is_error, "{text}");
+        assert!(text.contains("Backend"), "should name the rail: {text}");
+        assert!(text.contains("stage 2 of 2"), "should name the stage: {text}");
+
+        // The write, and it is the ByRoot form: the plain SetRailRun names
+        // no workspace, so the daemon could not push it and the app would
+        // go on showing the rail idle.
+        match &t.requests[1] {
+            Request::SetRailRunByRoot { root_path, rail_id, state, current_stage_id } => {
+                assert_eq!(root_path, "/ws");
+                assert_eq!(rail_id, "r1");
+                assert_eq!(state, "running");
+                assert_eq!(current_stage_id.as_deref(), Some("s2"));
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// A stage is unfinished while ANY of its steps is not done -- one
+    /// finished step in a stage of two does not move the rail past it.
+    #[test]
+    fn start_rail_stays_on_a_stage_that_is_only_half_done() {
+        let mut t = mock(vec![
+            orchestration(two_stage_rail(), vec![], vec![done("t1"), done("t2")]),
+            Response::Ok,
+        ]);
+        let (text, is_error) = call_start_rail("Backend", &mut t);
+        assert!(!is_error, "{text}");
+        match &t.requests[1] {
+            Request::SetRailRunByRoot { current_stage_id, .. } => {
+                assert_eq!(current_stage_id.as_deref(), Some("s2"));
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_rail_refuses_a_name_no_rail_has() {
+        let mut t = mock(vec![orchestration(two_stage_rail(), vec![], vec![])]);
+        let (text, is_error) = call_start_rail("frontend", &mut t);
+        assert!(is_error, "{text}");
+        assert_eq!(text, "no rail called \u{201c}frontend\u{201d} in this workspace");
+        assert_eq!(t.requests.len(), 1, "a refusal writes nothing: {:?}", t.requests);
+    }
+
+    /// Rail names are not unique, so an ambiguous one says which fact is
+    /// missing rather than arming an arbitrary half of the pair.
+    #[test]
+    fn start_rail_refuses_a_name_two_rails_share() {
+        let rails = vec![
+            a_rail("r1", "Backend", vec![a_stage("s1", 0, vec![a_step("t1", 0)])]),
+            a_rail("r2", "backend ", vec![a_stage("s2", 0, vec![a_step("t2", 0)])]),
+        ];
+        let mut t = mock(vec![orchestration(rails, vec![], vec![])]);
+        let (text, is_error) = call_start_rail("Backend", &mut t);
+        assert!(is_error, "{text}");
+        assert_eq!(text, "\u{201c}Backend\u{201d} names 2 rails — rename one of them");
+        assert_eq!(t.requests.len(), 1, "a refusal writes nothing: {:?}", t.requests);
+    }
+
+    /// A pause is a human's or a stalled step's. Resuming it from here
+    /// would re-launch the very step that failed.
+    #[test]
+    fn start_rail_refuses_a_paused_rail() {
+        let paused = protocol::RailRun {
+            rail_id: "r1".into(),
+            state: "paused".into(),
+            current_stage_id: Some("s1".into()),
+        };
+        let mut t = mock(vec![orchestration(two_stage_rail(), vec![paused], vec![])]);
+        let (text, is_error) = call_start_rail("Backend", &mut t);
+        assert!(is_error, "{text}");
+        assert_eq!(text, "\u{201c}Backend\u{201d} is paused — resume it yourself");
+        assert_eq!(t.requests.len(), 1, "a refusal writes nothing: {:?}", t.requests);
+    }
+
+    /// Start REWINDS: it re-points a rail at its FIRST unfinished stage.
+    /// A rail already going three stages in must therefore be left alone,
+    /// and told about -- an error would read as "your rail is not
+    /// running", which is the opposite of what is true.
+    #[test]
+    fn start_rail_leaves_a_running_rail_alone_and_says_so() {
+        let mut t = mock(vec![orchestration(
+            two_stage_rail(),
+            vec![running("r1", "s2")],
+            vec![done("t1")],
+        )]);
+        let (text, is_error) = call_start_rail("Backend", &mut t);
+        assert!(!is_error, "a no-op is a success: {text}");
+        assert!(text.contains("already running"), "{text}");
+        assert_eq!(t.requests.len(), 1, "nothing to write: {:?}", t.requests);
+    }
+
+    #[test]
+    fn start_rail_says_so_when_every_step_is_already_done() {
+        let mut t = mock(vec![orchestration(
+            two_stage_rail(),
+            vec![],
+            vec![done("t1"), done("t2"), done("t3")],
+        )]);
+        let (text, is_error) = call_start_rail("Backend", &mut t);
+        assert!(!is_error, "a no-op is a success: {text}");
+        assert!(text.contains("nothing to arm"), "{text}");
+        assert_eq!(t.requests.len(), 1, "nothing to write: {:?}", t.requests);
+    }
+
+    /// The gate is the whole compatibility story for this tool: the write
+    /// is a v28 request, so against an older daemon the agent gets a
+    /// version message instead of a rail armed with nothing watching it.
+    #[test]
+    fn start_rail_is_gated_on_the_daemon_that_can_serve_its_write() {
+        let needed = protocol::min_version_for(&Request::SetRailRunByRoot {
+            root_path: "/ws".into(),
+            rail_id: "r1".into(),
+            state: "running".into(),
+            current_stage_id: None,
+        });
+        let (path, seen, _dir) = fake_daemon(
+            needed - 1,
+            vec![orchestration(two_stage_rail(), vec![], vec![done("t1")])],
+        );
+        let mut t = SocketTransport::at(path);
+        let (text, is_error) = call_start_rail("Backend", &mut t);
+        assert!(is_error, "{text}");
+        assert!(text.contains("gavin_start_rail"), "{text}");
+        assert!(text.contains(&format!("v{needed}")), "{text}");
+        // The read went out; only the write was withheld.
+        assert!(
+            !seen.lock().unwrap().iter().any(|r| matches!(r, Request::SetRailRunByRoot { .. })),
+            "a gated write must produce nothing on the wire"
+        );
     }
 
     fn orchestration_reply() -> Response {

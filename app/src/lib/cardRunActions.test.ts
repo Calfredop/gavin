@@ -42,6 +42,10 @@ vi.mock("./layoutState", () => ({
   // tests drive it from one place: null is "no id", which is both a
   // profile with no verified argv and a daemon too old to persist one.
   conversationIdForLaunch: vi.fn(() => null as string | null),
+  // The baseline half of the same gate: null is "this run has none",
+  // which covers a launch outside a repo, an unborn HEAD and a daemon
+  // too old to store the sha.
+  baseShaForLaunch: vi.fn(async () => null as string | null),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
@@ -80,7 +84,7 @@ vi.mock("./workspace", () => {
 });
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, armFailureDetection } from "./layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, baseShaForLaunch, armFailureDetection } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
@@ -153,6 +157,7 @@ beforeEach(() => {
   // swaps the profile in has to be undone here or it leaks forward.
   vi.mocked(resolvedAgentFor).mockReturnValue(NO_RESUME_AGENT as never);
   vi.mocked(conversationIdForLaunch).mockReturnValue(null);
+  vi.mocked(baseShaForLaunch).mockResolvedValue(null);
   vi.mocked(findSessionLocation).mockReturnValue(null);
 });
 
@@ -452,6 +457,98 @@ describe("developCard", () => {
 
     vi.mocked(backend.createSession).mockRejectedValue(new Error("spawn failed"));
     expect(await developCard("ws-1", card("task", "To Do"))).toContain("spawn failed");
+  });
+});
+
+/// The baseline is the one field on a binding that cannot be
+/// reconstructed after the fact: by the time anybody asks where a run
+/// started, the agent has moved HEAD and dirtied the tree. So it is
+/// resolved before the session exists, carried by a resume, and
+/// re-resolved by a re-launch -- three rules, one per launch shape.
+describe("the run's baseline", () => {
+  const BASE = "1111111111111111111111111111111111111111";
+
+  it("runCard resolves it in the launch directory and records it on the binding", async () => {
+    vi.mocked(baseShaForLaunch).mockResolvedValue(BASE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+
+    expect(await runCard("ws-1", card("plan", "To Do"))).toBeNull();
+
+    expect(baseShaForLaunch).toHaveBeenCalledWith("/ws");
+    // Before the agent: a sha resolved after `createSession` would
+    // already include whatever the agent had done by then.
+    expect(vi.mocked(baseShaForLaunch).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(backend.createSession).mock.invocationCallOrder[0]
+    );
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0].at(-1)).toBe(BASE);
+  });
+
+  it("a launch with no baseline links a null rather than nothing", async () => {
+    // Outside a repository, on an unborn HEAD, or against a daemon too
+    // old to keep it. The null is passed explicitly so the row is
+    // CLEARED: a previous run's baseline left in place would credit this
+    // run with the last one's work.
+    vi.mocked(baseShaForLaunch).mockResolvedValue(null);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+
+    expect(await runCard("ws-1", card("plan", "To Do"))).toBeNull();
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0].at(-1)).toBeNull();
+  });
+
+  it("a resume carries the baseline it found instead of re-resolving one", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-dead",
+          cwd: "/ws",
+          command: "x",
+          baseSha: BASE,
+        },
+      ]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    vi.mocked(baseShaForLaunch).mockResolvedValue("2222222222222222222222222222222222222222");
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await resumeCard("ws-1", card("plan", "In Progress"))).toBeNull();
+
+    // The run's OWN baseline, not the one the checkout is on now: a
+    // resume is this run continuing, and everything the first attempt
+    // wrote is still this run's work.
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0].at(-1)).toBe(BASE);
+  });
+
+  it("a re-launch resolves a new one, in the directory the run was launched in", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/p/t.md",
+          sessionId: "s-dead",
+          cwd: "/p/drifted",
+          command: "claude 'x'",
+          launchCwd: "/p/wt",
+          baseSha: BASE,
+        },
+      ]),
+    });
+    vi.mocked(baseShaForLaunch).mockResolvedValue("3333333333333333333333333333333333333333");
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toBeNull();
+
+    // The LAUNCH directory, not `cwd`: `cwd` follows OSC 7 and the dead
+    // agent may have left it anywhere.
+    expect(baseShaForLaunch).toHaveBeenCalledWith("/p/wt");
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0].at(-1)).toBe(
+      "3333333333333333333333333333333333333333"
+    );
   });
 });
 

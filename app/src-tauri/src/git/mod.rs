@@ -6,10 +6,12 @@ pub mod conflict;
 pub mod ops;
 pub mod parse;
 pub mod run;
+pub mod runchanges;
 pub mod types;
 pub mod watch;
 
 pub use commands::*;
 pub use conflict::*;
 pub use ops::*;
+pub use runchanges::*;
 pub use watch::*;

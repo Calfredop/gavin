@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { resolvedAgentFor, armFailureDetection, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
+import { resolvedAgentFor, armFailureDetection, baseShaForLaunch, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { cardSessionState } from "./columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
@@ -281,6 +281,11 @@ async function launchCard(
       resumeAttempts: options.automatic
         ? (binding.resumeAttempts ?? 0) + 1
         : (binding.resumeAttempts ?? null),
+      // And so does the baseline, for the same reason: a resume is this
+      // run continuing. Re-resolving HEAD here would move the baseline
+      // past everything the run had already done and report the work as
+      // nobody's.
+      baseSha: binding.baseSha ?? null,
     });
     return null;
   }
@@ -314,6 +319,18 @@ async function launchCard(
   // rather than asserted away.
   if (command === null) return noPromptReason(agent.label);
   const cwd = card.contextFolder;
+  // Before the session exists, because that is the only moment this can
+  // be asked: an agent's first minutes move HEAD and dirty the tree.
+  //
+  // A resume reaching here is the WRITTEN reconstruction -- the profile
+  // could not reopen the conversation -- but it is still this run
+  // carrying on, and the edits the first attempt made are still its
+  // work. So it keeps the baseline it has, and resolves one only when
+  // there is none to keep: a view starting at the resume understates
+  // what the run did, but it is the only baseline that run will ever
+  // have.
+  const baseSha =
+    mode === "resume" && binding?.baseSha ? binding.baseSha : await baseShaForLaunch(cwd);
 
   let sessionId: string;
   try {
@@ -342,6 +359,10 @@ async function launchCard(
     launchCwd: cwd,
     // A fresh conversation is a fresh run, so it gets a fresh budget.
     resumeAttempts: 0,
+    // ...and a fresh baseline: what this run changes is measured from
+    // where IT started, not from where some earlier run of the same card
+    // did.
+    baseSha,
   });
   return null;
 }
@@ -433,6 +454,10 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
   // again from the beginning"; reopening the old conversation is
   // Resume, which is a different entry with different words on it.
   const fresh = withFreshConversationId(binding.command, agent.sessionIdArgs);
+  // Re-launch is "run this again from the beginning", so the baseline is
+  // resolved again too -- in the same directory the remembered command
+  // was launched in, which is where it is about to run again.
+  const baseSha = await baseShaForLaunch(binding.launchCwd ?? binding.cwd);
   let sessionId: string;
   try {
     sessionId = await backend.createSession(binding.cwd, fresh.command ?? undefined);
@@ -451,6 +476,7 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
     // binding would otherwise carry a spent one into a run that has not
     // failed yet.
     resumeAttempts: 0,
+    baseSha,
   });
   return null;
 }

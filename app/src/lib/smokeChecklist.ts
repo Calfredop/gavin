@@ -2779,6 +2779,93 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Per-run changes",
+    items: [
+      {
+        id: "run-changes-tab-chip",
+        text: "Run a card in a repo, let its agent edit a file, then press the diff glyph on its tab: the modal lists what THAT run changed, from the commit it started on",
+        hint: "The glyph sits beside the ↗ card link and only appears on a tab whose run has a baseline. The list must include files the agent already committed — that is the whole difference from the Git tab.",
+      },
+      {
+        id: "run-changes-untracked-counted",
+        text: "A run that only CREATES files still shows a file count and a “+N” — not “+0 −0”",
+        hint: "Untracked files are counted by reading them; a new 3-line file is +3. “+0” here would read as “this agent did nothing”.",
+      },
+      {
+        id: "run-changes-card-modal",
+        text: "The same run opens from the card detail modal's Agent session section, under the run buttons, and says “Changes since <sha>”",
+      },
+      {
+        id: "run-changes-no-baseline-says-why",
+        text: "A card bound by an older run (or one launched outside a repository) shows a SENTENCE in that spot, never a button that would diff against nothing",
+        hint: "Unlink and re-run the card to get a baseline back. Against a v25 daemon the sentence should name the daemon version instead.",
+      },
+      {
+        id: "run-changes-discard-refuses-live",
+        text: "With the agent still running, “Discard this run…” is disabled and hovering it explains that stopping the agent comes first",
+        hint: "The reason hangs on the span around the button — a disabled button fires no mouseenter.",
+      },
+      {
+        id: "run-changes-discard-restores",
+        text: "Stop the agent, discard the run, and the checkout goes back: its commits are off the branch, its edits reverted, and the files it created are in the Trash — draggable back out",
+        hint: "Confirm the dialog listed all three before you pressed it. `git reflog` should still show the dropped commits; the Trash should hold the new files rather than nothing.",
+      },
+      {
+        id: "run-changes-discard-git-tab",
+        text: "The Git tab, open on the same checkout, shows the reset without being touched",
+        hint: "Its own `git-changed` watcher, not a call from the run view.",
+      },
+    ],
+  },
+  {
+    title: "Per-card run history",
+    items: [
+      {
+        id: "run-history-lists-every-run",
+        text: "Run a card, let it finish, re-launch it, then open “Run history…” in the card modal: BOTH runs are listed, newest first",
+        hint: "This is the whole feature. Before v27 the daemon kept one binding per card and the earlier run was overwritten — one row here means the history is not being kept.",
+      },
+      {
+        id: "run-history-resume-is-one-run",
+        text: "Resume a card and its resumed session appears INDENTED under the run it continues, labelled “resume 1” — the card still counts as one run",
+        hint: "A resume launches a new session carrying the old conversation id. Two top-level rows here would tell you that you ran the card twice when you pressed Resume once.",
+      },
+      {
+        id: "run-history-tokens-per-run",
+        text: "Each run shows a token cost (“438k tokens · 14 turns”), and hovering it gives the exact input/output/cache split",
+        hint: "Read out of ~/.claude/projects/<dir>/<conversation id>.jsonl. Sanity-check the magnitude against `/usage` in the same conversation — a figure roughly THREE times too big means the per-content-block duplicate records are being counted more than once.",
+      },
+      {
+        id: "run-history-live-run-ticks",
+        text: "With an agent still working, its row says “Running”, its duration counts up second by second, and its token figure grows on Refresh",
+        hint: "A frozen number on the row somebody is actually watching is the failure mode here.",
+      },
+      {
+        id: "run-history-unwatched-run-has-no-duration",
+        text: "A run interrupted by a daemon restart shows “Unwatched” and an em dash for its duration — never a duration counted from its start to now",
+        hint: "Force it: launch a card, restart the daemon, reopen the history. A multi-hour duration on a run that lasted two minutes is the bug this row exists to catch.",
+      },
+      {
+        id: "run-history-cost-absent-not-zero",
+        text: "A run with no readable transcript (a gemini or opencode profile, or one whose log was deleted) says “No cost recorded” with a reason on hover — never “0 tokens”",
+      },
+      {
+        id: "run-history-open-session",
+        text: "“Open session” on a run whose session is still around jumps to that terminal",
+      },
+      {
+        id: "run-history-reaches-an-unbound-card",
+        text: "Unlink a card that has been run, reopen its modal: “Run history…” is still there, and the run it just lost is listed as “Unbound”",
+        hint: "The history sits outside the bound/unbound split — a card whose binding is gone is exactly the one whose history somebody wants.",
+      },
+      {
+        id: "run-history-old-daemon-blames-itself",
+        text: "Against a daemon older than v27 the “Run history…” button is disabled and the hover says the DAEMON only started keeping history in v27",
+        hint: "The sentence must be about gavin, not about the card. “No runs” on a card the human watched an agent work is the misreading this guards.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

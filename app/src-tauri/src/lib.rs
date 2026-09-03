@@ -1,4 +1,5 @@
 mod agent_setup;
+mod agent_tokens;
 mod agent_usage;
 mod config;
 mod daemon;
@@ -10,6 +11,7 @@ mod mac_window;
 mod pull_request;
 mod session;
 mod superpowers;
+mod trash;
 mod workspace_delete;
 mod worktree_setup;
 
@@ -44,6 +46,7 @@ pub fn run() {
         .manage(git::GitOps::default())
         .manage(agent_usage::UsageCache::new())
         .manage(pull_request::PrCache::new())
+        .manage(agent_tokens::TokenCache::new())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -94,6 +97,7 @@ pub fn run() {
             session::restart_daemon,
             daemon_compat,
             session::get_board,
+            session::card_runs,
             session::set_board,
             session::get_orchestration,
             session::set_orchestration,
@@ -140,6 +144,7 @@ pub fn run() {
             agent_setup::agent_profiles,
             agent_usage::agent_usage,
             pull_request::pr_status,
+            agent_tokens::card_run_tokens,
             session::get_agent_pause,
             session::set_agent_pause,
             agent_setup::mcp_formats,
@@ -151,6 +156,10 @@ pub fn run() {
             git::git_status,
             git::get_git_baselines,
             git::git_diff,
+            git::git_head_sha,
+            git::git_run_changes,
+            git::git_diff_since,
+            git::git_discard_run,
             git::git_stage_files,
             git::git_unstage_files,
             git::git_stage_all,
