@@ -6,6 +6,15 @@
   import type { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
 
+  // `sessionId` is fixed for the life of the component: onMount is what
+  // binds it, and nothing below re-reads it. That is deliberate -- the
+  // registry's container has to survive a tree-shape remount with its
+  // scrollback intact -- but it makes recreating this pane the caller's
+  // job whenever the session changes. Hand it a new id in place and it
+  // keeps showing the old session while fit() reports that terminal's
+  // measurements to the new one. Both call sites therefore rebuild it:
+  // Pane.svelte with an {#each} keyed by sessionId, MainAgentPanel with
+  // a {#key}. terminalPaneSession.test.ts holds every call site to it.
   let {
     sessionId,
     visible,

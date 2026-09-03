@@ -60,7 +60,21 @@
   </div>
   {#if sessionId}
     <div class="terminal">
-      <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} {fontSize} />
+      <!-- Keyed, because nothing above this panel is rebuilt when the
+           workspace changes: the hub renders <activeViewDef.component>,
+           which is the same HomeHubView value for every workspace, so
+           switching between two workspaces that both have an agent
+           running only updates props all the way down to here. A
+           TerminalPane binds its session in onMount and never re-reads
+           it, so without the key the pane would keep the previous
+           workspace's terminal on screen while fit() reported that
+           terminal's measurements to THIS workspace's session --
+           resizing an agent to a geometry its program never drew for.
+           Pane.svelte owes the same contract and pays it with an {#each}
+           keyed by sessionId. -->
+      {#key sessionId}
+        <TerminalPane bind:this={pane} {sessionId} visible={true} focused={false} {fontSize} />
+      {/key}
     </div>
   {:else}
     <div class="idle">
