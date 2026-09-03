@@ -1,4 +1,5 @@
 ---
+order: 1024
 title: [smoke] auto-resume an interrupted run
 status: To Do
 priority: medium
