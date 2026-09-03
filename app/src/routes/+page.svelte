@@ -187,10 +187,12 @@
         </div>
       {:else}
         <div class="content">
-          <!-- Above the tabs: the bound folder is the whole workspace's
-               context, not a property of whichever page is open. The
-               Settings tab embeds this control itself; showing the
-               banner there too would double it up. -->
+          <!-- Above the tabs: an unbound or missing root is the whole
+               workspace's problem, not a property of whichever page is
+               open. A healthy root renders nothing here (D64) -- the path
+               itself is Settings' to state. The Settings tab embeds this
+               control itself; showing the banner there too would double
+               it up. -->
           {#if activeView !== "settings"}
             <WorkspaceRootControl workspace={activeWorkspace} />
           {/if}

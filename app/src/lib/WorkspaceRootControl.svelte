@@ -10,8 +10,9 @@
 
   interface Props {
     workspace: Workspace;
-    /// "banner" is the hub-wide strip above every tab; "settings" is the
-    /// embedded form row, which drops the banner chrome because the
+    /// "banner" is the hub-wide strip above every tab, which speaks only
+    /// when the root is a problem; "settings" is the embedded form row,
+    /// which also states the path and drops the banner chrome because the
     /// panel already provides a heading.
     variant?: "banner" | "settings";
   }
@@ -113,9 +114,10 @@
 
 <div class:settings={variant === "settings"}>
 {#if workspace.id !== UNFILED_WORKSPACE_ID}
-  <!-- Every folder-picking affordance is settings-only (D56). The banner
-       variant states which folder the workspace is bound to and, when
-       that answer is bad news, points at the panel that can fix it. -->
+  <!-- Every folder-picking affordance is settings-only (D56), and stating
+       the bound path is settings-only too (D64): a healthy root is not
+       news, so the banner variant speaks only when the answer is bad, and
+       then points at the panel that can fix it. -->
   {#if !workspace.rootPath}
     <div class="banner">
       <span>No root folder set — bind this workspace to a directory to enable gavin features.</span>
@@ -134,13 +136,11 @@
         <button type="button" onclick={openSettings}>Open settings</button>
       {/if}
     </div>
-  {:else}
+  {:else if variant === "settings"}
     <div class="chip" title={workspace.rootPath}>
       <!-- The &lrm; bookends are load-bearing -- see .path below. -->
       <span class="path">&lrm;{workspace.rootPath}&lrm;</span>
-      {#if variant === "settings"}
-        <button type="button" class="gear" onclick={pickRoot} title="Change workspace root">⚙</button>
-      {/if}
+      <button type="button" class="gear" onclick={pickRoot} title="Change workspace root">⚙</button>
     </div>
   {/if}
   {#if errorMessage}

@@ -77,6 +77,15 @@ Continuing the log in
   The wizard is a setup flow, which is the same job D37 gave Settings when
   it made the panel work unrooted — and D56's actual target, the read-only
   hub banner, is untouched.
+- **D64 — The hub folder bar states nothing when the root is healthy.**
+  Added 2026-09-03. D56 left the `banner` variant one job — *stating* which
+  folder the workspace is bound to — and that answer turned out not to be
+  worth a permanent row above the tabs: the path never changes while you
+  work, and Settings already shows it beside the picker that can change it.
+  So the banner now speaks only when the root is a problem (unbound, or
+  bound to a folder that is gone), where the text is a call to action
+  rather than a fact. The path chip is `settings`-only, which also retires
+  the `variant === "settings"` guard around its ⚙ button.
 
 ## 3. Storage and ownership
 

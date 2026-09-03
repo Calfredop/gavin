@@ -36,13 +36,17 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "root-banner", text: "Unrooted workspace hub shows the “No root folder set” banner" },
       {
         id: "root-banner-no-picker",
-        text: "The hub folder bar sits above the tabs and offers no picker — only “Open settings”, which jumps to the Settings tab",
+        text: "That banner sits above the tabs and offers no picker — only “Open settings”, which jumps to the Settings tab",
+      },
+      {
+        id: "root-banner-quiet",
+        text: "A rooted, healthy workspace hub shows no folder bar at all — the path is stated only in Settings",
       },
       {
         id: "root-init",
         text: "Settings → Set root… → Initialize scaffolds .gavin-root (PRD, config, plans/docs/specs)",
       },
-      { id: "root-persists", text: "Root chip survives an app restart" },
+      { id: "root-persists", text: "Settings' root chip survives an app restart" },
       {
         id: "root-missing",
         text: "Renaming the root away shows “Root not found”; renaming back heals it",
