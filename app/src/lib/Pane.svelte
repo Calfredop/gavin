@@ -43,7 +43,7 @@
   } from "./ui/indicators";
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
-  import Tooltip from "./Tooltip.svelte";
+  import { tooltip } from "./tooltip";
   import { sessionLabel, folderName, boardTabLabel } from "./paths";
   import {
     setDragPayload,
@@ -433,9 +433,11 @@
             }}
           />
         {:else}
-          <Tooltip text={tabTooltip(sessionId)}>
-            <span class="tab-label" ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span>
-          </Tooltip>
+          <span
+            class="tab-label"
+            use:tooltip={tabTooltip(sessionId)}
+            ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span
+          >
         {/if}
         {#if tabStatusBadge(sessionId)}
           {@const status = tabStatusBadge(sessionId)}
@@ -450,18 +452,17 @@
         {/if}
         {#if linkedCard(sessionId)}
           {@const link = linkedCard(sessionId)}
-          <Tooltip text={`Open card · ${link?.title}`}>
-            <span
-              class="card-link"
-              aria-label="Open the card this agent is running"
-              onclick={(e) => {
-                e.stopPropagation();
-                if (link) void openLinkedCard(getActiveWorkspace($layoutState)?.id ?? "", link);
-              }}
-            >
-              <SquareArrowOutUpRight size={11} />
-            </span>
-          </Tooltip>
+          <span
+            class="card-link"
+            aria-label="Open the card this agent is running"
+            use:tooltip={`Open card · ${link?.title}`}
+            onclick={(e) => {
+              e.stopPropagation();
+              if (link) void openLinkedCard(getActiveWorkspace($layoutState)?.id ?? "", link);
+            }}
+          >
+            <SquareArrowOutUpRight size={11} />
+          </span>
         {/if}
         <!-- `restored` still decides whether the badge is THERE, exactly
              as it always did: it is a note about the screen, and typing

@@ -2430,6 +2430,29 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Tooltips",
+    items: [
+      {
+        id: "tooltip-tab-label-not-clipped",
+        text: "Hovering a tab's name shows its full hover text in one piece — nothing sliced off by the tab strip's top edge",
+        hint: "The tab bar scrolls, so its overflow clips anything drawn inside it. Use the TOP pane of a split, where there is no room above the strip: the bubble should flip below the tab rather than be cut.",
+      },
+      {
+        id: "tooltip-tab-label-says-something",
+        text: "That text is the thing the label had to shorten: a terminal's session name or cwd, a file tab's full path, a board tab's context folder",
+      },
+      {
+        id: "tooltip-tab-card-link",
+        text: "The ↗ on an agent tab names the card it opens, and the bubble looks identical to the badges' beside it",
+        hint: "One tooltip, one look. If this one is a different box from the git badge's two pixels away, a second mechanism has come back.",
+      },
+      {
+        id: "tooltip-drag-leaves-none",
+        text: "Dragging a tab by its name leaves no bubble behind",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {
