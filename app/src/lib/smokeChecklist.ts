@@ -640,6 +640,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "exp-meta", text: "Plan rows show status, priority dot, and ⚠ for broken frontmatter" },
       { id: "exp-select", text: "Clicking a file opens it in the editor on the right" },
       {
+        id: "exp-open-in-editor",
+        text: "A card's detail modal and its right-click menu both say “Open in card editor”; either lands on the Plans tab with that file selected and its editor already in Edit mode",
+        hint: "Was “Open in Plans tab”, which arrived in Formatted mode — one click short of typing. A file picked from the tree still opens Formatted.",
+      },
+      {
+        id: "exp-remember-selection",
+        text: "Select a file, switch its editor to Plain, go to Kanban and come back → the same file is selected and still in Plain; a reload keeps it too",
+        hint: "The hub view is destroyed on every tab switch; the selection lives in localStorage per workspace, so another workspace's Plans tab remembers its own file.",
+      },
+      {
+        id: "exp-remember-moved",
+        text: "With a card selected, drag it to Done on the board and return to Plans → the pane says “Select a file.”, not “This file no longer exists.”",
+        hint: "A remembered path is checked against the tree before it is shown; the vanished notice stays for a file deleted while you are looking at it (exp-vanished).",
+      },
+      {
         id: "exp-new-plan",
         text: "+ → Plans → title → Enter creates the file, selects it, and it appears LAST in To Do on the board (~3s)",
         hint: "The status is written explicitly here, so the file says “To Do” and the card is placed at the end of that column — the same rule the board's own composer follows.",

@@ -10,7 +10,7 @@
   import { isArchivedCard, slugStatus } from "./planBoard";
   import { childCards, parentCard } from "./cardRelations";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "./planChecklist";
-  import { requestedExplorerPath, slugFileName } from "./planExplorer";
+  import { requestedExplorerFile, slugFileName } from "./planExplorer";
   import { patchPlanField, patchPlanCreated, patchPlanPath } from "./gavinState";
   import type { PlanFileInfo } from "./gavin";
   import {
@@ -583,8 +583,11 @@
     onClose();
   }
 
-  function openInPlansTab(): void {
-    requestedExplorerPath.set(card.id);
+  // Lands on the Plans tab with this card's file selected and its editor
+  // in Edit mode: the action is named for the editor, so the human
+  // arrives ready to type rather than one mode-click away from it.
+  function openInCardEditor(): void {
+    requestedExplorerFile.set({ path: card.id, mode: "edit" });
     void switchWorkspaceView(workspaceId, "plans");
     onClose();
   }
@@ -926,7 +929,13 @@
     >
       {archived ? "Restore from archive" : "Archive"}
     </button>
-    <button type="button" onclick={openInPlansTab}>Open in Plans tab</button>
+    <button
+      type="button"
+      title="Opens this card's file on the Plans tab, ready to edit"
+      onclick={openInCardEditor}
+    >
+      Open in card editor
+    </button>
     <button type="button" onclick={() => void openExternally()}>Open externally</button>
     <button type="button" onclick={onClose}>Close</button>
   </div>

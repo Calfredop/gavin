@@ -1,10 +1,96 @@
 import { writable } from "svelte/store";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
-
-// Deep link into the Plans tab: set a path here before switching the
-// hub view and PlanExplorerHubView selects it (then clears the store).
-export const requestedExplorerPath = writable<string | null>(null);
+import { defaultMode, modesFor, type EditorMode } from "./fileEditing";
 import { isArchivedCard, slugStatus } from "./planBoard";
+
+/// What the Plans tab has on its right-hand side: a file, and the mode
+/// its editor holds it in. One object wherever it travels, never two
+/// fields, so a change of file always brings its mode with it -- the
+/// editor is keyed on the path and reads the mode once, at creation.
+export interface ExplorerSelection {
+  path: string;
+  mode: EditorMode;
+}
+
+// Deep link into the Plans tab: set a selection here before switching
+// the hub view and PlanExplorerHubView selects it (then clears the
+// store). The requester names the mode because that is where the intent
+// lives -- "Open in card editor" means Edit -- and the tab should not
+// have to know why it was asked.
+export const requestedExplorerFile = writable<ExplorerSelection | null>(null);
+
+// ---- the selection, remembered across a remount -----------------------
+//
+// `+page.svelte` renders ONE hub view at a time and destroys it on every
+// tab switch, so the tab's selection would otherwise start over on each
+// visit: open a card in the editor, glance at the board, come back to
+// "Select a file." Nothing else remembers it for the human -- it is a
+// per-human view preference, not workspace data -- so it goes where the
+// smoke checklist's ticks and the orchestration conflicts box already
+// live: localStorage, which carries it across a reload as well.
+
+/// Storage is injected (defaulting to the browser's) so this stays
+/// testable under vitest's node environment, where localStorage does
+/// not exist at all.
+type MaybeStorage = Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
+
+function defaultStorage(): MaybeStorage {
+  return typeof localStorage === "undefined" ? undefined : localStorage;
+}
+
+/// Per workspace: each workspace has a Plans tab of its own, and what one
+/// of them shows says nothing about another's.
+export function selectionStorageKey(workspaceId: string): string {
+  return `gavin.planExplorerSelection.${workspaceId}`;
+}
+
+/// Anything but a well-formed selection reads as nothing remembered --
+/// absent, corrupt, hand-edited, or a storage that refuses to be read.
+/// Forgetting is the only acceptable failure mode for a view preference.
+/// A remembered mode the file cannot offer (Formatted on a non-markdown
+/// file, or a word from some future vocabulary) falls back to the file's
+/// default rather than taking the file down with it.
+export function loadExplorerSelection(
+  workspaceId: string,
+  storage: MaybeStorage = defaultStorage()
+): ExplorerSelection | null {
+  try {
+    const raw = storage?.getItem(selectionStorageKey(workspaceId));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { path, mode } = parsed as { path?: unknown; mode?: unknown };
+    if (typeof path !== "string" || path === "") return null;
+    const legal = modesFor(path);
+    return {
+      path,
+      mode: legal.includes(mode as EditorMode) ? (mode as EditorMode) : defaultMode(path, "tab"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/// A null selection forgets, rather than remembering "nothing selected":
+/// the tab's empty state is what an absent key already means.
+export function saveExplorerSelection(
+  workspaceId: string,
+  selection: ExplorerSelection | null,
+  storage: MaybeStorage = defaultStorage()
+): void {
+  try {
+    const key = selectionStorageKey(workspaceId);
+    if (selection === null) {
+      storage?.removeItem(key);
+    } else {
+      // The two fields by name: the caller's object may be a $state
+      // proxy carrying whatever else it grew.
+      storage?.setItem(key, JSON.stringify({ path: selection.path, mode: selection.mode }));
+    }
+  } catch {
+    // Best-effort: a full or blocked storage must never break the tab.
+  }
+}
 
 /// The folders the navigator shows under a context. `archive` is the
 /// odd one out: it is the only group nothing can be CREATED in -- a card

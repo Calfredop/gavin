@@ -9,6 +9,9 @@ import {
   newFilePath,
   groupFolder,
   isCardGroup,
+  loadExplorerSelection,
+  saveExplorerSelection,
+  selectionStorageKey,
 } from "./planExplorer";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 
@@ -452,5 +455,91 @@ describe("followRenamedContext", () => {
     // disconnected workspace, not a folder that moved.
     const gone: GavinTree = { rootPath: "/ws", rootMissing: true, contexts: [] };
     expect(followRenamedContext(before, gone, "/ws/api")).toBeNull();
+  });
+});
+
+describe("plan explorer selection memory", () => {
+  const md = "/ws/.gavin-root/plans/auth.md";
+
+  function fakeStorage(initial: Record<string, string> = {}) {
+    const data = { ...initial };
+    return {
+      data,
+      getItem: (k: string) => data[k] ?? null,
+      setItem: (k: string, v: string) => {
+        data[k] = v;
+      },
+      removeItem: (k: string) => {
+        delete data[k];
+      },
+    };
+  }
+
+  it("keys the memory per workspace, under the app's namespace", () => {
+    expect(selectionStorageKey("w1")).toMatch(/^gavin\./);
+    expect(selectionStorageKey("w1")).not.toBe(selectionStorageKey("w2"));
+  });
+
+  it("remembers nothing until something was selected", () => {
+    expect(loadExplorerSelection("w1", fakeStorage())).toBeNull();
+  });
+
+  it("round-trips the selected file and its mode, per workspace", () => {
+    const storage = fakeStorage();
+    saveExplorerSelection("w1", { path: md, mode: "edit" }, storage);
+    expect(loadExplorerSelection("w1", storage)).toEqual({ path: md, mode: "edit" });
+    // Another workspace's Plans tab has its own memory.
+    expect(loadExplorerSelection("w2", storage)).toBeNull();
+  });
+
+  it("forgets when the selection is cleared", () => {
+    const storage = fakeStorage();
+    saveExplorerSelection("w1", { path: md, mode: "plain" }, storage);
+    saveExplorerSelection("w1", null, storage);
+    expect(loadExplorerSelection("w1", storage)).toBeNull();
+    expect(storage.data[selectionStorageKey("w1")]).toBeUndefined();
+  });
+
+  // A stale or hand-edited key must not decide the tab is broken:
+  // forgetting is the only acceptable failure mode for a view preference.
+  it("reads a corrupt or foreign payload as nothing remembered", () => {
+    for (const raw of [
+      "",
+      "yes",
+      "{}",
+      "[1]",
+      "null",
+      '{"path":""}',
+      '{"mode":"edit"}',
+      '{"path":3,"mode":"edit"}',
+    ]) {
+      expect(loadExplorerSelection("w1", fakeStorage({ [selectionStorageKey("w1")]: raw }))).toBeNull();
+    }
+  });
+
+  it("falls back to the file's default mode when the remembered one is unknown or illegal for it", () => {
+    const unknown = fakeStorage({
+      [selectionStorageKey("w1")]: JSON.stringify({ path: md, mode: "wysiwyg" }),
+    });
+    expect(loadExplorerSelection("w1", unknown)).toEqual({ path: md, mode: "formatted" });
+    // Only markdown has a rendered form; a remembered Formatted on
+    // anything else would strand the editor in a mode it can't offer.
+    const txt = "/ws/.gavin-root/docs/notes.txt";
+    const illegal = fakeStorage({
+      [selectionStorageKey("w1")]: JSON.stringify({ path: txt, mode: "formatted" }),
+    });
+    expect(loadExplorerSelection("w1", illegal)).toEqual({ path: txt, mode: "plain" });
+  });
+
+  it("survives storage being absent or refusing the access", () => {
+    expect(loadExplorerSelection("w1", undefined)).toBeNull();
+    expect(() => saveExplorerSelection("w1", { path: md, mode: "edit" }, undefined)).not.toThrow();
+    const blocked = () => {
+      throw new Error("blocked");
+    };
+    const broken = { getItem: blocked, setItem: blocked, removeItem: blocked };
+    expect(loadExplorerSelection("w1", broken)).toBeNull();
+    expect(() => saveExplorerSelection("w1", null, broken)).not.toThrow();
+    expect(() => saveExplorerSelection("w1", { path: md, mode: "edit" }, broken)).not.toThrow();
   });
 });

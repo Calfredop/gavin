@@ -8,7 +8,7 @@ import * as backend from "./backend";
 import { kanbanState, cardSessionFor } from "./kanbanState";
 import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
 import { patchPlanField } from "./gavinState";
-import { requestedExplorerPath } from "./planExplorer";
+import { requestedExplorerFile } from "./planExplorer";
 import { jumpToBoundSession, relaunchCard, developCard, resumeCard } from "./cardRunActions";
 import { developAvailable } from "./cardRun";
 import { cardSessionState } from "./columnRunAction";
@@ -40,10 +40,12 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
   const entries: ContextMenuEntry[] = [];
 
   entries.push({ label: "Open", onPick: () => hooks.openDetail(card.id) });
+  // The detail modal's button, by the same name and to the same place:
+  // the Plans tab with this file selected, its editor in Edit mode.
   entries.push({
-    label: "Open in Plans tab",
+    label: "Open in card editor",
     onPick: () => {
-      requestedExplorerPath.set(card.id);
+      requestedExplorerFile.set({ path: card.id, mode: "edit" });
       void switchWorkspaceView(workspaceId, "plans");
     },
   });

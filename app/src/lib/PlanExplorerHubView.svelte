@@ -8,11 +8,14 @@
     buildExplorerTree,
     followRenamedPath,
     isUnderRoot,
+    loadExplorerSelection,
     newFilePath,
-    requestedExplorerPath,
+    requestedExplorerFile,
+    saveExplorerSelection,
     slugFileName,
     type ExplorerContextNode,
     type ExplorerFile,
+    type ExplorerSelection,
     type CreatableGroup,
   } from "./planExplorer";
   import { mergePlanCards, type CardView } from "./planBoard";
@@ -21,6 +24,7 @@
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import { executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
+  import { defaultMode } from "./fileEditing";
   import PlanTree from "./PlanTree.svelte";
   import FileEditor from "./FileEditor.svelte";
   import PlanMetadataPanel from "./PlanMetadataPanel.svelte";
@@ -36,14 +40,51 @@
   }
   let { workspaceId }: Props = $props();
 
-  let selectedPath = $state<string | null>(null);
+  // The file on the right and the mode its editor holds it in (see
+  // ExplorerSelection). Everything below still reasons about the path;
+  // the mode rides along so the editor, keyed on the path, is created
+  // in the right one.
+  let selection = $state<ExplorerSelection | null>(null);
+  const selectedPath = $derived(selection?.path ?? null);
 
-  // Deep link from the card detail modal ("Open in Plans tab").
+  // A file picked from the tree opens the way a file tab does: rendered
+  // when it can be, ready to read. Only a deep link asks for more.
+  function select(path: string): void {
+    selection = { path, mode: defaultMode(path, "tab") };
+  }
+
+  // `+page.svelte` renders one hub view at a time and destroys it on
+  // every tab switch, so the selection would otherwise start over on
+  // each visit. It is remembered per workspace instead (planExplorer.ts)
+  // -- and re-read when the workspace prop changes, because this
+  // instance survives a switch between two workspaces both parked on
+  // their Plans tab.
+  //
+  // A restored path is provisional until the tree can vouch for it. A
+  // card filed to Done while the tab was away has MOVED, and greeting
+  // the human with "this file no longer exists" for a move they made
+  // themselves is noise -- where the same notice for a file deleted
+  // under their eyes is news. Plain `let`s: both are read inside the
+  // effects that write them.
+  let selectionWorkspace: string | null = null;
+  let restoreUnverified = false;
   $effect(() => {
-    const p = $requestedExplorerPath;
-    if (p) {
-      selectedPath = p;
-      requestedExplorerPath.set(null);
+    if (selectionWorkspace === workspaceId) return;
+    selectionWorkspace = workspaceId;
+    const remembered = loadExplorerSelection(workspaceId);
+    restoreUnverified = remembered !== null;
+    selection = remembered;
+  });
+
+  // Deep link from a card's detail modal or menu ("Open in card
+  // editor"). Declared after the restore so it wins on a mount where
+  // both have something to say.
+  $effect(() => {
+    const requested = $requestedExplorerFile;
+    if (requested) {
+      selection = requested;
+      restoreUnverified = false;
+      requestedExplorerFile.set(null);
     }
   });
   let error = $state<string | null>(null);
@@ -61,8 +102,36 @@
   );
   // Selection is held by PATH because the tree rebuilds on every watcher
   // push; a file deleted in a terminal must say so rather than leave a
-  // stale buffer on screen.
-  const selectionVanished = $derived(selectedPath !== null && !allPaths.has(selectedPath));
+  // stale buffer on screen. Not while the tree is still unknown, though
+  // (a fresh launch parked on this tab): an unloaded tree lists nothing,
+  // and "vanished" would be the wrong word for "not looked yet".
+  const treeKnown = $derived($gavinTrees[workspaceId] !== undefined);
+  const selectionVanished = $derived(selectedPath !== null && treeKnown && !allPaths.has(selectedPath));
+
+  // The restore's verification (see above): the first tree that can
+  // answer decides whether the remembered file is still there. The
+  // reactive reads come first, unconditionally, so the effect stays
+  // subscribed through the runs where there is nothing to verify --
+  // otherwise a workspace switch that arms a new restore would find it
+  // no longer listening.
+  $effect(() => {
+    const known = treeKnown;
+    const path = selectedPath;
+    if (!restoreUnverified || !known) return;
+    restoreUnverified = false;
+    if (path !== null && !allPaths.has(path)) selection = null;
+  });
+
+  // Written on every change rather than on the way out: nothing runs
+  // before a tab switch tears this view down, and a crash should not
+  // lose it either. Skipped until the restore above has run for this
+  // workspace, so a workspace switch can never file the old workspace's
+  // selection under the new one's key.
+  $effect(() => {
+    const current = selection;
+    if (selectionWorkspace !== workspaceId) return;
+    saveExplorerSelection(workspaceId, current);
+  });
 
   // ...but a file RENAMED or moved in a terminal isn't gone, and saying
   // so would make the human find it again by hand. Plain `let`, not
@@ -77,7 +146,7 @@
     previousWorkspaceId = workspaceId;
     if (selectedPath === null || previous === undefined || previous === tree) return;
     const moved = followRenamedPath(previous, tree, selectedPath);
-    if (moved !== null) selectedPath = moved;
+    if (moved !== null && selection) selection = { path: moved, mode: selection.mode };
   });
 
   const columnNames = $derived(($kanbanState[workspaceId]?.columns ?? []).map((c) => c.name));
@@ -151,17 +220,18 @@
         // Same daemon path agents use: validated, never overwrites. The
         // status is passed rather than defaulted so this and the
         // placement below cannot name two different columns.
-        selectedPath = await backend.createPlan(context.folderPath, fileName, title, NEW_CARD_STATUS);
+        const created = await backend.createPlan(context.folderPath, fileName, title, NEW_CARD_STATUS);
+        select(created);
         // A card is born with no `order:`, and unordered cards sort
         // into their column's alphabetical tail -- so a card filed from
         // this tree turned up halfway down To Do on the Kanban tab.
         // Same rule as the board's own composer: a new card goes last.
-        const placeError = await placeCardAtColumnEnd(workspaceId, selectedPath, NEW_CARD_STATUS, merged);
+        const placeError = await placeCardAtColumnEnd(workspaceId, created, NEW_CARD_STATUS, merged);
         if (placeError) error = placeError;
       } else {
         const path = newFilePath(context.gavinDir, group, fileName);
         await backend.writeFileForEditor(path, `# ${title}\n`);
-        selectedPath = path;
+        select(path);
       }
     } catch (e) {
       error = String(e instanceof Error ? e.message : e);
@@ -256,7 +326,7 @@
         error = String(e instanceof Error ? e.message : e);
       }
     }
-    if (selectedPath && deleted.includes(selectedPath)) selectedPath = null;
+    if (selectedPath && deleted.includes(selectedPath)) selection = null;
     void refreshGavinTree(workspaceId);
   }
 
@@ -302,7 +372,7 @@
     error = null;
     try {
       await backend.removeExternalGavinContext(root, target.folderPath);
-      if (selectedPath && selectedPath.startsWith(`${target.folderPath}/`)) selectedPath = null;
+      if (selectedPath && selectedPath.startsWith(`${target.folderPath}/`)) selection = null;
     } catch (e) {
       error = String(e instanceof Error ? e.message : e);
     }
@@ -377,7 +447,7 @@
         <PlanTree
           {contexts}
           {selectedPath}
-          onSelect={(p) => (selectedPath = p)}
+          onSelect={select}
           onCreateFile={createFile}
           onOpenInSplit={anchorSessionId ? openInSplit : null}
           onDeleteFile={(f) => (pendingDelete = f)}
@@ -410,7 +480,14 @@
               }}
             />
           {/if}
-          <FileEditor bind:this={editor} path={selectedPath} />
+          <FileEditor
+            bind:this={editor}
+            path={selectedPath}
+            initialMode={selection?.mode}
+            onModeChange={(mode) => {
+              if (selection) selection = { path: selection.path, mode };
+            }}
+          />
         {/key}
       {/if}
     </div>

@@ -19,8 +19,13 @@
   interface Props {
     path: string;
     initialMode?: EditorMode;
+    /// Fired when the human switches mode. The mode is this editor's own
+    /// state, read from `initialMode` once at creation; a host that has
+    /// to remember it across a remount (the Plans tab) hears about
+    /// changes here rather than reaching in.
+    onModeChange?: (mode: EditorMode) => void;
   }
-  let { path, initialMode }: Props = $props();
+  let { path, initialMode, onModeChange }: Props = $props();
 
   const AUTOSAVE_MS = 1000;
 
@@ -154,6 +159,7 @@
   function switchMode(next: EditorMode): void {
     if (mode === "edit" && next !== "edit") void save();
     mode = next;
+    onModeChange?.(next);
   }
 
   function keepMine(): void {

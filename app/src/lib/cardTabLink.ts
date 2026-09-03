@@ -6,7 +6,7 @@
 // follows it automatically.
 //
 // Pure lookups plus one deep-link store, in the shape planExplorer.ts's
-// `requestedExplorerPath` already established: the requester sets the
+// `requestedExplorerFile` already established: the requester sets the
 // store and switches the hub view, the view that owns the modal picks it
 // up on mount (or on the spot, if it is already showing) and clears it.
 
