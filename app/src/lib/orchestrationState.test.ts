@@ -15,6 +15,8 @@ vi.mock("./backend", () => ({
   gitStatus: vi.fn(),
   gitCheckout: vi.fn(),
   attachmentStatus: vi.fn(),
+  // prState reads the backend through the same module object.
+  prStatus: vi.fn(),
 }));
 
 // tick() reads four stores through get(), so each mock must expose a
@@ -72,6 +74,10 @@ vi.mock("./kanbanState", () => ({
 // test in this file must keep launching without the attachment gate
 // asking the host anything, so the default is none.
 const cardAttachments = vi.hoisted(() => ({ a: [] as string[] }));
+// ...and its column, for the loop-back that has to take a re-run card
+// back OUT of the done one. `get()` re-subscribes on every read, so the
+// tree below is rebuilt each time and picks this up.
+const cardStatus = vi.hoisted(() => ({ a: "To Do" }));
 vi.mock("./gavinState", () => ({
   gavinTrees: {
     subscribe: (fn: (v: unknown) => void) => (
@@ -89,7 +95,7 @@ vi.mock("./gavinState", () => ({
                   path: "/x/a.md",
                   fileName: "a.md",
                   title: "Wire the API",
-                  status: "To Do",
+                  status: cardStatus.a,
                   priority: null,
                   order: null,
                   kind: "task",
@@ -169,6 +175,9 @@ import * as gavinState from "./gavinState";
 import * as layoutStateModule from "./layoutState";
 import * as kanbanStateModule from "./kanbanState";
 import { toolRecords, __resetForTesting as toolsResetForTesting } from "./toolsState";
+import { prReports, __resetForTesting as prResetForTesting } from "./prState";
+import { prKey } from "./pullRequest";
+import type { PrReport } from "./pullRequest";
 import {
   orchestrations,
   fetchOrchestration,
@@ -237,6 +246,7 @@ beforeEach(() => {
   boardStore.set({});
   layoutStore.set({ workspaces: [], sessionStatusById: {}, failureReasonById: {} });
   cardAttachments.a = [];
+  cardStatus.a = "To Do";
   // Every launch now asks for the rail's page before making its session,
   // so this mock is reached from far more tests than Start and Resume --
   // and `clearAllMocks` keeps implementations, so a describe that made
@@ -776,7 +786,9 @@ describe("rail controls", () => {
   it("Retry returns a stalled step to pending and clears its reason", async () => {
     await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "card file is missing");
     await retryStep("ws-1", "t1");
-    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "pending", null, null, null, null, null);
+    // `0`, not null: a Retry starts the run over, and an `until` step's
+    // loop budget is the one count no launch clears (see retryStep).
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "pending", null, null, null, null, 0);
   });
 
   // The escape hatch. A step whose completion signal never arrives used
@@ -1206,6 +1218,377 @@ describe("executeActions", () => {
     });
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
+  });
+});
+
+// ---- the loop-until step ----------------------------------------------------
+// The pure half is orchestrationLoop.test.ts. This is the executor: what
+// actually gets written when a check fails, which is the half a source
+// grep cannot check.
+
+/// A card step, then the check that guards it.
+function loopRailPlan(untilParams: Record<string, string> = {}): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        pageId: "p1",
+        stages: [
+          {
+            id: "s0",
+            position: 0,
+            steps: [{ id: "work", position: 0, cardPath: "/x/a.md", toolId: null }],
+          },
+          {
+            id: "s1",
+            position: 1,
+            steps: [
+              { id: "check", position: 0, cardPath: "", toolId: "builtin:until", toolParams: untilParams },
+            ],
+          },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    stepRuns: [
+      { stepId: "work", state: "done", sessionId: "sess-w", reason: null },
+      { stepId: "check", state: "running", sessionId: "sess-c", reason: null },
+    ],
+  };
+}
+
+describe("a loop-until step's executor", () => {
+  const CHECK_LOG = "/tmp/gavin-until-check.log";
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-new");
+    // The card body FileEditor read, and the check's log, from one mock.
+    vi.mocked(backend.readFileForViewer).mockImplementation(async (path: string) => ({
+      exists: true,
+      truncated: false,
+      content: path === CHECK_LOG ? "FAIL src/x.test.ts\n1 failing test\n" : "# a card",
+    }));
+    vi.mocked(backend.getOrchestration).mockResolvedValue(loopRailPlan());
+    setRailPageLive();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+  });
+
+  it("runs the check as a visible session on the rail's page, capturing its output", async () => {
+    await setStepRunAction("ws-1", "check", "pending", null, null);
+    vi.mocked(backend.setStepRun).mockClear();
+    await executeActions("ws-1", [{ kind: "launch", stepId: "check" }]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("set -o pipefail");
+    // The whole script is single-quoted into `bash -c`, so the log
+    // path's own quotes arrive as `'\''` -- the path itself is what
+    // matters here.
+    expect(command).toContain(`tee '\\''${CHECK_LOG}`);
+    expect(command).toContain("npm test");
+    // The whole point of the wrapper: the pipeline's status is the
+    // check's, so the epilogue reports the real code.
+    expect(command).toContain('exit "$__gavin_code"');
+  });
+
+  // Every other launch writes 0 here. The same field holds this step's
+  // LOOP budget, so zeroing it would make the budget unspendable.
+  it("preserves the loop budget across the check's own relaunches", async () => {
+    await setStepRunAction("ws-1", "check", "pending", null, null);
+    vi.mocked(backend.setStepRun).mockClear();
+    await executeActions("ws-1", [{ kind: "launch", stepId: "check" }]);
+    expect(backend.setStepRun).toHaveBeenLastCalledWith(
+      "check", "running", "sess-new", null, null, "/x/wt", null
+    );
+  });
+
+  it("re-arms both steps and points the rail back at the work's stage", async () => {
+    const again = await executeActions("ws-1", [
+      { kind: "loopBack", stepId: "check", previousStepId: "work", attempt: 1, max: 5 },
+    ]);
+    // The check carries the count -- that pair is what says a loop is in
+    // flight, and what the re-armed step's launch reads.
+    expect(backend.setStepRun).toHaveBeenCalledWith("check", "pending", null, null, null, null, 1);
+    // The work's own count is left alone; its launch zeroes it anyway.
+    expect(backend.setStepRun).toHaveBeenCalledWith("work", "pending", null, null, null, null, null);
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s0");
+    // Never paused: a rail that pauses itself every time a test fails is
+    // a rail that never retries anything.
+    expect(backend.setRailRun).not.toHaveBeenCalledWith("r1", "paused", expect.anything());
+    // The pass that scheduled the loop-back stopped there, so nothing
+    // has launched the re-armed step yet.
+    expect(again).toBe(true);
+  });
+
+  // Rule 1 files a card step done on sight when its card is in the done
+  // column -- before rule 2 could ever launch it. A loop that re-armed
+  // such a step would spend its whole budget without re-running anything.
+  it("takes a re-run card back out of the done column", async () => {
+    boardStore.set({ "ws-1": { columns: [{ id: "c0", name: "To Do", position: 0 }, { id: "c1", name: "Done", position: 1 }], labels: [], cardSessions: [] } });
+    cardStatus.a = "Done";
+    await executeActions("ws-1", [
+      { kind: "loopBack", stepId: "check", previousStepId: "work", attempt: 1, max: 5 },
+    ]);
+    expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
+    expect(gavinState.patchPlanField).toHaveBeenCalledWith("ws-1", "/x/a.md", "status", "In Progress");
+  });
+
+  it("leaves a card that is not finished exactly where it is", async () => {
+    boardStore.set({ "ws-1": { columns: [{ id: "c0", name: "To Do", position: 0 }, { id: "c1", name: "Done", position: 1 }], labels: [], cardSessions: [] } });
+    await executeActions("ws-1", [
+      { kind: "loopBack", stepId: "check", previousStepId: "work", attempt: 1, max: 5 },
+    ]);
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("stalls with the check's own last words when the budget is spent", async () => {
+    await executeActions("ws-1", [{ kind: "loopExhausted", stepId: "check", max: 2 }]);
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "check",
+      "stalled",
+      null,
+      "the check still failed after 2 retries — FAIL src/x.test.ts\n1 failing test",
+      null,
+      null,
+      // Zeroed as it stalls: rule 2 retries a stalled step when the run
+      // reaches it again, and a spent count would give up at once.
+      0
+    );
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
+  });
+
+  // The re-armed agent has to be told what failed, or it writes the same
+  // code again. Derived from the run rows and the log on disk, never
+  // from a note held between the two ticks.
+  it("opens the re-run card's prompt with the failure", async () => {
+    await mutateRunState_loopMidFlight();
+    await executeActions("ws-1", [{ kind: "launch", stepId: "work" }]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("The previous attempt failed this check:");
+    expect(command).toContain("1 failing test");
+    expect(command).toContain("Fix it, then finish.");
+    // ...and the card's own prompt is still in there, after it.
+    expect(command).toContain("/x/a.md");
+  });
+
+  // A shell step is simply re-run. Pasting a paragraph of test output in
+  // front of a bash body would not retry the step, it would break it.
+  it("re-runs a shell step with its command line untouched", async () => {
+    const plan = loopRailPlan();
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...plan,
+      rails: [
+        {
+          ...plan.rails[0],
+          stages: [
+            {
+              ...plan.rails[0].stages[0],
+              steps: [
+                { id: "work", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} },
+              ],
+            },
+            plan.rails[0].stages[1],
+          ],
+        },
+      ],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    await mutateRunState_loopMidFlight();
+    await executeActions("ws-1", [{ kind: "launch", stepId: "work" }]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("git push -u origin HEAD");
+    expect(command).not.toContain("The previous attempt failed this check:");
+  });
+
+  it("leaves a first run's prompt alone", async () => {
+    await setStepRunAction("ws-1", "work", "pending", null, null, null, null, 0);
+    await setStepRunAction("ws-1", "check", "pending", null, null, null, null, 0);
+    await executeActions("ws-1", [{ kind: "launch", stepId: "work" }]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).not.toContain("The previous attempt failed this check:");
+  });
+
+  /// The state executeLoopBack leaves behind: both steps pending, the
+  /// count on the check's row.
+  async function mutateRunState_loopMidFlight(): Promise<void> {
+    await setStepRunAction("ws-1", "work", "pending", null, null);
+    await setStepRunAction("ws-1", "check", "pending", null, null, null, null, 1);
+  }
+});
+
+// ---- the pull-request wait step ---------------------------------------------
+// The pure halves are pullRequest.test.ts (what a report MEANS) and
+// orchestration.test.ts (which action each verdict produces). This is
+// the executor: what is actually written, and what the re-run's prompt
+// gets handed -- the half a source grep cannot check.
+
+/// A card step, then the wait on the pull request for the rail's branch.
+function prRailPlan(): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        branch: "feat/x",
+        pageId: "p1",
+        stages: [
+          {
+            id: "s0",
+            position: 0,
+            steps: [{ id: "work", position: 0, cardPath: "/x/a.md", toolId: null }],
+          },
+          {
+            id: "s1",
+            position: 1,
+            steps: [{ id: "wait", position: 0, cardPath: "", toolId: "builtin:await-pr" }],
+          },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    stepRuns: [
+      { stepId: "work", state: "done", sessionId: "sess-w", reason: null },
+      { stepId: "wait", state: "pending", sessionId: null, reason: null },
+    ],
+  };
+}
+
+function prReport(checks: Array<{ name: string; state: string }>) {
+  return {
+    state: "ready" as const,
+    number: 9,
+    url: "https://example.test/pr/9",
+    title: "t",
+    prState: "OPEN",
+    isDraft: false,
+    reviewDecision: "",
+    mergeable: "MERGEABLE",
+    createdAt: 0,
+    checks: checks.map((c) => ({ ...c, url: "" })),
+    observedAt: 1000,
+    cached: false,
+  } as PrReport;
+}
+
+describe("a pull-request wait step's executor", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    prResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-new");
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      exists: true,
+      truncated: false,
+      content: "# a card",
+    });
+    vi.mocked(backend.getOrchestration).mockResolvedValue(prRailPlan());
+    setRailPageLive();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+  });
+
+  afterEach(() => prResetForTesting());
+
+  /// The difference from every other tool kind, and the reason `pr` is a
+  /// kind: it starts nothing, and it still goes `running`. A `gavin`
+  /// action resolves inside its own launch and so could never wait.
+  it("starts no session and leaves the step running with none", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "wait" }]);
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenLastCalledWith(
+      "wait", "running", null, null, null, null, null
+    );
+  });
+
+  /// The same field carries the loop budget, so zeroing it at launch
+  /// would make the budget unspendable and the loop unbounded.
+  it("preserves the loop budget across its own relaunches", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "wait" }]);
+    const last = vi.mocked(backend.setStepRun).mock.calls.at(-1);
+    expect(last?.at(-1)).toBeNull();
+  });
+
+  /// A pull request belongs to a branch. Waiting on one an unbound rail
+  /// cannot have is not slow, it is meaningless -- and it would sit
+  /// `running` with nothing able to end it.
+  it("refuses to launch on a rail that binds no branch", async () => {
+    const plan = prRailPlan();
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...plan,
+      rails: [{ ...plan.rails[0], branch: null }],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    await executeActions("ws-1", [{ kind: "launch", stepId: "wait" }]);
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "wait", "stalled", null,
+      "this rail binds no branch, so there is no pull request to wait for",
+      null, null, null
+    );
+  });
+
+  /// What the whole loop is for: the re-run opens with what GitHub said,
+  /// derived from the live report rather than remembered -- so an app
+  /// reload between the re-arm and the launch changes nothing.
+  it("opens the re-run's prompt with the failing checks", async () => {
+    prReports.set({ [prKey("/x/wt", "feat/x")]: prReport([{ name: "build", state: "failure" }]) });
+    // The state executeLoopBack leaves behind: both pending, the count
+    // on the wait step's own row.
+    await setStepRunAction("ws-1", "work", "pending", null, null);
+    await setStepRunAction("ws-1", "wait", "pending", null, null, null, null, 1);
+    vi.mocked(backend.setStepRun).mockClear();
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "work" }]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("build");
+    expect(command).toContain("#9");
+  });
+
+  /// Not mid-loop: the wait step has spent no retries, so this launch is
+  /// the first attempt and its prompt must stay byte-identical.
+  it("leaves an ordinary launch's prompt alone", async () => {
+    prReports.set({ [prKey("/x/wt", "feat/x")]: prReport([{ name: "build", state: "failure" }]) });
+    await setStepRunAction("ws-1", "work", "pending", null, null);
+    await executeActions("ws-1", [{ kind: "launch", stepId: "work" }]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).not.toContain("failing");
+  });
+
+  /// The reason has to quote what failed, and this verdict was reached by
+  /// reading GitHub -- so unlike an until step's, there is no log on disk
+  /// and the note travels with the action.
+  it("stalls with the failing checks when the budget is spent", async () => {
+    await executeActions("ws-1", [
+      { kind: "loopExhausted", stepId: "wait", max: 3, note: "1 check is failing on pull request #9:\n- build" },
+    ]);
+    const stall = vi
+      .mocked(backend.setStepRun)
+      .mock.calls.find((c) => c[1] === "stalled");
+    expect(stall?.[3]).toBe(
+      "the pull request still was not ready after 3 retries — 1 check is failing on pull request #9:"
+    );
+    // The budget is zeroed as it stalls, so a later Resume gets a fresh
+    // one rather than giving up on its first look.
+    expect(stall?.at(-1)).toBe(0);
   });
 });
 

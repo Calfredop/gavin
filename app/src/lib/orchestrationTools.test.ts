@@ -46,8 +46,8 @@ describe("the built-in set", () => {
     return tool;
   };
 
-  it("ships twelve tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(12);
+  it("ships fourteen tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(14);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
@@ -99,7 +99,7 @@ describe("the built-in set", () => {
 
   it("demonstrates every kind", () => {
     const kinds = new Set(BUILTIN_TOOLS.map((t) => t.kind));
-    expect([...kinds].sort()).toEqual(["agent", "command", "gavin", "script"]);
+    expect([...kinds].sort()).toEqual(["agent", "command", "gavin", "pr", "script", "until"]);
   });
 
   // Chaining rails is the whole point: the last step of one rail arms

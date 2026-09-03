@@ -31,6 +31,7 @@ one that WRITES it, and still nothing that reads it.*
 | T7 | Built-ins are **data, not code**: a `BUILTIN_TOOLS` array in `orchestrationTools.ts`, unit-tested like any other pure module. Nothing about running them is special-cased. |
 | T8 | The plan is still replaced **wholesale**; tools are a **separate, targeted store** (upsert/delete by id), because a tool outlives every arrangement that uses it. |
 | T9 | **Added 2026-09-02:** a fourth kind, `gavin`, is an action **the app performs itself** — no session, no checkout, no exit code. Built-in only, and its **body names the action** so it stays data (T7) rather than a branch on an id. One ships: `builtin:start-rail`. See §8. |
+| T10 | **Added 2026-09-03:** two more kinds, and both exist because a **completion rule** is what a kind is for. `until` runs a check and, when it fails, sends the rail **backwards** over the step before it, up to a budget. `pr` runs nothing at all: it waits on the pull request for the rail's branch, which gavin reads with `gh` host-side, and reaches the same verdict from GitHub. Both are built-in only. See §9. |
 
 ---
 
@@ -470,3 +471,68 @@ Conflicts are untouched: a `gavin` step joins `same-worktree` groups like
 any other tool step (T6). That is a harmless over-report — it touches no
 checkout — and handing `detectConflicts` the tool library to tell them
 apart costs more than the false positive does.
+
+---
+
+## 9. `until` and `pr`: kinds that can move a rail backwards (added 2026-09-03)
+
+Every kind before these answers one question — *is this step finished?* —
+and the answer is yes or it is a stall. These two add a third answer: **do
+it again.** A check that failed is not a reason to stop a rail, it is a
+reason to re-run the work that failed it, and a rail that paused on every
+red test would never retry anything.
+
+That is a **completion rule**, and §3.1 already establishes that
+completion rules live in the kind. So `until` is not a `command` with a
+flag and `pr` is not a `gavin` action with a timer: a duplicate of either
+— or one a newer gavin ships — loops because of what it IS, not because
+the scheduler recognised an id.
+
+`orchestrationLoop.ts` owns the loop for both. One budget (persisted on
+the step's own run row, reusing `resumeAttempts`), one `loopBack` action,
+one rule about what opens the re-run's prompt. The two kinds differ only
+in **where the verdict comes from**.
+
+### 9.1 `until` — the verdict is an exit code
+
+`builtin:until` runs its check as a visible shell session on the rail's
+page, tee'd to a file so the retry prompt and the stall reason can quote
+it without depending on a terminal the human never opened.
+
+### 9.2 `pr` — the verdict is GitHub
+
+`builtin:await-pr` starts **no session**. `pull_request.rs` runs one `gh
+pr view <branch> --json …` per minute per branch, and `pullRequest.ts`
+turns that report into the same verdict `until` gets from an exit code:
+pass, wait, loop back, give up.
+
+**One poll, two readers**, and that is the whole reason the reading is
+host-side rather than a `gh` in the step's own shell. The rail header's PR
+chips are drawn from the same report the step's verdict comes from, so a
+green chip row beside a waiting rail is not a state this can reach.
+
+Three consequences worth stating, because each is a place the obvious
+choice is wrong:
+
+- **A `pr` step goes `running` with no session id.** That is the whole
+  difference from a `gavin` action (§8.2), which resolves inside its own
+  launch: waiting is a *state*, and a step that resolved immediately could
+  not wait. It does not wedge the rail — the daemon's running-step guard
+  exempts a row with no session, since there is no live agent to orphan.
+- **On a rail that is not running, the wait stalls.** Only a running rail
+  consults the poll, so a wait left `running` under a paused one is
+  waiting on nothing that will ever look at it. It stalls with a reason
+  saying exactly that, and Play relaunches it (rule 2).
+- **An empty check rollup is not a pass, for the first two minutes.**
+  GitHub returns `[]` both for a repo with no CI and for a PR whose
+  workflow runs it has not registered yet, and `gh pr create` returns
+  before it has. Reading the second as the first is how a rail advances
+  past CI that never started.
+
+`gh` failing is deliberately **not** a stall: a wait step's job is to be
+patient, and a sleeping laptop or a dropped VPN must not cost a human a
+Resume press. The reason rides the chips instead, where a genuinely
+broken `gh auth` is visible. A `gh` that is not installed at all is the
+exception, and that one stalls — waiting will not install it.
+
+Merging is never gavin's. Nothing in this kind writes to GitHub.

@@ -8,6 +8,9 @@ import type { GavinTree, PlanFileInfo } from "./gavin";
 import type { WorktreeInfo } from "./git";
 import type { SessionStatus } from "./notifications";
 import { isArchivedCard, planKey, slugStatus } from "./planBoard";
+import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "./orchestrationLoop";
+import { prKey, prRequirement, prWaitVerdict } from "./pullRequest";
+import type { PrReport } from "./pullRequest";
 
 export interface Step {
   id: string;
@@ -138,11 +141,20 @@ export interface ConflictNote {
 /// agentTurnEnded), so T5's exit code can never be its verdict. A
 /// `gavin` tool has no session at all -- orchestrationState resolves it
 /// to `done` or `stalled` in the launch itself, so no rule here ever
-/// sees one running.
+/// sees one running. An `until` tool's exit code is a verdict on the
+/// RAIL rather than on the step: a failing check sends it backwards (see
+/// orchestrationLoop.ts).
+///
+/// `params` is here for exactly one reason and it is optional because of
+/// it: an `until` step's budget is a parameter, and the scheduler cannot
+/// decide "retry or give up" without reading it. Every caller passes
+/// whole `Tool`s, which carry them; a summary built by hand without them
+/// falls back to the shipped default.
 export interface ToolSummary {
   id: string;
   name: string;
-  kind: "agent" | "command" | "script" | "gavin";
+  kind: "agent" | "command" | "script" | "gavin" | "until" | "pr";
+  params?: { name: string; default: string }[];
 }
 
 export type RailState = "idle" | "running" | "paused";
@@ -179,6 +191,14 @@ export interface StepRun {
   /// daemon restart are precisely the conditions auto-resume runs under,
   /// so a counter that resets on either is an unbounded loop wearing the
   /// costume of a limit. A manual Resume does not spend it.
+  ///
+  /// On an `until` step's row this same field holds its LOOP budget --
+  /// how many times the check has sent the rail back (see
+  /// orchestrationLoop.ts). A deliberate reuse rather than a second
+  /// mechanism: it is the only persisted integer a run row has, and the
+  /// two can never collide, since auto-resume acts only on a run with a
+  /// conversation id and a broken agent behind it, and an until step is
+  /// a shell with neither.
   resumeAttempts?: number | null;
 }
 
@@ -407,7 +427,22 @@ export type Action =
   | { kind: "complete"; railId: string }
   /// Put `path` on `branch` before anything of this rail launches
   /// (spec O15). orchestrationState owns the git call and the refusal.
-  | { kind: "switchBranch"; railId: string; path: string; branch: string };
+  | { kind: "switchBranch"; railId: string; path: string; branch: string }
+  /// An `until` step's check failed with budget left: re-arm
+  /// `previousStepId` and point the rail back at the stage that holds
+  /// it, recording `attempt` on the until step's own run row. The one
+  /// action that moves a rail BACKWARDS, which is why it is not spelled
+  /// as a pair of existing ones -- a `stall` plus an `advance` would
+  /// pause the rail (rule 5) in between.
+  | { kind: "loopBack"; stepId: string; previousStepId: string; attempt: number; max: number }
+  /// A looping step ran out of budget. Distinct from `stall` only
+  /// because the REASON has to quote what failed.
+  ///
+  /// `note` carries it when the decision already knows -- a `pr` step
+  /// read GitHub to reach this verdict, so the failing checks are in
+  /// hand. Absent for an `until` step, whose check tee'd its output to a
+  /// file this module cannot read; the executor reads it there.
+  | { kind: "loopExhausted"; stepId: string; max: number; note?: string };
 
 /// Why a pending step cannot be launched right now, or null.
 /// `knownWorktrees` is null when the worktree list has not loaded yet --
@@ -422,11 +457,24 @@ function launchBlocker(
   step: Step,
   entry: CardEntry | undefined,
   knownWorktrees: Set<string> | null,
-  knownTools: Set<string> | null
+  knownTools: Set<string> | null,
+  /// The kinds, for the one blocker that is about a KIND rather than
+  /// about the step: a `pr` step with no branch to look up. Null while
+  /// the library loads, which must not read as "no step is a pr step" --
+  /// but the tool check above already leaves such a step launchable, and
+  /// executeToolLaunch re-derives this blocker with a loaded library.
+  toolKinds: Map<string, ToolSummary["kind"]> | null = null
 ): string | null {
   if (isToolStep(step)) {
     if (knownTools && !knownTools.has(step.toolId as string)) {
       return "tool is no longer in the library";
+    }
+    // A pull request belongs to a BRANCH, and an unbound rail has none.
+    // Refused at launch rather than waited out: a wait step on an
+    // unbound rail is not slow, it is meaningless, and it would sit
+    // `running` forever with nothing able to end it.
+    if (isPrStep(step, toolKinds) && !rail.branch) {
+      return "this rail binds no branch, so there is no pull request to wait for";
     }
   } else {
     if (!entry) return "card file is missing";
@@ -831,7 +879,19 @@ export function nextActions(
   /// reason the stall has to record. Empty by default: a caller that
   /// does not know reads as "nothing broke", which is the pre-v21
   /// behaviour.
-  failureReasonById: ReadonlyMap<string, string> = new Map()
+  failureReasonById: ReadonlyMap<string, string> = new Map(),
+  /// What GitHub says about each branch's pull request, by `prKey`
+  /// (`prState.prReports`). A key with no entry is "not asked yet",
+  /// which a `pr` step waits through -- never a pass. Empty by default:
+  /// a caller that does not know reads as "nothing has been polled",
+  /// and every pr step simply waits.
+  prReports: Readonly<Record<string, PrReport>> = {},
+  /// Epoch SECONDS. Only the pull-request rules read it, and only to
+  /// tell "this PR has no CI" from "its CI has not started yet"
+  /// (EMPTY_ROLLUP_GRACE_SECS). Passed rather than read from the clock
+  /// so this function stays pure and total: a test that fixes it gets
+  /// the same list every time.
+  now: number = Math.floor(Date.now() / 1000)
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
@@ -847,6 +907,9 @@ export function nextActions(
   const knownTools = tools ? new Set(tools.map((t) => t.id)) : null;
   const toolName = new Map((tools ?? []).map((t) => [t.id, t.name]));
   const toolKind = new Map((tools ?? []).map((t) => [t.id, t.kind]));
+  // Whole summaries, for the one rule that needs a tool's PARAMS: an
+  // `until` step's budget.
+  const toolSummary = new Map((tools ?? []).map((t) => [t.id, t]));
   const runByStep = new Map(orch.stepRuns.map((r) => [r.stepId, r]));
 
   for (const rail of orch.rails) {
@@ -863,7 +926,42 @@ export function nextActions(
       for (const stage of rail.stages) {
         for (const step of stage.steps) {
           if (stepStateOf(orch, step.id) !== "running") continue;
+          // A `pr` step has NO session, so every rule below -- all of
+          // which ask what a session did -- would speak for it wrongly,
+          // and `deadSessionAction` would report a session that ended
+          // while gavin was not watching when there never was one.
+          //
+          // Stalled rather than left alone, and that half is deliberate.
+          // A wait step only advances on a RUNNING rail, because that is
+          // the only place rule 3f consults the poll; one left `running`
+          // under an idle or paused rail is waiting on nothing that will
+          // ever look at it, and it would sit there indefinitely with
+          // nothing on any surface saying why. (It would not wedge the
+          // rail -- the daemon's running-step guard exempts a row with no
+          // session id, since there is no live agent to orphan -- so this
+          // is about being honest, not about being editable.)
+          //
+          // The reason says what actually happened rather than blaming a
+          // session, and rule 2 relaunches a stalled step when the run
+          // reaches it again -- so pressing Play resumes the wait.
+          if (isPrStep(step, toolKind)) {
+            actions.push({
+              kind: "stall",
+              stepId: step.id,
+              reason: "the rail stopped while this step was waiting on the pull request",
+            });
+            continue;
+          }
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
+          // A tool step running with NO session, before the library has
+          // loaded. It is almost certainly the `pr` step above -- the
+          // only kind that runs without one -- but with no kinds to read
+          // it cannot be told from any other, and `deadSessionAction`
+          // would report a session that ended while gavin was not
+          // watching about a step that never had one. Left alone for the
+          // cold-start reason launchBlocker gives: the tick that lands
+          // with a loaded library decides, one emission later.
+          if (knownTools === null && isToolStep(step) && sessionId === null) continue;
           const wasInterrupted = sessionId !== null && interruptedSessionIds.has(sessionId);
           // A failed agent is LIVE -- the process is still at its prompt
           // -- so like an interrupted one it slips past the branch
@@ -918,6 +1016,12 @@ export function nextActions(
 
     let stageId = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
     let stalled = false;
+    // An `until` step sent the rail BACKWARDS on this pass. Nothing more
+    // of this rail is scheduled: the executor re-points `currentStageId`
+    // at the stage being re-run, and the next tick launches from there.
+    // Separate from `stalled` because the rail is not paused -- it is
+    // still running, one stage earlier.
+    let loopingBack = false;
 
     for (let guard = 0; guard <= rail.stages.length; guard++) {
       const stage = rail.stages.find((s) => s.id === stageId);
@@ -979,7 +1083,7 @@ export function nextActions(
         // fresh stall re-pauses the rail (rule 5). That is what keeps
         // this one attempt per press of Play rather than a spin.
         if (state === "pending" || state === "stalled") {
-          const reason = launchBlocker(rail, step, entry, knownWorktrees, knownTools);
+          const reason = launchBlocker(rail, step, entry, knownWorktrees, knownTools, toolKind);
           if (reason) {
             actions.push({ kind: "stall", stepId: step.id, reason });
             simulated.set(step.id, "stalled");
@@ -996,6 +1100,76 @@ export function nextActions(
         // chance to call it done. For a TOOL step the exit code is the
         // whole verdict (tools spec T5).
         if (state === "running") {
+          // Rule 3f -- a `pr` step, waiting on a pull request. Checked
+          // before everything below because all of that asks what a
+          // SESSION did, and this step has none: gavin does the waiting
+          // itself, off one poll of `gh` that the rail header's chips
+          // read too (pullRequest.ts).
+          //
+          // Its verdict is the `until` loop with GitHub in place of an
+          // exit code, and it emits the very same actions -- a failing
+          // check sends the rail BACKWARDS over the work that produced
+          // it, rather than pausing the rail the way a stall would.
+          if (isPrStep(step, toolKind)) {
+            const previous = stepBefore(rail, step.id);
+            const summary = toolSummary.get(step.toolId as string);
+            const checkout = conflictCheckout(rail, tree);
+            const verdict = prWaitVerdict({
+              // No branch and no checkout is not a state a launched step
+              // should be in -- launchBlocker refuses an unbound rail --
+              // but a rail unbound WHILE a step waited would land here,
+              // and `undefined` makes it wait rather than guess.
+              report:
+                checkout && rail.branch ? prReports[prKey(checkout, rail.branch)] : undefined,
+              requirement: prRequirement(summaryParam(summary, stepParams(step), "require")),
+              attempts: runByStep.get(step.id)?.resumeAttempts,
+              max: untilMax(summary, stepParams(step)),
+              previousStepId: previous?.id ?? null,
+              now,
+            });
+            if (verdict.kind === "pass") {
+              actions.push({ kind: "markDone", stepId: step.id });
+              simulated.set(step.id, "done");
+              break stepBody;
+            }
+            if (verdict.kind === "retry") {
+              actions.push({
+                kind: "loopBack",
+                stepId: step.id,
+                previousStepId: verdict.previousStepId,
+                attempt: verdict.attempt,
+                max: verdict.max,
+              });
+              simulated.set(step.id, "pending");
+              simulated.set(verdict.previousStepId, "pending");
+              loopingBack = true;
+              break stepBody;
+            }
+            if (verdict.kind === "exhausted") {
+              actions.push({
+                kind: "loopExhausted",
+                stepId: step.id,
+                max: verdict.max,
+                // Carried, unlike an until step's: this verdict was
+                // reached by READING GitHub, so what failed is already in
+                // hand and the executor has no log to go and find.
+                note: verdict.note,
+              });
+              simulated.set(step.id, "stalled");
+              stalled = true;
+              break stepBody;
+            }
+            if (verdict.kind === "stuck") {
+              actions.push({ kind: "stall", stepId: step.id, reason: verdict.reason });
+              simulated.set(step.id, "stalled");
+              stalled = true;
+              break stepBody;
+            }
+            // `waiting` -- the ordinary answer, and the whole point of
+            // the step. Nothing is emitted and the step stays `running`;
+            // the next poll ticks the scheduler and asks again.
+            break stepBody;
+          }
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
           // Rule 3c -- the session was INTERRUPTED: killed with a
           // previous daemon, and back in the layout as a bare shell with
@@ -1085,6 +1259,61 @@ export function nextActions(
             simulated.set(step.id, "done");
             break stepBody;
           }
+          // Rule 3e -- an `until` step whose check has finished. The one
+          // rule that can move a rail BACKWARDS, so it is checked before
+          // the plain dead-session verdict below, which would read a
+          // failing check as a stalled step and pause the rail (which is
+          // exactly what the tool exists to avoid doing).
+          //
+          // Only on a RUNNING rail: the reconciliation pass at the top of
+          // this function leaves an until step on an idle or paused rail
+          // to `deadSessionAction`, because looping is something a rail
+          // does while it is advancing, and re-arming a step under a rail
+          // nobody started would launch work out of nowhere.
+          if (sessionId && !liveSessionIds.has(sessionId) && isUntilStep(step, toolKind)) {
+            const previous = stepBefore(rail, step.id);
+            const verdict = untilVerdict({
+              exitCode: exitCodes.get(sessionId),
+              attempts: runByStep.get(step.id)?.resumeAttempts,
+              max: untilMax(toolSummary.get(step.toolId as string), stepParams(step)),
+              previousStepId: previous?.id ?? null,
+            });
+            if (verdict.kind === "pass") {
+              actions.push({ kind: "markDone", stepId: step.id });
+              simulated.set(step.id, "done");
+              break stepBody;
+            }
+            if (verdict.kind === "retry") {
+              actions.push({
+                kind: "loopBack",
+                stepId: step.id,
+                previousStepId: verdict.previousStepId,
+                attempt: verdict.attempt,
+                max: verdict.max,
+              });
+              // Both go back to `pending`: the work is about to run
+              // again, and the check after it.
+              simulated.set(step.id, "pending");
+              simulated.set(verdict.previousStepId, "pending");
+              loopingBack = true;
+              break stepBody;
+            }
+            if (verdict.kind === "exhausted") {
+              actions.push({ kind: "loopExhausted", stepId: step.id, max: verdict.max });
+              simulated.set(step.id, "stalled");
+              stalled = true;
+              break stepBody;
+            }
+            if (verdict.kind === "stuck") {
+              actions.push({ kind: "stall", stepId: step.id, reason: verdict.reason });
+              simulated.set(step.id, "stalled");
+              stalled = true;
+              break stepBody;
+            }
+            // `unwitnessed` falls through: nobody saw the check's exit,
+            // so the honest answer is the one every tool step already
+            // gets for that, a stall (see toolStepOutcome).
+          }
           if (sessionId && !liveSessionIds.has(sessionId)) {
             const action = deadSessionAction(
               step,
@@ -1116,6 +1345,10 @@ export function nextActions(
       // Rule 5 -- any stall this tick pauses the rail; the executor
       // writes that, and we stop scheduling here.
       if (stalled) break;
+
+      // A loop-back has moved the rail's own cursor. Nothing further is
+      // decided from a `currentStageId` the executor is about to change.
+      if (loopingBack) break;
 
       // Rule 4 -- a fully-done stage advances. An empty stage is
       // vacuously done, so it is stepped over rather than hanging.

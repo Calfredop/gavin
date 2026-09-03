@@ -479,6 +479,56 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Its params popover previews “Start the rail “<name>”.” rather than a command line, and says nothing is named yet when the field is empty. The library's Built-in section shows “gavin's own” where the other eleven show Duplicate.",
       },
       {
+        id: "run-until-loops",
+        text: "A “Loop until a check passes” step after an agent step re-runs THAT step when the check fails, with the rail staying running and its header reading “retry 1 of 5”",
+        hint: "Add an agent step whose card asks for something that breaks the check (e.g. “add a failing test”), then + Add step → Loop until a check passes, and set its Check command to something that fails (`false`, or the project's test command). Start the rail. The check opens as a VISIBLE shell tab on the rail's page and prints its output. When it exits non-zero the rail must NOT pause and the chips must NOT go red: the check goes back to pending, the agent step re-launches, and the rail header carries the retry badge beside “running”. Set Check to `true` afterwards and the loop must end — the step goes done and the rail completes.",
+      },
+      {
+        id: "run-until-prompt-carries-failure",
+        text: "The re-run agent's prompt opens with “The previous attempt failed this check:” and the check's own last lines, then the card's prompt",
+        hint: "Read the new tab's first screen. The fenced block is the tail of what the check printed — not a summary, not empty. A shell step in that position (a Bash command tool) is simply re-run instead, with its command line untouched: put one before the check and confirm nothing is pasted in front of it.",
+      },
+      {
+        id: "run-until-budget",
+        text: "With Retries set to 1 and a check that never passes, the rail retries exactly once and then STALLS with the check's last output as the reason",
+        hint: "Open the until step's Sliders, set Retries to 1. The agent step runs twice in total, then the check stalls, the rail pauses, and hovering the check's chip shows “the check still failed after 1 retry — …”. Press Reset run state and start again: the budget must be fresh, i.e. it retries once more rather than giving up immediately.",
+      },
+      {
+        id: "run-until-library",
+        text: "Loop until a check passes reads “Loop until” in the drawer and the library with its own ↻ icon, and the library offers no Duplicate on it",
+        hint: "It is in the + Add step picker's Tools list beside the others. Its Sliders show two fields, Check command and Retries. The library's Built-in section shows “gavin's own” where the other eleven show Duplicate.",
+      },
+      {
+        id: "pr-chips-on-a-bound-rail",
+        text: "A rail bound to a branch with an open PR shows a read-only chip row under its binding: “#123”, the check tally, and the review state",
+        hint: "Bind a rail to a branch that has a pull request (open one with the “Open a pull request” tool if you need to). Within about fifteen seconds the chips appear UNDER the worktree/branch line, not beside the rail name. #123 links out to GitHub in a browser; hovering it says the PR title and “checked just now”. A branch with NO pull request must show no chips at all — not a grey placeholder. Unbind the rail and the row disappears.",
+      },
+      {
+        id: "pr-chips-say-when-gh-cannot-answer",
+        text: "With `gh` logged out, the chip row reads “PR unknown” with gh's own first line as its tooltip — and the rail does not stall",
+        hint: "`gh auth logout` in a terminal, wait for the next poll. The chip must be amber and say why. `gh auth login` again and it recovers on its own without touching the rail. This is the one case the wait step is deliberately patient about: a rail waiting on CI must survive a sleeping laptop and a dropped VPN.",
+      },
+      {
+        id: "run-await-pr-waits",
+        text: "A “Wait for the pull request” step sits `running` with NO session tab while checks are in flight, and marks itself done when they pass",
+        hint: "Rail bound to a branch, a step that pushes, then + Add step → Wait for the pull request. Start it. The wait step goes running and the rail's page gets NO new tab — gavin does the waiting itself. The rail header's check chip counts up (“1/3 checks”) as CI reports. When every check passes the step goes done and the rail advances. Nothing merges: the PR is still open on GitHub afterwards.",
+      },
+      {
+        id: "run-await-pr-loops-on-a-failing-check",
+        text: "A failing CI check sends the rail BACKWARDS over the step before the wait, with the rail still running and its header reading “retry 1 of 3”",
+        hint: "Push something that fails CI. When GitHub reports the failure the rail must NOT pause and the chips must NOT go red-and-stopped: the wait goes back to pending, the previous step re-launches, and the retry badge appears beside “running”. The re-run agent's prompt must open with the failing checks BY NAME and their run URLs — read the new tab's first screen. Set Retries to 1 first and confirm it gives up after one, stalling with “the pull request still was not ready after 1 retry — …”.",
+      },
+      {
+        id: "run-await-pr-refuses-an-unbound-rail",
+        text: "A wait step on a rail with no branch stalls at once with “this rail binds no branch, so there is no pull request to wait for”",
+        hint: "Unbind the rail (or bind a worktree with no branch) and start it. The step must stall rather than sit running forever — there is no pull request for it to wait on. Pausing a rail mid-wait must also stall the wait step (“the rail stopped while this step was waiting on the pull request”) so the rail stays editable and deletable; pressing Play resumes the wait.",
+      },
+      {
+        id: "run-await-pr-library",
+        text: "Wait for the pull request reads “Wait on a pull request” in the drawer and the library with its own pull-request icon, and offers no Duplicate",
+        hint: "Its Sliders show two fields, “Wait for (checks / approval)” and Retries, and the preview reads “This step will wait on this rail's pull request…” rather than a command line. Set Wait for to “checks and approval” and confirm the step then holds until the PR is approved — and that a reviewer requesting changes loops the rail back exactly as a failing check does.",
+      },
+      {
         id: "skill-updated",
         text: "Re-run “Set up agent integration”: SKILL.md teaches name-your-tab-first, kinds, nesting, promotion, tick-when-done; gavin-orchestrate, gavin-resume and gavin-develop land beside it",
       },

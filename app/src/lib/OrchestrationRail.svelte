@@ -17,7 +17,7 @@
   import { resumeTrail } from "./autoResumeState";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import { tooltip } from "./tooltip";
-  import { attentionIndicator, railIndicator } from "./ui/indicators";
+  import { attentionIndicator, railIndicator, railRetryIndicator } from "./ui/indicators";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
   import type { Label } from "./kanban";
@@ -29,9 +29,13 @@
     Rail,
     Stage,
     StageMode,
+    Step,
     StepAttention,
   } from "./orchestration";
   import { stepParams, attentionTip, railAttention } from "./orchestration";
+  import { railRetryLabel } from "./orchestrationLoop";
+  import { prChips } from "./pullRequest";
+  import { prPollTick, prReportFor, prReports, requestPr } from "./prState";
   import { findTool } from "./orchestrationTools";
   import type { OrchestrationAgentAction } from "./orchestrationAgent";
   import type { Tool } from "./orchestrationTools";
@@ -102,6 +106,11 @@
     onClearDone: () => void;
     /// Resolved page name for the bindings row; null when unbound.
     pageName: string | null;
+    /// The checkout this rail's work happens in (`conflictCheckout`), or
+    /// null in a rootless workspace. Passed rather than derived here so
+    /// the header and the scheduler cannot disagree about which
+    /// directory a `gh` runs in.
+    checkout: string | null;
     onBind: () => void;
     /// Hand THIS rail to an agent of its own (the header's wand). Scoped
     /// on purpose: the tab header's Generate button is about the cards
@@ -156,6 +165,7 @@
     numbered,
     attentions,
     pageName,
+    checkout,
     editing,
     onStartEdit,
     onRename,
@@ -197,6 +207,30 @@
   const attentionTitle = $derived(
     attention ? attentionTip(attention, doneColumnName ?? "the done column") : ""
   );
+  // "retry 2 of 5" while an `until` step is sending the rail back over
+  // the step before it. Null the rest of the time, which is almost
+  // always -- a loop is a state a rail passes through, not one it sits
+  // in, and a badge that were always there would say nothing.
+  const retrying = $derived(railRetryLabel(rail, orch, tools));
+  // What GitHub says about this rail's branch, off the ONE poll a `pr`
+  // step's verdict also comes from (pullRequest.ts). Read-only, and
+  // deliberately so: merging is the human's action, so nothing on this
+  // row is a button that acts -- the chips only link out.
+  //
+  // `prPollTick` is read for its effect on this effect's DEPENDENCIES
+  // rather than for its value: it emits on every sweep, so the interest
+  // below is renewed even when nothing about the pull request has
+  // changed. Without that, a settled PR's chips would expire off the
+  // header while the human was still reading them.
+  $effect(() => {
+    void $prPollTick;
+    requestPr(checkout, rail.branch);
+  });
+  const prReport = $derived(prReportFor($prReports, checkout, rail.branch));
+  // The clock is read here rather than held, because the only thing that
+  // uses it is the "checked 2m ago" tooltip, and this recomputes on every
+  // poll -- which is exactly when that age changes.
+  const prRow = $derived(prChips(prReport, Math.floor(Date.now() / 1000)));
   const stages = $derived([...rail.stages].sort((a, b) => a.position - b.position));
   // A rail-level conflict (missing/unbound worktree) badges the HEADER,
   // not any chip -- the cause is the binding, not a step.
@@ -246,6 +280,21 @@
 
   function runOf(id: string) {
     return orch.stepRuns.find((r) => r.stepId === id) ?? null;
+  }
+
+  /// The "gavin resumed this run by itself" line for a step, or null.
+  ///
+  /// Silent for either LOOPING kind, and that exception is load-bearing:
+  /// a loop's budget is counted in the same `resumeAttempts` field (see
+  /// orchestrationLoop.ts), so a check that went round twice would
+  /// otherwise claim its agent broke and was resumed — which nothing
+  /// about it is true of. The in-memory trail is keyed by step too, but
+  /// only auto-resume ever writes it, so dropping both here is the whole
+  /// of the fix.
+  function resumeNoteOf(step: Step) {
+    const kind = step.toolId ? findTool(tools, step.toolId)?.kind : undefined;
+    if (kind === "until" || kind === "pr") return null;
+    return resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts);
   }
 
   const drag = $derived($orchDragState);
@@ -349,6 +398,16 @@
           tip={attentionTitle}
         />
       {/if}
+      <!-- Beside the state, not instead of it, for the same reason the
+           attention badge is: the rail is still running. This says which
+           DIRECTION -- backwards, over work it has already done once. -->
+      {#if retrying}
+        <StatusBadge
+          indicator={railRetryIndicator()}
+          text={retrying}
+          tip="Something this rail waits on did not pass — a CI check, or a reviewer — so the step before it is running again ({retrying})"
+        />
+      {/if}
     </div>
     <div class="action-row">
       {#if railState === "running"}
@@ -417,6 +476,25 @@
            of its own the moment the human arms it (spec O16). -->
       <span class="pg">{pageName ?? "page at Start"}</span>
     </button>
+    <!-- Only when there is something to say. A branch with no pull
+         request is the resting state of most branches, and a permanent
+         grey chip saying so would be noise on every rail. -->
+    {#if prRow.length > 0}
+      <div class="pr-row">
+        {#each prRow as chip (chip.key)}
+          {#if chip.href}
+            <a
+              class="pr-chip {chip.tone}"
+              href={chip.href}
+              target="_blank"
+              rel="noreferrer"
+              use:tooltip={chip.tip}>{chip.label}</a>
+          {:else}
+            <span class="pr-chip {chip.tone}" use:tooltip={chip.tip}>{chip.label}</span>
+          {/if}
+        {/each}
+      </div>
+    {/if}
     {#if !doneColumnName}
       <p class="warn">This board has no columns — nothing can complete.</p>
     {/if}
@@ -527,7 +605,7 @@
               {placed}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
-              resumeNote={resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts)}
+              resumeNote={resumeNoteOf(step)}
               attention={attentions.get(step.id) ?? null}
               {doneColumnName}
               badges={numbersForStep(numbered, step.id)}
@@ -555,7 +633,7 @@
               toolParams={stepParams(step)}
               state={stepStateOf(orch, step.id)}
               reason={runOf(step.id)?.reason ?? null}
-              resumeNote={resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts)}
+              resumeNote={resumeNoteOf(step)}
               attention={attentions.get(step.id) ?? null}
               {doneColumnName}
               badges={numbersForStep(numbered, step.id)}
@@ -723,6 +801,50 @@
     background: var(--surface-overlay);
     color: var(--text);
     font-size: 10px;
+  }
+  /* Under the binding it qualifies, not beside the rail name: the name
+     row is already the one place a 280px column has to ellipsise, and a
+     pull request is a fact about the BRANCH — which is the line directly
+     above this one. */
+  .pr-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 0 5px;
+  }
+  .pr-chip {
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--surface-overlay);
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 16px;
+    white-space: nowrap;
+    text-decoration: none;
+  }
+  a.pr-chip:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+  /* The app's one colour vocabulary (ui/indicators.ts): accent is
+     happening now, success is finished and clean, warning wants a human,
+     danger is broken. Nothing here is a bare coloured dot — every chip
+     carries its own words. */
+  .pr-chip.accent {
+    border-color: var(--border-focus);
+    color: var(--accent-text);
+  }
+  .pr-chip.success {
+    color: var(--success-text);
+  }
+  .pr-chip.warning {
+    border-color: var(--border-warning);
+    color: var(--warning-text);
+  }
+  .pr-chip.danger {
+    border-color: var(--border-danger);
+    color: var(--danger-text);
   }
   .warn {
     margin: 0;

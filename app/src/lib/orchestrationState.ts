@@ -48,6 +48,7 @@ import {
   findStep,
   insertStageWithSteps,
   startRailVerdict,
+  conflictCheckout,
 } from "./orchestration";
 import type {
   Action,
@@ -64,6 +65,17 @@ import type {
 import { composeGeneratePrompt, composeRailPrompt } from "./orchestrationPrompts";
 import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "./orchestrationTools";
 import type { Tool } from "./orchestrationTools";
+import {
+  buildUntilScript,
+  exhaustedReason,
+  isPrStep,
+  retrySourceFor,
+  stageIdOfStep,
+  untilLogPath,
+  withRetryPrefix,
+} from "./orchestrationLoop";
+import { currentPrReports, prReportFor, prReports, requestPr, startPrPolling } from "./prState";
+import { failingChecksNote, prExhaustedReason } from "./pullRequest";
 import { stepsFromTemplate } from "./orchestrationGroups";
 import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
@@ -94,6 +106,7 @@ import {
   runStatusNeeded,
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
+import { slugStatus } from "./planBoard";
 import { setRailNotificationVoice, type SessionStatus } from "./notifications";
 import {
   GENERATE_LABEL,
@@ -460,7 +473,13 @@ export async function resetRail(workspaceId: string, railId: string): Promise<vo
   if (!rail) return;
   for (const stage of rail.stages) {
     for (const step of stage.steps) {
-      await setStepRunAction(workspaceId, step.id, "pending", null, null);
+      // `0`, not the usual null: this is a run starting over, and the
+      // one counter a re-launch does NOT rewrite is an `until` step's
+      // loop budget (see executeToolLaunch). Every other step is zeroed
+      // by its own launch anyway, so passing it here changes nothing for
+      // them -- and a rail Reset that left a spent budget behind would
+      // give the loop one attempt and then stall.
+      await setStepRunAction(workspaceId, step.id, "pending", null, null, null, null, 0);
     }
   }
   await setRailRunAction(workspaceId, railId, "idle", null);
@@ -470,7 +489,10 @@ export async function resetRail(workspaceId: string, railId: string): Promise<vo
 /// tick re-reads the card and re-checks the worktree rather than
 /// replaying the old command (spec §6.2).
 export async function retryStep(workspaceId: string, stepId: string): Promise<void> {
-  await setStepRunAction(workspaceId, stepId, "pending", null, null);
+  // `0` for the same reason resetRail passes it: a Retry is a fresh
+  // attempt, and an `until` step's loop budget is the one count no
+  // launch clears.
+  await setStepRunAction(workspaceId, stepId, "pending", null, null, null, null, 0);
   await tick(workspaceId);
 }
 
@@ -601,6 +623,62 @@ export async function markStepDone(workspaceId: string, stepId: string): Promise
   await tick(workspaceId);
 }
 
+/// What a check step wrote, or "". Its own session's scrollback would be
+/// the obvious source and is not usable: an xterm `Terminal` exists only
+/// where a pane built one, and a rail's page is routinely one the human
+/// never opened. So the check tees to a file (see buildUntilScript) and
+/// both readers -- the retried prompt and the exhausted stall reason --
+/// read that.
+///
+/// Never throws. A missing or unreadable log means the quote is dropped,
+/// not that the loop breaks.
+async function readCheckLog(untilStepId: string): Promise<string> {
+  try {
+    const file = await backend.readFileForViewer(untilLogPath(untilStepId));
+    return file.exists ? file.content : "";
+  } catch {
+    return "";
+  }
+}
+
+/// The check output that must OPEN this step's prompt, or null when this
+/// launch is not part of a loop.
+///
+/// Derived from the plan and the run rows rather than remembered: see
+/// retryLogFor. A note held in a variable between the re-arm and the
+/// launch would be lost by exactly the app reload this design survives.
+async function retryNoteFor(
+  workspaceId: string,
+  rail: Rail,
+  stepId: string
+): Promise<string | null> {
+  const orch = get(orchestrations)[workspaceId];
+  const library = libraryFor(get(toolRecords), workspaceId);
+  // null is "still loading", not "no tools": guessing here would drop
+  // the failure from the prompt and send the agent back in blind.
+  if (!orch || !library) return null;
+  const source = retrySourceFor(rail, stepId, orch, new Map(library.map((t) => [t.id, t.kind])));
+  if (!source) return null;
+  // A pull-request loop has no log: the failure is in the live report
+  // the poll already holds, which is the same reading the chips beside
+  // this rail are drawn from. Derived at launch time for the reason
+  // retrySourceFor gives -- nothing is remembered between the re-arm and
+  // the launch, so a reload in between changes nothing.
+  if (source.kind === "pr") {
+    const tree = get(gavinTrees)[workspaceId];
+    const checkout = conflictCheckout(rail, tree);
+    const report = prReportFor(currentPrReports(), checkout, rail.branch);
+    const note = report ? failingChecksNote(report) : "";
+    return note.trim() ? note : null;
+  }
+  try {
+    const file = await backend.readFileForViewer(source.path);
+    return file.exists && file.content.trim() ? file.content : null;
+  } catch {
+    return null;
+  }
+}
+
 /// Run a `gavin` tool: an action the app performs itself, with no
 /// session, no checkout and no exit code (tools spec T9). It resolves
 /// synchronously, so the step never passes through `running` -- there is
@@ -687,6 +765,41 @@ async function executeToolLaunch(
     return await executeGavinAction(workspaceId, rail, step, tool);
   }
 
+  // A `pr` step launches NOTHING. gavin does the waiting itself, off the
+  // poll behind the rail's PR chips, and the step is over when GitHub
+  // says so (nextActions rule 3f).
+  //
+  // It still goes `running`, unlike a `gavin` action, and that is the
+  // whole difference between the two kinds: waiting is a state, and a
+  // step that resolved inside its launch could not wait at all. What it
+  // does NOT do is take a session id, so every rule that reconciles a
+  // dead session steps around it.
+  if (tool.kind === "pr") {
+    if (!rail.branch) {
+      // launchBlocker refuses this before the launch; re-derived here
+      // for the same reason executeToolLaunch re-derives the others --
+      // the pass that scheduled this ran against a library that may not
+      // have loaded, and an unbound rail must never leave a step
+      // waiting on a pull request that cannot exist.
+      await setStepRunAction(
+        workspaceId,
+        step.id,
+        "stalled",
+        null,
+        "this rail binds no branch, so there is no pull request to wait for"
+      );
+      return false;
+    }
+    // Warm the poll before the first tick asks: without this the step
+    // would wait a poll cycle for its own report to exist.
+    requestPr(conflictCheckout(rail, get(gavinTrees)[workspaceId]), rail.branch);
+    // `null`, not 0, for exactly the reason the `until` kind passes null
+    // below: the same field carries the LOOP budget, and zeroing it here
+    // would make the budget unspendable and the loop unbounded.
+    await setStepRunAction(workspaceId, step.id, "running", null, null, null, null, null);
+    return false;
+  }
+
   // The rail's checkout, NOT a card's contextFolder -- there is no card.
   const tree = get(gavinTrees)[workspaceId];
   const cwd = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
@@ -703,13 +816,27 @@ async function executeToolLaunch(
 
   const body = resolveToolBody(tool, stepParams(step));
   const agent = resolvedAgentFor(workspaceId);
-  // Only an AGENT tool gets a conversation: a command or script step is
-  // a shell, and its verdict is its exit code (tools spec T5).
+  // Only an AGENT tool gets a conversation: a command, script or until
+  // step is a shell, and its verdict is its exit code (tools spec T5).
   const conversationId = tool.kind === "agent" ? conversationIdForLaunch(agent) : null;
+  // Only an agent's prompt is prefixed. A `command` or `script` tool's
+  // body is shell source, and pasting a paragraph of test output in
+  // front of it would not retry the step, it would break it -- which is
+  // exactly what "a shell step is simply re-run" means.
+  const prompt =
+    tool.kind === "agent"
+      ? withRetryPrefix(body, await retryNoteFor(workspaceId, rail, step.id))
+      : body;
   const command =
     tool.kind === "agent"
-      ? buildRunCommand(agent.launchCommand, agent.promptArgs, body, agent.sessionIdArgs, conversationId)
-      : buildToolCommand(tool.kind, body, tool.name);
+      ? buildRunCommand(agent.launchCommand, agent.promptArgs, prompt, agent.sessionIdArgs, conversationId)
+      : tool.kind === "until"
+        ? // `script`, not `command`: the wrapper needs bash (pipefail,
+          // and a brace group around a body that may be several lines),
+          // and buildToolCommand's script shape is the one that runs its
+          // body through `bash -c`. The human's login shell here is zsh.
+          buildToolCommand("script", buildUntilScript(body, untilLogPath(step.id)), tool.name)
+        : buildToolCommand(tool.kind, body, tool.name);
   // Only an `agent` tool can land here: a command or script tool builds
   // its own line and never asks the profile for one. Stalled rather
   // than failed, and the reason names the agent -- a rail that stops
@@ -748,7 +875,23 @@ async function executeToolLaunch(
   // 0, not null: this is a NEW conversation, so it is a new run, and a
   // new run gets a fresh auto-resume budget. Carrying the old count
   // forward would let one relaunched step inherit a spent budget.
-  await setStepRunAction(workspaceId, step.id, "running", sessionId, null, conversationId, cwd, 0);
+  //
+  // The `until` kind is the exception, and it has to be: the same field
+  // holds its LOOP budget (see orchestrationLoop.ts), and a loop re-runs
+  // the check every time round. Zeroing it here would make the budget
+  // unspendable and the loop unbounded. Every path that means "start
+  // over" -- resetRail, retryStep, an exhausted stall -- writes 0
+  // explicitly instead.
+  await setStepRunAction(
+    workspaceId,
+    step.id,
+    "running",
+    sessionId,
+    null,
+    conversationId,
+    cwd,
+    tool.kind === "until" ? null : 0
+  );
   return false;
 }
 
@@ -798,6 +941,10 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   } else {
     prompt = composePlanPrompt(step.cardPath, resolved.paths);
   }
+  // A card step re-run by a loop opens with what failed. Null except on
+  // a retry, and then this is the whole difference between "do the card"
+  // and "the check you have to pass says this".
+  prompt = withRetryPrefix(prompt, await retryNoteFor(workspaceId, rail, stepId));
 
   const agent = resolvedAgentFor(workspaceId);
   const conversationId = conversationIdForLaunch(agent);
@@ -920,11 +1067,115 @@ async function stallStage(workspaceId: string, railId: string, reason: string): 
   await setRailRunAction(workspaceId, railId, "paused", current);
 }
 
-/// Returns whether the tick should run again immediately. Two actions
-/// ask for it, and both change what the scheduler READS rather than only
-/// what it has already decided: executeSwitchBranch moves the refs
-/// snapshot, and a `gavin` tool step finishes inside its own launch --
-/// so the stage's fate was decided before that step was done.
+/// Stall one step, and pause its rail if that rail was advancing.
+///
+/// Rule 5 stops a rail that is ADVANCING. A rail that is idle or paused
+/// has nothing to stop, and the reconciling stalls nextActions issues for
+/// a dead session on such a rail must not relabel a rail nobody started
+/// as "paused".
+async function stallStep(
+  workspaceId: string,
+  orch: Orchestration,
+  stepId: string,
+  reason: string,
+  /// See setStepRunAction: null leaves the persisted count alone, which
+  /// is what every stall but an exhausted loop's wants.
+  resumeAttempts: number | null = null
+): Promise<void> {
+  await setStepRunAction(workspaceId, stepId, "stalled", null, reason, null, null, resumeAttempts);
+  const rail = railOwning(orch, stepId);
+  if (rail && railStateOf(orch, rail.id) === "running") {
+    const current = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
+    await setRailRunAction(workspaceId, rail.id, "paused", current);
+  }
+}
+
+/// Take a re-run card back OUT of the done column, when it is in it.
+///
+/// Rule 1 fires before rule 2: a card step whose card sits in the done
+/// column is marked done on sight, before anything launches it. So a
+/// loop that re-armed such a step would go round its whole budget
+/// without the work ever running again -- the card would be filed done,
+/// the stage would complete, the check would fail, and round again.
+///
+/// The write itself is the one executeLaunch already makes at launch
+/// (spec §3); this is the same statement one beat earlier, because rule
+/// 1 pre-empts the launch that would have made it. And it is true: the
+/// check says this work is not finished.
+///
+/// Only when the card's OWN status says done. A nested task has none --
+/// its column is its parent's -- and writing one would un-nest it, which
+/// is a far bigger edit than the loop is entitled to make.
+async function reopenCardForRerun(workspaceId: string, step: Step): Promise<void> {
+  if (isToolStep(step)) return;
+  const done = doneColumnName(workspaceId);
+  const status = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath)?.plan.status ?? null;
+  if (!done || status === null || slugStatus(status) !== slugStatus(done)) return;
+  try {
+    await backend.setPlanFrontmatterField(step.cardPath, "status", "In Progress");
+    patchPlanField(workspaceId, step.cardPath, "status", "In Progress");
+  } catch {
+    // The step is re-armed either way, and the budget bounds the spin. A
+    // failed status write is not a reason to leave the rail parked on a
+    // check that has just failed.
+  }
+}
+
+/// Send the rail BACK a step: the check failed and there is budget left.
+///
+/// Four writes and their order matters. The card comes out of the done
+/// column first (see above), or rule 1 would file the step done before
+/// rule 2 could launch it. Then the check step goes `pending` carrying
+/// the incremented count -- that pair is what says a loop is in flight,
+/// and it is what the re-armed step's own launch reads to decide whether
+/// to quote the failure in its prompt (retryLogFor). Then the step to
+/// re-run goes `pending`, its own count untouched: a launch zeroes it
+/// anyway, and leaving it alone is what lets two `until` steps in a row
+/// keep their separate budgets. Finally the rail's cursor moves back to
+/// the stage holding it.
+///
+/// The rail stays RUNNING throughout. Spelling this as a stall plus an
+/// advance would have paused it in between (rule 5), which is the one
+/// thing a loop must not do -- a rail that pauses itself every time a
+/// test fails is a rail that never retries anything.
+///
+/// Returns true so the tick runs again: the pass that scheduled this
+/// stopped at the loop-back, so nothing has launched the re-armed step.
+async function executeLoopBack(
+  workspaceId: string,
+  action: Extract<Action, { kind: "loopBack" }>
+): Promise<boolean> {
+  const orch = get(orchestrations)[workspaceId];
+  const rail = orch ? railOwning(orch, action.stepId) : null;
+  if (!orch || !rail) return false;
+  const previous = rail.stages.flatMap((s) => s.steps).find((t) => t.id === action.previousStepId);
+  if (!previous) return false;
+  await reopenCardForRerun(workspaceId, previous);
+  await setStepRunAction(
+    workspaceId,
+    action.stepId,
+    "pending",
+    null,
+    null,
+    null,
+    null,
+    action.attempt
+  );
+  await setStepRunAction(workspaceId, action.previousStepId, "pending", null, null);
+  const stageId = stageIdOfStep(rail, action.previousStepId);
+  // No stage means the plan changed under the loop. Leaving the cursor
+  // where it is beats pointing it at nothing, which nextActions reads as
+  // "this rail is complete".
+  if (stageId) await setRailRunAction(workspaceId, rail.id, "running", stageId);
+  return true;
+}
+
+/// Returns whether the tick should run again immediately. Three actions
+/// ask for it, and all three change what the scheduler READS rather than
+/// only what it has already decided: executeSwitchBranch moves the refs
+/// snapshot, a `gavin` tool step finishes inside its own launch -- so the
+/// stage's fate was decided before that step was done -- and a loop-back
+/// re-points the rail at a stage the pass had already walked past.
 export async function executeActions(workspaceId: string, actions: Action[]): Promise<boolean> {
   let again = false;
   for (const action of actions) {
@@ -950,16 +1201,30 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       // its transcript stays reachable from the chip.
       await setStepRunAction(workspaceId, action.stepId, "done", sessionId, null);
     } else if (action.kind === "stall") {
-      await setStepRunAction(workspaceId, action.stepId, "stalled", null, action.reason);
-      const rail = railOwning(orch, action.stepId);
-      // Rule 5 stops a rail that is ADVANCING. A rail that is idle or
-      // paused has nothing to stop, and the reconciling stalls nextActions
-      // now issues for a dead session on such a rail must not relabel a
-      // rail nobody started as "paused".
-      if (rail && railStateOf(orch, rail.id) === "running") {
-        const current = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
-        await setRailRunAction(workspaceId, rail.id, "paused", current);
-      }
+      await stallStep(workspaceId, orch, action.stepId, action.reason);
+    } else if (action.kind === "loopExhausted") {
+      // The reason has to QUOTE the check, and the check's output is on
+      // disk rather than in the plan -- which is the only reason this is
+      // an action of its own rather than the `stall` above.
+      //
+      // The budget is zeroed as it stalls: rule 2 retries a stalled step
+      // when the run reaches it again, and a spent count would make every
+      // later Resume run the check exactly once and give up.
+      //
+      // A `pr` step carries its own note: that verdict was reached by
+      // reading GitHub, so what failed is already in hand and there is
+      // no log on disk to go and find.
+      await stallStep(
+        workspaceId,
+        orch,
+        action.stepId,
+        action.note !== undefined
+          ? prExhaustedReason(action.max, action.note)
+          : exhaustedReason(action.max, await readCheckLog(action.stepId)),
+        0
+      );
+    } else if (action.kind === "loopBack") {
+      again = (await executeLoopBack(workspaceId, action)) || again;
     } else if (action.kind === "switchBranch") {
       again =
         (await executeSwitchBranch(workspaceId, action.railId, action.path, action.branch)) || again;
@@ -1042,6 +1307,23 @@ async function runTick(workspaceId: string): Promise<boolean> {
   // which rule 3b reads as a finished turn. Without this the rail
   // advances on work that never happened. See nextActions rule 3d.
   const failureReasons = new Map(Object.entries(get(layoutState).failureReasonById));
+  // Say that the rails still care, before reading. A `pr` step's poll is
+  // demand-driven (prState.ts) precisely so a workspace with nothing
+  // waiting spends nothing -- and this is the half that keeps a rail
+  // waiting on CI polling while the human is on another tab, which is
+  // the whole point of a rail that runs unattended.
+  //
+  // Every rail carrying a pr step at all, not only one whose step is
+  // already running: the report has to be warm by the time the step
+  // launches, or its first tick waits a poll cycle for its own answer.
+  const kinds = tools ? new Map(tools.map((t) => [t.id, t.kind])) : null;
+  for (const rail of orch.rails) {
+    if (!rail.branch) continue;
+    const wants = rail.stages.some((stage) =>
+      stage.steps.some((step) => isPrStep(step, kinds))
+    );
+    if (wants) requestPr(conflictCheckout(rail, tree), rail.branch);
+  }
   return await executeActions(
     workspaceId,
     nextActions(
@@ -1054,7 +1336,9 @@ async function runTick(workspaceId: string): Promise<boolean> {
       get(sessionExits),
       statuses,
       interrupted,
-      failureReasons
+      failureReasons,
+      currentPrReports(),
+      Math.floor(Date.now() / 1000)
     )
   );
 }
@@ -1097,7 +1381,20 @@ function tickInputStores(): Readable<unknown>[] {
   // clock and would tick the scheduler twice a minute forever, while the
   // deduped flag emits exactly twice per pause -- once when starts stop,
   // once when they may resume.
-  return [kanbanState, gavinTrees, gitStore, toolRecords, layoutState, sessionExits, activePaused];
+  // prReports is here for the same reason sessionExits is: it is how a
+  // `pr` step's verdict ARRIVES. Without it a rail waiting on CI would
+  // sit until some unrelated event ticked -- which is exactly the bug
+  // this whole module-level scheduler was written to fix, in a new place.
+  return [
+    kanbanState,
+    gavinTrees,
+    gitStore,
+    toolRecords,
+    layoutState,
+    sessionExits,
+    activePaused,
+    prReports,
+  ];
 }
 
 let stopScheduler: (() => void) | null = null;
@@ -1212,6 +1509,10 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     void tick(workspaceId);
   });
   const stop = startScheduler();
+  // Started beside the scheduler and owned by the same teardown: the
+  // poll behind a `pr` step has to keep running whatever view is
+  // mounted, exactly as the tick does.
+  const stopPolling = startPrPolling();
   // Started here for the reason the scheduler is: it belongs to the app,
   // not to a tab. A Generate that finishes while the human is reading the
   // board still has to release the button, and the record it clears was
@@ -1231,6 +1532,7 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   const stopAutoResume = startAutoResume();
   return () => {
     stop();
+    stopPolling();
     stopAgents();
     stopAutoResume();
     setRailNotificationVoice(null);

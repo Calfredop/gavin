@@ -12,7 +12,26 @@
 /// session and no checkout (tools spec T9). It is built-in-only -- the
 /// library dialog never offers it -- because its body is not source the
 /// human writes, it is the name of the action.
-export type ToolKind = "agent" | "command" | "script" | "gavin";
+///
+/// `until` is built-in-only for a different reason: its body IS a shell
+/// command, but what makes it a kind rather than a `command` is its
+/// COMPLETION RULE. A command step passes or stalls; an until step also
+/// sends the rail BACKWARDS, re-running the step before it (see
+/// orchestrationLoop.ts). The kind is where every other completion rule
+/// in the scheduler already lives, so a duplicate of the tool -- or one
+/// a newer gavin ships -- loops for the same reason this one does,
+/// rather than because the scheduler recognised an id.
+///
+/// `pr` is built-in-only for the third reason: it has no body to run at
+/// all. It waits on the pull request for the rail's branch, which gavin
+/// reads with `gh` host-side (pull_request.rs) and the rail header draws
+/// beside it -- one poll, so the chips and the verdict can never be
+/// looking at different pull requests. Its completion rule is the `until`
+/// rule with GitHub in place of a shell: pass, or send the rail back over
+/// the work that failed. A `gavin` tool could not be it -- one of those
+/// resolves inside its own launch and never passes through `running`
+/// (tools spec §8.2), and waiting on CI is nothing but `running`.
+export type ToolKind = "agent" | "command" | "script" | "gavin" | "until" | "pr";
 
 /// Where a tool came from. `builtin` is read-only -- the library dialog
 /// offers Duplicate instead of Edit. Derived from the wire's
@@ -63,7 +82,11 @@ export function toolKindLabel(kind: ToolKind): string {
       ? "Bash command"
       : kind === "gavin"
         ? "Gavin action"
-        : "Bash script";
+        : kind === "until"
+          ? "Loop until"
+          : kind === "pr"
+            ? "Wait on a pull request"
+            : "Bash script";
 }
 
 /// The actions a `gavin` tool can name. The body is the selector rather
@@ -87,14 +110,20 @@ export function isBuiltinId(id: string): boolean {
 }
 
 // ---- The built-in set ------------------------------------------------------
-// Twelve tools covering every example the card named, and demonstrating
-// all three authorable kinds. Data, not code: nothing about running the
-// first eleven is special.
+// Fourteen tools covering every example the card named, and
+// demonstrating all three authorable kinds. Data, not code: nothing
+// about running the first eleven is special.
 //
-// The twelfth, Start rail, is the exception the `gavin` kind exists for:
-// arming another rail is not a shell command and not a prompt, it is
-// something only this app can do. Its body still names the action rather
-// than hiding it in a branch on the id.
+// Three are not like the others, and all three are built-in-only because
+// their bodies are not source a human writes in a text box. Start rail is
+// the `gavin` kind: arming another rail is not a shell command and not a
+// prompt, it is something only this app can do, and its body names the
+// action rather than hiding it in a branch on the id. Loop until a check
+// passes is the `until` kind: its body IS a shell command, but its
+// verdict can send the rail backwards, and that is a completion rule
+// rather than a body. Wait for the pull request is the `pr` kind, which
+// has no body to run at all -- gavin reads GitHub itself, and the step is
+// over when the pull request says so.
 //
 // Merge ships TWICE, once per direction, because a step always runs in
 // the rail's own checkout and only the inbound direction is reachable
@@ -203,6 +232,44 @@ export const BUILTIN_TOOLS: Tool[] = [
     scope: "builtin",
     params: [{ name: "command", label: "Test command", default: "npm test" }],
     body: "{{command}}",
+  },
+  {
+    id: "builtin:until",
+    name: "Loop until a check passes",
+    description:
+      "Runs a check; while it fails, sends the rail back to re-run the step before this one, " +
+      "up to the attempt budget. An agent step is retried with the check's output in its prompt.",
+    kind: "until",
+    scope: "builtin",
+    params: [
+      { name: "check", label: "Check command", default: "npm test" },
+      { name: "max", label: "Retries", default: "5" },
+    ],
+    // Only `check` appears here. `max` is read as an ARGUMENT by the
+    // scheduler (untilMax), the way the Start rail tool reads `rail` --
+    // pasting a number into the command line would be meaningless.
+    body: "{{check}}",
+  },
+  {
+    id: "builtin:await-pr",
+    name: "Wait for the pull request",
+    description:
+      "Waits on the pull request for this rail's branch — CI, and optionally an approval. " +
+      "A failing check sends the rail back to re-run the step before this one. Never merges.",
+    kind: "pr",
+    scope: "builtin",
+    params: [
+      // Free text on purpose (prRequirement reads it loosely): the
+      // dialog has one field shape, and "checks and approval" is what a
+      // human types when asked what to wait for.
+      { name: "require", label: "Wait for (checks / approval)", default: "checks" },
+      { name: "max", label: "Retries", default: "3" },
+    ],
+    // Nothing to substitute: the branch comes from the rail's binding
+    // and the pull request from GitHub. The body still says what the
+    // step does, so a plan read on paper is legible -- the same reason
+    // `builtin:start-rail`'s body names its action.
+    body: "await-pr",
   },
   {
     id: "builtin:unity-tests",
