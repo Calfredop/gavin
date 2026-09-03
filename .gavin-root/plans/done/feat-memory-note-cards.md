@@ -2,7 +2,7 @@
 order: 7168
 kind: task
 title: Proposed memories as note cards
-status: To Do
+status: Done
 priority: medium
 ---
 Let an agent propose a durable fact about the repo as a note card, and let the human adopt it into the workspace instructions file with one action.

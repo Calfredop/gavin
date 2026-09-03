@@ -2,7 +2,7 @@
 order: 6144
 kind: task
 title: Loop-until rail step
-status: To Do
+status: Done
 priority: medium
 ---
 Add a `builtin:until` orchestration tool: a rail step that re-runs the step before it until a check command exits 0, or an iteration budget runs out.

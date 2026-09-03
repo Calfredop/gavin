@@ -2,7 +2,7 @@
 order: 12288
 kind: task
 title: Stale worktree sweep
-status: To Do
+status: Done
 priority: medium
 ---
 Give the Git tab's worktrees section a "Sweep stale" action that lists worktrees Gavin no longer needs and removes them after one confirmation.

@@ -2,7 +2,7 @@
 order: 3072
 kind: task
 title: Attention inbox on the hub
-status: To Do
+status: Done
 priority: medium
 ---
 Add one cross-workspace list of every session that is waiting on a human, ordered by how long it has waited, to the app hub.
