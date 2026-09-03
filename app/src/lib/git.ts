@@ -43,6 +43,32 @@ export interface FileDiff {
   hunks: Hunk[];
 }
 
+/// What one agent run changed, against the commit its checkout was on
+/// when the run started (`app/src-tauri/src/git/runchanges.rs`).
+///
+/// `notARepo` and `baseMissing` are answers rather than errors: both are
+/// ordinary states with words of their own in the view, and neither is
+/// worth a red strip.
+export interface RunChanges {
+  baseSha: string;
+  notARepo: boolean;
+  baseMissing: boolean;
+  root: string | null;
+  baseSubject: string | null;
+  /// Tracked changes against the baseline, then untracked files as `?`.
+  files: FileEntry[];
+  added: number;
+  removed: number;
+  /// Commits on HEAD the baseline does not have -- what a discard drops.
+  commits: number;
+}
+
+export interface DiscardReport {
+  trashed: string[];
+  /// `[path, reason]` for everything that did not go to the Trash.
+  failed: [string, string][];
+}
+
 export interface Author {
   name: string;
   email: string;

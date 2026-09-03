@@ -47,6 +47,8 @@ vi.mock("./layoutState", () => ({
   // Null by default: no conversation id unless a test asks for one, which
   // is what an unverified profile OR a pre-v21 daemon looks like.
   conversationIdForLaunch: vi.fn(() => null as string | null),
+  // Same default for the run baseline: absent unless a test asks.
+  baseShaForLaunch: vi.fn(async () => null as string | null),
   createSessionOnPage: vi.fn(),
   createPage: vi.fn().mockResolvedValue(null),
   // The card-attachment run gate resolves relative paths against the
@@ -67,6 +69,11 @@ vi.mock("./layoutState", () => ({
 vi.mock("./kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
+  // The real lookup rather than a stub: a resume READS the binding it is
+  // about to rewrite (for the baseline it must carry, not re-resolve),
+  // and a stub returning nothing would make that carrying untestable.
+  cardSessionFor: (board: { cardSessions?: { path: string }[] } | undefined, path: string) =>
+    board?.cardSessions?.find((cs) => cs.path === path),
 }));
 // /x/a.md's `attachments:` line, settable per test: every OTHER launch
 // test in this file must keep launching without the attachment gate
@@ -1203,9 +1210,42 @@ describe("executeActions", () => {
       // would need, and unlike `cwd` it never drifts.
       conversationId: null,
       launchCwd: "/x/wt",
+      // The commit the rail's checkout was on before the step ran. Null
+      // here for the same reason as the id above: the mocked launch
+      // resolves none (no repo, or a daemon too old to keep it).
+      baseSha: null,
     });
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/x/a.md", "status", "In Progress");
+  });
+
+  /// A rail step is a card run like any other, so it records the same
+  /// baseline -- resolved in the RAIL's checkout, which is what makes a
+  /// per-run diff worth having at all: several rails edit several
+  /// worktrees at once and the workspace Git tab shows one of them.
+  it("a launch records the baseline of the rail's own checkout, before the session", async () => {
+    const BASE = "4444444444444444444444444444444444444444";
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.baseShaForLaunch).mockResolvedValue(BASE);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(layoutStateModule.baseShaForLaunch).toHaveBeenCalledWith("/x/wt");
+    // Before the agent exists: a sha resolved afterwards would already
+    // carry whatever it had done by then.
+    expect(vi.mocked(layoutStateModule.baseShaForLaunch).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(layoutStateModule.createSessionOnPage).mock.invocationCallOrder[0]
+    );
+    expect(kanbanStateModule.linkCardSessionAction).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ baseSha: BASE })
+    );
   });
 });
 

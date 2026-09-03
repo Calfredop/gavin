@@ -17,9 +17,12 @@
     terminalFontSize,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
-  import { kanbanState, fetchBoard } from "./kanbanState";
+  import { kanbanState, cardSessionFor, fetchBoard } from "./kanbanState";
   import { orchestrations, fetchOrchestration } from "./orchestrationState";
   import { linkedCardFor, openLinkedCard, type LinkedCard } from "./cardTabLink";
+  import { cardSessionState } from "./columnRunAction";
+  import { chipTooltip, runBaseline } from "./runChanges";
+  import RunChangesModal from "./RunChangesModal.svelte";
   import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
   import { restoredBadge, type RestoredBadge } from "./orphan";
@@ -28,7 +31,7 @@
   import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
-  import { X, Plus, Kanban, Pin, SquareArrowOutUpRight } from "@lucide/svelte";
+  import { X, Plus, Kanban, Pin, SquareArrowOutUpRight, FileDiff } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
@@ -145,6 +148,48 @@
     if (!ws) return null;
     return linkedCardFor($kanbanState[ws.id], $orchestrations[ws.id], $gavinTrees[ws.id], sessionId);
   }
+
+  // The same reverse lookup, one step further: the binding this tab's
+  // agent runs under, and the commit its checkout was on when it
+  // started. Null for a run with no baseline -- an older daemon, a
+  // launch outside a repository -- because a chip is a glyph with no
+  // room to explain itself. The card detail modal is where the reason
+  // is said; this only appears when there is something to open.
+  //
+  // Deliberately fetches NOTHING. A count on the chip would be a `git
+  // diff` per tab per render, across every pane in the window.
+  function runChangesFor(sessionId: string): {
+    path: string;
+    title: string;
+    cwd: string;
+    baseSha: string;
+    live: boolean;
+  } | null {
+    const link = linkedCard(sessionId);
+    if (!link) return null;
+    const ws = getActiveWorkspace($layoutState);
+    if (!ws) return null;
+    const binding = cardSessionFor($kanbanState[ws.id], link.path);
+    const baseline = runBaseline(binding, $daemonCompat);
+    if (baseline.kind !== "ready") return null;
+    return {
+      path: link.path,
+      title: link.title,
+      cwd: baseline.cwd,
+      baseSha: baseline.baseSha,
+      live: cardSessionState($layoutState, binding) === "live",
+    };
+  }
+
+  /// The tab whose Changes modal is open, if any. One at a time: it is
+  /// opened from a tab click and closed from its own header.
+  let changesFor = $state<{
+    path: string;
+    title: string;
+    cwd: string;
+    baseSha: string;
+    live: boolean;
+  } | null>(null);
 
   // The card link reads two things a terminal page never loads on its
   // own: the board (which holds the card bindings) and the orchestration
@@ -464,6 +509,20 @@
             <SquareArrowOutUpRight size={11} />
           </span>
         {/if}
+        {#if runChangesFor(sessionId)}
+          {@const run = runChangesFor(sessionId)}
+          <span
+            class="card-link"
+            aria-label="See what this run changed"
+            use:tooltip={run ? chipTooltip(run.baseSha) : undefined}
+            onclick={(e) => {
+              e.stopPropagation();
+              changesFor = run;
+            }}
+          >
+            <FileDiff size={11} />
+          </span>
+        {/if}
         <!-- `restored` still decides whether the badge is THERE, exactly
              as it always did: it is a note about the screen, and typing
              into the tab dismisses it (clearRestoredMarker). `interrupted`
@@ -572,6 +631,21 @@
     {/each}
   </div>
 </div>
+
+<!-- Opened from a tab chip, so it lives here rather than in the hub:
+     the human is looking at the agent, and the answer to "what has it
+     actually done to my checkout" should not require finding its card
+     first. -->
+{#if changesFor}
+  <RunChangesModal
+    path={changesFor.path}
+    title={changesFor.title}
+    cwd={changesFor.cwd}
+    baseSha={changesFor.baseSha}
+    sessionIsLive={changesFor.live}
+    onClose={() => (changesFor = null)}
+  />
+{/if}
 
 <style>
   .pane-wrapper {

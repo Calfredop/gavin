@@ -26,6 +26,35 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// `FEATURE_MIN_VERSION` entry is owed: the app never sends it (it has a
 /// workspace id already) and gavin-mcp fails closed on skew.
 ///
+/// v27 gave a card a RUN HISTORY: a `CardRun` per session it was ever
+/// bound to, and `Request::CardRuns` to read them back. The daemon
+/// already knew every run -- it just kept exactly one, because
+/// `card_sessions` is upserted by `(workspace_id, path)` and the next
+/// launch overwrote the last. The rows are opened and closed by the
+/// daemon itself, off the `LinkCardSession`/`UnlinkCardSession` it
+/// already receives and the session exit it already reports, so nothing
+/// new is asked of a caller.
+///
+/// A new request TYPE, so `min_version_for` is the real gate; the app
+/// mirrors it as FEATURE_MIN_VERSION.runHistory only so the panel can
+/// say WHY it is empty, which is a different sentence from "this card
+/// has never been run".
+///
+/// v26 gave a card run a BASELINE: `CardSession.base_sha`, the commit its
+/// checkout sat on the instant the agent was launched, carried on the
+/// widened `Request::LinkCardSession`. It is what makes "what did this
+/// run change" answerable at all -- the sha cannot be recovered
+/// afterwards, because moving HEAD and dirtying the tree is the first
+/// thing an agent does -- and it is what "discard this run" resets to.
+///
+/// A widening of an EXISTING request, so `min_version_for` gates it by
+/// TYPE and is structurally blind to it: a v25 daemon parses the launch
+/// perfectly well and drops the sha, which would leave a Changes button
+/// diffing against nothing. The gate that matters is the app's
+/// FEATURE_MIN_VERSION.runChanges, whose consumer is the LAUNCH --
+/// `baseShaForLaunch` does not even ask git for a sha it knows cannot be
+/// persisted.
+///
 /// v25 added `Request::SessionProcesses`: one sample of what each live
 /// session is costing, as a cumulative CPU counter, a resident-memory
 /// total and the instant they were read. A new request variant, so
@@ -396,8 +425,21 @@ pub enum Request {
         /// None here means zero rather than "leave it alone".
         #[serde(default)]
         resume_attempts: Option<u32>,
+        /// See `CardSession::base_sha` -- the commit this run started on
+        /// (v26). `serde(default)` so a pre-v26 caller still links a run,
+        /// and None from a caller that HAS one means the same thing it
+        /// means on the record: this run has no baseline.
+        #[serde(default)]
+        base_sha: Option<String>,
     },
     UnlinkCardSession {
+        workspace_id: String,
+        path: String,
+    },
+    /// Every run this card has had, newest first (v27). Never an error
+    /// for an unknown workspace or an unrun card -- an empty list, which
+    /// is the honest answer for a card nobody has launched.
+    CardRuns {
         workspace_id: String,
         path: String,
     },
@@ -561,6 +603,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::PromoteChecklistItem { .. } | Request::SetChecklistItem { .. } => 4,
 
         Request::LinkCardSession { .. } | Request::UnlinkCardSession { .. } => 5,
+
+        // A card's run history. A new request TYPE, so this match is the
+        // real gate: against an older daemon it never reaches the wire,
+        // and there would be nothing to read anyway -- no daemon before
+        // 27 kept a run once the next one replaced it. The app mirrors it
+        // as `runHistory` for one reason only, and it is not a silent
+        // drop: an empty panel has to say "this daemon does not keep run
+        // history" rather than "this card has never been run".
+        Request::CardRuns { .. } => 27,
 
         // Arming a rail from gavin-mcp (`gavin_start_rail`). A new request
         // TYPE, so this match is the whole gate and no daemonCompat.ts
@@ -802,6 +853,7 @@ pub enum Response {
     /// would retry into both.
     SessionFailed { id: String, reason: String },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
+    CardRuns { runs: Vec<CardRun> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
         rails: Vec<Rail>,
@@ -1042,6 +1094,75 @@ pub struct CardSession {
     /// card-run half of `StepRun::resume_attempts`, persisted for the
     /// same reason: the budget has to outlive the reload.
     #[serde(default)]
+    pub resume_attempts: Option<u32>,
+    /// The commit this run's checkout was on when the agent started
+    /// (v26) -- the baseline the "Changes" view diffs against and the
+    /// commit "discard this run" resets to.
+    ///
+    /// Recorded at launch because it is unrecoverable later: an agent's
+    /// first minutes move HEAD and dirty the tree, and no amount of
+    /// looking afterwards says where it began. None is the honest answer
+    /// for a run launched outside a repository, on an unborn HEAD, or
+    /// against a daemon too old to store it -- and every surface reads
+    /// None as "no baseline", never as "no changes".
+    #[serde(default)]
+    pub base_sha: Option<String>,
+}
+
+/// One run of a card: the whole life of ONE session that was bound to
+/// it (v27). `card_sessions` keeps the live binding and nothing else --
+/// it is upserted by `(workspace_id, path)`, so every previous run was
+/// overwritten by the next launch. This is that history, kept.
+///
+/// A run is a SESSION, not a conversation. A session id always exists,
+/// it is what the daemon already thinks in, and it is what a human can
+/// jump to. A *resume* launches a new session carrying the previous
+/// run's `conversation_id`, so consecutive rows sharing one are a chain
+/// the reader can present as such -- a judgement the daemon deliberately
+/// does not make, because it would have to guess where a chain ends.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardRun {
+    /// Row id, ascending with time. The tiebreaker for two runs opened
+    /// in the same second, which a relaunch genuinely can be.
+    pub id: i64,
+    pub path: String,
+    pub session_id: String,
+    pub command: Option<String>,
+    /// The agent CLI's own id for this run's conversation, when the
+    /// profile has one. Both the key the token totals are read by (the
+    /// CLI names its own log after it) and what makes two rows a resume
+    /// chain.
+    pub conversation_id: Option<String>,
+    pub launch_cwd: Option<String>,
+    /// The commit this run started on -- `CardSession::base_sha`, kept
+    /// per run so the Changes view can be offered for a PAST run and not
+    /// only the live one.
+    pub base_sha: Option<String>,
+    /// Wall-clock epoch seconds. The registry cannot supply these: its
+    /// `started_at_us` is a process start time used as a pid-reuse
+    /// guard, not a clock anyone can subtract.
+    pub started_at: i64,
+    /// None while the run is open, and ALSO for a run the daemon never
+    /// saw end (`outcome` says which). Never a stand-in for "now".
+    pub ended_at: Option<i64>,
+    /// The session's exit code, when the daemon watched it exit.
+    pub exit_code: Option<i32>,
+    /// How the run ended, and never absent:
+    ///
+    ///  - `running`   -- open, and this daemon is hosting it
+    ///  - `exited`    -- the session ended; `exit_code` says how
+    ///  - `replaced`  -- a newer run took the card's binding
+    ///  - `unlinked`  -- the binding was removed (unlink, delete, archive)
+    ///  - `abandoned` -- it ended and nobody was watching: the daemon
+    ///    that opened the row went away, or the session ended with
+    ///    nothing attached to notice. `ended_at` stays None rather than
+    ///    being back-filled with the time somebody LOOKED, which is a
+    ///    different fact from the time it stopped.
+    pub outcome: String,
+    /// Unattended auto-resumes WITHIN this session, as of its last link
+    /// (see `CardSession::resume_attempts`). Not the number of times the
+    /// run was resumed INTO a new session -- that is the chain above.
     pub resume_attempts: Option<u32>,
 }
 
@@ -2143,6 +2264,15 @@ mod tests {
         // SetPlanFrontmatterField key, and CreatePlan.attachments. No
         // new variant, which is exactly why daemonCompat.ts owes it a
         // FEATURE_MIN_VERSION entry with real consumers.
+        // v27: CardRun + Request::CardRuns -- a card's run history, kept
+        // by the daemon off the links and exits it already sees. A new
+        // request TYPE, so this match IS its gate; daemonCompat.ts's
+        // `runHistory` exists only so an empty panel can name the reason.
+        // v26: CardSession.base_sha and the widened LinkCardSession --
+        // the commit a card run started on, which is what the Changes
+        // view diffs against and what "discard this run" resets to. No
+        // new variant: another widening this match cannot see, so
+        // daemonCompat.ts's `runChanges` is its only gate.
         // v21: Request::SetFailurePatterns -- the agent profile's own
         // error text, matched against the daemon's RENDERED screen so a
         // broken agent stops reading as a finished one. A new request
@@ -2360,8 +2490,10 @@ mod tests {
                 conversation_id: None,
                 launch_cwd: None,
                 resume_attempts: None,
+                base_sha: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
+            Request::CardRuns { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
@@ -2440,7 +2572,7 @@ mod tests {
     /// v11=4, v12=1 (Shutdown), v13=2 (the archive), v15=3 (group
     /// templates), v18=1 (Snapshot), v21=1 (SetFailurePatterns), v23=1
     /// (ClaimCardForSession), v24=1 (EndOrphan), v25=1 (SessionProcesses),
-    /// v28=1 (SetRailRunByRoot), plus Unknown.
+    /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -2467,6 +2599,7 @@ mod tests {
         expected.insert(23, 1);
         expected.insert(24, 1);
         expected.insert(25, 1);
+        expected.insert(27, 1);
         expected.insert(28, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
@@ -2476,6 +2609,57 @@ mod tests {
              Request variant, make sure you also considered whether \
              PROTOCOL_VERSION needs bumping (see this test's doc comment)"
         );
+    }
+
+    /// The run history crosses to the frontend, so its field names are
+    /// part of the wire the same way `CardSession`'s are -- and unlike
+    /// that one, three of its fields carry a MEANING in their absence
+    /// (`endedAt` on an open run, `exitCode` on one nobody watched
+    /// finish, `conversationId` on a profile with no id), so the nulls
+    /// are asserted rather than left to a `skip_serializing_if` nobody
+    /// noticed had been added.
+    #[test]
+    fn card_run_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let run = CardRun {
+            id: 7,
+            path: "/p/t.md".to_string(),
+            session_id: "s-1".to_string(),
+            command: Some("claude 'x'".to_string()),
+            conversation_id: None,
+            launch_cwd: Some("/p/worktrees/a".to_string()),
+            base_sha: Some("f75db30f75db30f75db30f75db30f75db30f75db".to_string()),
+            started_at: 1_756_900_000,
+            ended_at: None,
+            exit_code: None,
+            outcome: "running".to_string(),
+            resume_attempts: Some(2),
+        };
+        assert_eq!(
+            serde_json::to_value(&run).unwrap(),
+            serde_json::json!({ "id": 7, "path": "/p/t.md", "sessionId": "s-1",
+                                "command": "claude 'x'", "conversationId": null,
+                                "launchCwd": "/p/worktrees/a",
+                                "baseSha": "f75db30f75db30f75db30f75db30f75db30f75db",
+                                "startedAt": 1_756_900_000, "endedAt": null,
+                                "exitCode": null, "outcome": "running",
+                                "resumeAttempts": 2 })
+        );
+
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::CardRuns {
+            workspace_id: "ws".to_string(),
+            path: "/p/t.md".to_string(),
+        }).unwrap();
+        write_message(&mut buf, &Response::CardRuns { runs: vec![run.clone()] }).unwrap();
+        let mut reader = &buf[..];
+        match read_message::<_, Request>(&mut reader).unwrap().unwrap() {
+            Request::CardRuns { path, .. } => assert_eq!(path, "/p/t.md"),
+            other => panic!("expected CardRuns, got {other:?}"),
+        }
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::CardRuns { runs } => assert_eq!(runs, vec![run]),
+            other => panic!("expected CardRuns, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2488,12 +2672,14 @@ mod tests {
             conversation_id: Some("conv-1".to_string()),
             launch_cwd: Some("/p/worktrees/a".to_string()),
             resume_attempts: Some(1),
+            base_sha: Some("f75db30f75db30f75db30f75db30f75db30f75db".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&cs).unwrap(),
             serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p", "command": null,
                                 "conversationId": "conv-1", "launchCwd": "/p/worktrees/a",
-                                "resumeAttempts": 1 })
+                                "resumeAttempts": 1,
+                                "baseSha": "f75db30f75db30f75db30f75db30f75db30f75db" })
         );
         let mut buf = Vec::new();
         write_message(&mut buf, &Request::LinkCardSession {
@@ -2505,6 +2691,7 @@ mod tests {
             conversation_id: None,
             launch_cwd: None,
             resume_attempts: None,
+            base_sha: None,
         }).unwrap();
         write_message(&mut buf, &Request::UnlinkCardSession {
             workspace_id: "ws".to_string(),

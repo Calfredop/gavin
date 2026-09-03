@@ -68,13 +68,14 @@ import type { Tool } from "./orchestrationTools";
 import { stepsFromTemplate } from "./orchestrationGroups";
 import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
-import { kanbanState, linkCardSessionAction } from "./kanbanState";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore, refresh as refreshGit } from "./gitState";
 import {
   layoutState,
   resolvedAgentFor,
   armFailureDetection,
+  baseShaForLaunch,
   conversationIdForLaunch,
   createSessionOnPage,
   createPage,
@@ -554,6 +555,10 @@ export async function resumeStep(
       conversationId: run.conversationId ?? null,
       launchCwd: cwd,
       resumeAttempts: options.automatic ? (run.resumeAttempts ?? 0) + 1 : (run.resumeAttempts ?? null),
+      // Carried, never re-resolved: this is the same run continuing, and
+      // a baseline moved to the resume's HEAD would credit everything
+      // the first attempt did to nobody.
+      baseSha: cardSessionFor(get(kanbanState)[workspaceId], step.cardPath)?.baseSha ?? null,
     });
   }
 
@@ -814,6 +819,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
   const cwd = rail.worktreePath ?? entry.contextFolder;
+  const baseSha = await baseShaForLaunch(cwd);
   const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
@@ -841,6 +847,10 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     command,
     conversationId,
     launchCwd: cwd,
+    // The rail's checkout as it stood before this step ran. Resolved
+    // above, before the session, for the reason baseShaForLaunch
+    // documents: a step that has started cannot be asked where it began.
+    baseSha,
   });
   // See executeToolLaunch: a fresh conversation is a fresh budget.
   await setStepRunAction(workspaceId, stepId, "running", sessionId, null, conversationId, cwd, 0);

@@ -1,8 +1,8 @@
 use crate::config::Workspace;
 use crate::layout::LayoutNode;
 use protocol::{
-    read_message, socket_path, write_message, Board, Column, ConflictNote, GroupTemplate, Label,
-    Orchestration, Rail, Request, Response, ToolDef,
+    read_message, socket_path, write_message, Board, CardRun, Column, ConflictNote, GroupTemplate,
+    Label, Orchestration, Rail, Request, Response, ToolDef,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -3128,6 +3128,34 @@ pub fn get_board(
     get_board_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
+/// A card's run history (v27). Gated by `min_version_for` on the way
+/// out like every other request, so against a daemon older than 27 this
+/// fails with the version message rather than pretending the card has
+/// never been run -- which is why the panel reads
+/// `FEATURE_MIN_VERSION.runHistory` before it ever asks.
+fn card_runs_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+    path: String,
+    compat: &DaemonCompat,
+) -> anyhow::Result<Vec<CardRun>> {
+    let resp = send_command_reconnecting(command_conn, compat, &Request::CardRuns { workspace_id, path })?;
+    match resp {
+        Response::CardRuns { runs } => Ok(runs),
+        other => anyhow::bail!("expected CardRuns, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub fn card_runs(
+    workspace_id: String,
+    path: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Vec<CardRun>, String> {
+    card_runs_impl(&state.0, workspace_id, path, &current_compat(&compat)).map_err(|e| e.to_string())
+}
+
 fn set_board_impl(
     command_conn: &Mutex<UnixStream>,
     workspace_id: String,
@@ -3780,6 +3808,7 @@ pub fn link_card_session(
     conversation_id: Option<String>,
     launch_cwd: Option<String>,
     resume_attempts: Option<u32>,
+    base_sha: Option<String>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
@@ -3795,6 +3824,7 @@ pub fn link_card_session(
             conversation_id,
             launch_cwd,
             resume_attempts,
+            base_sha,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -4377,6 +4407,7 @@ mod gate_tests {
                 conversation_id: None,
                 launch_cwd: None,
                 resume_attempts: None,
+                base_sha: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
@@ -4464,6 +4495,49 @@ mod kanban_command_tests {
     use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with, parity_compat};
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn card_runs_impl_returns_the_cards_runs_newest_first() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::CardRuns {
+            runs: vec![
+                CardRun {
+                    id: 2,
+                    path: "/p/t.md".to_string(),
+                    session_id: "s-2".to_string(),
+                    command: Some("claude".to_string()),
+                    conversation_id: Some("conv-2".to_string()),
+                    launch_cwd: None,
+                    base_sha: None,
+                    started_at: 20,
+                    ended_at: None,
+                    exit_code: None,
+                    outcome: "running".to_string(),
+                    resume_attempts: None,
+                },
+                CardRun {
+                    id: 1,
+                    path: "/p/t.md".to_string(),
+                    session_id: "s-1".to_string(),
+                    command: None,
+                    conversation_id: None,
+                    launch_cwd: None,
+                    base_sha: None,
+                    started_at: 10,
+                    ended_at: Some(15),
+                    exit_code: Some(0),
+                    outcome: "exited".to_string(),
+                    resume_attempts: None,
+                },
+            ],
+        }]);
+        let conn = Mutex::new(client);
+
+        let runs = card_runs_impl(&conn, "ws-1".to_string(), "/p/t.md".to_string(), &parity_compat()).unwrap();
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].session_id, "s-2");
+        assert_eq!(runs[1].outcome, "exited");
+    }
 
     #[test]
     fn get_board_impl_returns_the_boards_columns_and_labels() {

@@ -93,6 +93,43 @@ pub fn resolve_repo_root(cwd: &str) -> Option<String> {
     Some(root.to_string())
 }
 
+/// The commit `cwd`'s checkout is on right now, or `None` when `cwd` is
+/// in no repository, HEAD is unborn, or git cannot be run -- the same
+/// silent-degradation convention as `resolve_repo_root` above.
+///
+/// The daemon's one baseline resolver, and it exists for exactly one
+/// caller: a card CLAIM (`claim_card_for_session`), where an agent binds
+/// itself to a card gavin never launched. Every gavin-launched run gets
+/// its baseline from the app, which knows the launch directory before
+/// there is a session at all; a claim is the case where nobody else was
+/// there to look.
+///
+/// `--verify` and `-q` rather than a bare `rev-parse HEAD`: on an unborn
+/// HEAD a bare one prints the literal string "HEAD" and exits non-zero,
+/// and a bare one in a non-repo prints git's error to stdout on some
+/// versions. Both would otherwise be recorded as a sha.
+pub fn head_sha(cwd: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "-q", "HEAD"])
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(output.stdout).ok()?;
+    let sha = sha.trim();
+    // Length-checked rather than trusted: this value is handed to
+    // `git reset --hard` later on, and the one thing that must never
+    // reach that is a string git resolves to something else.
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(sha.to_string())
+}
+
 /// Runs `git --no-optional-locks status --porcelain=v2 --branch` in
 /// `repo_root`, parses the result, and returns it -- or `None` if git
 /// fails to spawn, exits non-zero, times out, or produces output
