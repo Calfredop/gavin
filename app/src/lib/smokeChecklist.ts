@@ -1518,6 +1518,31 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Against a daemon older than v23, the list still shows every session and still kills them — the two figure columns say why they are empty instead of reading 0",
         hint: "ListSessions has been in the protocol since v1, so jumping and killing work all the way down. Blank cells would read as “this session is using nothing”, which is a measurement nobody took.",
       },
+      {
+        id: "tasks-restart-asks-with-this-list",
+        text: "With several terminals open, press “Restart daemon…”: ONE in-app confirmation counts the sessions in THIS list (“All 7 sessions…”), names how many no tab is showing, and Enter does NOT fire the red button",
+        hint: "Settings can only say “every terminal session”; this panel knows the number, and a number the human can check against the rows behind the dialog is how they tell a quiet restart from an expensive one.",
+      },
+      {
+        id: "tasks-restart-cancel-changes-nothing",
+        text: "Cancel that prompt: the button never says “Restarting…”, the figures keep updating every two seconds, and no session moves",
+        hint: "`restarting` both labels the button and stops the poll, so it is set only once the human has said yes. Setting it at the click would put a button reading “Restarting…” behind a dialog still asking whether to.",
+      },
+      {
+        id: "tasks-restart-rebuilds-every-row",
+        text: "Confirm it: the button reads “Restarting…”, no “Couldn’t read the session list” error flashes, and when it returns every row is a plain shell at the same folder with “Daemon restarted at HH:MM” above the grid",
+        hint: "The socket is closed and re-made underneath the panel. The poll is suppressed for the whole restart and any reply already in flight is discarded — otherwise a successful restart reports itself as a failure to read the list.",
+      },
+      {
+        id: "tasks-restart-interrupts-an-agent",
+        text: "Run a card from the board, wait until the agent is clearly working, then restart from this panel: its row comes back as a shell marked “interrupted”, and the card offers Resume rather than starting the prompt over",
+        hint: "The confirmation promises exactly this, and the promise is version-dependent: on a daemon older than v20 the command is RE-RUN from the beginning, and the prompt says so instead (restartStopsAgentsLine, shared with the Settings prompt).",
+      },
+      {
+        id: "tasks-restart-does-not-end-an-orphan",
+        text: "With an orphan present (`trap '' HUP; sleep 900`, then restart once), open the panel and restart again: the prompt warns the surviving process will NOT be ended, and afterwards that row is still orphaned with the same pid",
+        hint: "recover() re-probes a recorded survivor and keeps it when it is still alive. Someone reaching for Restart to be rid of an orphan would be picking the one action that cannot do it, so the prompt says so before they press it.",
+      },
     ],
   },
   {

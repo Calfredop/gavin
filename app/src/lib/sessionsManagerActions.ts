@@ -1,5 +1,5 @@
 // Doing what the task manager offers: jumping to a session, ending one,
-// ending all of them.
+// ending all of them, and restarting the daemon that holds them.
 //
 // The write side of sessionsManager.ts, kept out of that module so the
 // arithmetic and the wording stay a pure, testable projection. Every
@@ -14,12 +14,14 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
+import { restartOutcome, type DaemonCompat } from "./daemonCompat";
 import { askConfirm, showAlert } from "./dialog";
 import {
   handleAgentSessionSpawned,
   handleOrphanEnded,
   handleSessionExited,
   layoutState,
+  restartDaemonInPlace,
   switchToSessionInPage,
   switchWorkspaceView,
 } from "./layoutState";
@@ -30,6 +32,9 @@ import {
   killFailedAlert,
   killPlan,
   refusedOrphanAlert,
+  restartConfirm,
+  restartFailedAlert,
+  restartOutcomeAlert,
   survivorsAlert,
   type KillScope,
   type SessionRow,
@@ -104,6 +109,52 @@ export function endStaleSessions(rows: SessionRow[]): Promise<number> {
 /// Ends the rows the human picked, after asking once with their names.
 export function endSelectedSessions(rows: SessionRow[]): Promise<number> {
   return endBatch(rows, "selected");
+}
+
+/// Restarts gavin-daemon, after asking.
+///
+/// The heaviest thing this panel can do, and the reason it belongs here
+/// rather than only in Settings: the human who has just read a list of
+/// wedged sessions is the one who wants it, and the list they are
+/// looking at IS what the restart costs. So the prompt is built from
+/// those very rows.
+///
+/// `restartDaemonInPlace`, not `backend.restartDaemon`: the Rust side
+/// rewires the live connections and re-arms the gavin root watches, and
+/// the wrapper then re-reads the workspaces the daemon rebuilt on
+/// recovery (every surviving session comes back as a bare shell) and
+/// refreshes the compat verdict. Calling the command directly would
+/// leave the app holding a picture of sessions that no longer exist.
+///
+/// Returns true when the daemon actually came back, so the caller knows
+/// whether to re-read its list. A restart that changed nothing about the
+/// version gap says so through an alert -- `restartOutcome` is the same
+/// verdict the compat banner and Settings report, and this panel has no
+/// banner under the button to render it into.
+///
+/// `onConfirmed` fires once the human has said yes and before the socket
+/// goes away, which is the only moment the panel can act on. It has to
+/// stop polling for the duration -- a poll that lands mid-restart reads
+/// as "couldn't read the session list" -- and it must not start saying
+/// "Restarting…" while a dialog is still asking whether to. Those two
+/// are the same instant, and this is it.
+export async function restartDaemon(
+  rows: SessionRow[],
+  compat: DaemonCompat | null,
+  onConfirmed?: () => void
+): Promise<boolean> {
+  if (!(await askConfirm(restartConfirm(rows, compat)))) return false;
+  onConfirmed?.();
+  const before = compat?.daemonVersion ?? null;
+  let note: string | null;
+  try {
+    note = restartOutcome(before, await restartDaemonInPlace());
+  } catch (e) {
+    await showAlert(restartFailedAlert(e));
+    return false;
+  }
+  if (note) await showAlert(restartOutcomeAlert(note));
+  return true;
 }
 
 /// One confirmation for the batch, matching how every other batch close

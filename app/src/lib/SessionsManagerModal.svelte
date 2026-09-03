@@ -37,6 +37,7 @@
     endSession,
     endStaleSessions,
     jumpToSession,
+    restartDaemon,
   } from "./sessionsManagerActions";
   import Modal from "./Modal.svelte";
   import { tooltip } from "./tooltip";
@@ -65,6 +66,13 @@
   /// human picked has to survive that.
   let selection = $state<Selection>(NO_SELECTION);
   let timer: ReturnType<typeof setInterval> | null = null;
+  /// True only while the daemon is actually away -- set once the human
+  /// has confirmed, not when the button is pressed. It both labels the
+  /// button and stops the poll below.
+  let restarting = $state(false);
+  /// When the last restart from this panel finished, so the human can
+  /// tell a list of fresh shells from a list that never moved.
+  let restartedAt = $state<string | null>(null);
   /// Guards against a slow poll landing after a faster later one, and
   /// against one landing after the panel closed. Identity comparison is
   /// no use under Svelte 5's $state proxies, so this is a counter.
@@ -92,6 +100,12 @@
   const metricsBlocked = $derived(featureBlockedReason($daemonCompat, "sessionMetrics"));
 
   async function poll(): Promise<void> {
+    // Nothing may ask the daemon anything while it is being replaced:
+    // the socket is closed and re-made underneath this panel, and a poll
+    // landing in that window would report the restart as "couldn't read
+    // the session list". The interval keeps firing; this is what makes
+    // those ticks nothing.
+    if (restarting) return;
     const mine = ++epoch;
     let next: ManagedSessions;
     try {
@@ -149,6 +163,41 @@
 
   async function clearStale(): Promise<void> {
     if ((await endStaleSessions(rows)) > 0) await refresh();
+  }
+
+  /// Restarting is the one action here that takes the daemon away, so
+  /// the poll is stopped for as long as it is gone. Both halves of that
+  /// happen in the confirmed callback, never at the click: the flag also
+  /// labels the button, and a button that reads "Restarting…" while a
+  /// dialog is still asking whether to restart is a button that lies.
+  ///
+  /// The epoch bump goes with it, so a reply already in flight is
+  /// discarded rather than surfacing as an error the human would read as
+  /// the restart having failed.
+  ///
+  /// `refresh` afterwards, not `poll`: every session on the other side is
+  /// a brand new process, so the CPU counter this panel was dividing
+  /// against belongs to something that no longer exists. It runs on the
+  /// failure path too -- a restart that went wrong leaves this list
+  /// describing a daemon that may not be there, and the honest thing is
+  /// to go and look.
+  async function restart(): Promise<void> {
+    if (restarting) return;
+    let began = false;
+    try {
+      const restarted = await restartDaemon(rows, $daemonCompat, () => {
+        began = true;
+        epoch += 1;
+        restarting = true;
+        // Dropped up front: a restart that then fails must not leave an
+        // earlier one's timestamp standing as if it described this list.
+        restartedAt = null;
+      });
+      if (restarted) restartedAt = new Date().toLocaleTimeString();
+    } finally {
+      restarting = false;
+    }
+    if (began) await refresh();
   }
 
   async function jump(row: SessionRow): Promise<void> {
@@ -235,10 +284,25 @@
       >
         Kill all…
       </button>
+      <!-- Last and set apart: the three buttons before it act on rows in
+           this list, this one replaces the process that owns every one
+           of them. -->
+      <button
+        type="button"
+        class="danger apart"
+        disabled={restarting}
+        use:tooltip={"Restart gavin-daemon — every session comes back as a fresh shell"}
+        onclick={() => void restart()}
+      >
+        {restarting ? "Restarting…" : "Restart daemon…"}
+      </button>
     </header>
 
     {#if error}
       <p class="problem">Couldn’t read the session list: {error}</p>
+    {/if}
+    {#if restartedAt}
+      <p class="hint">Daemon restarted at {restartedAt}. Every session below is a fresh shell.</p>
     {/if}
     {#if metricsBlocked}
       <p class="hint">{metricsBlocked} Until then the list works, but nothing measures what a session is costing.</p>
@@ -580,5 +644,10 @@
   }
   button.danger:not(:disabled):hover {
     color: var(--danger);
+  }
+  /* The gap says what the grouping says: everything left of it ends
+     sessions in this list, this replaces the process holding them. */
+  .apart {
+    margin-left: 12px;
   }
 </style>

@@ -114,7 +114,7 @@ export const FEATURE_MIN_VERSION = {
   // behaviour: the Restart-daemon confirmation tells the human their
   // agents will be stopped and not restarted. On a v19 daemon that is
   // the opposite of what happens, and it is the one screen where being
-  // wrong costs work. See `restartConfirmLines`.
+  // wrong costs work. See `restartStopsAgentsLine`.
   interruptedRuns: 20,
   // Orphan detection: whether the daemon PROBES the process a killed
   // session named, rather than inferring from its epoch that it must be
@@ -180,8 +180,8 @@ export const FEATURE_MIN_VERSION = {
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
 
-/// What the Restart-daemon confirmation says will happen, which depends
-/// on which daemon is about to be restarted.
+/// The one sentence in a restart confirmation whose truth depends on
+/// which daemon is about to be restarted.
 ///
 /// On v20+ a running agent is stopped and NOT restarted: its command
 /// carries the whole prompt, so re-running it would be a second
@@ -192,14 +192,24 @@ export type Feature = keyof typeof FEATURE_MIN_VERSION;
 /// is the failure this warning exists to describe -- so the copy has to
 /// say that instead. A confirmation that promises the safe behaviour and
 /// then delivers the destructive one is worse than no confirmation.
+///
+/// Exported on its own because two surfaces now offer the restart and
+/// they do not ask with the same list: Settings asks about the daemon in
+/// the abstract, the task manager asks about the sessions it is showing.
+/// Sharing the sentence rather than the array is what keeps the version
+/// warning from being written twice and drifting.
+export function restartStopsAgentsLine(c: DaemonCompat | null): string {
+  return c !== null && c.daemonVersion < FEATURE_MIN_VERSION.interruptedRuns
+    ? `Any agent that is running right now is stopped — and this daemon (v${c.daemonVersion}) will RE-RUN its command from the beginning, in a checkout that already carries its edits. Restart it only if you are willing to have that work repeated.`
+    : "Any agent that is running right now is stopped, and not restarted — its card, rail step or commit run is marked interrupted so you can resume it.";
+}
+
+/// What the Settings panel's Restart-daemon confirmation says will
+/// happen.
 export function restartConfirmLines(c: DaemonCompat | null): string[] {
-  const stopped =
-    c !== null && c.daemonVersion < FEATURE_MIN_VERSION.interruptedRuns
-      ? `Any agent that is running right now is stopped — and this daemon (v${c.daemonVersion}) will RE-RUN its command from the beginning, in a checkout that already carries its edits. Restart it only if you are willing to have that work repeated.`
-      : "Any agent that is running right now is stopped, and not restarted — its card, rail step or commit run is marked interrupted so you can resume it.";
   return [
     "Every terminal session restarts as a fresh shell at its current folder.",
-    stopped,
+    restartStopsAgentsLine(c),
     "Scrollback in open terminals is lost.",
     "The window stays open — plans, boards and git keep working.",
   ];

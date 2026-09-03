@@ -11,6 +11,9 @@ import {
   managerSummary,
   nextSort,
   refusedOrphanAlert,
+  restartConfirm,
+  restartFailedAlert,
+  restartOutcomeAlert,
   selectRow,
   selectedRows,
   selectionHint,
@@ -20,6 +23,7 @@ import {
   type ManagedSession,
   type SessionRow,
 } from "./sessionsManager";
+import { restartOutcome, restartStopsAgentsLine } from "./daemonCompat";
 import type { Workspace } from "./workspace";
 
 const SECOND = 1_000_000;
@@ -363,6 +367,88 @@ describe("confirmations", () => {
   });
 });
 
+describe("the restart confirmation", () => {
+  const V20 = { daemonVersion: 20, appVersion: 20, degraded: false };
+
+  it("counts the sessions on THIS list, which is what the press costs", () => {
+    // Settings can only say "every terminal session"; the panel offering
+    // the restart is the one screen that knows the number, and a number
+    // the human can check against the rows behind the dialog is how they
+    // tell a quiet restart from an expensive one.
+    const rows = rowsFor([session({ id: "a" }), session({ id: "b" }), session({ id: "c" })]);
+    const text = restartConfirm(rows, V20).lines.join(" ");
+    expect(text).toContain("All 3 sessions in this list");
+    expect(text).toContain("fresh shells");
+  });
+
+  it("calls out the sessions no tab is showing", () => {
+    // The hidden ones are why someone opens this panel at all, and they
+    // are the ones whose loss is hardest to notice afterwards.
+    const rows = rowsFor([session({ id: "seen" }), session({ id: "unseen" })], {
+      workspaces: [showing("seen")],
+    } as never);
+    expect(restartConfirm(rows, V20).lines.join(" ")).toContain("1 session no tab is showing");
+  });
+
+  it("says nothing about hidden sessions when every one is on screen", () => {
+    const rows = rowsFor([session({ id: "seen" })], { workspaces: [showing("seen")] } as never);
+    expect(restartConfirm(rows, V20).lines.join(" ")).not.toContain("no tab is showing");
+  });
+
+  it("carries the same version warning the Settings prompt does", () => {
+    // A pre-v20 daemon RE-RUNS every agent command on the way back up
+    // instead of stopping it. Two surfaces now offer the restart, and
+    // this is the sentence that must not exist twice and drift.
+    const rows = rowsFor([session({ command: "claude" })]);
+    const old = { daemonVersion: 19, appVersion: 20, degraded: true };
+    expect(restartConfirm(rows, old).lines).toContain(restartStopsAgentsLine(old));
+    expect(restartConfirm(rows, old).lines.join(" ")).toContain("RE-RUN its command");
+    expect(restartConfirm(rows, V20).lines.join(" ")).toContain("stopped, and not restarted");
+  });
+
+  it("warns that a restart is the one thing that does NOT end an orphan", () => {
+    // recover() re-probes a recorded survivor and keeps it when it is
+    // still alive, so someone reaching for Restart to be rid of these
+    // would be choosing the only action that cannot do it.
+    const rows = rowsFor([
+      session({ id: "a" }),
+      session({ id: "b", orphan: { pid: 4471, command: "claude" } }),
+    ]);
+    const text = restartConfirm(rows, V20).lines.join(" ");
+    expect(text).toContain("does not end the 1 process still running outside gavin");
+  });
+
+  it("leaves the orphan line out when nothing survived", () => {
+    const rows = rowsFor([session()]);
+    expect(restartConfirm(rows, V20).lines.join(" ")).not.toContain("outside gavin");
+  });
+
+  it("still asks when the list is empty, because the daemon still goes", () => {
+    // Restarting with nothing running is the ordinary case -- picking up
+    // a rebuilt binary -- and it must not claim sessions will be lost.
+    const prompt = restartConfirm([], V20);
+    expect(prompt.lines.join(" ")).toContain("no sessions to lose");
+    expect(prompt.lines.join(" ")).not.toContain("in this list");
+  });
+
+  it("is a danger prompt whose button names the verb", () => {
+    // ConfirmPrompt keeps focus on the dismissing button for a danger
+    // choice, so Enter cannot restart the daemon by reflex.
+    const prompt = restartConfirm(rowsFor([session()]), V20);
+    expect(prompt.danger).toBe(true);
+    expect(prompt.confirmLabel).toBe("Restart daemon");
+    expect(prompt.confirmLabel).not.toMatch(/^ok$/i);
+  });
+
+  it("always says the two things a restart costs whatever the daemon is", () => {
+    for (const c of [null, V20, { daemonVersion: 19, appVersion: 20, degraded: true }]) {
+      const text = restartConfirm(rowsFor([session()]), c).lines.join(" ");
+      expect(text).toContain("Scrollback");
+      expect(text).toContain("window stays open");
+    }
+  });
+});
+
 describe("alerts", () => {
   it("names the row that could not be ended, and carries the reason", () => {
     const [row] = rowsFor([session({ command: "claude" })]);
@@ -382,6 +468,20 @@ describe("alerts", () => {
     const alert = survivorsAlert(["stuck", "also stuck"], 5);
     expect(alert.title).toContain("2 of 5");
     expect(alert.lines.join(" ")).toContain("stuck, also stuck");
+  });
+
+  it("carries the reason a restart failed, and says the list is now a guess", () => {
+    const alert = restartFailedAlert(new Error("daemon would not exit"));
+    expect(alert.title).toContain("restart");
+    expect(alert.lines.join(" ")).toContain("daemon would not exit");
+    expect(alert.lines.join(" ")).toContain("Sessions may already be gone");
+  });
+
+  it("repeats restartOutcome's verdict rather than writing a second one", () => {
+    // The panel has no banner under the button to render the note into,
+    // which is the only reason this alert exists.
+    const note = restartOutcome(25, { daemonVersion: 25, appVersion: 26, degraded: true })!;
+    expect(restartOutcomeAlert(note).lines).toEqual([note]);
   });
 });
 

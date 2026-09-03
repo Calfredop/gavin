@@ -18,6 +18,7 @@ vi.mock("./layoutState", () => ({
   handleAgentSessionSpawned: vi.fn(),
   handleOrphanEnded: vi.fn(),
   handleSessionExited: vi.fn(),
+  restartDaemonInPlace: vi.fn(),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
 }));
@@ -29,6 +30,7 @@ import {
   handleOrphanEnded,
   handleSessionExited,
   layoutState,
+  restartDaemonInPlace,
   switchToSessionInPage,
   switchWorkspaceView,
 } from "./layoutState";
@@ -38,6 +40,7 @@ import {
   endSession,
   endStaleSessions,
   jumpToSession,
+  restartDaemon,
 } from "./sessionsManagerActions";
 import type { KillAlert, KillPrompt, SessionRow } from "./sessionsManager";
 
@@ -105,6 +108,7 @@ beforeEach(() => {
   vi.mocked(handleSessionExited).mockClear();
   vi.mocked(switchToSessionInPage).mockClear();
   vi.mocked(switchWorkspaceView).mockClear();
+  vi.mocked(restartDaemonInPlace).mockReset().mockResolvedValue(null);
   withLayout(["s-1"]);
 });
 
@@ -263,5 +267,78 @@ describe("endSelectedSessions", () => {
     vi.mocked(askConfirm).mockResolvedValue(false);
     expect(await endSelectedSessions([row({ id: "a" }), row({ id: "b" })])).toBe(0);
     expect(backend.killSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("restartDaemon", () => {
+  const V25 = { daemonVersion: 25, appVersion: 25, degraded: false };
+
+  it("asks before taking the daemon away, with this list's own count", async () => {
+    expect(await restartDaemon([row({ id: "a" }), row({ id: "b" })], V25)).toBe(true);
+    expect(askConfirm).toHaveBeenCalledTimes(1);
+    expect(asked().title).toContain("Restart gavin-daemon");
+    expect(asked().lines.join(" ")).toContain("All 2 sessions in this list");
+    expect(asked().danger).toBe(true);
+  });
+
+  it("does nothing at all when the answer is no", async () => {
+    vi.mocked(askConfirm).mockResolvedValue(false);
+    expect(await restartDaemon([row()], V25)).toBe(false);
+    expect(restartDaemonInPlace).not.toHaveBeenCalled();
+  });
+
+  it("goes through restartDaemonInPlace, which re-reads what recovery rebuilt", async () => {
+    // backend.restartDaemon alone would leave the app holding a picture
+    // of sessions the daemon has just replaced with bare shells.
+    await restartDaemon([row()], V25);
+    expect(restartDaemonInPlace).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells the caller the daemon is gone before it goes, and only then", async () => {
+    // The panel stops polling on this signal and labels its button with
+    // it. Firing at the click would make the button say "Restarting…"
+    // while a dialog is still asking whether to.
+    const events: string[] = [];
+    vi.mocked(askConfirm).mockImplementation(async () => {
+      events.push("asked");
+      return true;
+    });
+    vi.mocked(restartDaemonInPlace).mockImplementation(async () => {
+      events.push("restarting");
+      return null;
+    });
+    await restartDaemon([row()], V25, () => events.push("confirmed"));
+    expect(events).toEqual(["asked", "confirmed", "restarting"]);
+  });
+
+  it("never signals the confirmed hook when the human said no", async () => {
+    vi.mocked(askConfirm).mockResolvedValue(false);
+    const onConfirmed = vi.fn();
+    await restartDaemon([row()], V25, onConfirmed);
+    expect(onConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed restart rather than looking like it worked", async () => {
+    vi.mocked(restartDaemonInPlace).mockRejectedValue(new Error("pkill unavailable"));
+    expect(await restartDaemon([row()], V25)).toBe(false);
+    expect(alerted().lines.join(" ")).toContain("pkill unavailable");
+  });
+
+  it("says so when the daemon came back at the very same old version", async () => {
+    // The silent failure this button has: the gavin-daemon binary beside
+    // the app is itself the stale one, so the restart happens and can
+    // never help. A press that reads as a no-op is what that looks like.
+    const same = { daemonVersion: 24, appVersion: 25, degraded: true };
+    vi.mocked(restartDaemonInPlace).mockResolvedValue(same);
+    expect(await restartDaemon([row()], same)).toBe(true);
+    expect(alerted().lines.join(" ")).toContain("the same version");
+  });
+
+  it("stays quiet when the restart actually lifted the gap", async () => {
+    vi.mocked(restartDaemonInPlace).mockResolvedValue(V25);
+    expect(await restartDaemon([row()], { daemonVersion: 24, appVersion: 25, degraded: true })).toBe(
+      true
+    );
+    expect(showAlert).not.toHaveBeenCalled();
   });
 });

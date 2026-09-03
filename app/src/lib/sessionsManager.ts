@@ -14,6 +14,7 @@
 // twice is how the two surfaces end up disagreeing.
 
 import type { AlertOptions, ConfirmOptions } from "./dialog";
+import { restartStopsAgentsLine, type DaemonCompat } from "./daemonCompat";
 import { describeOrphan, type OrphanProcess } from "./orphan";
 
 /// dialog.ts lets a prompt omit its lines; every prompt here has some,
@@ -513,6 +514,88 @@ export function killBatchConfirm(rows: SessionRow[], scope: KillScope): KillProm
   return scope === "all"
     ? { title: `End all ${plural(n, "session")}?`, lines, confirmLabel: "End all", danger: true }
     : { title: `End ${n} selected sessions?`, lines, confirmLabel: "End selected", danger: true };
+}
+
+/// What the task manager's Restart-daemon press asks first.
+///
+/// The panel offers the restart because it is the one screen that can
+/// see the whole cost of it: every session the daemon is holding, the
+/// hidden ones included, is on this list. So the prompt counts THAT list
+/// rather than repeating Settings' abstract "every terminal session" --
+/// a number the human can check against the rows behind the dialog is
+/// the only way they can tell a quiet restart from an expensive one.
+///
+/// The version-dependent sentence about running agents is
+/// `restartStopsAgentsLine`, shared with the Settings prompt: on a
+/// pre-v20 daemon a restart RE-RUNS every agent command instead of
+/// stopping it, and that warning must not exist in two places that can
+/// drift apart.
+///
+/// The orphan line is this panel's alone, and it is the one thing a
+/// restart is NOT: `SessionManager::recover` re-probes a recorded
+/// survivor and keeps it when it is still alive, so restarting does not
+/// end the processes that already outlived a daemon -- it hands them to
+/// the next one. Someone reaching for Restart to be rid of them would be
+/// choosing the one action that cannot do it.
+///
+/// `danger`, always, and for the same reason every kill here is:
+/// ConfirmPrompt keeps focus on the dismissing button for a danger
+/// choice, so Enter cannot restart the daemon by reflex.
+export function restartConfirm(rows: SessionRow[], compat: DaemonCompat | null): KillPrompt {
+  const hidden = rows.filter((r) => !r.visible).length;
+  const orphans = rows.filter((r) => r.orphan).length;
+  const lines: string[] = [];
+
+  if (rows.length === 0) {
+    lines.push("There are no sessions to lose — the daemon simply goes away and comes back.");
+  } else {
+    const where = hidden > 0 ? `, including the ${plural(hidden, "session")} no tab is showing` : "";
+    lines.push(
+      `All ${plural(rows.length, "session")} in this list${where} restart as fresh shells at ` +
+        `their current folders.`
+    );
+  }
+  lines.push(restartStopsAgentsLine(compat));
+  if (orphans > 0) {
+    lines.push(
+      `This does not end the ${plural(orphans, "process")} still running outside gavin: the new ` +
+        `daemon re-checks each one and keeps the ones that are still alive. End those from this ` +
+        `list instead.`
+    );
+  }
+  lines.push("Scrollback in open terminals is lost.");
+  lines.push("The window stays open — plans, boards and git keep working.");
+
+  return {
+    title: "Restart gavin-daemon?",
+    lines,
+    confirmLabel: "Restart daemon",
+    danger: true,
+  };
+}
+
+/// The restart never completed: the old daemon would not die, or the new
+/// one would not answer the version probe.
+///
+/// Loud rather than silent because the app is now in the one state this
+/// panel cannot describe -- it is showing a list it read from a daemon
+/// that may no longer be there.
+export function restartFailedAlert(error: unknown): KillAlert {
+  return {
+    title: "Couldn’t restart the daemon",
+    lines: [
+      error instanceof Error ? error.message : String(error),
+      "Sessions may already be gone. Close this and reopen it to see what the daemon is holding now.",
+    ],
+  };
+}
+
+/// The restart worked and achieved nothing: the daemon came back still
+/// older than this app. `restartOutcome` writes the sentence; this only
+/// puts it somewhere the human will read it, because in this panel there
+/// is no banner underneath the button to render it into.
+export function restartOutcomeAlert(note: string): KillAlert {
+  return { title: "Restarted, still an older daemon", lines: [note] };
 }
 
 /// The daemon refused, or the request never got there.

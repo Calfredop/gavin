@@ -89,6 +89,44 @@ describe("the panel", () => {
     expect(text).toContain("endSelectedSessions");
     expect(text).toContain("endSession");
     expect(text).toContain("jumpToSession");
+    expect(text).toContain("restartDaemon");
+  });
+
+  it("offers the restart from the same header as the kills", () => {
+    // The card asked for it here because this is the screen that shows
+    // what a restart costs -- every session the daemon is holding.
+    const text = source(PANEL);
+    const header = text.slice(text.indexOf("<header>"), text.indexOf("</header>"));
+    expect(header).toContain("Restart daemon…");
+    expect(header.indexOf("Kill all")).toBeLessThan(header.indexOf("Restart daemon…"));
+  });
+
+  it("stops polling for as long as the daemon is gone", () => {
+    // The socket is closed and re-made underneath this panel; a poll
+    // landing in that window would report the restart as a failure to
+    // read the session list.
+    const text = source(PANEL);
+    expect(text).toContain("if (restarting) return;");
+    const poll = text.slice(text.indexOf("async function poll()"));
+    expect(poll.slice(0, poll.indexOf("const mine"))).toContain("if (restarting) return;");
+  });
+
+  it("waits for the confirmation before it says it is restarting", () => {
+    // `restarting` both labels the button and gates the poll, so setting
+    // it at the click would make the button read "Restarting…" while a
+    // dialog is still asking whether to restart at all.
+    const text = source(PANEL);
+    const fn = text.slice(text.indexOf("async function restart()"));
+    const body = fn.slice(0, fn.indexOf("\n  }"));
+    expect(body).toContain("restartDaemon(rows, $daemonCompat, () => {");
+    expect(body.indexOf("restarting = true")).toBeGreaterThan(body.indexOf("restartDaemon(rows"));
+  });
+
+  it("drops the CPU baseline once the daemon has come back", () => {
+    // Every session on the other side is a brand new process, so the
+    // counter the panel was dividing against measures nothing.
+    const fn = source(PANEL).slice(source(PANEL).indexOf("async function restart()"));
+    expect(fn.slice(0, fn.indexOf("\n  }"))).toContain("await refresh()");
   });
 
   it("sorts and selects through the pure module, never in the template", () => {
