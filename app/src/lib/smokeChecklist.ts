@@ -3464,6 +3464,64 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Hub tab strip",
+    items: [
+      {
+        id: "hubtabs-locked-by-default",
+        text: "A tab cannot be dragged until the ⇄ button at the end of the row is clicked",
+        hint: "Locked is the resting state, and it is not remembered: reopening the app locks the row again.",
+      },
+      {
+        id: "hubtabs-drag-reorder",
+        text: "Unlocked, dragging a tab shows an insertion mark on the tab under the cursor and drops it there",
+        hint: "The mark is the pane tab row's own — a 2px bar on the leading or trailing edge.",
+      },
+      {
+        id: "hubtabs-digits-follow",
+        text: "After a reorder, ⌘1…⌘8 open the tabs in their NEW positions, and the badges shown while ⌘ is held agree",
+      },
+      {
+        id: "hubtabs-order-per-workspace",
+        text: "Another workspace's row is untouched by that drag",
+        hint: "Order never inherits: a drag in one strip must not rearrange four others.",
+      },
+      {
+        id: "hubtabs-order-survives-restart",
+        text: "The new order survives an app restart",
+      },
+      {
+        id: "hubtabs-hide-app-default",
+        text: "Settings → Hub tabs → Sections: crossing out an eye takes that tab out of EVERY workspace's row",
+      },
+      {
+        id: "hubtabs-hide-last-refused",
+        text: "Hide all but one: the last eye is disabled, and hovering its ROW says why",
+        hint: "The reason hangs on the row because a disabled button never fires mouseenter.",
+      },
+      {
+        id: "hubtabs-hide-workspace-override",
+        text: "Workspace Settings → Hub tabs → Sections: a change here affects only that workspace, and the panel now says it keeps a list of its own",
+      },
+      {
+        id: "hubtabs-follow-default-again",
+        text: "“Follow the default” puts that workspace back on the app-wide list — including later changes to it",
+      },
+      {
+        id: "hubtabs-hide-active-tab",
+        text: "Hiding the tab currently on screen moves you to the first tab left, rather than stranding the view with nothing selected",
+      },
+      {
+        id: "hubtabs-chips-still-reach",
+        text: "A sidebar recap chip for a hidden section still opens it",
+        hint: "Hiding takes the tab out of the row, not the view out of the app.",
+      },
+      {
+        id: "hubtabs-reset-order",
+        text: "Workspace Settings → Hub tabs → “Reset the order” restores the shipped order, and the row shows it immediately",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

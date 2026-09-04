@@ -18,6 +18,8 @@
     autoCommitToSelect,
   } from "./autoCommit";
   import { scratchpadEnabled, setScratchpadEnabled } from "./sidebarPrefs";
+  import { hiddenHubViewCount, hubTabsHiddenDefault } from "./hubTabPrefs";
+  import HubTabsModal from "./HubTabsModal.svelte";
   import { themeState } from "./ui/themeState.svelte";
   import type { ThemePref } from "./ui/theme";
   import IconButton from "./ui/IconButton.svelte";
@@ -104,6 +106,12 @@
     void setAgentModelDefault(profileId, value);
   }
 
+  /// The eye list is a panel of its own rather than nine checkboxes in
+  /// this one: it is the same list the workspace panel offers, and one
+  /// component is what keeps the two saying the same thing.
+  let hubTabsOpen = $state(false);
+  const hiddenCount = $derived(hiddenHubViewCount($hubTabsHiddenDefault));
+
   function commitCustom(profileId: string): void {
     const value = (drafts[profileId] ?? stored(profileId)).trim();
     if (value === stored(profileId)) return;
@@ -151,6 +159,21 @@
         The Scratchpad is the pinned drawer a page with no workspace of its own lands in. Switching
         it off takes its row out of the sidebar and out of ⌘⌥-number; nothing inside it is closed or
         deleted, and switching it back on brings the row and its pages straight back.
+      </p>
+    </section>
+
+    <section>
+      <h3>Hub tabs</h3>
+      <div class="row">
+        <span>Sections</span>
+        <button type="button" class="manage" onclick={() => (hubTabsOpen = true)}>
+          {hiddenCount === 0 ? "All shown" : `${hiddenCount} hidden`}…
+        </button>
+      </div>
+      <p class="hint">
+        Which sections a workspace's tab row offers, for every workspace that keeps no list of its
+        own. Rearranging a row is done in the row itself — unlock it with the button at the end of
+        the tabs.
       </p>
     </section>
 
@@ -311,6 +334,13 @@
   </div>
 </Modal>
 
+<!-- Outside the panel, not inside it: a modal nested in another modal's
+     scrolling body would be clipped by it. Later in the tree so it lands
+     on top, the same rule +page.svelte follows for its alert layer. -->
+{#if hubTabsOpen}
+  <HubTabsModal onClose={() => (hubTabsOpen = false)} />
+{/if}
+
 <style>
   /* Deliberately the same rules as SettingsHubView's panel, so the
      app-wide and per-workspace settings read as one family rather than
@@ -394,6 +424,16 @@
   .actions {
     display: flex;
     justify-content: flex-end;
+  }
+  .row button.manage {
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 3px 8px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 1em;
   }
   .actions button {
     background: var(--surface-overlay);

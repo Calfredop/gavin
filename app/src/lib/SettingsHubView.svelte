@@ -52,6 +52,12 @@
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "./agentPauseState";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
   import { UNFILED_WORKSPACE_ID } from "./workspace";
+  import HubTabsModal from "./HubTabsModal.svelte";
+  import {
+    hiddenHubViewCount,
+    hubTabsHiddenByWorkspace,
+    hubTabsHiddenDefault,
+  } from "./hubTabPrefs";
 
   interface Props {
     workspaceId: string;
@@ -137,6 +143,17 @@
   /// panel must never show a box whose selected row is secretly doing
   /// something.
   const inheritedAutoCommit = $derived(resolveAutoCommit(undefined, $autoCommitDefault));
+
+  // --- hub tabs ---------------------------------------------------------
+  /// The eye list opens in a panel of its own, shared with app Settings:
+  /// one component, so the two levels can never disagree about what the
+  /// list contains or what inheriting means.
+  let hubTabsOpen = $state(false);
+  /// The effective set -- this workspace's own list while it has one, the
+  /// app-wide default while it does not -- so the row counts what the
+  /// strip actually hides rather than what was stored here.
+  const hiddenHubTabs = $derived($hubTabsHiddenByWorkspace[workspaceId] ?? $hubTabsHiddenDefault);
+  const hubTabsInherited = $derived(!(workspaceId in $hubTabsHiddenByWorkspace));
 
   // --- danger zone -----------------------------------------------------
   let deleting = $state(false);
@@ -423,6 +440,26 @@
         <span>Root</span>
         <WorkspaceRootControl workspace={ws} variant="settings" />
       </div>
+    </section>
+
+    <section>
+      <h3>Hub tabs</h3>
+      <div class="row">
+        <span>Sections</span>
+        <button type="button" onclick={() => (hubTabsOpen = true)}>
+          {hiddenHubViewCount(hiddenHubTabs) === 0
+            ? "All shown"
+            : `${hiddenHubViewCount(hiddenHubTabs)} hidden`}…
+        </button>
+      </div>
+      <p class="hint">
+        Which sections this workspace's tab row offers.
+        {hubTabsInherited
+          ? "It follows the app-wide list in Settings until you change something here."
+          : "It keeps a list of its own."}
+        Rearranging the row is done in the row itself — unlock it with the button at the end of the
+        tabs.
+      </p>
     </section>
 
     <section>
@@ -893,6 +930,10 @@
       </div>
     </section>
   </div>
+
+  {#if hubTabsOpen}
+    <HubTabsModal {workspaceId} onClose={() => (hubTabsOpen = false)} />
+  {/if}
 
   {#if deleting}
     <WorkspaceDeleteWizard {workspaceId} onClose={() => (deleting = false)} />

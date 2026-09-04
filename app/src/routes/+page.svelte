@@ -47,7 +47,18 @@
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
-  import { hubViewBusy, hubViewAttention } from "$lib/hubViewMeta";
+  import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hubViewMeta";
+  import {
+    hubTabOrderByWorkspace,
+    hubTabPrefsFor,
+    hubTabsHiddenByWorkspace,
+    hubTabsHiddenDefault,
+    hubTabsUnlocked,
+    setWorkspaceHubTabOrder,
+    toggleHubTabsUnlocked,
+  } from "$lib/hubTabPrefs";
+  import { getDragKind, getDragPayload, setDragPayload } from "$lib/dragDrop";
+  import { ArrowLeftRight } from "@lucide/svelte";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
   import { tooltip } from "$lib/tooltip";
@@ -71,15 +82,44 @@
   const hubViews = $derived(
     visibleHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV, Boolean(activeWorkspace?.rootPath))
   );
+  // This workspace's own arrangement of the row: the order it was dragged
+  // into, and the hidden set it keeps or inherits from the app-wide
+  // default. Handed to tabStripHubViews rather than applied here, so the
+  // strip, the ⌘-digit router and both settings panels all derive the row
+  // from the one rule.
+  const hubTabPrefs = $derived(
+    hubTabPrefsFor(
+      activeWorkspace?.id ?? "",
+      $hubTabOrderByWorkspace,
+      $hubTabsHiddenByWorkspace,
+      $hubTabsHiddenDefault
+    )
+  );
   // What the strip draws. Settings is offered (it is in hubViews, and
   // activeViewDef below still resolves it) but is reached by the gear in
   // the row's actions rather than by a tab -- so this list, not hubViews,
   // is what the tabs and their ⌘-digit badges are counted from.
   const tabViews = $derived(
-    tabStripHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV, Boolean(activeWorkspace?.rootPath))
+    tabStripHubViews(
+      activeWorkspace?.id ?? "",
+      import.meta.env.DEV,
+      Boolean(activeWorkspace?.rootPath),
+      hubTabPrefs
+    )
   );
   const settingsView = $derived(hubViews.find((v) => v.id === "settings") ?? null);
-  const activeViewDef = $derived(hubViews.find((v) => v.id === activeView) ?? tabViews[0]);
+  // Which views this row can point AT: the tabs it draws, plus the ones
+  // reached by a button. A workspace parked on a tab that has since been
+  // hidden would otherwise keep rendering it with nothing in the row
+  // underlined -- reachable until the human clicked away, and then not
+  // at all. It falls back to the first tab instead.
+  const drawableViews = $derived(
+    new Set([...tabViews.map((v) => v.id), ...hubViews.filter((v) => v.viaAction).map((v) => v.id)])
+  );
+  const activeViewDef = $derived(
+    (drawableViews.has(activeView) ? hubViews.find((v) => v.id === activeView) : undefined) ??
+      tabViews[0]
+  );
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
   // the accent every tab indicator in this workspace reads.
   const activeAgent = $derived(
@@ -117,6 +157,54 @@
         ).size > 0)
       : false,
   });
+
+  // Where a tab would land if it were dropped right now. Cleared on
+  // leave, end and drop, exactly as the pane row's own reorder marker is.
+  let hubTabDrop = $state<{ viewId: string; position: "before" | "after" } | null>(null);
+
+  function handleHubTabDragStart(event: DragEvent, viewId: string): void {
+    if (!activeWorkspace) return;
+    setDragPayload(event, { kind: "hub-tab", workspaceId: activeWorkspace.id, viewId });
+  }
+
+  function handleHubTabDragOver(event: DragEvent, viewId: string): void {
+    if (getDragKind(event) !== "hub-tab") return;
+    event.preventDefault();
+    // Without an explicit dropEffect the app shows the "copy" (+) cursor
+    // even though the source set effectAllowed -- it has to be set on the
+    // TARGET's dragover. See Pane.svelte's tab row, which learned this
+    // the same way.
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    hubTabDrop = { viewId, position: dropSide(event) };
+  }
+
+  function dropSide(event: DragEvent): "before" | "after" {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    return (event.clientX - rect.left) / rect.width < 0.5 ? "before" : "after";
+  }
+
+  function clearHubTabDrop(): void {
+    hubTabDrop = null;
+  }
+
+  function handleHubTabDrop(event: DragEvent, viewId: string): void {
+    event.preventDefault();
+    // Recomputed from the drop itself rather than read off the hover
+    // marker: the pointer can cross the tab's midpoint between the last
+    // dragover and the release.
+    const position = dropSide(event);
+    const payload = getDragPayload(event);
+    hubTabDrop = null;
+    if (!payload || payload.kind !== "hub-tab" || !activeWorkspace) return;
+    // Never across workspaces: the strip is only ever drawn for the
+    // active one, but a payload naming another one would rearrange a row
+    // nobody is looking at.
+    if (payload.workspaceId !== activeWorkspace.id) return;
+    setWorkspaceHubTabOrder(
+      activeWorkspace.id,
+      moveHubViewId(hubTabPrefs.order, payload.viewId, viewId, position)
+    );
+  }
 
   async function quitApp(): Promise<void> {
     closeConfirmed = true;
@@ -256,7 +344,12 @@
                   <button
                     type="button"
                     class="tab"
-                    class:active={activeView === view.id}
+                    class:active={activeViewDef?.id === view.id}
+                    class:arrangeable={$hubTabsUnlocked}
+                    class:drop-before={hubTabDrop?.viewId === view.id &&
+                      hubTabDrop.position === "before"}
+                    class:drop-after={hubTabDrop?.viewId === view.id &&
+                      hubTabDrop.position === "after"}
                     use:tooltip={busy
                       ? "An agent is committing"
                       : wantsYou
@@ -267,6 +360,12 @@
                       : wantsYou
                         ? `${hubLabel(view, activeAgent.file)} — a rail is waiting on you`
                         : undefined}
+                    draggable={$hubTabsUnlocked}
+                    ondragstart={(e) => handleHubTabDragStart(e, view.id)}
+                    ondragover={(e) => handleHubTabDragOver(e, view.id)}
+                    ondragleave={clearHubTabDrop}
+                    ondragend={clearHubTabDrop}
+                    ondrop={(e) => handleHubTabDrop(e, view.id)}
                     onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
                   >
                     <!-- In the icon's place, not beside it: the tab row must
@@ -293,6 +392,20 @@
                   </button>
                 {/each}
               </div>
+              <!-- At the end of the tabs, and OUTSIDE the scroller: the
+                   lock is what makes the row draggable at all, so a
+                   narrow window must never be able to push it out of
+                   reach. Locked is the resting state -- a tab row that
+                   rearranged itself whenever a click drifted would move
+                   the thing you were aiming at. -->
+              <IconButton
+                icon={ArrowLeftRight}
+                label={$hubTabsUnlocked ? "Lock the tab order" : "Rearrange the tabs"}
+                size={12}
+                class="arrange-toggle"
+                active={$hubTabsUnlocked}
+                onclick={toggleHubTabsUnlocked}
+              />
               <!-- What the window lost when the title strip came down to
                    the sidebar's width: somewhere roomy to grab it. The
                    run of bar after the last tab moves the window, the way
@@ -313,7 +426,7 @@
                     icon={settingsView.icon}
                     label="Workspace settings"
                     size={14}
-                    active={activeView === settingsView.id}
+                    active={activeViewDef?.id === settingsView.id}
                     onclick={() => switchWorkspaceView(activeWorkspace.id, settingsView.id)}
                   />
                 {/if}
@@ -578,6 +691,31 @@
     width: 1px;
     transform: translateY(-50%);
     background: var(--border);
+  }
+  /* Says the row is live without moving anything: the tabs stay exactly
+     where they are, and only the cursor changes. */
+  .tab.arrangeable {
+    cursor: grab;
+  }
+  .tab.arrangeable:active {
+    cursor: grabbing;
+  }
+  /* The pane row's own insertion marks, to the pixel (Pane.svelte's
+     .tab.drop-before/.drop-after): one gesture, one piece of feedback,
+     wherever a tab is being dragged. */
+  .tab.drop-before {
+    box-shadow: inset 2px 0 0 0 var(--ws-accent, #4a9eff);
+  }
+  .tab.drop-after {
+    box-shadow: inset -2px 0 0 0 var(--ws-accent, #4a9eff);
+  }
+  /* Deliberately smaller than a tab: it acts ON the row rather than
+     being one of its destinations, and a control the same size as the
+     tabs would read as a tenth tab. */
+  .tabs :global(.arrange-toggle) {
+    flex: 0 0 auto;
+    align-self: center;
+    margin-left: 6px;
   }
   .tab.active {
     color: var(--text);

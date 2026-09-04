@@ -15,6 +15,7 @@ import { confirmTabClose } from "./confirmClose";
 import { findLeafPath, getNodeAtPath, isPinned } from "./layout";
 import { getActiveTree, getActiveWorkspace, getActiveView, sidebarWorkspaceOrder } from "./workspace";
 import { tabStripHubViewIds } from "./hubViewMeta";
+import { currentHubTabPrefs } from "./hubTabPrefs";
 import { scratchpadEnabled } from "./sidebarPrefs";
 import { cmdHeld, isMacSync } from "./platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "./shortcuts";
@@ -120,8 +121,15 @@ function routeDigit(
   // The STRIP's ids, not every view on offer: ⌘-digits address tabs by
   // position, and the row is what the human is counting along. A view
   // reached by a button in the actions (Settings) has no position to
-  // address, and counting it here would shift every digit past it.
-  const views = tabStripHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
+  // address, and counting it here would shift every digit past it -- and
+  // for the same reason the row's own preferences are passed in: a
+  // rearranged or thinned-out strip is still what is being counted.
+  const views = tabStripHubViewIds(
+    ws.id,
+    import.meta.env.DEV,
+    Boolean(ws.rootPath),
+    currentHubTabPrefs(ws.id)
+  );
   const index = resolveIndex(digit, views.length);
   if (index === null) return null;
   const viewId = views[index];

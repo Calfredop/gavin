@@ -63,6 +63,7 @@
 
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel } from "./paths";
   import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
+  import { currentHubTabPrefs } from "./hubTabPrefs";
   import {
     setDragPayload,
     getDragKind,
@@ -492,16 +493,23 @@
   /// offers. Where the home row under the workspace name used to go.
   function openHub(ws: Workspace): void {
     switchWorkspace(ws.id);
-    switchWorkspaceView(ws.id, resolveHubView(ws, import.meta.env.DEV));
+    switchWorkspaceView(ws.id, resolveHubView(ws, import.meta.env.DEV, currentHubTabPrefs(ws.id)));
   }
 
   /// A recap chip's click: straight to the tab that chip summarises,
   /// falling back to the workspace's usual hub landing when that tab is
   /// not on offer (both Git and Orchestration require a bound root).
+  ///
+  /// Against what the workspace OFFERS, not against what its strip draws:
+  /// hiding a tab takes it out of the row, not out of the app, and a chip
+  /// that summarises the board still has to be able to open it.
   function openHubView(ws: Workspace, view: string): void {
     switchWorkspace(ws.id);
     const offered = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
-    switchWorkspaceView(ws.id, offered.includes(view) ? view : resolveHubView(ws, import.meta.env.DEV));
+    switchWorkspaceView(
+      ws.id,
+      offered.includes(view) ? view : resolveHubView(ws, import.meta.env.DEV, currentHubTabPrefs(ws.id))
+    );
   }
 
   // ahead/behind are only meaningful (and only shown) when hasUpstream is
@@ -704,6 +712,10 @@
   function handleWorkspaceDragOver(event: DragEvent, workspaceId: string): void {
     const kind = getDragKind(event);
     if (!kind) return;
+    // A hub tab is being rearranged within its own strip and has nowhere
+    // to land here -- refusing it in the dragover is what keeps the
+    // sidebar from lighting up under a drag it cannot accept.
+    if (kind === "hub-tab") return;
     // The pinned Scratchpad workspace isn't part of the reorderable
     // list, so a dragged workspace has nowhere meaningful to land on
     // it -- ignore.
@@ -745,7 +757,7 @@
       await reorderWorkspaceAction(payload.workspaceId, targetIndex);
     } else if (payload.kind === "page") {
       await movePageAction(payload.pageId, ws.id, ws.pages.length);
-    } else {
+    } else if (payload.kind === "pane" || payload.kind === "tab") {
       await movePaneOrTab(
         { kind: payload.kind, workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
         { kind: "workspace", workspaceId: ws.id }
@@ -759,7 +771,7 @@
 
   function handlePageDragOver(event: DragEvent, pageId: string): void {
     const kind = getDragKind(event);
-    if (!kind || kind === "workspace") return;
+    if (!kind || kind === "workspace" || kind === "hub-tab") return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -774,7 +786,7 @@
     event.preventDefault();
     const payload = getDragPayload(event);
     clearHover();
-    if (!payload || payload.kind === "workspace") return;
+    if (!payload || payload.kind === "workspace" || payload.kind === "hub-tab") return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (payload.kind === "page") {
       const position = computeReorderPosition(rect, event.clientY);
