@@ -2,13 +2,26 @@
   // The tool library: one modal, two modes. List mode shows what exists,
   // grouped by scope; edit mode is the form. Built-ins are read-only and
   // offer Duplicate rather than Edit (tools spec T4).
+  //
+  // The form authors all SIX kinds. It offered three until 2026-09-04,
+  // and what held the other three back was this form rather than the
+  // scheduler -- every rule about a `gavin`, `until` or `pr` step
+  // branches on the kind, never on a built-in id, so a copy has always
+  // worked. What could not be expressed was the body: an action typed
+  // into a text box could name nothing, and a `pr` tool has no body to
+  // type at all. `toolBodyEditor` answers that per kind, and the three
+  // branches below draw its three shapes.
   import { Bot, Terminal, FileCode2, Zap, Repeat, GitPullRequest, Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
   import { open as openPicker } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import {
+    GAVIN_ACTIONS,
     TOOL_KINDS,
+    bodyForKind,
+    toolBodyEditor,
     toolKindLabel,
+    toolKindParamNote,
     emptyTool,
     duplicateTool,
     validateTool,
@@ -19,6 +32,7 @@
     type ToolScope,
   } from "./orchestrationTools";
   import { saveToolAction, deleteToolAction } from "./toolsState";
+  import { isRunnableStandalone } from "./workspaceTools";
   import { daemonCompat, workspaceRootPath } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import { tooltip } from "./tooltip";
@@ -35,9 +49,23 @@
     /// groups…" button asks for -- a human who clicked that should land
     /// on Groups, not have to click past Tools to find it.
     initialTab?: "tools" | "groups";
+    /// A draft to open the FORM on, skipping the list. The Tools hub tab
+    /// passes one when a row's own Edit is pressed: the human already
+    /// found the tool, and making them find it again in a dialog is the
+    /// step this prop removes. Already a copy when it arrives
+    /// (`editDraftFor`), and copied again here for the same reason
+    /// `startEdit` does.
+    initialEdit?: Tool | null;
     onClose: () => void;
   }
-  let { workspaceId, tools, templates, initialTab = "tools", onClose }: Props = $props();
+  let {
+    workspaceId,
+    tools,
+    templates,
+    initialTab = "tools",
+    initialEdit = null,
+    onClose,
+  }: Props = $props();
 
   let activeTab = $state<"tools" | "groups">("tools");
   // Seeded from the prop when the dialog OPENS, not at construction: this
@@ -53,7 +81,30 @@
   /// Null is list mode. Editing holds a DRAFT, never a library object --
   /// the list re-renders from the store the moment a save lands, and
   /// mutating a library entry in place would fight that.
-  let editing = $state<Tool | null>(null);
+  ///
+  /// Seeded at CONSTRUCTION rather than in an effect like `activeTab`:
+  /// this is the one piece of state the human then types into, and an
+  /// effect that re-ran for any reason would overwrite what they wrote
+  /// with the draft they started from.
+  let editing = $state<Tool | null>(
+    initialEdit ? { ...initialEdit, params: initialEdit.params.map((p) => ({ ...p })) } : null
+  );
+
+  /// The authored body held across a switch to a kind that imposes its
+  /// own (`pr`, `gavin`). Lives here rather than in the draft because it
+  /// is never saved: it exists so clicking the wrong chip costs a click.
+  /// Null until something is actually put away -- a blank body IS worth
+  /// restoring, and a new tool's is blank.
+  let stashedBody = $state<string | null>(null);
+
+  function pickKind(kind: ToolKind): void {
+    if (!editing || editing.kind === kind) return;
+    if (toolBodyEditor(kind).shape !== "text" && toolBodyEditor(editing.kind).shape === "text") {
+      stashedBody = editing.body;
+    }
+    editing.body = bodyForKind(kind, editing.body, stashedBody);
+    editing.kind = kind;
+  }
   let error = $state<string | null>(null);
   let confirmingDelete = $state<string | null>(null);
   let saving = $state(false);
@@ -254,8 +305,9 @@
         </button>
       </header>
       <p class="intro">
-        A tool is a reusable step: an agent prompt, a bash command, or a bash script. Drag one onto
-        a rail from the drawer.
+        A tool is a reusable step: an agent prompt, a bash command or script, a loop until a check
+        passes, a wait on a pull request, or an action gavin performs itself. Drag one onto a rail
+        from the drawer.
       </p>
 
       {#if error}
@@ -289,27 +341,14 @@
                       <button type="button" class="ghost" onclick={() => (confirmingDelete = null)}>
                         Keep
                       </button>
-                    {:else if tool.kind === "gavin"}
-                      <!-- Nothing to author: a gavin tool's body names an
-                           action this app implements, and the edit form
-                           offers only the three kinds a human can write.
-                           A duplicate would be a tool whose kind chip
-                           highlights nothing. -->
-                      <span class="readonly">gavin's own</span>
-                    {:else if tool.kind === "until"}
-                      <!-- Same reason, different fact: an until tool's
-                           body IS shell source, but its kind is a
-                           scheduler rule the edit form cannot express, so
-                           a duplicate would come back as a plain
-                           command that never loops. -->
-                      <span class="readonly">gavin's own</span>
-                    {:else if tool.kind === "pr"}
-                      <!-- And the third: a pr tool has no body to run at
-                           all. gavin reads GitHub itself, so a duplicate
-                           would be a command whose text is the word
-                           "await-pr". -->
-                      <span class="readonly">gavin's own</span>
                     {:else if tool.scope === "builtin"}
+                      <!-- Every built-in, the gavin / until / pr three
+                           included. Those three were marked here as
+                           gavin's alone while the form could not express
+                           their bodies; it can now (toolBodyEditor), and
+                           a copy of one has always run correctly -- the
+                           scheduler branches on the KIND, never on which
+                           built-in id it came from. -->
                       <IconButton
                         icon={Copy}
                         label="Duplicate to edit"
@@ -376,7 +415,7 @@
                 type="button"
                 class="chip"
                 class:on={editing.kind === kind}
-                onclick={() => editing && (editing.kind = kind)}
+                onclick={() => pickKind(kind)}
               >
                 {toolKindLabel(kind)}
               </button>
@@ -406,28 +445,54 @@
         </div>
       </div>
 
-      <label>
-        <span class="field">
-          {editing.kind === "agent" ? "Prompt" : editing.kind === "command" ? "Command" : "Script"}
-        </span>
-        <textarea
-          bind:value={editing.body}
-          class:mono={editing.kind !== "agent"}
-          rows={editing.kind === "command" ? 3 : 8}
-          spellcheck={editing.kind === "agent"}
-          placeholder={editing.kind === "agent"
-            ? "What the agent should do, in this rail's checkout."
-            : "./deploy.sh {{env}}"}
-        ></textarea>
-      </label>
-      <p class="hint">
-        Use <code>{"{{name}}"}</code> to drop a parameter in. Substitution is literal — you own the
-        quoting.
-      </p>
+      <!-- Three shapes, one per relationship a kind has with its body:
+           source somebody writes, the name of an action, or nothing at
+           all. `toolBodyEditor` owns which, so the labels and the
+           heights cannot drift from the kinds they describe. -->
+      {@const bodyEditor = toolBodyEditor(editing.kind)}
+      {#if bodyEditor.shape === "text"}
+        <label>
+          <span class="field">{bodyEditor.label}</span>
+          <textarea
+            bind:value={editing.body}
+            class:mono={bodyEditor.mono}
+            rows={bodyEditor.rows}
+            spellcheck={!bodyEditor.mono}
+            placeholder={bodyEditor.placeholder}
+          ></textarea>
+        </label>
+        <p class="hint">
+          Use <code>{"{{name}}"}</code> to drop a parameter in. Substitution is literal — you own the
+          quoting.
+        </p>
+      {:else if bodyEditor.shape === "action"}
+        <!-- A select, not a text box: the body of a gavin tool NAMES
+             something this app implements, and a typed one that named
+             nothing would stall every step it was dropped onto with the
+             mistake discoverable only at launch. -->
+        <label>
+          <span class="field">{bodyEditor.label}</span>
+          <select bind:value={editing.body}>
+            {#each GAVIN_ACTIONS as action (action)}
+              <option value={action}>{action}</option>
+            {/each}
+          </select>
+        </label>
+        <p class="hint">
+          Gavin performs this itself — no session and no checkout. Its arguments are the parameters
+          below.
+        </p>
+      {:else}
+        <p class="hint">{bodyEditor.note}</p>
+      {/if}
 
-      <!-- The reason hangs on the LABEL, not on the input: a disabled
-           element never fires `mouseenter`, so a tooltip bound to the
-           field itself would never appear. -->
+      <!-- Only for a kind that can run standalone. A rail step runs in
+           the rail's own checkout and never reads this field (spec
+           T6/T11), so on the three kinds that ONLY run as a step it is a
+           control with no effect -- and one that quietly kept a value
+           would be read as having one. Whatever was typed before a
+           switch survives, hidden, and comes back with the kind. -->
+      {#if isRunnableStandalone(editing)}
       <div class="cwd-field" use:tooltip={cwdBlocked}>
         <span class="field">Working directory</span>
         <div class="cwd-row">
@@ -455,6 +520,7 @@
           {/if}
         </p>
       </div>
+      {/if}
       {#if undeclared.length > 0}
         <p class="warn">
           No parameter declares {undeclared.map((n) => `{{${n}}}`).join(", ")} — it will be left in
@@ -468,6 +534,13 @@
           <Plus size={12} /> Add
         </button>
       </div>
+      {#if toolKindParamNote(editing.kind)}
+        <!-- The three kinds whose parameters are ARGUMENTS rather than
+             text pasted into a body: nothing in the form would otherwise
+             tell a human authoring one what to call them, and a name got
+             wrong reads as no parameter at all. -->
+        <p class="hint">{toolKindParamNote(editing.kind)}</p>
+      {/if}
       {#if editing.params.length === 0}
         <p class="empty">No parameters — the body runs exactly as written.</p>
       {:else}
@@ -764,7 +837,6 @@
   }
   .kind,
   .params,
-  .readonly,
   .confirm {
     flex: none;
     color: var(--text-subtle);
@@ -811,6 +883,23 @@
   textarea.mono {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 11px;
+  }
+  /* Its own rule rather than joining `input, textarea`: a select has no
+     intrinsic `size` floor to zero out, and it must not inherit
+     `resize: vertical`. */
+  select {
+    min-width: 0;
+    padding: 5px 7px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+  }
+  select:focus {
+    outline: none;
+    border-color: var(--border-focus);
   }
   .row {
     display: flex;

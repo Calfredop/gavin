@@ -96,10 +96,21 @@ export interface ToolRecord {
 }
 
 /// The kinds a human can AUTHOR, in the order the dialog's chips offer
-/// them. Deliberately not every ToolKind: a `gavin` tool's body selects
-/// an action this app implements, so one typed into the dialog would
-/// name nothing.
-export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];
+/// them: the three that also run on their own first, then the three that
+/// only mean something inside a rail.
+///
+/// It was the first three alone until 2026-09-04, and the reason it is
+/// now all six is worth keeping. `gavin`, `until` and `pr` were withheld
+/// from the chips not because the SCHEDULER treats an authored one
+/// differently -- every rule about them branches on `kind` and never on
+/// a built-in id, so a copy has always worked -- but because the edit
+/// form could not express their bodies. A `gavin` body names an action,
+/// and a free-text box let one name nothing; a `pr` body is not run at
+/// all, so a duplicate came back as a command whose text was the word
+/// "await-pr". `toolBodyEditor` below is what removed that obstacle: the
+/// form now draws a SELECT for an action and no body field at all for a
+/// wait, so each of the six is authorable in the shape it actually has.
+export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script", "until", "pr", "gavin"];
 
 export function toolKindLabel(kind: ToolKind): string {
   return kind === "agent"
@@ -133,6 +144,142 @@ export function gavinActionOf(tool: Pick<Tool, "kind" | "body">): GavinAction | 
 
 export function isBuiltinId(id: string): boolean {
   return id.startsWith("builtin:");
+}
+
+// ---- Authoring one ---------------------------------------------------------
+
+/// A `pr` tool's body. Nothing runs it -- gavin reads GitHub itself
+/// (pull_request.rs) and the step is over when the pull request says so
+/// -- but the body still says what the step DOES, so a rail read on
+/// paper is legible. The same reason `builtin:start-rail`'s body names
+/// its action rather than hiding it in a branch on the id.
+export const PR_BODY = "await-pr";
+
+/// How a kind's body is authored. Three shapes, because the six kinds
+/// have three different relationships with their bodies:
+///
+/// - `text` — the body IS source the human writes: a prompt, a command
+///   line, a script, or the shell check an `until` step loops on.
+/// - `action` — the body NAMES something this app implements, so the
+///   form offers the names rather than a text box. Only `gavin`.
+/// - `none` — there is no body to write. Only `pr`, which runs nothing.
+///
+/// A descriptor rather than a chain of ternaries in the template,
+/// because the same three questions (what to call the field, how tall,
+/// whether it is monospaced) were already being asked three times over
+/// three kinds, and adding three more kinds to that is where the answers
+/// start to disagree with each other.
+export type ToolBodyEditor =
+  | {
+      shape: "text";
+      label: string;
+      placeholder: string;
+      rows: number;
+      /// Monospaced, and spellcheck off: shell source, not prose.
+      mono: boolean;
+    }
+  | { shape: "action"; label: string }
+  | { shape: "none"; note: string };
+
+export function toolBodyEditor(kind: ToolKind): ToolBodyEditor {
+  switch (kind) {
+    case "agent":
+      return {
+        shape: "text",
+        label: "Prompt",
+        placeholder: "What the agent should do, in this rail's checkout.",
+        rows: 8,
+        mono: false,
+      };
+    case "command":
+      return {
+        shape: "text",
+        label: "Command",
+        placeholder: "./deploy.sh {{env}}",
+        rows: 3,
+        mono: true,
+      };
+    case "until":
+      return {
+        shape: "text",
+        label: "Check command",
+        placeholder: "npm test",
+        rows: 3,
+        mono: true,
+      };
+    case "gavin":
+      return { shape: "action", label: "Action" };
+    case "pr":
+      return {
+        shape: "none",
+        note:
+          "Nothing to write: gavin reads the pull request for this rail's branch itself. " +
+          "What the step waits for is a parameter, not a body.",
+      };
+    default:
+      return {
+        shape: "text",
+        label: "Script",
+        placeholder: "./deploy.sh {{env}}",
+        rows: 8,
+        mono: true,
+      };
+  }
+}
+
+/// Whether a body is one of the fixed texts a kind imposes rather than
+/// something a human typed. Used only to decide what switching kinds may
+/// throw away.
+function isFixedBody(body: string): boolean {
+  const said = body.trim();
+  return said === PR_BODY || (GAVIN_ACTIONS as readonly string[]).includes(said);
+}
+
+/// The body a draft carries after the human picks a different kind.
+///
+/// Two of the six have no body a human writes, and both still need one:
+/// `gavinActionOf` READS a `gavin` body, and a `pr` body is what makes
+/// the step legible on paper. So switching to either replaces whatever
+/// was in the box. `stashed` is the authored body held across that swap
+/// -- switching back restores it, so a stray click on a chip costs a
+/// click rather than eight lines of prompt.
+///
+/// Null is "nothing was ever put away", which an EMPTY STRING is not: a
+/// new tool starts with a blank body, and a blank one restored is the
+/// blank the human was looking at. Conflating the two is what leaves
+/// "await-pr" sitting in a brand-new tool's Command field.
+///
+/// Switching to `gavin` keeps a body that already names an action, so
+/// re-picking the chip a draft is already on changes nothing.
+export function bodyForKind(kind: ToolKind, current: string, stashed: string | null): string {
+  if (kind === "pr") return PR_BODY;
+  if (kind === "gavin") {
+    return gavinActionOf({ kind, body: current }) ? current.trim() : GAVIN_ACTIONS[0];
+  }
+  return isFixedBody(current) && stashed !== null ? stashed : current;
+}
+
+/// What a kind reads its PARAMETERS as, for the hint under the parameter
+/// grid — or null for the three whose params are only text substituted
+/// into a body.
+///
+/// The three that need this are the three whose params are ARGUMENTS:
+/// nothing pastes them into the body, so a human authoring one from
+/// scratch has no way to discover the names from the form. Getting a
+/// name wrong is silent by design -- `summaryParam` ignores a param the
+/// tool does not declare, so a budget typed into `retries` reads as no
+/// budget at all rather than as an error.
+export function toolKindParamNote(kind: ToolKind): string | null {
+  switch (kind) {
+    case "until":
+      return "The check is the body. This kind also reads a `max` parameter — how many times it may send the rail back before giving up.";
+    case "pr":
+      return "This kind reads a `require` parameter (checks / approval) and a `max` — how many times a failing check may send the rail back.";
+    case "gavin":
+      return "The parameters are the action's arguments: `start-rail` reads `rail`, the name of the rail to arm.";
+    default:
+      return null;
+  }
 }
 
 // ---- The built-in set ------------------------------------------------------
@@ -693,10 +840,11 @@ export function resolveToolCwd(tool: Pick<Tool, "cwd">, rootPath: string | null)
 export function validateTool(tool: Tool): string | null {
   if (!tool.name.trim()) return "A tool needs a name.";
   if (!tool.body.trim()) return "A tool needs a body.";
-  // Unreachable from the dialog, which offers only the three authorable
-  // kinds -- but a `gavin` tool that reached a save with a body naming
-  // nothing would stall every step it was dropped onto, with the mistake
-  // discoverable only at launch.
+  // The dialog draws a `gavin` body as a select over GAVIN_ACTIONS, so
+  // this is reachable only from a tool whose action a NEWER gavin named
+  // and this one does not have. Refused rather than saved: such a tool
+  // stalls every step it is dropped onto, with the mistake discoverable
+  // only at launch.
   if (tool.kind === "gavin" && !gavinActionOf(tool)) {
     return `“${tool.body.trim()}” is not a gavin action.`;
   }

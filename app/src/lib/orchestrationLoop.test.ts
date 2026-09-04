@@ -639,11 +639,27 @@ describe("the until step's wiring", () => {
     expect(body("retryStep")).toContain('"pending", null, null, null, null, 0)');
   });
 
-  it("is never offered as a kind a human can author", () => {
+  // The reverse of what this asserted until 2026-09-04. What kept `until`
+  // off the chips was never the scheduler -- every rule about the loop
+  // branches on the KIND, so an authored one has always looped -- it was
+  // the edit form, which had one body field and would have handed back a
+  // plain command. `toolBodyEditor` gives the kind its own, so the chip
+  // is offered and the field it opens says Check command.
+  it("is a kind a human can author, with a body field of its own", () => {
     expect(SOURCES["./orchestrationTools.ts"]).toContain(
-      'export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];'
+      'export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script", "until", "pr", "gavin"];'
     );
-    expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain('{:else if tool.kind === "until"}');
+    expect(SOURCES["./orchestrationTools.ts"]).toContain('label: "Check command"');
+    expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain("toolBodyEditor(editing.kind)");
+  });
+
+  // Its budget is an ARGUMENT rather than text pasted into the body, and
+  // `summaryParam` ignores a param the tool does not declare -- so a
+  // budget typed into `retries` reads as no budget rather than as an
+  // error. The form has to say the name.
+  it("tells an author what its parameters are called", () => {
+    expect(SOURCES["./orchestrationTools.ts"]).toMatch(/case "until":[\s\S]{0,200}`max`/);
+    expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain("toolKindParamNote(editing.kind)");
   });
 
   for (const path of [

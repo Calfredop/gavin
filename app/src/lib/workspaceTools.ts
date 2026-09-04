@@ -2,9 +2,12 @@
 // tool is run on its OWN -- with no rail behind it -- and what the last
 // run of each one means.
 //
-// The tab is a launcher over the library that already exists
-// (orchestrationTools.ts): no second store, no second dialog, no second
-// set of built-ins. Everything here is a rule about STANDALONE running,
+// The tab is a launcher AND an editor over the library that already
+// exists (orchestrationTools.ts): no second store, no second dialog, no
+// second set of built-ins. Editing opens the very dialog the
+// Orchestration tab opens, seeded on the row the human was looking at
+// (`editDraftFor`), so a tool written here and a tool written there are
+// one tool. Everything else here is a rule about STANDALONE running,
 // which is the only thing that is new.
 //
 // Three rules run through the file.
@@ -13,9 +16,15 @@
 // completion rules, not work: an `until` step's verdict SENDS THE RAIL
 // BACKWARDS and a `pr` step is nothing but waiting, so both are
 // meaningless without a rail to act on, and a `gavin` tool's whole body
-// is the name of a rail action. They are filtered out here rather than
-// disabled in the view, because "you cannot run this" is a fact about
-// the tool and not about the button.
+// is the name of a rail action. `isRunnableStandalone` is that fact, and
+// every launch path asks it.
+//
+// They are LISTED all the same, with Run dark and the reason on the row.
+// They were filtered out while this tab was only a launcher; it is an
+// editor too now, and a filter by kind means the human who switches a
+// tool to Loop-until watches it vanish from the list they are standing
+// in -- with no way back to it except a dialog they did not open. A row
+// that says why its button is dark is the cheaper answer.
 //
 // **A verdict is what somebody observed.** A shell tool's exit code and
 // an agent's turn ending are both events gavin watched; `abandoned` is
@@ -36,7 +45,7 @@
 
 import { relativeTime } from "./appHub";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
-import { resolveToolCwd, type Tool, type ToolKind } from "./orchestrationTools";
+import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "./orchestrationTools";
 
 /// One standalone run of a tool. Mirrors `ToolRun` in the protocol crate.
 export interface ToolRun {
@@ -54,11 +63,10 @@ export interface ToolRun {
   outcome: string;
 }
 
-/// The kinds that mean anything on their own. Deliberately the same
-/// three the library dialog lets a human AUTHOR: a tool somebody can
-/// write is a tool they can run, and the three that are missing are the
-/// three that are built-in-only for the same underlying reason -- their
-/// bodies are completion rules rather than work.
+/// The kinds that mean anything on their own. The three that are missing
+/// are the three whose bodies are completion rules rather than work: a
+/// human can author all six (TOOL_KINDS), and this is the narrower
+/// question of which of them a Run button can start.
 export const RUNNABLE_TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];
 
 /// A type predicate, not just a boolean: every caller's next move is to
@@ -81,12 +89,28 @@ export function isRunnableStandalone<T extends Pick<Tool, "kind">>(
 /// rather than by the library's own order, because that order is a
 /// stored `position` the Tools tab has no way to change and would look
 /// arbitrary from here.
-export function runnableTools(library: Tool[]): Tool[] {
+///
+/// Every kind, including the three that cannot run alone: see the header.
+export function listedTools(library: Tool[]): Tool[] {
   const rank: Record<Tool["scope"], number> = { workspace: 0, global: 1, builtin: 2 };
   return library
-    .filter(isRunnableStandalone)
     .slice()
     .sort((a, b) => rank[a.scope] - rank[b.scope] || a.name.localeCompare(b.name));
+}
+
+/// The draft the library dialog opens on when a row on this tab is
+/// edited. A COPY, never the library object: the list re-renders from
+/// the store the moment a save lands, and a draft that was the library
+/// entry would fight that.
+///
+/// A built-in cannot be saved, so the pencil on one hands back a
+/// duplicate -- the same answer the library's own list gives, arrived at
+/// from the row the human was already looking at rather than after
+/// finding that row again in a dialog.
+export function editDraftFor(tool: Tool, newId: string): Tool {
+  return tool.scope === "builtin"
+    ? duplicateTool(tool, newId)
+    : { ...tool, params: tool.params.map((p) => ({ ...p })) };
 }
 
 /// The last run of each tool, by tool id. The daemon already answers
@@ -218,24 +242,54 @@ export function toolCwdLabel(tool: Pick<Tool, "cwd">): string | null {
   return own && own !== "." ? own : null;
 }
 
+/// Why a kind never runs on its own, in its own words. One sentence per
+/// kind rather than one sentence with the kind interpolated: "an until
+/// step's verdict sends the rail backwards" and "a pr step is nothing
+/// but waiting" are different facts, and a row that states the general
+/// rule leaves the human to work out which half of it they hit.
+///
+/// Keyed rather than switched, so `isRunnableStandalone` stays the
+/// predicate every launch path asks and this stays only the wording.
+const CANNOT_RUN_ALONE: Partial<Record<ToolKind, string>> = {
+  until:
+    "A Loop-until tool is a rail's completion rule — its verdict sends the rail backwards, " +
+    "so it only means something as a step.",
+  pr:
+    "A Wait-for-PR tool is nothing but waiting on a rail's branch — it only means something " +
+    "as a step.",
+  gavin:
+    "A Gavin action acts on a rail — its body names something to do to one, so it only means " +
+    "something as a step.",
+};
+
+/// The sentence for a kind that never runs alone, or null for one that
+/// does. Both the Run button's reason and the launch's own refusal come
+/// through here, so the row and the error it would have produced cannot
+/// say two different things about one tool.
+export function cannotRunAloneReason(kind: ToolKind): string | null {
+  return CANNOT_RUN_ALONE[kind] ?? null;
+}
+
 /// Why this tool cannot be run right now, or null.
 ///
-/// Ordered by what the human can do about it. The daemon comes first
-/// because no amount of editing the tool fixes it; the root second
-/// because a workspace with no folder has nowhere to run ANY tool; and
-/// the open run last, because that one is not an error at all -- it is
-/// the tool doing what it was asked.
+/// Ordered by how permanent the answer is. The kind comes first because
+/// nothing changes it: upgrading the daemon and binding a root both
+/// leave a completion rule exactly as unrunnable as it was, and offering
+/// a version number as the reason would send the human to fix something
+/// that is not the problem. Then the daemon, which no amount of editing
+/// the tool fixes; then the root, because a workspace with no folder has
+/// nowhere to run ANY tool; and the open run last, because that one is
+/// not an error at all -- it is the tool doing what it was asked.
 export function runBlockedReason(input: {
   compat: DaemonCompat | null;
   rootPath: string | null;
   tool: Tool;
   lastRun: ToolRun | undefined;
 }): string | null {
+  const alone = cannotRunAloneReason(input.tool.kind);
+  if (alone) return alone;
   const gated = featureBlockedReason(input.compat, "toolRuns");
   if (gated) return gated;
-  if (!isRunnableStandalone(input.tool)) {
-    return `A ${input.tool.kind} tool is a rail's completion rule — it only means something as a step.`;
-  }
   if (resolveToolCwd(input.tool, input.rootPath) === null) {
     return "This workspace has no root folder, so there is nowhere to run a tool.";
   }
@@ -249,11 +303,11 @@ export function runBlockedReason(input: {
 /// Null while the library is still being fetched -- `renderLibraryFor`
 /// hands the view the built-ins meanwhile, so there is always something
 /// to draw and never a reason to say "loading".
-export function toolsEmptyMessage(runnable: Tool[], search: string): string | null {
-  if (runnable.length > 0) return null;
+export function toolsEmptyMessage(listed: Tool[], search: string): string | null {
+  if (listed.length > 0) return null;
   return search.trim()
     ? `No tool matches “${search.trim()}”.`
-    : "No tools yet — open Manage tools… to write one.";
+    : "No tools yet — press New tool to write one.";
 }
 
 /// Free-text match over the fields a human would type: the name, the

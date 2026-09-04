@@ -1,16 +1,38 @@
 <script lang="ts">
-  // The Tools tab: the library that already exists, with a Run button.
+  // The Tools tab: the library that already exists, with a Run button
+  // and a way in to the editor.
   //
   // A template over workspaceTools.ts, which owns every rule -- which
-  // tools are runnable, what a last run means, why Run is dark. Nothing
-  // is decided here; this file is rows, a search box and a dialog.
+  // tools are listed, which of them run alone, what a last run means,
+  // why Run is dark. Nothing is decided here; this file is rows, a
+  // search box and a dialog.
   //
-  // "Manage tools…" opens ToolLibraryDialog, the SAME dialog the
-  // Orchestration tab opens. There is one library, one editor and one
-  // store behind both tabs, so a tool written for a rail is runnable
-  // here the moment it is saved.
+  // Every row's Edit, its Duplicate, and New tool all open
+  // ToolLibraryDialog -- the SAME dialog the Orchestration tab opens,
+  // seeded on the row that was pressed (`editDraftFor`). There is one
+  // library, one editor and one store behind both tabs, so a tool
+  // written for a rail is runnable here the moment it is saved, and a
+  // tool written here is droppable onto a rail.
+  //
+  // The list holds every kind, not only the runnable three. A tool's
+  // kind is editable from this tab now, and a list filtered by kind
+  // would make the human who switches one to Loop-until watch it
+  // disappear from under the cursor.
   import { onMount } from "svelte";
-  import { Bot, FileCode2, FolderOpen, Play, Settings2, Terminal } from "@lucide/svelte";
+  import {
+    Bot,
+    Copy,
+    FileCode2,
+    FolderOpen,
+    GitPullRequest,
+    Pencil,
+    Play,
+    Plus,
+    Repeat,
+    Settings2,
+    Terminal,
+    Zap,
+  } from "@lucide/svelte";
   import { daemonCompat, layoutState, workspaceRootPath } from "./layoutState";
   import { revealSession } from "./cardRunActions";
   import { toolRecords, fetchTools, renderLibraryFor } from "./toolsState";
@@ -21,12 +43,13 @@
   } from "./groupTemplatesState";
   import { toolRunsStore, refreshToolRuns } from "./toolRunsState";
   import { requestToolRun } from "./workspaceToolsActions";
-  import { toolKindLabel, type Tool, type ToolKind } from "./orchestrationTools";
+  import { emptyTool, toolKindLabel, type Tool, type ToolKind } from "./orchestrationTools";
   import {
+    editDraftFor,
     lastRunsFor,
+    listedTools,
     matchesToolSearch,
     runBlockedReason,
-    runnableTools,
     toolCwdLabel,
     toolRunAxis,
     toolRunChip,
@@ -34,6 +57,7 @@
     toolsEmptyMessage,
     type ToolRun,
   } from "./workspaceTools";
+  import IconButton from "./ui/IconButton.svelte";
   import { runIndicator } from "./ui/indicators";
   import SearchInput from "./ui/SearchInput.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
@@ -47,7 +71,13 @@
   let { workspaceId }: Props = $props();
 
   let search = $state("");
-  let managing = $state(false);
+  /// Null is closed. A non-null value is the library dialog, open on the
+  /// draft it carries -- `null` inside it being its own list. Held as one
+  /// piece of state rather than a boolean beside a draft, so the dialog
+  /// cannot be open on a draft from the time before last: the parent
+  /// tears the component down on close and builds a fresh one, and
+  /// `initialEdit` is read once at construction.
+  let managing = $state<{ draft: Tool | null } | null>(null);
   let error = $state<string | null>(null);
 
   // A clock, so "4m ago" becomes "5m ago" without the human touching
@@ -80,11 +110,21 @@
   const templates = $derived(templateLibraryFor($groupTemplateRecords, workspaceId) ?? []);
   const rootPath = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
   const lastRuns = $derived(lastRunsFor($toolRunsStore, workspaceId));
-  const shown = $derived(runnableTools(library).filter((t) => matchesToolSearch(t, search)));
+  const shown = $derived(listedTools(library).filter((t) => matchesToolSearch(t, search)));
   const emptyMessage = $derived(toolsEmptyMessage(shown, search));
 
   const iconFor = (kind: ToolKind) =>
-    kind === "agent" ? Bot : kind === "command" ? Terminal : FileCode2;
+    kind === "agent"
+      ? Bot
+      : kind === "command"
+        ? Terminal
+        : kind === "gavin"
+          ? Zap
+          : kind === "until"
+            ? Repeat
+            : kind === "pr"
+              ? GitPullRequest
+              : FileCode2;
 
   function blockedFor(tool: Tool): string | null {
     return runBlockedReason({
@@ -97,6 +137,14 @@
 
   async function run(tool: Tool): Promise<void> {
     error = await requestToolRun(workspaceId, tool);
+  }
+
+  /// Opens the library dialog on this row. A built-in cannot be saved,
+  /// so `editDraftFor` hands back a copy of one instead of the original
+  /// -- which is why the built-in rows say Duplicate and the rest say
+  /// Edit, and why both go through here.
+  function edit(tool: Tool): void {
+    managing = { draft: editDraftFor(tool, crypto.randomUUID()) };
   }
 
   // The app's ONE badge vocabulary, composed here rather than in
@@ -122,7 +170,14 @@
       placeholder="Search tools by name, description or kind…"
     />
     <span class="spacer"></span>
-    <button type="button" class="action" onclick={() => (managing = true)}>
+    <button
+      type="button"
+      class="action"
+      onclick={() => (managing = { draft: emptyTool(crypto.randomUUID()) })}
+    >
+      <Plus size={14} /> New tool
+    </button>
+    <button type="button" class="action" onclick={() => (managing = { draft: null })}>
       <Settings2 size={14} /> Manage tools…
     </button>
   </header>
@@ -179,6 +234,21 @@
               </button>
             {/if}
           </span>
+          <!-- Editing sits beside Run rather than behind Manage tools…:
+               the row the human wants to change is the one they are
+               already pointing at. A built-in gets Duplicate for the
+               same reason the library's own list does -- it cannot be
+               saved, so the only way to edit one is to make a copy. -->
+          {#if tool.scope === "builtin"}
+            <IconButton
+              icon={Copy}
+              label="Duplicate to edit"
+              size={13}
+              onclick={() => edit(tool)}
+            />
+          {:else}
+            <IconButton icon={Pencil} label="Edit" size={13} onclick={() => edit(tool)} />
+          {/if}
           <!-- The reason hangs on this span, not on the button: a
                disabled element never fires `mouseenter`, so a title on
                it would be a tooltip that never appears. -->
@@ -200,7 +270,8 @@
     {workspaceId}
     tools={library}
     {templates}
-    onClose={() => (managing = false)}
+    initialEdit={managing.draft}
+    onClose={() => (managing = null)}
   />
 {/if}
 

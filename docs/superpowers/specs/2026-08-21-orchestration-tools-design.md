@@ -34,6 +34,7 @@ one that WRITES it, and still nothing that reads it.*
 | T10 | **Added 2026-09-03:** two more kinds, and both exist because a **completion rule** is what a kind is for. `until` runs a check and, when it fails, sends the rail **backwards** over the step before it, up to a budget. `pr` runs nothing at all: it waits on the pull request for the rail's branch, which gavin reads with `gh` host-side, and reaches the same verdict from GitHub. Both are built-in only. See §9. |
 | T11 | **Added 2026-09-04:** a tool carries its own **working directory** (`cwd`, relative to the workspace root, absolute kept as written, absent = the root). It is read **only by a standalone run** (T12). A rail step still runs in the rail's checkout and ignores it — T6 is unchanged, and deliberately so: rail conflict detection is computed off `worktreePath ?? rootPath`, so a step that quietly jumped out of its worktree would let two rails collide with nothing left to warn about. See §10. |
 | T12 | **Added 2026-09-04:** a tool can be run **standalone** from a per-workspace **Tools** hub tab — the same library, filtered to the three kinds that mean anything without a rail (`agent`, `command`, `script`), with **one session per run** and a run the **daemon** remembers. Sequencing stays orchestration's job: a multi-step deploy is written as one `script` tool, because bash already sequences. See §10. |
+| T13 | **Added 2026-09-04:** a human can author **every** kind, and the Tools tab **edits** as well as runs. What kept `gavin`, `until` and `pr` built-in-only was never the scheduler — every rule about them branches on the KIND — it was an edit form with one body field. The form now has three (source / an action select / none), so all six are authorable and every built-in offers Duplicate. The Tools tab lists the whole library, with Run dark and a reason on the three that only mean something as a step. See §11. |
 
 ---
 
@@ -296,11 +297,14 @@ badges, retry, remove.
 *List mode*: three sections (Built-in / This workspace / All workspaces).
 Built-ins offer **Duplicate**; the others offer **Edit** and **Delete**.
 
-*Edit mode*: name, description, kind (three radio chips), scope (This
+*Edit mode*: name, description, kind (radio chips), scope (This
 workspace / All workspaces), body (a textarea; monospace for `command` and
 `script`), and a params editor — rows of name/label/default with add and
 remove. Beneath the body, a live list of the `{{placeholders}}` found in it,
 flagging any that no param declares.
+
+**Amended 2026-09-04 (T13):** the chips offer all six kinds and the body
+field takes its shape from the kind — see §11.
 
 ### 5.4 Step params dialog
 
@@ -484,6 +488,10 @@ any other tool step (T6). That is a harmless over-report — it touches no
 checkout — and handing `detectConflicts` the tool library to tell them
 apart costs more than the false positive does.
 
+**Amended 2026-09-04 (T13):** no longer built-in-only. The library dialog
+draws a `gavin` body as a **select** over `GAVIN_ACTIONS` rather than a
+text box, which is what made the chip safe to offer — see §11.
+
 ---
 
 ## 9. `until` and `pr`: kinds that can move a rail backwards (added 2026-09-03)
@@ -499,6 +507,11 @@ completion rules live in the kind. So `until` is not a `command` with a
 flag and `pr` is not a `gavin` action with a timer: a duplicate of either
 — or one a newer gavin ships — loops because of what it IS, not because
 the scheduler recognised an id.
+
+**Amended 2026-09-04 (T13):** neither is built-in-only any more, and the
+sentence above is why it was always safe — "a duplicate of either loops
+because of what it IS". What was missing was a form that could write one:
+§11.
 
 `orchestrationLoop.ts` owns the loop for both. One budget (persisted on
 the step's own run row, reusing `resumeAttempts`), one `loopBack` action,
@@ -568,16 +581,20 @@ in `workspaceTools.ts`.
 
 ### 10.1 Which tools it offers
 
-`agent`, `command` and `script` — exactly the three the dialog lets a
-human **author**, and the three that are not completion rules.
+`agent`, `command` and `script` **run**; the other three do not.
 
-The other three are excluded for one reason each, and all three reduce to
+Those three are unrunnable for one reason each, and all three reduce to
 "this is a rule about a rail, not a piece of work": an `until` tool's
 verdict sends the rail **backwards** (§9.1) and there is no rail to send;
 a `pr` tool runs nothing at all and is pure waiting on a rail's branch
-(§9.2); a `gavin` tool's body *names a rail action* (§8.1). They are
-filtered out of the list rather than shown disabled, because "you cannot
-run this" is a fact about the tool and not about the button.
+(§9.2); a `gavin` tool's body *names a rail action* (§8.1).
+
+**Amended 2026-09-04 (T13):** they were *filtered out of the list*; they
+are now **listed with Run dark**, each carrying its own sentence. The tab
+edits tools as well as running them, and a filter by kind means the human
+who switches a tool to Loop-until watches it vanish from the list they
+are standing in — with no way back to it except a dialog they did not
+open. `isRunnableStandalone` is unchanged and still gates every launch.
 
 Rail-shaped built-ins are offered anyway — Merge assumes a rail's branch
 and Push assumes a rail's checkout — because a human standing in the root
@@ -675,3 +692,73 @@ exists is the question this answers.
 
 Deploy is **not** shipped. A pipeline is per-project, and a built-in that
 guessed at one would be a template every workspace had to delete.
+
+---
+
+## 11. Authoring every kind, and editing from the tab (added 2026-09-04, T13)
+
+Two changes, and the second is why the first is safe.
+
+### 11.1 The obstacle was the form, not the scheduler
+
+`gavin` (§8), `until` and `pr` (§9) shipped built-in-only, and each
+carried its own reason for it. They were all the same reason: **the edit
+form had one body field**. A `gavin` body typed into a textarea could
+name an action gavin does not have — a tool that stalls every step it is
+dropped onto, discoverable only at launch. A `pr` tool has no body to
+type at all, so a duplicate came back as a command whose text was the
+word `await-pr`. An `until` duplicate came back as a plain `command`,
+because the kind is a completion rule and the chips offered three.
+
+None of that was ever a rule about *running* one. Every rule about these
+kinds branches on `kind` — `isUntilStep`, `isPrStep`, the `gavin` branch
+in `executeGavinAction` — and never on a built-in id, which T7 spent a
+section establishing. A copy has always behaved exactly like its
+original. What could not be expressed was the body.
+
+### 11.2 Three body shapes (`toolBodyEditor`)
+
+So the form grew the shapes the six kinds actually have:
+
+| shape | kinds | what the form draws |
+|---|---|---|
+| `text` | `agent`, `command`, `script`, `until` | a textarea, labelled and sized per kind — `until`'s says **Check command**, because a step whose field says "Command" reads as one that runs once |
+| `action` | `gavin` | a **select** over `GAVIN_ACTIONS`. The form cannot express an action gavin does not have, which leaves `validateTool`'s refusal guarding only a tool a *newer* gavin wrote |
+| `none` | `pr` | no field, and a sentence saying gavin reads the pull request itself. What the step waits for is a parameter |
+
+Two of the six impose their body, so switching kinds **stashes** the
+authored one and puts it back on the way out. The stash is `string |
+null`, not `string`: a new tool's body is blank, and blank is worth
+restoring — conflating the two leaves `await-pr` sitting in a brand-new
+tool's Command field.
+
+The three whose params are **arguments** rather than text substituted
+into a body (`until`'s `max`, `pr`'s `require`/`max`, `start-rail`'s
+`rail`) name them under the parameter grid. `summaryParam` ignores a
+param the tool does not declare, so a budget typed into `retries` reads
+as *no budget* rather than as an error — the form is the only place that
+mistake can be caught.
+
+The **working directory** (T11) is hidden on those three. A rail step
+runs in the rail's own checkout and never reads it (T6/T11), so on a kind
+that only runs as a step it is a control with no effect — and one that
+quietly kept a value would be read as having one. A value set before a
+switch survives, hidden, and comes back with the kind.
+
+### 11.3 Editing from the Tools tab
+
+Every row carries **Edit** (a built-in carries **Duplicate to edit**),
+and the bar carries **New tool** beside Manage tools…. All of them open
+`ToolLibraryDialog` — the same dialog, seeded through a new `initialEdit`
+prop — because the point is not having to find the row again inside a
+dialog. One library, one editor, one store; a second form here would
+drift from the first the moment either grew a field.
+
+The draft comes from `editDraftFor`, which copies (the list re-renders
+from the store the moment a save lands) and turns a **built-in into a
+duplicate**: a built-in cannot be saved, so a form opened on one would
+refuse after the human had typed.
+
+`initialEdit` is read at **construction**, not in an effect. An effect
+that re-ran for any reason would overwrite what the human had typed with
+the draft they started from.
