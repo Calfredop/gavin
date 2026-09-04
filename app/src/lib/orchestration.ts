@@ -158,7 +158,22 @@ export interface ToolSummary {
 }
 
 export type RailState = "idle" | "running" | "paused";
-export type StepState = "pending" | "running" | "done" | "stalled";
+export type StepState = "pending" | "running" | "done" | "skipped" | "stalled";
+
+/// Is this step BEHIND the run? The one question the scheduler's advance
+/// rules actually ask, and the reason `skipped` could be added without
+/// auditing every `=== "done"` in the file by eye.
+///
+/// `done` and `skipped` are both terminal and they mean opposite things:
+/// done says the work happened, skipped says the human decided it would
+/// not and sent the rail past it (see `skipStep`). Everything that asks
+/// "may the rail move on" must accept both; everything that asks "did
+/// this work get done" -- a Clear-done sweep, a recap that counts
+/// finished work -- must keep asking for `done` alone, or a skip starts
+/// reading as an achievement.
+export function isStepFinished(state: StepState): boolean {
+  return state === "done" || state === "skipped";
+}
 
 export interface RailRun {
   railId: string;
@@ -363,14 +378,16 @@ export function isStageRunning(orch: Orchestration, stageId: string): boolean {
 }
 
 /// Where Start arms the rail: the first stage (by position) holding a
-/// step that is not already `done`. Cards that are ALREADY in the done
-/// column are not considered here -- nextActions marks and cascades past
-/// them on the first tick, which keeps this trivial and keeps one place
-/// deciding what "done" means.
+/// step that is not already finished -- `done` OR `skipped`, since a
+/// step the human sent the rail past is as much behind it as one that
+/// ran, and Start must not rewind onto it. Cards that are ALREADY in the
+/// done column are not considered here -- nextActions marks and cascades
+/// past them on the first tick, which keeps this trivial and keeps one
+/// place deciding what "done" means.
 export function firstUnfinishedStageId(rail: Rail, orch: Orchestration): string | null {
   const stages = [...rail.stages].sort((a, b) => a.position - b.position);
   for (const stage of stages) {
-    if (!stage.steps.every((s) => stepStateOf(orch, s.id) === "done")) return stage.id;
+    if (!stage.steps.every((s) => isStepFinished(stepStateOf(orch, s.id)))) return stage.id;
   }
   return null;
 }
@@ -1099,13 +1116,16 @@ export function nextActions(
         // The status is the one the BOARD shows the card in, so a nested
         // task under a Done plan is skipped here rather than re-run.
         //
-        // `!== "done"` covers a STALLED step too: a card someone finished
-        // by hand while its step sat failed is done, not something rule 2
-        // should then retry.
+        // `!isStepFinished` covers a STALLED step too: a card someone
+        // finished by hand while its step sat failed is done, not
+        // something rule 2 should then retry. It also covers a SKIPPED
+        // one, and that half matters: the human sent the rail past this
+        // step, and a card that later reaches Done by any other route
+        // must not quietly rewrite that decision as "done".
         const cardStatus = statusOf(entry);
         if (
           !isToolStep(step) &&
-          state !== "done" &&
+          !isStepFinished(state ?? "pending") &&
           doneSlug &&
           cardStatus !== null &&
           slugStatus(cardStatus) === doneSlug
@@ -1376,13 +1396,17 @@ export function nextActions(
           }
         }
         }
-        // A `sequence` stage stops here unless THIS step read "done" on
-        // this pass -- covering a launch (now "running"), a stall (every
-        // site that sets `stalled = true` for this step also leaves it at
+        // A `sequence` stage stops here unless THIS step finished on this
+        // pass -- covering a launch (now "running"), a stall (every site
+        // that sets `stalled = true` for this step also leaves it at
         // "stalled" first), and a step rule 1-3 had no reason to touch at
         // all. Rule 5 below still reads `stalled` to pause the rail; that
         // is a separate concern from stopping THIS stage's walk early.
-        if (sequential && simulated.get(step.id) !== "done") break;
+        //
+        // A `skipped` member lets the next one go, which is the whole of
+        // "skip and proceed" inside a sequence: the rail carries on with
+        // the member after the one the human stepped over.
+        if (sequential && !isStepFinished(simulated.get(step.id) ?? "pending")) break;
       }
 
       // Rule 5 -- any stall this tick pauses the rail; the executor
@@ -1393,9 +1417,11 @@ export function nextActions(
       // decided from a `currentStageId` the executor is about to change.
       if (loopingBack) break;
 
-      // Rule 4 -- a fully-done stage advances. An empty stage is
-      // vacuously done, so it is stepped over rather than hanging.
-      if (!stage.steps.every((s) => simulated.get(s.id) === "done")) break;
+      // Rule 4 -- a fully-finished stage advances. An empty stage is
+      // vacuously done, so it is stepped over rather than hanging. A
+      // `skipped` step counts here for the same reason a `done` one
+      // does: the rail has nothing left to do with it.
+      if (!stage.steps.every((s) => isStepFinished(simulated.get(s.id) ?? "pending"))) break;
       const next = rail.stages
         .filter((s) => s.position > stage.position)
         .sort((a, b) => a.position - b.position)[0];
@@ -2107,6 +2133,12 @@ export function railDoneStepIds(
   for (const stage of [...rail.stages].sort((a, b) => a.position - b.position)) {
     for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
       if (ran.has(step.id)) {
+        // `done` alone, NOT isStepFinished: a `skipped` step is behind
+        // the run but it is not finished work, and it is the only record
+        // that the human sent the rail past it. Sweeping it under a
+        // button labelled "Clear done steps" would erase that decision
+        // and call it done in the same gesture. Remove (the per-step X)
+        // is still there for whoever actually wants it gone.
         if (stepStateOf(orch, step.id) === "done") ids.push(step.id);
         continue;
       }
@@ -2448,7 +2480,10 @@ export function detectConflicts(
   worktrees: WorktreeInfo[] | null,
   branches: string[] | null = null
 ): Conflict[] {
-  const steps = placedSteps(orch, tree).filter((s) => s.state !== "done");
+  // Finished steps drop out, `skipped` as much as `done`: a conflict is
+  // a claim about work the rails have STILL to do, and a step the human
+  // sent the rail past will never touch the checkout again.
+  const steps = placedSteps(orch, tree).filter((s) => !isStepFinished(s.state));
   const conflicts: Conflict[] = [];
 
   // 1. A PARALLEL stage IS a same-worktree conflict by construction: its

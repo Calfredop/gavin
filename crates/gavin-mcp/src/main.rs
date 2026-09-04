@@ -730,9 +730,14 @@ enum StartVerdict {
 }
 
 /// Where Start arms a rail: the first stage (by position) holding a step
-/// whose run row is not `done`. Card statuses play no part -- the app's
+/// whose run row is not FINISHED. Card statuses play no part -- the app's
 /// `firstUnfinishedStageId`, which this mirrors, leaves that to the
 /// scheduler's own first tick.
+///
+/// Finished is `done` OR `skipped`: a step the human sent the rail past
+/// is as much behind it as one that ran, and an agent arming the rail
+/// here must not rewind onto it -- that would undo the skip and re-run
+/// work somebody had explicitly declined.
 fn first_unfinished_stage(
     rail: &protocol::Rail,
     step_runs: &[protocol::StepRun],
@@ -741,7 +746,9 @@ fn first_unfinished_stage(
     stages.sort_by_key(|s| s.position);
     stages.into_iter().find(|stage| {
         !stage.steps.iter().all(|step| {
-            step_runs.iter().any(|r| r.step_id == step.id && r.state == "done")
+            step_runs
+                .iter()
+                .any(|r| r.step_id == step.id && (r.state == "done" || r.state == "skipped"))
         })
     })
 }
@@ -1323,9 +1330,13 @@ mod tests {
     }
 
     fn done(step_id: &str) -> protocol::StepRun {
+        step_run(step_id, "done")
+    }
+
+    fn step_run(step_id: &str, state: &str) -> protocol::StepRun {
         protocol::StepRun {
             step_id: step_id.into(),
-            state: "done".into(),
+            state: state.into(),
             session_id: None,
             reason: None,
             conversation_id: None,
@@ -1405,6 +1416,20 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    /// A step the human SKIPPED is behind the rail exactly as a done one
+    /// is. Arming here must not rewind onto it: that would undo the skip
+    /// and re-run work somebody had explicitly declined.
+    #[test]
+    fn start_rail_arms_past_a_skipped_step() {
+        let mut t = mock(vec![
+            orchestration(two_stage_rail(), vec![], vec![step_run("t1", "skipped")]),
+            Response::Ok,
+        ]);
+        let (text, is_error) = call_start_rail("Backend", &mut t);
+        assert!(!is_error, "{text}");
+        assert!(text.contains("stage 2 of 2"), "should arm past the skip: {text}");
     }
 
     /// A stage is unfinished while ANY of its steps is not done -- one

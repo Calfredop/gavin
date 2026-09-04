@@ -9,7 +9,7 @@
 
 import { allSessionIds, sessionTabsOnly } from "./layout";
 import { boardSummary } from "./homeSummary";
-import { railStateOf, stepStateOf, type Orchestration, type Rail } from "./orchestration";
+import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "./orchestration";
 import { slugStatus } from "./planBoard";
 import type { Board } from "./kanban";
 import type { GavinTree } from "./gavin";
@@ -215,7 +215,11 @@ export function railPhase(
   if (attentionRailIds.has(rail.id)) return "attention";
   if (railStateOf(orch, rail.id) === "running") return "running";
   const steps = rail.stages.flatMap((stage) => stage.steps);
-  if (steps.length > 0 && steps.every((step) => stepStateOf(orch, step.id) === "done")) return "done";
+  // `skipped` counts as finished here: a rail whose every step is behind
+  // it has nothing left to run, and filing it under "idle" would put it
+  // back in the pile of rails waiting to be started.
+  if (steps.length > 0 && steps.every((step) => isStepFinished(stepStateOf(orch, step.id))))
+    return "done";
   return "idle";
 }
 

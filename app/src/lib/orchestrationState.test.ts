@@ -198,6 +198,7 @@ import {
   resumeRail,
   retryStep,
   markStepDone,
+  skipStep,
   resumeStep,
   setRailAutoResumeAction,
   executeActions,
@@ -811,6 +812,47 @@ describe("rail controls", () => {
     await setStepRunAction("ws-1", "t1", "stalled", null, "Push branch exited with code 1");
     await markStepDone("ws-1", "t1");
     expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", null, null, null, null, null);
+  });
+
+  // The other half of the pair. "Mark done" was the only way past a step
+  // that would not finish, so it got pressed for work nobody did -- and
+  // every tally downstream counted that step as delivered.
+  it("Skip files a running step skipped, keeping its session", async () => {
+    await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
+    await skipStep("ws-1", "t1");
+    // Not "done": the rail is past this step and nothing about it
+    // happened. The session survives -- a live agent the human has
+    // stopped waiting for is still theirs to read, and to kill from the
+    // session itself if that is what they meant.
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "skipped", "sess-1", null, null, null, null);
+  });
+
+  it("Skip clears a stalled step's reason with it", async () => {
+    await setStepRunAction("ws-1", "t1", "stalled", null, "Push branch exited with code 1");
+    await skipStep("ws-1", "t1");
+    // The stall is no longer why the rail is where it is, and a bubble
+    // still quoting it would describe a decision nobody made.
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "skipped", null, null, null, null, null);
+  });
+
+  // The "and proceed" half. Rule 5 pauses a rail around a stall, so the
+  // step most worth skipping sits on a rail that would otherwise skip it
+  // and then advance nothing.
+  it("Skip puts a rail paused by the stall back to running", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await setStepRunAction("ws-1", "t1", "stalled", null, "agent exited before the card reached Done");
+    vi.mocked(backend.setRailRun).mockClear();
+    await skipStep("ws-1", "t1");
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1");
+  });
+
+  // Skipping one step is not starting a rail. A rail the human left idle
+  // must stay idle, or a skip would launch work out of nowhere.
+  it("Skip does not start an idle rail", async () => {
+    await setStepRunAction("ws-1", "t1", "stalled", null, "worktree is gone");
+    vi.mocked(backend.setRailRun).mockClear();
+    await skipStep("ws-1", "t1");
+    expect(backend.setRailRun).not.toHaveBeenCalled();
   });
 });
 

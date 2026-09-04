@@ -55,6 +55,7 @@ import {
   Square,
   SquareCheck,
   SquareDot,
+  SquareSlash,
   SquareX,
   TriangleAlert,
   Unlink2,
@@ -356,6 +357,11 @@ const STEP: Record<StepState, Indicator> = {
   pending: make("step", "pending", Square, "neutral", "not started"),
   running: make("step", "running", SquareDot, "accent", "running now"),
   done: make("step", "done", SquareCheck, "success", "done"),
+  // A struck-through square, and NEUTRAL rather than success: a skipped
+  // step is behind the rail exactly as a done one is, but nothing about
+  // it went right. Success tone would read as work delivered, and danger
+  // as a failure -- neither is what "the human said move on" means.
+  skipped: make("step", "skipped", SquareSlash, "neutral", "skipped — the rail was sent past it"),
   stalled: make("step", "stalled", SquareX, "danger", "stalled"),
 };
 
@@ -363,7 +369,7 @@ export function stepIndicator(state: StepState): Indicator {
   return STEP[state];
 }
 
-export const STEP_STATES = ["pending", "running", "done", "stalled"] as const;
+export const STEP_STATES = ["pending", "running", "done", "skipped", "stalled"] as const;
 
 // ---- rail --------------------------------------------------------------
 // The rail itself, one level up from its steps. Both surfaces that show

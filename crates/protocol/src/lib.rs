@@ -1476,7 +1476,12 @@ pub struct RailRun {
 #[serde(rename_all = "camelCase")]
 pub struct StepRun {
     pub step_id: String,
-    /// pending | running | done | stalled
+    /// pending | running | done | skipped | stalled
+    ///
+    /// Opaque here on purpose -- the app owns this vocabulary and the
+    /// daemon only stores it, which is why `skipped` ("the human sent the
+    /// rail past this step") could join without a protocol bump. Anything
+    /// that has to reason about it must ask the app.
     pub state: String,
     pub session_id: Option<String>,
     /// Human-readable stall cause; None otherwise.

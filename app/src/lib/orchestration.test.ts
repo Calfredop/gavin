@@ -7,6 +7,7 @@ import {
   stepStateOf,
   railStateOf,
   firstUnfinishedStageId,
+  isStepFinished,
   runnableIdleRails,
   startRailVerdict,
   railRunsDiffer,
@@ -1320,6 +1321,132 @@ describe("nextActions on a sequence group", () => {
     const actions = nextActions(o, b(), t(), [], new Set());
     expect(actions.filter((a) => a.kind === "stall")).toHaveLength(1);
     expect(actions.some((a) => a.kind === "launch")).toBe(false);
+  });
+});
+
+// A step the human sent the rail PAST. Terminal like `done` and it means
+// the opposite: the rail has nothing left to do here, and nothing here
+// got done. Every rule that asks "may the rail move on" has to accept it;
+// every tally that asks "what got finished" must not.
+describe("skip and proceed", () => {
+  it("counts done and skipped as finished, and nothing else", () => {
+    expect(isStepFinished("done")).toBe(true);
+    expect(isStepFinished("skipped")).toBe(true);
+    expect(isStepFinished("pending")).toBe(false);
+    expect(isStepFinished("running")).toBe(false);
+    expect(isStepFinished("stalled")).toBe(false);
+  });
+
+  it("lets Start arm past a fully skipped stage", () => {
+    const r = rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [],
+      stepRuns: [{ stepId: "t1", state: "skipped", sessionId: null, reason: null }],
+    };
+    // Not "r1-s0": a rail that rewound onto the step the human had just
+    // stepped over would undo the skip on the next press of Play.
+    expect(firstUnfinishedStageId(r, orch)).toBe("r1-s1");
+  });
+
+  it("advances the rail off a skipped step's stage", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]], [["t2", "/ws/.gavin-root/plans/b.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: "sess-1", reason: null },
+    ]);
+    expect(nextActions(orch, BOARD, tree([plan("a.md"), plan("b.md")]), [], new Set())).toEqual([
+      { kind: "advance", railId: "r1", stageId: "r1-s1" },
+      { kind: "launch", stepId: "t2" },
+    ]);
+  });
+
+  it("completes a rail whose last stage was skipped", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: null, reason: null },
+    ]);
+    expect(nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set())).toEqual([
+      { kind: "complete", railId: "r1" },
+    ]);
+  });
+
+  // Rule 2 wants `pending` or `stalled`; a skipped step is neither, so
+  // the run must walk over it rather than start it.
+  it("never relaunches a skipped step", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: null, reason: null },
+    ]);
+    const actions = nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set());
+    expect(actions.some((a) => a.kind === "launch")).toBe(false);
+  });
+
+  // Rule 1 turns a card sitting in the done column into a `markDone`.
+  // Over a SKIPPED step that would rewrite the human's decision as an
+  // achievement -- and a card can reach Done by any route, including a
+  // human dragging it there minutes later.
+  it("does not re-file a skipped step as done when its card reaches the done column", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: null, reason: null },
+    ]);
+    const actions = nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set());
+    expect(actions.some((a) => a.kind === "markDone")).toBe(false);
+    expect(actions).toEqual([{ kind: "complete", railId: "r1" }]);
+  });
+
+  it("lets the next member of a sequence group go", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/ws/.gavin-root/plans/a.md", 0);
+    o = addStep(o, "s1", "t2", "/ws/.gavin-root/plans/b.md", 1);
+    o = setStageMode(o, "s1", "sequence");
+    o = {
+      ...o,
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+      stepRuns: [{ stepId: "t1", state: "skipped", sessionId: null, reason: null }],
+    };
+    expect(nextActions(o, board(["To Do", "Done"]), tree([plan("a.md"), plan("b.md")]), [], new Set())).toEqual([
+      { kind: "launch", stepId: "t2" },
+    ]);
+  });
+
+  // A conflict is a claim about work the rails have STILL to do. A
+  // skipped step will never touch the checkout again, so it drops out of
+  // the detector exactly as a done one does.
+  it("drops out of conflict detection", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/ws/.gavin-root/plans/a.md", 0);
+    o = addStep(o, "s1", "t2", "/ws/.gavin-root/plans/a.md", 1);
+    const t = tree([plan("a.md")]);
+    // The rail is unbound, which is a conflict of its own and says
+    // nothing about steps -- the duplicate-card one is the subject here.
+    const dupes = (orch: Orchestration) =>
+      detectConflicts(orch, t, [], []).filter((c) => c.kind === "duplicate-card");
+    expect(dupes(o)).toHaveLength(1);
+    const skipped: Orchestration = {
+      ...o,
+      stepRuns: [{ stepId: "t2", state: "skipped", sessionId: null, reason: null }],
+    };
+    expect(dupes(skipped)).toEqual([]);
+  });
+
+  // "Clear done steps" says done, and a skip is the only record that the
+  // human sent the rail past this step. Sweeping it under that label
+  // would erase the decision and call it done in the same gesture.
+  it("is left on the rail by Clear done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"], ["t2", "/ws/.gavin-root/plans/b.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [],
+      stepRuns: [
+        { stepId: "t1", state: "done", sessionId: null, reason: null },
+        { stepId: "t2", state: "skipped", sessionId: null, reason: null },
+      ],
+    };
+    const cards = cardIndex(tree([plan("a.md"), plan("b.md")]));
+    expect(railDoneStepIds(r, orch, cards, "Done")).toEqual(["t1"]);
   });
 });
 

@@ -647,6 +647,51 @@ export async function markStepDone(workspaceId: string, stepId: string): Promise
   await tick(workspaceId);
 }
 
+/// "Skip and proceed" -- the OTHER honest answer to a step that is not
+/// going to finish, and the one Mark done was being misused for.
+///
+/// Mark done says the work happened; a human who only wants the rail to
+/// move on had to say that anyway, and every surface downstream then
+/// counted a step nobody ran as delivered work -- the rail recap, the
+/// stage tally, the prompt an orchestration agent reads. `skipped` is a
+/// terminal state that says the opposite out loud: the rail is past this
+/// step BECAUSE someone decided it would not run.
+///
+/// Two halves, and the second is the "and proceed":
+///
+/// 1. The run row goes `skipped`, keeping the session id and the session
+///    itself, exactly as markStepDone does. The human has judged the step
+///    not worth finishing, not the transcript not worth reading -- and
+///    killing a live agent is a decision they can still make from the
+///    session itself, which is where it belongs.
+/// 2. A PAUSED rail is put back to `running`. Rule 5 pauses a rail
+///    around a stall, so the step most worth skipping sits on a rail
+///    that would otherwise skip it and then advance nothing -- the same
+///    trap resumeStep documents. Only from `paused`: a rail the human
+///    left idle stays idle, because skipping one step is not starting a
+///    rail.
+export async function skipStep(workspaceId: string, stepId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const sessionId = orch?.stepRuns.find((r) => r.stepId === stepId)?.sessionId ?? null;
+  const rail = orch ? railOwning(orch, stepId) : null;
+  // The reason goes with it: whatever stalled the step is no longer the
+  // reason the rail is where it is, and a bubble still quoting it would
+  // describe a decision nobody made.
+  await setStepRunAction(workspaceId, stepId, "skipped", sessionId, null);
+
+  if (rail && railStateOf(get(orchestrations)[workspaceId], rail.id) === "paused") {
+    const current = get(orchestrations)[workspaceId].railRuns.find(
+      (r) => r.railId === rail.id
+    )?.currentStageId;
+    // The stage this STEP sits in when the rail has no current one -- a
+    // step id would be accepted here and name nothing, leaving the rail
+    // running at a stage that does not exist (see resumeStep).
+    const owning = rail.stages.find((g) => g.steps.some((t) => t.id === stepId))?.id ?? null;
+    await setRailRunAction(workspaceId, rail.id, "running", current ?? owning);
+  }
+  await tick(workspaceId);
+}
+
 /// What a check step wrote, or "". Its own session's scrollback would be
 /// the obvious source and is not usable: an xterm `Terminal` exists only
 /// where a pane built one, and a rail's page is routinely one the human

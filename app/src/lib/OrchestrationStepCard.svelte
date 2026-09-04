@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CheckCheck, RotateCw, X } from "@lucide/svelte";
+  import { CheckCheck, RotateCw, SkipForward, X } from "@lucide/svelte";
   import BoardCard from "./BoardCard.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
@@ -40,6 +40,9 @@
     onRetry: () => void;
     /// Files a step done by hand -- same contract as the chip's.
     onMarkDone: () => void;
+    /// Sends the rail PAST this step without claiming it was done --
+    /// same contract as the chip's.
+    onSkip: () => void;
     onRemove: () => void;
     // --- everything below is the board's own plumbing, passed straight
     // through so a card on a rail behaves like a card anywhere else.
@@ -68,6 +71,7 @@
     severity,
     onRetry,
     onMarkDone,
+    onSkip,
     onRemove,
     labelDefs,
     workspaceId,
@@ -143,8 +147,18 @@
         {#if state === "stalled"}
           <IconButton icon={RotateCw} label="Retry" size={13} onclick={onRetry} />
         {/if}
+        <!-- The pair, always together: these are the two honest answers
+             to a step that is not going to finish on its own, and
+             offering only the first is what made "Mark done" the button
+             people pressed when they meant "move on". -->
         {#if state === "running" || state === "stalled"}
           <IconButton icon={CheckCheck} label="Mark done" size={13} onclick={onMarkDone} />
+          <IconButton
+            icon={SkipForward}
+            label="Skip and proceed"
+            size={13}
+            onclick={onSkip}
+          />
         {/if}
         <IconButton icon={X} label="Remove from rail" size={13} onclick={onRemove} />
       </div>
@@ -178,7 +192,14 @@
   .step.done {
     box-shadow: 0 0 0 2px var(--border-success);
   }
-  .step.done > :global(.card) {
+  /* Behind the rail like .done, and faded like it -- but a PLAIN ring,
+     with none of done's success tone: the rail is past this step and
+     nothing about it went right. */
+  .step.skipped {
+    box-shadow: 0 0 0 2px var(--border);
+  }
+  .step.done > :global(.card),
+  .step.skipped > :global(.card) {
     opacity: 0.75;
   }
   .step.stalled {

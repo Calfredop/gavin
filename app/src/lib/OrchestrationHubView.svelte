@@ -78,6 +78,7 @@
     setRailAutoResumeAction,
     retryStep,
     markStepDone,
+    skipStep,
     makeStageSequentialAction,
     moveStepIntoStageAction,
     moveStepToNewStageAction,
@@ -792,6 +793,7 @@
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onMarkStepDone={(stepId) => void markStepDone(workspaceId, stepId)}
+          onSkipStep={(stepId) => void skipStep(workspaceId, stepId)}
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
           filtering={lens.filtering}
           stepLit={lens.stepLit}

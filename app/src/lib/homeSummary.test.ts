@@ -170,6 +170,21 @@ describe("orchestrationSummary", () => {
     expect(s.rails[0].stagesDone).toBe(1);
   });
 
+  // Finished, not achieved. A stage the human skipped past is one the
+  // rail is done with, and a recap that still counted it would under-
+  // report how far the rail has actually got.
+  it("counts a stage the human skipped past among the ones behind the rail", () => {
+    const s = orchestrationSummary(
+      orch([orail("backend", [["t1"], ["t2"], ["t3"]])], {
+        stepRuns: [step("t1", "done"), step("t2", "skipped")],
+      }),
+      undefined,
+      null,
+      null
+    );
+    expect(s.rails[0].stagesDone).toBe(2);
+  });
+
   it("reports the rail's current stage as a 1-based index", () => {
     const s = orchestrationSummary(
       orch([orail("backend", [["t1"], ["t2"], ["t3"]])], {

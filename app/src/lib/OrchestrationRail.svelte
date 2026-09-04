@@ -124,6 +124,9 @@
     onAddStep: () => void;
     onRetryStep: (stepId: string) => void;
     onMarkStepDone: (stepId: string) => void;
+    /// Sends the rail past a step without claiming its work happened, and
+    /// un-pauses the rail so it actually proceeds (see skipStep).
+    onSkipStep: (stepId: string) => void;
     onRemoveStep: (stepId: string) => void;
     /// The tab's search box holds a query. A rail keeps its whole shape
     /// while filtered -- a pipeline with holes in it would read as a
@@ -184,6 +187,7 @@
     onAddStep,
     onRetryStep,
     onMarkStepDone,
+    onSkipStep,
     onRemoveStep,
     onEditStepParams,
     onOpenCard,
@@ -612,6 +616,7 @@
               severity={severityForStep(numbered, step.id)}
               onRetry={() => onRetryStep(step.id)}
               onMarkDone={() => onMarkStepDone(step.id)}
+              onSkip={() => onSkipStep(step.id)}
               onRemove={() => onRemoveStep(step.id)}
               {labelDefs}
               {workspaceId}
@@ -640,6 +645,7 @@
               severity={severityForStep(numbered, step.id)}
               onRetry={() => onRetryStep(step.id)}
               onMarkDone={() => onMarkStepDone(step.id)}
+              onSkip={() => onSkipStep(step.id)}
               onRemove={() => onRemoveStep(step.id)}
               onEditParams={() => onEditStepParams(step.id)}
               dimmed={filtering && !stepLit(step.id)}

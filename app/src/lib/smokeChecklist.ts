@@ -459,6 +459,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Click the arrow, not the row: the row must NOT also switch to the terminal. Then try it on a page belonging to a workspace you are NOT in — the jump has to activate that workspace, not flip its hub view behind your back.",
       },
       {
+        id: "run-skip-and-proceed",
+        text: "“Skip and proceed” on a running or stalled step sends the rail past it — the step reads “skipped” (a struck-through square, no green), the next stage starts, and the agent's own tab is left alone",
+        hint: "Sits next to Mark done on both the step card and the chip, and only on a running or stalled step. Do it on a STALLED step for the important half: the rail was paused by that stall, and Skip has to un-pause it and carry on by itself — no Play press. Check the honest half too: the skipped step must NOT go green, must not be swept by “Clear done steps”, and moving its card to Done by hand afterwards must not re-file it as done. On an IDLE rail (never started, or reset) a skip must not start anything.",
+      },
+      {
         id: "run-clear-done-keeps-restarted",
         text: "“Clear done steps” leaves behind every step the rail still has to run — including one restarted over a card that is still sitting in Done",
         hint: "Run a rail to the end so every card sits in Done, then press Reset run state: the broom must go flat and its tooltip read “This rail has no done steps”, because every step is queued to run again. A stalled step is the same — move its card to Done by hand and it still stays on the rail, since Retry would run it. The fallback still has to work the other way round: on a rail that has NEVER run, moving one of its cards to Done by hand takes that step alone off.",

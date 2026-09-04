@@ -201,6 +201,21 @@ describe("railPhase", () => {
     expect(railPhase(orch, r)).toBe("done");
   });
 
+  // A rail with nothing left to run has arrived, however it got there.
+  // Filing it under "idle" would put it back in the pile of rails
+  // waiting to be started.
+  it("reports a rail whose remaining steps were skipped as done", () => {
+    const r = rail("r1", [stage("s1", 0, [step("st1", 0)]), stage("s2", 1, [step("st2", 0)])]);
+    const orch = orchestration({
+      rails: [r],
+      stepRuns: [
+        { stepId: "st1", state: "done", sessionId: null, reason: null },
+        { stepId: "st2", state: "skipped", sessionId: null, reason: null },
+      ],
+    });
+    expect(railPhase(orch, r)).toBe("done");
+  });
+
   it("reports a rail with one unfinished step as idle", () => {
     const r = rail("r1", [stage("s1", 0, [step("st1", 0), step("st2", 1)])]);
     const orch = orchestration({
