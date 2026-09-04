@@ -32,7 +32,7 @@
     cancelNewWorkspace,
   } from "./workspaceCreate";
   import type { SessionStatus } from "./layoutState";
-  import { presetSingle, allSessionIds, findLeafPath, getNodeAtPath } from "./layout";
+  import { presetSingle, findLeafPath, getNodeAtPath } from "./layout";
   import {
     ChevronRight,
     ChevronDown,
@@ -76,6 +76,7 @@
     railStripStats,
     kanbanColumnChips,
     pageAgentsSummary,
+    workspaceAgentsSummary,
     pageTabRows,
     hasRecap,
     showGitChip,
@@ -204,16 +205,22 @@
     return digit === null ? null : String(digit);
   }
 
-  // The count this plan's sidebar badges show -- waiting_for_input only,
-  // never a generic aggregate across all three states (see this plan's
-  // Global Constraints: "working" is background information, not
-  // something a badge needs to draw the eye to).
-  function waitingForInputCount(page: Page): number {
-    return allSessionIds(page.layout).filter((id) => $layoutState.sessionStatusById[id] === "waiting_for_input").length;
-  }
-
-  function workspaceWaitingForInputCount(ws: Workspace): number {
-    return ws.pages.reduce((sum, page) => sum + waitingForInputCount(page), 0);
+  // The count the sidebar's badges show -- waiting_for_input only, never
+  // a generic aggregate across all three states (see this plan's Global
+  // Constraints: "working" is background information, not something a
+  // badge needs to draw the eye to).
+  //
+  // Read off the very tallies the recap strip beside it uses
+  // (sidebarSummary.ts) rather than walked again here. The page badge is
+  // `tabs.waiting` from the recap the row already computed; this is the
+  // workspace's own total, and it goes through workspaceAgentsSummary
+  // because a sum over ws.pages cannot see the workspace's MAIN agent
+  // session -- that one lives outside every page tree (D12), so a Home-tab
+  // agent with a question on screen earned no badge anywhere in the
+  // sidebar, which is precisely the session a human has no other row to
+  // notice.
+  function workspaceWaitingCount(ws: Workspace): number {
+    return workspaceAgentsSummary(ws, $layoutState).waiting;
   }
 
   // The two halves of a workspace's recap row. Both are pure tallies
@@ -995,8 +1002,8 @@
               {/if}
             </span>
           {/if}
-          {#if waitingForInputCount(page) > 0}
-            {@const waiting = waitingForInputCount(page)}
+          {#if tabs.waiting > 0}
+            {@const waiting = tabs.waiting}
             <StatusBadge
               indicator={agentIndicatorByState("waiting_for_input")}
               size={10}
@@ -1196,8 +1203,8 @@
             {#if hint}<ShortcutHint text={hint} />{/if}
           {/if}
           <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
-          {#if workspaceWaitingForInputCount(ws) > 0}
-            {@const waiting = workspaceWaitingForInputCount(ws)}
+          {#if workspaceWaitingCount(ws) > 0}
+            {@const waiting = workspaceWaitingCount(ws)}
             <StatusBadge
               indicator={agentIndicatorByState("waiting_for_input")}
               size={10}
@@ -1277,8 +1284,8 @@
               onclick={() => switchWorkspace(ws.id)}
             >{ws.name}</span>
           {/if}
-          {#if workspaceWaitingForInputCount(ws) > 0}
-            {@const waiting = workspaceWaitingForInputCount(ws)}
+          {#if workspaceWaitingCount(ws) > 0}
+            {@const waiting = workspaceWaitingCount(ws)}
             <StatusBadge
               indicator={agentIndicatorByState("waiting_for_input")}
               size={10}

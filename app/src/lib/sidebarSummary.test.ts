@@ -786,3 +786,36 @@ describe("pageTabRows", () => {
     expect(sessions.filter((r) => r.status === "idle")).toHaveLength(summary.idle);
   });
 });
+
+// The attention badge is the one part of these tallies no unit test can
+// reach: it is a number rendered on a row. What it must not do is count
+// for itself. It did, once -- a sum over ws.pages, which cannot see the
+// workspace's MAIN agent session (D12, outside every page tree), so a
+// Home-tab agent with a question on screen showed no badge on any row of
+// the sidebar. These pin the badge to the summaries above, where the
+// main session is already folded in and already tested.
+describe("Sidebar attention badge wiring", () => {
+  const source = (
+    import.meta.glob("./Sidebar.svelte", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>
+  )["./Sidebar.svelte"];
+
+  it("counts a workspace's waiting agents with workspaceAgentsSummary", () => {
+    expect(source).toContain("return workspaceAgentsSummary(ws, $layoutState).waiting;");
+  });
+
+  it("draws the page badge off the recap that row already computed", () => {
+    expect(source).toContain("{#if tabs.waiting > 0}");
+  });
+
+  it("wears the shared agent badge rather than a glyph of its own", () => {
+    expect(source).toContain('indicator={agentIndicatorByState("waiting_for_input")}');
+  });
+
+  it("keeps no second walk of the layouts for the count", () => {
+    expect(source).not.toContain('=== "waiting_for_input"');
+  });
+});
