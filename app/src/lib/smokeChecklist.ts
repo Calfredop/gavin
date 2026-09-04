@@ -310,11 +310,6 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Run & bindings",
     items: [
       {
-        id: "session-actions-own-row",
-        text: "On an unbound card, the detail modal stacks “Develop into a plan…” and “▶ Run …” one per row, each still only as wide as its own label",
-        hint: "Both labels are sentences, so side by side they wrapped mid-label. Check a plan and a task (the Run label differs), and a card with no Develop button — the lone Run button must not stretch across the modal.",
-      },
-      {
         id: "develop-jumps-to-tab",
         text: "“Develop into a plan…” lands you IN the spawned agent's tab (terminal view, Agents page) rather than leaving you on the board",
         hint: "From both surfaces that offer it — the card menu and the detail modal. Develop writes no status and binds no session, so the board it was started from shows nothing at all afterwards; the agent's first move is a question, and the jump is what puts you in front of it. The tab is named after the card until the agent renames itself.",
@@ -3699,6 +3694,71 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "pin-survives-restart",
         text: "Pins survive an app restart, and unpinning leaves no trace in config.json",
+      },
+    ],
+  },
+  {
+    title: "Card detail panel",
+    items: [
+      {
+        id: "detail-bar-pinned",
+        text: "Open a card whose agent is waiting for input and whose prompt runs to a screenful: the state and “Jump to session” are visible WITHOUT scrolling, and stay put while you scroll the prompt",
+        hint: "This is the whole card. The panel used to be one scroll — identity, every field, attachments, checklist, tasks, the prompt, and only then the session block — so the one urgent button sat below however much the human had written. Only the middle band scrolls now.",
+      },
+      {
+        id: "detail-bar-tone",
+        text: "That bar is tinted amber with a bold headline while the agent waits; a WORKING agent gets the accent border and no tint",
+        hint: "Colour means what ui/indicators.ts says it means: amber wants a human, blue is motion. A working agent is not an alert.",
+      },
+      {
+        id: "detail-bar-wait",
+        text: "The bar says how long it has been waiting, and after an app restart the same wait wears “≥” or reads “since launch”",
+        hint: "Gavin can only time a state from a transition it watched. A status already in place when the app attached gives a floor, never a measurement — hover the number and it says so.",
+      },
+      {
+        id: "detail-bar-primary",
+        text: "On a card whose session has exited, “Jump to session” is greyed and “Re-launch” carries the accent — the accent is never on a dead button",
+        hint: "Both are drawn either way: a pair where only one is possible is how the panel says which. Check the live case too — there Jump is the accented one and Re-launch is grey.",
+      },
+      {
+        id: "detail-bar-orphan",
+        text: "With a surviving orphan process the bar goes red and leads with “End the running process”, ahead of “Resume this card”",
+        hint: "Resuming beside an agent that never stopped is the second-agent-in-one-checkout outcome, and the two buttons are neighbours.",
+      },
+      {
+        id: "detail-bar-unbound",
+        text: "An unbound card's bar leads with “▶ Run …” in the accent, then “Develop into a plan…” (To Do only) and “Run it on several agents…”",
+        hint: "All three compose a command line, so with an agent profile that takes no prompt all three grey together and the reason is printed under the bar, not in a tooltip a disabled button could never fire.",
+      },
+      {
+        id: "detail-folds-remember",
+        text: "“Card settings” and “Orchestration rail” start folded and say what they hold while folded (“2 labels · 1 attachment · auto commit on”, “Rework · stage 2 of 4”)",
+        hint: "A fold that hides whether anything is in there just moves the hunt one click on. Break an attachment and the folded line must say “⚠ 1 missing attachment” — that is the one thing in there that blocks every run.",
+      },
+      {
+        id: "detail-folds-persist",
+        text: "Unfold “Card settings”, close the panel, reopen it on a DIFFERENT card and restart the app: it is still unfolded",
+        hint: "localStorage, app-wide, like the sidebar's expansion — the answer is about how you read a card, not about one card.",
+      },
+      {
+        id: "detail-one-scrollbar",
+        text: "A card with a long body scrolls ONCE — the prompt/body block has no scrollbar of its own any more",
+        hint: "It used to be a 200px box with its own scroller inside a panel that also scrolled. Uncapping it costs nothing now that nothing urgent sits below it.",
+      },
+      {
+        id: "detail-foot-pinned",
+        text: "Delete / Archive / Open in card editor / Close never scroll away, and an error from one of them appears directly above them",
+        hint: "An action reporting into a part of the panel that has scrolled off is an action that reported nowhere.",
+      },
+      {
+        id: "detail-repoint-scrolls-top",
+        text: "Opening a nested task from the Tasks list lands you at the TOP of that card, not at the offset the previous one was scrolled to",
+        hint: "The panel repoints without unmounting, and the scrolling element is now inside it rather than Modal's own panel.",
+      },
+      {
+        id: "detail-pane-fills",
+        text: "The same panel split into a pane (the card tab) fills it: head pinned at the top, foot pinned at the bottom, only the middle scrolling — at any pane height",
+        hint: "Narrow the pane too: the bar's buttons wrap as a block against the right edge rather than one button at a time.",
       },
     ],
   },
