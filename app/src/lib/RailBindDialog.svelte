@@ -101,6 +101,11 @@
   let draftBranch = $state("");
   let draftFrom = $state("HEAD");
   let creating = $state(false);
+  /// Why the last "Create and bind" did not take. Said here for the same
+  /// reason the fork dialog says its own: the Git tab's error banner is
+  /// not on screen from the orchestration hub, so a refusal delegated to
+  /// it reached nobody and the button read as dead.
+  let createError = $state<string | null>(null);
 
   /// What a branch made HERE is for: this rail. Seeding both name fields
   /// with it is the whole point of making a branch or a worktree from
@@ -117,6 +122,7 @@
   /// form is a fresh question each time it is asked.
   function startNaming(): void {
     draftBranch = seedBranch;
+    createError = null;
     naming = true;
   }
 
@@ -160,11 +166,22 @@
   async function createAndBind(): Promise<void> {
     if (draftError || creating) return;
     creating = true;
+    createError = null;
     const name = draftBranch;
-    const ok = await createBranch(workspaceId, name, draftFrom === "HEAD" ? null : draftFrom, false);
+    const created = await createBranch(workspaceId, name, draftFrom === "HEAD" ? null : draftFrom, false);
     creating = false;
-    if (!ok) return; // the Git tab's error banner carries git's message
-    await bindRailAction(workspaceId, railId, { branch: name });
+    if (!created.ok) {
+      createError = created.error;
+      return;
+    }
+    try {
+      await bindRailAction(workspaceId, railId, { branch: name });
+    } catch (e) {
+      // The branch exists; only the binding failed. Closing the form
+      // here would report a half-done action as a finished one.
+      createError = `Created ${name}, but binding it to this rail failed: ${e instanceof Error ? e.message : String(e)}`;
+      return;
+    }
     naming = false;
     draftBranch = "";
   }
@@ -323,6 +340,8 @@
                   </button>
                 </div>
                 {#if draftError && draftBranch}<div class="err">{draftError}</div>{/if}
+                <!-- git's own refusal, in the form that asked for it. -->
+                {#if createError}<div class="err" role="alert">{createError}</div>{/if}
               </form>
             {:else}
               <button

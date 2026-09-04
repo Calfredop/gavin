@@ -1,8 +1,16 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import * as backend from "./backend";
-  import { gitStore, forkWorktree, switchWorktree, rootPathOf } from "./gitState";
+  import {
+    gitStore,
+    ensureGitView,
+    forkWorktree,
+    refresh as refreshGit,
+    switchWorktree,
+    rootPathOf,
+  } from "./gitState";
   import { gavinTrees } from "./gavinState";
+  import { showAlert } from "./dialog";
   import { defaultWorktreePath, validateBranchName } from "./git";
   import { setupPlan, setupNotice } from "./worktreeSetup";
 
@@ -66,12 +74,32 @@
   let folderTouched = $state(false);
   let startAgent = $state(true);
   let submitting = $state(false);
+  /// What git said about the last Create press. Shown HERE rather than
+  /// left to the Git tab's error banner: two of this dialog's three
+  /// callers open it from a surface that banner is not on, which turned
+  /// every refusal into a button that did nothing.
+  let submitError = $state<string | null>(null);
 
   /// The workspace's `[worktree] setup`. Read off disk by the host, not
   /// fetched from the daemon, so a workspace whose daemon is mid-upgrade
   /// still gets its worktrees set up. `.gavin-root` sits at the WORKSPACE
   /// root, which is not always the git toplevel this dialog forks from.
   const gavinRoot = $derived($gavinTrees[workspaceId]?.rootPath ?? "");
+
+  // The Git tab may never have been opened in this workspace -- a rail's
+  // bind dialog and a card both reach this one without it -- and with no
+  // view every mutation below is refused before it reaches git. Only
+  // when there is none: `ensureGitView` resets a view whose cwd differs,
+  // and the Git tab's own switcher opens this dialog pointed at whatever
+  // worktree the human last chose. Reading the store makes this an HMR
+  // repair too: re-executing gitState.ts empties it under an open
+  // dialog, and the effect puts a view back.
+  $effect(() => {
+    if (!gavinRoot || $gitStore[workspaceId]) return;
+    ensureGitView(workspaceId, gavinRoot);
+    void refreshGit(workspaceId);
+  });
+
   let setup = $state<string[]>([]);
   $effect(() => {
     const root = gavinRoot;
@@ -113,32 +141,84 @@
   const folderError = $derived(folder.trim() ? null : "Folder is required");
   const valid = $derived(!branchError && !folderError && !submitting);
 
+  function messageOf(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
+
+  /// A failure AFTER the worktree exists and this dialog has closed
+  /// itself. There is no dialog left to put it in, and it must not be
+  /// dropped: an alert is the only surface every caller shares. Fire and
+  /// forget on purpose -- the setup session below must not wait behind a
+  /// modal the human may not be at the keyboard for.
+  function reportAfterCreate(path: string, what: string, e: unknown): void {
+    void showAlert({
+      title: "The worktree was created, but the step after it failed",
+      lines: [path, `${what}: ${messageOf(e)}`],
+    });
+  }
+
   async function submit(): Promise<void> {
     if (!valid) return;
     submitting = true;
+    submitError = null;
     const path = folder.trim();
     // Captured before the awaits below unmount this component: what the
     // human agreed to is the plan as it stood when they pressed Create.
     const run = plan;
-    const ok = await forkWorktree(workspaceId, {
+    const forked = await forkWorktree(workspaceId, {
       path,
       branch: effectiveBranch,
       from: mode === "new" && from !== "HEAD" ? from : null,
       newBranch: mode === "new",
     });
     submitting = false;
-    if (!ok) return; // the error banner shows git's message; keep the dialog
+    // Keep the dialog AND say why. This used to delegate to the Git
+    // tab's error banner, which only one of the three callers has on
+    // screen -- and a refusal with no view to file itself in said
+    // nothing anywhere at all.
+    if (!forked.ok) {
+      submitError = forked.error;
+      return;
+    }
     onClose();
-    if (switchAfter) await switchWorktree(workspaceId, path);
-    await onPicked?.(path);
+    // Everything below runs after the close, so each step is guarded
+    // separately: a rejection here has no dialog left to show it, and
+    // `void submit()` dropped it silently. The setup session is the one
+    // thing that outlives this dialog, and a binding that failed must
+    // not take it down with it.
+    if (switchAfter) {
+      try {
+        await switchWorktree(workspaceId, path);
+      } catch (e) {
+        reportAfterCreate(path, "Couldn't point the Git tab at it", e);
+      }
+    }
+    try {
+      await onPicked?.(path);
+    } catch (e) {
+      reportAfterCreate(path, "Couldn't bind it to what asked for it", e);
+    }
     // Last, and after the binding above has landed: the session is the
     // one thing here that outlives this dialog.
     if (run) onRunInWorktree(path, run.line);
   }
+
+  /// A form handler can only `void` a promise, and what that did with a
+  /// rejection was drop it -- the reason a fork that threw after the
+  /// worktree existed read as a button that had done nothing. Nothing in
+  /// `submit` should reject any more; this is the backstop that makes
+  /// sure the next thing that does is still said out loud.
+  function onFormSubmit(event: SubmitEvent): void {
+    event.preventDefault();
+    void submit().catch((e) => {
+      submitting = false;
+      void showAlert({ title: "Couldn't create the worktree", lines: [messageOf(e)] });
+    });
+  }
 </script>
 
 <Modal onClose={onClose}>
-  <form class="fork" onsubmit={(e) => { e.preventDefault(); void submit(); }}>
+  <form class="fork" onsubmit={onFormSubmit}>
     <h3>New worktree</h3>
 
     <div class="mode" role="radiogroup" aria-label="Branch mode">
@@ -194,6 +274,9 @@
         <code>{plan.line}</code>
       </div>
     {/if}
+
+    <!-- git's own refusal, in the dialog that asked for it. -->
+    {#if submitError}<div class="err" role="alert">{submitError}</div>{/if}
 
     <div class="actions">
       <button type="button" onclick={onClose}>Cancel</button>

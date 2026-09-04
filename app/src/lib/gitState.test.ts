@@ -112,7 +112,8 @@ import {
 import {
   gitStore, initialState, applyStatus, followSelection, splitMessage, joinMessage, canCommit,
   commitButtonLabel, amendRewritesPushed,
-  ensureGitView, refresh, select, run, stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
+  ensureGitView, refresh, select, run, runWithReason, runBlocker, forkWorktree,
+  stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
   effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
   switchWorktree, mergeBack, rootPathOf, removeWorktree,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
@@ -314,6 +315,55 @@ describe("run / mutations", () => {
     setCommitDraft("ws", { summary: "mine" });
     setCommitDraft("ws", { amend: true });
     expect(get(gitStore)["ws"].commit.summary).toBe("mine");
+  });
+
+  // A refusal is not a failure: git was never asked, so nothing was
+  // recorded and `false` was the whole story. Every surface that is not
+  // the Git tab read that as a button doing nothing.
+  it("names the operation already holding the view instead of a bare false", async () => {
+    ensureGitView("ws", "/r");
+    let release!: () => void;
+    const slow = run("ws", "Stage", () => new Promise<void>((res) => (release = res)));
+    const refused = await runWithReason("ws", "New worktree", async () => {});
+    expect(refused).toEqual({ ok: false, error: "Another git operation is still running (Stage)" });
+    // Filed too, so the banner keeps carrying it for the tab that watches it.
+    expect(get(gitStore)["ws"].error).toBe("Another git operation is still running (Stage)");
+    release();
+    expect(await slow).toBe(true);
+  });
+
+  it("still answers when the workspace has no git view at all", async () => {
+    const refused = await runWithReason("ws", "New worktree", async () => {});
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toBe("Gavin has no git view for this workspace yet");
+    // There is nowhere to file it -- which is exactly why the RETURN has
+    // to carry it. This path used to say nothing anywhere.
+    expect(get(gitStore)["ws"]).toBeUndefined();
+  });
+
+  it("runBlocker answers the same question before the button is pressed", async () => {
+    expect(runBlocker(null)).toBe("Gavin has no git view for this workspace yet");
+    ensureGitView("ws", "/r");
+    await refresh("ws");
+    const view = get(gitStore)["ws"];
+    expect(runBlocker(view)).toBeNull();
+    expect(runBlocker({ ...view, busy: "Stage" })).toBe("Another git operation is still running (Stage)");
+    expect(runBlocker({ ...view, op: { id: "1", label: "Fetch", line: null } })).toBe(
+      "Another git operation is still running (Fetch)"
+    );
+  });
+
+  it("forkWorktree hands git's own message back to its caller", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitWorktreeAdd).mockRejectedValueOnce("fatal: '/x' already exists");
+    expect(await forkWorktree("ws", { path: "/x", branch: "b", from: null, newBranch: true })).toEqual({
+      ok: false,
+      error: "New worktree failed: fatal: '/x' already exists",
+    });
+    expect(await forkWorktree("ws", { path: "/y", branch: "b", from: null, newBranch: true })).toEqual({
+      ok: true,
+      error: null,
+    });
   });
 
   it("ensureGitView resets state when the cwd changes and keeps it otherwise", () => {
