@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  GENERATE_LABEL,
-  generateAction,
-  generateButtonLabel,
+  ORGANIZE_LABEL,
+  organizeAction,
+  organizeButtonLabel,
   orchestrationAgentOver,
   reorganizeAction,
   reorganizeLabel,
@@ -10,7 +10,7 @@ import {
 import type { OrchestrationAgentRecord } from "./workspace";
 
 function run(over: Partial<OrchestrationAgentRecord> = {}): OrchestrationAgentRecord {
-  return { sessionId: "s-1", railId: null, label: GENERATE_LABEL, ...over };
+  return { sessionId: "s-1", railId: null, label: ORGANIZE_LABEL, ...over };
 }
 
 describe("reorganizeLabel", () => {
@@ -50,24 +50,24 @@ describe("orchestrationAgentOver", () => {
   });
 });
 
-describe("generateAction", () => {
+describe("organizeAction", () => {
   const ready = { run: null, unplacedCount: 3, hasRoot: true, daemonBlocked: null };
 
   it("starts when there are unplaced cards and nothing is running", () => {
-    expect(generateAction(ready)).toEqual({
+    expect(organizeAction(ready)).toEqual({
       kind: "start",
-      tip: "Hand the unplaced cards to a new agent…",
+      tip: "Hand the unplaced cards to a new agent — it spreads them across rails, worktrees and branches…",
     });
   });
 
   it("does not need the workspace's main agent", () => {
-    // The whole point of the dedicated session: Generate used to be
+    // The whole point of the dedicated session: Organize used to be
     // paste-only, so a stopped Home agent made it impossible.
-    expect(generateAction(ready).kind).toBe("start");
+    expect(organizeAction(ready).kind).toBe("start");
   });
 
   it("jumps to the run holding the slot instead of refusing", () => {
-    expect(generateAction({ ...ready, run: run({ label: "Reorganize “backend”" }) })).toEqual({
+    expect(organizeAction({ ...ready, run: run({ label: "Reorganize “backend”" }) })).toEqual({
       kind: "jump",
       tip: "Reorganize “backend” is already running — jump to its tab",
     });
@@ -76,23 +76,23 @@ describe("generateAction", () => {
   it("puts the running run ahead of having nothing to place", () => {
     // Otherwise the human is told "nothing left to place" by a button
     // that is actually held by the agent placing it.
-    expect(generateAction({ ...ready, unplacedCount: 0, run: run() }).kind).toBe("jump");
+    expect(organizeAction({ ...ready, unplacedCount: 0, run: run() }).kind).toBe("jump");
   });
 
   it("is blocked with nothing left to place", () => {
-    const action = generateAction({ ...ready, unplacedCount: 0 });
+    const action = organizeAction({ ...ready, unplacedCount: 0 });
     expect(action.kind).toBe("blocked");
     expect(action.tip).toContain("already on a rail");
   });
 
   it("is blocked without a root folder to start the agent in", () => {
-    const action = generateAction({ ...ready, hasRoot: false });
+    const action = organizeAction({ ...ready, hasRoot: false });
     expect(action.kind).toBe("blocked");
     expect(action.tip).toContain("no root folder");
   });
 
   it("puts the daemon's own reason first, before any of them", () => {
-    const action = generateAction({
+    const action = organizeAction({
       ...ready,
       hasRoot: false,
       unplacedCount: 0,
@@ -134,10 +134,10 @@ describe("reorganizeAction", () => {
     });
   });
 
-  it("is held by a Generate too", () => {
+  it("is held by an Organize too", () => {
     expect(reorganizeAction({ ...ready, run: run() })).toEqual({
       kind: "jump",
-      tip: "Generate is already running — jump to its tab",
+      tip: "Organize is already running — jump to its tab",
     });
   });
 
@@ -152,17 +152,17 @@ describe("reorganizeAction", () => {
   });
 });
 
-describe("generateButtonLabel", () => {
-  it("offers to generate when the slot is free", () => {
-    expect(generateButtonLabel(null)).toBe("Generate with agent…");
+describe("organizeButtonLabel", () => {
+  it("offers to organize when the slot is free", () => {
+    expect(organizeButtonLabel(null)).toBe("Organize with agent…");
   });
 
   it("stops offering while its own run is going", () => {
-    expect(generateButtonLabel(run())).toBe("Generating…");
+    expect(organizeButtonLabel(run())).toBe("Organizing…");
   });
 
-  it("does not claim a rail's reorganize as a generate", () => {
-    expect(generateButtonLabel(run({ railId: "rail-1", label: "Reorganize “backend”" }))).toBe(
+  it("does not claim a rail's reorganize as an organize", () => {
+    expect(organizeButtonLabel(run({ railId: "rail-1", label: "Reorganize “backend”" }))).toBe(
       "Agent running…"
     );
   });

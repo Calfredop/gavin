@@ -113,7 +113,7 @@
     checkout: string | null;
     onBind: () => void;
     /// Hand THIS rail to an agent of its own (the header's wand). Scoped
-    /// on purpose: the tab header's Generate button is about the cards
+    /// on purpose: the tab header's Organize button is about the cards
     /// nobody placed, this one is about the arrangement of one rail.
     onReorganize: () => void;
     /// What pressing the wand does right now (orchestrationAgent.ts).

@@ -3,7 +3,7 @@
 // a whole-plan write; what differs is the SCOPE the prompt hands the
 // agent:
 //
-//   - Generate  — the tab header's button, over the cards nobody placed;
+//   - Organize   — the tab header's button, over the cards nobody placed;
 //   - Reorganize — a rail header's button, over that one rail.
 //
 // Each now launches a DEDICATED session rather than being pasted into the
@@ -85,10 +85,19 @@ function conflictBlock(conflictSummary: string[], railName: string | null): stri
     : `Gavin currently flags no conflicts${where}.`;
 }
 
-/// "Generate with agent…" — the job is the cards nobody has placed. The
+/// "Organize with agent…" — the job is the cards nobody has placed. The
 /// tab's own picture rides along so the agent starts from what the human
 /// is looking at; it still reads gavin_get_orchestration for the truth.
-export function composeGeneratePrompt(
+///
+/// PARALLELISM IS THE ASK, and the prompt says so rather than leaving it
+/// to the skill alone. Pressing Organize is the human saying "spread this
+/// out"; an agent that reads only the safety half of the parallelism rule
+/// ("when unsure, serialize") answers it with one long rail, which is the
+/// arrangement they already had. The safe way to run more at once is more
+/// rails on more worktrees, so the request has to name the isolation --
+/// and name it as work the agent DOES, since a rail whose worktree nobody
+/// created is a `worktree-missing` conflict, not a bound rail.
+export function composeOrganizePrompt(
   orch: Orchestration | null,
   unplaced: CardEntry[],
   conflictSummary: string[]
@@ -123,6 +132,11 @@ export function composeGeneratePrompt(
     "Place every unplaced card the payload lists: extend a rail where the work belongs on one, add",
     "a rail where it does not. Leave the steps already on rails where they are unless a card you",
     "are placing forces a reorder — and if it does, say which and why.",
+    "",
+    "Organizing means parallelizing: spread the work as wide as it can safely go. Prefer a new rail",
+    "over a longer one, and give each rail that must run at the same time its own isolation — create",
+    "the worktree and the branch yourself with git, then send worktreePath and branch on the rail.",
+    "An unbound rail is not isolated, and a worktreePath nothing created is a stalled rail.",
     "",
     READ_FIRST,
     CARRY_THROUGH,

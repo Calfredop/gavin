@@ -54,7 +54,7 @@
     runAllConfirm,
   } from "./railConfirm";
   import { findTool, toolKindLabel } from "./orchestrationTools";
-  import { generateAction, generateButtonLabel, reorganizeAction } from "./orchestrationAgent";
+  import { organizeAction, organizeButtonLabel, reorganizeAction } from "./orchestrationAgent";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
     groupTemplateRecords,
@@ -88,7 +88,7 @@
     moveStepToNewStageAction,
     addCardAsStageAction,
     addStepToStageAction,
-    requestGenerate,
+    requestOrganize,
     requestRailReorganize,
     revealOrchestrationAgent,
     renameRailAction,
@@ -401,9 +401,9 @@
     new Set((orch?.rails ?? []).flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))))
   );
   const available = $derived(availableCards(cards, placed));
-  // The "+ Add step" picker and Generate get the set with finished work
+  // The "+ Add step" picker and Organize get the set with finished work
   // taken out -- neither has the drawer's bucket to put it in, so both
-  // would otherwise offer up (and Generate would instruct an agent to
+  // would otherwise offer up (and Organize would instruct an agent to
   // place) cards the scheduler marks done and cascades straight past.
   const pickable = $derived(unfinishedCards(available, planIndex(cards), board));
   // A nested child is not on offer -- its plan carries it -- so both
@@ -632,11 +632,11 @@
   // to that run instead of a second launch, because both requests rewrite
   // the WHOLE plan and would overwrite each other.
   const agentRun = $derived(ws?.orchestrationAgent ?? null);
-  const generateFor = $derived(
-    generateAction({
+  const organizeFor = $derived(
+    organizeAction({
       run: agentRun,
       // Measured over every unplaced card, never the search lens's view:
-      // Generate hands the agent the real set, so a filter that happens
+      // Organize hands the agent the real set, so a filter that happens
       // to hide them all must not claim there is nothing left to place.
       unplacedCount: pickable.length,
       hasRoot: root !== null,
@@ -656,8 +656,8 @@
   }
 
   /// The header button: the unplaced cards are the job.
-  async function generate(): Promise<void> {
-    handOff(await requestGenerate(workspaceId, pickable, conflictSummary));
+  async function organize(): Promise<void> {
+    handOff(await requestOrganize(workspaceId, pickable, conflictSummary));
   }
 
   /// A rail header's button: that one rail is the job, and it is handed
@@ -676,9 +676,9 @@
   /// going. Never a dead button -- a disabled control cannot explain
   /// itself, and "why can I not press this" is exactly the question a
   /// run holding the slot answers by showing itself.
-  function pressGenerate(): void {
-    if (generateFor.kind === "jump") void revealOrchestrationAgent(workspaceId);
-    else if (generateFor.kind === "start") void generate();
+  function pressOrganize(): void {
+    if (organizeFor.kind === "jump") void revealOrchestrationAgent(workspaceId);
+    else if (organizeFor.kind === "start") void organize();
   }
 
   function pressReorganize(railId: string): void {
@@ -714,11 +714,11 @@
     <button
       type="button"
       class="add-rail"
-      disabled={generateFor.kind === "blocked"}
-      title={generateFor.tip}
-      onclick={pressGenerate}
+      disabled={organizeFor.kind === "blocked"}
+      title={organizeFor.tip}
+      onclick={pressOrganize}
     >
-      {generateButtonLabel(agentRun)}
+      {organizeButtonLabel(agentRun)}
     </button>
     <button
       type="button"

@@ -2491,7 +2491,7 @@ export function nestedChildCounts(cards: Map<string, CardEntry>): Map<string, nu
 }
 
 /// `availableCards` with FINISHED work taken out -- what the "+ Add step"
-/// picker offers, and what Generate hands the agent.
+/// picker offers, and what Organize hands the agent.
 ///
 /// The drawer can afford to keep the done cards: it buckets by status and
 /// starts the done bucket collapsed, so a rail that genuinely wants a

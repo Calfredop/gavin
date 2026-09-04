@@ -66,7 +66,7 @@ import type {
   Step,
   ToolSummary,
 } from "./orchestration";
-import { composeGeneratePrompt, composeRailPrompt } from "./orchestrationPrompts";
+import { composeOrganizePrompt, composeRailPrompt } from "./orchestrationPrompts";
 import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "./orchestrationTools";
 import type { Tool } from "./orchestrationTools";
 import {
@@ -118,7 +118,7 @@ import { stripFrontmatter } from "./planChecklist";
 import { slugStatus } from "./planBoard";
 import { setRailNotificationVoice, type SessionStatus } from "./notifications";
 import {
-  GENERATE_LABEL,
+  ORGANIZE_LABEL,
   orchestrationAgentOver,
   reorganizeLabel,
 } from "./orchestrationAgent";
@@ -1828,7 +1828,7 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // it is the tab NOT on screen where nobody would ever find out.
   const stopDecoys = startDecoyWatch();
   // Started here for the reason the scheduler is: it belongs to the app,
-  // not to a tab. A Generate that finishes while the human is reading the
+  // not to a tab. An Organize that finishes while the human is reading the
   // board still has to release the button, and the record it clears was
   // loaded from config.json a moment ago -- this first pass is also how a
   // run that outlived the last window gets adopted or written off.
@@ -2313,7 +2313,7 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
 
 // ---- the tab's own agent runs ----------------------------------------------
 //
-// Generate and a rail's Reorganize each spawn a DEDICATED session (the
+// Organize and a rail's Reorganize each spawn a DEDICATED session (the
 // shape "Develop into a plan…" uses) instead of pasting into the
 // workspace's main agent. Two things follow, and both are the point:
 // the request no longer needs the human to have started the Home agent,
@@ -2380,7 +2380,7 @@ async function launchOrchestrationAgent(
 /// what the tab currently shows, so the agent starts from the same
 /// picture the human is looking at -- it still calls
 /// gavin_get_orchestration for the authoritative read.
-export function requestGenerate(
+export function requestOrganize(
   workspaceId: string,
   unplaced: CardEntry[],
   conflictSummary: string[]
@@ -2388,8 +2388,8 @@ export function requestGenerate(
   const orch = get(orchestrations)[workspaceId] ?? null;
   return launchOrchestrationAgent(
     workspaceId,
-    { railId: null, label: GENERATE_LABEL },
-    composeGeneratePrompt(orch, unplaced, conflictSummary)
+    { railId: null, label: ORGANIZE_LABEL },
+    composeOrganizePrompt(orch, unplaced, conflictSummary)
   );
 }
 

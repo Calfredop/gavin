@@ -121,7 +121,7 @@ describe("jumpToSession", () => {
 
   it("gives a session with no tab one first, then jumps to it", async () => {
     // The whole reason the card asks for this: a git-commit run or an
-    // orchestration Generate is a real session with nowhere to watch it.
+    // orchestration Organize is a real session with nowhere to watch it.
     withLayout([]);
     vi.mocked(handleAgentSessionSpawned).mockImplementation(() => withLayout(["hidden-1"]));
 

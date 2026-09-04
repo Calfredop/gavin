@@ -711,7 +711,7 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
     // inside its plan's, and so is a rail step carrying that plan -- so
     // the plan is the unit of placement and listing the children beside
     // it offers the same work over again. This list is the AUTHORITATIVE
-    // one (the tab's own Generate prompt tells the agent to read it), so
+    // one (the tab's own Organize prompt tells the agent to read it), so
     // the two spellings of the rule have to agree.
     let unplaced: Vec<Value> = tree
         .contexts
@@ -1382,7 +1382,7 @@ mod tests {
             .collect()
     }
 
-    /// This list is the AUTHORITATIVE one -- the tab's Generate prompt
+    /// This list is the AUTHORITATIVE one -- the tab's Organize prompt
     /// sends the agent here for the truth -- so it has to leave out
     /// exactly what the drawer leaves out. A nested child has no card of
     /// its own on the board; its plan is the unit of placement, and

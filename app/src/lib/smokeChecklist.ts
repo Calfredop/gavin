@@ -836,7 +836,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "arch-drawer-count",
         text: "Orchestration: “Unplaced (n)” counts only cards still waiting — a Done card stays listed in the drawer’s collapsed group but is out of the number AND out of + Add step, and an archived card is in none of the three",
-        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one — then open + Add step on any rail: the Done card is not in the Cards list, and a nested task under that Done parent is gone too. With every remaining card finished the list reads “Every card left to place is finished.” and Generate with agent… goes inert.",
+        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one — then open + Add step on any rail: the Done card is not in the Cards list, and a nested task under that Done parent is gone too. With every remaining card finished the list reads “Every card left to place is finished.” and Organize with agent… goes inert.",
       },
       {
         id: "arch-agent-told",
@@ -1595,7 +1595,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "tasks-hidden-session-listed",
         text: "Press “Commit via agent” on the Git tab and open the panel while it runs: the hidden run is listed, marked with no tab",
-        hint: "The card's “invisible sessions”. A commit agent, an orchestration Generate and a rail's Reorganize all run with nothing rendering them; before this they were visible only as a spinner.",
+        hint: "The card's “invisible sessions”. A commit agent, an orchestration Organize and a rail's Reorganize all run with nothing rendering them; before this they were visible only as a spinner.",
       },
       {
         id: "tasks-jump-opens-a-tab-for-a-hidden-one",
@@ -2193,7 +2193,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       {
         id: "run-all-placement",
-        text: "The Orchestration toolbar's “Run all” sits between “Generate with agent…” and “+ Rail”",
+        text: "The Orchestration toolbar's “Run all” sits between “Organize with agent…” and “+ Rail”",
       },
       {
         id: "run-all-dead-when-nothing",
@@ -2277,16 +2277,26 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       {
         id: "orch-agent-own-tab",
-        text: "“Generate with agent…” opens a NEW agent tab on the Agents page, named “Generate”, and lands you in it — the Home agent's terminal is untouched",
+        text: "“Organize with agent…” opens a NEW agent tab on the Agents page, named “Organize”, and lands you in it — the Home agent's terminal is untouched",
         hint: "The whole change: it used to bracket-paste into the Home agent and hop to Home. Check the Home terminal received nothing.",
       },
       {
         id: "orch-agent-no-home-agent-needed",
-        text: "With the workspace's Home agent STOPPED, Generate still works — no “Start the workspace agent on Home first”",
+        text: "With the workspace's Home agent STOPPED, Organize still works — no “Start the workspace agent on Home first”",
       },
       {
         id: "orch-agent-rail-wand",
         text: "A rail's wand does the same for that rail, in a tab named “Reorganize “<rail>””",
+      },
+      {
+        id: "orch-agent-organize-parallelizes",
+        text: "An Organize run comes back with the unplaced cards spread across SEVERAL rails, not queued into one",
+        hint: "Give it four or five unrelated cards. One long rail is the arrangement they already had — the button is the request to parallelize, and the skill's §2 says so.",
+      },
+      {
+        id: "orch-agent-organize-cuts-worktrees",
+        text: "The rails it adds come back BOUND: each one that runs beside another names a worktree that exists on disk and a branch, and the Conflicts box shows no “worktree is gone”",
+        hint: "git worktree list in the root: the folders are really there, cut by the agent, not just named. Check the setup from [worktree] setup ran in each (node_modules/target present).",
       },
       {
         id: "orch-agent-names-itself",
@@ -2294,7 +2304,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "orch-agent-one-slot",
-        text: "While one run is going, the header button reads “Generating…”/“Agent running…” and EVERY rail wand jumps to that tab instead of starting a second",
+        text: "While one run is going, the header button reads “Organizing…”/“Agent running…” and EVERY rail wand jumps to that tab instead of starting a second",
         hint: "Hover each: the tooltip names the run holding the slot. Two of these agents at once would overwrite each other's plan.",
       },
       {

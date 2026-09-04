@@ -107,7 +107,7 @@ describe("sessionRows", () => {
   });
 
   it("calls a session no page holds invisible, and still names its workspace", () => {
-    // The git-commit agent and the orchestration Generate run are both
+    // The git-commit agent and the orchestration Organize run are both
     // this: real sessions, doing real work, that nothing in the app is
     // rendering. Naming the workspace is what makes such a row
     // actionable rather than an anonymous pid.

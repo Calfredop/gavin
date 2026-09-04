@@ -56,9 +56,9 @@ export interface AgentCommitRecord {
 /// that has to refuse a second run has to name the first.
 export interface OrchestrationAgentRecord {
   sessionId: string;
-  /// The rail being reorganized; null/absent for a whole-tab Generate.
+  /// The rail being reorganized; null/absent for a whole-tab Organize.
   railId?: string | null;
-  /// What the human calls this run ("Generate", "Reorganize “backend”").
+  /// What the human calls this run ("Organize", "Reorganize “backend”").
   /// Stored rather than re-derived: a rail can be renamed or deleted
   /// while its run is still going, and the blocked button still has to
   /// say what is holding the slot.
@@ -81,7 +81,7 @@ export interface Workspace {
   rootPath?: string;
   /// The running main agent session (D12) -- outside every page tree.
   mainSessionId?: string;
-  /// The orchestration agent run (a Generate, or one rail's Reorganize)
+  /// The orchestration agent run (an Organize, or one rail's Reorganize)
   /// still in flight. One slot per workspace, because both requests end
   /// in a write of the WHOLE plan -- see orchestrationAgent.ts, which
   /// owns every rule about it.

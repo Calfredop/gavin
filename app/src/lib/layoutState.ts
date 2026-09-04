@@ -1747,7 +1747,7 @@ export async function setGitViewPrefs(workspaceId: string, patch: Partial<GitVie
 }
 
 /// Writes the workspace's in-flight orchestration agent into config.json,
-/// or clears it (`null`). One slot per workspace, deliberately: Generate
+/// or clears it (`null`). One slot per workspace, deliberately: Organize
 /// and every rail's Reorganize both end in a write of the WHOLE plan, so
 /// two at once overwrite each other rather than dividing the work.
 ///
