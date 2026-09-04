@@ -2,7 +2,7 @@
 order: 11264
 kind: task
 title: [fix] developing plan
-status: To Do
+status: Done
 ---
 if a plan in development mode, there's no indication on it's card. A card in development mode should be "deactrivatged" until developed, to avoid conflicts.
 

@@ -2,7 +2,7 @@
 order: 9216
 kind: task
 title: [feat] new window
-status: To Do
+status: Done
 ---
 Allow to open a workspace in a new window, or to move an already opened one to a new window. Make this possible via the contextual menu of the workspace, and from the action buttons of the hub (befor the new page "+" button)
 

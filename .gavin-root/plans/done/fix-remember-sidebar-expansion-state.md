@@ -1,10 +1,10 @@
 ---
-order: 14336
+order: 12288
 kind: task
-title: [fix] orchestration generate rename
-status: To Do
+title: [fix] remember sidebar expansion state
+status: Done
 ---
-Rename the “Generate” action in orchestration to “Organize"
+store the state of the expansion of worksapces and pages
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

@@ -1,10 +1,10 @@
 ---
-order: 8192
+order: 13312
 kind: task
-title: [fix] app min size
-status: To Do
+title: [feat] total cpu and memory use
+status: Done
 ---
-At the moment I can resize the window to a 0,0 size. Make a reasonable min size
+In task manager let’s add totals
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.
