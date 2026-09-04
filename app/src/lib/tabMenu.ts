@@ -13,8 +13,8 @@ import type { ContextMenuEntry } from "./contextMenu";
 
 export interface TabMenuContext {
   tabId: string;
-  kind: "terminal" | "file" | "board";
-  /** cwd for a terminal, the file for a file tab, the context folder for a board tab. */
+  kind: "terminal" | "file" | "board" | "card";
+  /** cwd for a terminal, the file for a file tab or a card tab, the context folder for a board tab. */
   path: string | null;
   pinned: boolean;
   /** The owning leaf's tabs in order, and which of them are pinned. */
@@ -83,7 +83,9 @@ export function buildTabMenuEntries(ctx: TabMenuContext, hooks: TabMenuHooks): C
   const path = ctx.path;
   entries.push(
     { separator: true },
-    ctx.kind === "file"
+    // A card tab's path is the card's own markdown file, so it reveals
+    // like a file tab rather than opening a folder.
+    ctx.kind === "file" || ctx.kind === "card"
       ? {
           label: "Reveal in Finder",
           disabled: path === null,

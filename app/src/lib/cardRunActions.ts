@@ -24,6 +24,11 @@ import {
   provisionalSessionName,
   runStatusNeeded,
 } from "./cardRun";
+import {
+  developingBlocker,
+  developingRunOn,
+  recordDevelopingCard,
+} from "./developingCardsState";
 import { stripFrontmatter } from "./planChecklist";
 import { missingAttachmentReason, resolvedAttachmentPaths } from "./attachments";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "./queuedInput";
@@ -77,6 +82,19 @@ export async function revealSession(sessionId: string): Promise<boolean> {
   await switchWorkspaceView(location.workspaceId, "terminal");
   await switchToSessionInPage(location.workspaceId, location.pageId, sessionId);
   return true;
+}
+
+/// Puts the human in front of the agent DEVELOPING this card, if one is.
+/// False when nothing is developing it (and when the reveal misses, for
+/// revealSession's own reasons).
+///
+/// What the card's develop badge, its menu entry and a second press of
+/// Develop all do: a card mid-rewrite has exactly one useful action on
+/// it, and it is not another launch.
+export async function revealDevelopingCard(workspaceId: string, path: string): Promise<boolean> {
+  const record = developingRunOn(workspaceId, path);
+  if (!record) return false;
+  return await revealSession(record.sessionId);
 }
 
 // Focus a card's bound live session (card-model spec §3): "jumped" on
@@ -152,6 +170,12 @@ export async function developCard(
   if (cardSessionState(get(layoutState), binding) === "live") {
     return "This card has a live agent — jump to it instead of developing under it";
   }
+  // A develop run already on this card is the worst version of the same
+  // conflict -- BOTH agents rewrite the whole file -- so a second press
+  // lands the human in the first run's tab instead of starting one. Read
+  // here rather than trusted from the button, which cannot see a run
+  // another window started.
+  if (await revealDevelopingCard(workspaceId, card.id)) return null;
 
   // The card file is never read here: the skill's first move is to read
   // it, and inlining a task's body is what turns an interview into a
@@ -174,6 +198,13 @@ export async function developCard(
   // record for one to outlive and nothing that could ever resume it.
   void armFailureDetection(sessionId, agent.failurePatterns);
   handleAgentSessionSpawned(workspaceId, sessionId);
+  // Written down BEFORE the jump, and before anything can fail after it:
+  // this record is the card's only indication that it is being rewritten,
+  // and the only thing standing between the run and a second agent
+  // started on the same file (developingCards.ts). An unrecorded run is
+  // one the next window cannot tell apart from any other agent on the
+  // Agents page.
+  await recordDevelopingCard(workspaceId, { path: card.id, sessionId });
   // Jump to it. Develop is the one launch with NO binding and no status
   // write (see above), so the board it was started from shows nothing at
   // all afterwards -- no session dot, no column change -- and the agent's
@@ -204,14 +235,23 @@ async function launchCard(
   // it, which is the only way a card gets un-stuck from a killed run.
   if (cardSessionState(state, binding) === "live") return null;
 
-  // Both gates run BEFORE the status write below. A refused launch must
-  // leave the card exactly as it was: writing In Progress and then
+  // All three gates run BEFORE the status write below. A refused launch
+  // must leave the card exactly as it was: writing In Progress and then
   // refusing would move the card on the board for a run that never
   // happened, and the human would have to put it back by hand.
   //
-  // The agent gate is first and needs nothing from the card: an agent
-  // that takes no prompt refuses every card, so resolving attachments
-  // for one is work with no possible outcome.
+  // Develop first, because it is the only gate about work already in
+  // flight: an agent is rewriting this card's file right now, and a run
+  // started on it would be executing a prompt that is about to be
+  // replaced -- and writing its own status into a file the develop agent
+  // is holding in its editor. Re-read here rather than trusted from the
+  // button, which cannot see a run another window started.
+  const developing = developingBlocker(workspaceId, card.id);
+  if (developing) return developing;
+
+  // The agent gate needs nothing from the card: an agent that takes no
+  // prompt refuses every card, so resolving attachments for one is work
+  // with no possible outcome.
   const agent = resolvedAgentFor(workspaceId);
   if (agent.promptArgs === null) return noPromptReason(agent.label);
 
@@ -442,6 +482,11 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // Checked before composing: composing reads the card file, and "no
   // agent" is the more useful message when both are true.
   if (!mainAgentSessionId(workspaceId)) return NO_MAIN_AGENT;
+  // The same develop gate a dedicated run passes, because the conflict is
+  // about the CARD, not about which agent reads it: the main agent would
+  // be handed the body of a file being rewritten as it read it.
+  const developing = developingBlocker(workspaceId, card.id);
+  if (developing) return developing;
   // Same gate, same reason, and again before the status write: handing
   // the main agent a card whose attachments have gone is the same wasted
   // session as spawning a dedicated one for it.
@@ -478,6 +523,12 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
 export async function relaunchCard(workspaceId: string, path: string): Promise<string | null> {
   const binding = cardSessionFor(get(kanbanState)[workspaceId], path);
   if (!binding) return "No session remembered for this card";
+  // Re-launch replays the ORIGINAL prompt, which for a card being
+  // developed is the very text the develop agent is replacing -- so it is
+  // the launch with the most to lose from ignoring this gate, not the
+  // least.
+  const developing = developingBlocker(workspaceId, path);
+  if (developing) return developing;
   const agent = resolvedAgentFor(workspaceId);
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude

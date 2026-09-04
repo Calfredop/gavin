@@ -5,6 +5,7 @@
   import { loadConflictsCollapsed, saveConflictsCollapsed } from "./orchestrationConflictBanner";
   import type { CardEntry, NumberedConflict, Orchestration } from "./orchestration";
   import type { Tool } from "./orchestrationTools";
+  import { railBindFix, type RailBindTab } from "./railBind";
 
   interface Props {
     /// Whose box this is: the collapse is remembered per workspace.
@@ -15,10 +16,24 @@
     /// Tool names, so a conflict naming a tool step reads as "Push
     /// branch" rather than as a uuid.
     tools: Tool[];
-    onBindWorktree: (railId: string) => void;
+    /// Opens the rail's bind dialog on the tab that actually repairs
+    /// this conflict. One label served every rail-level conflict before,
+    /// naming the worktree even when the cause was a missing BRANCH --
+    /// and then landing on the worktree list.
+    onBindRail: (railId: string, tab: RailBindTab) => void;
     /// The repair for a parallel stage (grouping spec G5): tell the group
     /// to run its members one at a time. The group stays whole.
     onMakeSequential: (stageId: string) => void;
+    /// The repair for a nested task placed on a rail beside its parent:
+    /// give it a status, which makes it a card of its own instead of one
+    /// the plan's agent already carries (cardCompletion.ts). Both steps
+    /// stay where the human put them -- this settles which of the two is
+    /// the piece of work, rather than taking one off.
+    onBreakOut: (cardPath: string) => void;
+    /// The column that repair would file it into, for the button's own
+    /// words. Null on a board with no columns, where the button cannot
+    /// name a destination and so is not offered.
+    breakOutColumn: string | null;
     /// featureBlockedReason(compat, "groups"), or null when the daemon can
     /// take a mode write. The repair now flips `mode` (Task 6) instead of
     /// splitting the stage -- an older daemon drops that field silently,
@@ -32,8 +47,10 @@
     cards,
     orch,
     tools,
-    onBindWorktree,
+    onBindRail,
     onMakeSequential,
+    onBreakOut,
+    breakOutColumn,
     groupsBlocked,
   }: Props = $props();
 
@@ -85,8 +102,9 @@
             <span class="text">{describeConflict(conflict, cards, orch, tools)}</span>
             {#if conflict.kind === "declared"}<span class="tag">agent note</span>{/if}
             {#if railId}
-              <button type="button" class="fix" onclick={() => onBindWorktree(railId)}>
-                {conflict.kind === "branch-missing" ? "Bind branch…" : "Bind worktree…"}
+              {@const fix = railBindFix(conflict.kind)}
+              <button type="button" class="fix" onclick={() => onBindRail(railId, fix.tab)}>
+                {fix.label}
               </button>
             {:else if conflict.kind === "same-worktree" && conflict.stageId}
               <button
@@ -97,6 +115,15 @@
                 onclick={() => onMakeSequential(conflict.stageId as string)}
               >
                 Run in sequence
+              </button>
+            {:else if conflict.kind === "nested-with-parent" && breakOutColumn}
+              <button
+                type="button"
+                class="fix"
+                title={`Give it a status of its own in ${breakOutColumn} — it stays part of the plan`}
+                onclick={() => onBreakOut(conflict.cardPath)}
+              >
+                Break out
               </button>
             {/if}
           </li>

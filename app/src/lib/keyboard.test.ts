@@ -48,6 +48,11 @@ import {
 import { copySelection, pasteClipboard } from "./clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "./keyboard";
 import { requestedCompose } from "./composeRequest";
+import {
+  hubTabOrderByWorkspace,
+  hubTabsHiddenByWorkspace,
+  hubTabsHiddenDefault,
+} from "./hubTabPrefs";
 
 const state = layoutState as unknown as Writable<Record<string, unknown>>;
 
@@ -102,6 +107,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   (globalThis as Record<string, unknown>).__testIsMac = true;
   requestedCompose.set(null);
+  hubTabsHiddenDefault.set([]);
+  hubTabsHiddenByWorkspace.set({});
+  hubTabOrderByWorkspace.set({});
   setState();
 });
 
@@ -176,9 +184,83 @@ describe("digit navigation", () => {
     expect(switchToTab).not.toHaveBeenCalled();
   });
 
+  // The digits address tabs BY POSITION, so they have to count the row
+  // the human is looking at -- not the one gavin declares.
+  it("counts the hub tabs the human hid", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", rootPath: "/r", activeView: "kanban", activePageId: null, pages: [] },
+      ],
+      focusedSessionId: null,
+    });
+    hubTabsHiddenDefault.set(["git"]);
+    await press("Digit2");
+    // home, kanban, ... -> git is gone, so the second tab is now Kanban.
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "kanban");
+  });
+
+  it("counts the hub tabs in the order they were dragged into", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", rootPath: "/r", activeView: "kanban", activePageId: null, pages: [] },
+      ],
+      focusedSessionId: null,
+    });
+    hubTabOrderByWorkspace.set({ "ws-1": ["plans", "kanban"] });
+    await press("Digit2");
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "kanban");
+  });
+
+  it("lets a workspace's own hidden list beat the app-wide one", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", rootPath: "/r", activeView: "kanban", activePageId: null, pages: [] },
+      ],
+      focusedSessionId: null,
+    });
+    hubTabsHiddenDefault.set(["git"]);
+    hubTabsHiddenByWorkspace.set({ "ws-1": [] });
+    await press("Digit2");
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "git");
+  });
+
   it("⌘⇧2 switches page", async () => {
     await press("Digit2", { shiftKey: true });
     expect(switchPage).toHaveBeenCalledWith("ws-1", "p2");
+  });
+
+  // The digits count the rows the sidebar DRAWS, and a pinned page is
+  // drawn first -- so ⌘⇧1 has to be that page, not whatever sits first
+  // in the stored array. Both readers go through sidebarPageOrder for
+  // exactly this reason.
+  it("⌘⇧1 follows the sidebar's pinned page order", async () => {
+    setState({
+      workspaces: [
+        {
+          id: "ws-1",
+          name: "ws-1",
+          activeView: "terminal",
+          activePageId: "p1",
+          pages: [
+            { id: "p1", name: "p1", layout: leaf(["a"]), focusedSessionId: "a" },
+            { id: "p2", name: "p2", layout: leaf(["d"]), focusedSessionId: "d", pinnedAt: 10 },
+          ],
+        },
+      ],
+    });
+    await press("Digit1", { shiftKey: true });
+    expect(switchPage).toHaveBeenCalledWith("ws-1", "p2");
+  });
+
+  it("⌘⌥1 follows the sidebar's pinned workspace order", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", activeView: "terminal", activePageId: null, pages: [] },
+        { id: "ws-2", name: "ws-2", activeView: "terminal", activePageId: null, pages: [], pinnedAt: 10 },
+      ],
+    });
+    await press("Digit1", { altKey: true });
+    expect(switchWorkspace).toHaveBeenCalledWith("ws-2");
   });
 
   it("⌘⌥2 switches workspace in sidebar order (Scratchpad first)", async () => {

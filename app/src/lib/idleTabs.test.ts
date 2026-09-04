@@ -19,6 +19,7 @@ const page = (layout: LayoutNode, name = "Page 1"): Page => ({
 const state = (extra: Partial<PageTabState> = {}): PageTabState => ({
   sessionStatusById: {},
   fileTabsById: {},
+  cardTabsById: {},
   boardTabsById: {},
   ...extra,
 });

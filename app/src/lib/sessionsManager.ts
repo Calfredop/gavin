@@ -448,8 +448,8 @@ export type KillScope = "all" | "stale" | "selected";
 
 const NAMES_SHOWN = 6;
 
-function plural(n: number, word: string): string {
-  return `${n} ${n === 1 ? word : `${word}s`}`;
+function plural(n: number, word: string, many = `${word}s`): string {
+  return `${n} ${n === 1 ? word : many}`;
 }
 
 /// The line that separates the stale rows from the rest of a batch, or
@@ -467,6 +467,21 @@ function staleLine(rows: SessionRow[]): string | null {
       ? `, and ${orphans} ${orphans === 1 ? "has a process" : "have processes"} still running outside gavin.`
       : ".")
   );
+}
+
+/// What a batch is costing, or null when nothing in it was measured.
+///
+/// The one figure the grid cannot show: every other number in this
+/// prompt can be checked against the rows behind it, but a sum over a
+/// selection appears nowhere else -- and "these three are holding 4 GB"
+/// is the reason someone reaches for the button in the first place.
+function costLine(rows: SessionRow[]): string | null {
+  const total = totalUsage(rows);
+  const parts: string[] = [];
+  if (total.memBytes !== null) parts.push(`${formatMemory(total.memBytes)} of memory`);
+  if (total.cpuPercent !== null) parts.push(`${formatCpu(total.cpuPercent)} of one core`);
+  if (parts.length === 0) return null;
+  return `Together they are using ${parts.join(" and ")}.`;
 }
 
 /// What a batch press asks, or null when there is nothing to end.
@@ -496,6 +511,8 @@ export function killBatchConfirm(rows: SessionRow[], scope: KillScope): KillProm
       const count = rows.filter((r) => r.staleness === kind).length;
       if (count > 0) lines.push(`${count} ${kind}: ${what}.`);
     }
+    const cost = costLine(rows);
+    if (cost) lines.push(cost);
     lines.push(DISK_STAYS);
     return { title: `Clear ${n} stale sessions?`, lines, confirmLabel: "Clear stale", danger: true };
   }
@@ -510,6 +527,8 @@ export function killBatchConfirm(rows: SessionRow[], scope: KillScope): KillProm
   }
   const stale = staleLine(rows);
   if (stale) lines.push(stale);
+  const cost = costLine(rows);
+  if (cost) lines.push(cost);
   lines.push(DISK_STAYS);
   return scope === "all"
     ? { title: `End all ${plural(n, "session")}?`, lines, confirmLabel: "End all", danger: true }
@@ -671,4 +690,102 @@ export function formatMemory(bytes: number | null): string {
 /// find.
 export function formatCpu(percent: number | null): string {
   return percent === null ? "—" : `${percent.toFixed(1)}%`;
+}
+
+/// What the whole list is costing, as one line under it.
+///
+/// Summed from the ROWS rather than from the sample, so the totals cover
+/// exactly what the human can see -- and so a figure this module already
+/// refused to state (`cpuPercent` null, because the pair of samples
+/// could not honestly produce a rate) is left out of the sum for the
+/// same reason it renders as an em dash in its own cell. A total that
+/// quietly counted those as zero would be the one lie the per-row
+/// arithmetic was written to avoid, told once more at the bottom of the
+/// table.
+export interface Totals {
+  sessions: number;
+  /// Processes behind the two figures, across every session's tree.
+  processes: number;
+  /// The rated shares of one core, added up: 200 is two cores' worth.
+  /// Null when NO row has a rate -- the first poll, or a daemon too old
+  /// to measure -- which has to read as "nothing measured", never 0.0%.
+  cpuPercent: number | null;
+  /// Resident bytes added up, null on the same terms.
+  memBytes: number | null;
+  /// Rows with something running whose CPU could not be rated. The total
+  /// is a floor by exactly these, and saying how many is what lets a
+  /// human tell a quiet fleet from a freshly opened panel.
+  cpuPending: number;
+}
+
+export function totalUsage(rows: SessionRow[]): Totals {
+  let cpu = 0;
+  let rated = 0;
+  let mem = 0;
+  let measured = 0;
+  let processes = 0;
+  let cpuPending = 0;
+
+  for (const row of rows) {
+    processes += row.processCount;
+    if (row.cpuPercent !== null) {
+      cpu += row.cpuPercent;
+      rated += 1;
+    } else if (row.processCount > 0) {
+      // Nothing running is not a gap: an exited row contributes no CPU
+      // because there is none, not because nobody could measure it.
+      cpuPending += 1;
+    }
+    if (row.memBytes !== null) {
+      mem += row.memBytes;
+      measured += 1;
+    }
+  }
+
+  return {
+    sessions: rows.length,
+    processes,
+    cpuPercent: rated > 0 ? cpu : null,
+    memBytes: measured > 0 ? mem : null,
+    cpuPending,
+  };
+}
+
+/// What the totals line says it covers.
+///
+/// Counts rather than a bare "Total", because the two figures beside it
+/// are sums over a list that changes every two seconds: without knowing
+/// how many things went into a number, a human cannot tell a fleet that
+/// grew from one that got busier.
+export function totalsCoverage(total: Totals): string {
+  const parts = [
+    plural(total.sessions, "session"),
+    plural(total.processes, "process", "processes"),
+  ];
+  if (total.cpuPending > 0) parts.push(`${total.cpuPending} not rated yet`);
+  return parts.join(" · ");
+}
+
+/// The caveats behind the two sums, for the hover.
+///
+/// Both are honest as a direction and neither is a machine reading, and
+/// the panel has to say which is which somewhere: CPU adds shares of ONE
+/// core, so its ceiling is the core count rather than 100; memory adds
+/// resident sizes, and a page shared between two processes is resident
+/// in both. The per-session figure the daemon reports already sums a
+/// tree that way (proc.rs, tree_usage), so this total is the same kind
+/// of number one level up -- an upper bound, not what ending everything
+/// would hand back.
+export function totalsNote(total: Totals): string {
+  const lines = [
+    "CPU adds each session’s share of one core, so 200% is two cores’ worth of work.",
+    "Memory adds resident sizes, so a page shared between processes is counted in each — an upper bound, not what ending them would give back.",
+  ];
+  if (total.cpuPending > 0) {
+    lines.push(
+      `${plural(total.cpuPending, "session")} started too recently to have a rate, so the CPU ` +
+        `figure is at least this much.`
+    );
+  }
+  return lines.join("\n");
 }

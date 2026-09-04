@@ -63,6 +63,19 @@ export interface Tool {
   body: string;
   params: ToolParam[];
   scope: ToolScope;
+  /// Where this tool runs when it is launched STANDALONE from the Tools
+  /// tab: relative resolves against the workspace root, absolute is kept
+  /// as written, null is the root itself (see `resolveToolCwd`).
+  ///
+  /// A rail step ignores it, on purpose (spec T6/T11): a step runs in
+  /// the rail's own checkout, because that is the checkout rail conflict
+  /// detection is computed off. A step that quietly jumped out of its
+  /// worktree would let two rails collide with nothing left to warn
+  /// about.
+  ///
+  /// Optional so the fourteen built-ins below -- none of which wants a
+  /// directory of its own -- do not each have to declare `cwd: null`.
+  cwd?: string | null;
 }
 
 /// One tool as the daemon stores it. `workspaceId` IS the scope.
@@ -75,13 +88,29 @@ export interface ToolRecord {
   body: string;
   params: ToolParam[];
   position: number;
+  /// v30. Present on every record this app writes; a daemon older than
+  /// 30 drops it on the way in and hands back a row without it, which
+  /// reads as null -- the reason `toolCwd` is a compat gate rather than
+  /// a field the dialog simply offers.
+  cwd: string | null;
 }
 
 /// The kinds a human can AUTHOR, in the order the dialog's chips offer
-/// them. Deliberately not every ToolKind: a `gavin` tool's body selects
-/// an action this app implements, so one typed into the dialog would
-/// name nothing.
-export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];
+/// them: the three that also run on their own first, then the three that
+/// only mean something inside a rail.
+///
+/// It was the first three alone until 2026-09-04, and the reason it is
+/// now all six is worth keeping. `gavin`, `until` and `pr` were withheld
+/// from the chips not because the SCHEDULER treats an authored one
+/// differently -- every rule about them branches on `kind` and never on
+/// a built-in id, so a copy has always worked -- but because the edit
+/// form could not express their bodies. A `gavin` body names an action,
+/// and a free-text box let one name nothing; a `pr` body is not run at
+/// all, so a duplicate came back as a command whose text was the word
+/// "await-pr". `toolBodyEditor` below is what removed that obstacle: the
+/// form now draws a SELECT for an action and no body field at all for a
+/// wait, so each of the six is authorable in the shape it actually has.
+export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script", "until", "pr", "gavin"];
 
 export function toolKindLabel(kind: ToolKind): string {
   return kind === "agent"
@@ -117,10 +146,157 @@ export function isBuiltinId(id: string): boolean {
   return id.startsWith("builtin:");
 }
 
+// ---- Authoring one ---------------------------------------------------------
+
+/// A `pr` tool's body. Nothing runs it -- gavin reads GitHub itself
+/// (pull_request.rs) and the step is over when the pull request says so
+/// -- but the body still says what the step DOES, so a rail read on
+/// paper is legible. The same reason `builtin:start-rail`'s body names
+/// its action rather than hiding it in a branch on the id.
+export const PR_BODY = "await-pr";
+
+/// How a kind's body is authored. Three shapes, because the six kinds
+/// have three different relationships with their bodies:
+///
+/// - `text` — the body IS source the human writes: a prompt, a command
+///   line, a script, or the shell check an `until` step loops on.
+/// - `action` — the body NAMES something this app implements, so the
+///   form offers the names rather than a text box. Only `gavin`.
+/// - `none` — there is no body to write. Only `pr`, which runs nothing.
+///
+/// A descriptor rather than a chain of ternaries in the template,
+/// because the same three questions (what to call the field, how tall,
+/// whether it is monospaced) were already being asked three times over
+/// three kinds, and adding three more kinds to that is where the answers
+/// start to disagree with each other.
+export type ToolBodyEditor =
+  | {
+      shape: "text";
+      label: string;
+      placeholder: string;
+      rows: number;
+      /// Monospaced, and spellcheck off: shell source, not prose.
+      mono: boolean;
+    }
+  | { shape: "action"; label: string }
+  | { shape: "none"; note: string };
+
+export function toolBodyEditor(kind: ToolKind): ToolBodyEditor {
+  switch (kind) {
+    case "agent":
+      return {
+        shape: "text",
+        label: "Prompt",
+        placeholder: "What the agent should do, in this rail's checkout.",
+        rows: 8,
+        mono: false,
+      };
+    case "command":
+      return {
+        shape: "text",
+        label: "Command",
+        placeholder: "./deploy.sh {{env}}",
+        rows: 3,
+        mono: true,
+      };
+    case "until":
+      return {
+        shape: "text",
+        label: "Check command",
+        placeholder: "npm test",
+        rows: 3,
+        mono: true,
+      };
+    case "gavin":
+      return { shape: "action", label: "Action" };
+    case "pr":
+      return {
+        shape: "none",
+        note:
+          "Nothing to write: gavin reads the pull request for this rail's branch itself. " +
+          "What the step waits for is a parameter, not a body.",
+      };
+    default:
+      return {
+        shape: "text",
+        label: "Script",
+        placeholder: "./deploy.sh {{env}}",
+        rows: 8,
+        mono: true,
+      };
+  }
+}
+
+/// Whether a body is one of the fixed texts a kind imposes rather than
+/// something a human typed. Used only to decide what switching kinds may
+/// throw away.
+function isFixedBody(body: string): boolean {
+  const said = body.trim();
+  return said === PR_BODY || (GAVIN_ACTIONS as readonly string[]).includes(said);
+}
+
+/// The body a draft carries after the human picks a different kind.
+///
+/// Two of the six have no body a human writes, and both still need one:
+/// `gavinActionOf` READS a `gavin` body, and a `pr` body is what makes
+/// the step legible on paper. So switching to either replaces whatever
+/// was in the box. `stashed` is the authored body held across that swap
+/// -- switching back restores it, so a stray click on a chip costs a
+/// click rather than eight lines of prompt.
+///
+/// Null is "nothing was ever put away", which an EMPTY STRING is not: a
+/// new tool starts with a blank body, and a blank one restored is the
+/// blank the human was looking at. Conflating the two is what leaves
+/// "await-pr" sitting in a brand-new tool's Command field.
+///
+/// Switching to `gavin` keeps a body that already names an action, so
+/// re-picking the chip a draft is already on changes nothing.
+export function bodyForKind(kind: ToolKind, current: string, stashed: string | null): string {
+  if (kind === "pr") return PR_BODY;
+  if (kind === "gavin") {
+    return gavinActionOf({ kind, body: current }) ? current.trim() : GAVIN_ACTIONS[0];
+  }
+  return isFixedBody(current) && stashed !== null ? stashed : current;
+}
+
+/// What a kind reads its PARAMETERS as, for the hint under the parameter
+/// grid — or null for the three whose params are only text substituted
+/// into a body.
+///
+/// The three that need this are the three whose params are ARGUMENTS:
+/// nothing pastes them into the body, so a human authoring one from
+/// scratch has no way to discover the names from the form. Getting a
+/// name wrong is silent by design -- `summaryParam` ignores a param the
+/// tool does not declare, so a budget typed into `retries` reads as no
+/// budget at all rather than as an error.
+export function toolKindParamNote(kind: ToolKind): string | null {
+  switch (kind) {
+    case "until":
+      return "The check is the body. This kind also reads a `max` parameter — how many times it may send the rail back before giving up.";
+    case "pr":
+      return "This kind reads a `require` parameter (checks / approval) and a `max` — how many times a failing check may send the rail back.";
+    case "gavin":
+      return "The parameters are the action's arguments: `start-rail` reads `rail`, the name of the rail to arm.";
+    default:
+      return null;
+  }
+}
+
 // ---- The built-in set ------------------------------------------------------
-// Fourteen tools covering every example the card named, and
+// Sixteen tools covering every example the cards named, and
 // demonstrating all three authorable kinds. Data, not code: nothing
-// about running the first eleven is special.
+// about running any of them is special.
+//
+// The last two, Consolidate repo and Reconcile repo, are the ones the
+// Tools tab was asked for by name, and they are the two written for a
+// WORKSPACE rather than for a rail: neither assumes a branch of its own,
+// and both are jobs a human does to a repository between pieces of work
+// rather than as a step inside one. They are ordinary `agent` tools all
+// the same -- a rail can carry either, and the Tools tab offers every
+// agent, command and script tool in the library beside them. They are
+// APPENDED rather than slotted in beside the other agent tools because
+// this list's order is the order the library draws, and a new tool
+// belongs at the end of it.
 //
 // Three are not like the others, and all three are built-in-only because
 // their bodies are not source a human writes in a text box. Start rail is
@@ -399,6 +575,70 @@ export const BUILTIN_TOOLS: Tool[] = [
     params: [{ name: "rail", label: "Rail to start", default: "" }],
     body: "start-rail",
   },
+  {
+    id: "builtin:consolidate-repo",
+    name: "Consolidate repo",
+    description:
+      "An agent commits a dirty tree feature by feature — only the files each change touches. " +
+      "Never `git add -A`, never pushes.",
+    kind: "agent",
+    scope: "builtin",
+    params: [],
+    // Deliberately narrower than "Commit changes" above, which groups
+    // what it finds and stops there. This one is written for the tree
+    // several agents have been editing at once: the grouping rule is
+    // per-FEATURE rather than per-change, and the staging rule is
+    // explicit, because `git add -A` in a shared checkout commits
+    // somebody else's half-finished work under this run's message.
+    body:
+      "Consolidate the uncommitted work in this checkout into a series of clean commits.\n\n" +
+      "This tree may carry work from SEVERAL pieces of work at once, so the job is to " +
+      "separate them, not to bank them.\n\n" +
+      "1. Read `git status` and the full diff (staged and unstaged) before deciding anything. " +
+      "Read the changed files themselves where the diff alone does not say what a change is for.\n" +
+      "2. Group the changes by FEATURE — one commit per coherent piece of work, however many " +
+      "files it spans. A file touched by two features is split with `git add -p`.\n" +
+      "3. Stage each commit by naming its own paths (`git add <path> …`). Never `git add -A`, " +
+      "`git add .` or `git commit -a`: they would sweep in work you have not read.\n" +
+      "4. Write a conventional-commit subject for each (`feat(scope): …`, `fix(scope): …`) and " +
+      "a body explaining WHY the change is right — the constraint it respects, the failure it " +
+      "prevents. Never attribute the work to an agent or an AI.\n" +
+      "5. Leave anything you cannot confidently attribute UNCOMMITTED, and list it at the end. " +
+      "An honest leftover is a better outcome than a commit that mixes two features.\n" +
+      "6. Do NOT push, and do not amend, rebase or rewrite any existing commit.\n\n" +
+      "If there is nothing to commit, say so and stop — that is a success, not a problem.",
+  },
+  {
+    id: "builtin:reconcile-repo",
+    name: "Reconcile repo",
+    description:
+      "An agent reports every branch and worktree against a base: what is merged, what is " +
+      "behind, what looks abandoned. Reads only — deletes nothing.",
+    kind: "agent",
+    scope: "builtin",
+    params: [{ name: "base", label: "Compare against", default: "main" }],
+    // A REPORT, and the prompt says so three times, because the obvious
+    // next step from every finding here is a delete -- and a branch that
+    // looks abandoned to a reader of `git log` is regularly one somebody
+    // is working in another checkout. What to remove is the human's
+    // call; what exists is the question this answers.
+    body:
+      "Report the state of every branch and worktree in this repository against `{{base}}`.\n\n" +
+      "This is a REPORT. Do not delete a branch, remove a worktree, merge, rebase, push or " +
+      "commit anything — not even something that looks obviously dead.\n\n" +
+      "1. `git worktree list` and `git branch -vv` — what exists, and which checkout holds each " +
+      "branch. A branch checked out somewhere else is in use, whatever its log says.\n" +
+      "2. For each branch, compare it with `{{base}}`: `git rev-list --left-right --count " +
+      "{{base}}...<branch>` gives how far behind and ahead it is, and " +
+      "`git branch --merged {{base}}` says whether its work already landed.\n" +
+      "3. Sort every branch into one of: MERGED (its work is in `{{base}}`; nothing would be " +
+      "lost by removing it), BEHIND (unmerged work, but `{{base}}` has moved on), ACTIVE " +
+      "(unmerged and recently touched), or UNCLEAR — and use UNCLEAR rather than guessing.\n" +
+      "4. Name any worktree whose branch is gone, and any that has uncommitted changes: those " +
+      "are the two states that lose work when somebody tidies up.\n" +
+      "5. Finish with a short table: branch, worktree, ahead/behind, last commit date, verdict. " +
+      "Say what you would suggest removing and why — and stop there, without removing it.",
+  },
 ];
 
 // ---- Resolution ------------------------------------------------------------
@@ -424,6 +664,10 @@ export function toolLibrary(records: ToolRecord[]): Tool[] {
       body: record.body,
       params: record.params,
       scope: record.workspaceId === null ? "global" : "workspace",
+      // `?? null` rather than passed straight through: a row written by
+      // a daemon older than v30 has no `cwd` key at all, and undefined
+      // and null must not be two spellings of "runs at the root".
+      cwd: record.cwd ?? null,
     });
   }
   return [...byId.values()];
@@ -528,6 +772,7 @@ export function emptyTool(id: string): Tool {
     body: "",
     params: [],
     scope: "workspace",
+    cwd: null,
   };
 }
 
@@ -556,7 +801,37 @@ export function toRecord(tool: Tool, workspaceId: string, position: number): Too
     body: tool.body,
     params: tool.params,
     position,
+    // An untouched field is not a directory. Normalised to null here so
+    // the daemon, the launcher and the row all read "runs at the root"
+    // the same way -- the store trims too, but a record that carried
+    // `"  "` would still show a blank directory on the tab.
+    cwd: tool.cwd?.trim() ? tool.cwd.trim() : null,
   };
+}
+
+/// Where a tool launched STANDALONE runs: its own `cwd` resolved against
+/// the workspace root. Absolute is kept as written, relative is joined
+/// to the root, and no directory at all IS the root.
+///
+/// Not used by rails, deliberately (spec T6/T11) -- a rail step runs in
+/// `worktreePath ?? rootPath` and never asks the tool. Rail conflict
+/// detection is computed off that checkout, so a step that resolved a
+/// tool's own directory would let two rails work the same tree with
+/// nothing left to warn about.
+///
+/// Null when there is no root to resolve against, which is the caller's
+/// cue to refuse the launch rather than start a session in whatever
+/// directory the app happens to have.
+export function resolveToolCwd(tool: Pick<Tool, "cwd">, rootPath: string | null): string | null {
+  const own = tool.cwd?.trim() ?? "";
+  if (own.startsWith("/")) return own;
+  if (!rootPath) return null;
+  if (!own || own === ".") return rootPath;
+  // Plain join: a `..` segment is the human's own business, and
+  // rewriting the path they typed would make the field lie about where
+  // the tool runs. The trailing slash is trimmed so the two spellings of
+  // one root produce one string.
+  return `${rootPath.replace(/\/+$/, "")}/${own.replace(/^\.\//, "")}`;
 }
 
 /// What is wrong with a tool the human is editing, or null. Checked in
@@ -565,10 +840,11 @@ export function toRecord(tool: Tool, workspaceId: string, position: number): Too
 export function validateTool(tool: Tool): string | null {
   if (!tool.name.trim()) return "A tool needs a name.";
   if (!tool.body.trim()) return "A tool needs a body.";
-  // Unreachable from the dialog, which offers only the three authorable
-  // kinds -- but a `gavin` tool that reached a save with a body naming
-  // nothing would stall every step it was dropped onto, with the mistake
-  // discoverable only at launch.
+  // The dialog draws a `gavin` body as a select over GAVIN_ACTIONS, so
+  // this is reachable only from a tool whose action a NEWER gavin named
+  // and this one does not have. Refused rather than saved: such a tool
+  // stalls every step it is dropped onto, with the mistake discoverable
+  // only at launch.
   if (tool.kind === "gavin" && !gavinActionOf(tool)) {
     return `“${tool.body.trim()}” is not a gavin action.`;
   }
@@ -579,6 +855,14 @@ export function validateTool(tool: Tool): string | null {
     }
     if (seen.has(param.name)) return `Two parameters are both called “${param.name}”.`;
     seen.add(param.name);
+  }
+  // A working directory with a `{{param}}` in it would look substituted
+  // and would not be: resolveToolCwd is the resolve path, and only
+  // resolveToolBody substitutes. Refused here so the mistake is a
+  // message naming the field rather than a session started in a
+  // directory called `{{env}}`.
+  if (tool.cwd && placeholdersIn(tool.cwd).length > 0) {
+    return "A working directory can't take a {{parameter}} — only the body is substituted.";
   }
   return null;
 }

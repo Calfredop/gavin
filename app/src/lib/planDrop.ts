@@ -1,5 +1,6 @@
 import * as backend from "./backend";
 import { composeSlot } from "./cardCompose";
+import { guardCompletion, subjectFromCard } from "./cardCompletion";
 import { patchPlanField } from "./gavinState";
 import { computeOrderWrites, type OrderedPlanCard } from "./planOrder";
 import { dropHold } from "./kanbanDrag";
@@ -103,25 +104,52 @@ export async function planCommitFromMerged(
   // daemon round-trips finish. Released in finally either way -- on
   // success the patch lands in the same tick, on failure the card
   // returning to its old slot is the truthful outcome.
-  dropHold.set({ kind: "plan", id: drag.id, target: drag.target, size: drag.size });
-  try {
-    if (drag.target.nest) {
-      return await applyNestDrop(workspaceId, dragged, drag.target.nest, drag.target.index, all);
-    }
+  const hold = (): void => {
+    dropHold.set({ kind: "plan", id: drag.id, target: drag.target, size: drag.size });
+  };
 
-    const targetKey = drag.target.columnId;
-    const isAuto = targetKey.startsWith(AUTO_COLUMN_PREFIX);
-    const planCards = isAuto
-      ? (merged.autoColumns.find((a) => AUTO_COLUMN_PREFIX + a.status === targetKey)?.planCards ?? [])
-      : (merged.columns.find((dc) => dc.column.id === targetKey)?.planCards ?? []);
-    // A nested child being freed (status null) always gets the column's
-    // name -- even its parent's own column (card-model spec §2).
-    const statusTarget =
-      drag.sourceColumnId === targetKey && dragged.status !== null
-        ? null
-        : isAuto
-          ? targetKey.slice(AUTO_COLUMN_PREFIX.length)
-          : (columns.find((c) => c.id === targetKey)?.name ?? null);
+  if (drag.target.nest) {
+    hold();
+    try {
+      return await applyNestDrop(workspaceId, dragged, drag.target.nest, drag.target.index, all);
+    } finally {
+      dropHold.set(null);
+    }
+  }
+
+  const targetKey = drag.target.columnId;
+  const isAuto = targetKey.startsWith(AUTO_COLUMN_PREFIX);
+  const planCards = isAuto
+    ? (merged.autoColumns.find((a) => AUTO_COLUMN_PREFIX + a.status === targetKey)?.planCards ?? [])
+    : (merged.columns.find((dc) => dc.column.id === targetKey)?.planCards ?? []);
+  // A nested child being freed (status null) always gets the column's
+  // name -- even its parent's own column (card-model spec §2).
+  const statusTarget =
+    drag.sourceColumnId === targetKey && dragged.status !== null
+      ? null
+      : isAuto
+        ? targetKey.slice(AUTO_COLUMN_PREFIX.length)
+        : (columns.find((c) => c.id === targetKey)?.name ?? null);
+
+  // Asked BEFORE the hold, deliberately: the hold hides the card and
+  // draws a placeholder where it would land, and leaving that on screen
+  // behind a modal would show the drop as already made while the human
+  // is still being asked whether to make it.
+  if (statusTarget !== null) {
+    const decision = await guardCompletion(
+      workspaceId,
+      subjectFromCard(dragged),
+      statusTarget,
+      columns
+    );
+    if (decision.error) return decision.error;
+    // Cancelled: the card snaps back to where it was, which is the
+    // truth -- nothing was written, so there is nothing to report.
+    if (!decision.proceed) return null;
+  }
+
+  hold();
+  try {
     return await applyPlanDrop({
       workspaceId,
       path: drag.id,

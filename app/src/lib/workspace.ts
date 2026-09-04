@@ -7,6 +7,10 @@ export interface Page {
   name: string;
   layout: LayoutNode;
   focusedSessionId: string | null;
+  /// When this page was pinned, epoch milliseconds; absent means not
+  /// pinned. See `pinnedFirst` for why the pin is a moment rather than
+  /// a flag, and why it never touches the stored order.
+  pinnedAt?: number;
 }
 
 export interface GitViewPrefs {
@@ -54,11 +58,26 @@ export interface AgentCommitRecord {
 /// (it lands on the Agents page), so the layout tree already knows it
 /// exists -- what the tree cannot say is what it is doing, and a button
 /// that has to refuse a second run has to name the first.
+/// A "Develop into a plan…" run still in flight: the card being reshaped,
+/// and the session doing it.
+///
+/// Its own record because a develop run binds NOTHING -- no card<->session
+/// binding, no status write, since developing a card is not starting it
+/// (cardRunActions.ts's developCard). Without it the app cannot tell that
+/// the card it is about to hand an agent is being REWRITTEN underneath,
+/// which is the one way two runs on one card destroy work rather than
+/// merely duplicating it.
+export interface DevelopingCardRecord {
+  /// Absolute path of the card file, the same key `cardSessions` uses.
+  path: string;
+  sessionId: string;
+}
+
 export interface OrchestrationAgentRecord {
   sessionId: string;
-  /// The rail being reorganized; null/absent for a whole-tab Generate.
+  /// The rail being reorganized; null/absent for a whole-tab Organize.
   railId?: string | null;
-  /// What the human calls this run ("Generate", "Reorganize “backend”").
+  /// What the human calls this run ("Organize", "Reorganize “backend”").
   /// Stored rather than re-derived: a rail can be renamed or deleted
   /// while its run is still going, and the blocked button still has to
   /// say what is holding the slot.
@@ -81,11 +100,17 @@ export interface Workspace {
   rootPath?: string;
   /// The running main agent session (D12) -- outside every page tree.
   mainSessionId?: string;
-  /// The orchestration agent run (a Generate, or one rail's Reorganize)
+  /// The orchestration agent run (an Organize, or one rail's Reorganize)
   /// still in flight. One slot per workspace, because both requests end
   /// in a write of the WHOLE plan -- see orchestrationAgent.ts, which
   /// owns every rule about it.
   orchestrationAgent?: OrchestrationAgentRecord;
+  /// The cards being developed right now, one record per in-flight
+  /// "Develop into a plan…" run. Absent or empty means none. A LIST, not
+  /// a single slot like the orchestration agent above: two develop runs
+  /// on two different cards divide the work, and it is the same card
+  /// twice that conflicts. developingCards.ts owns the rules.
+  developingCards?: DevelopingCardRecord[];
   /// Launch command for it; "claude" when unset.
   /// Accent colour; absent means the default. Machine-local (D35).
   color?: string;
@@ -134,6 +159,10 @@ export interface Workspace {
   /// app-wide one, which is not the same as off: a workspace that wants
   /// no pause while the app has one stores a cycle with `enabled: false`.
   agentPause?: PauseCycle;
+  /// When this workspace was pinned to the top of the sidebar, epoch
+  /// milliseconds; absent means not pinned. Same rule and same reason as
+  /// `Page.pinnedAt`, one level up.
+  pinnedAt?: number;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its
@@ -172,13 +201,14 @@ export interface WorkspacesData {
   removedWorkspaces?: RemovedWorkspace[];
 }
 
-/// Whether two root paths name the same directory as far as a reclaim is
-/// concerned. Only trailing separators are normalized: a path that came
-/// from the folder picker and one persisted months ago differ by a
-/// trailing slash often enough to matter, and nothing else about them can
-/// be compared without touching the filesystem, which this module never
-/// does.
-function sameRoot(a: string, b: string): boolean {
+/// Whether two root paths name the same directory as far as gavin is
+/// concerned -- a reclaim match, and "is this folder already open in a
+/// workspace?" when one is picked (workspaceOpen.ts). Only trailing
+/// separators are normalized: a path that came from the folder picker
+/// and one persisted months ago differ by a trailing slash often enough
+/// to matter, and nothing else about them can be compared without
+/// touching the filesystem, which this module never does.
+export function sameRoot(a: string, b: string): boolean {
   const trim = (p: string) => p.replace(/[/\\]+$/, "");
   return trim(a) === trim(b) && trim(a) !== "";
 }
@@ -414,6 +444,26 @@ export function renamePage(state: WorkspacesData, workspaceId: string, pageId: s
   };
 }
 
+/// Stamps (or clears) a page's pin. `undefined` unpins, and stores the
+/// absence rather than a zero: "never pinned" and "pinned at the epoch"
+/// have to stay different answers, since `pinnedFirst` reads the field's
+/// TYPE to decide which group a row is in.
+export function setPagePinnedAt(
+  state: WorkspacesData,
+  workspaceId: string,
+  pageId: string,
+  pinnedAt: number | undefined
+): WorkspacesData {
+  return {
+    ...state,
+    workspaces: state.workspaces.map((w) =>
+      w.id === workspaceId
+        ? { ...w, pages: w.pages.map((p) => (p.id === pageId ? { ...p, pinnedAt } : p)) }
+        : w
+    ),
+  };
+}
+
 export function switchPage(state: WorkspacesData, workspaceId: string, pageId: string): WorkspacesData {
   return {
     ...state,
@@ -610,10 +660,62 @@ export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
 /// to the top, then the rest as stored. Shared with the ⌘⌥-number
 /// router so a hint badge and the shortcut can never point at
 /// different workspaces.
-export function sidebarWorkspaceOrder(workspaces: Workspace[]): Workspace[] {
-  const unfiled = workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID);
+///
+/// `showScratchpad` is that same contract's other half. A human who has
+/// switched the Scratchpad off (sidebarPrefs.ts) has no row for it, so
+/// the digits must close up over the gap rather than spend one on a
+/// workspace nothing on screen names -- and both readers have to make
+/// that decision the same way, which is why it is a parameter here and
+/// not a filter each of them applies afterwards. It defaults to true so
+/// the app hub, which lists what EXISTS rather than what is pinned,
+/// keeps its own answer without asking.
+export function sidebarWorkspaceOrder(
+  workspaces: Workspace[],
+  showScratchpad = true
+): Workspace[] {
+  const unfiled = showScratchpad ? workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID) : [];
   const rest = workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID);
-  return [...unfiled, ...rest];
+  return [...unfiled, ...pinnedFirst(rest)];
+}
+
+/// The order the sidebar renders a workspace's pages in: pinned ones
+/// first, then the rest as stored. Shared with the ⌘⇧-number router for
+/// the same reason `sidebarWorkspaceOrder` is -- a hint badge and the
+/// shortcut it promises must count the same rows.
+export function sidebarPageOrder(pages: Page[]): Page[] {
+  return pinnedFirst(pages);
+}
+
+/// Whether a row is pinned. One reader for the field's absence rule, so
+/// no surface decides for itself whether a `pinnedAt` of 0 counts.
+export function isPinned(item: { pinnedAt?: number }): boolean {
+  return typeof item.pinnedAt === "number";
+}
+
+/// Pinned rows first, in the order they were pinned; everything else
+/// after them in the order it was already in.
+///
+/// The pin is a MOMENT rather than a flag, and it deliberately leaves
+/// the stored array alone. Hoisting the row in the array instead would
+/// answer "on top" for one pin and lose the question for two, and worse:
+/// unpinning would have nowhere to put the row back, so a pin the human
+/// undid a second later would still have rearranged their sidebar for
+/// good. Ordering pinned rows by when they were pinned is also the only
+/// rule a human already holds -- the row you pinned first is the row at
+/// the top -- so it needs no explaining anywhere in the UI.
+///
+/// Ties break on stored position, so two rows pinned in the same
+/// millisecond sort deterministically rather than by whatever the
+/// engine's sort happens to do.
+export function pinnedFirst<T extends { pinnedAt?: number }>(items: T[]): T[] {
+  const indexed = items.map((item, index) => ({ item, index }));
+  const pinned = indexed.filter((e) => typeof e.item.pinnedAt === "number");
+  const rest = indexed.filter((e) => typeof e.item.pinnedAt !== "number");
+  pinned.sort((a, b) => {
+    const diff = (a.item.pinnedAt ?? 0) - (b.item.pinnedAt ?? 0);
+    return diff !== 0 ? diff : a.index - b.index;
+  });
+  return [...pinned, ...rest].map((e) => e.item);
 }
 
 // Searches every workspace's every page for sessionId, fresh at call time

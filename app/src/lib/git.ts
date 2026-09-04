@@ -274,6 +274,26 @@ export function validateBranchName(name: string): string | null {
   return null;
 }
 
+/// Whether `git switch <name>` in this repo could resolve `name` at all
+/// -- the question a rail's branch binding has to answer before the
+/// scheduler moves a checkout, since `git switch` cannot CREATE a branch
+/// and answers a missing one with `fatal: invalid reference: <name>`.
+///
+/// A remote-only branch counts as present. `git switch feat/api` with
+/// nothing local but `origin/feat/api` creates the tracking branch
+/// itself, so calling that unresolvable would refuse a binding that
+/// works. `remotes[].branches` already carries the name with its remote
+/// stripped and the rest of the path intact (`origin/feat/a/b` ->
+/// `feat/a/b`), which is exactly the spelling a binding uses.
+///
+/// Deliberately takes a whole snapshot rather than a branch list: the
+/// two lists are one answer, and a caller passing only the local one
+/// would reintroduce the very false refusal above.
+export function branchResolvable(refs: RefsSnapshot, name: string): boolean {
+  if (refs.branches.some((b) => b.name === name)) return true;
+  return refs.remotes.some((r) => r.branches.includes(name));
+}
+
 // ---- Conflict resolution ---------------------------------------------------
 
 export type ConflictKind = "text" | "deleteModify" | "addedBoth" | "binary" | "submodule";

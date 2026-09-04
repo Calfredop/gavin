@@ -14,6 +14,9 @@ vi.mock("./backend", () => ({
   deleteTool: vi.fn(),
   gitStatus: vi.fn(),
   gitCheckout: vi.fn(),
+  // The decoy sweep's one call: what THIS run changed in its own
+  // checkout, baseline included, so a committed decoy edit still shows.
+  gitRunChanges: vi.fn(),
   attachmentStatus: vi.fn(),
   // prState reads the backend through the same module object.
   prStatus: vi.fn(),
@@ -52,7 +55,7 @@ vi.mock("./layoutState", () => ({
   // Same default for the run baseline: absent unless a test asks.
   baseShaForLaunch: vi.fn(async () => null as string | null),
   createSessionOnPage: vi.fn(),
-  createPage: vi.fn().mockResolvedValue(null),
+  createSessionOnNewPage: vi.fn().mockResolvedValue(null),
   // The card-attachment run gate resolves relative paths against the
   // workspace ROOT, so the scheduler reaches for this before it spawns.
   workspaceRootPath: vi.fn(() => "/ws"),
@@ -85,6 +88,9 @@ const cardAttachments = vi.hoisted(() => ({ a: [] as string[] }));
 // back OUT of the done one. `get()` re-subscribes on every read, so the
 // tree below is rebuilt each time and picks this up.
 const cardStatus = vi.hoisted(() => ({ a: "To Do" }));
+// Cards a single test needs and nobody else does -- a plan with a nested
+// task under it, for the completion cascade. Reset in beforeEach.
+const extraPlans = vi.hoisted(() => ({ list: [] as Record<string, unknown>[] }));
 vi.mock("./gavinState", () => ({
   gavinTrees: {
     subscribe: (fn: (v: unknown) => void) => (
@@ -127,11 +133,12 @@ vi.mock("./gavinState", () => ({
                   checklistTotal: 0,
                   parseWarning: false,
                 },
+                ...extraPlans.list,
               ],
               docs: [],
               specs: [],
               hasPrd: true,
-              configWarning: false,
+              configWarning: false
             },
           ],
         },
@@ -140,6 +147,7 @@ vi.mock("./gavinState", () => ({
     ),
   },
   patchPlanField: vi.fn(),
+  patchPlanPath: vi.fn(),
 }));
 // The daemon's own pushes, capturable: initOrchestrationListeners is the
 // third place a plan can arrive, and the only one that needs a real
@@ -152,6 +160,10 @@ vi.mock("@tauri-apps/api/event", () => ({
     tauriEvents.handlers.set(name, handler);
     return () => tauriEvents.handlers.delete(name);
   },
+}));
+vi.mock("./dialog", () => ({
+  askConfirm: vi.fn(),
+  askConfirmChecked: vi.fn(),
 }));
 vi.mock("./gitState", () => {
   // Settable, not a constant: executeSwitchBranch reads the REFRESHED
@@ -198,6 +210,7 @@ import {
   resumeRail,
   retryStep,
   markStepDone,
+  skipStep,
   resumeStep,
   setRailAutoResumeAction,
   executeActions,
@@ -211,6 +224,8 @@ import {
   moveRailCardsAction,
   clearDoneStepsAction,
   stepAttentionsByWorkspace,
+  decoyEditsByWorkspace,
+  refreshDecoyEdits,
   railStatusVoice,
   makeStageSequentialAction,
   setStageModeAction,
@@ -222,6 +237,7 @@ import {
   __resetForTesting,
 } from "./orchestrationState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "./orchestration";
+import { askConfirmChecked } from "./dialog";
 import type { Orchestration, Rail, Stage } from "./orchestration";
 import type { GroupTemplate } from "./orchestrationGroups";
 
@@ -254,11 +270,12 @@ beforeEach(() => {
   layoutStore.set({ workspaces: [], sessionStatusById: {}, failureReasonById: {} });
   cardAttachments.a = [];
   cardStatus.a = "To Do";
-  // Every launch now asks for the rail's page before making its session,
-  // so this mock is reached from far more tests than Start and Resume --
+  extraPlans.list = [];
+  // Every launch that makes a session asks for the rail's page first, so
+  // this mock is reached from far more tests than Start and Resume --
   // and `clearAllMocks` keeps implementations, so a describe that made
-  // it answer "p-new" would otherwise re-bind every later test's rail.
-  vi.mocked(layoutStateModule.createPage).mockResolvedValue(null);
+  // it answer a page would otherwise re-bind every later test's rail.
+  vi.mocked(layoutStateModule.createSessionOnNewPage).mockResolvedValue(null);
 });
 
 /// The layout a rail bound to "p1" is entitled to: the page it names,
@@ -457,13 +474,26 @@ describe("executeActions — switchBranch (spec O15)", () => {
   });
 
   /// Point the mocked refs snapshot at a branch for /x/wt.
-  function refsSay(branch: string): void {
+  ///
+  /// A COMPLETE snapshot, because `refs` is never partial in the app --
+  /// gitState publishes what `refs()` returned or nothing at all -- and
+  /// executeSwitchBranch now reads the branch lists out of the same one
+  /// it reads the worktrees from. `has` is what the repo itself holds,
+  /// SWITCH's branch included by default: every test here but the
+  /// missing-branch one is about a binding that exists.
+  function refsSay(branch: string, has: string[] = ["main", "feature/api"]): void {
     (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({
       "ws-1": {
         refs: {
+          branches: has.map((name) => ({
+            name, current: name === branch, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "s",
+          })),
+          remotes: [],
+          stashes: [],
           worktrees: [
             { path: "/x/wt", head: "a", branch, isMain: false, locked: false, prunable: false },
           ],
+          headBranch: branch,
         },
       },
     });
@@ -564,6 +594,65 @@ describe("executeActions — switchBranch (spec O15)", () => {
 
     const stalled = vi.mocked(backend.setStepRun).mock.calls.map((c) => c[0]);
     expect(stalled).toEqual(["t1", "t2"]);
+  });
+
+  it("refuses a branch this repo does not have, without calling git at all", async () => {
+    // git's own answer is `fatal: invalid reference: <name>`, which
+    // reads as a gavin fault rather than the binding it is -- and the
+    // binding is the one an agent-written rail arrives with, since
+    // gavin_set_orchestration takes any string.
+    refsSay("main", ["main"]);
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+
+    await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.gitCheckout).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("feature/api is not a branch of this repo"),
+      null,
+      null,
+      null,
+    );
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
+  });
+
+  it("switches to a branch that exists only on a remote", async () => {
+    // `git switch feature/api` with nothing local but origin/feature/api
+    // creates the tracking branch itself. Refusing it would refuse a
+    // binding that works.
+    (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({
+      "ws-1": {
+        refs: {
+          branches: [{ name: "main", current: true, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "s" }],
+          remotes: [{ name: "origin", url: "u", branches: ["main", "feature/api"] }],
+          stashes: [],
+          worktrees: [{ path: "/x/wt", head: "a", branch: "main", isMain: false, locked: false, prunable: false }],
+          headBranch: "main",
+        },
+      },
+    });
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("feature/api"));
+
+    expect(await executeActions("ws-1", [SWITCH])).toBe(true);
+    expect(backend.gitCheckout).toHaveBeenCalledWith("/x/wt", "feature/api", null);
+  });
+
+  it("switches when the refs snapshot has not loaded — unknown is not gone", async () => {
+    // The same cold-start rule launchBlocker and branchSwitchFor follow.
+    // A workspace whose git view was never opened has no snapshot, and
+    // reading that as "no branch exists" would stall every bound rail.
+    (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({});
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("feature/api"));
+
+    expect(await executeActions("ws-1", [SWITCH])).toBe(true);
+    expect(backend.gitCheckout).toHaveBeenCalledWith("/x/wt", "feature/api", null);
   });
 
   it("leaves a step that is not pending alone", async () => {
@@ -745,49 +834,25 @@ describe("rail controls", () => {
     expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", null);
   });
 
-  // Spec O16. `boundRail` names page "p1", and the mocked layoutState
-  // holds no workspaces at all, so the rail's binding is exactly the
-  // stale one an unbound rail and a closed page both look like.
-  it("Start gives the rail a page of its own, in the rail's checkout", async () => {
-    vi.mocked(layoutStateModule.createPage).mockResolvedValue("p-new");
+  // Spec O16, but at LAUNCH. Arming used to spawn the page here, which
+  // meant opening a blank shell to have something to put on it -- and
+  // that shell then sat first in the tab strip for the life of the page,
+  // ahead of every agent the page existed for. `boundRail` names page
+  // "p1" over an empty layout, so this rail is exactly the unbound /
+  // closed-page case that used to spawn one.
+  it("Start arms the rail without spawning a page", async () => {
     await startRail("ws-1", "r1");
-    expect(layoutStateModule.createPage).toHaveBeenCalledWith(
-      "ws-1",
-      expect.any(Function),
-      1,
-      "backend",
-      // activate: false -- Start must not throw the human off the
-      // Orchestration tab they pressed it in.
-      { cwd: "/x/wt", activate: false }
-    );
-    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("p-new");
-  });
-
-  it("Start leaves a rail whose page still exists on it", async () => {
-    layoutStore.set({
-      workspaces: [{ id: "ws-1", pages: [{ id: "p1", name: "backend" }] }],
-      sessionStatusById: {},
-      failureReasonById: {},
-    });
-    await startRail("ws-1", "r1");
-    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
-  });
-
-  // A page is where agents land, not a precondition for running them:
-  // the rail arms onto the Agents-page fallback instead of stalling.
-  it("Start still arms the rail when the page cannot be created", async () => {
-    vi.mocked(layoutStateModule.createPage).mockResolvedValue(null);
-    await startRail("ws-1", "r1");
-    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("p1");
+    expect(layoutStateModule.createSessionOnNewPage).not.toHaveBeenCalled();
     expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1");
+    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("p1");
   });
 
-  it("Resume spawns the page too — it may have been closed while paused", async () => {
-    vi.mocked(layoutStateModule.createPage).mockResolvedValue("p-new");
+  it("Resume arms the rail without spawning one either", async () => {
     await setRailRunAction("ws-1", "r1", "paused", "s1");
+    vi.mocked(backend.setRailRun).mockClear();
     await resumeRail("ws-1", "r1");
-    expect(layoutStateModule.createPage).toHaveBeenCalledTimes(1);
-    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("p-new");
+    expect(layoutStateModule.createSessionOnNewPage).not.toHaveBeenCalled();
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1");
   });
 
   it("Retry returns a stalled step to pending and clears its reason", async () => {
@@ -812,43 +877,46 @@ describe("rail controls", () => {
     await markStepDone("ws-1", "t1");
     expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "done", null, null, null, null, null);
   });
-});
 
-describe("a rail spawns its own page when armed (spec O16)", () => {
-  beforeEach(async () => {
-    vi.mocked(backend.getOrchestration).mockResolvedValue(boundRail());
-    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
-    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
-    vi.mocked(layoutStateModule.createPage).mockResolvedValue("pg-new");
-    setLayoutState({ workspaces: [{ id: "ws-1", pages: [] }] });
-    await fetchOrchestration("ws-1");
+  // The other half of the pair. "Mark done" was the only way past a step
+  // that would not finish, so it got pressed for work nobody did -- and
+  // every tally downstream counted that step as delivered.
+  it("Skip files a running step skipped, keeping its session", async () => {
+    await setStepRunAction("ws-1", "t1", "running", "sess-1", null);
+    await skipStep("ws-1", "t1");
+    // Not "done": the rail is past this step and nothing about it
+    // happened. The session survives -- a live agent the human has
+    // stopped waiting for is still theirs to read, and to kill from the
+    // session itself if that is what they meant.
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "skipped", "sess-1", null, null, null, null);
   });
 
-
-
-  // The Start button is still showing while the page is being created,
-  // so a second click lands on an unbound rail.
-  it("a double Start spawns one page, not two", async () => {
-    let finish: (id: string | null) => void = () => {};
-    vi.mocked(layoutStateModule.createPage).mockImplementation(
-      () => new Promise<string | null>((resolve) => (finish = resolve))
-    );
-    const first = startRail("ws-1", "r1");
-    const second = startRail("ws-1", "r1");
-    finish("pg-new");
-    await Promise.all([first, second]);
-    expect(layoutStateModule.createPage).toHaveBeenCalledTimes(1);
+  it("Skip clears a stalled step's reason with it", async () => {
+    await setStepRunAction("ws-1", "t1", "stalled", null, "Push branch exited with code 1");
+    await skipStep("ws-1", "t1");
+    // The stall is no longer why the rail is where it is, and a bubble
+    // still quoting it would describe a decision nobody made.
+    expect(backend.setStepRun).toHaveBeenLastCalledWith("t1", "skipped", null, null, null, null, null);
   });
 
+  // The "and proceed" half. Rule 5 pauses a rail around a stall, so the
+  // step most worth skipping sits on a rail that would otherwise skip it
+  // and then advance nothing.
+  it("Skip puts a rail paused by the stall back to running", async () => {
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await setStepRunAction("ws-1", "t1", "stalled", null, "agent exited before the card reached Done");
+    vi.mocked(backend.setRailRun).mockClear();
+    await skipStep("ws-1", "t1");
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "running", "s1");
+  });
 
-
-
-  it("a rail with nothing left to run spawns no page", async () => {
-    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
-    await setStepRunAction("ws-1", "t1", "done", null, null);
-    vi.mocked(layoutStateModule.createPage).mockClear();
-    await startRail("ws-1", "r1");
-    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
+  // Skipping one step is not starting a rail. A rail the human left idle
+  // must stay idle, or a skip would launch work out of nowhere.
+  it("Skip does not start an idle rail", async () => {
+    await setStepRunAction("ws-1", "t1", "stalled", null, "worktree is gone");
+    vi.mocked(backend.setRailRun).mockClear();
+    await skipStep("ws-1", "t1");
+    expect(backend.setRailRun).not.toHaveBeenCalled();
   });
 });
 
@@ -877,12 +945,21 @@ function adoptedRail(pageId: string | null = null): Orchestration {
   };
 }
 
-// Spec O16, enforced at LAUNCH rather than only at arming. The Grimoria
-// failure: five rails armed over the socket, every step of every rail
-// stacked on the workspace's active page, because ensureRailPage was
-// reachable only from Start and Resume.
-describe("a rail armed without Start gets its page at its first launch (spec O16)", () => {
-  const PAGE_ARGS = ["ws-1", expect.any(Function), 1, "backend", { cwd: "/x/wt", activate: false }];
+// Spec O16, enforced at LAUNCH and ONLY at launch. The Grimoria failure:
+// five rails armed over the socket, every step of every rail stacked on
+// the workspace's active page, because the page was reachable only from
+// Start and Resume. Arming spawns none now, so this is the whole of it.
+describe("a rail gets its page at its first launch (spec O16)", () => {
+  // The page is made AROUND the launch's own session -- name, cwd,
+  // command, and the posture that keeps the human on the Orchestration
+  // tab -- so nothing blank is opened to have something to put on it.
+  const pageArgs = (command: unknown = expect.any(String)) => [
+    "ws-1",
+    "backend",
+    "/x/wt",
+    command,
+    { activate: false },
+  ];
 
   beforeEach(async () => {
     __resetForTesting();
@@ -900,33 +977,35 @@ describe("a rail armed without Start gets its page at its first launch (spec O16
     });
     vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
     vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
-    vi.mocked(layoutStateModule.createPage).mockResolvedValue("pg-rail");
+    vi.mocked(layoutStateModule.createSessionOnNewPage).mockResolvedValue({
+      pageId: "pg-rail",
+      sessionId: "sess-9",
+    });
     setLayoutState({ workspaces: [{ id: "ws-1", pages: [] }] });
     await fetchOrchestration("ws-1");
   });
 
   it("the first launch lands on a page named after the rail, and binds it", async () => {
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
-    // The NEW page, not the null the rail carried when the launch began:
-    // the binding is an optimistic mutatePlan, and a rail read once at
-    // the top of the launch is stale by the time the session is made.
-    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
-      "ws-1",
-      "pg-rail",
-      "/x/wt",
-      expect.stringContaining("claude")
+    expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
+      ...pageArgs(expect.stringContaining("claude"))
     );
+    // The agent IS the page's first tab. Making the page first and
+    // landing the session on it afterwards is what left a blank shell
+    // ahead of it, first in the tab strip for the life of the page.
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
     expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("pg-rail");
+    // And that one session is the step's, not a shell beside it.
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
   });
 
   it("the rail's second launch reuses that page", async () => {
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    // The mocked createPage puts nothing in the layout; the real one does.
+    // The mock puts nothing in the layout; the real one does.
     setLayoutState({ workspaces: [{ id: "ws-1", pages: [{ id: "pg-rail", name: "backend" }] }] });
-    vi.mocked(layoutStateModule.createPage).mockClear();
+    vi.mocked(layoutStateModule.createSessionOnNewPage).mockClear();
     await executeActions("ws-1", [{ kind: "launch", stepId: "t2" }]);
-    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnNewPage).not.toHaveBeenCalled();
     expect(layoutStateModule.createSessionOnPage).toHaveBeenLastCalledWith(
       "ws-1",
       "pg-rail",
@@ -941,8 +1020,32 @@ describe("a rail armed without Start gets its page at its first launch (spec O16
     await fetchOrchestration("ws-1");
     setLayoutState({ workspaces: [{ id: "ws-1", pages: [{ id: "p-other", name: "Page 1" }] }] });
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
-    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+    expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(...pageArgs());
+    expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("pg-rail");
+  });
+
+  // The launch button is still showing while the page is being made, so
+  // a second launch can reach a rail that is still unbound. It WAITS for
+  // the page rather than racing it: giving up on one used to drop that
+  // session on the Agents page, and re-reading a half-written binding
+  // would have made a second page named after the same rail.
+  it("two launches racing an unbound rail spawn one page, not two", async () => {
+    let finish: (v: { pageId: string; sessionId: string } | null) => void = () => {};
+    const gate = new Promise<{ pageId: string; sessionId: string } | null>((r) => (finish = r));
+    vi.mocked(layoutStateModule.createSessionOnNewPage).mockReturnValue(gate);
+    const first = executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    const second = executeActions("ws-1", [{ kind: "launch", stepId: "t2" }]);
+    // Both launches must be past the guard before the page lands, or the
+    // race this covers never happens.
+    await vi.waitFor(() => expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalled());
+    // The real one puts the page in the layout; without that, the waiting
+    // launch sees a binding naming a page that does not exist -- the
+    // closed-page case -- and spawns another.
+    setLayoutState({ workspaces: [{ id: "ws-1", pages: [{ id: "pg-rail", name: "backend" }] }] });
+    finish({ pageId: "pg-rail", sessionId: "sess-9" });
+    await Promise.all([first, second]);
+    expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledTimes(1);
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenLastCalledWith(
       "ws-1",
       "pg-rail",
       "/x/wt",
@@ -954,7 +1057,7 @@ describe("a rail armed without Start gets its page at its first launch (spec O16
   // for running them. The step goes to the fallback and the rail keeps
   // advancing -- a page failure must never read as a stalled step.
   it("a page that cannot be created still launches the step on the fallback and leaves the rail running", async () => {
-    vi.mocked(layoutStateModule.createPage).mockResolvedValue(null);
+    vi.mocked(layoutStateModule.createSessionOnNewPage).mockResolvedValue(null);
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
     expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
       "ws-1",
@@ -979,12 +1082,8 @@ describe("a rail armed without Start gets its page at its first launch (spec O16
     await fetchOrchestration("ws-1");
     toolRecords.set({ "ws-1": [] });
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
-    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
-      "ws-1",
-      "pg-rail",
-      "/x/wt",
-      expect.stringContaining("git push -u origin HEAD")
+    expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
+      ...pageArgs(expect.stringContaining("git push -u origin HEAD"))
     );
   });
 
@@ -1018,7 +1117,7 @@ describe("a rail armed without Start gets its page at its first launch (spec O16
     await fetchOrchestration("ws-1");
     toolRecords.set({ "ws-1": [] });
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
-    expect(layoutStateModule.createPage).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnNewPage).not.toHaveBeenCalled();
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
 
@@ -1034,12 +1133,8 @@ describe("a rail armed without Start gets its page at its first launch (spec O16
     await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "broke", "conv-1", "/x/wt");
     await setRailRunAction("ws-1", "r1", "paused", "s1");
     expect(await resumeStep("ws-1", "t1")).toBeNull();
-    expect(layoutStateModule.createPage).toHaveBeenCalledWith(...PAGE_ARGS);
-    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
-      "ws-1",
-      "pg-rail",
-      "/x/wt",
-      "claude --resume conv-1"
+    expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
+      ...pageArgs("claude --resume conv-1")
     );
   });
 });
@@ -1097,6 +1192,32 @@ describe("executeActions", () => {
   it("complete returns the rail to idle", async () => {
     await executeActions("ws-1", [{ kind: "complete", railId: "r1" }]);
     expect(backend.setRailRun).toHaveBeenLastCalledWith("r1", "idle", null);
+  });
+
+  it("a step whose card is being DEVELOPED stalls instead of running the prompt it is replacing", async () => {
+    // The rail's half of the develop lock. A stall, not a failure: the
+    // sweep frees the card when the develop run ends and the rail picks
+    // the step up on the next tick -- with the card the human asked for
+    // rather than the thin one it was.
+    layoutStateModule.layoutState.update((st) => ({
+      ...st,
+      // Only the two fields the develop lookup reads; the rest of a
+      // Workspace is irrelevant to it.
+      workspaces: [{ id: "ws-1", developingCards: [{ path: "/x/a.md", sessionId: "s-dev" }] }] as never,
+    }));
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("being developed"),
+      null,
+      null,
+      null,
+    );
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
 
   it("a step whose card has a missing attachment stalls with the file named, spawning nothing", async () => {
@@ -1695,6 +1816,111 @@ describe("moveRailCardsAction", () => {
     expect(await moveRailCardsAction("ws-1", "nope", "Done")).toBeNull();
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
   });
+
+  // Filing a whole rail into Done is the bulk version of the drag that
+  // used to sweep nested tasks away without saying so (cardCompletion.ts).
+  describe("a rail carrying a plan with nested tasks", () => {
+    beforeEach(() => {
+      boardStore.set({
+        "ws-1": {
+          columns: [
+            { id: "c1", name: "To Do", position: 0 },
+            { id: "c2", name: "Done", position: 1 },
+          ],
+          labels: [],
+          cardSessions: [],
+        },
+      });
+      extraPlans.list = [
+        {
+          path: "/x/plan.md",
+          fileName: "plan.md",
+          title: "File explorer",
+          status: "To Do",
+          priority: null,
+          order: null,
+          kind: "plan",
+          parent: null,
+          labels: [],
+          checklistDone: 0,
+          checklistTotal: 0,
+          parseWarning: false,
+        },
+        {
+          path: "/x/lens.md",
+          fileName: "lens.md",
+          title: "Tree lens",
+          status: null,
+          priority: null,
+          order: null,
+          kind: "task",
+          parent: "plan.md",
+          labels: [],
+          checklistDone: 0,
+          checklistTotal: 0,
+          parseWarning: false,
+        },
+      ];
+      orchestrations.set({
+        "ws-1": {
+          ...emptyOrchestration(),
+          rails: [
+            {
+              id: "r1",
+              name: "r1",
+              position: 0,
+              worktreePath: null,
+              pageId: null,
+              stages: [
+                {
+                  id: "s1",
+                  position: 0,
+                  steps: [
+                    { id: "t1", position: 0, cardPath: "/x/plan.md" },
+                    { id: "t2", position: 1, cardPath: "/x/a.md" },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      });
+    });
+
+    it("asks about the plan, naming the task that would travel with it", async () => {
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+      vi.mocked(askConfirmChecked).mockResolvedValue({ confirmed: true, checked: false });
+      expect(await moveRailCardsAction("ws-1", "r1", "Done")).toBeNull();
+      expect(vi.mocked(askConfirmChecked).mock.calls[0][0].lines).toContain("“Tree lens”");
+      expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+        ["/x/plan.md", "status", "Done"],
+        ["/x/a.md", "status", "Done"],
+      ]);
+    });
+
+    // Declining is about THAT card. The rail's other cards were never
+    // what the question was about, and leaving them unfiled would make
+    // one "no" undo the whole gesture.
+    it("skips only the declined card and files the rest", async () => {
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+      vi.mocked(askConfirmChecked).mockResolvedValue({ confirmed: false, checked: false });
+      expect(await moveRailCardsAction("ws-1", "r1", "Done")).toBeNull();
+      expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+        ["/x/a.md", "status", "Done"],
+      ]);
+    });
+
+    it("breaks the nested task out into the first column when the box is ticked", async () => {
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+      vi.mocked(askConfirmChecked).mockResolvedValue({ confirmed: true, checked: true });
+      expect(await moveRailCardsAction("ws-1", "r1", "Done")).toBeNull();
+      expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+        ["/x/lens.md", "status", "To Do"],
+        ["/x/plan.md", "status", "Done"],
+        ["/x/a.md", "status", "Done"],
+      ]);
+    });
+  });
 });
 
 describe("clearDoneStepsAction", () => {
@@ -1917,6 +2143,82 @@ describe("launching a tool step", () => {
     vi.mocked(layoutStateModule.setSessionName).mockRejectedValue(new Error("nope"));
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
+  });
+
+  // Tools spec T6/T11. A tool can carry a working directory of its own
+  // (v30), and the Tools tab runs it there -- but a RAIL step ignores
+  // it and runs in the rail's checkout, always.
+  //
+  // This is not tidiness. Rail conflict detection is computed off
+  // `worktreePath ?? rootPath`: it is how gavin knows two rails are
+  // about to work the same tree. A step that quietly jumped out of its
+  // worktree would let two rails collide with nothing left to warn
+  // about, and the human would find out from a merge.
+  it("ignores the tool's own working directory and uses the rail's checkout", async () => {
+    toolRecords.set({
+      "ws-1": [
+        {
+          id: "u-cwd",
+          workspaceId: "ws-1",
+          name: "Deploy",
+          description: "",
+          kind: "command",
+          body: "./deploy.sh",
+          params: [],
+          position: 0,
+          cwd: "/somewhere/else",
+        },
+      ],
+    });
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...toolRail(),
+      rails: [
+        {
+          ...toolRail().rails[0],
+          stages: [
+            {
+              id: "s1",
+              position: 0,
+              steps: [{ id: "t1", position: 0, cardPath: "", toolId: "u-cwd", toolParams: {} }],
+            },
+          ],
+        },
+      ],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({
+      "ws-1": [
+        {
+          id: "u-cwd",
+          workspaceId: "ws-1",
+          name: "Deploy",
+          description: "",
+          kind: "command",
+          body: "./deploy.sh",
+          params: [],
+          position: 0,
+          cwd: "/somewhere/else",
+        },
+      ],
+    });
+    setRailPageLive();
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("./deploy.sh")
+    );
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/somewhere/else",
+      expect.anything()
+    );
   });
 
   it("substitutes the step's parameter overrides", async () => {
@@ -2854,6 +3156,140 @@ describe("stepAttentionsByWorkspace", () => {
     boardStore.set({});
     status({ "sess-1": "idle" });
     expect(get(stepAttentionsByWorkspace)["ws-1"]).toBeUndefined();
+  });
+});
+
+// The sweep behind the `decoy-edit` mark: one `git_run_changes` per
+// running card step, against the baseline its run started on. The
+// baseline is the point -- a status call would go quiet the moment the
+// agent committed the wrong file, while the rail stayed just as wedged.
+describe("refreshDecoyEdits", () => {
+  const CARD = "/ws/.gavin-root/plans/a.md";
+
+  function decoyRail(): Orchestration {
+    return {
+      ...emptyOrchestration(),
+      rails: [
+        {
+          id: "r1",
+          name: "backend",
+          position: 0,
+          worktreePath: "/x/wt",
+          pageId: "p1",
+          stages: [
+            { id: "s1", position: 0, steps: [{ id: "t1", position: 0, cardPath: CARD }] },
+          ],
+        },
+      ],
+      stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+    };
+  }
+
+  function bind(baseSha: string | null): void {
+    boardStore.update((all) => ({
+      ...all,
+      "ws-1": {
+        ...(all["ws-1"] as Record<string, unknown>),
+        cardSessions: [
+          { path: CARD, sessionId: "sess-1", cwd: "/x/wt", command: null, launchCwd: "/x/wt", baseSha },
+        ],
+      },
+    }));
+  }
+
+  const changed = (files: Array<{ path: string; oldPath?: string }>) => ({
+    baseSha: "base",
+    notARepo: false,
+    baseMissing: false,
+    root: "/x/wt",
+    baseSubject: null,
+    files: files.map((f) => ({ ...f, status: "M" as const })),
+    added: 0,
+    removed: 0,
+    commits: 0,
+  });
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.getOrchestration).mockResolvedValue(decoyRail());
+    await fetchOrchestration("ws-1");
+    bind("base");
+  });
+
+  it("records the step whose card the run changed inside the worktree", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: ".gavin-root/plans/a.md" }]));
+    await refreshDecoyEdits("ws-1");
+    expect([...(get(decoyEditsByWorkspace)["ws-1"] ?? [])]).toEqual(["t1"]);
+  });
+
+  it("asks the run's own checkout, against the baseline it started on", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([]));
+    await refreshDecoyEdits("ws-1");
+    expect(backend.gitRunChanges).toHaveBeenCalledWith("/x/wt", "base");
+  });
+
+  it("records nothing for a run that only touched code", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: "app/src/lib/git.ts" }]));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(0);
+  });
+
+  // Every unknown is silence rather than a mark: a run with no baseline
+  // (pre-v26, outside a repo, unborn HEAD) simply cannot be asked.
+  it("makes no call at all without a baseline", async () => {
+    bind(null);
+    await refreshDecoyEdits("ws-1");
+    expect(backend.gitRunChanges).not.toHaveBeenCalled();
+  });
+
+  // ...and neither can a rail with no checkout of its own, which has no
+  // second copy of anything to confuse.
+  it("makes no call for an unbound rail", async () => {
+    orchestrations.update((all) => ({
+      ...all,
+      "ws-1": {
+        ...all["ws-1"],
+        rails: all["ws-1"].rails.map((r) => ({ ...r, worktreePath: null })),
+      },
+    }));
+    await refreshDecoyEdits("ws-1");
+    expect(backend.gitRunChanges).not.toHaveBeenCalled();
+  });
+
+  it("survives a git call that fails, leaving nothing marked", async () => {
+    vi.mocked(backend.gitRunChanges).mockRejectedValue(new Error("no such worktree"));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(0);
+  });
+
+  // The mark is about a LIVE step. A finished run's decoy edit is a
+  // merge problem, not a rail waiting on somebody.
+  it("clears the set once nothing is running", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: ".gavin-root/plans/a.md" }]));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(1);
+    orchestrations.update((all) => ({
+      ...all,
+      "ws-1": {
+        ...all["ws-1"],
+        stepRuns: [{ stepId: "t1", state: "done", sessionId: "sess-1", reason: null }],
+      },
+    }));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(0);
+  });
+
+  // What the whole sweep is for: the mark reaches the chips, the rail
+  // header and the hub through the map every surface already reads.
+  it("puts the mark on the step, even while its agent is still working", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: ".gavin-root/plans/a.md" }]));
+    await refreshDecoyEdits("ws-1");
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "working" } }));
+    expect(get(stepAttentionsByWorkspace)["ws-1"].get("t1")).toBe("decoy-edit");
   });
 });
 

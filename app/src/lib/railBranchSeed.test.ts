@@ -35,7 +35,9 @@ describe("the branch name a rail's bind dialog seeds", () => {
     const s = source(BIND);
     // Assigned by the opener, not by an $effect: re-seeding on every
     // open is what makes Cancel discard a half-typed name.
-    expect(s).toMatch(/function startNaming\(\): void \{\s*draftBranch = seedBranch;\s*naming = true;/);
+    // The opener also clears the last refusal between the two, which is
+    // why this is not one unbroken sequence.
+    expect(s).toMatch(/function startNaming\(\): void \{\s*draftBranch = seedBranch;[^}]*naming = true;/);
     expect(s).toContain("onclick={startNaming}");
     expect(s).not.toContain("onclick={() => (naming = true)}");
   });

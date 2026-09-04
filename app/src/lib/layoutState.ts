@@ -1,6 +1,6 @@
 import { writable, derived, get, type Writable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { askConfirm } from "./dialog";
+import { askConfirm, showAlert } from "./dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
@@ -13,6 +13,7 @@ import type {
   WorkspacesData,
   GitStatus,
   GitViewPrefs,
+  DevelopingCardRecord,
   OrchestrationAgentRecord,
   RemovedWorkspace,
 } from "./workspace";
@@ -22,6 +23,7 @@ import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
 import { followRenamedContext } from "./planExplorer";
+import { retargetPath } from "./fileTree";
 import {
   normalizeColor,
   resolveAgentConfig,
@@ -30,13 +32,25 @@ import {
 } from "./settings";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
-import type { BoardTab, GavinTree } from "./gavin";
+import type { BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
 import type { StatusSince } from "./attentionInbox";
 import { indexQueued, type QueuedInput } from "./queuedInput";
 import { candidateAgentConfig, type Candidate } from "./bestOfN";
+import {
+  activeWorkspaceForWindow,
+  isInAnotherWindow,
+  nextActiveAfterHandoff,
+  windowAction,
+} from "./appWindow";
+import {
+  currentWindowLabel,
+  currentWorkspaceWindows,
+  initWorkspaceWindows,
+  isMainWindow,
+} from "./appWindowState";
 
 export type { SessionStatus };
 
@@ -116,6 +130,7 @@ export interface LayoutState {
   statusSinceById: Record<string, StatusSince>;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
+  cardTabsById: Record<string, CardTab>;
   /// Workspaces the sidebar X removed, newest first. Persisted with the
   /// workspaces themselves; see workspace.ts's RemovedWorkspace for why
   /// removing a workspace has to leave a record at all.
@@ -139,6 +154,7 @@ const initialState: LayoutState = {
   statusSinceById: {},
   fileTabsById: {},
   boardTabsById: {},
+  cardTabsById: {},
   removedWorkspaces: [],
 };
 
@@ -336,6 +352,63 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
   }
 }
 
+/// config.json's `activeWorkspaceId` read for THIS window.
+///
+/// The stored id is one value behind however many windows are open, so it
+/// can be right for at most one of them -- and not even reliably for the
+/// main window, since the workspace it names may since have moved into a
+/// window of its own. Every window therefore takes it as a preference and
+/// falls back to the first workspace it actually holds.
+function forThisWindow(data: WorkspacesData): WorkspacesData {
+  return {
+    ...data,
+    activeWorkspaceId: activeWorkspaceForWindow(
+      data.workspaces,
+      currentWorkspaceWindows(),
+      currentWindowLabel(),
+      data.activeWorkspaceId ?? null
+    ),
+  };
+}
+
+/// Takes on what another window just wrote.
+///
+/// config.json is one file and every window writes the whole array back,
+/// so without this the second window to save would undo the first's work
+/// -- a page renamed here, a tab opened there, and whichever saved last
+/// wins the entire file. The writer is the authority and this is every
+/// other window agreeing with it.
+///
+/// What is NOT adopted: which workspace this window is showing. That is
+/// per window now, and taking the writer's would make one window's click
+/// change what another is looking at.
+function adoptWorkspaces(data: WorkspacesData): void {
+  layoutState.update((s) => {
+    if (s.status !== "ready") return s;
+    const resolved = workspace.resolveActiveFocus({
+      workspaces: data.workspaces,
+      activeWorkspaceId: activeWorkspaceForWindow(
+        data.workspaces,
+        currentWorkspaceWindows(),
+        currentWindowLabel(),
+        s.activeWorkspaceId
+      ),
+      removedWorkspaces: data.removedWorkspaces ?? [],
+    });
+    return {
+      ...s,
+      workspaces: resolved.state.workspaces,
+      activeWorkspaceId: resolved.state.activeWorkspaceId,
+      focusedSessionId: resolved.focusedSessionId,
+      removedWorkspaces: data.removedWorkspaces ?? [],
+    };
+  });
+  // A root bound (or unbound) in the other window is a watch this one
+  // owes the daemon too: gavin trees arrive per window, and a workspace
+  // whose root this window never armed would render an empty board.
+  watchRootedWorkspaces(data.workspaces);
+}
+
 /// Makes a workspace the active one: stamps it as last used, and takes
 /// the app hub down. Every path that puts a workspace on screen goes
 /// through here rather than calling workspace.switchWorkspace directly
@@ -343,8 +416,30 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
 /// hub must not survive underneath the workspace the user just chose,
 /// and both are far too easy to forget one call site at a time.
 function activateWorkspace(state: WorkspacesData, workspaceId: string): WorkspacesData {
+  if (claimedElsewhere(workspaceId)) return state;
   closeAppHub();
   return workspace.switchWorkspace(state, workspaceId, Date.now());
+}
+
+/// The one gate that keeps a workspace out of two windows at once, and
+/// what it does instead: raise the window it is already in.
+///
+/// Every path that puts a workspace on screen -- the sidebar, the hub's
+/// recents, the ⌘⌥-digits, a card jumping to its session, a rail
+/// launching a step -- ends in `activateWorkspace`, so guarding that one
+/// function is what makes the rule hold everywhere without thirty call
+/// sites each remembering it. Two panes over one PTY would each report
+/// their own size to the daemon and resize the program between them for
+/// as long as both were open; see appWindow.ts.
+///
+/// Answering `true` means "not here" -- the caller returns its state
+/// unchanged, so nothing on screen moves.
+function claimedElsewhere(workspaceId: string): boolean {
+  if (!isInAnotherWindow(currentWorkspaceWindows(), workspaceId, currentWindowLabel())) {
+    return false;
+  }
+  void backend.focusWorkspaceWindow(workspaceId).catch(() => {});
+  return true;
 }
 
 // The directory a blank terminal opened inside a workspace should start
@@ -384,7 +479,8 @@ export function liveSessionIds(state: LayoutState): Set<string> {
     if (ws.mainSessionId) ids.add(ws.mainSessionId);
     for (const page of ws.pages) {
       for (const id of layout.allSessionIds(page.layout)) {
-        if (!state.fileTabsById[id] && !state.boardTabsById[id]) ids.add(id);
+        if (!state.fileTabsById[id] && !state.boardTabsById[id] && !state.cardTabsById[id])
+          ids.add(id);
       }
     }
   }
@@ -411,8 +507,9 @@ async function createFreshSession(workspaceId: string): Promise<string | null> {
 /// The non-session tabs a close ended, handed back to the caller instead
 /// of being pruned on the spot.
 ///
-/// `fileTabsById`/`boardTabsById` are the ONLY thing that tells
-/// Pane.svelte a tab is a file or a board rather than a terminal. Drop an
+/// `fileTabsById`/`boardTabsById`/`cardTabsById` are the ONLY thing that
+/// tells Pane.svelte a tab is a file, a board or a card rather than a
+/// terminal. Drop an
 /// id from them while it is still in a layout tree and that pane falls
 /// straight through to a `<TerminalPane>` for an id the daemon has never
 /// heard of: it mounts, calls fit(), and asks the daemon to resize it.
@@ -425,6 +522,7 @@ async function createFreshSession(workspaceId: string): Promise<string | null> {
 interface ClosedTabs {
   fileTabIds: string[];
   boardTabIds: string[];
+  cardTabIds: string[];
 }
 
 // Every close path (tab, pane, page, workspace) ends the tabs it owns.
@@ -435,10 +533,12 @@ interface ClosedTabs {
 async function endTabs(
   tabIds: string[],
   fileTabsById: Record<string, FileTab>,
-  boardTabsById: Record<string, BoardTab>
+  boardTabsById: Record<string, BoardTab>,
+  cardTabsById: Record<string, CardTab>
 ): Promise<ClosedTabs | null> {
   const fileTabIds: string[] = [];
   const boardTabIds: string[] = [];
+  const cardTabIds: string[] = [];
   for (const id of tabIds) {
     const fileTab = fileTabsById[id];
     if (fileTab) {
@@ -454,6 +554,13 @@ async function endTabs(
       boardTabIds.push(id);
       continue;
     }
+    if (cardTabsById[id]) {
+      // Same as a board tab: no process, no watcher of its own. The card
+      // file's watch belongs to the detail view inside the pane, which
+      // tears it down when it unmounts.
+      cardTabIds.push(id);
+      continue;
+    }
     try {
       await backend.killSession(id);
     } catch (e) {
@@ -461,7 +568,7 @@ async function endTabs(
       return null;
     }
   }
-  return { fileTabIds, boardTabIds };
+  return { fileTabIds, boardTabIds, cardTabIds };
 }
 
 /// Drops the tabs endTabs ended from the maps that classify them. Call
@@ -469,6 +576,17 @@ async function endTabs(
 async function pruneClosedTabs(closed: ClosedTabs): Promise<void> {
   if (closed.fileTabIds.length > 0) await pruneFileTabs(closed.fileTabIds);
   if (closed.boardTabIds.length > 0) await pruneBoardTabs(closed.boardTabIds);
+  if (closed.cardTabIds.length > 0) await pruneCardTabs(closed.cardTabIds);
+}
+
+// Mirrors pruneBoardTabs exactly, over the third map.
+async function pruneCardTabs(closedIds: string[]): Promise<void> {
+  const remaining: Record<string, CardTab> = {};
+  for (const [id, tab] of Object.entries(get(layoutState).cardTabsById)) {
+    if (!closedIds.includes(id)) remaining[id] = tab;
+  }
+  layoutState.update((s) => ({ ...s, cardTabsById: remaining }));
+  await backend.setCardTabs(remaining).catch(() => {});
 }
 
 // Mirrors pruneFileTabs: best-effort persistence, a failed prune costs a
@@ -503,6 +621,43 @@ async function pruneFileTabs(closedIds: string[]): Promise<void> {
   // Best-effort, matching how this map is loaded: a failed prune costs a
   // stale entry, never a broken close.
   await backend.setFileTabs(asPathMap).catch(() => {});
+}
+
+// Points every open file tab at a path that has just been renamed or
+// moved -- the path itself, and anything that was under it when the
+// renamed entry was a directory.
+//
+// Without this the Files tab's own rename would leave a tab titled after
+// a file that no longer exists, over an editor reporting it deleted: the
+// human performed a rename and the app reported a loss. FileEditor
+// follows the prop change in place rather than remounting (see the
+// path effect there), so an unsaved buffer survives the move.
+//
+// Returns how many tabs moved, so the caller can say so.
+export async function retargetFileTabs(from: string, to: string): Promise<number> {
+  const state = get(layoutState);
+  const fileTabsById: Record<string, FileTab> = {};
+  let moved = 0;
+  for (const [id, tab] of Object.entries(state.fileTabsById)) {
+    const next = retargetPath(tab.path, from, to);
+    if (next === tab.path) {
+      fileTabsById[id] = tab;
+      continue;
+    }
+    moved += 1;
+    fileTabsById[id] = { ...tab, path: next };
+  }
+  if (moved === 0) return 0;
+  layoutState.update((s) => ({ ...s, fileTabsById }));
+
+  const asPathMap: Record<string, string> = {};
+  for (const [id, tab] of Object.entries(fileTabsById)) {
+    asPathMap[id] = tab.path;
+  }
+  // Best-effort, like pruneFileTabs: a failed persist costs a stale
+  // entry in config.json, never a tab left pointing at the old name.
+  await backend.setFileTabs(asPathMap).catch(() => {});
+  return moved;
 }
 
 // The active page's identity plus its current tree, or null if there's no
@@ -570,15 +725,16 @@ function repairBoardTabs(
 
 const unlisteners: UnlistenFn[] = [];
 
-/// Resolves once `fileTabsById`/`boardTabsById` hold what the Rust side
-/// persisted -- see loadTabMaps. Both ready paths await it before letting
+/// Resolves once `fileTabsById`/`boardTabsById`/`cardTabsById` hold what
+/// the Rust side persisted -- see loadTabMaps. Both ready paths await it
+/// before letting
 /// `status` leave "connecting", so no layout tree is ever rendered
 /// against empty maps. Starts resolved so a test (or any caller) that
 /// never ran bootstrap is not left hanging.
 let tabMapsLoaded: Promise<void> = Promise.resolve();
 
-/// Loads the two frontend-owned maps that say which layout-tree ids are
-/// file views and which are boards.
+/// Loads the three frontend-owned maps that say which layout-tree ids are
+/// file views, which are boards and which are cards.
 ///
 /// Unlike session names, these are not cosmetic: every id NOT in them is
 /// taken to be a daemon session. Empty maps therefore do not degrade to
@@ -595,10 +751,20 @@ let tabMapsLoaded: Promise<void> = Promise.resolve();
 async function loadTabMaps(): Promise<void> {
   const maxAttempts = 15;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const [fileTabs, boardTabs] = await Promise.all([
+    const [fileTabs, boardTabs, cardTabs] = await Promise.all([
       backend.getFileTabs().catch(() => null),
       backend.getBoardTabs().catch(() => null),
+      backend.getCardTabs().catch(() => null),
     ]);
+    // Card tabs deliberately do NOT gate this, unlike the other two. The
+    // frontend is served live by vite under `tauri dev`, so an edit that
+    // adds a host command reaches a window whose BINARY predates it, and
+    // `get_card_tabs` then rejects with "not found" forever. Requiring it
+    // here would spend all 15 attempts and then seed nothing at all --
+    // turning every restored file and board tab into a terminal for an id
+    // the daemon never had, which is a far worse failure than the one it
+    // would be reporting. An older binary has no card tabs to lose, and a
+    // genuinely transient miss is what repairUnknownTabs is for.
     if (fileTabs && boardTabs) {
       const fileTabsById: Record<string, FileTab> = {};
       for (const [tabId, path] of Object.entries(fileTabs)) {
@@ -622,6 +788,7 @@ async function loadTabMaps(): Promise<void> {
         ...s,
         fileTabsById: { ...fileTabsById, ...s.fileTabsById },
         boardTabsById: { ...boardTabs, ...s.boardTabsById },
+        cardTabsById: { ...(cardTabs ?? {}), ...s.cardTabsById },
       }));
       return;
     }
@@ -646,8 +813,8 @@ let pendingUnknownTabPass: Promise<void> | null = null;
 /// The last-resort repair for the one thing Pane.svelte cannot tell
 /// apart on its own.
 ///
-/// A tab id in a layout tree and in NEITHER map is a daemon session --
-/// and that is also exactly what a board or file tab looks like the
+/// A tab id in a layout tree and in NONE of the maps is a daemon session
+/// -- and that is also exactly what a board, file or card tab looks like the
 /// moment its map entry goes missing, because nothing about the id
 /// itself says which it is. So a lost entry does not degrade, it
 /// inverts: a real xterm and a `pty-output` listener get built for an id
@@ -694,28 +861,34 @@ async function runUnknownTabPass(): Promise<void> {
   // both ready paths already wait on it -- asking underneath it would be
   // one guaranteed miss per restored board tab.
   await tabMapsLoaded;
-  const [fileTabs, boardTabs] = await Promise.all([
+  const [fileTabs, boardTabs, cardTabs] = await Promise.all([
     backend.getFileTabs().catch(() => null),
     backend.getBoardTabs().catch(() => null),
+    backend.getCardTabs().catch(() => null),
   ]);
   for (const id of ids) unknownTabsInFlight.delete(id);
   // Nothing was learned, so nothing is recorded: leaving these unchecked
   // is what lets the next render ask again.
+  // Same asymmetry as loadTabMaps, for the same reason: a binary without
+  // the command must not cost the file and board repair.
   if (!fileTabs || !boardTabs) return;
   for (const id of ids) unknownTabsChecked.add(id);
   const files = ids.filter((id) => fileTabs[id] !== undefined);
   const boards = ids.filter((id) => boardTabs[id] !== undefined);
-  if (files.length === 0 && boards.length === 0) return;
+  const cards = cardTabs ? ids.filter((id) => cardTabs[id] !== undefined) : [];
+  if (files.length === 0 && boards.length === 0 && cards.length === 0) return;
   layoutState.update((s) => {
     const fileTabsById = { ...s.fileTabsById };
     const boardTabsById = { ...s.boardTabsById };
+    const cardTabsById = { ...s.cardTabsById };
     // ??=, not =: the store is the authority the moment it has an answer
     // of its own, exactly as in loadTabMaps.
     for (const id of files) fileTabsById[id] ??= { path: fileTabs[id] };
     for (const id of boards) boardTabsById[id] ??= boardTabs[id];
-    return { ...s, fileTabsById, boardTabsById };
+    if (cardTabs) for (const id of cards) cardTabsById[id] ??= cardTabs[id];
+    return { ...s, fileTabsById, boardTabsById, cardTabsById };
   });
-  for (const id of [...files, ...boards]) terminalRegistry.destroyTerminal(id);
+  for (const id of [...files, ...boards, ...cards]) terminalRegistry.destroyTerminal(id);
 }
 
 /// Refills what the frontend only ever learns from daemon pushes.
@@ -858,7 +1031,11 @@ export async function reconcileLayoutSessions(): Promise<void> {
   const stale = workspace.staleLayoutTabIds(
     before,
     new Set(baselines.map((b) => b.id)),
-    new Set([...Object.keys(before.fileTabsById), ...Object.keys(before.boardTabsById)])
+    new Set([
+      ...Object.keys(before.fileTabsById),
+      ...Object.keys(before.boardTabsById),
+      ...Object.keys(before.cardTabsById),
+    ])
   );
   // handleSessionExited searches the CURRENT trees and is a no-op for an
   // id no longer in one, so a tab closed in the meantime needs no guard.
@@ -874,6 +1051,12 @@ export async function bootstrap(): Promise<void> {
   tabMapsLoaded = loadTabMaps();
   void seedSessionBaselines();
   void seedQueuedInputs();
+  // Awaited, and ahead of every ready path: which workspace this window
+  // shows depends on which ones it holds, so a payload applied before the
+  // map arrived would put the main window's workspace in a workspace
+  // window for a frame -- with its terminals, which is exactly the
+  // two-windows-one-PTY state the map exists to prevent.
+  unlisteners.push(await initWorkspaceWindows());
   unlisteners.push(
     await listen<WorkspacesData>("workspaces-ready", async (event) => {
       // Awaited BEFORE the tree lands in the store: a file or board tab
@@ -882,7 +1065,7 @@ export async function bootstrap(): Promise<void> {
       await tabMapsLoaded;
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
-        const resolved = workspace.resolveActiveFocus(event.payload);
+        const resolved = workspace.resolveActiveFocus(forThisWindow(event.payload));
         return {
           ...s,
           status: "ready",
@@ -895,6 +1078,15 @@ export async function bootstrap(): Promise<void> {
       watchRootedWorkspaces(event.payload.workspaces);
       void refreshDaemonCompat();
       void reconcileLayoutSessions();
+    })
+  );
+  // Another window's save of the shared workspaces file. Its own echo is
+  // ignored by label: the window that wrote it is already showing what it
+  // wrote, and re-adopting would clobber anything it has changed since.
+  unlisteners.push(
+    await listen<{ origin: string; data: WorkspacesData }>("workspaces-synced", (event) => {
+      if (event.payload.origin === currentWindowLabel()) return;
+      adoptWorkspaces(event.payload.data);
     })
   );
   unlisteners.push(
@@ -1008,6 +1200,21 @@ export async function bootstrap(): Promise<void> {
   // mounted is the bug that made rails tick only on their own tab.
   const { startPauseClock } = await import("./agentPauseState");
   unlisteners.push(startPauseClock());
+  // And the same again for the develop records: a "Develop into a plan…"
+  // run that finishes while the human is on another tab still has to give
+  // the card back, and this watch's first pass is also what ADOPTS a run
+  // that outlived the last window -- the records load with the
+  // workspaces. Dynamically imported for the cycle reason above.
+  const { startDevelopingCardsWatch } = await import("./developingCardsState");
+  unlisteners.push(startDevelopingCardsWatch());
+  // And once more for the Tools tab's two watchers. The daemon closes a
+  // shell tool's run by itself and pushes nothing, and an agent tool's
+  // run is closed by watching its session go quiet -- neither can be
+  // owned by the tab, because a tool finishing while the human is
+  // looking at its terminal is the ordinary case, not the exception.
+  // Dynamically imported for the cycle reason above.
+  const { initWorkspaceToolListeners } = await import("./workspaceToolsActions");
+  unlisteners.push(initWorkspaceToolListeners());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);
@@ -1154,7 +1361,7 @@ async function pollForStartupState(): Promise<void> {
       await tabMapsLoaded;
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
-        const resolved = workspace.resolveActiveFocus(data);
+        const resolved = workspace.resolveActiveFocus(forThisWindow(data));
         return {
           ...s,
           status: "ready",
@@ -1194,6 +1401,10 @@ async function restoreRemovedWorkspace(
   // reclaimable() insists the workspace is empty, so nothing is bound to
   // this id -- except, possibly, a watch from an earlier root pick.
   await backend.unwatchGavinRoot(workspaceId).catch(() => {});
+  // The workspace keeps its window across the re-key, but the registry is
+  // keyed by id: without this the old id points at a workspace that no
+  // longer exists and the new one reads as the main window's.
+  if (!isMainWindow()) await backend.claimWorkspaceWindow(tombstone.id).catch(() => {});
 
   const data = workspace.restoreWorkspaceId(state, workspaceId, tombstone.id, rootPath);
   layoutState.update((s) => ({
@@ -1677,6 +1888,37 @@ export async function setWorkspaceColor(workspaceId: string, color: string): Pro
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
+/// Pins or unpins a workspace's sidebar row. The stamp is taken here
+/// rather than passed in because this is the only place a pin is made,
+/// and `pinnedFirst` sorts on it -- a caller free to supply its own
+/// moment could reorder rows that were pinned long ago.
+///
+/// Unpinning stores `undefined`, which `persistWorkspaces` drops from
+/// config.json entirely (`skip_serializing_if` on the Rust side): an
+/// unpinned row leaves no trace of having been pinned, so a later pin
+/// starts from a clean moment instead of an old one.
+export async function setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
+  const state = get(layoutState);
+  const pinnedAt = pinned ? Date.now() : undefined;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, pinnedAt } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// The same, one level down: a page's row inside its workspace.
+export async function setPagePinned(
+  workspaceId: string,
+  pageId: string,
+  pinned: boolean
+): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.setPagePinnedAt(state, workspaceId, pageId, pinned ? Date.now() : undefined);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
 /// One writer for every boolean workspace preference that lives in
 /// config.json -- the notification toggles and the close confirm. Keyed
 /// rather than one function each so a new toggle costs a union member,
@@ -1745,7 +1987,7 @@ export async function setGitViewPrefs(workspaceId: string, patch: Partial<GitVie
 }
 
 /// Writes the workspace's in-flight orchestration agent into config.json,
-/// or clears it (`null`). One slot per workspace, deliberately: Generate
+/// or clears it (`null`). One slot per workspace, deliberately: Organize
 /// and every rail's Reorganize both end in a write of the WHOLE plan, so
 /// two at once overwrite each other rather than dividing the work.
 ///
@@ -1761,6 +2003,28 @@ export async function setOrchestrationAgent(
   const state = get(layoutState);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, orchestrationAgent: record ?? undefined } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Writes the workspace's in-flight "Develop into a plan…" runs into
+/// config.json. A LIST, unlike the slot above: two develop runs on two
+/// different cards divide the work rather than overwriting each other,
+/// and it is the same card twice that conflicts.
+///
+/// Persisted for the same reason the orchestration agent is -- a develop
+/// run outlives the window that started it, and a window that comes back
+/// with no memory of it offers Run on a card whose file is mid-rewrite.
+/// Stored empty as ABSENT so an untouched workspace keeps the key out of
+/// a file the human reads.
+export async function setDevelopingCards(
+  workspaceId: string,
+  records: DevelopingCardRecord[]
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, developingCards: records.length > 0 ? records : undefined } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
@@ -1864,6 +2128,90 @@ export async function openBoardInSplit(
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
+// Opens one of a card's own views -- its detail panel, or the diff of
+// what its run did to the checkout -- as a new tab split beside the pane
+// holding `anchorSessionId`. Mirrors openBoardInSplit, with
+// cardTabsById/setCardTabs in place of the board-tab map.
+//
+// Unlike the file and board splits this one DEDUPES first. It is reached
+// from a chip on a terminal tab, which the human clicks to check on the
+// agent and clicks again a minute later; splitting a second identical
+// pane every time is how a page ends up four copies deep in the same
+// card. An already-open view of the same card is brought forward
+// instead, wherever on this page it lives.
+export async function openCardInSplit(
+  anchorSessionId: string,
+  workspaceId: string,
+  path: string,
+  view: CardTabView
+): Promise<void> {
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const existing = Object.entries(state.cardTabsById).find(
+    ([id, tab]) =>
+      tab.workspaceId === workspaceId &&
+      tab.path === path &&
+      tab.view === view &&
+      layout.findLeafPath(location.tree, id) !== null
+  );
+  if (existing) {
+    await switchToTab(existing[0]);
+    return;
+  }
+  const tabId = crypto.randomUUID();
+  const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
+  const cardTabsById = { ...state.cardTabsById, [tabId]: { workspaceId, path, view } };
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, cardTabsById }));
+  try {
+    await backend.setCardTabs(cardTabsById);
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
+/// Repoints ONE card tab at another card -- the pane's own navigation
+/// (the detail panel's Tasks list, its "Part of" row). Deliberately not
+/// retargetCardTabs: that one follows a file that MOVED, and moves every
+/// pane showing it; this one is a human walking from one card to
+/// another in a single pane, and must leave the sibling panes alone.
+export async function setCardTabPath(tabId: string, path: string): Promise<void> {
+  const state = get(layoutState);
+  const tab = state.cardTabsById[tabId];
+  if (!tab || tab.path === path) return;
+  const cardTabsById = { ...state.cardTabsById, [tabId]: { ...tab, path } };
+  layoutState.update((s) => ({ ...s, cardTabsById }));
+  await backend.setCardTabs(cardTabsById).catch(() => {});
+}
+
+/// Points every open card tab at a path that has just moved -- setting a
+/// card Done files it under `plans/done/`, and archiving moves it again.
+/// Without this the pane would go on asking the tree for a card that is
+/// no longer at that path and render its "this card is gone" state for a
+/// card that is merely somewhere else.
+export async function retargetCardTabs(from: string, to: string): Promise<void> {
+  const state = get(layoutState);
+  const cardTabsById: Record<string, CardTab> = {};
+  let moved = false;
+  for (const [id, tab] of Object.entries(state.cardTabsById)) {
+    if (tab.path !== from) {
+      cardTabsById[id] = tab;
+      continue;
+    }
+    moved = true;
+    cardTabsById[id] = { ...tab, path: to };
+  }
+  if (!moved) return;
+  layoutState.update((s) => ({ ...s, cardTabsById }));
+  // Best-effort, like pruneCardTabs: a failed persist costs a stale entry
+  // in config.json, never a tab left pointing at the old path.
+  await backend.setCardTabs(cardTabsById).catch(() => {});
+}
+
 export async function addTab(targetSessionId: string): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
@@ -1879,7 +2227,7 @@ export async function addTab(targetSessionId: string): Promise<void> {
 
 export async function closeSession(sessionId: string): Promise<void> {
   const state = get(layoutState);
-  const closed = await endTabs([sessionId], state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs([sessionId], state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
   // Tree first, maps second (see ClosedTabs): the other order leaves the
   // tab in the tree for a render with nothing left to classify it.
@@ -2345,7 +2693,7 @@ export async function closePane(anySessionId: string): Promise<void> {
   if (leaf.type !== "leaf") return;
   const sessionIds = [...leaf.tabs];
 
-  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
 
   let tree: LayoutNode | null = location.tree;
@@ -2383,6 +2731,10 @@ export async function createWorkspace(name: string): Promise<void> {
   // switchWorkspace, so the hub is taken down here rather than there --
   // the hub's own "+ New workspace…" must land you in what it created.
   closeAppHub();
+  // Claimed before it is stored, so no window ever reads this workspace
+  // as unowned -- which, absence meaning "the main window", would put it
+  // in two windows at once the moment anything switched to it there.
+  if (!isMainWindow()) await backend.claimWorkspaceWindow(id).catch(() => {});
   const data = workspace.createWorkspace(state, id, name);
   const resolved = workspace.resolveActiveFocus(data);
   layoutState.update((s) => ({
@@ -2414,7 +2766,75 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
   await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
+/// Puts a workspace in a window of its own, and stops showing it here.
+///
+/// The order is the whole of it. This window looks away FIRST, then gives
+/// up the terminals it was drawing, and only then asks for the window --
+/// so at no point are two live panes reporting two sizes for one PTY. The
+/// new window builds its own terminals and asks the daemon to repaint
+/// them, which is the same path a reload already takes.
+///
+/// Both halves of the card's ask are this one function: a workspace you
+/// are looking at "moves" to a new window, and one you are not "opens" in
+/// one. The difference is only whether this window had to look away, and
+/// that is a fact it can read for itself rather than a mode the caller
+/// picks.
+export async function handOffWorkspace(workspaceId: string): Promise<void> {
+  const label = currentWindowLabel();
+  const action = windowAction(currentWorkspaceWindows(), workspaceId, label);
+  // Already in a window of its own: the honest answer is to raise it, not
+  // to open a second one onto the same workspace. "none" is this window
+  // being asked to hand over the workspace it IS -- the surfaces withdraw
+  // the action then, and this is what makes a stale click harmless.
+  if (action !== "open") {
+    if (action === "show") await backend.focusWorkspaceWindow(workspaceId).catch(() => {});
+    return;
+  }
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+
+  if (state.activeWorkspaceId === workspaceId && !get(appHubOpen)) {
+    const next = nextActiveAfterHandoff(
+      state.workspaces,
+      currentWorkspaceWindows(),
+      label,
+      workspaceId
+    );
+    if (next) await switchWorkspace(next);
+    else openAppHub();
+  }
+
+  // Every id in the trees, not just the terminals: destroyTerminal is a
+  // no-op for a file or board tab, and enumerating which is which here
+  // would be a second, drifting copy of the tab maps. The main agent
+  // sits outside every page, so it has to be named separately.
+  for (const id of workspace.allSessionIdsInWorkspace(ws)) {
+    terminalRegistry.destroyTerminal(id);
+  }
+  if (ws.mainSessionId) terminalRegistry.destroyTerminal(ws.mainSessionId);
+
+  try {
+    await backend.openWorkspaceWindow(workspaceId);
+  } catch (e) {
+    // An alert, never setError: the app behind this is perfectly
+    // healthy, and replacing it with the lost-the-daemon overlay
+    // because a window would not open would be a far bigger lie than
+    // the failure itself.
+    await showAlert({
+      title: "Couldn't open a new window",
+      lines: [`${ws.name} stays in this window.`, String(e)],
+    });
+  }
+}
+
 export async function switchWorkspaceView(workspaceId: string, view: string): Promise<void> {
+  // Guarded separately from activateWorkspace, which this deliberately
+  // does not call: `activeView` is stored ON the workspace, so a click
+  // here on a workspace that lives in another window would persist a tab
+  // change that window then adopts -- one window silently redrawing
+  // another.
+  if (claimedElsewhere(workspaceId)) return;
   const state = get(layoutState);
   // Same reason as switchToTab: the workspace is already active so
   // activateWorkspace never runs, but ⌘2 (and the tab row, and Home's
@@ -2454,8 +2874,13 @@ export async function closeWorkspace(
   if (!ws) return;
   const sessionIds = workspace.allSessionIdsInWorkspace(ws);
 
-  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
+  // A window whose workspace no longer exists has nothing to show, so it
+  // goes with it. After the confirmation, never before: a cancelled close
+  // must leave the window standing. A no-op for a workspace in the main
+  // window -- removing one must not take the app down.
+  await backend.closeWorkspaceWindow(workspaceId).catch(() => {});
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }
@@ -2516,27 +2941,39 @@ export function deleteWorkspaceFromApp(workspaceId: string): Promise<void> {
 /// Start on a rail would otherwise throw them off the Orchestration tab
 /// they pressed it in. Same posture createSessionOnPage already takes
 /// when it drops a rail's agent onto a page that is not on screen.
+///
+/// `withAgent` starts EVERY pane on the workspace's configured agent
+/// instead of a bare shell -- the "New page" dropdown's checkbox. The
+/// agent is resolved here rather than by the caller, because a launch
+/// is more than a command: it also has to arm failure detection, or a
+/// broken agent on the new page reads as one that finished (the same
+/// pairing startMainAgent makes). Resolution is per PAGE, not per pane:
+/// four panes of a 2x2 are four sessions of one workspace's agent.
 export async function createPage(
   workspaceId: string,
   buildTree: (freshIds: string[]) => LayoutNode,
   sessionCount: number,
   name: string,
-  opts: { cwd?: string; activate?: boolean } = {}
+  opts: { cwd?: string; activate?: boolean; withAgent?: boolean } = {}
 ): Promise<string | null> {
   const state = get(layoutState);
   const target = state.workspaces.find((w) => w.id === workspaceId);
   if (!target) return null;
   const previousPageId = target.activePageId;
+  const agent = opts.withAgent ? resolvedAgentFor(workspaceId) : null;
   let freshIds: string[];
   try {
     const sessionCwd = opts.cwd || freshSessionCwd(workspaceId);
     freshIds = await Promise.all(
-      Array.from({ length: sessionCount }, () => backend.createSession(sessionCwd))
+      Array.from({ length: sessionCount }, () =>
+        agent ? backend.createSession(sessionCwd, agent.launchCommand) : backend.createSession(sessionCwd)
+      )
     );
   } catch (e) {
     setError(String(e));
     return null;
   }
+  if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns);
   const tree = buildTree(freshIds);
   const pageId = crypto.randomUUID();
   const created = workspace.createPage(state, workspaceId, pageId, name, tree);
@@ -2575,7 +3012,7 @@ export async function createPage(
 export async function createTiledPage(
   workspaceId: string,
   name: string,
-  specs: readonly { cwd: string; command: string }[],
+  specs: readonly { cwd: string; command: string | null }[],
   opts: { activate?: boolean } = {}
 ): Promise<{ pageId: string; sessionIds: string[] } | null> {
   const state = get(layoutState);
@@ -2589,7 +3026,10 @@ export async function createTiledPage(
     // directory that was created moments ago, and starting them in order
     // means a failure names the candidate it belongs to.
     for (const spec of specs) {
-      sessionIds.push(await backend.createSession(spec.cwd, spec.command));
+      // "" and null both mean "the default", exactly as they do on a
+      // SessionLink -- a one-pane page is spawned by callers that carry
+      // a rail's launch, not only by best-of-N's real worktree paths.
+      sessionIds.push(await backend.createSession(spec.cwd || undefined, spec.command ?? undefined));
     }
   } catch (e) {
     setError(String(e));
@@ -2613,6 +3053,31 @@ export async function createTiledPage(
   }));
   await persistWorkspaces(workspaces, data.activeWorkspaceId);
   return { pageId, sessionIds };
+}
+
+/// ONE session, and a page built AROUND it: the session is the new
+/// page's first and only tab.
+///
+/// The distinction from `createPage` + `createSessionOnPage` -- what
+/// every "make the page, then land the session on it" flow used to be --
+/// is the blank shell that pairing leaves behind. `createPage` opens the
+/// page with fresh shells of its OWN, so the session the page was made
+/// FOR arrives as tab two, behind an idle terminal nobody asked for and
+/// first in the strip for the life of the page. When a page exists
+/// because something is about to run on it, that something is its first
+/// tab.
+///
+/// `createPage` stays right for the human-facing "+": there the blank
+/// shell IS the ask.
+export async function createSessionOnNewPage(
+  workspaceId: string,
+  name: string,
+  cwd: string,
+  command: string | null,
+  opts: { activate?: boolean } = {}
+): Promise<{ pageId: string; sessionId: string } | null> {
+  const made = await createTiledPage(workspaceId, name, [{ cwd, command }], opts);
+  return made ? { pageId: made.pageId, sessionId: made.sessionIds[0] } : null;
 }
 
 // Creates a fresh session for a kanban card link, homing it in the given
@@ -2733,7 +3198,7 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
   if (!page) return;
   const sessionIds = layout.allSessionIds(page.layout);
 
-  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);

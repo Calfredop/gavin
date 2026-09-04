@@ -36,9 +36,15 @@ function view(fileName: string, extra: Partial<CardView> = {}): CardView {
 /// Every id listed here is a tab that EXISTS -- findSessionLocation only
 /// finds a session that is still in some page's tree, which is exactly
 /// the app's definition of "still running".
-function state(liveTabs: string[], fileTabs: Record<string, string> = {}): ClosableState {
+function state(
+  liveTabs: string[],
+  fileTabs: Record<string, string> = {},
+  cardTabs: Record<string, string> = {}
+): ClosableState {
   const fileTabsById: Record<string, { path: string }> = {};
   for (const [id, path] of Object.entries(fileTabs)) fileTabsById[id] = { path };
+  const cardTabsById: Record<string, { path: string }> = {};
+  for (const [id, path] of Object.entries(cardTabs)) cardTabsById[id] = { path };
   return {
     activeWorkspaceId: "ws",
     workspaces: [
@@ -57,6 +63,7 @@ function state(liveTabs: string[], fileTabs: Record<string, string> = {}): Closa
       },
     ],
     fileTabsById,
+    cardTabsById,
   };
 }
 

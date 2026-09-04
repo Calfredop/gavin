@@ -13,6 +13,25 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v30 gave a TOOL a run of its own. Until now a library tool was
+/// reachable only as a step on an orchestration rail, so "commit the
+/// dirty tree" meant building a rail and binding it to a checkout; the
+/// Tools hub tab runs one directly, and these three requests are how the
+/// run is remembered. `ToolRun` mirrors `CardRun`, and `StartToolRun`,
+/// `SetToolRunOutcome` and `ToolRuns` open it, close it and read the
+/// last one back. Tracked in the daemon rather than in the app so a
+/// failure nobody watched is still visible after a restart -- which is
+/// the whole reason a run record exists at all.
+///
+/// Three new request TYPES, which `min_version_for` gates on its own.
+/// The half it CANNOT see rides along in the same version: `SaveTool`'s
+/// `ToolDef` gains `cwd`, a tool's own working directory, and that
+/// widens an EXISTING request. A v29 daemon accepts the save, drops the
+/// field and hands the tool back rooted wherever the caller happens to
+/// be -- so `daemonCompat.ts` owes `toolRuns: 30` AND `toolCwd: 30`,
+/// with the working-directory field disabled by the second one rather
+/// than accepting a value the daemon will silently discard.
+///
 /// v29 added the follow-up queue: `Request::QueueInput`,
 /// `ListQueuedInputs`, `SetQueuedInputs` and `SendQueuedInput`, answered
 /// with `Response::QueuedInputs` and pushed as
@@ -173,7 +192,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -506,6 +525,55 @@ pub enum Request {
         workspace_id: String,
         path: String,
     },
+    /// Opens a run for a tool launched STANDALONE from the Tools tab
+    /// (v30). The rail's own steps do not come through here: a step
+    /// already has a `StepRun`, and filing a second record for it would
+    /// double-count the same work on two surfaces.
+    ///
+    /// The daemon closes the row itself when the session exits, which is
+    /// what makes a `command` or `script` tool's verdict free -- the
+    /// caller never has to be watching. An `agent` tool's session does
+    /// not exit when its turn ends, so that one is closed by
+    /// `SetToolRunOutcome` instead.
+    StartToolRun {
+        workspace_id: String,
+        tool_id: String,
+        session_id: String,
+        command: Option<String>,
+        /// Where the session was launched -- the tool's own `cwd`
+        /// resolved against the workspace root. Recorded because a tool
+        /// may deliberately run somewhere other than the root, and a run
+        /// row that did not say where is not evidence of anything.
+        launch_cwd: Option<String>,
+        /// The agent CLI's own id for this run's conversation, for an
+        /// `agent` tool. None for every other kind: a shell has no
+        /// conversation.
+        conversation_id: Option<String>,
+    },
+    /// Closes the open run of `session_id` with a verdict the DAEMON
+    /// cannot reach on its own (v30). Only ever an `agent` tool: its
+    /// session is still alive when its turn ends, so nothing the daemon
+    /// watches would ever close the row.
+    ///
+    /// Keyed on the session rather than the run id, exactly as
+    /// `finish_runs_for_session` is: the caller watching an agent go
+    /// quiet knows which session that was and has no reason to have kept
+    /// a row id. A row that is no longer `running` is left alone, so a
+    /// later exit can never overwrite a verdict already recorded.
+    SetToolRunOutcome {
+        session_id: String,
+        /// running | passed | failed | abandoned.
+        outcome: String,
+        exit_code: Option<i32>,
+    },
+    /// The LAST run of each of this workspace's tools (v30) -- not the
+    /// whole history. The Tools tab shows one chip per row and nothing
+    /// else, so answering with every run ever would hand the app a list
+    /// it throws all but the head of away, and grow without bound.
+    /// Never an error for an unknown workspace: an empty list.
+    ToolRuns {
+        workspace_id: String,
+    },
     /// The workspace's orchestration plan plus its run state. Never an
     /// error for an unknown workspace -- an empty Orchestration.
     GetOrchestration {
@@ -684,6 +752,23 @@ pub fn min_version_for(req: &Request) -> u32 {
         // refusal naming the version rather than a rail armed with no
         // push behind it.
         Request::SetRailRunByRoot { .. } => 28,
+
+        // Standalone tool runs (v30). Three new request TYPES, so this
+        // match really does stop all three against an older daemon --
+        // nothing is silently stored where it will never be read back.
+        //
+        // It is NOT the whole gate for v30 though, and that is the part
+        // worth writing down: the same version widens `SaveTool`'s
+        // ToolDef with `cwd`, which this match sorts by TYPE and cannot
+        // see. A v29 daemon takes that save, drops the directory and
+        // stores a tool that will run wherever the launcher stood. The
+        // app's FEATURE_MIN_VERSION carries both halves -- `toolRuns`
+        // so the tab can say why Run is dark, and `toolCwd` so the
+        // dialog's field is disabled rather than accepting a value the
+        // daemon throws away.
+        Request::SetToolRunOutcome { .. }
+        | Request::StartToolRun { .. }
+        | Request::ToolRuns { .. } => 30,
 
         Request::DeleteCardFile { .. } => 6,
 
@@ -952,6 +1037,7 @@ pub enum Response {
     QueuedInputsChanged { id: String, queued: Vec<QueuedInput> },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
     CardRuns { runs: Vec<CardRun> },
+    ToolRuns { runs: Vec<ToolRun> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
     Orchestration {
         rails: Vec<Rail>,
@@ -1417,6 +1503,80 @@ pub struct ToolDef {
     pub body: String,
     pub params: Vec<ToolParam>,
     pub position: i64,
+    /// Where this tool RUNS when it is launched standalone from the
+    /// Tools tab (v30): relative resolves against the workspace root,
+    /// absolute is taken as written, None is the root itself.
+    ///
+    /// A rail step ignores it, and that is a rule rather than an
+    /// oversight (tools spec T6/T11): a step runs in `worktree_path ??
+    /// root_path` because rail conflict detection is computed off THAT
+    /// checkout, so a step that quietly jumped out of its worktree would
+    /// let two rails collide with nothing left to warn about.
+    ///
+    /// `serde(default)` because every tool authored before v30 has none,
+    /// and "no directory of its own" is exactly what those tools mean.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+/// One standalone run of a library tool, launched from the Tools hub tab
+/// (v30). Deliberately shaped like `CardRun`: it answers the same
+/// questions about the same thing -- one session, opened and closed by
+/// the daemon -- and a second vocabulary for "how did that end" is a
+/// second set of words the reader would have to learn.
+///
+/// What it does NOT carry is the rail's half of a `StepRun`. A tool run
+/// has no stage to advance, no retry budget and nothing to send
+/// backwards: it is one session, and the record exists so a failure
+/// nobody was watching is still on the row after a restart.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRun {
+    /// Row id, ascending with time. The tiebreaker for two runs of one
+    /// tool opened in the same second, and what "the last run" is picked
+    /// by -- `started_at` has one-second resolution and cannot order
+    /// them.
+    pub id: i64,
+    pub tool_id: String,
+    pub session_id: String,
+    pub command: Option<String>,
+    /// Where the session was launched: the tool's own `cwd` resolved
+    /// against the workspace root. A run row that did not say where it
+    /// ran would be evidence of nothing, now that a tool can carry a
+    /// directory of its own.
+    pub launch_cwd: Option<String>,
+    /// The agent CLI's own id for this run's conversation. None for
+    /// every kind but `agent`: a shell has no conversation.
+    pub conversation_id: Option<String>,
+    /// Wall-clock epoch seconds, like `CardRun`'s: the registry's own
+    /// `started_at_us` is a process start time kept as a pid-reuse
+    /// guard, not a clock anyone can subtract.
+    pub started_at: i64,
+    /// None while the run is open, and ALSO for a run whose end the
+    /// daemon never saw (`outcome` says which). Never a stand-in for now.
+    pub ended_at: Option<i64>,
+    /// The session's exit code, when the daemon watched it exit. None
+    /// for an `agent` tool, whose verdict is its turn ending rather than
+    /// its process stopping.
+    pub exit_code: Option<i32>,
+    /// How the run ended, and never absent:
+    ///
+    ///  - `running`   -- open, and this daemon is hosting it
+    ///  - `passed`    -- it did what it was asked: a shell exited 0, or
+    ///    an agent's turn ended without failure detection firing
+    ///  - `failed`    -- a non-zero exit, or a broken agent
+    ///  - `abandoned` -- it ended and nobody was watching: the daemon
+    ///    that opened the row went away, or the session ended with
+    ///    nothing attached to notice. `ended_at` stays None rather than
+    ///    being back-filled with the time somebody LOOKED, which is a
+    ///    different fact from the time it stopped.
+    ///
+    /// `passed`/`failed` where `CardRun` says `exited`, deliberately: a
+    /// card run's verdict is the board, so the daemon only reports that
+    /// the session stopped. A tool run's whole point IS the verdict, and
+    /// "exited with code 1" is the evidence for it rather than a
+    /// substitute for saying it.
+    pub outcome: String,
 }
 
 /// One member of a group template: a tool and the overrides it carries.
@@ -1476,7 +1636,12 @@ pub struct RailRun {
 #[serde(rename_all = "camelCase")]
 pub struct StepRun {
     pub step_id: String,
-    /// pending | running | done | stalled
+    /// pending | running | done | skipped | stalled
+    ///
+    /// Opaque here on purpose -- the app owns this vocabulary and the
+    /// daemon only stores it, which is why `skipped` ("the human sent the
+    /// rail past this step") could join without a protocol bump. Anything
+    /// that has to reason about it must ask the app.
     pub state: String,
     pub session_id: Option<String>,
     /// Human-readable stall cause; None otherwise.
@@ -2397,6 +2562,12 @@ mod tests {
         // SetPlanFrontmatterField key, and CreatePlan.attachments. No
         // new variant, which is exactly why daemonCompat.ts owes it a
         // FEATURE_MIN_VERSION entry with real consumers.
+        // v30: ToolRun + StartToolRun / SetToolRunOutcome / ToolRuns --
+        // a library tool run STANDALONE from the Tools tab, remembered
+        // by the daemon so a failure nobody watched survives a restart.
+        // Three new request TYPES, which min_version_for does gate; the
+        // same version also widens SaveTool's ToolDef with `cwd`, which
+        // it cannot see -- daemonCompat.ts owes `toolRuns` and `toolCwd`.
         // v27: CardRun + Request::CardRuns -- a card's run history, kept
         // by the daemon off the links and exits it already sees. A new
         // request TYPE, so this match IS its gate; daemonCompat.ts's
@@ -2448,7 +2619,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 29);
+        assert_eq!(PROTOCOL_VERSION, 30);
     }
 
     #[test]
@@ -2754,6 +2925,7 @@ mod tests {
                     body: "b".into(),
                     params: vec![],
                     position: 0,
+                    cwd: None,
                 },
             },
             Request::DeleteTool { id: "t".into() },
@@ -2766,6 +2938,21 @@ mod tests {
             Request::GetGroupTemplates { workspace_id: "w".into() },
             Request::SaveGroupTemplate { template: a_group_template() },
             Request::DeleteGroupTemplate { id: "g1".into() },
+            // v30's standalone tool runs.
+            Request::StartToolRun {
+                workspace_id: "w".into(),
+                tool_id: "t".into(),
+                session_id: "s".into(),
+                command: None,
+                launch_cwd: None,
+                conversation_id: None,
+            },
+            Request::SetToolRunOutcome {
+                session_id: "s".into(),
+                outcome: "passed".into(),
+                exit_code: None,
+            },
+            Request::ToolRuns { workspace_id: "w".into() },
             Request::Unknown,
         ]
     }
@@ -2798,7 +2985,7 @@ mod tests {
     /// templates), v18=1 (Snapshot), v21=1 (SetFailurePatterns), v23=1
     /// (ClaimCardForSession), v24=1 (EndOrphan), v25=1 (SessionProcesses),
     /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), v29=4 (the
-    /// follow-up queue), plus Unknown.
+    /// follow-up queue), v30=3 (standalone tool runs), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -2828,6 +3015,7 @@ mod tests {
         expected.insert(27, 1);
         expected.insert(28, 1);
         expected.insert(29, 4);
+        expected.insert(30, 3);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -2887,6 +3075,75 @@ mod tests {
             Response::CardRuns { runs } => assert_eq!(runs, vec![run]),
             other => panic!("expected CardRuns, got {other:?}"),
         }
+    }
+
+    /// A tool run crosses to the frontend the way a card run does, and
+    /// three of its fields carry a MEANING in their absence (`endedAt`
+    /// on an open run, `exitCode` on an agent's, `conversationId` on a
+    /// shell's), so the nulls are asserted rather than left to a
+    /// `skip_serializing_if` nobody noticed had been added.
+    #[test]
+    fn tool_run_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let run = ToolRun {
+            id: 3,
+            tool_id: "builtin:consolidate-repo".to_string(),
+            session_id: "s-9".to_string(),
+            command: Some("claude 'x'".to_string()),
+            launch_cwd: Some("/p/apps/web".to_string()),
+            conversation_id: None,
+            started_at: 1_770_000_000,
+            ended_at: None,
+            exit_code: None,
+            outcome: "running".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&run).unwrap(),
+            serde_json::json!({
+                "id": 3,
+                "toolId": "builtin:consolidate-repo",
+                "sessionId": "s-9",
+                "command": "claude 'x'",
+                "launchCwd": "/p/apps/web",
+                "conversationId": null,
+                "startedAt": 1_770_000_000i64,
+                "endedAt": null,
+                "exitCode": null,
+                "outcome": "running"
+            })
+        );
+
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::ToolRuns { workspace_id: "ws".to_string() }).unwrap();
+        write_message(&mut buf, &Response::ToolRuns { runs: vec![run.clone()] }).unwrap();
+        let mut reader = &buf[..];
+        match read_message::<_, Request>(&mut reader).unwrap().unwrap() {
+            Request::ToolRuns { workspace_id } => assert_eq!(workspace_id, "ws"),
+            other => panic!("expected ToolRuns, got {other:?}"),
+        }
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::ToolRuns { runs } => assert_eq!(runs, vec![run]),
+            other => panic!("expected ToolRuns, got {other:?}"),
+        }
+    }
+
+    /// The half of v30 `min_version_for` cannot see. A tool saved by a
+    /// caller that predates the field has no `cwd` on the wire at all,
+    /// and that has to parse as None -- "runs at the root" -- rather
+    /// than failing the whole library read.
+    #[test]
+    fn a_tool_def_written_before_v30_parses_with_no_working_directory() {
+        let tool: ToolDef = serde_json::from_value(serde_json::json!({
+            "id": "u1",
+            "workspaceId": null,
+            "name": "Push",
+            "description": "",
+            "kind": "command",
+            "body": "git push",
+            "params": [],
+            "position": 0
+        }))
+        .unwrap();
+        assert_eq!(tool.cwd, None);
     }
 
     #[test]
@@ -3233,6 +3490,7 @@ mod tests {
                 default: "origin".into(),
             }],
             position: 0,
+            cwd: Some("apps/web".into()),
         };
         assert_eq!(
             serde_json::to_value(&tool).unwrap(),
@@ -3244,7 +3502,8 @@ mod tests {
                 "kind": "command",
                 "body": "git push -u {{remote}} HEAD",
                 "params": [{ "name": "remote", "label": "Remote", "default": "origin" }],
-                "position": 0
+                "position": 0,
+                "cwd": "apps/web"
             })
         );
     }

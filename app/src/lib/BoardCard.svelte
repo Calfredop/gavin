@@ -6,6 +6,7 @@
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
+    agentDevelopingIndicator,
     agentExitedIndicator,
     agentFailedIndicator,
     agentIndicator,
@@ -21,7 +22,8 @@
   import { tooltip } from "./tooltip";
   import { layoutState, resolvedAgents } from "./layoutState";
   import { agentPromptBlocker } from "./cardRun";
-  import { jumpToBoundSession } from "./cardRunActions";
+  import { jumpToBoundSession, revealDevelopingCard } from "./cardRunActions";
+  import { developingRunIn, DEVELOPING_BLOCK } from "./developingCards";
   // Svelte 5 self-import for the nested-children recursion.
   import BoardCardSelf from "./BoardCard.svelte";
 
@@ -126,6 +128,20 @@
     showRailBadge && workspaceId !== null ? cardRailBadge($orchestrations[workspaceId], card.id) : null
   );
 
+  // The card is being REWRITTEN by a develop agent (developingCards.ts).
+  // Read from the store like the session dot and the rail glyph: a
+  // develop run binds nothing to the card on purpose, so the card itself
+  // says nothing about it and every board surface has to look it up in
+  // the same place.
+  const developing = $derived(
+    workspaceId !== null ? developingRunIn($layoutState, workspaceId, card.id) : null
+  );
+
+  async function handleDevelopBadgeClick(): Promise<void> {
+    if (workspaceId === null) return;
+    await revealDevelopingCard(workspaceId, card.id);
+  }
+
   async function handleDotClick(): Promise<void> {
     if (workspaceId === null) return;
     // "interrupted" opens the card for the same reason "exited" does:
@@ -136,6 +152,11 @@
     if (result === "exited" || result === "interrupted" || result === "failed") onOpen(card.id);
   }
   const runnable = $derived(card.kind !== "note" && binding === null && (onRun !== null || onSendToAgent !== null));
+  // Why both pills are dead while a develop run holds this card. The
+  // pills stay VISIBLE and go quiet rather than disappearing: a card that
+  // silently loses its buttons for the length of an interview reads as a
+  // bug, and the tooltip on the row is the only place the reason fits.
+  const developBlock = $derived(developing ? DEVELOPING_BLOCK : null);
 
   // Shift+click multi-select (boardSelection.ts). Read straight from the
   // app-wide store rather than threaded down as a prop: every board
@@ -192,6 +213,7 @@
   class:session-idle={sessionBadge?.indicator.state === "idle"}
   class:session-interrupted={sessionBadge?.indicator.state === "interrupted"}
   class:session-failed={sessionBadge?.indicator.state === "failed"}
+  class:developing={developing !== null}
   role="button"
   tabindex="0"
   onkeydown={handleKeydown}
@@ -256,6 +278,24 @@
     {/if}
     {#if card.kind === "plan" && card.checklistTotal > 0}
       <span class="progress" use:tooltip={"Checklist: " + card.checklistDone + " of " + card.checklistTotal + " done"}>{card.checklistDone}/{card.checklistTotal}</span>
+    {/if}
+    {#if developing}
+      <button
+        type="button"
+        class="session-button"
+        aria-label="Open the agent developing this card"
+        onpointerdown={shield}
+        onclick={(e) => {
+          e.stopPropagation();
+          void handleDevelopBadgeClick();
+        }}
+      >
+        <StatusBadge
+          indicator={agentDevelopingIndicator()}
+          size={12}
+          tip="{agentDevelopingIndicator().tip} — click to open that session. Nothing else can run this card until it finishes."
+        />
+      </button>
     {/if}
     {#if sessionBadge}
       <button
@@ -322,41 +362,45 @@
     <!-- The block's reason hangs HERE, on the row, not on the button it
          disables: a disabled element fires no mouseenter, so a tooltip
          bound to one can never appear. The row is never disabled.
-         "▶ agent" is deliberately NOT gated -- it pastes into a session
-         that is already running, and builds no argv at all. -->
-    <div class="run-pills" use:tooltip={runBlocked}>
+         "▶ hub" is deliberately NOT gated by the AGENT block -- it pastes
+         into a session that is already running, and builds no argv at
+         all. The develop block is another matter and gates both: that
+         one is about the CARD, whose body is what would be pasted. -->
+    <div class="run-pills" use:tooltip={developBlock ?? runBlocked}>
       {#if onRun}
         <button
           type="button"
           class="pill pill-session"
-          disabled={runBlocked !== null}
-          use:tooltip={runBlocked === null
+          disabled={runBlocked !== null || developBlock !== null}
+          use:tooltip={runBlocked === null && developBlock === null
             ? "Run in a dedicated agent session, bound to this card"
             : null}
           onpointerdown={shield}
           onclick={(e) => {
             e.stopPropagation();
-            if (runBlocked === null) onRun?.(card);
+            if (runBlocked === null && developBlock === null) onRun?.(card);
           }}
         >
-          ▶ session
+          ▶ new session
         </button>
       {/if}
       {#if onSendToAgent}
         <button
           type="button"
           class="pill pill-agent"
-          disabled={!agentAvailable}
-          use:tooltip={agentAvailable
-            ? "Send to the running workspace agent (Home)"
-            : "No workspace agent running — start it on the Home tab first"}
+          disabled={!agentAvailable || developBlock !== null}
+          use:tooltip={developBlock !== null
+            ? null
+            : agentAvailable
+              ? "Send to the running workspace agent (Home)"
+              : "No workspace agent running — start it on the Home tab first"}
           onpointerdown={shield}
           onclick={(e) => {
             e.stopPropagation();
-            if (agentAvailable) onSendToAgent?.(card);
+            if (agentAvailable && developBlock === null) onSendToAgent?.(card);
           }}
         >
-          ▶ agent
+          ▶ hub
         </button>
       {/if}
     </div>
@@ -526,6 +570,14 @@
   }
   .card.session-idle {
     border-left: 3px solid var(--border-success);
+  }
+  /* Accent, the tone for "something is happening right now": an agent is
+     rewriting this card. Drawn from the develop record rather than a
+     binding -- a develop run deliberately has none -- and it wins over
+     nothing else, because a card being developed cannot have a live run
+     to disagree with. */
+  .card.developing {
+    border-left: 3px solid var(--border-focus);
   }
   /* Warning, not success or danger: an interrupted run is neither
      finished nor failed -- it is unfinished work waiting on a decision.

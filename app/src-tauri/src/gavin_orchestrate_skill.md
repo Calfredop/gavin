@@ -1,6 +1,6 @@
 ---
 name: gavin-orchestrate
-description: Use when the human asks to plan, generate, order, parallelize, or reorganize this workspace's work — or asks why a rail is blocked. Reads and writes the Orchestration tab's rails.
+description: Use when the human asks to organize, plan, order, parallelize, or reorganize this workspace's work — or asks why a rail is blocked. Reads and writes the Orchestration tab's rails, cutting the worktrees and branches they need.
 ---
 
 # Organizing a gavin workspace's work into rails
@@ -34,20 +34,26 @@ tool's parameters. Never author an arrangement from memory or from the
 card titles alone.
 
 If there are no rails yet, create one per natural workstream — a
-subsystem, a layer, a piece of the PRD — and propose an isolation for
-each (see §2b). The human binds them in the tab; you only name them.
+subsystem, a layer, a piece of the PRD — and give each one the isolation
+it needs (§2b). Cutting that worktree or branch is your job, not a note
+for the human: a rail nobody bound is a rail that cannot run beside
+another.
 
 ## 1a. What you were asked to change
 
 The tab has two buttons that call you, and the request says which:
 
-- **Generate with agent…** (the tab header) — the job is the cards
+- **Organize with agent…** (the tab header) — the job is the cards
   **nobody has placed**: the `unplacedCards` list in the read payload. The
   request names them too, but cuts a long backlog and says so — the
   payload is the complete list. Put every one of them on a rail — extend a rail
   where the work belongs on one, add a rail where it does not (§2b for
   its isolation). Steps already on rails stay where they are unless a
   card you are placing forces a reorder, and then say which and why.
+
+  Pressing it is also a request to **parallelize**: the human wants this
+  backlog running at once, not queued. Answer it with rails, and cut the
+  worktrees they need — §2's "spread it wide".
 - **Reorganize with agent** (a wand in ONE rail's header) — the job is
   that rail's own arrangement: reorder its stages, split a stage whose
   steps would collide in one checkout, merge stages that are genuinely
@@ -110,6 +116,34 @@ human has to untangle two agents' half-finished edits.
 If two pieces of work must run at once and might collide, the right move
 is two rails on two worktrees — not one parallel stage.
 
+### Spread it wide
+
+"When unsure, serialize" is a rule about a **stage**, and it is not
+licence to answer an **Organize** run with one long rail. That button is
+the human asking for their backlog to run at once; an arrangement that
+queues every card behind a single checkout hands them back the
+arrangement they already had.
+
+So default the other way at the RAIL level. Two pieces of work that do
+not depend on each other belong on **two rails with two worktrees**, not
+in two stages of one — that is the arrangement that is both parallel and
+safe, and the reason worktree isolation exists. Serialize *inside* a
+rail; parallelize *across* rails; let the number of rails be the number
+of independent workstreams the cards actually contain.
+
+Cutting those worktrees is part of the answer, not a follow-up for the
+human — §2b.
+
+What still earns a sequence:
+
+- a card that **cannot start until another finishes** — it edits what the
+  other produces, or reviews it;
+- work that is honestly the same files in the same checkout;
+- a rail that must land before another begins: chain those with the
+  `Start rail` tool (§2a) rather than trusting the timing.
+
+Everything else runs beside it.
+
 ## 2b. Worktrees and branches are not the same tool
 
 A rail carries two independent bindings: `worktreePath` says **which
@@ -124,16 +158,63 @@ whether or not they name different branches — worse, in fact, because
 they will fight over the head. Isolation comes from a separate worktree
 and nothing else.
 
-So propose:
+So choose:
 
 - **a worktree** when rails must run **at the same time**, or when the
-  work is long-lived enough to want its own files on disk;
+  work is long-lived enough to want its own files on disk. An Organize
+  run is the first case by default (§2);
 - **a plain branch** when the rails are alternatives the human will run
   **one at a time**, and a folder per rail would just be clutter.
 
 Gavin switches a bound branch only when no step of that rail is running,
 refuses while the checkout has uncommitted changes, and never switches
 back when the rail completes — the work stays checked out, in view.
+
+### Make the isolation, do not merely name it
+
+You have a shell. **Create the worktree and the branch yourself**, then
+send the rail back bound to them. A `worktreePath` nothing created does
+not bind a rail — gavin flags it `worktree-missing` and every step on it
+stalls — and a rail with neither binding is not isolated at all, however
+the arrangement reads.
+
+Work from the **workspace root**: the checkout you were launched in, and
+the one every absolute card path in the read payload sits under.
+
+1. **Look first.** `git worktree list` and `git branch`. A branch already
+   checked out somewhere cannot be checked out again, and a folder that
+   already exists is not yours to claim.
+2. **A worktree on a new branch**, in the sibling folder gavin's own
+   dialog would have proposed — the root's folder name, a hyphen, and the
+   branch with each `/` written as `-`:
+
+   ```
+   git worktree add -b <branch> ../<repo>-<branch>
+   ```
+
+   An existing branch instead: `git worktree add <path> <branch>`.
+3. **Then its setup.** `[worktree] setup` in `.gavin-root/config.toml`
+   declares what a fresh checkout needs — `npm install`, `cargo fetch`, an
+   `.env` copy. Gavin runs those for a worktree made in the app; nothing
+   runs them for one made here, so run them yourself in the new checkout,
+   joined with `&&` so a failed install stops the rest. A worktree whose
+   setup failed is worse than no worktree: the rail's first agent looks
+   like it started fine and spends its turn on the install.
+4. **A branch with no worktree** is `git branch <name>` — created, never
+   checked out. The rail's own first step is what moves a checkout, once,
+   and the human is working in the root one meanwhile. Never
+   `git checkout` in the root yourself.
+5. **Then bind it in the write**: `worktreePath` and `branch` on the rail.
+   Set both for a worktree you cut on a new branch — the switch is a
+   no-op while the checkout is already there, and the pair is what the
+   human and the next agent read as the rail's isolation.
+
+Branch names have to survive git: no spaces, no `..`, no leading `-`, no
+`.lock` tail, and none of `~ ^ : ? * [ \ @{`. Slug the rail's name into
+one.
+
+Never cut a second worktree or branch for a rail that already carries
+one, and say in your summary which ones you created and where.
 
 A tool step counts here exactly like a card step: a `Run tests` or
 `Commit changes` step writes to the rail's checkout, so co-staging it

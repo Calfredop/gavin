@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { composeGeneratePrompt, composeRailPrompt } from "./orchestrationPrompts";
+import { composeOrganizePrompt, composeRailPrompt } from "./orchestrationPrompts";
 import { NAME_TAB_FIRST } from "./cardRun";
 import type { CardEntry, Orchestration, Rail, ToolSummary } from "./orchestration";
 import { emptyOrchestration } from "./orchestration";
@@ -52,17 +52,17 @@ function orchWith(rails: Rail[]): Orchestration {
   return { ...emptyOrchestration(), rails };
 }
 
-describe("composeGeneratePrompt", () => {
+describe("composeOrganizePrompt", () => {
   const unplaced = [card("a.md", "Fix login", "To Do"), card("b.md", "Write tests")];
 
   it("names the skill and the job", () => {
-    const p = composeGeneratePrompt(null, unplaced, []);
+    const p = composeOrganizePrompt(null, unplaced, []);
     expect(p).toContain("Use the gavin-orchestrate skill");
     expect(p).toContain("UNPLACED");
   });
 
   it("lists every unplaced card with its status and path", () => {
-    const p = composeGeneratePrompt(null, unplaced, []);
+    const p = composeOrganizePrompt(null, unplaced, []);
     expect(p).toContain("2 cards nobody has placed yet:");
     expect(p).toContain("- Fix login (To Do) — /ws/.gavin-root/plans/a.md");
     // No status is said out loud rather than left blank.
@@ -71,7 +71,7 @@ describe("composeGeneratePrompt", () => {
 
   it("cuts a long backlog and says how many it cut", () => {
     const many = Array.from({ length: 34 }, (_, i) => card(`c${i}.md`, `Card ${i}`));
-    const p = composeGeneratePrompt(null, many, []);
+    const p = composeOrganizePrompt(null, many, []);
     expect(p).toContain("34 cards nobody has placed yet:");
     expect(p).toContain("- Card 29 (no status)");
     expect(p).not.toContain("- Card 30 (no status)");
@@ -81,7 +81,7 @@ describe("composeGeneratePrompt", () => {
   });
 
   it("says so rather than inventing work when nothing is unplaced", () => {
-    const p = composeGeneratePrompt(orchWith([rail("r1", "backend", [])]), [], []);
+    const p = composeOrganizePrompt(orchWith([rail("r1", "backend", [])]), [], []);
     expect(p).toContain("Nothing is unplaced right now");
   });
 
@@ -89,30 +89,45 @@ describe("composeGeneratePrompt", () => {
     const r = { ...rail("r1", "backend", [[["t1", "/ws/.gavin-root/plans/a.md"]]]) };
     r.worktreePath = "/x/wt-a";
     r.branch = "feature/api";
-    const p = composeGeneratePrompt(orchWith([r]), unplaced, []);
+    const p = composeOrganizePrompt(orchWith([r]), unplaced, []);
     expect(p).toContain("- backend (/x/wt-a, branch feature/api): 1 stage, 1 step");
   });
 
   it("tells the agent to create rails when there are none", () => {
-    expect(composeGeneratePrompt(orchWith([]), unplaced, [])).toContain(
+    expect(composeOrganizePrompt(orchWith([]), unplaced, [])).toContain(
       "The tab has no rails yet — create them."
     );
-    expect(composeGeneratePrompt(null, unplaced, [])).toContain("The tab has no rails yet");
+    expect(composeOrganizePrompt(null, unplaced, [])).toContain("The tab has no rails yet");
   });
 
   it("carries gavin's own conflict lines, or says there are none", () => {
-    expect(composeGeneratePrompt(null, unplaced, ["1. two steps share /x/wt-a"])).toContain(
+    expect(composeOrganizePrompt(null, unplaced, ["1. two steps share /x/wt-a"])).toContain(
       "Gavin currently flags:\n- 1. two steps share /x/wt-a"
     );
-    expect(composeGeneratePrompt(null, unplaced, [])).toContain(
+    expect(composeOrganizePrompt(null, unplaced, [])).toContain(
       "Gavin currently flags no conflicts."
     );
   });
 
   it("asks for the authoritative read and for tool fields to survive the rewrite", () => {
-    const p = composeGeneratePrompt(null, unplaced, []);
+    const p = composeOrganizePrompt(null, unplaced, []);
     expect(p).toContain("Read gavin_get_orchestration");
     expect(p).toContain("toolId and toolParams");
+  });
+
+  // Pressing Organize IS the request to parallelize, so the prompt has to
+  // say it: the skill's own parallelism rule leads with "when unsure,
+  // serialize", and an agent reading only that half answers with one long
+  // rail -- the arrangement the human already had.
+  it("asks for parallelism, and for the isolation that makes it safe", () => {
+    const p = composeOrganizePrompt(null, unplaced, []);
+    expect(p).toContain("Organizing means parallelizing");
+    expect(p).toContain("Prefer a new rail");
+    // Named as work the agent DOES, not as a binding to leave the human:
+    // an unbound rail is not isolation and a worktreePath nobody created
+    // is a worktree-missing conflict.
+    expect(p).toContain("create");
+    expect(p).toContain("worktreePath and branch on the rail");
   });
 });
 
@@ -188,7 +203,7 @@ describe("both prompts", () => {
   it("open by telling the agent to name its own tab", () => {
     // They land in a session of their own now, so the tab is the human's
     // only handle on which of the two requests is in it.
-    expect(composeGeneratePrompt(null, [], []).startsWith(NAME_TAB_FIRST)).toBe(true);
+    expect(composeOrganizePrompt(null, [], []).startsWith(NAME_TAB_FIRST)).toBe(true);
     expect(
       composeRailPrompt(emptyOrchestration(), rail("r1", "backend", []), new Map(), [], []).startsWith(
         NAME_TAB_FIRST

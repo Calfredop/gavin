@@ -20,9 +20,15 @@ import {
   toolKindLabel,
   gavinActionOf,
   resolveToolParam,
+  resolveToolCwd,
   GAVIN_ACTIONS,
   type Tool,
   type ToolRecord,
+  TOOL_KINDS,
+  PR_BODY,
+  bodyForKind,
+  toolBodyEditor,
+  toolKindParamNote,
 } from "./orchestrationTools";
 
 function record(over: Partial<ToolRecord> = {}): ToolRecord {
@@ -35,6 +41,7 @@ function record(over: Partial<ToolRecord> = {}): ToolRecord {
     body: "./deploy.sh {{env}}",
     params: [{ name: "env", label: "Environment", default: "staging" }],
     position: 0,
+    cwd: null,
     ...over,
   };
 }
@@ -46,8 +53,8 @@ describe("the built-in set", () => {
     return tool;
   };
 
-  it("ships fourteen tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(14);
+  it("ships sixteen tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(16);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
@@ -343,6 +350,83 @@ describe("editing", () => {
   it("refuses to turn a built-in into a save", () => {
     expect(() => toRecord(BUILTIN_TOOLS[0], "ws-1", 0)).toThrow();
   });
+
+  // An untouched field is not a directory. Both spellings have to reach
+  // the daemon as null, or the launcher would have to resolve `""`
+  // against the root and the row would show a blank directory.
+  it("normalises a blank working directory to absent", () => {
+    const tool: Tool = { ...emptyTool("u1"), name: "x", body: "y" };
+    expect(toRecord({ ...tool, cwd: "  " }, "ws-1", 0).cwd).toBeNull();
+    expect(toRecord({ ...tool, cwd: null }, "ws-1", 0).cwd).toBeNull();
+    expect(toRecord({ ...tool, cwd: " apps/web " }, "ws-1", 0).cwd).toBe("apps/web");
+  });
+});
+
+describe("authoring a kind", () => {
+  // All six, and the order matters: the three that also run on their own
+  // come first, because the Tools tab is where most tools are written.
+  it("offers every kind, runnable ones first", () => {
+    expect(TOOL_KINDS).toEqual(["agent", "command", "script", "until", "pr", "gavin"]);
+  });
+
+  it("gives each kind a body editor of the shape its body actually has", () => {
+    expect(toolBodyEditor("agent")).toMatchObject({ shape: "text", mono: false, rows: 8 });
+    expect(toolBodyEditor("command")).toMatchObject({ shape: "text", mono: true, rows: 3 });
+    expect(toolBodyEditor("script")).toMatchObject({ shape: "text", mono: true, rows: 8 });
+    // The check IS the body, so it is a command line -- but the field
+    // has to say "check", or a human writes a step and expects it to run
+    // once.
+    expect(toolBodyEditor("until")).toMatchObject({ shape: "text", label: "Check command" });
+    expect(toolBodyEditor("gavin").shape).toBe("action");
+    expect(toolBodyEditor("pr").shape).toBe("none");
+  });
+
+  it("names the parameters the three argument kinds read, and nobody else's", () => {
+    expect(toolKindParamNote("until")).toContain("`max`");
+    expect(toolKindParamNote("pr")).toContain("`require`");
+    expect(toolKindParamNote("gavin")).toContain("`rail`");
+    for (const kind of ["agent", "command", "script"] as const) {
+      expect(toolKindParamNote(kind), kind).toBeNull();
+    }
+  });
+});
+
+describe("bodyForKind", () => {
+  // `validateTool` refuses an empty body, and `gavinActionOf` reads this
+  // one: a switch that left a prompt behind would save a gavin tool
+  // naming nothing.
+  it("imposes the fixed body on the two kinds that do not author one", () => {
+    expect(bodyForKind("pr", "npm test", null)).toBe(PR_BODY);
+    expect(bodyForKind("gavin", "npm test", null)).toBe(GAVIN_ACTIONS[0]);
+  });
+
+  it("keeps a gavin body that already names an action", () => {
+    expect(bodyForKind("gavin", "  start-rail  ", null)).toBe("start-rail");
+  });
+
+  it("leaves an authored body alone when the new kind authors one too", () => {
+    expect(bodyForKind("script", "npm test", null)).toBe("npm test");
+    expect(bodyForKind("until", "npm test", "stashed")).toBe("npm test");
+  });
+
+  // The whole point of the stash: clicking the wrong chip costs a click,
+  // not eight lines of prompt. A fixed body is not source, so nothing is
+  // lost by replacing it.
+  it("restores the stashed body when a fixed one is switched away from", () => {
+    expect(bodyForKind("agent", PR_BODY, "Review the diff.")).toBe("Review the diff.");
+    expect(bodyForKind("command", "start-rail", "npm test")).toBe("npm test");
+  });
+
+  it("keeps the fixed body when there is nothing stashed to put back", () => {
+    expect(bodyForKind("agent", PR_BODY, null)).toBe(PR_BODY);
+  });
+
+  // A new tool's body is blank, and blank is worth restoring: reading an
+  // empty stash as "nothing was put away" is what leaves "await-pr"
+  // sitting in a brand-new tool's Command field.
+  it("restores a stashed body that was empty", () => {
+    expect(bodyForKind("command", PR_BODY, "")).toBe("");
+  });
 });
 
 describe("validateTool", () => {
@@ -383,6 +467,15 @@ describe("validateTool", () => {
     expect(validateTool({ ...ok, kind: "gavin", body: "stop-rail" })).toMatch(/stop-rail/);
     expect(validateTool({ ...ok, kind: "gavin", body: "start-rail" })).toBeNull();
   });
+
+  // Only the BODY is substituted (resolveToolBody); resolveToolCwd
+  // resolves, it does not substitute. A directory with a placeholder in
+  // it would look parameterised and would not be, and the session would
+  // start in a folder literally called `{{env}}`.
+  it("rejects a placeholder in the working directory", () => {
+    expect(validateTool({ ...ok, cwd: "builds/{{env}}" })).toMatch(/working directory/);
+    expect(validateTool({ ...ok, cwd: "builds/staging" })).toBeNull();
+  });
 });
 
 describe("gavinActionOf", () => {
@@ -422,5 +515,39 @@ describe("resolveToolParam", () => {
 
   it("is empty for a parameter the tool does not declare", () => {
     expect(resolveToolParam(tool, { other: "x" }, "other")).toBe("");
+  });
+});
+
+// A tool's own working directory (v30). Only a STANDALONE run reads it:
+// a rail step runs in the rail's checkout and never asks the tool, which
+// railStepCwd's own test pins from the other side.
+describe("resolveToolCwd", () => {
+  it("is the workspace root when the tool names no directory", () => {
+    expect(resolveToolCwd({ cwd: null }, "/r")).toBe("/r");
+    expect(resolveToolCwd({}, "/r")).toBe("/r");
+    expect(resolveToolCwd({ cwd: "   " }, "/r")).toBe("/r");
+    expect(resolveToolCwd({ cwd: "." }, "/r")).toBe("/r");
+  });
+
+  it("resolves a relative directory against the root", () => {
+    expect(resolveToolCwd({ cwd: "apps/web" }, "/r")).toBe("/r/apps/web");
+    expect(resolveToolCwd({ cwd: "./apps/web" }, "/r")).toBe("/r/apps/web");
+  });
+
+  it("joins one root to one path however the root was spelled", () => {
+    expect(resolveToolCwd({ cwd: "apps" }, "/r/")).toBe("/r/apps");
+  });
+
+  it("keeps an absolute directory exactly as written", () => {
+    expect(resolveToolCwd({ cwd: "/elsewhere/repo" }, "/r")).toBe("/elsewhere/repo");
+  });
+
+  // An absolute path needs no root, so it still answers -- but a
+  // relative one has nothing to resolve against, and guessing would
+  // start a session wherever the app happens to be.
+  it("refuses a relative directory with no root to resolve against", () => {
+    expect(resolveToolCwd({ cwd: "apps/web" }, null)).toBeNull();
+    expect(resolveToolCwd({ cwd: null }, null)).toBeNull();
+    expect(resolveToolCwd({ cwd: "/abs" }, null)).toBe("/abs");
   });
 });

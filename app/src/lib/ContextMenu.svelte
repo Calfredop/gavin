@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { contextMenu, closeContextMenu, isSeparator, type ContextMenuItem } from "./contextMenu";
+  import {
+    contextMenu,
+    closeContextMenu,
+    isSeparator,
+    isHeading,
+    type ContextMenuItem,
+  } from "./contextMenu";
 
   let menuEl = $state<HTMLElement | null>(null);
   let clamped = $state({ x: 0, y: 0 });
@@ -15,9 +21,13 @@
     };
   });
 
+  // A toggle acts WITHOUT dismissing: it changed the state the entries
+  // were built from, and its handler re-publishes them (see
+  // setContextMenuEntries), so the tick lands under the cursor that set
+  // it and the pick it qualifies is still one click away.
   function pick(item: ContextMenuItem): void {
     if (item.disabled) return;
-    closeContextMenu();
+    if (!item.keepOpen) closeContextMenu();
     item.onPick();
   }
 
@@ -52,6 +62,8 @@
     {#each $contextMenu.entries as entry, i (i)}
       {#if isSeparator(entry)}
         <div class="separator"></div>
+      {:else if isHeading(entry)}
+        <div class="heading">{entry.heading}</div>
       {:else}
         <button
           type="button"
@@ -59,10 +71,11 @@
           class:danger={entry.danger}
           class:active={entry.active}
           disabled={entry.disabled}
-          role="menuitem"
+          role={entry.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+          aria-checked={entry.checked === undefined ? undefined : entry.checked}
           onclick={() => pick(entry)}
         >
-          <span class="marker">{entry.active ? "•" : ""}</span>
+          <span class="marker">{entry.checked ? "✓" : entry.active ? "•" : ""}</span>
           {entry.label}
         </button>
       {/if}
@@ -123,5 +136,16 @@
     height: 1px;
     background: var(--surface-overlay);
     margin: 4px 6px;
+  }
+  /* Names the menu; never picked. Indented to the items' own text
+     column (their 10px marker plus its 4px gap) so the title and the
+     rows below it read off one left edge. */
+  .heading {
+    color: var(--text-subtle);
+    font-family: monospace;
+    font-size: 0.75em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 8px 4px 22px;
   }
 </style>

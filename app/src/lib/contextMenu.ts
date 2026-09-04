@@ -13,10 +13,26 @@ export interface ContextMenuItem {
   disabled?: boolean;
   // A checkmark-style marker (e.g. the card's current column).
   active?: boolean;
+  // A checkbox: the item states a setting the next pick will obey,
+  // rather than naming the value already chosen. Drawn with its own
+  // marker so a menu can carry both without the two reading alike.
+  checked?: boolean;
+  // Picking this item does NOT dismiss the menu. Only right for an item
+  // that toggles something the menu itself displays -- a checkbox whose
+  // menu closed on the tick would hide the state it just changed, and
+  // the human would have to reopen it to act on the choice they made.
+  keepOpen?: boolean;
   onPick: () => void;
 }
 
-export type ContextMenuEntry = ContextMenuItem | { separator: true };
+/// A row that names the menu rather than offering anything: what a
+/// DROPDOWN needs and a right-click menu never does. A context menu is
+/// opened at a thing, so its subject is obvious; a menu hanging off a
+/// button whose label has been reduced to an icon has lost the words,
+/// and this is where they go.
+export type ContextMenuHeading = { heading: string };
+
+export type ContextMenuEntry = ContextMenuItem | { separator: true } | ContextMenuHeading;
 
 export interface ContextMenuState {
   x: number;
@@ -30,7 +46,9 @@ export const contextMenu = writable<ContextMenuState | null>(null);
 const MENU_GAP_PX = 4;
 
 export function openContextMenu(x: number, y: number, entries: ContextMenuEntry[]): void {
-  const hasAction = entries.some((e) => !("separator" in e));
+  // Neither a separator nor a heading is a reason to open a menu: a
+  // list of nothing but decoration is an empty menu with a title on it.
+  const hasAction = entries.some((e) => !isSeparator(e) && !isHeading(e));
   contextMenu.set(hasAction ? { x, y, entries } : null);
 }
 
@@ -43,12 +61,37 @@ export function openContextMenuFromEvent(e: MouseEvent, entries: ContextMenuEntr
   openContextMenu(e.clientX, e.clientY, entries);
 }
 
+/// Swaps the entries of the menu that is already open, keeping its
+/// position. What a `keepOpen` toggle needs: its own click changed the
+/// state the entries were built from, and the list is a plain array
+/// captured at open time, so the tick it just set would not appear
+/// until the menu was closed and opened again.
+///
+/// A no-op when no menu is up -- a toggle can only be picked from an
+/// open menu, so this is a late/duplicate call rather than a reason to
+/// reopen one somewhere the human is not looking.
+export function setContextMenuEntries(entries: ContextMenuEntry[]): void {
+  contextMenu.update((m) => (m ? { ...m, entries } : m));
+}
+
 export function closeContextMenu(): void {
   contextMenu.set(null);
 }
 
 export function isSeparator(entry: ContextMenuEntry): entry is { separator: true } {
   return "separator" in entry;
+}
+
+export function isHeading(entry: ContextMenuEntry): entry is ContextMenuHeading {
+  return "heading" in entry;
+}
+
+/// The entries that actually offer something. Every caller that walks a
+/// menu wants this rather than "not a separator": that test was the whole
+/// narrowing before headings existed, and it silently stops narrowing the
+/// moment a third kind of row joins the union.
+export function isMenuItem(entry: ContextMenuEntry): entry is ContextMenuItem {
+  return !isSeparator(entry) && !isHeading(entry);
 }
 
 // Anchors the shared menu under an element instead of at the pointer:

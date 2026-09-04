@@ -36,7 +36,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "root-banner", text: "Unrooted workspace hub shows the “No root folder set” banner" },
       {
         id: "root-banner-no-picker",
-        text: "That banner sits above the tabs and offers no picker — only “Open settings”, which jumps to the Settings tab",
+        text: "That banner sits above the tabs and offers no picker — only “Open settings”, which opens the workspace's settings",
       },
       {
         id: "root-banner-quiet",
@@ -233,7 +233,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "attach-blocks-run",
-        text: "▶ session on a card with a missing attachment refuses by NAME and starts nothing — and the card stays in its column",
+        text: "▶ new session on a card with a missing attachment refuses by NAME and starts nothing — and the card stays in its column",
         hint: "The status write happens after the gate, so a refused run must not leave the card in In Progress.",
       },
       {
@@ -321,12 +321,12 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "run-task",
-        text: "Hover pills: blue ▶ session spawns a dedicated bound agent (Agents page, attached, no focus steal) and sets In Progress",
+        text: "Hover pills: blue ▶ new session spawns a dedicated bound agent (Agents page, attached, no focus steal) and sets In Progress",
         hint: "The composed command is agentCommand + the quoted prompt; cwd = the card's context folder.",
       },
       {
         id: "run-plan",
-        text: "▶ session on a plan hands the agent a pointer prompt (read the file, tick items, promote, keep status)",
+        text: "▶ new session on a plan hands the agent a pointer prompt (read the file, tick items, promote, keep status)",
       },
       {
         id: "run-dot",
@@ -345,7 +345,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "run-unlink", text: "Unlink clears the dot and the binding; the next Run spawns fresh" },
       {
         id: "run-send-agent",
-        text: "Green ▶ agent pill pastes the prompt into the RUNNING main agent and jumps Home; disabled (with tooltip) when none runs",
+        text: "Green ▶ hub pill pastes the prompt into the RUNNING main agent and jumps Home; disabled (with tooltip) when none runs",
         hint: "No binding/dot for main-agent sends — the card's status is the tracking.",
       },
       {
@@ -389,6 +389,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The card detail modal offers the same button above ▶ Run, and by the same rule. The entry is To Do only — confirm it is absent (in BOTH surfaces) on In Progress, on Done, on a note, and on a card that already has a session. The spawned command starts “Use the gavin-develop skill…”; answer its questions and the card comes back as a checklist, nested children or just a sharper prompt, still in To Do and still unbound, so “Start all” can then run it.",
       },
       {
+        id: "develop-locks-the-card",
+        text: "While a card is being developed it wears an accent Agent · developing badge, an accent spine, and both its run pills are dead",
+        hint: "Start a develop run and go back to the board without answering the agent. The card face should carry the drafting-compass badge (click it: it lands you back in that agent's tab) and both pills — ▶ new session AND ▶ hub — should be greyed, with the reason in the row's tooltip. Its right-click menu should offer “Developing — jump to its tab” INSTEAD of Run / Run on several agents / Send to workspace agent, and the detail modal should replace those buttons with one “Jump to the develop session”. Answer the agent and let it finish: within a couple of seconds of the tab going idle the badge clears and every control comes back.",
+      },
+      {
+        id: "develop-lock-covers-every-launch",
+        text: "Nothing can start work on a card being developed — the column's Start all skips it, and a rail step over it stalls with “the card is being developed”",
+        hint: "With one develop run going: the To Do column's “Start all (n unbound)” must both COUNT and start one fewer, leaving the developing card alone. Put the same card on an orchestration rail and start the rail: the step chip stalls with that reason and the rail pauses, rather than launching. Let the develop agent finish, then press the rail's Start again — the step runs, with the card the agent rewrote.",
+      },
+      {
+        id: "develop-lock-survives-a-reload",
+        text: "The lock and the badge survive a frontend reload, and a develop run whose tab you close releases its card",
+        hint: "The record lives in config.json beside the workspace, so ⌘R (or a restart) must come back with the badge still on the card. Then close the develop agent's tab: the badge clears within a tick and the run pills come back — a card locked by an agent that is gone is the one failure mode worse than no lock at all.",
+      },
+      {
         id: "run-develop-switches-kind",
         text: "Developing a card that turns out to need steps flips it to kind: plan, and one that does not leaves it kind: task",
         hint: "Develop a card into a checklist: the board card must gain the n/m progress chip and the detail modal a tickable Checklist section — both are drawn for plans only, so a developed card still marked kind: task looks empty however many “- [ ]” lines it holds. Do it again on a genuinely small card and refuse a decomposition: it should stay kind: task with a rewritten body, since the plan prompt never inlines a body and would hand its agent a checklist that is not there. Read the frontmatter of both afterwards — the agent proposes the switch before it writes, so it is also the one thing you can veto in a word.",
@@ -400,8 +415,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "run-rail-spawns-its-page",
-        text: "Starting an unbound rail spawns a page named after it, and the rail's agents land there",
-        hint: "The page chip reads “page at Start” beforehand and the rail's name afterwards; a new blank shell on that page opens in the rail's checkout, not $HOME. Re-arming it, or pressing Resume, must not make a second page — close the page while it is paused and Resume is the one case that should.",
+        text: "An unbound rail's FIRST LAUNCH spawns a page named after it, and the agent is that page's only tab — no blank terminal ahead of it",
+        hint: "Press Start and watch the sidebar: no page appears until the first step actually launches, and the one that then appears holds exactly one tab, the agent's, opened in the rail's checkout rather than $HOME. This is the fix — the page used to be made at Start, which meant opening an idle shell to have something to put on it, and that shell then sat first in the tab strip forever. Re-arming the rail, or pressing Resume, must not make a second page; close the page mid-run and the next launch makes a fresh one. A rail whose stage holds only a `gavin` action (Start rail) launches no session and so must get no page at all.",
       },
       {
         id: "run-rail-page-at-launch",
@@ -434,6 +449,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "One notification, not two. Needs the workspace's “finished” notification toggle on and the gavin window not frontmost. A step that really does finish (its card reaches Done, or an agent TOOL step's turn ends) keeps the ordinary “finished” wording — check one of those too, or this only proves the rewrite fires.",
       },
       {
+        id: "run-step-decoy-warning",
+        text: "A card step launched on a rail with a WORKTREE opens its agent with the “this card lives at \u2026 and nowhere else” paragraph; the same card run from the board (no worktree) does not",
+        hint: "Read the agent's first screen, or the command in the Sessions manager. The negative half is the point: a board Run launches in the card's own folder, where there is no second copy, and a warning about a hazard that is not there teaches an agent to skim the framing.",
+      },
+      {
+        id: "run-step-decoy-edit",
+        text: "An agent that edits its worktree's OWN copy of the step's card marks the step “needs you” with a file glyph, and the tooltip names the decoy \u2014 within about thirty seconds, whether or not the agent committed it",
+        hint: "Start a rail bound to a worktree, then in that agent's tab edit <worktree>/.gavin-root/plans/<the card>.md (moving it into plans/done/ counts) and leave the real card alone. The sweep runs on a 30s clock, so wait one. Commit the edit inside the worktree and the mark must SURVIVE \u2014 that is the whole reason this reads run changes rather than git status. Touch nothing and no mark may ever appear.",
+      },
+      {
+        id: "run-step-stale",
+        text: "A step whose agent's turn ended and whose card is still not in Done escalates from the amber “turn ended” mark to a red “stopped for good” one after ten minutes, on the chip, the rail header and the hub's Waiting-on-you list",
+        hint: "The same setup as run-step-turn-ended, then leave it. The clock is the session's last status CHANGE, so do not type at the agent while you wait. The hub row's wait column should read “10m” (or “\u226510m” if the app attached after the agent went quiet).",
+      },
+      {
         id: "run-drop-on-running-sequence-stage",
         text: "Dropping a card onto the SINGLE-STEP stage a RUNNING rail is currently on forms a sequence group and the drop stays pending — it goes live on its own the moment the running member finishes",
         hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage becomes a two-member sequence group and the new card sits queued, not started, without you touching Pause/Resume. Finish the running member (its card reaches Done, or its tool step's turn ends) and the second starts on its own, with no Play press needed. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",
@@ -459,6 +489,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "Click the arrow, not the row: the row must NOT also switch to the terminal. Then try it on a page belonging to a workspace you are NOT in — the jump has to activate that workspace, not flip its hub view behind your back.",
       },
       {
+        id: "run-skip-and-proceed",
+        text: "“Skip and proceed” on a running or stalled step sends the rail past it — the step reads “skipped” (a struck-through square, no green), the next stage starts, and the agent's own tab is left alone",
+        hint: "Sits next to Mark done on both the step card and the chip, and only on a running or stalled step. Do it on a STALLED step for the important half: the rail was paused by that stall, and Skip has to un-pause it and carry on by itself — no Play press. Check the honest half too: the skipped step must NOT go green, must not be swept by “Clear done steps”, and moving its card to Done by hand afterwards must not re-file it as done. On an IDLE rail (never started, or reset) a skip must not start anything.",
+      },
+      {
         id: "run-clear-done-keeps-restarted",
         text: "“Clear done steps” leaves behind every step the rail still has to run — including one restarted over a card that is still sitting in Done",
         hint: "Run a rail to the end so every card sits in Done, then press Reset run state: the broom must go flat and its tooltip read “This rail has no done steps”, because every step is queued to run again. A stalled step is the same — move its card to Done by hand and it still stays on the rail, since Retry would run it. The fallback still has to work the other way round: on a rail that has NEVER run, moving one of its cards to Done by hand takes that step alone off.",
@@ -476,7 +511,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "run-start-rail-library",
         text: "Start rail reads “Gavin action” in the drawer and the library, with its own ⚡ icon, and the library offers no Duplicate on it",
-        hint: "Its params popover previews “Start the rail “<name>”.” rather than a command line, and says nothing is named yet when the field is empty. The library's Built-in section shows “gavin's own” where the other eleven show Duplicate.",
+        hint: "Its params popover previews “Start the rail “<name>”.” rather than a command line, and says nothing is named yet when the field is empty. The library's Built-in section offers Duplicate on it like every other built-in, and the copy's body is a select over the actions rather than a text box.",
       },
       {
         id: "run-until-loops",
@@ -496,7 +531,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "run-until-library",
         text: "Loop until a check passes reads “Loop until” in the drawer and the library with its own ↻ icon, and the library offers no Duplicate on it",
-        hint: "It is in the + Add step picker's Tools list beside the others. Its Sliders show two fields, Check command and Retries. The library's Built-in section shows “gavin's own” where the other eleven show Duplicate.",
+        hint: "It is in the + Add step picker's Tools list beside the others. Its Sliders show two fields, Check command and Retries. The library's Built-in section offers Duplicate on it like every other built-in, and the copy's body field says Check command.",
       },
       {
         id: "pr-chips-on-a-bound-rail",
@@ -816,7 +851,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "arch-drawer-count",
         text: "Orchestration: “Unplaced (n)” counts only cards still waiting — a Done card stays listed in the drawer’s collapsed group but is out of the number AND out of + Add step, and an archived card is in none of the three",
-        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one — then open + Add step on any rail: the Done card is not in the Cards list, and a nested task under that Done parent is gone too. With every remaining card finished the list reads “Every card left to place is finished.” and Generate with agent… goes inert.",
+        hint: "Archive a card sitting in the drawer and its row goes. Set one to Done and the row moves to the Done group while the header drops by one — then open + Add step on any rail: the Done card is not in the Cards list, and a nested task under that Done parent is gone too. With every remaining card finished the list reads “Every card left to place is finished.” and Organize with agent… goes inert.",
       },
       {
         id: "arch-agent-told",
@@ -1270,7 +1305,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "oc-cursor-still-blocked",
-        text: "Switch the profile to Cursor: the card's ▶ session pill is disabled and hovering the row says the agent takes no prompt",
+        text: "Switch the profile to Cursor: the card's ▶ new session pill is disabled and hovering the row says the agent takes no prompt",
         hint: "Hover the ROW, not the greyed pill — a disabled element fires no mouseenter. Same sentence on the card modal, inline.",
       },
     ],
@@ -1297,6 +1332,31 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "sidebar-row-rename",
         text: "Rename… turns the row into an input in place; Enter renames the session (the tab bar agrees at once), Escape leaves it alone",
         hint: "Double-clicking the row's name starts the same rename. A blank name must fall back to the cwd label, not stick as empty.",
+      },
+    ],
+  },
+  {
+    title: "Sidebar expansion memory",
+    items: [
+      {
+        id: "sidebar-expansion-survives-reload",
+        text: "Expand two workspaces and one page's tab list, reload the window: exactly those rows come back open, and no others",
+        hint: "⌘R, or the Restart daemon & retry overlay — the sidebar is unmounted whenever the layout leaves “ready”, which is what used to lose this.",
+      },
+      {
+        id: "sidebar-expansion-collapse-sticks",
+        text: "Collapse the ACTIVE workspace, reload: it comes back collapsed",
+        hint: "This is the one the first-activation auto-expand used to undo on every launch. A collapse is an answer and must outlive the reload.",
+      },
+      {
+        id: "sidebar-expansion-first-visit-still-opens",
+        text: "A workspace you have never expanded still opens itself the first time you switch to it",
+        hint: "Remembering must not cost the courtesy. Only a workspace with no answer yet auto-expands — after that, whatever you last chose stands.",
+      },
+      {
+        id: "sidebar-expansion-forgets-what-is-gone",
+        text: "Expand a page, close it, relaunch: no ghost row, and the other pages' expansion is untouched",
+        hint: "Same for a removed workspace. Entries are pruned against what still exists on every write.",
       },
     ],
   },
@@ -1336,30 +1396,102 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
-    title: "Title bar",
+    title: "App header",
     items: [
       {
-        id: "bar-pane-controls-terminal",
-        text: "On a terminal page the bar shows Split Right, Split Down and Close Pane, and all three act on the focused pane",
+        id: "header-full-height",
+        text: "The hub tabs and a page's tabs sit at the very top of the window; only the traffic lights' strip is above the sidebar, and nothing spans the window any more",
+        hint: "The strip and both tab rows are the same height, so the sidebar's first row (“Gavin”) starts on exactly the line the view beside it does — and switching between a hub tab and a page must not nudge the content up or down.",
       },
       {
-        id: "bar-pane-controls-hub",
-        text: "Switching to any hub tab (Home, Kanban, Git…) takes those three away; going back to the terminal brings them back",
-        hint: "They address the focused pane of the active page, which a hub tab keeps but never shows — clicking Split there used to spawn a session into a page nowhere on screen. ⌘D already refused from a hub tab.",
+        id: "header-page-tabs-match-hub",
+        text: "A page's tabs are the same size as the hub tabs above the Kanban board — same height, same text",
+        hint: "They were smaller (4/8px at 0.8em against 6/10px at 0.85em). Both take their metrics from theme.css now, so a difference is a regression rather than a tweak.",
       },
       {
-        id: "bar-pane-controls-app-hub",
-        text: "Opening the app hub takes them away too, even though the workspace under it was on a terminal page",
+        id: "header-page-tab-indicator",
+        text: "The active tab of the FOCUSED pane is underlined in the workspace's accent, the way the active hub tab is — split the page and the underline follows the focus, one pane at a time",
+        hint: "It used to be a blue bar over the tab. An uncoloured workspace falls back to the same amber the hub tabs use.",
+      },
+      {
+        id: "header-pane-controls",
+        text: "Every pane's own tab row ends with Split Right, Split Down and Close Pane, and each acts on THAT pane — split the page in two and check both",
+        hint: "They used to be app-wide and addressed “the focused pane”, which a hub tab kept but never showed; from there Split spawned a session into a page nowhere on screen. On the pane there is nothing to get wrong.",
+      },
+      {
+        id: "header-tab-chips-moved",
+        text: "The plan and diff buttons are on the tab row's right, not inside the tab: run a card, and the tab carries a label and a close box while the row offers Show plan and See what this run changed",
+        hint: "Both act on the ACTIVE tab — switch tabs in that pane and they appear, change or go. Each still opens its pane beside the agent rather than over it.",
+      },
+      {
+        id: "header-tabs-scroll",
+        text: "Open enough tabs (and shrink the window) to overflow a row, then scroll it with a plain mouse wheel over the tabs — the row scrolls sideways and the actions on its right never move",
+        hint: "Both rows: a pane's tabs and the workspace's hub tabs. A trackpad's sideways swipe works too, and once the row is at either end the wheel goes back to whatever is under it.",
       },
       {
         id: "bar-new-page-menu",
-        text: "“New page” stays put on every tab; clicking it drops a menu of the presets — Single, Side by Side, 2×2 Grid",
+        text: "“New page” is a “+” with a chevron at the right of both rows; clicking it drops a menu TITLED “New page” over the presets — Single, Side by Side, 2×2 Grid",
         hint: "The menu is the app's one context-menu layer, so Escape, a click elsewhere and the window losing focus all close it, and a second click on the button closes it rather than reopening it.",
       },
       {
         id: "bar-new-page-lands",
-        text: "Picking a preset adds a page with that layout to the current workspace AND brings it on screen — do it from the Kanban tab and from the app hub as well, not only from a terminal",
-        hint: "Sessions start in the workspace's bound root, and the page is named after the count it already had (Page 3, Page 4…).",
+        text: "Picking a preset adds a page with that layout to the current workspace AND brings it on screen — do it from a hub tab and from a pane's row, not only from one of them",
+        hint: "Sessions start in the workspace's bound root, and the page is named after the count it already had (Page 3, Page 4…). The app hub has no row of its own; the sidebar's per-workspace + is the route from there.",
+      },
+      {
+        id: "bar-new-page-with-agent-toggle",
+        text: "“With agent” heads the menu as a checkbox: clicking it ticks it and the menu STAYS OPEN, so the preset under it is still one click away",
+        hint: "It qualifies the rows under it rather than being a fourth thing to pick. A menu that closed on the tick would hide the state it just set.",
+      },
+      {
+        id: "bar-new-page-with-agent-lands",
+        text: "With it ticked, a preset opens every pane on the workspace's configured agent instead of a bare shell — try 2×2 and confirm all four panes are agents",
+        hint: "The agent is the one Settings names for this workspace; a 2×2 spends four sessions on it.",
+      },
+      {
+        id: "bar-new-page-with-agent-forgets",
+        text: "Untick it, or reopen the menu after adding an agent page, and the box is still whatever you last left it — but a fresh app start has it clear",
+        hint: "Deliberately not a stored preference: a tick remembered from last week would spend agent sessions on a page asked for as terminals. Each row's button keeps its own tick, so check the one you are using.",
+      },
+      {
+        id: "header-window-drag",
+        text: "The window still moves: drag it by the strip beside the traffic lights, and by the empty run of the hub tab row after the last tab",
+        hint: "Double-clicking either one zooms the window (or whatever “Double-click a window's title bar to” is set to). The strip is all that is left of the old full-width bar, which is why the hub row gives some of the room back.",
+      },
+      {
+        id: "header-pane-drag-unchanged",
+        text: "The empty part of a PANE's tab row still drags the pane, not the window — grab it and drop the pane elsewhere on the page",
+        hint: "The one row that deliberately does not move the window: a bar that did either depending on invisible state would be worse than a small handle.",
+      },
+      {
+        id: "header-rows-one-black",
+        text: "A page's tab row is the same black as the terminal under it and as the hub tab row — no grey band across the top, and no grey margin around the active tab",
+        hint: "It used to be --surface-raised, the colour the sidebar's strip still is. Switch between a hub tab and a page and the only thing that changes above the view is the tabs themselves. Check the light theme too.",
+      },
+      {
+        id: "header-tab-dividers",
+        text: "A short vertical hairline sits between neighbouring tabs on BOTH rows, stopping well short of the row's height",
+        hint: "It is what separates the tabs now that no tab has a fill of its own. Full height would read as a box around each tab. The first tab of a row has none to its left.",
+      },
+      {
+        id: "header-one-action-group",
+        text: "Split a page in two: only ONE row of actions is drawn, on the focused pane — click into the other pane and the whole group moves there with the underline",
+        hint: "Every pane used to draw its own, four copies on a 2×2. Split further and check no pane is ever left without one — New page lives in that group.",
+      },
+      {
+        id: "header-workspace-settings-gear",
+        text: "Settings is a gear at the right of the hub tab row, not a tab: click it to open the Settings view, and it stays lit while that view is on screen",
+        hint: "The strip has one tab fewer, so ⌘1–⌘9 and the hold-⌘ badges must line up with the tabs that are left. The root banner's “Open settings” and the sidebar's recap still land there too.",
+      },
+      {
+        id: "close-window-keeps-sessions",
+        text: "Close the window (⌘W on the window, the red light, ⌘Q): the prompt offers Close window / Keep open with an unticked “End every terminal session too” — close with it UNTICKED and reopen; every session is still there",
+        hint: "The box must come up clear every time. Escape and Keep open both leave the window open.",
+      },
+      {
+        id: "close-window-kills-sessions",
+        text: "Close it again with the box TICKED: every terminal and agent is gone when the app is reopened — not just the tabs, the sessions behind them",
+        hint: "Check with the Sessions manager after relaunching, not just by counting tabs. Leave a long-running command in one tab first. Anything already written to disk stays.",
       },
     ],
   },
@@ -1543,9 +1675,24 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The figure covers the session's process and everything it started, and is not clamped at 100. A shell showing 0.2% while its children pin four cores is the failure this shape avoids.",
       },
       {
+        id: "tasks-totals-sum-the-two-columns",
+        text: "Under the last row a pinned “Total” line sums the CPU and Mem columns and names what it covers (“14 sessions · 37 processes”); start four `yes > /dev/null` in one tab and the total climbs by ~400% too",
+        hint: "It is a `<tfoot>` INSIDE the table, not a strip under the grid: `table-layout: fixed` makes the columns exact, and anything outside would be a scrollbar's width out of line the moment the list overflows.",
+      },
+      {
+        id: "tasks-totals-stay-at-the-foot",
+        text: "With ~30 terminals open, the Total line stays at the bottom of the grid while the rows scroll under it — the mirror of the headings staying at the top",
+        hint: "Sticky is on the CELLS, never on `<tfoot>` or `<tr>`: this is WKWebView, and a cell is the form it has always honoured. What the fleet costs must not scroll away.",
+      },
+      {
+        id: "tasks-totals-wait-for-a-rate",
+        text: "For the first two seconds the total CPU reads “—”, never 0.0%; open a new terminal and for one poll the coverage line reads “… · 1 not rated yet”, with the reason on hover",
+        hint: "A total that counted an unrated row as zero would be the one lie the per-row arithmetic was written to avoid, told once more at the bottom of the table. Hover also says what kind of number each sum is — shares of ONE core, and resident sizes that count a shared page twice.",
+      },
+      {
         id: "tasks-hidden-session-listed",
         text: "Press “Commit via agent” on the Git tab and open the panel while it runs: the hidden run is listed, marked with no tab",
-        hint: "The card's “invisible sessions”. A commit agent, an orchestration Generate and a rail's Reorganize all run with nothing rendering them; before this they were visible only as a spinner.",
+        hint: "The card's “invisible sessions”. A commit agent, an orchestration Organize and a rail's Reorganize all run with nothing rendering them; before this they were visible only as a spinner.",
       },
       {
         id: "tasks-jump-opens-a-tab-for-a-hidden-one",
@@ -1578,9 +1725,14 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The prompt is the only place a mis-click shows. With one row picked it is worded as that row's own ✕ would be.",
       },
       {
+        id: "tasks-kill-selected-states-the-cost",
+        text: "Select two busy sessions and press “Kill N selected…”: the prompt also says what they are using together (“Together they are using 1.4 GB of memory and 210.0% of one core.”)",
+        hint: "Every other number in that prompt can be checked against the rows behind it; a sum over a SELECTION appears nowhere else on screen, and it is usually the reason someone reached for the button.",
+      },
+      {
         id: "tasks-clear-stale",
-        text: "With an exited row and a live one, “Clear stale (1)” is enabled; pressing it asks once, spelling out what clearing an exited row does, and leaves the live row alone",
-        hint: "Clearing an exited row deletes a record; clearing an orphan sends SIGTERM to a live process. One word covering both would hide the one that matters, so the prompt lists each kind present.",
+        text: "With a stale row and a live one, “Clear stale (1)” is enabled; pressing it asks once, spelling out what clearing each kind present does, and leaves the live row alone",
+        hint: "Clearing an exited row deletes a record; clearing an orphan sends SIGTERM to a live process. One word covering both would hide the one that matters, so the prompt lists each kind present. A run that simply ends no longer leaves a row at all, so stage this with an orphan (`trap '' HUP; sleep 900`, then restart the daemon) or an interrupted one.",
       },
       {
         id: "tasks-grid-scrolls-inside",
@@ -1890,6 +2042,16 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Orchestration → bind a rail → New worktree…: the setup session opens on the RAIL's page, in the new worktree",
         hint: "This is the path with no “Start agent here” checkbox at all, and the one that used to hand the dialog a no-op. Check the session's cwd is the fork (not the workspace root) and that it landed on the page named after the rail rather than on the page you were looking at. The rail itself stays idle — this is not a run row.",
       },
+      {
+        id: "wt-fork-error-line",
+        text: "A refused “New worktree…” says why IN the dialog, from every surface that opens it — including a rail's bind dialog, with the Git tab never opened in this workspace",
+        hint: "Force git's refusal: mkdir the folder the dialog proposes and drop a file in it, then press Create. The dialog stays open with git's own sentence under the fields (“New worktree failed: fatal: … already exists”), not a button that appears to do nothing. Do it from the Git tab's switcher too — the banner still carries it there — and from a rail in a workspace whose Git tab you have never opened, which used to be the one path that said nothing anywhere.",
+      },
+      {
+        id: "wt-fork-branch-error-line",
+        text: "Bind a rail → “New branch…” reports a refusal the same way, in the form",
+        hint: "The field's own validation catches a name it can already see, so use one only git can refuse: `git branch parent` by hand, then ask for `parent/child` — git answers “cannot lock ref”. The sentence appears under the form, and the form stays open on what you typed rather than closing as if it had worked.",
+      },
     ],
   },
   {
@@ -2129,6 +2291,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Rail bindings dialog",
+    items: [
+      {
+        id: "bind-chips-three",
+        text: "A rail header shows THREE binding chips — worktree, branch, page — and each opens the dialog on its own tab",
+        hint: "Worktree and branch share the first line, the page has the second. Hover each: an unset one says what the default does (\u201ceach card's own folder\u201d, \u201cwhatever is checked out\u201d, \u201ca page of its own at first launch\u201d), a set one says the whole worktree path the chip abbreviates to a folder name.",
+      },
+      {
+        id: "bind-chips-narrow",
+        text: "At 280px the chips ellipsise their VALUE and keep their glyphs, and the header stays at the same height as before",
+        hint: "Bind a rail to a worktree with a long folder name and a long branch. Nothing may wrap to a fourth header row.",
+      },
+      {
+        id: "bind-tab-strip",
+        text: "The dialog is a tab strip: Worktree / Branch / Page, each tab showing what that binding is set to right now",
+        hint: "Only one list is on screen at a time. Picking a value updates the tab's own sub-label immediately, without leaving the tab.",
+      },
+      {
+        id: "bind-tab-keys",
+        text: "With a tab focused, \u2190/\u2192 move across the strip (wrapping) and Home/End jump to the ends; Escape still closes the dialog",
+        hint: "Escape is the one that matters: a tablist that swallows it leaves the modal stuck open.",
+      },
+      {
+        id: "bind-tab-deep-link",
+        text: "The conflict box's repair button names the binding it repairs and lands on that tab",
+        hint: "A rail bound to a deleted branch offers \u201cPick another branch\u201d and opens on Branch; a deleted worktree offers \u201cPick another worktree\u201d; a rail with no worktree offers \u201cGive it a worktree\u201d. All three used to say \u201cBind worktree…\u201d and open at the top.",
+      },
+      {
+        id: "bind-tab-height",
+        text: "Switching tabs does not resize the dialog under the pointer",
+        hint: "The Page tab on a workspace with one page is the short one — the panel keeps a floor so the Done button stays put.",
+      },
+    ],
+  },
+  {
     title: "Rail branch/worktree defaults",
     items: [
       {
@@ -2162,7 +2359,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       {
         id: "run-all-placement",
-        text: "The Orchestration toolbar's “Run all” sits between “Generate with agent…” and “+ Rail”",
+        text: "The Orchestration toolbar's “Run all” sits between “Organize with agent…” and “+ Rail”",
       },
       {
         id: "run-all-dead-when-nothing",
@@ -2194,20 +2391,78 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Clearing finished rails",
+    items: [
+      {
+        id: "clear-done-rails-placement",
+        text: "The Orchestration toolbar's “Clear done” sits between “Run all” and “+ Rail”",
+      },
+      {
+        id: "clear-done-rails-dead-when-nothing",
+        text: "With no rail finished, “Clear done” is greyed and its tooltip reads “No rail has finished every step it holds”",
+        hint: "Check the vacuous case too: a brand-new EMPTY rail must not make the button live. An empty rail is unstarted, not finished.",
+      },
+      {
+        id: "clear-done-rails-confirm-names-them",
+        text: "Pressing it opens the confirm naming each rail it will remove, by name, in the order they sit on screen",
+      },
+      {
+        id: "clear-done-rails-removes-them",
+        text: "Confirming removes exactly those rails, and the rails with work left are still there in their old order",
+      },
+      {
+        id: "clear-done-rails-cards-stay",
+        text: "The cards those rails carried are untouched — still on the Kanban tab, still in their columns, and the confirm said how many would stay",
+        hint: "The whole promise: a rail is a plan over cards, not a container of them. Check the drawer got them back as unplaced.",
+      },
+      {
+        id: "clear-done-rails-worktree-stays",
+        text: "A bound finished rail's worktree is still on disk and still listed on the Git tab; the confirm named it before you pressed",
+      },
+      {
+        id: "clear-done-rails-skipped-counts",
+        text: "A rail whose last step you SKIPPED counts as finished, and the confirm says so in its own line rather than calling the skip done",
+        hint: "The rail has nothing left to run, which is what the skip meant. Excluding it would make one skip leave a rail unclearable forever.",
+      },
+      {
+        id: "clear-done-rails-leaves-paused",
+        text: "A finished rail that is paused is left standing, and the confirm accounted for it",
+      },
+      {
+        id: "clear-done-rails-cancel",
+        text: "Cancelling the confirm removes nothing — every rail is still on the tab",
+      },
+      {
+        id: "clear-done-rails-survives-reload",
+        text: "The removed rails are still gone after a reload — the plan was written, not just re-drawn",
+      },
+    ],
+  },
+  {
     title: "Orchestration agent runs",
     items: [
       {
         id: "orch-agent-own-tab",
-        text: "“Generate with agent…” opens a NEW agent tab on the Agents page, named “Generate”, and lands you in it — the Home agent's terminal is untouched",
+        text: "“Organize with agent…” opens a NEW agent tab on the Agents page, named “Organize”, and lands you in it — the Home agent's terminal is untouched",
         hint: "The whole change: it used to bracket-paste into the Home agent and hop to Home. Check the Home terminal received nothing.",
       },
       {
         id: "orch-agent-no-home-agent-needed",
-        text: "With the workspace's Home agent STOPPED, Generate still works — no “Start the workspace agent on Home first”",
+        text: "With the workspace's Home agent STOPPED, Organize still works — no “Start the workspace agent on Home first”",
       },
       {
         id: "orch-agent-rail-wand",
         text: "A rail's wand does the same for that rail, in a tab named “Reorganize “<rail>””",
+      },
+      {
+        id: "orch-agent-organize-parallelizes",
+        text: "An Organize run comes back with the unplaced cards spread across SEVERAL rails, not queued into one",
+        hint: "Give it four or five unrelated cards. One long rail is the arrangement they already had — the button is the request to parallelize, and the skill's §2 says so.",
+      },
+      {
+        id: "orch-agent-organize-cuts-worktrees",
+        text: "The rails it adds come back BOUND: each one that runs beside another names a worktree that exists on disk and a branch, and the Conflicts box shows no “worktree is gone”",
+        hint: "git worktree list in the root: the folders are really there, cut by the agent, not just named. Check the setup from [worktree] setup ran in each (node_modules/target present).",
       },
       {
         id: "orch-agent-names-itself",
@@ -2215,7 +2470,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "orch-agent-one-slot",
-        text: "While one run is going, the header button reads “Generating…”/“Agent running…” and EVERY rail wand jumps to that tab instead of starting a second",
+        text: "While one run is going, the header button reads “Organizing…”/“Agent running…” and EVERY rail wand jumps to that tab instead of starting a second",
         hint: "Hover each: the tooltip names the run holding the slot. Two of these agents at once would overwrite each other's plan.",
       },
       {
@@ -2308,6 +2563,52 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "auto-commit-agent-reads-it",
         text: "Running a card that carries the block hands the agent a prompt with that sentence in it",
         hint: "The body IS the prompt, so nothing extra is injected — read the launched tab's first screen.",
+      },
+    ],
+  },
+  {
+    title: "Workspace windows",
+    items: [
+      {
+        id: "window-open-from-menu",
+        text: "A workspace's sidebar menu → “Open in New Window” opens a second window showing that workspace, cascaded down-right of this one",
+        hint: "The new window is the whole app: same sidebar, same hub, rounded corners and a working title-bar double-click.",
+      },
+      {
+        id: "window-open-from-hub",
+        text: "The window button on the hub tab row (left of the “+”) does the same for the workspace you are looking at",
+      },
+      {
+        id: "window-first-looks-away",
+        text: "Moving the workspace you are ON switches this window to another workspace — or to the app hub when it was the only one",
+      },
+      {
+        id: "window-terminals-move",
+        text: "A running agent's terminal comes up painted and live in the new window, and typing into it works",
+        hint: "The daemon repaints from its screen model; the session is never restarted, so scrollback from before the move is gone but the program is not.",
+      },
+      {
+        id: "window-marked-elsewhere",
+        text: "The first window still lists that workspace, dimmed with a window glyph; clicking it raises the other window instead of switching",
+        hint: "The menu entry there reads “Show in Its Window”, never a second “Open in New Window”.",
+      },
+      {
+        id: "window-edits-sync",
+        text: "Renaming a page (or adding one) in one window shows up in the other's sidebar without a reload",
+        hint: "config.json is shared; the writer broadcasts and every other window adopts. Check BOTH directions.",
+      },
+      {
+        id: "window-close-returns",
+        text: "Closing the workspace window asks nothing and hands the workspace back: the first window's row un-dims and switching to it works",
+      },
+      {
+        id: "window-close-workspace",
+        text: "Closing that workspace (sidebar X) from the first window takes its window down with it",
+      },
+      {
+        id: "window-not-restored",
+        text: "Quitting with two windows open and relaunching comes back as one window holding everything",
+        hint: "Windows are deliberately not restored — the registry is ephemeral.",
       },
     ],
   },
@@ -2773,13 +3074,38 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       {
         id: "orch-no-rails-drawer-shown",
-        text: "On a workspace with no rails the Orchestration tab still shows the Unplaced drawer at its right edge — its cards, Groups and Tools listed, greyed — and “No rails yet” stands in the empty strip beside it",
+        text: "On a workspace with no rails the Orchestration tab still shows the Unplaced drawer at its right edge — its cards live, its Groups and Tools listed but greyed — and “No rails yet” stands in the empty strip beside it",
         hint: "Delete every rail, or open a fresh workspace. Before this the whole lower half was that one line and the drawer — the list a first rail is built from — was nowhere. The drawer's hint should read “No rail to place these on yet — add one with “+ Rail””.",
       },
       {
         id: "orch-no-rails-drawer-inert",
-        text: "With no rails, no drawer row drags and none click-adds; press “+ Rail” and the same rows light up, click-add to the new rail and drag onto it",
-        hint: "Pressing and moving on a greyed card row must show no drag ghost — the rows carry no drag handle at all in this state, not merely a disabled look. The new rail is the drawer's click-to-add target the moment it exists.",
+        text: "With no rails, no drawer row drags and no tool or group row click-adds; press “+ Rail” and the same rows light up, click a tool onto the new rail and drag onto it",
+        hint: "Pressing and moving on a card row must show no drag ghost — the rows carry no drag handle at all in this state, not merely a disabled look. A card row still CLICKS, though: it opens the card, which needs no rail. The new rail is the drawer's click-to-add target for tools and groups the moment it exists.",
+      },
+    ],
+  },
+  {
+    title: "Opening a card from the Unplaced drawer",
+    items: [
+      {
+        id: "orch-drawer-click-opens",
+        text: "Clicking a card row in the Orchestration tab's Unplaced drawer opens that card's detail modal — and places nothing on any rail",
+        hint: "It used to append the card to whichever rail was first, a target the row never named. Check the rails after the press: no new step anywhere. The modal is the board's own — same columns, same labels, same nested children — so an edit made in it shows on the Kanban tab too.",
+      },
+      {
+        id: "orch-drawer-click-still-places",
+        text: "Placement still works both ways: drag a card row onto the rail you mean, or use that rail's “+ Add step”; a Tools or Groups row still appends on a click",
+        hint: "The drawer's hint says which is which: “Drag onto a rail. Click a card to open it, a tool to append it.” A press-and-move on a card row must still raise the drag ghost — opening on click cannot have cost the row its drag.",
+      },
+      {
+        id: "orch-drawer-click-no-rail",
+        text: "On a workspace with no rails a card row still opens its modal, while the Tools and Groups rows stay greyed and inert",
+        hint: "Reading a card needs no rail; appending one does. The card row must not look or behave disabled here even though nothing can be placed yet.",
+      },
+      {
+        id: "orch-drawer-click-follows-edit",
+        text: "Moving that card to Done from the modal drops it into the drawer's collapsed Done group and out of the “Unplaced (n)” count, with the modal still open",
+        hint: "The row and the modal read one projection. If the row stays put in its old group, the drawer is holding a snapshot rather than the board's live cards.",
       },
     ],
   },
@@ -2887,6 +3213,516 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "run-history-old-daemon-blames-itself",
         text: "Against a daemon older than v27 the “Run history…” button is disabled and the hover says the DAEMON only started keeping history in v27",
         hint: "The sentence must be about gavin, not about the card. “No runs” on a card the human watched an agent work is the misreading this guards.",
+      },
+    ],
+  },
+  {
+    title: "Files tab",
+    items: [
+      {
+        id: "files-tree-opens-over-the-root",
+        text: "The Files tab opens with the workspace root's own row expanded and its top level listed — dotfiles, target/ and node_modules/ included",
+        hint: "The tree shows everything on disk on purpose: no .gitignore filter and no dotfile rule. A missing .gitignore or a missing target/ means something is filtering that was never meant to.",
+      },
+      {
+        id: "files-large-dir-stays-responsive",
+        text: "Expanding node_modules/ (or target/) lists it without the window stuttering, and expanding it a second time after collapsing is instant",
+        hint: "One read_dir per opened directory, no recursive walk and no watcher on the repo tree — the 3000-folder FSEvents stall is exactly what this shape avoids. The second open is instant because a collapse keeps the listing.",
+      },
+      {
+        id: "files-symlink-is-a-leaf",
+        text: "A symlink is listed with a link glyph, no chevron, and clicking it does not walk into it",
+        hint: "The host reports a link's kind from symlink metadata, so a link to a directory is never a directory here.",
+      },
+      {
+        id: "files-click-opens-in-the-pane",
+        text: "Clicking a .ts/.md/.rs file opens it in the editor pane on the right, editable",
+      },
+      {
+        id: "files-binary-opens-in-the-os",
+        text: "Clicking a .png (or any type outside viewable_extensions) opens it in the OS's default app and leaves the editor pane alone — and its menu entry reads “Open in the default app”",
+        hint: "The PRD's standing rule for binaries and media. The label saying so before the click is the point: nobody should have to click to find out it leaves the app.",
+      },
+      {
+        id: "files-open-in-a-tab",
+        text: "“Open in a tab” on a file row opens it as a file tab beside the focused terminal",
+        hint: "Needs a terminal session focused to anchor the split; with a file or board tab focused the entry is absent rather than dead.",
+      },
+      {
+        id: "files-copy-path-and-reveal",
+        text: "“Copy path” puts the absolute path on the clipboard, and “Reveal in Finder” selects the entry in its folder",
+      },
+      {
+        id: "files-new-file-and-folder",
+        text: "“New file…” and “New folder…” on a folder row create it in place; the new file opens in the editor pane and the new folder opens empty",
+        hint: "Creating into a folder never opened before must work too — the tree reads it rather than inventing a listing.",
+      },
+      {
+        id: "files-create-refuses-to-clobber",
+        text: "Creating a file whose name is already taken refuses with “already exists” and leaves the existing file untouched",
+      },
+      {
+        id: "files-rename-in-place",
+        text: "Rename a folder that has open subfolders inside it: the row renames and the subfolders STAY open",
+        hint: "The tree re-keys the subtree instead of re-reading it. Folders folding shut on the human's own rename is the failure this catches.",
+      },
+      {
+        id: "files-rename-follows-an-open-tab",
+        text: "With a file open as a tab, rename it from the Files tab: the tab's title follows, its editor keeps showing the file, and no “deleted” banner appears",
+        hint: "Retargeting, not remounting. A file reappearing at the OLD name afterwards means the editor's last-chance write landed on the path that had just stopped existing.",
+      },
+      {
+        id: "files-trash-asks-first",
+        text: "“Move to Trash” asks in gavin's own dialog — never a macOS one — with a red button, focus left on Cancel, and the folder case saying it takes everything inside",
+        hint: "plugin-dialog is capability-narrowed; a native confirm fails at the permission layer instead of appearing.",
+      },
+      {
+        id: "files-trash-keeps-the-buffer",
+        text: "Trash the file the editor pane is showing WITH unsaved edits: the pane keeps the text under its “deleted” banner rather than clearing",
+        hint: "That buffer is the only copy left. Tidying the pane would throw it away.",
+      },
+      {
+        id: "files-trash-is-recoverable",
+        text: "A trashed file is in the Finder Trash and can be put back — never gone",
+      },
+      {
+        id: "files-filter-keeps-ancestors",
+        text: "Typing in the filter box narrows to matching names and keeps each match's parent folders visible above it",
+      },
+      {
+        id: "files-filter-empty-state-says-loaded-only",
+        text: "A filter matching nothing says “No match in the folders you have opened” — never a bare “No match”",
+        hint: "The filter only ever sees loaded nodes; walking the repo to find the rest is the trap the lazy tree exists to avoid. The wording is the honest difference between “not in this repo” and “open the folder it is in”.",
+      },
+      {
+        id: "files-selection-survives-a-tab-switch",
+        text: "Open a file three folders deep, switch to Kanban and back: the same folders are open and the same file is in the editor",
+        hint: "The hub view is destroyed on every switch, so this comes back out of localStorage, per workspace.",
+      },
+      {
+        id: "files-restored-selection-verified",
+        text: "Delete the remembered file outside gavin, then return to the Files tab: the pane opens empty rather than on a phantom",
+        hint: "The restore is verified against the tree — but only once the containing folder has actually been read.",
+      },
+      {
+        id: "files-split-is-a-share",
+        text: "Drag the divider, then resize the window: the two panes keep their proportion and neither collapses; double-click resets it",
+      },
+      {
+        id: "files-refresh-catches-up",
+        text: "Have an agent write a file into an open folder, then press Refresh: the new file appears and the open folders stay open",
+        hint: "There is deliberately no watcher on the repo tree, so nothing appears until Refresh — that is the design, not a bug.",
+      },
+    ],
+  },
+  {
+    title: "Nested tasks and Done",
+    items: [
+      {
+        id: "completion-drag-to-done-asks",
+        text: "Drag a plan carrying two nested tasks into Done: gavin asks first, names both tasks by title, and says plans/done/ takes their files too",
+        hint: "The prompt is the whole fix. A plan whose own checklist is complete can still be carrying untouched follow-on work, and nothing else on the board can say so — a nested task has no status of its own to look unfinished with.",
+      },
+      {
+        id: "completion-box-left-alone-files-everything",
+        text: "Answer that prompt with the box left alone: the plan and both tasks land in Done, exactly as before",
+        hint: "The default has to stay what the app has always done. The prompt exists to make the sweep loud, not to reverse it.",
+      },
+      {
+        id: "completion-box-ticked-keeps-them",
+        text: "Do it again with the box ticked: the plan files, and both tasks appear as their own cards in the first column, each still showing “Part of” the plan",
+        hint: "Break-out is one status: write. Losing the parent link would be “Un-parent”, which is a different action and stays a different action.",
+      },
+      {
+        id: "completion-cancel-snaps-back",
+        text: "Cancel the prompt: the card returns to the column it was dragged from with nothing written, and no placeholder is left behind in Done",
+        hint: "The question is asked before the drop is held, so the board must never show the drop as already made while the modal is up.",
+      },
+      {
+        id: "completion-asked-on-every-route",
+        text: "The same prompt appears from the card menu's “Move to Done”, the detail modal's Status select, a rail header's “Move all to Done” and the Plans tab's Status select — and both selects snap back on Cancel",
+        hint: "Four gestures, one question. A select still reading “Done” after a cancel is the modal lying about where the card is.",
+      },
+      {
+        id: "completion-tasks-list-breaks-one-out",
+        text: "Open a plan's card: the Tasks list says a nested task has no status of its own, and “Break out” beside a nested child moves it to the first column while it keeps the link back",
+      },
+      {
+        id: "completion-conflict-repairs-itself",
+        text: "Put a nested child on a rail beside its parent: the conflicts box's “Break out” button clears the pair without either step leaving its rail",
+        hint: "The escape offered where the complaint is. Taking one step off a rail was the only advice this row used to be able to give.",
+      },
+    ],
+  },
+  {
+    title: "Card panes from a terminal tab",
+    items: [
+      {
+        id: "cardpane-show-plan-splits",
+        text: "Run a card, then click the ☑ chip on its terminal tab: the card's detail panel opens as a pane to the RIGHT, with the terminal still on screen beside it",
+        hint: "This chip used to be an arrow that switched the whole window to the Kanban or Orchestration tab. Watching an agent and reading its card are the same act; taking the terminal away to do the second was the bug.",
+      },
+      {
+        id: "cardpane-show-plan-once",
+        text: "Click that same chip again: nothing splits — the pane already open comes forward instead",
+        hint: "The chip is clicked repeatedly by anyone checking on a run. Splitting per click is how a page ends up four copies deep in one card.",
+      },
+      {
+        id: "cardpane-go-to-board",
+        text: "The plan pane's header carries “Show on the board”, and it lands on the card's own hub tab — the Orchestration tab for a railed card, Kanban for any other",
+        hint: "The old chip's jump did not disappear, it moved one click in. Check BOTH kinds of card: a railed one must not land on the board.",
+      },
+      {
+        id: "cardpane-no-go-to-board-on-the-hub",
+        text: "Open the same card from the Kanban tab: the modal there has NO “Show on the board” button",
+        hint: "It would go where it already is. The action is passed per host, so only the pane offers it.",
+      },
+      {
+        id: "cardpane-changes-splits-too",
+        text: "The ⑂ Changes chip splits the diff in as a pane as well, no longer as a modal over the terminal",
+      },
+      {
+        id: "cardpane-both-views-coexist",
+        text: "Open the plan pane and the changes pane for one card: they are two tabs, not one that keeps swapping",
+      },
+      {
+        id: "cardpane-escape-does-not-close-it",
+        text: "With a card pane focused, press Escape: the pane stays. Clicking the terminal beside it does not close it either",
+        hint: "The panel is the card detail component drawn inline. If it still behaved like a dialog it would vanish on the Escape meant for the terminal.",
+      },
+      {
+        id: "cardpane-tasks-list-moves-only-this-pane",
+        text: "Open a plan's pane AND its changes pane, then click a nested task in the Tasks list: only the plan pane follows",
+        hint: "Navigating within a pane and following a card whose FILE moved are two different writes.",
+      },
+      {
+        id: "cardpane-done-follows-the-file",
+        text: "Set the card Done from inside the pane: it files into plans/done/ and the pane follows it there rather than reading “No card at …”",
+      },
+      {
+        id: "cardpane-survives-a-restart",
+        text: "Leave a card pane open and restart the app: it comes back as the same card pane — NOT as a terminal, and no extra shell is spawned",
+        hint: "The dangerous one. A tab id in a layout tree that no tab map claims is treated as a dead session and replaced by a fresh shell, so a card tab that failed to persist would not go missing quietly.",
+      },
+      {
+        id: "cardpane-closes-without-killing",
+        text: "Close a card pane: no confirm about ending a terminal session, and the sidebar's page expansion drops its row",
+        hint: "A card pane runs no process. The close prompt saying “The terminal session will end” would be a lie.",
+      },
+      {
+        id: "cardpane-sidebar-row",
+        text: "The sidebar's page expansion lists a card pane with the ☑ glyph and the label “<card> · plan” / “<card> · changes”, matching the tab bar exactly",
+      },
+      {
+        id: "cardpane-archive-closes-it",
+        text: "Archive a card that has a pane open: the pane closes with it, like its file tabs already did",
+      },
+    ],
+  },
+  {
+    title: "Cut and copy a line",
+    items: [
+      {
+        id: "lineclip-compose-body-copy",
+        text: "In the ⌘N composer's body, type three lines, put the caret in the middle one with NOTHING selected, press ⌘C, then ⌘V at the end — the whole middle line arrives, on a line of its own",
+        hint: "Nothing selected used to mean the keystroke did nothing at all. The pasted text must carry its line break, or the round trip joins two lines into one.",
+      },
+      {
+        id: "lineclip-compose-body-cut",
+        text: "Same box, caret in the middle line, ⌘X: the line AND its break go, so no blank line is left behind and the caret sits at the start of the line that moved up",
+      },
+      {
+        id: "lineclip-undo",
+        text: "Straight after that ⌘X, press ⌘Z: the cut line comes back",
+        hint: "The delete goes through the field's own editing command for exactly this reason. A hand-written value assignment would leave nothing to undo.",
+      },
+      {
+        id: "lineclip-last-line",
+        text: "⌘X on the LAST line of a multi-line box removes it without leaving a trailing blank line",
+      },
+      {
+        id: "lineclip-selection-untouched",
+        text: "Select a few characters and press ⌘C: just that selection is copied, exactly as before",
+        hint: "The line gesture may only fill the gap where the selection is empty.",
+      },
+      {
+        id: "lineclip-single-line-field",
+        text: "In a one-line field (the composer's title, a search box), ⌘C with no selection copies the whole field — and pasting it into a terminal does NOT submit it",
+        hint: "No trailing break on a single-line field, deliberately: a search query that ends in a newline runs itself the moment it lands at a shell prompt.",
+      },
+      {
+        id: "lineclip-single-line-cut",
+        text: "⌘X in that one-line field clears it, and the surface reacts — the Add button disables, the search results come back",
+        hint: "Proves the edit reaches Svelte's binding rather than only the DOM node.",
+      },
+      {
+        id: "lineclip-file-editor",
+        text: "In a file tab's Edit mode, ⌘X with no selection cuts the caret's line; ⌘V puts it back as a line",
+        hint: "The editor already did this on its own. The pass is to confirm nothing added here got in its way.",
+      },
+      {
+        id: "lineclip-terminal-untouched",
+        text: "With a terminal focused, select output and ⌘C: the selection copies. With nothing selected, ⌘C does NOT paste a stray line anywhere",
+        hint: "The terminal answers the copy itself with its own selection; the line gesture must never speak over it.",
+      },
+      {
+        id: "lineclip-readonly",
+        text: "In a read-only text box, ⌘X copies the line but leaves the text alone",
+      },
+    ],
+  },
+  {
+    title: "Sidebar rework",
+    items: [
+      {
+        id: "sidebar-gavin-footer",
+        text: "“Gavin” is the FIRST row of the sidebar's footer, above Task manager / Usage / Settings, with a short rule under it that does not reach either edge",
+        hint: "It used to sit above the workspace list. Clicking it still opens the app hub, and the row fills while the hub is up.",
+      },
+      {
+        id: "sidebar-no-workspaces-header",
+        text: "There is no “Workspaces” heading row and no + on it — the list starts at the first workspace",
+      },
+      {
+        id: "sidebar-collapse",
+        text: "The strip over the sidebar has a collapse button on the far side from the traffic lights; clicking it narrows the column to an icon rail — it never disappears",
+        hint: "The traffic lights live in that same column, so a hidden sidebar would be a window with no controls. The rail is as wide as the controls need and no wider.",
+      },
+      {
+        id: "sidebar-collapse-rows",
+        text: "Collapsed, each workspace is one row showing its initial, its accent stripe and its active fill; hovering names it in full, clicking switches to it, right-click still opens its menu",
+      },
+      {
+        id: "sidebar-collapse-persists",
+        text: "Collapsed, reload the frontend (⌘R) — it comes back collapsed, and the expand button puts it back",
+        hint: "localStorage, like the row expansion beside it. A reload used to be the only way to lose it.",
+      },
+      {
+        id: "sidebar-open-workspace",
+        text: "The folder button on that strip opens a picker; choosing a folder that already holds .gavin* makes a workspace named after the folder and binds it in one step",
+      },
+      {
+        id: "sidebar-open-workspace-fresh",
+        text: "Choosing a folder with no .gavin* asks Initialize / Open without initializing / Cancel — and Cancel leaves NO new workspace behind",
+        hint: "The old sidebar + created the workspace first and asked afterwards, which is how a nameless rootless row got left on every escape.",
+      },
+      {
+        id: "sidebar-open-workspace-already",
+        text: "Picking a folder a workspace is already on switches to that workspace instead of building a second one on the same root",
+      },
+      {
+        id: "sidebar-search-row",
+        text: "The magnifier opens a search box as the sidebar's second row, focused and ready to type; Escape, the ✕, or the magnifier again closes it AND clears what was typed",
+      },
+      {
+        id: "sidebar-search-order",
+        text: "Type a word several things share: matching workspaces come first, then pages, then sessions — never interleaved",
+        hint: "The ranking is the feature. Seed it by naming a workspace, one of its pages and a terminal in it the same thing.",
+      },
+      {
+        id: "sidebar-search-open",
+        text: "Clicking a hit lands on it — a workspace switches, a page opens, a session gets focus in its page — and the search row closes behind you",
+      },
+      {
+        id: "sidebar-scratchpad-off",
+        text: "Settings → Sidebar → untick “Keep its row in the sidebar”: the Scratchpad row goes, and ⌘⌥1 now means the FIRST remaining workspace",
+        hint: "The sidebar and the shortcut read one ordering on purpose. If the digits are off by one, they have stopped sharing it.",
+      },
+      {
+        id: "sidebar-scratchpad-off-while-in-it",
+        text: "Switch to the Scratchpad first, THEN untick it: the app moves you to another workspace rather than leaving you on one with no row",
+      },
+      {
+        id: "sidebar-scratchpad-back",
+        text: "Tick it again: the row is back, with every page that was in it",
+        hint: "Nothing is closed or deleted by switching it off — only the row goes.",
+      },
+      {
+        id: "sidebar-cards-badge-quiet",
+        text: "Hover the card-count badge on a workspace's recap strip: a tooltip names every column, and the strip does NOT rearrange itself — git and rails stay put",
+        hint: "It used to take over the whole row after 250ms of hover. Crossing the strip on the way elsewhere is far more common than wanting the breakdown.",
+      },
+    ],
+  },
+  {
+    title: "Hub tab strip",
+    items: [
+      {
+        id: "hubtabs-locked-by-default",
+        text: "A tab cannot be dragged until the ⇄ button at the end of the row is clicked",
+        hint: "Locked is the resting state, and it is not remembered: reopening the app locks the row again.",
+      },
+      {
+        id: "hubtabs-drag-reorder",
+        text: "Unlocked, dragging a tab shows an insertion mark on the tab under the cursor and drops it there",
+        hint: "The mark is the pane tab row's own — a 2px bar on the leading or trailing edge.",
+      },
+      {
+        id: "hubtabs-digits-follow",
+        text: "After a reorder, ⌘1…⌘8 open the tabs in their NEW positions, and the badges shown while ⌘ is held agree",
+      },
+      {
+        id: "hubtabs-order-per-workspace",
+        text: "Another workspace's row is untouched by that drag",
+        hint: "Order never inherits: a drag in one strip must not rearrange four others.",
+      },
+      {
+        id: "hubtabs-order-survives-restart",
+        text: "The new order survives an app restart",
+      },
+      {
+        id: "hubtabs-hide-app-default",
+        text: "Settings → Hub tabs → Sections: crossing out an eye takes that tab out of EVERY workspace's row",
+      },
+      {
+        id: "hubtabs-hide-last-refused",
+        text: "Hide all but one: the last eye is disabled, and hovering its ROW says why",
+        hint: "The reason hangs on the row because a disabled button never fires mouseenter.",
+      },
+      {
+        id: "hubtabs-hide-workspace-override",
+        text: "Workspace Settings → Hub tabs → Sections: a change here affects only that workspace, and the panel now says it keeps a list of its own",
+      },
+      {
+        id: "hubtabs-follow-default-again",
+        text: "“Follow the default” puts that workspace back on the app-wide list — including later changes to it",
+      },
+      {
+        id: "hubtabs-hide-active-tab",
+        text: "Hiding the tab currently on screen moves you to the first tab left, rather than stranding the view with nothing selected",
+      },
+      {
+        id: "hubtabs-chips-still-reach",
+        text: "A sidebar recap chip for a hidden section still opens it",
+        hint: "Hiding takes the tab out of the row, not the view out of the app.",
+      },
+      {
+        id: "hubtabs-reset-order",
+        text: "Workspace Settings → Hub tabs → “Reset the order” restores the shipped order, and the row shows it immediately",
+      },
+    ],
+  },
+  {
+    title: "Tools tab",
+    items: [
+      {
+        id: "tools-tab-lists-every-kind",
+        text: "The Tools tab lists the whole library, and the Loop-until / Wait-for-PR / Start-rail rows sit there with Run dark and a reason naming their own kind",
+        hint: "Those three are completion rules, not work: an until step's verdict sends the RAIL backwards, a pr step is pure waiting on a rail's branch, and a gavin tool's body names a rail action. Listed rather than filtered because the kind is editable from this tab — a filter would make a tool switched to Loop-until vanish from under the cursor that switched it. Hover each dark Run: three different sentences, not one.",
+      },
+      {
+        id: "tools-tab-edits-a-row",
+        text: "A stored tool's pencil opens the library dialog straight on that tool's form; a built-in's Copy opens a saveable duplicate of it",
+        hint: "The point is not having to find the row again inside a dialog. The built-in case must arrive with “(copy)” in the name and This workspace selected — the original cannot be saved, so a form opened on it would refuse after the typing.",
+      },
+      {
+        id: "tools-tab-new-tool",
+        text: "New tool in the tab's own bar opens the empty form, and the tool appears in the list on Save",
+        hint: "Cancel lands on the dialog's list rather than closing it — from there Done closes. An empty library says “press New tool to write one”.",
+      },
+      {
+        id: "tools-kind-switch-all-six",
+        text: "The edit form's Runs as row offers all six kinds, and the body field changes shape with the kind",
+        hint: "Agent prompt → an 8-row prose box; Bash command → 3 rows monospaced; Bash script → 8 monospaced; Loop until → 3 rows labelled Check command; Wait on a pull request → NO body field, just a sentence saying gavin reads GitHub itself; Gavin action → a select, never a text box. The working directory disappears on the last three: a rail step ignores it.",
+      },
+      {
+        id: "tools-kind-switch-keeps-the-body",
+        text: "Switching a written tool to Wait-on-a-PR and back restores the body it had, rather than leaving “await-pr” behind",
+        hint: "Type a prompt, click Wait on a pull request, click Agent prompt again: the prompt is back. The two kinds that impose a body do it so validateTool has one and a plan reads on paper — losing eight lines of prompt to a stray chip click is the failure this prevents.",
+      },
+      {
+        id: "tools-authored-until-loops",
+        text: "A duplicated Loop-until tool, dropped on a rail with a failing check, sends the rail backwards exactly as the built-in does",
+        hint: "This is what the kind switch is for. The scheduler branches on the KIND, never on which built-in id a tool came from — if a copy behaves like a plain command, that branch has grown an id in it. Same for a duplicated Start rail: it must arm the rail its `rail` parameter names.",
+      },
+      {
+        id: "tools-command-settles",
+        text: "Running a command tool leaves its row on “passed” (exit 0) or “failed” (anything else), without a reload",
+        hint: "Force a failure: duplicate Run tests and give it `exit 3`. The DAEMON closes a shell run off the session exit and pushes nothing, so the row only moves because toolRunsState re-reads on sessionExits — this is the item that catches that watcher being unwired.",
+      },
+      {
+        id: "tools-agent-settles",
+        text: "Running an agent tool leaves its row on “passed” when the agent's turn ends — not on “running” forever",
+        hint: "An interactive agent's session never exits, so nothing the daemon watches would close the row: the app files the verdict when the session goes idle. Same rule as an agent tool step on a rail.",
+      },
+      {
+        id: "tools-agent-failure",
+        text: "An agent tool whose agent breaks lands on “failed”, not “passed”",
+        hint: "Kill the network mid-turn. An agent's `idle` is two quiet seconds, so a broken agent and a finished one look identical without failure detection.",
+      },
+      {
+        id: "tools-run-chip-opens-session",
+        text: "Clicking a row's last-run chip jumps to that run's session",
+        hint: "A chip that says “failed” with no way to see why is a dead end.",
+      },
+      {
+        id: "tools-cwd-runs-there",
+        text: "A tool with a working directory set runs THERE — the new tab's cwd is that folder, not the workspace root",
+        hint: "Set it with Manage tools… → Choose…; a folder under the root is stored relative, so the row shows `apps/web` rather than an absolute path.",
+      },
+      {
+        id: "tools-cwd-ignored-on-a-rail",
+        text: "The SAME tool dropped on a rail still runs in the rail's checkout, ignoring its working directory",
+        hint: "Tools spec T6/T11. Rail conflict detection is computed off worktreePath ?? rootPath, so a step that jumped out of its worktree would let two rails collide with nothing left to warn about.",
+      },
+      {
+        id: "tools-params-prompt",
+        text: "A tool with parameters asks for them first, prefilled with its defaults, and says which folder it will run in",
+        hint: "A tool with none launches straight away — asking about a tool whose whole definition is on the row buys nothing.",
+      },
+      {
+        id: "tools-manage-is-the-same-dialog",
+        text: "“Manage tools…” opens the same library dialog the Orchestration tab opens, and a tool saved there appears on both tabs",
+        hint: "One library, one editor, one store. Two would drift.",
+      },
+      {
+        id: "tools-old-daemon-explains-itself",
+        text: "Against a daemon older than v30 the Run buttons are dark and hovering one names the version",
+        hint: "The reason hangs on a wrapper span, not on the button: a disabled element never fires mouseenter, so a tooltip bound to it would never appear. The working-directory field in the dialog is dark for the same reason — a v29 daemon accepts the save and silently drops the field.",
+      },
+    ],
+  },
+  {
+    title: "Pinned sidebar rows",
+    items: [
+      {
+        id: "pin-workspace-hoists",
+        text: "Right-click a workspace → Pin lifts its row above the unpinned ones (and stays under the Scratchpad)",
+      },
+      {
+        id: "pin-page-hoists",
+        text: "Right-click a page → Pin lifts it to the top of its workspace's page list",
+      },
+      {
+        id: "pin-order-is-pin-time",
+        text: "Pin a second workspace: it lands UNDER the first, not above it",
+        hint: "The order is when you pinned, not the stored order — the row you pinned first stays the row on top. Same for pages.",
+      },
+      {
+        id: "pin-x-becomes-unpin",
+        text: "A pinned row's X is replaced by a pin glyph, and clicking it unpins the row",
+      },
+      {
+        id: "pin-menu-close-greys",
+        text: "A pinned row's own menu says “Unpin” and greys out its Close Workspace / Close Page",
+      },
+      {
+        id: "pin-survives-close-others",
+        text: "“Close Other Pages” on an unpinned page leaves every pinned page open, without asking about them",
+      },
+      {
+        id: "pin-not-draggable",
+        text: "A pinned row cannot be dragged, and dragging another row onto it shows no insertion line",
+        hint: "Panes and tabs still drop INTO a pinned page — only the reorder is refused.",
+      },
+      {
+        id: "pin-digits-follow",
+        text: "⌘⌥-digits and ⌘⇧-digits address the rows as drawn: ⌘⇧1 goes to the pinned page",
+        hint: "Hold ⌘⌥ / ⌘⇧ to see the hint badges; the badge and the shortcut must name the same row.",
+      },
+      {
+        id: "pin-survives-restart",
+        text: "Pins survive an app restart, and unpinning leaves no trace in config.json",
       },
     ],
   },

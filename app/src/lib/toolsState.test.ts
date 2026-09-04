@@ -30,6 +30,7 @@ function record(over: Partial<ToolRecord> = {}): ToolRecord {
     body: "./deploy.sh",
     params: [],
     position: 0,
+    cwd: null,
     ...over,
   };
 }

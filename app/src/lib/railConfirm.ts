@@ -1,4 +1,5 @@
 import {
+  finishedRails,
   isToolStep,
   railCardPaths,
   railDoneStepIds,
@@ -108,6 +109,77 @@ export function groupRemoveConfirm(stage: Stage, cards: Map<string, CardEntry>):
       `${count(cardPaths.size, "card")} ${cardPaths.size === 1 ? "stays" : "stay"} — a step is only a reference.`
     );
   return { title, lines, confirmLabel: "Remove group" };
+}
+
+/// What the toolbar's "Clear done" asks before it removes every finished
+/// rail. The most destructive thing on this tab -- N rails at once, and
+/// no undo -- so it names them all rather than counting them, the way
+/// runAllConfirm names the rails it starts: a list is the only form in
+/// which a human can spot the one they did not mean.
+///
+/// Everything else here is a promise about what SURVIVES, because a rail
+/// looks like it owns its cards and its worktree and it owns neither
+/// (spec O2, §7). Deleting five rails looks five times as much like it
+/// takes them with it.
+export function clearFinishedRailsConfirm(
+  orch: Orchestration,
+  cards: Map<string, CardEntry>
+): RailConfirm {
+  const finished = finishedRails(orch);
+  const finishedIds = new Set(finished.map((r) => r.id));
+  // Deduped ACROSS the rails as well as within each one: two rails may
+  // carry the same card, and the promise being made is about card files.
+  // Narrowed to files the tree still knows about, the same honesty
+  // groupRemoveConfirm applies -- counting a reference nothing backs any
+  // more would promise to keep a card that is already gone.
+  const cardPaths = new Set(
+    finished.flatMap((r) => railCardPaths(r)).filter((path) => cards.has(path))
+  );
+  const skipped = finished
+    .flatMap((r) => r.stages.flatMap((s) => s.steps))
+    .filter((step) => stepStateOf(orch, step.id) === "skipped").length;
+  const worktrees = finished.filter((r) => r.worktreePath);
+  // A rail that has nothing left to do but is running or paused is left
+  // standing on purpose (see finishedRails), and it is the rail a human
+  // would otherwise hunt for afterwards wondering why it survived.
+  const held = orch.rails.filter(
+    (r) =>
+      !finishedIds.has(r.id) &&
+      railStateOf(orch, r.id) !== "idle" &&
+      r.stages.some((s) => s.steps.length > 0) &&
+      firstUnfinishedStageId(r, orch) === null
+  ).length;
+
+  const lines = [`Removes: ${finished.map((r) => r.name).join(", ")}.`];
+  if (cardPaths.size > 0)
+    lines.push(
+      `${count(cardPaths.size, "card")} ${cardPaths.size === 1 ? "stays" : "stay"} — a step is only a reference.`
+    );
+  // Said out loud, because "all steps done" is what the button claims and
+  // a skip is not work that happened. The rail is finished either way --
+  // that is the whole reason a skip exists -- but the human gets to see
+  // that it is what they are agreeing to.
+  if (skipped > 0)
+    lines.push(
+      `${count(skipped, "step")} ${skipped === 1 ? "was" : "were"} skipped rather than done — nothing is left to run either way.`
+    );
+  if (worktrees.length === 1)
+    lines.push(
+      `The worktree ${worktrees[0].worktreePath} is left as it is — only the rail's binding to it goes.`
+    );
+  else if (worktrees.length > 1)
+    lines.push(
+      `${count(worktrees.length, "worktree")} are left as they are — only the rails' bindings to them go.`
+    );
+  if (held > 0)
+    lines.push(
+      `${count(held, "rail")} with nothing left to do ${held === 1 ? "is" : "are"} running or paused, so ${held === 1 ? "it stays" : "they stay"}.`
+    );
+  return {
+    title: `Remove ${count(finished.length, "finished rail")}?`,
+    lines,
+    confirmLabel: `Remove ${count(finished.length, "rail")}`,
+  };
 }
 
 /// What "Run all" asks before it arms every idle rail. Not destructive,

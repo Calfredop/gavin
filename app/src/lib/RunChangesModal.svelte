@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import Modal from "./Modal.svelte";
   import GitFileRow from "./GitFileRow.svelte";
   import GitDiffUnified from "./GitDiffUnified.svelte";
@@ -32,9 +33,13 @@
     /// Whether the run's agent is alive right now. A discard under a
     /// working agent is refused rather than confirmed.
     sessionIsLive: boolean;
+    /// Draw as a pane rather than as a dialog -- see Modal's own prop.
+    /// The tab chip splits this view off beside the agent it belongs to,
+    /// which is the whole reason it is not a modal there.
+    inline?: boolean;
     onClose: () => void;
   }
-  let { path, title, cwd, baseSha, sessionIsLive, onClose }: Props = $props();
+  let { path, title, cwd, baseSha, sessionIsLive, inline = false, onClose }: Props = $props();
 
   // Re-runs when the card or the run changes, which is what re-points an
   // already-open modal (a re-launch mints a new baseline).
@@ -70,6 +75,12 @@
     onClose();
   }
 
+  // As a PANE this view is closed from the tab bar's X, which unmounts it
+  // without ever reaching close() -- and the cached diff is the largest
+  // object the app keeps per card (see closeRunChanges). Harmless for the
+  // modal, whose own close() has already dropped the entry.
+  onDestroy(() => closeRunChanges(path));
+
   async function handleDiscard(): Promise<void> {
     if (!changes || blocked) return;
     const prompt = discardPrompt(changes, title);
@@ -85,8 +96,8 @@
   }
 </script>
 
-<Modal onClose={close} scrollKey={path} wide innerScroll>
-  <div class="run-changes">
+<Modal onClose={close} scrollKey={path} wide innerScroll {inline}>
+  <div class="run-changes" class:inline>
     <div class="head">
       <div class="titles">
         <h2>{title}</h2>
@@ -183,6 +194,13 @@
     min-height: 0;
     height: min(70vh, 720px);
     width: min(88vw, 980px);
+  }
+  /* As a pane the size is the pane's, not the window's: a fixed 980px
+     inside a half-width split would simply overflow it, and 70vh would
+     ignore the pane's own height in both directions. */
+  .run-changes.inline {
+    height: 100%;
+    width: 100%;
   }
   .head {
     display: flex;

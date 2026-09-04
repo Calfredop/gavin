@@ -36,7 +36,8 @@
       ? sessionTabsOnly(
           allSessionIdsInWorkspace(ws),
           $layoutState.fileTabsById,
-          $layoutState.boardTabsById
+          $layoutState.boardTabsById,
+          $layoutState.cardTabsById
         ).length
       : 0
   );

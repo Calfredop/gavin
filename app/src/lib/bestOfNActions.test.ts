@@ -52,7 +52,7 @@ vi.mock("./layoutState", () => ({
 
 const forkWorktree = vi.fn(async (_ws: string, opts: { path: string; from: string | null }) => {
   trace.push(`fork:${opts.path}`);
-  return true;
+  return { ok: true, error: null } as { ok: boolean; error: string | null };
 });
 const discardWorktrees = vi.fn(async (_ws: string, entries: { path: string }[], deleteBranches: boolean) => {
   trace.push(`discard:${entries.map((e) => e.path).join(",")}:${deleteBranches ? "branches" : "keep"}`);
@@ -130,10 +130,13 @@ beforeEach(() => {
   trace.length = 0;
   vi.clearAllMocks();
   bestOfNRuns.set({});
+  // The layout store is module-level, so a card left under a develop run
+  // by one test would refuse every launch in the next one.
+  layoutState.layoutState.update((st) => ({ ...st, workspaces: [] }));
   // vi.clearAllMocks wipes the implementations declared above.
   forkWorktree.mockImplementation(async (_ws, opts) => {
     trace.push(`fork:${opts.path}`);
-    return true;
+    return { ok: true, error: null };
   });
   discardWorktrees.mockImplementation(async (_ws, entries, deleteBranches) => {
     trace.push(`discard:${entries.map((e) => e.path).join(",")}:${deleteBranches ? "branches" : "keep"}`);
@@ -220,17 +223,33 @@ describe("starting a run", () => {
     expect(trace).toEqual([]);
   });
 
+  // N times the reason a single Run has: this launch forks the card's
+  // prompt into a worktree per candidate, so a file mid-rewrite would be
+  // copied into all of them.
+  it("refuses while an agent is developing the card, before any worktree exists", async () => {
+    layoutState.layoutState.update((st) => ({
+      ...st,
+      workspaces: [{ id: "ws-1", developingCards: [{ path: CARD.id, sessionId: "s-dev" }] }] as never,
+    }));
+
+    expect(await startBestOfN("ws-1", CARD, PLANS, "main")).toMatch(/developing this card/);
+    expect(trace).toEqual([]);
+  });
+
   it("removes the worktrees it already made when a later fork fails", async () => {
     forkWorktree.mockImplementationOnce(async (_ws, opts) => {
       trace.push(`fork:${opts.path}`);
-      return true;
+      return { ok: true, error: null };
     });
     forkWorktree.mockImplementationOnce(async () => {
       trace.push("fork:FAILED");
-      return false;
+      return { ok: false, error: "New worktree failed: fatal: '/repos/x' already exists" };
     });
     const error = await startBestOfN("ws-1", CARD, PLANS, "main");
-    expect(error).toMatch(/Couldn't create the worktree for Claude Code · sonnet/);
+    // git's own words, not a pointer at a tab the human is not looking at.
+    expect(error).toBe(
+      "Couldn't create the worktree for Claude Code · sonnet — New worktree failed: fatal: '/repos/x' already exists"
+    );
     expect(trace).toEqual(["status", "fork:/repos/gavin-auth-opus", "fork:FAILED", "discard:/repos/gavin-auth-opus:branches"]);
     expect(get(bestOfNRuns)["ws-1"] ?? []).toEqual([]);
   });

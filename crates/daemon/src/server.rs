@@ -75,6 +75,20 @@ struct HeuristicState {
     /// one instruction, since last_activity is refreshed on every
     /// incoming byte regardless of source.
     seen_osc133: AtomicBool,
+    /// Whether the output-activity heuristic is entitled to speak for
+    /// this session at all. Fixed for the session's whole life (see
+    /// `heuristic_speaks_for`), so it lives outside the mutex.
+    ///
+    /// False for a plain terminal, and that is this flag's entire
+    /// reason for existing: the heuristic reads "bytes arrived" as "the
+    /// agent is working", and a tab the human opened to type in has no
+    /// agent in it. Its prompt paint and its keystroke echoes are
+    /// output, so it used to report `working` for two seconds after
+    /// every character typed -- a spinner drawn from the app's AGENT
+    /// vocabulary (ui/indicators.ts) over a session where nothing was
+    /// running, counted as a running agent by the sidebar recap, the
+    /// fleet view and the close-idle-tabs prompt alike.
+    applies: bool,
 }
 
 struct HeuristicInner {
@@ -172,6 +186,27 @@ struct RepoPollerInner {
     /// `None` until the very first check completes, so a brand-new
     /// poller's first check never waits.
     last_checked: Option<Instant>,
+}
+
+/// Whether the output-activity heuristic may speak for this session.
+///
+/// It may only when gavin put something in the PTY that is expected to
+/// work and then stop: a session created with a command line (an agent,
+/// a rail's script, a git commit run). For those the heuristic is the
+/// only turn-boundary detector there is, since the agents this app hosts
+/// emit no OSC 133.
+///
+/// It may not for a plain terminal -- `command: None`, the tab the human
+/// opens to type in -- nor for a session `recover` put a bare shell into,
+/// whose command column still names an agent that was deliberately NOT
+/// re-run. Both hold a shell at a prompt, and inferring work from a
+/// shell's own echo is inventing a status rather than detecting one.
+///
+/// Explicit signals are untouched by this: a shell with OSC 133
+/// integration still reports its own command boundaries, and a bell still
+/// asks for the human. Only the INFERENCE is withdrawn.
+fn heuristic_speaks_for(record: &SessionRecord) -> bool {
+    record.command.is_some() && !record.interrupted
 }
 
 /// Persists a status transition and, if a client is currently attached,
@@ -543,13 +578,22 @@ fn spawn_suspend_watchdog(manager: &Arc<SessionManager>) {
     });
 }
 
-/// Spawned once per session pump (see spawn_pump), alongside it. Polls
+/// Spawned once per session pump (see spawn_pump), alongside it -- but
+/// only for a session the heuristic speaks for at all
+/// (`heuristic_speaks_for`); a plain terminal gets no timer, because
+/// nothing ever sets the flag it would be timing out. Polls
 /// `heuristic.inner` every HEURISTIC_POLL_INTERVAL; once
 /// HEURISTIC_QUIET_PERIOD has elapsed with no new output AND this session
 /// has never seen a valid OSC 133 marker, fires an Idle transition.
 /// Exits promptly once the session either switches permanently to
 /// OSC-133-only detection (seen_osc133) or ends (running set false).
 fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heuristic: Arc<HeuristicState>) {
+    if !heuristic.applies {
+        // Nothing to time out: the reactive half never sets
+        // heuristic_working for this session, so this thread would poll
+        // for the session's whole life to decide nothing.
+        return;
+    }
     let manager = Arc::clone(manager);
     std::thread::spawn(move || loop {
         std::thread::sleep(HEURISTIC_POLL_INTERVAL);
@@ -1574,6 +1618,72 @@ impl SessionManager {
         self.orchestration.lock().unwrap().delete_tool(id)
     }
 
+    // ---- Standalone tool runs (v30) --------------------------------------
+
+    pub fn start_tool_run(
+        &self,
+        workspace_id: &str,
+        tool_id: &str,
+        session_id: &str,
+        command: Option<&str>,
+        launch_cwd: Option<&str>,
+        conversation_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().start_tool_run(
+            workspace_id,
+            tool_id,
+            session_id,
+            command,
+            launch_cwd,
+            conversation_id,
+        )
+    }
+
+    pub fn set_tool_run_outcome(
+        &self,
+        session_id: &str,
+        outcome: &str,
+        exit_code: Option<i32>,
+    ) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().set_tool_run_outcome(session_id, outcome, exit_code)
+    }
+
+    /// The last run of each of this workspace's tools, reconciled against
+    /// the registry before it is returned -- exactly as `card_runs` is,
+    /// and for the same reason: `running` is a CLAIM, and this is the only
+    /// place that can check it. A session that ended with nothing
+    /// attached had no pump to report its exit, so without this a run
+    /// that has been over for days reads as still going.
+    pub fn tool_runs(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::ToolRun>> {
+        let runs = self.orchestration.lock().unwrap().tool_runs(workspace_id)?;
+        let claimed: Vec<&str> = runs
+            .iter()
+            .filter(|r| r.outcome == "running")
+            .map(|r| r.session_id.as_str())
+            .collect();
+        if claimed.is_empty() {
+            return Ok(runs);
+        }
+        let registry = self.registry.lock().unwrap();
+        let gone: Vec<String> = claimed
+            .into_iter()
+            .filter(|id| {
+                !matches!(
+                    registry.get(id),
+                    Ok(Some(ref record)) if record.status != SessionStatus::Exited
+                )
+            })
+            .map(|id| id.to_string())
+            .collect();
+        drop(registry);
+        if gone.is_empty() {
+            return Ok(runs);
+        }
+        let mut orchestration = self.orchestration.lock().unwrap();
+        orchestration.abandon_tool_runs_for_sessions(&gone)?;
+        orchestration.tool_runs(workspace_id)
+    }
+
     pub fn group_templates(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::GroupTemplate>> {
         self.orchestration.lock().unwrap().group_templates(workspace_id)
     }
@@ -2059,25 +2169,46 @@ impl SessionManager {
 
     /// Ends a session and answers without waiting for its process to go.
     ///
-    /// `retire` rather than `kill` + drop, and the difference is the
-    /// whole latency of this request: both of those spend up to a fifth
-    /// of a second inside portable-pty's SIGHUP grace loop (see
-    /// `PtySession::retire`), and this reply is what the app's UI thread
-    /// blocks on -- once per session, on every close that ends several.
-    /// The signal still goes out before this returns; only the waiting
-    /// moved.
-    ///
-    /// Taken out of the map before the row is deleted, and the guard is
-    /// held across both, because `list_sessions` reads liveness from the
-    /// map and existence from the registry: releasing it in between
-    /// would let a reader see a row that no longer has a session, and
-    /// report a live session as exited.
+    /// Nothing of its own left: `forget_session` is the whole body, and
+    /// the pump's teardown calls the same thing. The two ways a session
+    /// ends have to leave the daemon in one state, and the reaper
+    /// described below is what stops either of them from paying
+    /// portable-pty's grace loop on a thread that owes somebody a reply.
     pub fn kill_session(&self, id: &str) -> anyhow::Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(session) = sessions.remove(id) {
+        self.forget_session(id)
+    }
+
+    /// Drops every trace of a session the daemon is no longer hosting:
+    /// its registry row (and, with it, the follow-ups queued against it)
+    /// and the PTY it was running in.
+    ///
+    /// Shared by `kill_session` and the pump's teardown, which are the
+    /// two ways a session ends, so neither can drift into leaving half of
+    /// it behind. Tolerant of an id it does not know: the two callers
+    /// overlap -- a killed session's pump wakes on the closed PTY and
+    /// tears down after the kill has already run -- and the second pass
+    /// must be a no-op rather than an error.
+    ///
+    /// The PTY goes through `retire` rather than being dropped where it
+    /// is removed, and that is the whole latency of a close. Both
+    /// `Child::kill` and `Drop` spend up to a fifth of a second inside
+    /// portable-pty's SIGHUP grace loop (see `PtySession::retire`) --
+    /// measured against this daemon, ~55ms per session while a client is
+    /// draining the pty and ~430ms when nothing is. On the kill path
+    /// that is time the app's UI thread spends blocked, once per
+    /// session, on every close that ends more than one: a page of eight
+    /// tabs froze the window for half a second, a workspace for several.
+    /// The hangup still goes out before this returns -- the process has
+    /// to learn its terminal is gone NOW -- and only the waiting for it
+    /// to act moves off.
+    fn forget_session(&self, id: &str) -> anyhow::Result<()> {
+        self.registry.lock().unwrap().remove(id)?;
+        // Bound before the `if let` so the map's guard is dropped at the
+        // end of this statement rather than held across the spawn.
+        let session = self.sessions.lock().unwrap().remove(id);
+        if let Some(session) = session {
             session.retire();
         }
-        self.registry.lock().unwrap().remove(id)?;
         Ok(())
     }
 
@@ -2285,18 +2416,25 @@ impl SessionManager {
                         if let Err(e) = registry.mark_interrupted(&record.id) {
                             eprintln!("failed to mark session {} interrupted: {e}", record.id);
                         }
-                        // The stored status describes the agent that was
-                        // working, and what is here now is a shell
-                        // sitting at a prompt. Attach replays this value
-                        // as its baseline, so leaving it would paint a
-                        // "working" dot over a session doing nothing --
-                        // the same lie in a second place. A plain
-                        // terminal session keeps its status untouched:
-                        // its recovery is unchanged, and its next prompt
-                        // corrects it anyway.
-                        if let Err(e) = registry.update_status(&record.id, SessionStatus::Idle) {
-                            eprintln!("failed to reset status for session {}: {e}", record.id);
-                        }
+                    }
+                    // Every recovered session, not just an interrupted
+                    // one. The stored status describes whatever was in
+                    // the PTY under the previous daemon; what is here now
+                    // is a bare shell sitting at a prompt, and Attach
+                    // replays this value as its baseline -- so leaving it
+                    // paints a "working" dot over a session doing
+                    // nothing.
+                    //
+                    // A plain terminal used to be exempt, on the grounds
+                    // that its next prompt corrected it anyway. It does
+                    // not: the output-activity heuristic no longer speaks
+                    // for a bare shell (see `heuristic_speaks_for`), so
+                    // nothing would ever move that row off `working`
+                    // again. The status is now reset here for the same
+                    // reason it always was for an agent row -- the shell
+                    // in front of the human is idle.
+                    if let Err(e) = registry.update_status(&record.id, SessionStatus::Idle) {
+                        eprintln!("failed to reset status for session {}: {e}", record.id);
                     }
                 }
                 Err(e) => {
@@ -2387,14 +2525,15 @@ impl SessionManager {
             // get a pump thread at all to tear it back down again --
             // specifically after a daemon restart, where recover() skips
             // Exited rows entirely, so `sessions` holds no entry, and the
-            // pump's reader_for call would fail outright. (Within one
-            // daemon lifetime an exited session still has its `sessions`
-            // entry -- only kill_session removes it -- so its pump does
-            // spawn, hits EOF immediately, and its normal teardown
-            // unregisters correctly.) The pump's error path now also
-            // unregisters as a backstop, but this gate keeps the daemon
-            // from doing the pointless work in the first place, and
-            // attaching to an already-exited session is a supported flow.
+            // pump's reader_for call would fail outright. That is now the
+            // only shape an Exited row reaching here can have: a session
+            // whose process ends in THIS lifetime is forgotten outright
+            // by the pump's teardown, row and PTY together, so a later
+            // attach to it finds no record at all and never gets here.
+            // The pump's error path unregisters as a backstop either way,
+            // but this gate keeps the daemon from doing the pointless
+            // work in the first place, and attaching to an already-exited
+            // session is a supported flow.
             if record.status != SessionStatus::Exited {
                 let _ = write_message(
                     &mut *writer.lock().unwrap(),
@@ -2578,6 +2717,20 @@ impl SessionManager {
                     running: true,
                 }),
                 seen_osc133: AtomicBool::new(false),
+                // Read once, here, rather than per chunk: `command` is
+                // written at creation and never changes, and
+                // `interrupted` is stamped by `recover` before this
+                // session can be attached to. A row that cannot be read
+                // keeps the old behaviour -- an unreadable registry is
+                // not evidence that a session is a plain terminal.
+                applies: match manager.registry.lock().unwrap().get(&id) {
+                    Ok(Some(record)) => heuristic_speaks_for(&record),
+                    Ok(None) => true,
+                    Err(e) => {
+                        eprintln!("failed to read session {id} while starting its pump: {e}");
+                        true
+                    }
+                },
             });
             spawn_heuristic_idle_timer(&manager, id.clone(), Arc::clone(&heuristic));
 
@@ -2635,9 +2788,25 @@ impl SessionManager {
                         {
                             let mut inner = heuristic.inner.lock().unwrap();
                             inner.last_activity = Instant::now();
-                            if !heuristic.seen_osc133.load(Ordering::SeqCst)
-                                && (!inner.heuristic_working || inner.waiting_for_input)
-                            {
+                            if heuristic.seen_osc133.load(Ordering::SeqCst) {
+                                // The shell speaks for itself now, and
+                                // that is a one-way switch.
+                            } else if !heuristic.applies {
+                                // A plain terminal: output claims
+                                // nothing. It does still END a wait --
+                                // the rule that renewed activity clears
+                                // waiting_for_input is about the bell
+                                // being answered, not about anything
+                                // working, and without this a shell that
+                                // beeped once would sit at
+                                // `waiting_for_input` forever, since the
+                                // quiet timer this session has no longer
+                                // runs.
+                                if inner.waiting_for_input {
+                                    inner.waiting_for_input = false;
+                                    persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+                                }
+                            } else if !inner.heuristic_working || inner.waiting_for_input {
                                 // Was idle, waiting for input, or never
                                 // yet working -- now has fresh output,
                                 // fire Working. Emitted while still
@@ -2721,6 +2890,55 @@ impl SessionManager {
             // was not recorded.
             if let Err(e) = manager.kanban.lock().unwrap().finish_runs_for_session(&id, Some(exit_code)) {
                 eprintln!("failed to close card runs for session {id}: {e}");
+            }
+            // And whatever standalone TOOL run it was (v30), here for the
+            // same reason: this is the one block that runs for both a
+            // natural exit and a kill. For a `command` or `script` tool
+            // the code IS the verdict, so this call is the whole of that
+            // tool's result -- nobody has to have been watching. An
+            // `agent` tool's row is already closed by the time its
+            // session ends, and the store's `outcome = 'running'` guard
+            // is what keeps this from overwriting that verdict.
+            if let Err(e) =
+                manager.orchestration.lock().unwrap().finish_tool_runs_for_session(&id, Some(exit_code))
+            {
+                eprintln!("failed to close tool runs for session {id}: {e}");
+            }
+            // Then forget the session itself. Nothing else ever did:
+            // `kill_session` was the only path that removed a row, and it
+            // only runs when a human closes a tab -- so every run that
+            // ended by itself left its record behind, and a hidden one
+            // (the Git tab's commit agent, a tool, anything the app takes
+            // off screen the moment it exits) left one nobody could see.
+            // `recover` skips an exited row rather than dropping it, so
+            // the pile outlived the daemon too, and the task manager was
+            // the only place to clear it, by hand, one run at a time.
+            //
+            // Nothing is lost with it: every reader treats an exited row
+            // and an unknown one identically (see the app's
+            // `adopt_session_impl`), the exit code has already gone into
+            // the card and tool run histories above, and the exit itself
+            // is announced below.
+            //
+            // The exception is a row that still names a process this
+            // session left RUNNING. That record is the human's only
+            // handle on the survivor -- `end_orphan` reads the pid out of
+            // it -- so an orphan turns the reap off rather than being
+            // swept away by it. A recovery that could not respawn a
+            // session marks its row Exited without ever reaching this
+            // block, so those stay too.
+            let orphaned = manager
+                .registry
+                .lock()
+                .unwrap()
+                .get(&id)
+                .ok()
+                .flatten()
+                .is_some_and(|record| record.orphan.is_some());
+            if !orphaned {
+                if let Err(e) = manager.forget_session(&id) {
+                    eprintln!("failed to drop the record of exited session {id}: {e}");
+                }
             }
             // Same atomic take-and-remove as the error path above, and for the same
             // reason: a single `.remove()` call closes the race window a separate
@@ -2962,6 +3180,29 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok),
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
+        }
+        Request::StartToolRun {
+            workspace_id,
+            tool_id,
+            session_id,
+            command,
+            launch_cwd,
+            conversation_id,
+        } => manager
+            .start_tool_run(
+                &workspace_id,
+                &tool_id,
+                &session_id,
+                command.as_deref(),
+                launch_cwd.as_deref(),
+                conversation_id.as_deref(),
+            )
+            .map(|_| Response::Ok),
+        Request::SetToolRunOutcome { session_id, outcome, exit_code } => manager
+            .set_tool_run_outcome(&session_id, &outcome, exit_code)
+            .map(|_| Response::Ok),
+        Request::ToolRuns { workspace_id } => {
+            manager.tool_runs(&workspace_id).map(|runs| Response::ToolRuns { runs })
         }
         Request::DeleteCardFile { path } => {
             manager.delete_card_file(&path).map(|_| Response::Ok)
@@ -3235,6 +3476,7 @@ mod tests {
                 default: "origin".into(),
             }],
             position: 0,
+            cwd: None,
         }
     }
 
@@ -4124,6 +4366,90 @@ mod tests {
         }
     }
 
+    /// Polls `list_sessions` until `id` is gone, or gives up. A poll
+    /// rather than a signal because the teardown that forgets a session
+    /// runs on that session's own pump thread, not on the one asking.
+    fn wait_until_forgotten(manager: &SessionManager, id: &str) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if !manager.list_sessions().unwrap().iter().any(|s| s.id == id) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn a_session_whose_process_ends_stops_being_listed() {
+        // `kill_session` used to be the only thing that ever removed a
+        // session, and nobody closes a tab that was never there: a hidden
+        // run -- the Git tab's commit agent, a tool, any launch the app
+        // takes off screen the moment it ends -- left its row behind for
+        // good. `recover` skips an exited row rather than dropping it, so
+        // the pile survived daemon restarts too, and the task manager was
+        // the only place to clear it, by hand, one run at a time.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager.create_session("/tmp", "/tmp", Some("exit 3")).unwrap();
+
+        // The pump is what witnesses an exit, and only an Attach starts
+        // one. The client end stays bound: dropping it would close the
+        // socket the teardown reports the exit on.
+        let (_client, server) = UnixStream::pair().unwrap();
+        manager.attach(&id, Arc::new(Mutex::new(server)));
+
+        assert!(
+            wait_until_forgotten(&manager, &id),
+            "a session whose process has ended must stop being listed"
+        );
+    }
+
+    #[test]
+    fn a_session_that_left_a_process_behind_keeps_its_row_when_its_shell_ends() {
+        // The one row worth keeping. A session whose command outlived its
+        // daemon is recorded as an orphan, and that row is the only handle
+        // the human has on the survivor -- `end_orphan` reads the pid out
+        // of it. Reaping it when the bare shell recovery put in its place
+        // finally exits would leave the process running with nothing left
+        // offering to end it.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-kept",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+        let manager = Arc::new(recovered_manager(&dir));
+
+        let (_client, server) = UnixStream::pair().unwrap();
+        manager.attach("orphan-kept", Arc::new(Mutex::new(server)));
+        manager.write_input("orphan-kept", b"exit\n").unwrap();
+
+        // Waits for the status rather than for the row to vanish, because
+        // not vanishing is the whole assertion.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut exited = None;
+        while std::time::Instant::now() < deadline && exited.is_none() {
+            match manager.list_sessions().unwrap().into_iter().find(|s| s.id == "orphan-kept") {
+                Some(row) if row.status == "exited" => exited = Some(row),
+                Some(_) => std::thread::sleep(Duration::from_millis(20)),
+                None => panic!("the row of a session with a surviving process must be kept"),
+            }
+        }
+        let row = exited.expect("the recovered shell never exited");
+        assert_eq!(
+            row.orphan.map(|o| o.pid),
+            Some(handle.pid),
+            "the surviving process must still be reported"
+        );
+
+        kill_and_reap(survivor);
+    }
+
     #[test]
     fn write_input_to_unknown_session_returns_error() {
         let (socket_path, _dir) = start_test_server();
@@ -4585,6 +4911,93 @@ mod tests {
                 assert_eq!(runs[0].session_id, "s-1");
             }
             other => panic!("expected CardRuns, got {other:?}"),
+        }
+    }
+
+    // --- standalone tool runs (v30) -----------------------------------
+
+    #[test]
+    fn a_tool_run_opens_and_reads_back_over_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        assert!(matches!(
+            handle_request(
+                &manager,
+                Request::StartToolRun {
+                    workspace_id: "ws-1".into(),
+                    tool_id: "builtin:push".into(),
+                    session_id: "s-1".into(),
+                    command: Some("git push".into()),
+                    launch_cwd: Some("/r/app".into()),
+                    conversation_id: None,
+                },
+            ),
+            Response::Ok
+        ));
+
+        match handle_request(&manager, Request::ToolRuns { workspace_id: "ws-1".into() }) {
+            Response::ToolRuns { runs } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].tool_id, "builtin:push");
+                assert_eq!(runs[0].launch_cwd.as_deref(), Some("/r/app"));
+                // Abandoned, not running: the session id names nothing
+                // the registry is hosting, and the read reconciles.
+                assert_eq!(runs[0].outcome, "abandoned");
+            }
+            other => panic!("expected ToolRuns, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_runs_is_an_empty_list_for_a_workspace_that_has_run_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        match handle_request(&manager, Request::ToolRuns { workspace_id: "ws-nothing".into() }) {
+            Response::ToolRuns { runs } => assert!(runs.is_empty()),
+            other => panic!("expected ToolRuns, got {other:?}"),
+        }
+    }
+
+    /// An agent tool's verdict comes from the app, because its session is
+    /// still alive when its turn ends -- nothing the daemon watches would
+    /// ever close that row.
+    #[test]
+    fn an_agent_tools_verdict_is_recorded_by_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let session = live_session(&manager);
+        handle_request(
+            &manager,
+            Request::StartToolRun {
+                workspace_id: "ws-1".into(),
+                tool_id: "builtin:commit".into(),
+                session_id: session.clone(),
+                command: None,
+                launch_cwd: None,
+                conversation_id: Some("conv-1".into()),
+            },
+        );
+
+        assert!(matches!(
+            handle_request(
+                &manager,
+                Request::SetToolRunOutcome {
+                    session_id: session.clone(),
+                    outcome: "passed".into(),
+                    exit_code: None,
+                },
+            ),
+            Response::Ok
+        ));
+
+        match handle_request(&manager, Request::ToolRuns { workspace_id: "ws-1".into() }) {
+            Response::ToolRuns { runs } => {
+                assert_eq!(runs[0].outcome, "passed");
+                assert!(runs[0].ended_at.is_some());
+                assert_eq!(runs[0].conversation_id.as_deref(), Some("conv-1"));
+            }
+            other => panic!("expected ToolRuns, got {other:?}"),
         }
     }
 
@@ -5445,8 +5858,9 @@ mod tests {
         };
 
         // Attach once, then make the shell exit so the pump thread's
-        // teardown persists SessionStatus::Exited to the registry (this
-        // does not remove the registry record -- only kill_session does).
+        // teardown runs. It forgets the session outright, so the second
+        // attach below is one to an id the daemon no longer knows -- the
+        // shape a tab left holding a finished run actually has.
         let mut stream1 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
@@ -5474,6 +5888,56 @@ mod tests {
         loop {
             match read_message::<_, Response>(&mut reader2) {
                 Ok(Some(Response::StatusChanged { id: rid, .. })) if rid == id => {
+                    panic!("attach() sent a baseline StatusChanged for an exited session");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
+            }
+        }
+    }
+
+    #[test]
+    fn attach_sends_no_baseline_status_for_a_row_recovery_could_not_bring_back() {
+        // The Exited gate's remaining input. A session whose process ends
+        // under a live daemon is forgotten outright now -- row and PTY
+        // together -- so the only Exited row an attach can still find is
+        // one a previous lifetime left and recovery could not respawn.
+        // Baselining it would paint a status over a session with nothing
+        // in it.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "unrecoverable-1".to_string(),
+                    workspace_path: "/definitely/does/not/exist/anywhere".to_string(),
+                    cwd: "/definitely/does/not/exist/anywhere".to_string(),
+                    command: Some("claude".to_string()),
+                    status: SessionStatus::Working,
+                    restored: false,
+                    generation: 0,
+                    interrupted: false,
+                    process: None,
+                    orphan: None,
+                    failure_reason: None,
+                })
+                .unwrap();
+        }
+        let manager = Arc::new(recovered_manager(&dir));
+        assert_eq!(
+            manager.registry.lock().unwrap().get("unrecoverable-1").unwrap().unwrap().status,
+            SessionStatus::Exited,
+            "test premise: recovery must mark this row Exited and keep it"
+        );
+
+        let (client, server) = UnixStream::pair().unwrap();
+        manager.attach("unrecoverable-1", Arc::new(Mutex::new(server)));
+
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let mut reader = BufReader::new(client);
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id, .. })) if id == "unrecoverable-1" => {
                     panic!("attach() sent a baseline StatusChanged for an exited session");
                 }
                 Ok(Some(_)) => continue,
@@ -5512,11 +5976,10 @@ mod tests {
         };
 
         // Attach once, then make the shell exit so the pump thread's
-        // teardown persists SessionStatus::Exited to the registry (this
-        // does not remove the registry record -- only kill_session does).
-        // Teardown also calls unregister_session_repo_mapping before
-        // persisting Exited, so no mapping is left over from this first
-        // attach either.
+        // teardown runs -- which forgets the session, leaving the second
+        // attach below aimed at an id the daemon no longer knows.
+        // Teardown also calls unregister_session_repo_mapping first, so
+        // no mapping is left over from this first attach either.
         let mut stream1 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
@@ -5810,6 +6273,101 @@ mod tests {
         assert!(
             saw_working_then_idle,
             "expected a \"working\" StatusChanged followed eventually by \"idle\", got: {statuses:?}"
+        );
+    }
+
+    fn session_record(command: Option<&str>, interrupted: bool) -> SessionRecord {
+        SessionRecord {
+            id: "s1".to_string(),
+            workspace_path: "/tmp/ws".to_string(),
+            cwd: "/tmp".to_string(),
+            command: command.map(|c| c.to_string()),
+            status: SessionStatus::Idle,
+            restored: false,
+            generation: 0,
+            interrupted,
+            process: None,
+            orphan: None,
+            failure_reason: None,
+        }
+    }
+
+    #[test]
+    fn the_heuristic_speaks_only_for_a_session_gavin_launched_something_in() {
+        assert!(heuristic_speaks_for(&session_record(Some("claude --model opus"), false)));
+        // The tab a human opened to type in.
+        assert!(!heuristic_speaks_for(&session_record(None, false)));
+        // An agent row `recover` put a bare shell into: the command
+        // column still names the agent, but the agent is not there.
+        assert!(!heuristic_speaks_for(&session_record(Some("claude --model opus"), true)));
+    }
+
+    /// The heuristic's premise is that an agent produces output while it
+    /// works. A plain terminal has no agent in it: every byte it emits is
+    /// the shell painting a prompt or echoing what the human just typed,
+    /// and calling that "working" put a spinner on a tab where nothing
+    /// was happening -- the same lie
+    /// `recover_resets_an_interrupted_rows_status_so_a_bare_shell_never_reads_as_working`
+    /// already had to stamp out on the recovery path.
+    ///
+    /// Asserts the absence of a status rather than the presence of one,
+    /// because the correct answer here is that the daemon says nothing:
+    /// the session is created `idle` and stays there until something
+    /// explicit -- an OSC 133 marker, a bell -- speaks for it.
+    #[test]
+    fn a_plain_terminal_never_reports_working_from_its_own_output() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            // `None`: exactly what the app sends for a terminal tab the
+            // human opened (backend.createSession with no command).
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: None,
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        // Typed, not run: bare characters with no newline are echoed by
+        // the shell's line editor without executing anything, so this
+        // exercises the keystroke-echo path without depending on whether
+        // the ambient $SHELL happens to emit OSC 133 around a command.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput { id: id.clone(), data: "echo not_run".to_string() },
+        )
+        .unwrap();
+
+        // Well past HEURISTIC_QUIET_PERIOD, so a heuristic that fired at
+        // all has had time to be seen -- and a read timeout so a quiet
+        // session ends the loop at the deadline instead of blocking.
+        stream2.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + HEURISTIC_QUIET_PERIOD * 3;
+        let mut statuses: Vec<String> = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    statuses.push(status);
+                }
+                Ok(_) => {}
+                // A timeout tick -- keep waiting until the deadline.
+                Err(_) => {}
+            }
+        }
+        assert!(
+            !statuses.iter().any(|s| s == "working"),
+            "a plain terminal reported working with no agent in it, got: {statuses:?}"
         );
     }
 
@@ -6392,10 +6950,11 @@ mod tests {
     }
 
     #[test]
-    fn recover_brings_a_plain_terminal_session_back_exactly_as_it_always_did() {
+    fn recover_brings_a_plain_terminal_session_back_as_an_idle_bare_shell() {
         // The other half of the rule: a session with no command has no
-        // run to have been interrupted, so nothing about it changes and
-        // nothing claims otherwise.
+        // run to have been interrupted, so it is never marked as such --
+        // but it is still a fresh bare shell, so it comes back idle like
+        // every other recovered session.
         let dir = tempfile::tempdir().unwrap();
         leftover_row(
             &dir.path().join("registry.sqlite"),
@@ -6410,7 +6969,10 @@ mod tests {
         let summary = &manager.list_sessions().unwrap()[0];
         assert_eq!(summary.restored, true);
         assert_eq!(summary.interrupted, false, "a plain terminal session was never running a task");
-        assert_eq!(summary.status, "working", "its status is left for its next prompt to correct");
+        assert_eq!(
+            summary.status, "idle",
+            "a shell at a prompt is idle, and nothing else will ever correct this row"
+        );
         assert!(shell_echoes(&manager, "shell-1", "plain_shell_ok"));
     }
 

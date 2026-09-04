@@ -49,6 +49,7 @@ vi.mock("./layoutState", () => ({
   daemonCompat: writable(null as DaemonCompat | null),
   queuedInputsById: writable({} as Record<string, unknown[]>),
   handleQueuedInputsChanged: vi.fn(),
+  setDevelopingCards: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // The DAEMON half of the conversation-resume gate lives here, so the
@@ -97,7 +98,7 @@ vi.mock("./workspace", () => {
 });
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, baseShaForLaunch, armFailureDetection } from "./layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
@@ -165,6 +166,9 @@ beforeEach(() => {
     ...s,
     interruptedSessionIds: new Set<string>(),
     failureReasonById: {},
+    // And the develop records, for the same reason: a card left locked by
+    // one test would refuse every launch in the next one.
+    workspaces: s.workspaces.map((w) => ({ ...w, developingCards: undefined })),
   }));
   // clearAllMocks clears CALLS, not implementations, so a test that
   // swaps the profile in has to be undone here or it leaks forward.
@@ -470,6 +474,130 @@ describe("developCard", () => {
 
     vi.mocked(backend.createSession).mockRejectedValue(new Error("spawn failed"));
     expect(await developCard("ws-1", card("task", "To Do"))).toContain("spawn failed");
+  });
+});
+
+/// A develop run REWRITES the card file, and it deliberately binds
+/// nothing and writes no status -- so without a record of its own the
+/// board had no idea, and offered every launch it has on a card whose
+/// prompt was about to be replaced. The record is both halves of the fix:
+/// the card's only indication, and the lock every launch reads.
+describe("a card being developed", () => {
+  const PATH = "/ws/.gavin-root/plans/t.md";
+
+  function developing(records: { path: string; sessionId: string }[]): void {
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) =>
+        w.id === "ws-1" ? { ...w, developingCards: records } : w
+      ),
+    }));
+  }
+
+  it("is recorded by developCard, before the jump that follows it", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    expect(setDevelopingCards).toHaveBeenCalledWith("ws-1", [{ path: PATH, sessionId: "s-9" }]);
+    // The record is the lock. Written after the jump, a window closed
+    // mid-jump would leave an agent rewriting a card nothing knows about.
+    expect(vi.mocked(setDevelopingCards).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(switchToSessionInPage).mock.invocationCallOrder[0]
+    );
+  });
+
+  it("keeps the other workspaces' records when it adds one", async () => {
+    developing([{ path: "/ws/.gavin-root/plans/other.md", sessionId: "s-old" }]);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    expect(setDevelopingCards).toHaveBeenCalledWith("ws-1", [
+      { path: "/ws/.gavin-root/plans/other.md", sessionId: "s-old" },
+      { path: PATH, sessionId: "s-9" },
+    ]);
+  });
+
+  // Two develop agents on one card is the worst version of the conflict:
+  // both of them rewrite the whole file.
+  it("makes a second Develop a jump, not a second run", async () => {
+    developing([{ path: PATH, sessionId: "s-dev" }]);
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(switchToSessionInPage).toHaveBeenCalledWith("ws-1", "pg-1", "s-dev");
+  });
+
+  it("develops afresh when the recorded run's session is nowhere to be found", async () => {
+    developing([{ path: PATH, sessionId: "s-dev" }]);
+    vi.mocked(findSessionLocation).mockReturnValue(null);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+
+    await developCard("ws-1", card("task", "To Do"));
+
+    // "No page holds it" is the same evidence the sweep clears the record
+    // on, so falling through to a fresh run is right rather than merely
+    // tolerated: the recorded agent is gone, and refusing here would
+    // strand the card behind a lock nothing is holding. Asserted so a
+    // change to it is a decision rather than an accident.
+    expect(backend.createSession).toHaveBeenCalled();
+  });
+
+  it("refuses a Run, and leaves the card's status exactly where it was", async () => {
+    developing([{ path: PATH, sessionId: "s-dev" }]);
+
+    const err = await runCard("ws-1", card("task", "To Do"));
+
+    expect(err).toContain("developing this card");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    // The refusal is BEFORE the status write, so a refused launch leaves
+    // the board untouched instead of moving a card for a run that never
+    // happened.
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Resume and a Send to the workspace agent", async () => {
+    developing([{ path: PATH, sessionId: "s-dev" }]);
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) => ({ ...w, mainSessionId: "main-1" })),
+    }));
+
+    expect(await resumeCard("ws-1", card("task", "In Progress"))).toContain("developing this card");
+    expect(await sendToMainAgent("ws-1", card("task", "To Do"))).toContain("developing this card");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.writeInput).not.toHaveBeenCalled();
+  });
+
+  // Re-launch replays the ORIGINAL prompt, which is the very text the
+  // develop agent is replacing -- the launch with the most to lose here,
+  // not the least.
+  it("refuses a Re-launch of the card's remembered command", async () => {
+    kanbanState.set({
+      "ws-1": board([{ path: PATH, sessionId: "s-dead", cwd: "/ws", command: "claude -p x" }]),
+    });
+    developing([{ path: PATH, sessionId: "s-dev" }]);
+
+    expect(await relaunchCard("ws-1", PATH)).toContain("developing this card");
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("lets every OTHER card run: the lock is one card's, not the board's", async () => {
+    developing([{ path: "/ws/.gavin-root/plans/other.md", sessionId: "s-dev" }]);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo it.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+
+    expect(await runCard("ws-1", card("task", "To Do"))).toBeNull();
+    expect(backend.createSession).toHaveBeenCalled();
   });
 });
 

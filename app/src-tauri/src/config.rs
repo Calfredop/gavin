@@ -15,6 +15,21 @@ pub struct Page {
     /// (a later plan) target a well-defined pane even in a page that isn't
     /// currently rendered.
     pub focused_session_id: Option<String>,
+    /// When this page was pinned to the top of its workspace's list,
+    /// epoch milliseconds. Absent means not pinned.
+    ///
+    /// A timestamp rather than a boolean because "on top" stops being a
+    /// position as soon as there are two of them, and the stored order
+    /// cannot answer it: pinning deliberately does NOT reorder `pages`,
+    /// or unpinning would have nowhere to put the row back. The moment
+    /// the human pinned it is the one ordering they already have in
+    /// mind -- the row pinned first stays the row at the top.
+    ///
+    /// Written by the frontend (which owns the clock) through the
+    /// ordinary workspaces save, like `Workspace::last_active_at`, so an
+    /// older config simply loads with it absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<i64>,
 }
 
 /// Well-known id for the always-present "Unfiled" pseudo-workspace -- a
@@ -140,6 +155,27 @@ pub struct OrchestrationAgentRecord {
     pub label: String,
 }
 
+/// A "Develop into a plan…" run that was still going when this config was
+/// written: the card being reshaped, and the session doing it.
+///
+/// Kept here because a develop run deliberately binds NOTHING -- no
+/// card<->session binding and no status write, since developing a card is
+/// not starting it -- so without this record the app has no way to tell
+/// that the card in front of it is about to be rewritten. That is what
+/// made it possible to start a second agent on a card whose own file was
+/// being replaced under it.
+///
+/// A list rather than one slot: unlike the orchestration agent, two
+/// develop runs on two DIFFERENT cards divide the work rather than
+/// overwriting each other. It is the same CARD twice that conflicts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopingCardRecord {
+    /// Absolute path of the card file being developed.
+    pub path: String,
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -168,6 +204,12 @@ pub struct Workspace {
     /// idle -- see orchestrationAgent.ts, which owns the whole rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestration_agent: Option<OrchestrationAgentRecord>,
+    /// The cards this workspace is DEVELOPING right now, one record per
+    /// in-flight run. Cleared by the frontend the moment a run's session
+    /// is gone, interrupted or idle -- see developingCards.ts, which owns
+    /// the rule, and shares it with the orchestration agent slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub developing_cards: Vec<DevelopingCardRecord>,
     /// D41 migration only: the pre-settings `agentCommand`, which now
     /// lives in `.gavin-root/config.toml`. Read once at bootstrap,
     /// carried into config.toml, then cleared -- `skip_serializing_if`
@@ -247,6 +289,11 @@ pub struct Workspace {
     /// config.json entirely for the ordinary inheriting case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_pause: Option<AgentPauseConfig>,
+    /// When this workspace was pinned to the top of the sidebar, epoch
+    /// milliseconds; absent means not pinned. Same rule and same reason
+    /// as `Page::pinned_at`, one level up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<i64>,
 }
 
 fn default_true() -> bool {
@@ -280,6 +327,24 @@ pub struct RemovedWorkspace {
 pub struct BoardTabRecord {
     pub workspace_id: String,
     pub context_folder: String,
+}
+
+/// One persisted card tab: a card's own detail view living in a pane
+/// rather than in a modal, opened from the terminal tab that runs it.
+/// `view` picks which half of the card it shows -- "plan" is the detail
+/// panel, "changes" the diff of what this run did to the checkout.
+///
+/// The run's baseline is deliberately NOT stored here. It lives on the
+/// card's `card_sessions` binding, which a re-launch replaces; copying it
+/// into the tab would pin the pane to a run that no longer exists.
+/// Crosses to the frontend via get/set_card_tabs, hence camelCase
+/// (verified by the shape test below).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardTabRecord {
+    pub workspace_id: String,
+    pub path: String,
+    pub view: String,
 }
 
 /// A duty cycle: sit out `pause_minutes` of every `period_minutes`, and
@@ -363,6 +428,15 @@ pub struct AppConfig {
     /// persist_workspaces, or it silently resets to empty on save.
     #[serde(default)]
     pub board_tabs: HashMap<String, BoardTabRecord>,
+    /// Open card tabs, keyed by tab id (same opaque id space as
+    /// session/file/board tabs in the pane tree). Like file_tabs and
+    /// board_tabs this persists alongside `workspaces` and must always be
+    /// carried through persist_workspaces, or it silently resets to empty
+    /// on save -- and an id in a layout tree that no tab map claims is
+    /// taken to be a terminal session, so losing this map does not blank
+    /// a pane, it builds a PTY for an id the daemon never had.
+    #[serde(default)]
+    pub card_tabs: HashMap<String, CardTabRecord>,
     /// App-global light/dark preference: "light", "dark", or absent for
     /// System -- the same "absent means default" convention as
     /// `Workspace::color`. Like session_names/file_tabs/board_tabs this
@@ -491,6 +565,7 @@ mod tests {
             name: "Page 1".to_string(),
             layout: sample_layout(),
             focused_session_id: None,
+            pinned_at: None,
         }
     }
 
@@ -505,6 +580,7 @@ mod tests {
             root_path: None,
             main_session_id: None,
             orchestration_agent: None,
+            developing_cards: Vec::new(),
             legacy_agent_command: None,
             color: None,
             notify_needs_input: true,
@@ -517,6 +593,7 @@ mod tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pinned_at: None,
         }
     }
 
@@ -541,6 +618,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(config_path(dir.path()), r#"{"workspaces":[]}"#).unwrap();
         assert_eq!(load(dir.path()).unwrap().theme, None);
+    }
+
+    /// A pin round-trips at both levels, and a config written before the
+    /// field existed loads with nothing pinned. Absence is the only
+    /// correct answer for an upgrade: a stamp invented at load time
+    /// would silently hoist rows the human never pinned, and every
+    /// workspace would claim the same "pinned first" moment.
+    #[test]
+    fn pins_roundtrip_and_default_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.pinned_at = Some(1_700_000_000_000);
+        ws.pages[0].pinned_at = Some(1_700_000_001_000);
+        let config = AppConfig { workspaces: vec![ws], ..Default::default() };
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.workspaces[0].pinned_at, Some(1_700_000_000_000));
+        assert_eq!(loaded.workspaces[0].pages[0].pinned_at, Some(1_700_000_001_000));
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[{"id":"w","name":"W","pages":[{"id":"p","name":"P","layout":{"type":"leaf","tabs":[],"activeTabIndex":0},"focusedSessionId":null}],"activePageId":null,"activeView":null}]}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap();
+        assert_eq!(old.workspaces[0].pinned_at, None);
+        assert_eq!(old.workspaces[0].pages[0].pinned_at, None);
     }
 
     /// Both halves of the setting round-trip, and both read as absent from
@@ -581,6 +685,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -606,6 +711,7 @@ mod tests {
             session_names,
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -645,6 +751,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs,
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -759,6 +866,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -803,6 +911,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -833,6 +942,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -866,6 +976,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -913,6 +1024,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -935,6 +1047,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -965,6 +1078,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs,
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -992,6 +1106,52 @@ mod tests {
         let config = load(dir.path()).unwrap();
         assert_eq!(config.board_tabs, HashMap::new());
         assert_eq!(config.file_tabs.get("t"), Some(&"/a.md".to_string()));
+    }
+
+    #[test]
+    fn card_tabs_roundtrip_and_default_empty_for_a_config_that_predates_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut card_tabs = HashMap::new();
+        card_tabs.insert(
+            "tab-9".to_string(),
+            CardTabRecord {
+                workspace_id: "ws-1".to_string(),
+                path: "/Users/alice/project/.gavin-root/plans/login.md".to_string(),
+                view: "changes".to_string(),
+            },
+        );
+        let config = AppConfig { card_tabs, ..AppConfig::default() };
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.card_tabs.get("tab-9").unwrap().view, "changes");
+
+        // The whole reason the map is persisted at all: an id in a
+        // layout tree that no tab map claims reads as a terminal
+        // session, so a card tab that failed to come back would not go
+        // missing -- it would come back as a shell.
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [], "active_workspace_id": null}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().card_tabs, HashMap::new());
+    }
+
+    #[test]
+    fn card_tab_record_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let record = CardTabRecord {
+            workspace_id: "ws-1".to_string(),
+            path: "/tmp/ws/.gavin-root/plans/login.md".to_string(),
+            view: "plan".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::json!({
+                "workspaceId": "ws-1",
+                "path": "/tmp/ws/.gavin-root/plans/login.md",
+                "view": "plan",
+            })
+        );
     }
 
     #[test]
@@ -1026,6 +1186,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -1047,6 +1208,47 @@ mod tests {
         assert!(json.get("orchestrationAgent").is_none());
     }
 
+    /// Same round trip for the develop records, and for a sharper reason:
+    /// a develop run rewrites the card file, and the whole point of the
+    /// record is that nothing else may be started on that card while it
+    /// does. A record that did not survive a reload would reopen exactly
+    /// the conflict it exists to close.
+    #[test]
+    fn developing_cards_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.developing_cards = vec![DevelopingCardRecord {
+            path: "/repo/.gavin-root/plans/thin-card.md".to_string(),
+            session_id: "session-4".to_string(),
+        }];
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
+            theme: None,
+            agent_models: HashMap::new(),
+            terminal_font_size: None,
+            auto_commit: None,
+            removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+    }
+
+    /// The empty list is the normal state and serializes away entirely,
+    /// the same courtesy the absent orchestration agent gets: an empty
+    /// array on every workspace is noise in a file the human does read.
+    #[test]
+    fn empty_developing_cards_is_not_serialized() {
+        let json = serde_json::to_value(sample_workspace()).unwrap();
+        assert!(json.get("developingCards").is_none());
+    }
+
     // Was main_session_and_agent_command_roundtrip: the launch command
     // moved to .gavin-root/config.toml (D41), so only the session id is
     // still a config.json concern.
@@ -1061,6 +1263,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -1121,6 +1324,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,

@@ -23,14 +23,15 @@ export interface ClosableState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   fileTabsById: Record<string, { path: string }>;
+  cardTabsById: Record<string, { path: string }>;
 }
 
 export interface ArchiveClosables {
   /// Live terminal sessions bound to the card. These END -- the prompt
   /// counts them, and only them.
   sessionIds: string[];
-  /// Pane tabs showing the card's file. Closing one ends no process, so
-  /// they go silently.
+  /// Pane tabs showing the card -- its file in an editor, or its detail
+  /// and diff views. Closing one ends no process, so they go silently.
   fileTabIds: string[];
 }
 
@@ -63,8 +64,14 @@ export function closablesForArchive(
       claimed.add(cs.sessionId);
       sessionIds.push(cs.sessionId);
     }
+    // File tabs and card tabs are counted together: both are a pane
+    // showing a card that is about to leave the board, both close
+    // silently, and the caller closes them through the one close path.
     const fileTabIds: string[] = [];
-    for (const [tabId, tab] of Object.entries(state.fileTabsById)) {
+    for (const [tabId, tab] of [
+      ...Object.entries(state.fileTabsById),
+      ...Object.entries(state.cardTabsById),
+    ]) {
       if (!paths.has(tab.path) || claimed.has(tabId)) continue;
       claimed.add(tabId);
       fileTabIds.push(tabId);

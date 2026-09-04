@@ -13,6 +13,7 @@ mod session;
 mod superpowers;
 mod trash;
 mod workspace_delete;
+mod workspace_window;
 mod worktree_setup;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -47,6 +48,7 @@ pub fn run() {
         .manage(agent_usage::UsageCache::new())
         .manage(pull_request::PrCache::new())
         .manage(agent_tokens::TokenCache::new())
+        .manage(workspace_window::WorkspaceWindows::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -91,6 +93,11 @@ pub fn run() {
             fileviewer::watch_file_for_viewer,
             fileviewer::unwatch_file_for_viewer,
             fileviewer::write_file_for_editor,
+            fileviewer::list_directory,
+            fileviewer::create_file,
+            fileviewer::create_directory,
+            fileviewer::rename_path,
+            fileviewer::trash_entry,
             session::signal_frontend_ready,
             mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
@@ -106,6 +113,9 @@ pub fn run() {
             session::get_tools,
             session::save_tool,
             session::delete_tool,
+            session::start_tool_run,
+            session::set_tool_run_outcome,
+            session::tool_runs,
             session::get_group_templates,
             session::save_group_template,
             session::delete_group_template,
@@ -119,6 +129,7 @@ pub fn run() {
             session::remove_external_gavin_context,
             session::gavin_root_exists,
             session::get_board_tabs,
+            session::get_card_tabs,
             session::get_session_baselines,
             session::end_orphan,
             session::list_managed_sessions,
@@ -127,6 +138,7 @@ pub fn run() {
             session::set_queued_inputs,
             session::send_queued_input,
             session::set_board_tabs,
+            session::set_card_tabs,
             session::set_plan_frontmatter_field,
             session::create_plan,
             session::set_checklist_item,
@@ -154,6 +166,11 @@ pub fn run() {
             agent_setup::mcp_formats,
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt,
+            workspace_window::open_workspace_window,
+            workspace_window::workspace_windows,
+            workspace_window::claim_workspace_window,
+            workspace_window::focus_workspace_window,
+            workspace_window::close_workspace_window,
             workspace_delete::scan_gavin_footprint,
             workspace_delete::remove_gavin_footprint,
             git::git_repo_info,

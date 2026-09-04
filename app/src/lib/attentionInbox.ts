@@ -19,11 +19,15 @@
 //   failed       the agent stopped because something BROKE
 //   turn-ended   a rail step's agent stopped talking and its card never
 //                reached the done column
+//   stale        the same, ten minutes on: nothing is coming
+//   decoy-edit   a rail step's agent wrote its worktree's own copy of the
+//                card, so the board can never see the work
 //
 // The first two are read straight off the session's status, so they hold
-// for a terminal nobody filed a card for. The third can only be said by
-// a rail -- an idle agent with no rail behind it is a shell at its
-// prompt, which is not the same thing as work that stopped short.
+// for a terminal nobody filed a card for. The last three can only be
+// said by a rail -- an idle agent with no rail behind it is a shell at
+// its prompt, which is not the same thing as work that stopped short,
+// and only a rail knows which checkout its agent was launched in.
 
 import { cardIndex, type Orchestration, type StepAttention } from "./orchestration";
 import { sessionLabel } from "./paths";
@@ -122,6 +126,13 @@ export const REASON_LABEL: Record<AttentionReason, string> = {
   asking: PHASE_LABEL.waiting,
   failed: PHASE_LABEL.failed,
   "turn-ended": "Turn ended, card unmoved",
+  // The aged form of the row above. The wait column already carries the
+  // number, so the label carries the verdict instead of repeating it.
+  stale: "Stopped for good, card unmoved",
+  // Names the mistake, not the symptom: this row's fix is a file, and a
+  // human reading "turn ended" would go and restart the agent into the
+  // same wrong file.
+  "decoy-edit": "Edited the worktree's copy of the card",
 };
 
 const MINUTE = 60_000;
@@ -244,13 +255,20 @@ function reasonFor(
   marks: Map<string, StepAttention>
 ): AttentionReason | null {
   if (state.interruptedSessionIds.has(sessionId)) return null;
-  if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId]) return null;
+  if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId] || state.cardTabsById[sessionId])
+    return null;
   const status = state.sessionStatusById[sessionId];
+  const mark = marks.get(sessionId);
   if (status === "failed") return "failed";
+  // Before `asking`, and without consulting the status at all: the write
+  // has already happened, so an agent still talking -- or still asking
+  // about the card it cannot reach -- is no less stuck for it. This is
+  // ATTENTION_RANK's order, kept in step with it deliberately.
+  if (mark === "decoy-edit") return "decoy-edit";
   if (status === "waiting_for_input") return "asking";
-  // Only a rail can say this, and only about an agent that has actually
+  // Only a rail can say these, and only about an agent that has actually
   // gone quiet. An idle session with no mark is a shell at its prompt.
-  if (status === "idle" && marks.get(sessionId) === "turn-ended") return "turn-ended";
+  if (status === "idle" && (mark === "turn-ended" || mark === "stale")) return mark;
   return null;
 }
 

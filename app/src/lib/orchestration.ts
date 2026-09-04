@@ -114,13 +114,16 @@ export interface Rail {
   /// has made a decision that was theirs; a per-rail opt-in dissolves it
   /// only if the human actually made it, in advance, for this rail.
   autoResume?: boolean;
-  /// Workspace page its sessions land on. Null until the rail is armed
-  /// -- or, for a rail armed some other way than Start (a run row
-  /// written to the daemon socket, one adopted across a restart), until
-  /// its first launch: both give an unbound rail a page of its own,
-  /// named after it (spec O16, pageToSpawnForRail). Still null if that
-  /// creation failed, and then the launch falls back to the Agents-page
-  /// posture handleAgentSessionSpawned already applies.
+  /// Workspace page its sessions land on. Null until the rail's FIRST
+  /// LAUNCH, whichever way the rail was armed -- Start, a run row written
+  /// to the daemon socket, one adopted across a restart. That launch
+  /// gives an unbound rail a page of its own, named after it (spec O16,
+  /// pageToSpawnForRail) and opened on the launch's own session, which is
+  /// why arming alone makes none: there is nothing yet to build the page
+  /// around, and building it around a blank shell is what left an idle
+  /// terminal ahead of every rail's agents. Still null if that creation
+  /// failed, and then the launch falls back to the Agents-page posture
+  /// handleAgentSessionSpawned already applies.
   pageId: string | null;
   stages: Stage[];
 }
@@ -158,7 +161,22 @@ export interface ToolSummary {
 }
 
 export type RailState = "idle" | "running" | "paused";
-export type StepState = "pending" | "running" | "done" | "stalled";
+export type StepState = "pending" | "running" | "done" | "skipped" | "stalled";
+
+/// Is this step BEHIND the run? The one question the scheduler's advance
+/// rules actually ask, and the reason `skipped` could be added without
+/// auditing every `=== "done"` in the file by eye.
+///
+/// `done` and `skipped` are both terminal and they mean opposite things:
+/// done says the work happened, skipped says the human decided it would
+/// not and sent the rail past it (see `skipStep`). Everything that asks
+/// "may the rail move on" must accept both; everything that asks "did
+/// this work get done" -- a Clear-done sweep, a recap that counts
+/// finished work -- must keep asking for `done` alone, or a skip starts
+/// reading as an achievement.
+export function isStepFinished(state: StepState): boolean {
+  return state === "done" || state === "skipped";
+}
 
 export interface RailRun {
   railId: string;
@@ -236,6 +254,22 @@ export function doneColumnOf(columns: Column[]): Column | null {
   let best: Column | null = null;
   for (const c of columns) {
     if (!best || c.position > best.position) best = c;
+  }
+  return best;
+}
+
+/// Its opposite, by the same rule read the other way: the column with
+/// the LOWEST `position`, which is where work that has not started
+/// belongs. Breaking a nested task out of its parent (cardCompletion.ts)
+/// files it here rather than into whatever column the parent was in --
+/// inheriting the parent's column would claim the child was under way.
+///
+/// Lives beside `doneColumnOf` for the reason that one exists: which
+/// column is which is decided in one place, or two surfaces disagree.
+export function firstColumnOf(columns: Column[]): Column | null {
+  let best: Column | null = null;
+  for (const c of columns) {
+    if (!best || c.position < best.position) best = c;
   }
   return best;
 }
@@ -363,14 +397,16 @@ export function isStageRunning(orch: Orchestration, stageId: string): boolean {
 }
 
 /// Where Start arms the rail: the first stage (by position) holding a
-/// step that is not already `done`. Cards that are ALREADY in the done
-/// column are not considered here -- nextActions marks and cascades past
-/// them on the first tick, which keeps this trivial and keeps one place
-/// deciding what "done" means.
+/// step that is not already finished -- `done` OR `skipped`, since a
+/// step the human sent the rail past is as much behind it as one that
+/// ran, and Start must not rewind onto it. Cards that are ALREADY in the
+/// done column are not considered here -- nextActions marks and cascades
+/// past them on the first tick, which keeps this trivial and keeps one
+/// place deciding what "done" means.
 export function firstUnfinishedStageId(rail: Rail, orch: Orchestration): string | null {
   const stages = [...rail.stages].sort((a, b) => a.position - b.position);
   for (const stage of stages) {
-    if (!stage.steps.every((s) => stepStateOf(orch, s.id) === "done")) return stage.id;
+    if (!stage.steps.every((s) => isStepFinished(stepStateOf(orch, s.id)))) return stage.id;
   }
   return null;
 }
@@ -393,6 +429,45 @@ export function runnableIdleRails(orch: Orchestration): Rail[] {
     .filter(
       (rail) =>
         railStateOf(orch, rail.id) === "idle" && firstUnfinishedStageId(rail, orch) !== null
+    );
+}
+
+/// The rails a toolbar "Clear done" sweeps away: the ones with nothing
+/// left in them to do. Three conditions, and each one excludes a rail
+/// that would otherwise read as finished by arithmetic alone.
+///
+/// A rail with NO STEPS is unstarted, not finished.
+/// `firstUnfinishedStageId` answers null for it -- correctly, since there
+/// is no stage to arm -- so "every step is done" is vacuously true of a
+/// rail the human added a minute ago and has not filled yet. Sweeping
+/// those under a button that promises to remove finished work is the one
+/// way this action could destroy something nobody had finished with.
+///
+/// `skipped` counts as finished here, and deliberately NOT the way
+/// `railDoneStepIds` counts it. That function answers "which steps are
+/// done WORK", where a skip is a decision rather than an achievement;
+/// this one answers "has this rail anything left", and a step the human
+/// sent the rail past is as much behind it as one that ran. Reading it
+/// the other way would leave a rail with one skipped step unclearable
+/// for good, which is the opposite of what the skip meant.
+///
+/// Only IDLE rails, which is `runnableIdleRails`' exclusion for the
+/// opposite reason: a running rail is mid-flight, and a paused one is
+/// paused because somebody decided it should be -- neither is a rail
+/// whose story is over, whatever its run rows currently add up to.
+///
+/// Cards already sitting in the done column with no run row do NOT make
+/// a rail finished: `firstUnfinishedStageId` does not consult them, so
+/// such a rail is offered to "Run all" instead, and the first tick marks
+/// its steps done and completes it. One rail cannot be both.
+export function finishedRails(orch: Orchestration): Rail[] {
+  return [...orch.rails]
+    .sort((a, b) => a.position - b.position)
+    .filter(
+      (rail) =>
+        railStateOf(orch, rail.id) === "idle" &&
+        rail.stages.some((stage) => stage.steps.length > 0) &&
+        firstUnfinishedStageId(rail, orch) === null
     );
 }
 
@@ -732,20 +807,61 @@ function deadSessionAction(
 /// - `turn-ended` -- the agent stopped talking and the card never
 ///   reached the done column. The work is not finished and nothing is
 ///   going to finish it.
+/// - `stale` -- `turn-ended`, aged. The turn ended more than
+///   STALE_AFTER_MS ago and the card still has not moved, so this is no
+///   longer an agent about to write a status: it is a step that will
+///   never finish and a rail that will wait behind it forever. Named
+///   apart from `turn-ended` because the rail's answer to the two
+///   differs -- one is worth a moment, the other is worth going to look
+///   at.
 /// - `failed` -- the agent stopped because something BROKE: the daemon
 ///   matched the profile's own error text on the rendered screen, or
 ///   watched the machine sleep through the conversation. "The agent
 ///   stopped talking" is true of this too and useless; the human needs
 ///   to know it broke, and a dead network and an expired token want
 ///   opposite responses.
-export type StepAttention = "asking" | "turn-ended" | "failed";
+/// - `decoy-edit` -- the agent wrote this rail worktree's OWN copy of
+///   the step's card instead of the card itself (see worktreeCards.ts).
+///   The one mark that names a cause rather than a symptom, and the only
+///   one that holds while the agent is still working: nothing it does
+///   from here can reach the board.
+export type StepAttention = "asking" | "turn-ended" | "stale" | "failed" | "decoy-edit";
 
-/// `failed` outranks both: a question and a quiet agent are states a
-/// rail can legitimately be in, and a broken one is not. `asking`
-/// outranks `turn-ended` in turn -- one is a question with a human on
-/// the other end of it, the other is work that quietly stopped.
+/// How long a turn has to have been over before `turn-ended` becomes
+/// `stale`.
+///
+/// Ten minutes, and the number is a judgement about ONE failure mode: an
+/// agent that finishes its work and then writes the card's status does
+/// both within a second of each other, so any gap this wide is not a
+/// write in flight. Shorter would start accusing agents mid-sentence
+/// (the daemon calls two quiet seconds `idle`); longer would leave a
+/// wedged rail looking merely slow for most of a coffee break.
+///
+/// Measured from the session's last status CHANGE, which is the only
+/// clock gavin has -- the daemon reports that a status changed, never
+/// when it began. A wait already under way when the app attached is
+/// stamped at first sight, so the elapsed time is a floor: it can only
+/// under-report, never accuse early.
+export const STALE_AFTER_MS = 10 * 60_000;
+
+/// The rank exists twice over: it picks the mark a rail HEADER shows
+/// when several of its steps have one, and it picks which of a single
+/// step's candidate marks wins.
+///
+/// The rule is one line: a mark that means "this will not finish by
+/// itself" outranks a mark that means "it still might". `failed`,
+/// `decoy-edit` and `stale` are the first kind; `asking` (a question
+/// with a human on the other end) and `turn-ended` (a turn that ended a
+/// moment ago, possibly with a status write in flight) are the second.
+///
+/// Within the first kind, `failed` leads because the daemon witnessed it
+/// and it carries the agent's own words; `decoy-edit` follows because
+/// gavin can name the exact mistake; `stale` last because it only knows
+/// that nothing happened.
 const ATTENTION_RANK: Record<StepAttention, number> = {
-  failed: 3,
+  failed: 5,
+  "decoy-edit": 4,
+  stale: 3,
   asking: 2,
   "turn-ended": 1,
 };
@@ -769,7 +885,21 @@ export function stepAttentions(
   board: Board,
   tree: GavinTree | undefined,
   tools: ToolSummary[] | null,
-  sessionStatuses: Map<string, SessionStatus>
+  sessionStatuses: Map<string, SessionStatus>,
+  /// The steps whose card this rail's own worktree has been written in
+  /// (decoyEditedSteps, fed by what each running step's run changed in
+  /// its own checkout). Empty by default, which is what a workspace with
+  /// no bound rail and a sweep that has not run yet both look like --
+  /// and "we have not looked" must never read as "we looked and it was
+  /// fine", which is why absence produces no mark rather than a
+  /// reassuring one.
+  decoyEdits: ReadonlySet<string> = new Set(),
+  /// When each session last CHANGED status, epoch ms -- layoutState's
+  /// statusSinceById, which is the only clock gavin has for this (see
+  /// STALE_AFTER_MS). A session with no stamp never goes stale: an
+  /// unmeasured wait is not a long one.
+  statusSince: ReadonlyMap<string, number> = new Map(),
+  now: number = Date.now()
 ): Map<string, StepAttention> {
   const marks = new Map<string, StepAttention>();
   // Before the tree walk. This runs on every layoutState emission -- a
@@ -793,48 +923,69 @@ export function stepAttentions(
     for (const stage of rail.stages) {
       for (const step of stage.steps) {
         if (stepStateOf(orch, step.id) !== "running") continue;
+        // Gathered rather than returned at the first hit, so the winner
+        // is ATTENTION_RANK's decision and not the order these tests
+        // happen to be written in. A step can genuinely be two of these
+        // at once -- an agent that wrote the decoy and then broke -- and
+        // before this the answer depended on which `if` came first.
+        const candidates: StepAttention[] = [];
+        // The one mark that does not read a session status. A decoy
+        // write is already on disk: the agent may still be working, and
+        // everything it does from here still lands in a file the board
+        // never reads.
+        if (decoyEdits.has(step.id)) candidates.push("decoy-edit");
         const sessionId = runByStep.get(step.id)?.sessionId ?? null;
-        if (!sessionId) continue;
-        const status = sessionStatuses.get(sessionId);
+        const status = sessionId ? sessionStatuses.get(sessionId) : undefined;
         // No status at all is "nothing reported yet", not "finished":
         // the daemon registers every new session idle, so believing an
         // absent status would mark a step the instant it launched.
         //
-        // `failed` first, and for EVERY step kind including a tool's:
-        // this is the one mark that outranks the step's own rules,
-        // because rule 3d has stalled the step on this very tick and the
-        // human is about to be shown a paused rail that owes them a
-        // reason. `turn-ended` skips tool steps below precisely because
-        // their rules speak for them; here the rule and the mark say the
-        // same thing.
+        // `failed` holds for EVERY step kind including a tool's, because
+        // rule 3d has stalled the step on this very tick and the human
+        // is about to be shown a paused rail that owes them a reason.
+        // `turn-ended` skips tool steps below precisely because their
+        // rules speak for them; here the rule and the mark agree.
         if (status === "failed") {
-          marks.set(step.id, "failed");
-          continue;
+          candidates.push("failed");
+        } else if (status === "waiting_for_input") {
+          candidates.push("asking");
+          // An idle TOOL step is never this. An `agent` tool's step is
+          // marked done by agentTurnEnded on this very tick -- from the
+          // running-rail rule and from the reconciliation pass both --
+          // so a mark would only flicker; a `command` tool's verdict is
+          // its exit code and nothing else (T5), because a quiet `npm
+          // run dev` is a server that started rather than an agent that
+          // stopped.
+        } else if (status === "idle" && !isToolStep(step)) {
+          // The card IS finished -- saying its turn ended short of Done
+          // would be false, and rule 1 marks the step done this same
+          // tick. Read through effectiveStatus, so a nested task under a
+          // Done plan counts as done rather than as abandoned work.
+          const entry = cards.get(step.cardPath);
+          const cardStatus = entry ? effectiveStatus(entry, plans) : null;
+          const finished =
+            doneSlug !== null && cardStatus !== null && slugStatus(cardStatus) === doneSlug;
+          if (!finished) {
+            const since = sessionId === null ? undefined : statusSince.get(sessionId);
+            const aged = since !== undefined && now - since >= STALE_AFTER_MS;
+            candidates.push(aged ? "stale" : "turn-ended");
+          }
         }
-        if (status === "waiting_for_input") {
-          marks.set(step.id, "asking");
-          continue;
-        }
-        if (status !== "idle") continue;
-        // An idle TOOL step is never this. An `agent` tool's step is
-        // marked done by agentTurnEnded on this very tick -- from the
-        // running-rail rule and from the reconciliation pass both -- so
-        // a mark would only flicker; a `command` tool's verdict is its
-        // exit code and nothing else (T5), because a quiet `npm run dev`
-        // is a server that started rather than an agent that stopped.
-        if (isToolStep(step)) continue;
-        // The card IS finished -- saying its turn ended short of Done
-        // would be false, and rule 1 marks the step done this same tick.
-        // Read through effectiveStatus, so a nested task under a Done
-        // plan counts as done rather than as abandoned work.
-        const entry = cards.get(step.cardPath);
-        const cardStatus = entry ? effectiveStatus(entry, plans) : null;
-        if (doneSlug && cardStatus !== null && slugStatus(cardStatus) === doneSlug) continue;
-        marks.set(step.id, "turn-ended");
+        const best = highestAttention(candidates);
+        if (best) marks.set(step.id, best);
       }
     }
   }
   return marks;
+}
+
+/// The most urgent of a step's candidate marks, or null for none.
+function highestAttention(candidates: readonly StepAttention[]): StepAttention | null {
+  let best: StepAttention | null = null;
+  for (const mark of candidates) {
+    if (!best || ATTENTION_RANK[mark] > ATTENTION_RANK[best]) best = mark;
+  }
+  return best;
 }
 
 /// One spelling of what a mark MEANS, so the chip's tooltip, the rail
@@ -852,6 +1003,22 @@ export function attentionTip(attention: StepAttention, doneName: string): string
       return "the agent stopped because something broke, not because it finished";
     case "turn-ended":
       return `the agent's turn ended but the card is not in ${doneName}`;
+    // Says the elapsed time, because that is the whole difference from
+    // `turn-ended` and the reader cannot see it anywhere else.
+    case "stale":
+      return (
+        `the agent's turn ended over ${Math.round(STALE_AFTER_MS / 60_000)} minutes ago and the ` +
+        `card is still not in ${doneName} — nothing is going to finish this step`
+      );
+    // The only tip that names a file rather than a state: the fix is a
+    // specific one (point the agent at the card's real path, or copy the
+    // worktree's edit over it), and a human told merely that something
+    // is wrong would go looking at the agent instead of at the disk.
+    case "decoy-edit":
+      return (
+        "the agent edited this rail worktree's own copy of the card instead of the card — " +
+        "gavin only ever reads the one in the main checkout, so this step can never finish"
+      );
   }
 }
 
@@ -1099,13 +1266,16 @@ export function nextActions(
         // The status is the one the BOARD shows the card in, so a nested
         // task under a Done plan is skipped here rather than re-run.
         //
-        // `!== "done"` covers a STALLED step too: a card someone finished
-        // by hand while its step sat failed is done, not something rule 2
-        // should then retry.
+        // `!isStepFinished` covers a STALLED step too: a card someone
+        // finished by hand while its step sat failed is done, not
+        // something rule 2 should then retry. It also covers a SKIPPED
+        // one, and that half matters: the human sent the rail past this
+        // step, and a card that later reaches Done by any other route
+        // must not quietly rewrite that decision as "done".
         const cardStatus = statusOf(entry);
         if (
           !isToolStep(step) &&
-          state !== "done" &&
+          !isStepFinished(state ?? "pending") &&
           doneSlug &&
           cardStatus !== null &&
           slugStatus(cardStatus) === doneSlug
@@ -1376,13 +1546,17 @@ export function nextActions(
           }
         }
         }
-        // A `sequence` stage stops here unless THIS step read "done" on
-        // this pass -- covering a launch (now "running"), a stall (every
-        // site that sets `stalled = true` for this step also leaves it at
+        // A `sequence` stage stops here unless THIS step finished on this
+        // pass -- covering a launch (now "running"), a stall (every site
+        // that sets `stalled = true` for this step also leaves it at
         // "stalled" first), and a step rule 1-3 had no reason to touch at
         // all. Rule 5 below still reads `stalled` to pause the rail; that
         // is a separate concern from stopping THIS stage's walk early.
-        if (sequential && simulated.get(step.id) !== "done") break;
+        //
+        // A `skipped` member lets the next one go, which is the whole of
+        // "skip and proceed" inside a sequence: the rail carries on with
+        // the member after the one the human stepped over.
+        if (sequential && !isStepFinished(simulated.get(step.id) ?? "pending")) break;
       }
 
       // Rule 5 -- any stall this tick pauses the rail; the executor
@@ -1393,9 +1567,11 @@ export function nextActions(
       // decided from a `currentStageId` the executor is about to change.
       if (loopingBack) break;
 
-      // Rule 4 -- a fully-done stage advances. An empty stage is
-      // vacuously done, so it is stepped over rather than hanging.
-      if (!stage.steps.every((s) => simulated.get(s.id) === "done")) break;
+      // Rule 4 -- a fully-finished stage advances. An empty stage is
+      // vacuously done, so it is stepped over rather than hanging. A
+      // `skipped` step counts here for the same reason a `done` one
+      // does: the rail has nothing left to do with it.
+      if (!stage.steps.every((s) => isStepFinished(simulated.get(s.id) ?? "pending"))) break;
       const next = rail.stages
         .filter((s) => s.position > stage.position)
         .sort((a, b) => a.position - b.position)[0];
@@ -1510,7 +1686,27 @@ export function pageToSpawnForRail(
 /// Never removes a worktree or a page -- those outlive the plan that
 /// referenced them (spec §7).
 export function deleteRail(orch: Orchestration, railId: string): Orchestration {
-  return sweepOrphans({ ...orch, rails: renumber(orch.rails.filter((r) => r.id !== railId)) });
+  return deleteRails(orch, [railId]);
+}
+
+/// Several rails in ONE pass, for the toolbar's "Clear done". Not a loop
+/// over `deleteRail`, because both of the steps it takes are wholesale:
+/// `renumber` re-derives every surviving rail's position from its index,
+/// so removing rails one at a time renumbers positions that the next
+/// removal only invalidates again, and `sweepOrphans` walks the whole
+/// plan for run rows to drop. One filter, one renumber, one sweep.
+///
+/// An empty id list returns the plan untouched rather than a fresh
+/// object: the caller's own guard is what stops a no-op write, and
+/// handing back the same reference keeps the optimistic-rollback check
+/// in `mutatePlan` honest.
+export function deleteRails(orch: Orchestration, railIds: string[]): Orchestration {
+  const dropped = new Set(railIds);
+  if (dropped.size === 0) return orch;
+  return sweepOrphans({
+    ...orch,
+    rails: renumber(orch.rails.filter((r) => !dropped.has(r.id))),
+  });
 }
 
 /// A freshly minted stage: `mode: "sequence"`, `name: null`. A stage
@@ -2107,6 +2303,12 @@ export function railDoneStepIds(
   for (const stage of [...rail.stages].sort((a, b) => a.position - b.position)) {
     for (const step of [...stage.steps].sort((a, b) => a.position - b.position)) {
       if (ran.has(step.id)) {
+        // `done` alone, NOT isStepFinished: a `skipped` step is behind
+        // the run but it is not finished work, and it is the only record
+        // that the human sent the rail past it. Sweeping it under a
+        // button labelled "Clear done steps" would erase that decision
+        // and call it done in the same gesture. Remove (the per-step X)
+        // is still there for whoever actually wants it gone.
         if (stepStateOf(orch, step.id) === "done") ids.push(step.id);
         continue;
       }
@@ -2261,6 +2463,22 @@ export function availableCards(
 /// the drawer as one row like any other and the children the human wrote
 /// would simply have vanished from the panel. The number is what says
 /// they went INTO the plan rather than away.
+/// The nested children of ONE plan, in tree order -- what a surface
+/// holding `CardEntry`s (the rail header's "Move all to …") needs when
+/// it has to name what a status write is about to carry with it. The
+/// board's own cards already carry `nestedChildren`; this is the same
+/// list for the side of the app that reads the tree instead.
+export function nestedChildrenOf(
+  parentPath: string,
+  cards: Map<string, CardEntry>
+): CardEntry[] {
+  const plans = planIndex(cards);
+  // Matched by path, never by object identity: the map these entries
+  // come from is rebuilt on every tree push, and a `$state` proxy is
+  // never identical to the object it wraps.
+  return [...cards.values()].filter((e) => nestedParent(e, plans)?.plan.path === parentPath);
+}
+
 export function nestedChildCounts(cards: Map<string, CardEntry>): Map<string, number> {
   const plans = planIndex(cards);
   const counts = new Map<string, number>();
@@ -2273,7 +2491,7 @@ export function nestedChildCounts(cards: Map<string, CardEntry>): Map<string, nu
 }
 
 /// `availableCards` with FINISHED work taken out -- what the "+ Add step"
-/// picker offers, and what Generate hands the agent.
+/// picker offers, and what Organize hands the agent.
 ///
 /// The drawer can afford to keep the done cards: it buckets by status and
 /// starts the done bucket collapsed, so a rail that genuinely wants a
@@ -2448,7 +2666,10 @@ export function detectConflicts(
   worktrees: WorktreeInfo[] | null,
   branches: string[] | null = null
 ): Conflict[] {
-  const steps = placedSteps(orch, tree).filter((s) => s.state !== "done");
+  // Finished steps drop out, `skipped` as much as `done`: a conflict is
+  // a claim about work the rails have STILL to do, and a step the human
+  // sent the rail past will never touch the checkout again.
+  const steps = placedSteps(orch, tree).filter((s) => !isStepFinished(s.state));
   const conflicts: Conflict[] = [];
 
   // 1. A PARALLEL stage IS a same-worktree conflict by construction: its

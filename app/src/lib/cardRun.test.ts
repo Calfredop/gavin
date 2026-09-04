@@ -19,6 +19,7 @@ import {
   runStatusNeeded,
   developAvailable,
   provisionalSessionName,
+  cardHomeNote,
 } from "./cardRun";
 
 describe("composeTaskPrompt", () => {
@@ -70,6 +71,48 @@ describe("composePlanPrompt", () => {
         "tick items (- [x]) as you complete them, promote items that need their own agent " +
         "with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field."
     );
+  });
+});
+
+// The decoy: where `.gavin*` is tracked in git, every worktree carries
+// its own copy of every card at the same relative path, and a rail step
+// launches its agent INSIDE one. Writing the copy is silent -- the board
+// never moves, the step never completes, and the divergence rides the
+// branch into a merge conflict.
+describe("cardHomeNote", () => {
+  it("says nothing when the card is inside the launch directory", () => {
+    expect(cardHomeNote("/ws/.gavin-root/plans/a.md", "/ws/.gavin-root")).toBe("");
+    expect(cardHomeNote("/ws/.gavin-root/plans/a.md", "/ws")).toBe("");
+  });
+
+  // A board Run passes no cwd at all, and must read exactly as it did
+  // before this existed.
+  it("says nothing with no launch directory", () => {
+    expect(cardHomeNote("/ws/.gavin-root/plans/a.md")).toBe("");
+    expect(composePlanPrompt("/p/plan.md", [], null)).toBe(composePlanPrompt("/p/plan.md"));
+  });
+
+  // Three things, and all three earn their place: which file is real,
+  // what the other one is, and what happens if it is written.
+  it("names the real path, the decoy, and the consequence", () => {
+    const note = cardHomeNote("/ws/.gavin-root/plans/a.md", "/wt/rail-a");
+    expect(note).toContain("/ws/.gavin-root/plans/a.md");
+    expect(note).toContain("decoy");
+    expect(note).toContain("invisible to the board");
+  });
+
+  it("rides on both launched prompts when the run is in a worktree", () => {
+    expect(composePlanPrompt("/ws/.gavin-root/plans/a.md", [], "/wt/rail-a")).toContain("decoy");
+    expect(composeTaskPrompt("/ws/.gavin-root/plans/a.md", "A", "body", [], "/wt/rail-a")).toContain(
+      "decoy"
+    );
+  });
+
+  // After the status contract, not before it: the sentence the note
+  // qualifies is the one telling the agent to write the card's status.
+  it("comes last, after the instruction it qualifies", () => {
+    const p = composeTaskPrompt("/ws/.gavin-root/plans/a.md", "A", "body", [], "/wt/rail-a");
+    expect(p.indexOf("gavin_set_plan_field")).toBeLessThan(p.indexOf("decoy"));
   });
 });
 

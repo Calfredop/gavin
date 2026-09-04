@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { Play, Plus } from "@lucide/svelte";
+  import { BrushCleaning, Play, Plus } from "@lucide/svelte";
   import OrchestrationRail from "./OrchestrationRail.svelte";
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
   import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
   import RailBindDialog from "./RailBindDialog.svelte";
+  import type { RailBindTab } from "./railBind";
   import SearchInput from "./ui/SearchInput.svelte";
   import { searchOrchestration } from "./orchestrationSearch";
   import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
@@ -27,6 +28,7 @@
   import {
     cardIndex,
     doneColumn,
+    firstColumnOf,
     railCardsToMove,
     detectConflicts,
     numberConflicts,
@@ -41,17 +43,19 @@
     findStep,
     findStage,
     runnableIdleRails,
+    finishedRails,
     conflictCheckout,
   } from "./orchestration";
   import type { Rail } from "./orchestration";
   import {
     railDeleteConfirm,
     railClearDoneConfirm,
+    clearFinishedRailsConfirm,
     groupRemoveConfirm,
     runAllConfirm,
   } from "./railConfirm";
   import { findTool, toolKindLabel } from "./orchestrationTools";
-  import { generateAction, generateButtonLabel, reorganizeAction } from "./orchestrationAgent";
+  import { organizeAction, organizeButtonLabel, reorganizeAction } from "./orchestrationAgent";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
   import {
     groupTemplateRecords,
@@ -69,6 +73,7 @@
     dismissSaveError,
     addRailAction,
     deleteRailAction,
+    deleteRailsAction,
     addStepAsStageAction,
     removeStepAction,
     startRail,
@@ -78,12 +83,13 @@
     setRailAutoResumeAction,
     retryStep,
     markStepDone,
+    skipStep,
     makeStageSequentialAction,
     moveStepIntoStageAction,
     moveStepToNewStageAction,
     addCardAsStageAction,
     addStepToStageAction,
-    requestGenerate,
+    requestOrganize,
     requestRailReorganize,
     revealOrchestrationAgent,
     renameRailAction,
@@ -94,6 +100,7 @@
     addTemplateToStageAction,
     setStepParamsAction,
     moveRailCardsAction,
+    breakOutNestedCardAction,
     clearDoneStepsAction,
     stepAttentionsByWorkspace,
     setStageModeAction,
@@ -173,6 +180,16 @@
   // The rail whose bindings are being edited, set by the rail header and
   // by the conflicts box's inline fix.
   let binding = $state<string | null>(null);
+  // WHICH of that rail's three bindings the human came for. Held beside
+  // `binding` rather than folded into it, because `binding` is what the
+  // dialog's rail prop resolves through (see railSelection.svelte.ts) and
+  // that lookup has to stay a plain id -- the tab is only a starting
+  // point, and the dialog owns it from the first click on its strip.
+  let bindingTab = $state<RailBindTab>("worktree");
+  function openBind(railId: string, tab: RailBindTab): void {
+    bindingTab = tab;
+    binding = railId;
+  }
 
   // A rail's two destructive header buttons ask first, in the app's own
   // ConfirmPrompt: both take steps off the plan for good, and neither is
@@ -228,6 +245,34 @@
     const ids = runnableRails.map((r) => r.id);
     runAllPrompt = false;
     for (const id of ids) await startRail(workspaceId, id);
+  }
+
+  // "Clear done": remove every rail that has finished everything on it.
+  // The same bare-flag shape "Run all" uses, and for the same reason --
+  // the list is re-derived while the prompt stands, so a rail that
+  // finishes (or is deleted by hand, or starts running again) under the
+  // open prompt changes what it says, and the prompt closes if nothing
+  // is left to remove by the time the human reaches the button.
+  let clearFinishedPrompt = $state(false);
+  const finished = $derived(orch ? finishedRails(orch) : []);
+  const clearFinishedContent = $derived.by(() =>
+    clearFinishedPrompt && orch && finished.length > 0
+      ? clearFinishedRailsConfirm(orch, cards)
+      : null
+  );
+  const clearFinishedTip = $derived(
+    finished.length === 0
+      ? "No rail has finished every step it holds"
+      : `Remove ${finished.length} finished ${finished.length === 1 ? "rail" : "rails"}…`
+  );
+
+  /// One write for all of them (deleteRailsAction), and the ids are read
+  /// BEFORE the prompt closes: `finished` is derived, so it empties the
+  /// moment the rails leave the plan.
+  function clearFinished(): void {
+    const ids = finished.map((r) => r.id);
+    clearFinishedPrompt = false;
+    void deleteRailsAction(workspaceId, ids);
   }
 
   // The group whose "Save as template…" dialog is open, by stage id --
@@ -367,9 +412,9 @@
     new Set((orch?.rails ?? []).flatMap((r) => r.stages.flatMap((s) => s.steps.map((t) => t.cardPath))))
   );
   const available = $derived(availableCards(cards, placed));
-  // The "+ Add step" picker and Generate get the set with finished work
+  // The "+ Add step" picker and Organize get the set with finished work
   // taken out -- neither has the drawer's bucket to put it in, so both
-  // would otherwise offer up (and Generate would instruct an agent to
+  // would otherwise offer up (and Organize would instruct an agent to
   // place) cards the scheduler marks done and cascades straight past.
   const pickable = $derived(unfinishedCards(available, planIndex(cards), board));
   // A nested child is not on offer -- its plan carries it -- so both
@@ -387,10 +432,11 @@
   const unplacedGroups = $derived(unplaced.groups);
   const shownRails = $derived(rails.filter((r) => lens.railShown(r.id)));
 
-  /// The drawer's click-to-add appends to the FIRST rail. The drawer is
-  /// rendered with no rails too (it disables every row then, on the null
-  /// target it is handed), so a stray call in that state does nothing
-  /// rather than throw on `rails[0].id`.
+  /// The drawer's click-to-add -- tool and group rows only -- appends to
+  /// the FIRST rail. The drawer is rendered with no rails too (it
+  /// disables those rows then, on the null target it is handed), so a
+  /// stray call in that state does nothing rather than throw on
+  /// `rails[0].id`.
   function onFirstRail(place: (rail: Rail) => void): void {
     const rail = rails[0];
     if (rail) place(rail);
@@ -597,11 +643,11 @@
   // to that run instead of a second launch, because both requests rewrite
   // the WHOLE plan and would overwrite each other.
   const agentRun = $derived(ws?.orchestrationAgent ?? null);
-  const generateFor = $derived(
-    generateAction({
+  const organizeFor = $derived(
+    organizeAction({
       run: agentRun,
       // Measured over every unplaced card, never the search lens's view:
-      // Generate hands the agent the real set, so a filter that happens
+      // Organize hands the agent the real set, so a filter that happens
       // to hide them all must not claim there is nothing left to place.
       unplacedCount: pickable.length,
       hasRoot: root !== null,
@@ -621,8 +667,8 @@
   }
 
   /// The header button: the unplaced cards are the job.
-  async function generate(): Promise<void> {
-    handOff(await requestGenerate(workspaceId, pickable, conflictSummary));
+  async function organize(): Promise<void> {
+    handOff(await requestOrganize(workspaceId, pickable, conflictSummary));
   }
 
   /// A rail header's button: that one rail is the job, and it is handed
@@ -641,9 +687,9 @@
   /// going. Never a dead button -- a disabled control cannot explain
   /// itself, and "why can I not press this" is exactly the question a
   /// run holding the slot answers by showing itself.
-  function pressGenerate(): void {
-    if (generateFor.kind === "jump") void revealOrchestrationAgent(workspaceId);
-    else if (generateFor.kind === "start") void generate();
+  function pressOrganize(): void {
+    if (organizeFor.kind === "jump") void revealOrchestrationAgent(workspaceId);
+    else if (organizeFor.kind === "start") void organize();
   }
 
   function pressReorganize(railId: string): void {
@@ -679,11 +725,11 @@
     <button
       type="button"
       class="add-rail"
-      disabled={generateFor.kind === "blocked"}
-      title={generateFor.tip}
-      onclick={pressGenerate}
+      disabled={organizeFor.kind === "blocked"}
+      title={organizeFor.tip}
+      onclick={pressOrganize}
     >
-      {generateButtonLabel(agentRun)}
+      {organizeButtonLabel(agentRun)}
     </button>
     <button
       type="button"
@@ -693,6 +739,15 @@
       onclick={() => (runAllPrompt = true)}
     >
       <Play size={14} /> Run all
+    </button>
+    <button
+      type="button"
+      class="add-rail"
+      disabled={finished.length === 0}
+      title={clearFinishedTip}
+      onclick={() => (clearFinishedPrompt = true)}
+    >
+      <BrushCleaning size={14} /> Clear done
     </button>
     <button
       type="button"
@@ -729,8 +784,14 @@
       {orch}
       {tools}
       {groupsBlocked}
-      onBindWorktree={(railId) => (binding = railId)}
+      onBindRail={openBind}
       onMakeSequential={(stageId) => void makeStageSequentialAction(workspaceId, stageId)}
+      breakOutColumn={firstColumnOf(board?.columns ?? [])?.name ?? null}
+      onBreakOut={(cardPath) => {
+        void breakOutNestedCardAction(workspaceId, cardPath).then((err) => {
+          if (err) cardWriteError = err;
+        });
+      }}
     />
   {/if}
 
@@ -786,12 +847,13 @@
             editingRailId = null;
           }}
           onCancelEdit={() => (editingRailId = null)}
-          onBind={() => (binding = rail.id)}
+          onBind={(tab) => openBind(rail.id, tab)}
           onReorganize={() => pressReorganize(rail.id)}
           reorganize={reorganizeFor(rail.id)}
           onAddStep={() => (picking = rail.id)}
           onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
           onMarkStepDone={(stepId) => void markStepDone(workspaceId, stepId)}
+          onSkipStep={(stepId) => void skipStep(workspaceId, stepId)}
           onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
           filtering={lens.filtering}
           stepLit={lens.stepLit}
@@ -817,14 +879,14 @@
         {templates}
         {nestedCounts}
         targetRailId={rails[0]?.id ?? null}
-        onAdd={(cardPath) =>
-          onFirstRail((rail) => void addStepAsStageAction(workspaceId, rail.id, cardPath))}
+        onOpenCard={(path) => (openCardPath = path)}
         onAddTool={(toolId) =>
           onFirstRail((rail) => void addToolAsStepAction(workspaceId, rail.id, toolId))}
         onAddTemplate={(templateId) => {
-          // The click-to-add path every drawer row gets: appended as its
-          // own new group at this rail's end, the same "past the end"
-          // append addToolAsStepAction gives a clicked tool.
+          // The click-to-add path a tool or group row gets: appended as
+          // its own new group at this rail's end, the same "past the end"
+          // append addToolAsStepAction gives a clicked tool. (A CARD row
+          // opens instead -- see the drawer's onOpenCard.)
           const template = templates.find((t) => t.id === templateId);
           if (template) {
             onFirstRail(
@@ -909,7 +971,12 @@
 {#if binding && orch}
   {@const bindingRail = orch.rails.find((r) => r.id === binding)}
   {#if bindingRail}
-    <RailBindDialog {workspaceId} rail={bindingRail} onClose={() => (binding = null)} />
+    <RailBindDialog
+      {workspaceId}
+      rail={bindingRail}
+      initialTab={bindingTab}
+      onClose={() => (binding = null)}
+    />
   {/if}
 {/if}
 
@@ -935,6 +1002,21 @@
     lines={runAllContent.lines}
     choices={[{ label: runAllContent.confirmLabel, onPick: () => void runAll() }]}
     onCancel={() => (runAllPrompt = false)}
+  />
+{/if}
+
+{#if clearFinishedContent}
+  <ConfirmPrompt
+    title={clearFinishedContent.title}
+    lines={clearFinishedContent.lines}
+    choices={[
+      {
+        label: clearFinishedContent.confirmLabel,
+        danger: true,
+        onPick: () => clearFinished(),
+      },
+    ]}
+    onCancel={() => (clearFinishedPrompt = false)}
   />
 {/if}
 
@@ -981,8 +1063,9 @@
     <div class="picker-body">
       <h3>Add a step</h3>
       <!-- Both step kinds, because the drawer's click-to-add can only
-           reach the FIRST rail; this picker is how a card or a tool
-           lands on a specific one without dragging. -->
+           reach the FIRST rail and a card row does not append at all;
+           this picker is how a card or a tool lands on a specific rail
+           without dragging. -->
       <p class="pick-head">Cards</p>
       {#if pickable.length === 0}
         <!-- Two different nothings, and the human is owed the difference:

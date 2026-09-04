@@ -68,15 +68,16 @@ describe("columnRunTargets", () => {
     id === "live" || id === "exited" || id === "interrupted" || id === "failed"
       ? (id as CardSessionState)
       : "none";
+  const nothingDeveloping = () => false;
 
   it("start and run skip notes and every bound card, whatever became of its session", () => {
     for (const mode of ["start", "run"] as const) {
-      expect(columnRunTargets(cards, mode, state).map((c) => c.id)).toEqual(["free", "plan"]);
+      expect(columnRunTargets(cards, mode, state, nothingDeveloping).map((c) => c.id)).toEqual(["free", "plan"]);
     }
   });
 
   it("resume adds the cards whose session exited, was interrupted, or broke — that is what it is for", () => {
-    expect(columnRunTargets(cards, "resume", state).map((c) => c.id)).toEqual([
+    expect(columnRunTargets(cards, "resume", state, nothingDeveloping).map((c) => c.id)).toEqual([
       "free",
       "exited",
       "interrupted",
@@ -87,7 +88,19 @@ describe("columnRunTargets", () => {
 
   it("never targets a live session in any mode", () => {
     for (const mode of ["start", "resume", "run"] as const) {
-      expect(columnRunTargets(cards, mode, state).some((c) => c.id === "live")).toBe(false);
+      expect(columnRunTargets(cards, mode, state, nothingDeveloping).some((c) => c.id === "live")).toBe(false);
+    }
+  });
+
+  // The count on the button is the reason this is a filter rather than
+  // left to the launch's own refusal: "Start all (7 unbound)" that starts
+  // six is a button that lied about its own scope.
+  it("never targets a card being developed, in any mode", () => {
+    for (const mode of ["start", "resume", "run"] as const) {
+      const targets = columnRunTargets(cards, mode, state, (id) => id === "free" || id === "exited");
+      expect(targets.some((c) => c.id === "free"), mode).toBe(false);
+      expect(targets.some((c) => c.id === "exited"), mode).toBe(false);
+      expect(targets.some((c) => c.id === "plan"), mode).toBe(true);
     }
   });
 });

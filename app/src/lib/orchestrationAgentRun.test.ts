@@ -1,4 +1,4 @@
-// The EFFECT half of the Orchestration tab's agent requests: Generate and
+// The EFFECT half of the Orchestration tab's agent requests: Organize and
 // a rail's Reorganize each spawn a dedicated session, record it in the
 // workspace's one slot, and release that slot when the run is over. The
 // decisions themselves are orchestrationAgent.test.ts's.
@@ -105,7 +105,7 @@ import * as layoutStateModule from "./layoutState";
 import * as cardRunActions from "./cardRunActions";
 import {
   orchestrations,
-  requestGenerate,
+  requestOrganize,
   requestRailReorganize,
   revealOrchestrationAgent,
   startOrchestrationAgentWatch,
@@ -163,9 +163,9 @@ function slot(): Record<string, unknown> | undefined {
   return get(store).workspaces[0].orchestrationAgent as Record<string, unknown> | undefined;
 }
 
-describe("requestGenerate", () => {
+describe("requestOrganize", () => {
   it("spawns its own agent in the workspace root and lands the human in it", async () => {
-    expect(await requestGenerate("ws-1", [], [])).toBeNull();
+    expect(await requestOrganize("ws-1", [], [])).toBeNull();
 
     const [cwd, command] = vi.mocked(backend.createSession).mock.calls[0];
     expect(cwd).toBe("/ws");
@@ -173,38 +173,38 @@ describe("requestGenerate", () => {
     expect(command).toContain("gavin-orchestrate");
     expect(vi.mocked(layoutStateModule.handleAgentSessionSpawned)).toHaveBeenCalledWith("ws-1", "sess-1");
     expect(vi.mocked(cardRunActions.revealSession)).toHaveBeenCalledWith("sess-1");
-    expect(vi.mocked(layoutStateModule.setSessionName)).toHaveBeenCalledWith("sess-1", "Generate");
+    expect(vi.mocked(layoutStateModule.setSessionName)).toHaveBeenCalledWith("sess-1", "Organize");
   });
 
   it("does not need the workspace's main agent to be running", async () => {
     // The workspace built above has no mainSessionId at all: the old
-    // paste-only Generate refused outright here.
-    expect(await requestGenerate("ws-1", [], [])).toBeNull();
+    // paste-only Organize refused outright here.
+    expect(await requestOrganize("ws-1", [], [])).toBeNull();
   });
 
   it("records the run so a later window can tell one is going", async () => {
-    await requestGenerate("ws-1", [], []);
-    expect(slot()).toEqual({ sessionId: "sess-1", railId: null, label: "Generate" });
+    await requestOrganize("ws-1", [], []);
+    expect(slot()).toEqual({ sessionId: "sess-1", railId: null, label: "Organize" });
   });
 
   it("refuses a second run while the first is going, and says which", async () => {
-    await requestGenerate("ws-1", [], []);
+    await requestOrganize("ws-1", [], []);
     vi.mocked(backend.createSession).mockClear();
 
-    const error = await requestGenerate("ws-1", [], []);
-    expect(error).toContain("Generate is already running");
+    const error = await requestOrganize("ws-1", [], []);
+    expect(error).toContain("Organize is already running");
     expect(vi.mocked(backend.createSession)).not.toHaveBeenCalled();
   });
 
   it("refuses without a root folder to start the agent in", async () => {
     store.update((s) => ({ ...s, workspaces: [workspace({ rootPath: null })] }));
-    expect(await requestGenerate("ws-1", [], [])).toContain("no root folder");
+    expect(await requestOrganize("ws-1", [], [])).toContain("no root folder");
     expect(vi.mocked(backend.createSession)).not.toHaveBeenCalled();
   });
 
   it("records nothing when the spawn itself fails", async () => {
     vi.mocked(backend.createSession).mockRejectedValue(new Error("no pty"));
-    expect(await requestGenerate("ws-1", [], [])).toContain("no pty");
+    expect(await requestOrganize("ws-1", [], [])).toContain("no pty");
     expect(slot()).toBeUndefined();
   });
 });
@@ -219,11 +219,11 @@ describe("requestRailReorganize", () => {
     });
   });
 
-  it("holds the SAME slot Generate holds", async () => {
+  it("holds the SAME slot Organize holds", async () => {
     // Both requests rewrite the whole plan, so the second one to finish
     // would silently undo the first.
     await requestRailReorganize("ws-1", "r1", new Map(), [], []);
-    expect(await requestGenerate("ws-1", [], [])).toContain("Reorganize “backend” is already running");
+    expect(await requestOrganize("ws-1", [], [])).toContain("Reorganize “backend” is already running");
   });
 
   it("is refused for a rail that is gone, before anything is spawned", async () => {
@@ -234,7 +234,7 @@ describe("requestRailReorganize", () => {
 
 describe("revealOrchestrationAgent", () => {
   it("puts the human in front of the run holding the slot", async () => {
-    await requestGenerate("ws-1", [], []);
+    await requestOrganize("ws-1", [], []);
     vi.mocked(cardRunActions.revealSession).mockClear();
 
     await revealOrchestrationAgent("ws-1");
@@ -254,7 +254,7 @@ describe("the slot sweep", () => {
     store.set({
       workspaces: [
         workspace(
-          { orchestrationAgent: { sessionId: "sess-1", railId: null, label: "Generate" } },
+          { orchestrationAgent: { sessionId: "sess-1", railId: null, label: "Organize" } },
           over.sessions ?? ["sess-1"]
         ),
       ],
@@ -320,7 +320,7 @@ describe("the slot sweep", () => {
   it("frees the slot a launch just filled once that run ends", async () => {
     await sweep();
     store.update((s) => ({ ...s, workspaces: [workspace({}, ["sess-1"])] }));
-    await requestGenerate("ws-1", [], []);
+    await requestOrganize("ws-1", [], []);
     expect(slot()).toBeDefined();
 
     store.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));

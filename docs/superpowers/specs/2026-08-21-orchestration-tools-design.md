@@ -32,6 +32,9 @@ one that WRITES it, and still nothing that reads it.*
 | T8 | The plan is still replaced **wholesale**; tools are a **separate, targeted store** (upsert/delete by id), because a tool outlives every arrangement that uses it. |
 | T9 | **Added 2026-09-02:** a fourth kind, `gavin`, is an action **the app performs itself** — no session, no checkout, no exit code. Built-in only, and its **body names the action** so it stays data (T7) rather than a branch on an id. One ships: `builtin:start-rail`. See §8. |
 | T10 | **Added 2026-09-03:** two more kinds, and both exist because a **completion rule** is what a kind is for. `until` runs a check and, when it fails, sends the rail **backwards** over the step before it, up to a budget. `pr` runs nothing at all: it waits on the pull request for the rail's branch, which gavin reads with `gh` host-side, and reaches the same verdict from GitHub. Both are built-in only. See §9. |
+| T11 | **Added 2026-09-04:** a tool carries its own **working directory** (`cwd`, relative to the workspace root, absolute kept as written, absent = the root). It is read **only by a standalone run** (T12). A rail step still runs in the rail's checkout and ignores it — T6 is unchanged, and deliberately so: rail conflict detection is computed off `worktreePath ?? rootPath`, so a step that quietly jumped out of its worktree would let two rails collide with nothing left to warn about. See §10. |
+| T12 | **Added 2026-09-04:** a tool can be run **standalone** from a per-workspace **Tools** hub tab — the same library, filtered to the three kinds that mean anything without a rail (`agent`, `command`, `script`), with **one session per run** and a run the **daemon** remembers. Sequencing stays orchestration's job: a multi-step deploy is written as one `script` tool, because bash already sequences. See §10. |
+| T13 | **Added 2026-09-04:** a human can author **every** kind, and the Tools tab **edits** as well as runs. What kept `gavin`, `until` and `pr` built-in-only was never the scheduler — every rule about them branches on the KIND — it was an edit form with one body field. The form now has three (source / an action select / none), so all six are authorable and every built-in offers Duplicate. The Tools tab lists the whole library, with Run dark and a reason on the three that only mean something as a step. See §11. |
 
 ---
 
@@ -59,6 +62,8 @@ export interface Tool {
   body: string;
   params: ToolParam[];
   scope: ToolScope;
+  /// Where a STANDALONE run happens (T11, v30). A rail step ignores it.
+  cwd?: string | null;
 }
 ```
 
@@ -68,6 +73,14 @@ daemon at all.
 
 `gavin` was added by §8. `TOOL_KINDS` — what the library dialog's chips
 offer — stays the three **authorable** kinds; the fourth is built-in only.
+
+`cwd` was added by §10. It is `Option<String>` on the wire, which widens
+an **existing** request (`SaveTool`) and is therefore invisible to
+`min_version_for`: a v29 daemon takes the save, drops the directory and
+hands the tool back rooted wherever the launcher stood. The gate that
+matters is the app's `FEATURE_MIN_VERSION.toolCwd`, and its consumer is
+the library dialog's field, which is disabled with the reason rather than
+accepting a value the daemon throws away.
 
 ### 1.2 Step
 
@@ -284,11 +297,14 @@ badges, retry, remove.
 *List mode*: three sections (Built-in / This workspace / All workspaces).
 Built-ins offer **Duplicate**; the others offer **Edit** and **Delete**.
 
-*Edit mode*: name, description, kind (three radio chips), scope (This
+*Edit mode*: name, description, kind (radio chips), scope (This
 workspace / All workspaces), body (a textarea; monospace for `command` and
 `script`), and a params editor — rows of name/label/default with add and
 remove. Beneath the body, a live list of the `{{placeholders}}` found in it,
 flagging any that no param declares.
+
+**Amended 2026-09-04 (T13):** the chips offer all six kinds and the body
+field takes its shape from the kind — see §11.
 
 ### 5.4 Step params dialog
 
@@ -472,6 +488,10 @@ any other tool step (T6). That is a harmless over-report — it touches no
 checkout — and handing `detectConflicts` the tool library to tell them
 apart costs more than the false positive does.
 
+**Amended 2026-09-04 (T13):** no longer built-in-only. The library dialog
+draws a `gavin` body as a **select** over `GAVIN_ACTIONS` rather than a
+text box, which is what made the chip safe to offer — see §11.
+
 ---
 
 ## 9. `until` and `pr`: kinds that can move a rail backwards (added 2026-09-03)
@@ -487,6 +507,11 @@ completion rules live in the kind. So `until` is not a `command` with a
 flag and `pr` is not a `gavin` action with a timer: a duplicate of either
 — or one a newer gavin ships — loops because of what it IS, not because
 the scheduler recognised an id.
+
+**Amended 2026-09-04 (T13):** neither is built-in-only any more, and the
+sentence above is why it was always safe — "a duplicate of either loops
+because of what it IS". What was missing was a form that could write one:
+§11.
 
 `orchestrationLoop.ts` owns the loop for both. One budget (persisted on
 the step's own run row, reusing `resumeAttempts`), one `loopBack` action,
@@ -536,3 +561,204 @@ broken `gh auth` is visible. A `gh` that is not installed at all is the
 exception, and that one stalls — waiting will not install it.
 
 Merging is never gavin's. Nothing in this kind writes to GitHub.
+
+
+---
+
+## 10. Running a tool without a rail (added 2026-09-04)
+
+Everything above assumes a rail. The library it describes was reachable
+only as a step on one, so "commit the dirty tree" meant building a rail
+and binding it to a checkout — three screens for one press. The **Tools**
+hub tab is the launcher that was missing.
+
+It is a launcher and nothing more. There is **one** library
+(`orchestrationTools.ts` + `toolsState.ts`), **one** editor
+(`ToolLibraryDialog`) and **one** built-in set behind both tabs, so a tool
+written for a rail is runnable from here the moment it is saved, and the
+reverse. What is new is only the rules about running one alone, which live
+in `workspaceTools.ts`.
+
+### 10.1 Which tools it offers
+
+`agent`, `command` and `script` **run**; the other three do not.
+
+Those three are unrunnable for one reason each, and all three reduce to
+"this is a rule about a rail, not a piece of work": an `until` tool's
+verdict sends the rail **backwards** (§9.1) and there is no rail to send;
+a `pr` tool runs nothing at all and is pure waiting on a rail's branch
+(§9.2); a `gavin` tool's body *names a rail action* (§8.1).
+
+**Amended 2026-09-04 (T13):** they were *filtered out of the list*; they
+are now **listed with Run dark**, each carrying its own sentence. The tab
+edits tools as well as running them, and a filter by kind means the human
+who switches a tool to Loop-until watches it vanish from the list they
+are standing in — with no way back to it except a dialog they did not
+open. `isRunnableStandalone` is unchanged and still gates every launch.
+
+Rail-shaped built-ins are offered anyway — Merge assumes a rail's branch
+and Push assumes a rail's checkout — because a human standing in the root
+checkout may well mean exactly that. The filter is by KIND, which is a
+structural fact, never by whether a body reads like a rail's.
+
+### 10.2 One tool, one session
+
+A run is one session, launched by exactly the functions a rail step uses:
+`buildRunCommand` for an `agent` tool, `buildToolCommand` for a shell one.
+Two builders would be two ways for one tool to behave.
+
+It is **revealed**, named after the tool, bound to **no card**, writes
+**no status**, and advances nothing. A shell tool's PTY can close in under
+a second, so revealing it is also the only chance to read what it printed.
+
+Sequencing stays orchestration's job. A multi-step deploy is written as
+one `script` tool — bash already sequences, and a second sequencer inside
+the Tools tab would be a rail with none of a rail's state.
+
+### 10.3 The run is the daemon's record
+
+`tool_runs` in `orchestration.sqlite`, shaped like `card_runs`: one row
+per session a tool was ever run in, opened by `StartToolRun` and closed
+either by the daemon or by the app. `Request::ToolRuns` answers with the
+**last run per tool** rather than a history — the tab draws one chip per
+row and would throw the rest away, and a response that grew with every run
+would be paid for on every tab visit.
+
+Kept by the daemon rather than in the app, because the whole value of the
+record is the case where **nobody was watching**: a run that failed while
+the human was in another workspace, or after the window closed, is still
+on the row when they come back.
+
+Four outcomes: `running`, `passed`, `failed`, `abandoned`. `passed`/
+`failed` where `CardRun` says `exited`, deliberately — a card run's
+verdict is the board, so the daemon only reports that the session stopped;
+a tool run's whole point IS the verdict, and "exited with code 1" is the
+evidence for it rather than a substitute for saying it.
+
+### 10.4 The verdict, split where the daemon's knowledge is
+
+Both halves are the **rail's own rules** (T5, §3.1.1), so a tool means the
+same thing wherever it runs:
+
+- A `command` or `script` run **passes on exit 0** and fails on anything
+  else. The daemon writes this itself, off the session exit it already
+  watches (`finish_tool_runs_for_session`), so it is right even with
+  nothing attached and even with the app closed.
+- An `agent` run **passes when its session goes `idle`** — its turn ended
+  — and **fails when failure detection fires**. An interactive agent sits
+  at its prompt forever, so nothing the daemon watches would ever close
+  that row; the app files it (`SetToolRunOutcome`). The store's
+  `outcome = 'running'` guard is what stops a later exit rewriting it.
+- A run whose end nobody saw is `abandoned`, swept on daemon start-up and
+  again when a read finds a `running` row whose session the registry no
+  longer has. `ended_at` stays NULL: nobody watched it end, and the time
+  somebody **looked** is a different fact.
+
+**No auto-resume**, and that is the one rail rule not carried over: an
+auto-resume exists to keep a rail moving, and there is no rail. A failed
+tool run is a failed row and a Run button.
+
+### 10.5 The working directory (T11)
+
+Set in the library dialog, with a folder picker — `dialog:allow-open` is
+the only OS dialog still permitted. Stored **relative to the workspace
+root** when the picked folder is under it, because that is what makes a
+tool portable: a global tool with an absolute path would run in one
+repository from every workspace that could see it.
+
+`resolveToolCwd` is the whole rule: absolute is kept as written, relative
+joins the root, absent IS the root. It is called by the standalone launch
+and by nothing else — `launchToolStep` does not consult it, and a test
+pins that (`ignores the tool's own working directory and uses the rail's
+checkout`).
+
+### 10.6 Two more built-ins
+
+`builtin:consolidate-repo` and `builtin:reconcile-repo`, both `agent`
+tools, both written for a **workspace** rather than a rail: neither
+assumes a branch of its own.
+
+Consolidate is deliberately narrower than `builtin:commit`, which groups
+what it finds and stops there. This one is written for the tree several
+agents have been editing at once — the grouping rule is per-FEATURE and
+the staging rule is explicit, because `git add -A` in a shared checkout
+commits somebody else's half-finished work under this run's message.
+
+Reconcile is a **report**, and its prompt says so three times. The obvious
+next step from every one of its findings is a delete, and a branch that
+looks abandoned to a reader of `git log` is regularly one somebody is
+working in another checkout. What to remove is the human's call; what
+exists is the question this answers.
+
+Deploy is **not** shipped. A pipeline is per-project, and a built-in that
+guessed at one would be a template every workspace had to delete.
+
+---
+
+## 11. Authoring every kind, and editing from the tab (added 2026-09-04, T13)
+
+Two changes, and the second is why the first is safe.
+
+### 11.1 The obstacle was the form, not the scheduler
+
+`gavin` (§8), `until` and `pr` (§9) shipped built-in-only, and each
+carried its own reason for it. They were all the same reason: **the edit
+form had one body field**. A `gavin` body typed into a textarea could
+name an action gavin does not have — a tool that stalls every step it is
+dropped onto, discoverable only at launch. A `pr` tool has no body to
+type at all, so a duplicate came back as a command whose text was the
+word `await-pr`. An `until` duplicate came back as a plain `command`,
+because the kind is a completion rule and the chips offered three.
+
+None of that was ever a rule about *running* one. Every rule about these
+kinds branches on `kind` — `isUntilStep`, `isPrStep`, the `gavin` branch
+in `executeGavinAction` — and never on a built-in id, which T7 spent a
+section establishing. A copy has always behaved exactly like its
+original. What could not be expressed was the body.
+
+### 11.2 Three body shapes (`toolBodyEditor`)
+
+So the form grew the shapes the six kinds actually have:
+
+| shape | kinds | what the form draws |
+|---|---|---|
+| `text` | `agent`, `command`, `script`, `until` | a textarea, labelled and sized per kind — `until`'s says **Check command**, because a step whose field says "Command" reads as one that runs once |
+| `action` | `gavin` | a **select** over `GAVIN_ACTIONS`. The form cannot express an action gavin does not have, which leaves `validateTool`'s refusal guarding only a tool a *newer* gavin wrote |
+| `none` | `pr` | no field, and a sentence saying gavin reads the pull request itself. What the step waits for is a parameter |
+
+Two of the six impose their body, so switching kinds **stashes** the
+authored one and puts it back on the way out. The stash is `string |
+null`, not `string`: a new tool's body is blank, and blank is worth
+restoring — conflating the two leaves `await-pr` sitting in a brand-new
+tool's Command field.
+
+The three whose params are **arguments** rather than text substituted
+into a body (`until`'s `max`, `pr`'s `require`/`max`, `start-rail`'s
+`rail`) name them under the parameter grid. `summaryParam` ignores a
+param the tool does not declare, so a budget typed into `retries` reads
+as *no budget* rather than as an error — the form is the only place that
+mistake can be caught.
+
+The **working directory** (T11) is hidden on those three. A rail step
+runs in the rail's own checkout and never reads it (T6/T11), so on a kind
+that only runs as a step it is a control with no effect — and one that
+quietly kept a value would be read as having one. A value set before a
+switch survives, hidden, and comes back with the kind.
+
+### 11.3 Editing from the Tools tab
+
+Every row carries **Edit** (a built-in carries **Duplicate to edit**),
+and the bar carries **New tool** beside Manage tools…. All of them open
+`ToolLibraryDialog` — the same dialog, seeded through a new `initialEdit`
+prop — because the point is not having to find the row again inside a
+dialog. One library, one editor, one store; a second form here would
+drift from the first the moment either grew a field.
+
+The draft comes from `editDraftFor`, which copies (the list re-renders
+from the store the moment a save lands) and turns a **built-in into a
+duplicate**: a built-in cannot be saved, so a form opened on one would
+refuse after the human had typed.
+
+`initialEdit` is read at **construction**, not in an effect. An effect
+that re-ran for any reason would overwrite what the human had typed with
+the draft they started from.

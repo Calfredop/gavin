@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { get } from "svelte/store";
   import type { PlanFileInfo } from "./gavin";
   import { statusOptions } from "./planExplorer";
-  import { patchPlanField } from "./gavinState";
+  import { gavinTrees, patchPlanField } from "./gavinState";
+  import { kanbanState } from "./kanbanState";
+  import { cardIndex, nestedChildrenOf } from "./orchestration";
+  import { guardCompletion } from "./cardCompletion";
   import * as backend from "./backend";
 
   interface Props {
@@ -18,27 +22,71 @@
 
   let titleDraft = $state(plan.title);
   let error = $state<string | null>(null);
+  // Mirrored into local state rather than read straight off the plan: a
+  // refused status write has to put the select back, and a one-way
+  // `value={plan.status}` never re-runs when the plan did not change --
+  // it would sit there naming a column the card is not in.
+  let statusChoice = $state(plan.status ?? "");
   // Reset the draft when a different plan is selected.
   let draftFor = $state(plan.path);
   $effect(() => {
     if (draftFor !== plan.path) {
       titleDraft = plan.title;
+      statusChoice = plan.status ?? "";
       draftFor = plan.path;
     }
   });
 
   const options = $derived(statusOptions(columnNames, plan.status));
 
-  async function commit(key: "title" | "status" | "priority", value: string): Promise<void> {
+  /// The fifth gesture that can file a plan, and the one furthest from
+  /// the board: this panel edits the card file directly. Its nested
+  /// children come from the tree rather than from a `CardView` -- there
+  /// is no board projection on this tab -- and the columns off the board
+  /// store, since `columnNames` carries no positions to tell the first
+  /// column from the last.
+  async function guardStatus(value: string): Promise<boolean> {
+    const cards = cardIndex(get(gavinTrees)[workspaceId]);
+    const decision = await guardCompletion(
+      workspaceId,
+      {
+        title: plan.title,
+        kind: plan.kind,
+        status: plan.status,
+        children: nestedChildrenOf(plan.path, cards).map((c) => ({
+          path: c.plan.path,
+          title: c.plan.title,
+        })),
+      },
+      value,
+      get(kanbanState)[workspaceId]?.columns ?? []
+    );
+    if (decision.error) error = decision.error;
+    return decision.proceed;
+  }
+
+  /// True when the field was actually written -- a caller holding a
+  /// control's own draft has to know whether to put it back.
+  async function commit(key: "title" | "status" | "priority", value: string): Promise<boolean> {
     error = null;
+    if (key === "status" && !(await guardStatus(value))) return false;
     try {
       await onBeforeWrite();
       await backend.setPlanFrontmatterField(plan.path, key, value);
       // Optimistic: the confirming watcher push is ~3s away.
       patchPlanField(workspaceId, plan.path, key, value);
+      return true;
     } catch (e) {
       error = String(e instanceof Error ? e.message : e);
+      return false;
     }
+  }
+
+  async function commitStatus(): Promise<void> {
+    if (statusChoice === (plan.status ?? "")) return;
+    // Put back only when nothing was written -- a select still naming a
+    // column the card is not in is this panel lying about the card.
+    if (!(await commit("status", statusChoice))) statusChoice = plan.status ?? "";
   }
 
   function commitTitle(): void {
@@ -65,8 +113,8 @@
   <label>
     Status
     <select
-      value={plan.status ?? ""}
-      onchange={(e) => void commit("status", (e.currentTarget as HTMLSelectElement).value)}
+      bind:value={statusChoice}
+      onchange={() => void commitStatus()}
     >
       {#each options as option (option)}
         <option value={option}>{option}</option>

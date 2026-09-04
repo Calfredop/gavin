@@ -1,7 +1,7 @@
 import type { Board } from "./kanban";
 import type { GavinTree } from "./gavin";
 import type { WorktreeInfo } from "./git";
-import { detectConflicts, railStateOf, stepStateOf } from "./orchestration";
+import { detectConflicts, isStepFinished, railStateOf, stepStateOf } from "./orchestration";
 import type { Orchestration, RailState } from "./orchestration";
 import { mergePlanCards } from "./planBoard";
 
@@ -133,7 +133,12 @@ export function orchestrationSummary(
         name: rail.name,
         state: railStateOf(orch, rail.id),
         stagesTotal: stages.length,
-        stagesDone: stages.filter((s) => s.steps.every((t) => stepStateOf(orch, t.id) === "done")).length,
+        // Finished, not achieved: a stage the human skipped past is one
+        // the rail is done with, and a recap that still counted it
+        // "3 of 7" would under-report how far the rail has actually got.
+        stagesDone: stages.filter((s) =>
+          s.steps.every((t) => isStepFinished(stepStateOf(orch, t.id)))
+        ).length,
         currentStage: at < 0 ? null : at + 1,
         stepsStalled: stages.reduce(
           (n, s) => n + s.steps.filter((t) => stepStateOf(orch, t.id) === "stalled").length,

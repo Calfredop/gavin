@@ -1,4 +1,4 @@
-// The Orchestration tab's two agent requests -- Generate and a rail's
+// The Orchestration tab's two agent requests -- Organize and a rail's
 // Reorganize -- as pure decisions: what a run is called, when it is over,
 // and what each button does while one is going. No Svelte, no Tauri, no
 // I/O; orchestrationState.ts owns every effect (launch, reveal, and the
@@ -15,8 +15,8 @@
 import type { SessionStatus } from "./notifications";
 import type { OrchestrationAgentRecord, SessionLiveness } from "./workspace";
 
-/// The name a whole-tab Generate wears wherever a run is named.
-export const GENERATE_LABEL = "Generate";
+/// The name a whole-tab Organize wears wherever a run is named.
+export const ORGANIZE_LABEL = "Organize";
 
 /// The name one rail's Reorganize wears. The rail is quoted because rail
 /// names are the human's own words and can be a whole sentence -- an
@@ -88,11 +88,11 @@ function busyTip(run: OrchestrationAgentRecord): string {
   return `${run.label} is already running — jump to its tab`;
 }
 
-export interface GenerateInput {
+export interface OrganizeInput {
   /// The workspace's in-flight orchestration agent, or null.
   run: OrchestrationAgentRecord | null;
-  /// How many unplaced cards Generate would actually be handed. Measured
-  /// over every unplaced card, never the search lens's view: Generate
+  /// How many unplaced cards Organize would actually be handed. Measured
+  /// over every unplaced card, never the search lens's view: Organize
   /// hands the agent the real set, so a filter that happens to hide them
   /// all must not claim there is nothing left to place.
   unplacedCount: number;
@@ -101,13 +101,13 @@ export interface GenerateInput {
   daemonBlocked: string | null;
 }
 
-/// The tab header's "Generate with agent…".
+/// The tab header's "Organize with agent…".
 ///
 /// Note what is NOT here any more: whether the workspace's main agent is
-/// running. Generate used to be paste-only, so a stopped main agent made
+/// running. Organize used to be paste-only, so a stopped main agent made
 /// it impossible; it now starts an agent of its own, and a tab the human
 /// never opened is no longer a precondition for organizing their work.
-export function generateAction(input: GenerateInput): OrchestrationAgentAction {
+export function organizeAction(input: OrganizeInput): OrchestrationAgentAction {
   const blocked = launchBlocker(input.hasRoot, input.daemonBlocked);
   if (blocked) return { kind: "blocked", tip: blocked };
   if (input.run) return { kind: "jump", tip: busyTip(input.run) };
@@ -117,7 +117,10 @@ export function generateAction(input: GenerateInput): OrchestrationAgentAction {
       tip: "Nothing is left to place — every unfinished card is already on a rail",
     };
   }
-  return { kind: "start", tip: "Hand the unplaced cards to a new agent…" };
+  return {
+    kind: "start",
+    tip: "Hand the unplaced cards to a new agent — it spreads them across rails, worktrees and branches…",
+  };
 }
 
 export interface ReorganizeInput {
@@ -151,12 +154,12 @@ export function reorganizeAction(input: ReorganizeInput): OrchestrationAgentActi
   return { kind: "start", tip: "Reorganize this rail with a new agent…" };
 }
 
-/// The header button's FACE. It stops saying "Generate" the moment a run
+/// The header button's FACE. It stops saying "Organize" the moment a run
 /// holds the slot, because pressing it then jumps to that run instead --
 /// and a button whose word and whose effect disagree is worse than a dead
 /// one. A rail's Reorganize gets the neutral wording: the header button
 /// is not the thing that started it.
-export function generateButtonLabel(run: OrchestrationAgentRecord | null): string {
-  if (!run) return "Generate with agent…";
-  return run.railId ? "Agent running…" : "Generating…";
+export function organizeButtonLabel(run: OrchestrationAgentRecord | null): string {
+  if (!run) return "Organize with agent…";
+  return run.railId ? "Agent running…" : "Organizing…";
 }

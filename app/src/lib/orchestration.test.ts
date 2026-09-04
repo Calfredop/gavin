@@ -2,12 +2,15 @@ import { describe, it, expect } from "vitest";
 import {
   emptyOrchestration,
   doneColumn,
+  firstColumnOf,
   cardIndex,
   effectiveWorktree,
   stepStateOf,
   railStateOf,
   firstUnfinishedStageId,
+  isStepFinished,
   runnableIdleRails,
+  finishedRails,
   startRailVerdict,
   railRunsDiffer,
   nextActions,
@@ -15,6 +18,7 @@ import {
   renameRail,
   bindRail,
   deleteRail,
+  deleteRails,
   addStage,
   addStep,
   removeStep,
@@ -39,6 +43,7 @@ import {
   groupUnplacedByStatus,
   availableCards,
   nestedChildCounts,
+  nestedChildrenOf,
   unfinishedCards,
   unplacedCount,
   addCardAsStage,
@@ -65,6 +70,7 @@ import {
   isStageRunning,
   runningStageId,
   stepAttentions,
+  STALE_AFTER_MS,
   railAttention,
   railsWantingAttention,
   attentionTip,
@@ -152,6 +158,18 @@ describe("doneColumn", () => {
 
   it("is null for a board with no columns", () => {
     expect(doneColumn(board([]))).toBeNull();
+  });
+});
+
+describe("firstColumnOf", () => {
+  it("is the column with the lowest position, whatever the array order", () => {
+    const b = board(["To Do", "In Progress", "Done"]);
+    b.columns = [b.columns[2], b.columns[0], b.columns[1]];
+    expect(firstColumnOf(b.columns)?.name).toBe("To Do");
+  });
+
+  it("is null for a board with no columns", () => {
+    expect(firstColumnOf([])).toBeNull();
   });
 });
 
@@ -276,6 +294,156 @@ describe("runnableIdleRails", () => {
 
   it("is empty for a plan with no rails", () => {
     expect(runnableIdleRails(emptyOrchestration())).toEqual([]);
+  });
+});
+
+describe("finishedRails", () => {
+  // Three rails with one step each, so the only thing separating them is
+  // what their run rows say -- the same shape runnableIdleRails' suite
+  // uses, because these two answer opposite halves of one question.
+  function three(): Rail[] {
+    return [
+      { ...rail("r1", [[["t1", "/x/a.md"]]]), position: 2 },
+      { ...rail("r2", [[["t2", "/x/b.md"]]]), position: 0 },
+      { ...rail("r3", [[["t3", "/x/c.md"]]]), position: 1 },
+    ];
+  }
+
+  function withRuns(
+    rails: Rail[],
+    railRuns: Orchestration["railRuns"],
+    stepRuns: Orchestration["stepRuns"] = []
+  ): Orchestration {
+    return { rails, conflictNotes: [], railRuns, stepRuns };
+  }
+
+  const done = (stepId: string): Orchestration["stepRuns"][number] => ({
+    stepId,
+    state: "done",
+    sessionId: null,
+    reason: null,
+  });
+
+  it("takes the idle rails whose every step is done, in screen order", () => {
+    const o = withRuns(three(), [], [done("t1"), done("t2")]);
+    expect(finishedRails(o).map((r) => r.id)).toEqual(["r2", "r1"]);
+  });
+
+  it("leaves a rail with anything unfinished on it", () => {
+    const o = withRuns(three(), [], [done("t2")]);
+    expect(finishedRails(o).map((r) => r.id)).toEqual(["r2"]);
+  });
+
+  it("counts a skipped step as finished", () => {
+    // A skip is the human sending the rail past that step: there is
+    // nothing left to run, and reading it the other way would leave the
+    // rail unclearable for good.
+    const o = withRuns(
+      three(),
+      [],
+      [{ stepId: "t2", state: "skipped", sessionId: null, reason: null }]
+    );
+    expect(finishedRails(o).map((r) => r.id)).toEqual(["r2"]);
+  });
+
+  it("does not count a stalled step as finished", () => {
+    const o = withRuns(
+      three(),
+      [],
+      [{ stepId: "t2", state: "stalled", sessionId: null, reason: "broke" }]
+    );
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("never takes an empty rail, however vacuously done it looks", () => {
+    // An empty rail is unstarted, not finished, and firstUnfinishedStageId
+    // says null for it -- which is why this needs its own condition.
+    const o = withRuns([rail("empty", []), rail("hollow", [[]])], []);
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("leaves a running rail alone even with every step done", () => {
+    const o = withRuns(
+      three(),
+      [{ railId: "r2", state: "running", currentStageId: "r2-s0" }],
+      [done("t2")]
+    );
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("leaves a paused rail alone even with every step done", () => {
+    const o = withRuns(
+      three(),
+      [{ railId: "r2", state: "paused", currentStageId: "r2-s0" }],
+      [done("t2")]
+    );
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("shares no rail with runnableIdleRails", () => {
+    // The two exclusions have to stay complementary: a rail offered to
+    // "Run all" and swept by "Clear done" in the same breath would be a
+    // race between two buttons on one toolbar.
+    const o = withRuns(three(), [], [done("t2")]);
+    const runnable = new Set(runnableIdleRails(o).map((r) => r.id));
+    expect(finishedRails(o).every((r) => !runnable.has(r.id))).toBe(true);
+  });
+
+  it("is empty for a plan with no rails", () => {
+    expect(finishedRails(emptyOrchestration())).toEqual([]);
+  });
+});
+
+describe("deleteRails", () => {
+  function two(): Orchestration {
+    return {
+      rails: [
+        { ...rail("r1", [[["t1", "/x/a.md"]]]), position: 0 },
+        { ...rail("r2", [[["t2", "/x/b.md"]]]), position: 1 },
+        { ...rail("r3", [[["t3", "/x/c.md"]]]), position: 2 },
+      ],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "idle", currentStageId: null }],
+      stepRuns: [
+        { stepId: "t1", state: "done", sessionId: null, reason: null },
+        { stepId: "t3", state: "done", sessionId: null, reason: null },
+      ],
+    };
+  }
+
+  it("removes every named rail in one pass", () => {
+    expect(deleteRails(two(), ["r1", "r3"]).rails.map((r) => r.id)).toEqual(["r2"]);
+  });
+
+  it("renumbers the survivors from zero", () => {
+    // Once, over the list that is left -- removing one at a time would
+    // renumber positions the next removal only invalidates again.
+    expect(deleteRails(two(), ["r1"]).rails.map((r) => r.position)).toEqual([0, 1]);
+  });
+
+  it("sweeps the run rows of the rails and steps it removed", () => {
+    const after = deleteRails(two(), ["r1", "r3"]);
+    expect(after.railRuns).toEqual([]);
+    expect(after.stepRuns).toEqual([]);
+  });
+
+  it("keeps the run rows of the rails it did not touch", () => {
+    const after = deleteRails(two(), ["r2"]);
+    expect(after.railRuns.map((r) => r.railId)).toEqual(["r1"]);
+    expect(after.stepRuns.map((r) => r.stepId)).toEqual(["t1", "t3"]);
+  });
+
+  it("ignores an id no rail carries", () => {
+    expect(deleteRails(two(), ["nope"]).rails.map((r) => r.id)).toEqual(["r1", "r2", "r3"]);
+  });
+
+  it("hands back the very same plan for an empty list", () => {
+    const o = two();
+    expect(deleteRails(o, [])).toBe(o);
+  });
+
+  it("agrees with deleteRail on a single id", () => {
+    expect(deleteRails(two(), ["r2"])).toEqual(deleteRail(two(), "r2"));
   });
 });
 
@@ -1323,6 +1491,132 @@ describe("nextActions on a sequence group", () => {
   });
 });
 
+// A step the human sent the rail PAST. Terminal like `done` and it means
+// the opposite: the rail has nothing left to do here, and nothing here
+// got done. Every rule that asks "may the rail move on" has to accept it;
+// every tally that asks "what got finished" must not.
+describe("skip and proceed", () => {
+  it("counts done and skipped as finished, and nothing else", () => {
+    expect(isStepFinished("done")).toBe(true);
+    expect(isStepFinished("skipped")).toBe(true);
+    expect(isStepFinished("pending")).toBe(false);
+    expect(isStepFinished("running")).toBe(false);
+    expect(isStepFinished("stalled")).toBe(false);
+  });
+
+  it("lets Start arm past a fully skipped stage", () => {
+    const r = rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [],
+      stepRuns: [{ stepId: "t1", state: "skipped", sessionId: null, reason: null }],
+    };
+    // Not "r1-s0": a rail that rewound onto the step the human had just
+    // stepped over would undo the skip on the next press of Play.
+    expect(firstUnfinishedStageId(r, orch)).toBe("r1-s1");
+  });
+
+  it("advances the rail off a skipped step's stage", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]], [["t2", "/ws/.gavin-root/plans/b.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: "sess-1", reason: null },
+    ]);
+    expect(nextActions(orch, BOARD, tree([plan("a.md"), plan("b.md")]), [], new Set())).toEqual([
+      { kind: "advance", railId: "r1", stageId: "r1-s1" },
+      { kind: "launch", stepId: "t2" },
+    ]);
+  });
+
+  it("completes a rail whose last stage was skipped", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: null, reason: null },
+    ]);
+    expect(nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set())).toEqual([
+      { kind: "complete", railId: "r1" },
+    ]);
+  });
+
+  // Rule 2 wants `pending` or `stalled`; a skipped step is neither, so
+  // the run must walk over it rather than start it.
+  it("never relaunches a skipped step", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: null, reason: null },
+    ]);
+    const actions = nextActions(orch, BOARD, tree([plan("a.md")]), [], new Set());
+    expect(actions.some((a) => a.kind === "launch")).toBe(false);
+  });
+
+  // Rule 1 turns a card sitting in the done column into a `markDone`.
+  // Over a SKIPPED step that would rewrite the human's decision as an
+  // achievement -- and a card can reach Done by any route, including a
+  // human dragging it there minutes later.
+  it("does not re-file a skipped step as done when its card reaches the done column", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const orch = running(r, "r1-s0", [
+      { stepId: "t1", state: "skipped", sessionId: null, reason: null },
+    ]);
+    const actions = nextActions(orch, BOARD, tree([plan("a.md", { status: "Done" })]), [], new Set());
+    expect(actions.some((a) => a.kind === "markDone")).toBe(false);
+    expect(actions).toEqual([{ kind: "complete", railId: "r1" }]);
+  });
+
+  it("lets the next member of a sequence group go", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/ws/.gavin-root/plans/a.md", 0);
+    o = addStep(o, "s1", "t2", "/ws/.gavin-root/plans/b.md", 1);
+    o = setStageMode(o, "s1", "sequence");
+    o = {
+      ...o,
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+      stepRuns: [{ stepId: "t1", state: "skipped", sessionId: null, reason: null }],
+    };
+    expect(nextActions(o, board(["To Do", "Done"]), tree([plan("a.md"), plan("b.md")]), [], new Set())).toEqual([
+      { kind: "launch", stepId: "t2" },
+    ]);
+  });
+
+  // A conflict is a claim about work the rails have STILL to do. A
+  // skipped step will never touch the checkout again, so it drops out of
+  // the detector exactly as a done one does.
+  it("drops out of conflict detection", () => {
+    let o = addRail(emptyOrchestration(), "r1", "backend");
+    o = addStep(addStage(o, "r1", "s1"), "s1", "t1", "/ws/.gavin-root/plans/a.md", 0);
+    o = addStep(o, "s1", "t2", "/ws/.gavin-root/plans/a.md", 1);
+    const t = tree([plan("a.md")]);
+    // The rail is unbound, which is a conflict of its own and says
+    // nothing about steps -- the duplicate-card one is the subject here.
+    const dupes = (orch: Orchestration) =>
+      detectConflicts(orch, t, [], []).filter((c) => c.kind === "duplicate-card");
+    expect(dupes(o)).toHaveLength(1);
+    const skipped: Orchestration = {
+      ...o,
+      stepRuns: [{ stepId: "t2", state: "skipped", sessionId: null, reason: null }],
+    };
+    expect(dupes(skipped)).toEqual([]);
+  });
+
+  // "Clear done steps" says done, and a skip is the only record that the
+  // human sent the rail past this step. Sweeping it under that label
+  // would erase the decision and call it done in the same gesture.
+  it("is left on the rail by Clear done", () => {
+    const r = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"], ["t2", "/ws/.gavin-root/plans/b.md"]]]);
+    const orch: Orchestration = {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [],
+      stepRuns: [
+        { stepId: "t1", state: "done", sessionId: null, reason: null },
+        { stepId: "t2", state: "skipped", sessionId: null, reason: null },
+      ],
+    };
+    const cards = cardIndex(tree([plan("a.md"), plan("b.md")]));
+    expect(railDoneStepIds(r, orch, cards, "Done")).toEqual(["t1"]);
+  });
+});
+
 describe("plan mutators", () => {
   it("adds a rail at the end and numbers positions from zero", () => {
     let o = addRail(emptyOrchestration(), "r1", "backend");
@@ -2295,6 +2589,33 @@ describe("availableCards", () => {
     const child = nested("child.md");
     const out = availableCards(index([parent, child]), new Set([child.plan.path]));
     expect(out.map((e) => e.plan.path)).toEqual([parent.plan.path]);
+  });
+});
+
+describe("nestedChildrenOf", () => {
+  const index = (plans: PlanFileInfo[]) => cardIndex(tree(plans));
+
+  it("lists the children the plan carries, and nobody else's", () => {
+    const idx = index([
+      plan("big.md", { kind: "plan", status: "To Do" }),
+      plan("other.md", { kind: "plan", status: "To Do" }),
+      plan("one.md", { kind: "task", status: null, parent: "big.md" }),
+      plan("two.md", { kind: "task", status: null, parent: "big.md" }),
+      plan("elsewhere.md", { kind: "task", status: null, parent: "other.md" }),
+      // Free-standing: it has a status of its own, so it is a card on the
+      // board and files itself.
+      plan("free.md", { kind: "task", status: "To Do", parent: "big.md" }),
+    ]);
+    expect(nestedChildrenOf("/ws/.gavin-root/plans/big.md", idx).map((e) => e.plan.fileName)).toEqual([
+      "one.md",
+      "two.md",
+    ]);
+  });
+
+  it("is empty for a plan carrying nothing, and for a path the tree lost", () => {
+    const idx = index([plan("big.md", { kind: "plan", status: "To Do" })]);
+    expect(nestedChildrenOf("/ws/.gavin-root/plans/big.md", idx)).toEqual([]);
+    expect(nestedChildrenOf("/ws/.gavin-root/plans/gone.md", idx)).toEqual([]);
   });
 });
 
@@ -3816,6 +4137,137 @@ describe("stepAttentions", () => {
     const orch = running(cardRail, "r1-s0", runs());
     expect(attn(orch, statuses("unknown")).get("t1")).toBeUndefined();
   });
+
+  // ---- the decoy card ---------------------------------------------------
+  // The failure this family was extended for. A rail step hands its
+  // agent a worktree cwd and an absolute card path in the main checkout;
+  // the agent writes the worktree's own copy, and everything downstream
+  // stays silent -- the board never moves, so from the rail's side the
+  // agent simply has not finished yet.
+  describe("a decoy write", () => {
+    const decoy = (ids: string[] = ["t1"]) => new Set(ids);
+
+    // The reproduction, as the code sees it: the agent is still working
+    // (or has only just gone quiet), the card is untouched, and before
+    // this every surface in the app had exactly nothing to say.
+    it("used to be invisible: a working agent over an unmoved card gets no mark on its own", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(attn(orch, statuses("working")).get("t1")).toBeUndefined();
+    });
+
+    // ...and the whole point of not reading a session status for this
+    // one: the write is already on disk, so an agent that is still busy
+    // is no less unable to reach the board.
+    it("marks the step while the agent is still working", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("working"), decoy()).get("t1")).toBe(
+        "decoy-edit"
+      );
+    });
+
+    it("outranks a turn that merely ended", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("idle"), decoy()).get("t1")).toBe(
+        "decoy-edit"
+      );
+    });
+
+    // The agent's own words about what broke are the more actionable
+    // fact, and rule 3d has already stalled the step with them.
+    it("still yields to an agent that broke", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("failed"), decoy()).get("t1")).toBe(
+        "failed"
+      );
+    });
+
+    it("marks only the step whose card was written", () => {
+      const two = rail("r1", [[["t1", A], ["t2", "/ws/.gavin-root/plans/b.md"]]]);
+      const orch = running(two, "r1-s0", [
+        { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+        { stepId: "t2", state: "running", sessionId: "s2", reason: null },
+      ]);
+      const marks = stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("working"), decoy(["t2"]));
+      expect(marks.get("t1")).toBeUndefined();
+      expect(marks.get("t2")).toBe("decoy-edit");
+    });
+
+    // "Not looked at" must never read as "looked at and clean" -- which
+    // is why the default is an empty set producing no mark rather than a
+    // reassuring one, and why a step that is not running is never marked
+    // whatever the sweep found.
+    it("says nothing about a step that is not running", () => {
+      const orch = running(cardRail, "r1-s0", runs("done"));
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("idle"), decoy()).size).toBe(0);
+    });
+  });
+
+  // ---- a turn that ended a long time ago --------------------------------
+  describe("staleness", () => {
+    const since = (ms: number) => new Map([["s1", ms]]);
+    const NOW = 1_000_000_000;
+
+    it("is turn-ended until the wait passes the threshold", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      const young = stepAttentions(
+        orch,
+        BOARD,
+        CARDS,
+        TOOLS,
+        statuses("idle"),
+        new Set(),
+        since(NOW - STALE_AFTER_MS + 1),
+        NOW
+      );
+      expect(young.get("t1")).toBe("turn-ended");
+    });
+
+    it("becomes stale once nothing has happened for the threshold", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      const old = stepAttentions(
+        orch,
+        BOARD,
+        CARDS,
+        TOOLS,
+        statuses("idle"),
+        new Set(),
+        since(NOW - STALE_AFTER_MS),
+        NOW
+      );
+      expect(old.get("t1")).toBe("stale");
+    });
+
+    // An unmeasured wait is not a long one. Every session is unstamped
+    // for a moment after the app attaches, and marking those stale would
+    // accuse every rail in the fleet on every restart.
+    it("never goes stale without a stamp", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(
+        stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("idle"), new Set(), new Map(), NOW).get(
+          "t1"
+        )
+      ).toBe("turn-ended");
+    });
+
+    // Staleness is an aged turn-ended and nothing else: a card that
+    // reached Done is finished however long ago its agent stopped.
+    it("says nothing about an old wait whose card did reach Done", () => {
+      const done = tree([plan("a.md", { status: "Done" })]);
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(
+        stepAttentions(orch, BOARD, done, TOOLS, statuses("idle"), new Set(), since(0), NOW).size
+      ).toBe(0);
+    });
+
+    // A busy agent re-stamps its session on every status change, so a
+    // long build never ages into this; only genuine quiet does.
+    it("says nothing about an agent that is still working, however long for", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(
+        stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("working"), new Set(), since(0), NOW).size
+      ).toBe(0);
+    });
+  });
 });
 
 describe("railAttention / railsWantingAttention", () => {
@@ -3838,6 +4290,18 @@ describe("railAttention / railsWantingAttention", () => {
     const r = rail("r1", [[["t1", A], ["t2", B]]]);
     expect(railAttention(r, marks({ t1: "failed", t2: "asking" }))).toBe("failed");
     expect(railAttention(r, marks({ t1: "turn-ended", t2: "failed" }))).toBe("failed");
+  });
+
+  // The rank's one rule: a mark meaning "this will not finish by itself"
+  // outranks one meaning "it still might". A rail header showing
+  // "needs you" for a question, while another of its steps is wedged on
+  // a decoy write, points the human at the wrong step.
+  it("puts a decoy write and a long-dead turn above a live question", () => {
+    const r = rail("r1", [[["t1", A], ["t2", B]]]);
+    expect(railAttention(r, marks({ t1: "decoy-edit", t2: "asking" }))).toBe("decoy-edit");
+    expect(railAttention(r, marks({ t1: "stale", t2: "asking" }))).toBe("stale");
+    expect(railAttention(r, marks({ t1: "stale", t2: "decoy-edit" }))).toBe("decoy-edit");
+    expect(railAttention(r, marks({ t1: "turn-ended", t2: "stale" }))).toBe("stale");
   });
 
   it("collects the rails with any marked step", () => {

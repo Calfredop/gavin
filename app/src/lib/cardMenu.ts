@@ -9,7 +9,16 @@ import { kanbanState, cardSessionFor } from "./kanbanState";
 import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
 import { patchPlanField } from "./gavinState";
 import { requestedExplorerFile } from "./planExplorer";
-import { jumpToBoundSession, relaunchCard, developCard, resumeCard } from "./cardRunActions";
+import { guardCompletion, subjectFromCard } from "./cardCompletion";
+import {
+  jumpToBoundSession,
+  relaunchCard,
+  developCard,
+  resumeCard,
+  revealDevelopingCard,
+} from "./cardRunActions";
+import { developingRunOn } from "./developingCardsState";
+import { DEVELOPING_MENU_LABEL } from "./developingCards";
 import { requestCardReview } from "./codeReviewActions";
 import { developAvailable } from "./cardRun";
 import { cardSessionState } from "./columnRunAction";
@@ -69,7 +78,16 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
     // this the menu would offer to start a SECOND run over the top of the
     // first -- which the launch refuses, but only after the human has
     // been offered it.
-    if (run) {
+    if (developingRunOn(workspaceId, card.id)) {
+      // Ahead of every other case, and replacing all of them: an agent is
+      // rewriting this card's file right now, so the prompt behind every
+      // run entry here is about to stop being true (developingCards.ts).
+      // One entry, and it goes where the answer is.
+      entries.push({
+        label: DEVELOPING_MENU_LABEL,
+        onPick: () => void revealDevelopingCard(workspaceId, card.id),
+      });
+    } else if (run) {
       entries.push({
         label: `Best of ${run.candidates.length} — pick a candidate…`,
         onPick: () => hooks.openDetail(card.id),
@@ -232,11 +250,22 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       label: `Move to ${col.name}`,
       active,
       disabled: active,
+      // Filing a plan takes its nested tasks with it, so the same
+      // question the board's drag asks is asked here (cardCompletion.ts)
+      // -- a card menu and a drag must not disagree about what a status
+      // write costs.
       onPick: () => {
-        void backend
-          .setPlanFrontmatterField(card.id, "status", col.name)
-          .then(() => patchPlanField(workspaceId, card.id, "status", col.name))
-          .catch((e) => hooks.reportError(String(e)));
+        void (async () => {
+          const decision = await guardCompletion(workspaceId, subjectFromCard(card), col.name, columns);
+          if (decision.error) return hooks.reportError(decision.error);
+          if (!decision.proceed) return;
+          try {
+            await backend.setPlanFrontmatterField(card.id, "status", col.name);
+            patchPlanField(workspaceId, card.id, "status", col.name);
+          } catch (e) {
+            hooks.reportError(String(e));
+          }
+        })();
       },
     });
   }

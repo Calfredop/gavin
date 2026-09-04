@@ -22,9 +22,23 @@
     // sticky inside the panel's own scroller would stick to its padding
     // edge, with the padding sliding past underneath.
     innerScroll?: boolean;
+    // Draws the panel as a PANE rather than as a dialog: it fills its
+    // container instead of floating over a backdrop, drops the width and
+    // height caps, and takes no part in the modal stack. Escape and a
+    // click outside stop closing it, which is the point -- a pane the
+    // human split off deliberately must not vanish because they pressed
+    // Escape in the terminal beside it.
+    inline?: boolean;
     children?: import("svelte").Snippet;
   }
-  let { onClose, scrollKey, wide = false, innerScroll = false, children }: Props = $props();
+  let {
+    onClose,
+    scrollKey,
+    wide = false,
+    innerScroll = false,
+    inline = false,
+    children,
+  }: Props = $props();
 
   let panel = $state<HTMLDivElement | null>(null);
   $effect(() => {
@@ -37,16 +51,19 @@
   // window-level listener needs it.
   let token = $state<symbol | null>(null);
   $effect(() => {
+    if (inline) return;
     const mine = pushModal();
     token = mine;
     return () => popModal(mine);
   });
 
   function handleBackdropClick(event: MouseEvent): void {
+    if (inline) return;
     if (event.target === event.currentTarget) onClose();
   }
 
   function handleKeydown(event: KeyboardEvent): void {
+    if (inline) return;
     if (event.key !== "Escape") return;
     if (token && !isTopModal(token)) return;
     onClose();
@@ -55,13 +72,14 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="backdrop" onclick={handleBackdropClick} role="presentation">
+<div class="backdrop" class:inline onclick={handleBackdropClick} role="presentation">
   <div
     class="panel"
     class:wide
     class:inner-scroll={innerScroll}
-    role="dialog"
-    aria-modal="true"
+    class:inline
+    role={inline ? undefined : "dialog"}
+    aria-modal={inline ? undefined : "true"}
     bind:this={panel}
   >
     {@render children?.()}
@@ -97,5 +115,29 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+  /* Inline: absolute rather than fixed, so the panel fills the PANE it
+     was mounted in rather than the window. The host is responsible for
+     being a positioned box (every pane in Pane.svelte already is). */
+  .backdrop.inline {
+    position: absolute;
+    background: none;
+    z-index: auto;
+    display: block;
+  }
+  .panel.inline {
+    width: 100%;
+    height: 100%;
+    /* Tighter than a dialog's 20px: a pane is already framed by its own
+       tab bar and the split beside it, so the panel's job is to use the
+       width it was given rather than to stand apart from a backdrop. */
+    padding: 12px;
+    max-width: none;
+    max-height: none;
+    min-width: 0;
+    border: none;
+    border-radius: 0;
+    background: var(--surface-base);
+    box-sizing: border-box;
   }
 </style>

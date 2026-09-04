@@ -38,6 +38,8 @@ import {
   CirclePause,
   CircleQuestionMark,
   CircleSlash2,
+  DraftingCompass,
+  FileWarning,
   GitBranch,
   History,
   LoaderCircle,
@@ -55,6 +57,7 @@ import {
   Square,
   SquareCheck,
   SquareDot,
+  SquareSlash,
   SquareX,
   TriangleAlert,
   Unlink2,
@@ -134,7 +137,10 @@ function make(
 const AGENT: Record<
   | "working"
   | "waiting_for_input"
+  | "developing"
   | "turn_ended"
+  | "stale"
+  | "decoy_edit"
   | "failed"
   | "unknown"
   | "interrupted"
@@ -156,6 +162,16 @@ const AGENT: Record<
   // same axis and the same question, so it lives here rather than
   // becoming a fourth vocabulary on the rails.
   turn_ended: make("agent", "turn_ended", CirclePause, "warning", "turn ended with the card unmoved"),
+  // The same shape as turn_ended, because it IS turn_ended -- aged past
+  // STALE_AFTER_MS with the card still where it was. Only the tone
+  // moves, which is exactly the claim: same question, and the answer has
+  // stopped being "give it a moment".
+  stale: make("agent", "stale", CirclePause, "danger", "turn ended long ago, card still unmoved"),
+  // The agent wrote the rail worktree's own copy of the card rather than
+  // the card (see worktreeCards.ts). Danger, because nothing the run
+  // does from here can reach the board, and a glyph of its own because
+  // the fix is about a FILE and no other agent state is.
+  decoy_edit: make("agent", "decoy_edit", FileWarning, "danger", "edited the worktree's copy of the card"),
   // The daemon's own word for an agent that stopped because something
   // broke -- an API error on its screen, a suspend it never came back
   // from -- rather than because it finished. Danger, because the run is
@@ -183,6 +199,21 @@ const AGENT: Record<
     CircleOff,
     "warning",
     "interrupted — the daemon restarted and this run was not resumed"
+  ),
+  // An agent is rewriting the CARD rather than doing the work on it
+  // ("Develop into a plan…"). Its own state because it answers a
+  // different question from every other one here: those say how the run
+  // on this card is going, and this one says the card itself is not
+  // finished being written -- which is why every launch is refused while
+  // it is drawn. Accent, because something is happening right now; no
+  // spin, because the agent spends most of the run waiting on the human's
+  // answers rather than moving.
+  developing: make(
+    "agent",
+    "developing",
+    DraftingCompass,
+    "accent",
+    "developing this card — an agent is rewriting it"
   ),
   idle: make("agent", "idle", CircleDashed, "neutral", "idle — nothing running"),
   exited: make("agent", "exited", CircleSlash2, "neutral", "session exited"),
@@ -217,6 +248,14 @@ export function agentFailedIndicator(reason?: string | null): Indicator {
   if (!reason) return AGENT.failed;
   const tip = `${AXIS_LABEL.agent} · stopped — ${reason}`;
   return { ...AGENT.failed, tip, label: tip };
+}
+
+/// A card whose "Develop into a plan…" run is still going. Read off the
+/// workspace's develop records rather than reported as a status: the run
+/// binds no session to the card on purpose (developing is not starting),
+/// so nothing about the card itself says it.
+export function agentDevelopingIndicator(): Indicator {
+  return AGENT.developing;
 }
 
 /// The agent states in the order a tally should list them: what is
@@ -356,6 +395,11 @@ const STEP: Record<StepState, Indicator> = {
   pending: make("step", "pending", Square, "neutral", "not started"),
   running: make("step", "running", SquareDot, "accent", "running now"),
   done: make("step", "done", SquareCheck, "success", "done"),
+  // A struck-through square, and NEUTRAL rather than success: a skipped
+  // step is behind the rail exactly as a done one is, but nothing about
+  // it went right. Success tone would read as work delivered, and danger
+  // as a failure -- neither is what "the human said move on" means.
+  skipped: make("step", "skipped", SquareSlash, "neutral", "skipped — the rail was sent past it"),
   stalled: make("step", "stalled", SquareX, "danger", "stalled"),
 };
 
@@ -363,7 +407,7 @@ export function stepIndicator(state: StepState): Indicator {
   return STEP[state];
 }
 
-export const STEP_STATES = ["pending", "running", "done", "stalled"] as const;
+export const STEP_STATES = ["pending", "running", "done", "skipped", "stalled"] as const;
 
 // ---- rail --------------------------------------------------------------
 // The rail itself, one level up from its steps. Both surfaces that show
@@ -458,6 +502,8 @@ export const RUN_OUTCOME_STATES = RUN_OUTCOMES;
 export function attentionIndicator(attention: StepAttention): Indicator {
   if (attention === "asking") return AGENT.waiting_for_input;
   if (attention === "failed") return AGENT.failed;
+  if (attention === "stale") return AGENT.stale;
+  if (attention === "decoy-edit") return AGENT.decoy_edit;
   return AGENT.turn_ended;
 }
 
@@ -468,6 +514,9 @@ export function allIndicators(): Indicator[] {
   return [
     ...AGENT_STATES.map(agentIndicatorByState),
     AGENT.turn_ended,
+    AGENT.stale,
+    AGENT.decoy_edit,
+    AGENT.developing,
     AGENT.unknown,
     ...PRIORITY_LEVELS.map((p) => PRIORITY[p]),
     ...STEP_STATES.map(stepIndicator),

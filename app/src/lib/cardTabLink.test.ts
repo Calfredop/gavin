@@ -10,6 +10,7 @@ import {
   cardPathForSession,
   cardIsOnARail,
   linkedCardFor,
+  linkForCardPath,
   rowLinkedCard,
   openLinkedCard,
   requestedCardDetail,
@@ -117,6 +118,27 @@ describe("linkedCardFor", () => {
 
   it("is null for a session bound to nothing -- most tabs are not agents", () => {
     expect(linkedCardFor(board(["/p/a.md", "s-1"]), undefined, undefined, "s-9")).toBeNull();
+  });
+});
+
+describe("linkForCardPath", () => {
+  // The card-pane half: a pane already knows which card it holds, so it
+  // asks by path rather than through a session binding. Same answer, so
+  // the pane's title and its "Show on the board" can never disagree with
+  // the chip that opened it.
+  it("names the card and picks the hub tab it belongs to", () => {
+    expect(linkForCardPath(railed("/p/a.md"), tree("/p/a.md", "Wire the API"), "/p/a.md")).toEqual({
+      path: "/p/a.md",
+      title: "Wire the API",
+      view: "orchestration",
+    });
+    expect(linkForCardPath(undefined, tree("/p/a.md", "Wire the API"), "/p/a.md").view).toBe("kanban");
+  });
+
+  it("is total: a path the tree has never heard of is still named, by its file", () => {
+    // A pane whose card was just created -- or has just moved into
+    // plans/done/ -- must keep a readable tab label rather than blanking.
+    expect(linkForCardPath(undefined, undefined, "/p/a.md").title).toBe("a.md");
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   railDeleteConfirm,
   railClearDoneConfirm,
+  clearFinishedRailsConfirm,
   groupRemoveConfirm,
   runAllConfirm,
 } from "./railConfirm";
@@ -277,5 +278,112 @@ describe("runAllConfirm", () => {
   it("says nothing about exclusions that do not apply", () => {
     const c = runAllConfirm(orchOfMany([named("r1", "docs", 0)]));
     expect(c.lines).toHaveLength(2);
+  });
+});
+
+describe("clearFinishedRailsConfirm", () => {
+  function named(id: string, name: string, position: number, steps = 1): Rail {
+    const stages = [
+      Array.from({ length: steps }, (_, i): [string, string] => [
+        `${id}-t${i}`,
+        `/ws/.gavin-root/plans/${id}-${i}.md`,
+      ]),
+    ];
+    return { ...rail(id, stages), name, position };
+  }
+
+  function orchOfMany(rails: Rail[], over: Partial<Orchestration> = {}): Orchestration {
+    return { rails, conflictNotes: [], railRuns: [], stepRuns: [], ...over };
+  }
+
+  const done = (stepId: string): Orchestration["stepRuns"][number] => ({
+    stepId,
+    state: "done",
+    sessionId: null,
+    reason: null,
+  });
+
+  const cards = cardIndexOf([plan("r1-0.md"), plan("r2-0.md"), plan("r2-1.md")]);
+
+  it("names every rail it is about to remove, in screen order", () => {
+    const o = orchOfMany([named("r1", "docs", 1), named("r2", "daemon", 0)], {
+      stepRuns: [done("r1-t0"), done("r2-t0")],
+    });
+    const c = clearFinishedRailsConfirm(o, cards);
+    expect(c.title).toBe("Remove 2 finished rails?");
+    expect(c.lines[0]).toBe("Removes: daemon, docs.");
+    expect(c.confirmLabel).toBe("Remove 2 rails");
+  });
+
+  it("singularizes a lone rail", () => {
+    const o = orchOfMany([named("r1", "docs", 0)], { stepRuns: [done("r1-t0")] });
+    const c = clearFinishedRailsConfirm(o, cards);
+    expect(c.title).toBe("Remove 1 finished rail?");
+    expect(c.confirmLabel).toBe("Remove 1 rail");
+  });
+
+  it("promises the cards stay, counted across every rail going", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1, 2)], {
+      stepRuns: [done("r1-t0"), done("r2-t0"), done("r2-t1")],
+    });
+    expect(clearFinishedRailsConfirm(o, cards).lines).toContain(
+      "3 cards stay — a step is only a reference."
+    );
+  });
+
+  it("does not promise to keep a card whose file is gone", () => {
+    const o = orchOfMany([named("r1", "docs", 0)], { stepRuns: [done("r1-t0")] });
+    expect(clearFinishedRailsConfirm(o, new Map()).lines.some((l) => l.includes("card"))).toBe(
+      false
+    );
+  });
+
+  it("says out loud when a step was skipped rather than done", () => {
+    const o = orchOfMany([named("r1", "docs", 0)], {
+      stepRuns: [{ stepId: "r1-t0", state: "skipped", sessionId: null, reason: null }],
+    });
+    expect(clearFinishedRailsConfirm(o, cards).lines).toContain(
+      "1 step was skipped rather than done — nothing is left to run either way."
+    );
+  });
+
+  it("names the one worktree it is leaving behind", () => {
+    const bound = { ...named("r1", "docs", 0), worktreePath: "/x/wt" };
+    const o = orchOfMany([bound], { stepRuns: [done("r1-t0")] });
+    expect(clearFinishedRailsConfirm(o, cards).lines).toContain(
+      "The worktree /x/wt is left as it is — only the rail's binding to it goes."
+    );
+  });
+
+  it("counts several worktrees rather than listing them", () => {
+    const o = orchOfMany(
+      [
+        { ...named("r1", "docs", 0), worktreePath: "/x/one" },
+        { ...named("r2", "daemon", 1), worktreePath: "/x/two" },
+      ],
+      { stepRuns: [done("r1-t0"), done("r2-t0")] }
+    );
+    expect(clearFinishedRailsConfirm(o, cards).lines).toContain(
+      "2 worktrees are left as they are — only the rails' bindings to them go."
+    );
+  });
+
+  it("accounts for a finished rail that stays because it is paused", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1)], {
+      railRuns: [{ railId: "r2", state: "paused", currentStageId: "r2-s0" }],
+      stepRuns: [done("r1-t0"), done("r2-t0")],
+    });
+    const c = clearFinishedRailsConfirm(o, cards);
+    expect(c.lines[0]).toBe("Removes: docs.");
+    expect(c.lines).toContain("1 rail with nothing left to do is running or paused, so it stays.");
+  });
+
+  it("says nothing about a rail that still has work on it", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1)], {
+      stepRuns: [done("r1-t0")],
+    });
+    const c = clearFinishedRailsConfirm(o, cards);
+    expect(c.lines[0]).toBe("Removes: docs.");
+    expect(c.lines.some((l) => l.includes("running or paused"))).toBe(false);
   });
 });

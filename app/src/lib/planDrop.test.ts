@@ -7,8 +7,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("./backend", () => ({
   setPlanFrontmatterField: vi.fn(),
 }));
+vi.mock("./dialog", () => ({
+  askConfirm: vi.fn(),
+  askConfirmChecked: vi.fn(),
+}));
 
 import * as backend from "./backend";
+import { askConfirmChecked } from "./dialog";
 import { gavinTrees } from "./gavinState";
 import { applyPlanDrop, placeCardAtColumnEnd, planCommitFromMerged } from "./planDrop";
 import { dropHold } from "./kanbanDrag";
@@ -195,6 +200,93 @@ describe("applyPlanDrop", () => {
     expect(err).toBeNull();
     // d.md excluded from the block -> dropping at 0 means "before a.md" -> midpoint of (nothing, 2048).
     expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([["/p/d.md", "order", "1024"]]);
+  });
+
+  // A plan dragged into Done takes its nested tasks with it, on disk and
+  // on the board. The drag is one of the two gestures that used to do
+  // that silently (cardCompletion.ts).
+  describe("planCommitFromMerged: the completion cascade", () => {
+    const COLS = [
+      { id: "col1", name: "To Do", position: 0 },
+      { id: "col2", name: "Done", position: 1 },
+    ];
+    function parentView(children: CardView[]): CardView {
+      return {
+        id: "/p/plan.md",
+        title: "File explorer",
+        status: "To Do",
+        priority: null,
+        order: 1024,
+        kind: "plan",
+        parent: null,
+        parentTitle: null,
+        parentBroken: false,
+        labels: [],
+        checklistDone: 0,
+        checklistTotal: 0,
+        contextName: "p",
+        contextFolder: "/p",
+        fileName: "plan.md",
+        parseWarning: false,
+        nestedChildren: children,
+      };
+    }
+    const child: CardView = { ...parentView([]), id: "/p/lens.md", title: "Tree lens", kind: "task", status: null, fileName: "lens.md", parent: "plan.md", order: null };
+
+    function drop(): Promise<string | null> {
+      seed([planInfo("/p/plan.md", "To Do", 1024)]);
+      return planCommitFromMerged(
+        "ws",
+        { id: "/p/plan.md", sourceColumnId: "col1", target: { columnId: "col2", index: 0 } },
+        COLS,
+        {
+          columns: [
+            { column: COLS[0], planCards: [parentView([child])] },
+            { column: COLS[1], planCards: [] },
+          ],
+          autoColumns: [],
+        }
+      );
+    }
+
+    it("asks, and writes nothing at all, when the human cancels", async () => {
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+      vi.mocked(askConfirmChecked).mockResolvedValue({ confirmed: false, checked: false });
+      expect(await drop()).toBeNull();
+      expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+      // Nothing was written, so nothing may be held: the card has to be
+      // back where the human grabbed it.
+      expect(get(dropHold)).toBeNull();
+    });
+
+    it("breaks the child out first when the box is ticked, then files the plan", async () => {
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+      vi.mocked(askConfirmChecked).mockResolvedValue({ confirmed: true, checked: true });
+      expect(await drop()).toBeNull();
+      expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+        ["/p/lens.md", "status", "To Do"],
+        ["/p/plan.md", "status", "Done"],
+        ["/p/plan.md", "order", "1024"],
+      ]);
+    });
+
+    it("says nothing when a plan is dragged anywhere but the done column", async () => {
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+      seed([planInfo("/p/plan.md", "Done", 1024)]);
+      await planCommitFromMerged(
+        "ws",
+        { id: "/p/plan.md", sourceColumnId: "col2", target: { columnId: "col1", index: 0 } },
+        COLS,
+        {
+          columns: [
+            { column: COLS[0], planCards: [] },
+            { column: COLS[1], planCards: [{ ...parentView([child]), status: "Done" }] },
+          ],
+          autoColumns: [],
+        }
+      );
+      expect(askConfirmChecked).not.toHaveBeenCalled();
+    });
   });
 
   it("planCommitFromMerged holds the drop visuals while writes are in flight, then releases", async () => {

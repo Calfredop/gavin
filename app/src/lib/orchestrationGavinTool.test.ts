@@ -41,16 +41,32 @@ describe("the gavin tool kind", () => {
     });
   }
 
-  it("is never offered as a kind a human can author", () => {
-    // TOOL_KINDS drives the edit form's chips. A `gavin` chip there would
-    // let someone save a tool whose body names nothing.
+  it("is a kind a human can author", () => {
+    // TOOL_KINDS drives the edit form's chips. A `gavin` chip was
+    // withheld while the body was a free-text box, because a body typed
+    // there could name nothing and would stall every step it was dropped
+    // onto -- discoverable only at launch.
     expect(SOURCES["./orchestrationTools.ts"]).toContain(
-      'export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];'
+      'export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script", "until", "pr", "gavin"];'
     );
   });
 
-  it("offers no Duplicate, since the edit form cannot express it", () => {
-    expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain('{:else if tool.kind === "gavin"}');
+  it("draws its body as a select over the actions, never a text box", () => {
+    // This is what made the chip safe to offer: the form cannot express
+    // an action gavin does not have, so `validateTool`'s refusal is left
+    // guarding only a tool a NEWER gavin wrote.
+    const editor = SOURCES["./orchestrationTools.ts"];
+    expect(editor).toMatch(/case "gavin":[\s\S]{0,120}shape: "action"/);
+    const dialog = SOURCES["./ToolLibraryDialog.svelte"];
+    expect(dialog).toContain('{:else if bodyEditor.shape === "action"}');
+    expect(dialog).toMatch(/#each GAVIN_ACTIONS as action/);
+  });
+
+  // A copy has always run correctly -- `executeGavinAction` branches on
+  // the kind and reads the body, never on which built-in id it came
+  // from -- so the Built-in section offers Duplicate on all sixteen.
+  it("offers Duplicate like every other built-in", () => {
+    expect(SOURCES["./ToolLibraryDialog.svelte"]).not.toContain("gavin's own");
   });
 });
 

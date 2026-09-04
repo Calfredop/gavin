@@ -96,8 +96,11 @@ describe("the session a new worktree gets", () => {
     // binding passed `onSpawnAgent={() => {}}` because it never wanted an
     // agent, which would have swallowed the setup with it.
     expect(source("GitWorktreeSwitcher.svelte")).toContain("onRunInWorktree={spawnAgent}");
+    // `railId`, not `rail.id`: this callback fires after the dialog has
+    // been closed, and the prop is a lazy read through the state that
+    // closed it — see railBindTeardown.test.ts.
     expect(source(BIND)).toContain(
-      "onRunInWorktree={(path, command) => void runOnRailPage(workspaceId, rail.id, path, command)}"
+      "onRunInWorktree={(path, command) => void runOnRailPage(workspaceId, railId, path, command)}"
     );
     expect(source(BIND)).not.toContain("onSpawnAgent");
   });

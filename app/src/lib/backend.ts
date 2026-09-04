@@ -6,10 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
-import type { BoardTab, GavinTree } from "./gavin";
+import type { BoardTab, CardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { ToolRecord } from "./orchestrationTools";
+import type { ToolRun } from "./workspaceTools";
 import type { GroupTemplateRecord } from "./orchestrationGroups";
 import type { DaemonCompat } from "./daemonCompat";
 import type { SessionStatus } from "./notifications";
@@ -48,6 +49,44 @@ export function resolvePathUnderCursor(candidate: string, cwd: string): Promise<
   return invoke("resolve_path_under_cursor", { candidate, cwd });
 }
 
+/// The Files tab's directory explorer. Every one of these takes the
+/// workspace ROOT alongside its target and the host refuses anything
+/// that resolves outside it -- see fileviewer.rs. One `list_directory`
+/// per opened folder, never a recursive walk and never a watcher: the
+/// tree refreshes on demand and after its own mutations.
+export function listDirectory(
+  root: string,
+  path: string
+): Promise<{ name: string; isDir: boolean; size: number; symlink: boolean }[]> {
+  return invoke("list_directory", { root, path });
+}
+
+/// Creates an empty file. Rejects an existing path rather than
+/// truncating it.
+export function createFile(root: string, path: string): Promise<void> {
+  return invoke("create_file", { root, path });
+}
+
+/// Creates one directory. A missing parent is an error, not a folder to
+/// invent.
+export function createDirectory(root: string, path: string): Promise<void> {
+  return invoke("create_directory", { root, path });
+}
+
+/// Renames or moves an entry inside the root. Refuses to overwrite the
+/// destination -- `fs::rename` would do it silently, turning a mistyped
+/// rename into a delete with no trip through the Trash.
+export function renamePath(root: string, from: string, to: string): Promise<void> {
+  return invoke("rename_path", { root, from, to });
+}
+
+/// Moves an entry to the OS Trash, through the same route the workspace
+/// delete wizard takes. Nothing gavin removes on the human's behalf is
+/// unrecoverable.
+export function trashEntry(root: string, path: string): Promise<void> {
+  return invoke("trash_entry", { root, path });
+}
+
 export function viewableExtensions(): Promise<string[]> {
   return invoke("viewable_extensions");
 }
@@ -81,6 +120,38 @@ export function setWorkspacesState(
   removedWorkspaces: RemovedWorkspace[]
 ): Promise<void> {
   return invoke("set_workspaces_state", { workspaces, activeWorkspaceId, removedWorkspaces });
+}
+
+/// Where every workspace currently is: workspace id -> window label, with
+/// absence meaning the main window. See workspace_window.rs -- the map is
+/// ephemeral, so this is a fact about right now, never about the config.
+export function workspaceWindows(): Promise<Record<string, string>> {
+  return invoke("workspace_windows");
+}
+
+/// Opens a window for a workspace, answering with the label that now
+/// holds it. Idempotent: a workspace that already has a window is raised
+/// rather than given a second one.
+export function openWorkspaceWindow(workspaceId: string): Promise<string> {
+  return invoke("open_workspace_window", { workspaceId });
+}
+
+/// Records that a workspace belongs to THIS window -- one created here,
+/// or re-keyed onto a removed workspace's id. Without it, a workspace the
+/// registry has never heard of reads as the main window's.
+export function claimWorkspaceWindow(workspaceId: string): Promise<void> {
+  return invoke("claim_workspace_window", { workspaceId });
+}
+
+/// Brings the window a workspace is already in to the front.
+export function focusWorkspaceWindow(workspaceId: string): Promise<void> {
+  return invoke("focus_workspace_window", { workspaceId });
+}
+
+/// Closes the window a workspace lives in, if it has one of its own. A
+/// no-op for a workspace in the main window.
+export function closeWorkspaceWindow(workspaceId: string): Promise<void> {
+  return invoke("close_workspace_window", { workspaceId });
 }
 
 /// The app-global light/dark preference. null means System -- the Rust
@@ -316,6 +387,10 @@ export function getBoardTabs(): Promise<Record<string, BoardTab>> {
   return invoke("get_board_tabs");
 }
 
+export function getCardTabs(): Promise<Record<string, CardTab>> {
+  return invoke("get_card_tabs");
+}
+
 /// One live session's cwd/status/restored/interrupted, as
 /// session::SessionBaseline.
 export interface SessionBaseline {
@@ -397,6 +472,10 @@ export function getGitBaselines(cwds: string[]): Promise<(GitStatus | null)[]> {
 
 export function setBoardTabs(boardTabs: Record<string, BoardTab>): Promise<void> {
   return invoke("set_board_tabs", { boardTabs });
+}
+
+export function setCardTabs(cardTabs: Record<string, CardTab>): Promise<void> {
+  return invoke("set_card_tabs", { cardTabs });
 }
 
 export function seedSmokeTestData(rootPath: string): Promise<void> {
@@ -951,6 +1030,44 @@ export function saveTool(tool: ToolRecord): Promise<void> {
 
 export function deleteTool(id: string): Promise<void> {
   return invoke("delete_tool", { id });
+}
+
+// --- Standalone tool runs (v30) ---------------------------------------------
+//
+// Gate on FEATURE_MIN_VERSION.toolRuns before calling any of these: they
+// are new request types, so an older daemon refuses them, and "this
+// daemon does not track tool runs" is a different sentence from "this
+// tool has never been run".
+
+/// Opens a run for a tool launched from the Tools tab. The daemon closes
+/// it itself when the session exits, which is the whole of a `command` or
+/// `script` tool's verdict; an `agent` tool's is filed by
+/// `setToolRunOutcome` when its turn ends.
+export function startToolRun(input: {
+  workspaceId: string;
+  toolId: string;
+  sessionId: string;
+  command: string | null;
+  launchCwd: string | null;
+  conversationId: string | null;
+}): Promise<void> {
+  return invoke("start_tool_run", input);
+}
+
+/// Records a verdict the daemon cannot reach on its own. Only ever an
+/// `agent` tool: its session is still alive when its turn ends.
+export function setToolRunOutcome(
+  sessionId: string,
+  outcome: string,
+  exitCode: number | null = null
+): Promise<void> {
+  return invoke("set_tool_run_outcome", { sessionId, outcome, exitCode });
+}
+
+/// The LAST run of each of this workspace's tools -- not a history. The
+/// Tools tab draws one chip per row, so this is exactly what it needs.
+export function toolRuns(workspaceId: string): Promise<ToolRun[]> {
+  return invoke("tool_runs", { workspaceId });
 }
 
 // --- Group templates --------------------------------------------------------

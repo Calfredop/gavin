@@ -32,6 +32,7 @@
   } from "./attachments";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
   import { isViewableInApp } from "./fileTypes";
+  import { SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
     agentExitedIndicator,
@@ -42,7 +43,15 @@
   import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "./bestOfNState";
   import { pickCandidate, abandonRun } from "./bestOfNActions";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
-  import { runCard, resumeCard, relaunchCard, developCard, revealSession } from "./cardRunActions";
+  import {
+    runCard,
+    resumeCard,
+    relaunchCard,
+    developCard,
+    revealSession,
+    revealDevelopingCard,
+  } from "./cardRunActions";
+  import { developingRunIn } from "./developingCards";
   import { cardSessionState } from "./columnRunAction";
   import { developAvailable, agentPromptBlocker } from "./cardRun";
   import { resumeNoteFor } from "./autoResume";
@@ -51,7 +60,7 @@
   import { historyBlockedReason } from "./runHistory";
   import RunHistoryModal from "./RunHistoryModal.svelte";
   import { resumeTrail } from "./autoResumeState";
-  import { doneColumnOf, findCardPlacement, stepStateOf } from "./orchestration";
+  import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "./orchestration";
   import { adoptMemory, isMemoryCard } from "./memoryCard";
   import {
     orchestrations,
@@ -59,6 +68,7 @@
     removeCardFromRailAction,
   } from "./orchestrationState";
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
+  import { breakOutChildren, guardCompletion, subjectFromCard } from "./cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
   import { interruptedCardNote } from "./orphan";
@@ -85,9 +95,28 @@
     // archives it into `plans/done/`. The host holds the open card's path
     // as identity, so it has to follow, or the modal vanishes mid-edit.
     onPathChange?: (path: string) => void;
+    // Draw as a pane rather than as a dialog -- see Modal's own prop.
+    inline?: boolean;
+    // Take the human to this card on the board or on its rail. Only a
+    // host that is NOT one of those surfaces passes it: the Kanban and
+    // Orchestration tabs already ARE where it would go, so the action is
+    // absent there rather than a no-op. This is the half of the old tab
+    // chip that survives -- the chip now opens this panel in a pane, and
+    // the jump to the hub tab lives here, one click further in.
+    onGoToBoard?: (() => void) | null;
   }
-  let { card, workspaceId, columns, labels, allCards, onClose, onOpenCard, onPathChange }: Props =
-    $props();
+  let {
+    card,
+    workspaceId,
+    columns,
+    labels,
+    allCards,
+    onClose,
+    onOpenCard,
+    onPathChange,
+    inline = false,
+    onGoToBoard = null,
+  }: Props = $props();
 
   const PRIORITIES: Priority[] = ["none", "low", "medium", "high", "urgent"];
   let errorMessage = $state<string | null>(null);
@@ -190,6 +219,24 @@
     }
   }
 
+  // The one escape from nesting, offered where the human is looking at
+  // the children rather than only at the moment the plan is being filed
+  // (cardCompletion.ts). It is a `status:` write and nothing else: the
+  // child becomes a card of its own in the first column and KEEPS its
+  // `parent:` link, which is what makes it different from "Un-parent"
+  // right beside it.
+  const breakOutTarget = $derived(firstColumnOf(columns));
+  async function breakOutChild(child: CardView): Promise<void> {
+    errorMessage = null;
+    if (!breakOutTarget) return;
+    const decision = await breakOutChildren(
+      workspaceId,
+      [{ path: child.id, title: child.title }],
+      breakOutTarget.name
+    );
+    errorMessage = decision.error;
+  }
+
   // --- field writes (surgical, patch-on-success) -----------------------
   async function writeField(
     key: "title" | "status" | "priority" | "labels" | "attachments",
@@ -236,8 +283,19 @@
   $effect(() => {
     statusChoice = card.status ?? "";
   });
-  function commitStatus(): void {
-    if (statusChoice !== (card.status ?? "")) void writeField("status", statusChoice);
+  // Filing a plan carries its nested tasks with it, so the select owes
+  // the human the same question the board's drag asks (cardCompletion.ts).
+  // On any answer but "go", the select is put back: leaving it showing a
+  // column the card is not in would be the modal telling a lie.
+  async function commitStatus(): Promise<void> {
+    if (statusChoice === (card.status ?? "")) return;
+    const decision = await guardCompletion(workspaceId, subjectFromCard(card), statusChoice, columns);
+    if (!decision.proceed) {
+      errorMessage = decision.error;
+      statusChoice = card.status ?? "";
+      return;
+    }
+    await writeField("status", statusChoice);
   }
 
   let priority = $state<Priority>("none");
@@ -395,14 +453,19 @@
     }
   }
 
-  // A split needs a terminal session to anchor to; file and board tabs
-  // are not sessions. Null means the app has no pane to split, and the
+  // A split needs a terminal session to anchor to; file, board and card
+  // tabs are not sessions. Null means the app has no pane to split, and the
   // chip falls back to the OS's default application -- an honest second
   // choice, rather than a click that does nothing.
   const anchorSessionId = $derived.by(() => {
     const focused = $layoutState.focusedSessionId;
     if (!focused) return null;
-    if ($layoutState.fileTabsById[focused] || $layoutState.boardTabsById[focused]) return null;
+    if (
+        $layoutState.fileTabsById[focused] ||
+        $layoutState.boardTabsById[focused] ||
+        $layoutState.cardTabsById[focused]
+      )
+        return null;
     return focused;
   });
 
@@ -531,6 +594,18 @@
     const err = await developCard(workspaceId, card);
     if (err) errorMessage = err;
     else onClose();
+  }
+
+  // The develop run this card is already under, if any. It replaces the
+  // whole unbound block below rather than sitting beside it: an agent is
+  // rewriting the file, so every launch there is refused
+  // (developingCards.ts) and there is exactly one useful thing to do.
+  const developing = $derived(developingRunIn($layoutState, workspaceId, card.id));
+
+  async function handleJumpToDevelop(): Promise<void> {
+    errorMessage = null;
+    await revealDevelopingCard(workspaceId, card.id);
+    onClose();
   }
 
   // --- best-of-N ------------------------------------------------------
@@ -706,10 +781,16 @@
   }
 </script>
 
-<Modal {onClose} scrollKey={card.id}>
+<Modal {onClose} scrollKey={card.id} {inline}>
   <div class="header">
     <span class="kind-badge kind-{card.kind}">{card.kind}</span>
     <span class="meta">{card.contextName} · {card.fileName}</span>
+    {#if onGoToBoard}
+      <button type="button" class="go-to-board" onclick={() => onGoToBoard?.()}>
+        <SquareArrowOutUpRight size={12} />
+        Show on the board
+      </button>
+    {/if}
   </div>
   <input class="title" type="text" bind:value={titleDraft} onblur={commitTitle} onkeydown={(e) => e.key === "Enter" && commitTitle()} />
   <div class="path">{card.id}</div>
@@ -730,7 +811,7 @@
   {/if}
   <label class="row">
     <span class="label">Status</span>
-    <select bind:value={statusChoice} onchange={commitStatus}>
+    <select bind:value={statusChoice} onchange={() => void commitStatus()}>
       {#if nested}
         <option value="">(nested in {card.parentTitle})</option>
       {:else if card.status === null}
@@ -875,15 +956,37 @@
   {#if children.length > 0}
     <div class="section">
       <div class="section-title">Tasks</div>
+      <!-- Said once, above the list: a nested task has no status of its
+           own, so nothing else on this modal can tell the human that
+           finishing this plan finishes it too. -->
+      {#if children.some((c) => c.status === null)}
+        <p class="quiet">
+          A nested task has no status of its own — it is done when this plan is, and travels
+          into plans/done/ with it. Break one out to give it a column of its own; it keeps
+          the link back here.
+        </p>
+      {/if}
       {#each children as child (child.id)}
         <div class="child-row">
           <button type="button" class="child-open" title="Open this task's card" onclick={() => onOpenCard(child.id)}>
             <span class="child-title" title={child.title}>{child.title}</span>
             <span class="child-status">{child.status ?? "(nested)"}</span>
           </button>
-          <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
-            Un-parent
-          </button>
+          <div class="child-actions">
+            {#if child.status === null && breakOutTarget}
+              <button
+                type="button"
+                class="unparent"
+                title={`Give it its own card in ${breakOutTarget.name} — it stays part of this plan`}
+                onclick={() => void breakOutChild(child)}
+              >
+                Break out
+              </button>
+            {/if}
+            <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
+              Un-parent
+            </button>
+          </div>
         </div>
       {/each}
     </div>
@@ -993,6 +1096,18 @@
           {:else}
             <p class="quiet">{baseline.reason}</p>
           {/if}
+        </div>
+      {:else if developing}
+        <p class="session-note">
+          An agent is developing this card — rewriting its body, and possibly its
+          kind and its nested tasks. Until it finishes, nothing else may run this
+          card: a second agent would be executing a prompt that is about to be
+          replaced, and writing its status into a file being rewritten.
+        </p>
+        <div class="session-actions">
+          <button type="button" onclick={() => void handleJumpToDevelop()}>
+            Jump to the develop session
+          </button>
         </div>
       {:else}
         <!-- Stacked, not side by side: both labels are sentences rather
@@ -1213,6 +1328,28 @@
     gap: 8px;
     margin-bottom: 6px;
   }
+  /* Pushed to the far end of the header: it is the one control here that
+     leaves this panel entirely, so it does not sit among the fields that
+     edit the card. */
+  .go-to-board {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    flex: none;
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.75em;
+    cursor: pointer;
+  }
+  .go-to-board:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+  }
   .kind-badge {
     border-radius: 10px;
     padding: 1px 8px;
@@ -1356,6 +1493,14 @@
     font-family: monospace;
     font-size: 0.75em;
     padding: 0 6px;
+  }
+  /* The row's actions travel together against the right edge: with the
+     margin on each button, a second one would push the first away from
+     it rather than sit beside it. */
+  .child-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     margin-left: auto;
   }
   .check-item input {

@@ -229,3 +229,33 @@ select {
   stroke-linejoin: miter;
   stroke-linecap: butt;
 }
+
+/* ---- The app's header row --------------------------------------------
+   Three bars are the same bar in three places, and whichever one is on
+   screen is now the TOP EDGE of the window: the strip over the sidebar
+   that carries the traffic lights, the workspace's hub tabs
+   (+page.svelte) and a page's session tabs (Pane.svelte). A few pixels
+   of difference between them is not a detail here -- the sidebar stops
+   lining up with the view beside it, and switching from a hub tab to a
+   page nudges the whole content area up or down.
+
+   So the metrics live here rather than three times over in three scoped
+   <style> blocks, and appHeader.test.ts pins that none of the three
+   goes back to a literal. --header-pad-top is the gap above a tab: it
+   belongs to the BAR, so the strip and both tab rows breathe the same
+   way against the window edge. */
+:root {
+  --header-height: 36px;
+  --header-pad-top: 6px;
+  --tab-pad: 6px 10px;
+  --tab-font-size: 0.85em;
+  --tab-indicator: 2px;
+  /* The gap between two tabs, and the hairline drawn down the middle of
+     it. Both rows are one flat surface now -- the same black as the view
+     under them -- so nothing but this rule says where one tab ends and
+     the next begins. It stops SHORT of the row's full height on purpose:
+     a full-height rule would read as a frame around each tab, which is
+     the boxed look the flat bar just got rid of. */
+  --tab-gap: 6px;
+  --tab-divider: 14px;
+}

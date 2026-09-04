@@ -332,7 +332,7 @@ function tabLocation(
 }
 
 function countLooseAgents(ws: Workspace, state: FleetState, bound: Set<string>): number {
-  const ids = sessionTabsOnly(workspaceSessionIds(ws), state.fileTabsById, state.boardTabsById);
+  const ids = sessionTabsOnly(workspaceSessionIds(ws), state.fileTabsById, state.boardTabsById, state.cardTabsById);
   let n = 0;
   for (const id of ids) {
     if (bound.has(id)) continue;

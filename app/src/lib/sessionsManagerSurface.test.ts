@@ -157,6 +157,37 @@ describe("the panel", () => {
     const head = style.slice(style.indexOf("thead th {"));
     expect(head.slice(0, head.indexOf("}"))).toContain("position: sticky");
   });
+
+  it("totals the list through the pure module, over the rows it is drawing", () => {
+    // Summing in the template would let the bottom line describe a
+    // different sample than the rows above it, and would put arithmetic
+    // somewhere no test can reach.
+    const text = source(PANEL);
+    expect(text).toContain("totalUsage(rows)");
+    expect(text).toContain("totalsCoverage(total)");
+    expect(text).toContain("formatCpu(total.cpuPercent)");
+    expect(text).toContain("formatMemory(total.memBytes)");
+  });
+
+  it("puts the totals inside the table, in the columns they are totals of", () => {
+    // `table-layout: fixed` makes the columns exact; a strip under the
+    // grid would have to guess them back, and would be a scrollbar's
+    // width out whenever the list overflows.
+    const text = source(PANEL);
+    const table = text.slice(text.indexOf("<table>"), text.indexOf("</table>"));
+    expect(table).toContain("<tfoot>");
+    expect(table.indexOf("</tbody>")).toBeLessThan(table.indexOf("<tfoot>"));
+  });
+
+  it("keeps the totals in place while the rows scroll, the mirror of the headings", () => {
+    // On the cells, never on `<tfoot>` or `<tr>`: this is WKWebView, and
+    // sticky on a table CELL is the form it has always honoured.
+    const style = source(PANEL).slice(source(PANEL).indexOf("<style>"));
+    const foot = style.slice(style.indexOf("tfoot td {"));
+    const rule = foot.slice(0, foot.indexOf("}"));
+    expect(rule).toContain("position: sticky");
+    expect(rule).toContain("bottom: 0");
+  });
 });
 
 describe("the dialogs it asks with", () => {

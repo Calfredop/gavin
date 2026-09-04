@@ -13,8 +13,16 @@ import {
 import { copySelection, pasteClipboard } from "./clipboard";
 import { confirmTabClose } from "./confirmClose";
 import { findLeafPath, getNodeAtPath, isPinned } from "./layout";
-import { getActiveTree, getActiveWorkspace, getActiveView, sidebarWorkspaceOrder } from "./workspace";
-import { visibleHubViewIds } from "./hubViewMeta";
+import {
+  getActiveTree,
+  getActiveWorkspace,
+  getActiveView,
+  sidebarPageOrder,
+  sidebarWorkspaceOrder,
+} from "./workspace";
+import { tabStripHubViewIds } from "./hubViewMeta";
+import { currentHubTabPrefs } from "./hubTabPrefs";
+import { scratchpadEnabled } from "./sidebarPrefs";
 import { cmdHeld, isMacSync } from "./platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "./shortcuts";
 import { requestedCompose, resolveComposeTarget } from "./composeRequest";
@@ -81,7 +89,11 @@ function routeDigit(
   if (!isMac && event.ctrlKey && event.altKey) return null;
 
   if (altKey) {
-    const list = sidebarWorkspaceOrder(state.workspaces);
+    // The same list the sidebar draws, Scratchpad included or not: these
+    // digits are the sidebar's rows counted from the top, and a router
+    // that counted a row nothing draws would be off by one for every
+    // workspace below it.
+    const list = sidebarWorkspaceOrder(state.workspaces, get(scratchpadEnabled));
     const index = resolveIndex(digit, list.length);
     if (index === null) return null;
     const workspaceId = list[index].id;
@@ -92,9 +104,13 @@ function routeDigit(
   if (!ws) return null;
 
   if (shiftKey) {
-    const index = resolveIndex(digit, ws.pages.length);
+    // The sidebar's own order, pinned pages first -- these digits count
+    // the rows it draws, and a router counting the stored array instead
+    // would address a different page than the badge on the row promises.
+    const pages = sidebarPageOrder(ws.pages);
+    const index = resolveIndex(digit, pages.length);
     if (index === null) return null;
-    const pageId = ws.pages[index].id;
+    const pageId = pages[index].id;
     return () => switchPage(ws.id, pageId);
   }
 
@@ -112,7 +128,18 @@ function routeDigit(
     return () => switchToTab(tabId);
   }
 
-  const views = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
+  // The STRIP's ids, not every view on offer: ⌘-digits address tabs by
+  // position, and the row is what the human is counting along. A view
+  // reached by a button in the actions (Settings) has no position to
+  // address, and counting it here would shift every digit past it -- and
+  // for the same reason the row's own preferences are passed in: a
+  // rearranged or thinned-out strip is still what is being counted.
+  const views = tabStripHubViewIds(
+    ws.id,
+    import.meta.env.DEV,
+    Boolean(ws.rootPath),
+    currentHubTabPrefs(ws.id)
+  );
   const index = resolveIndex(digit, views.length);
   if (index === null) return null;
   const viewId = views[index];

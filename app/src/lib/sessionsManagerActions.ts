@@ -44,7 +44,7 @@ import {
 /// is showing it.
 ///
 /// The hidden case is the reason this exists. A git-commit run, an
-/// orchestration Generate, a session left behind by a closed page: they
+/// orchestration Organize, a session left behind by a closed page: they
 /// are real sessions doing real work with nowhere to watch them, and
 /// `handleAgentSessionSpawned` is the app's one way to adopt such a
 /// session onto a page (the workspace's "Agents" page, created if

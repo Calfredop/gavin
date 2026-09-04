@@ -5,6 +5,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("./dialog", () => ({
+  askConfirm: vi.fn(),
+  askConfirmChecked: vi.fn(),
+}));
 vi.mock("./backend", () => ({
   setPlanFrontmatterField: vi.fn(),
   getBoard: vi.fn(),
@@ -24,6 +28,7 @@ vi.mock("./layoutState", () => ({
     interruptedSessionIds: new Set<string>(),
     failureReasonById: {},
   }),
+  setDevelopingCards: vi.fn().mockResolvedValue(undefined),
   // null = "not connected yet", which featureBlockedReason reads as "do
   // not pre-emptively grey anything out" -- so the archive entry is live
   // in these tests without pinning a daemon version.
@@ -81,6 +86,7 @@ vi.mock("./workspace", () => {
 });
 
 import * as backend from "./backend";
+import { askConfirmChecked } from "./dialog";
 import { findSessionLocation } from "./workspace";
 import { requestCardReview } from "./codeReviewActions";
 import { layoutState } from "./layoutState";
@@ -89,7 +95,7 @@ import { orchestrations } from "./orchestrationState";
 import { emptyOrchestration, addRail, addStage, addStep } from "./orchestration";
 import { buildCardMenuEntries, type CardMenuHooks } from "./cardMenu";
 import { bestOfNRequest, bestOfNRuns } from "./bestOfNState";
-import { isSeparator, type ContextMenuItem } from "./contextMenu";
+import { isMenuItem, type ContextMenuItem } from "./contextMenu";
 import type { CardView } from "./planBoard";
 import type { Board } from "./kanban";
 
@@ -134,7 +140,7 @@ function hooks(over: Partial<CardMenuHooks> = {}): CardMenuHooks {
 }
 
 function labels(entries: ReturnType<typeof buildCardMenuEntries>): string[] {
-  return entries.filter((e): e is ContextMenuItem => !isSeparator(e)).map((e) => e.label);
+  return entries.filter(isMenuItem).map((e) => e.label);
 }
 
 function board(cardSessions: Board["cardSessions"] = []): Board {
@@ -142,7 +148,7 @@ function board(cardSessions: Board["cardSessions"] = []): Board {
 }
 
 function item(entries: ReturnType<typeof buildCardMenuEntries>, label: string): ContextMenuItem | undefined {
-  return entries.find((e): e is ContextMenuItem => !isSeparator(e) && e.label === label);
+  return entries.find((e): e is ContextMenuItem => isMenuItem(e) && e.label === label);
 }
 
 /// Two rails, "backend" and "ui"; `on` optionally puts the card on one of
@@ -171,6 +177,40 @@ beforeEach(() => {
 });
 
 describe("buildCardMenuEntries", () => {
+  // The menu's "Move to Done" is the same write the board's drag makes,
+  // so it owes the human the same warning (cardCompletion.ts).
+  describe("Move to, on a plan carrying nested tasks", () => {
+    const withChild = () =>
+      card("plan", "To Do", {
+        nestedChildren: [card("task", null, { id: "/p/lens.md", title: "Tree lens", fileName: "lens.md", parent: "t.md" })],
+      });
+    function pick(entries: ReturnType<typeof buildCardMenuEntries>, label: string): void {
+      const entry = entries.find((e): e is ContextMenuItem => isMenuItem(e) && e.label === label);
+      entry?.onPick?.();
+    }
+
+    beforeEach(() => {
+      vi.mocked(askConfirmChecked).mockReset();
+      vi.mocked(backend.setPlanFrontmatterField).mockReset();
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p: string) => p);
+    });
+
+    it("asks first, and does not file the plan when the human cancels", async () => {
+      vi.mocked(askConfirmChecked).mockResolvedValue({ confirmed: false, checked: false });
+      pick(buildCardMenuEntries(withChild(), hooks()), "Move to Done");
+      await vi.waitFor(() => expect(askConfirmChecked).toHaveBeenCalled());
+      expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    });
+
+    it("asks nothing on a move that is not into the done column", async () => {
+      pick(buildCardMenuEntries(card("plan", "Done", { nestedChildren: withChild().nestedChildren }), hooks()), "Move to To Do");
+      await vi.waitFor(() =>
+        expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/p/t.md", "status", "To Do")
+      );
+      expect(askConfirmChecked).not.toHaveBeenCalled();
+    });
+  });
+
   it("a note gets open/move/delete but no run entry", () => {
     const l = labels(buildCardMenuEntries(card("note", "To Do"), hooks()));
     expect(l).toContain("Open");
@@ -185,11 +225,11 @@ describe("buildCardMenuEntries", () => {
     const l = labels(entries);
     expect(l).toContain("Run in dedicated session");
     const send = entries.find(
-      (e): e is ContextMenuItem => !isSeparator(e) && e.label === "Send to workspace agent"
+      (e): e is ContextMenuItem => isMenuItem(e) && e.label === "Send to workspace agent"
     );
     expect(send?.disabled).toBe(true); // no main agent in these hooks
     const current = entries.find(
-      (e): e is ContextMenuItem => !isSeparator(e) && e.label === "Move to To Do"
+      (e): e is ContextMenuItem => isMenuItem(e) && e.label === "Move to To Do"
     );
     expect(current?.disabled).toBe(true);
     expect(current?.active).toBe(true);

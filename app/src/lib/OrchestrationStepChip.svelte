@@ -5,6 +5,7 @@
     StickyNote,
     CheckCheck,
     RotateCw,
+    SkipForward,
     X,
     Bot,
     Terminal,
@@ -62,6 +63,12 @@
     /// own signal says otherwise, and without this the only way past
     /// such a step is to delete it (and the session holding it).
     onMarkDone: () => void;
+    /// Sends the rail PAST this step without claiming its work happened.
+    /// The other half of the pair above, and the reason both are offered:
+    /// "Mark done" was the only way past a step that would not finish, so
+    /// it was pressed for work nobody did -- and every tally downstream
+    /// then counted that step as delivered.
+    onSkip: () => void;
     onRemove: () => void;
     /// Search state (orchestrationSearch.ts). `hit` rings the chip the
     /// query found; `dimmed` fades the ones it did not, so a rail keeps
@@ -88,6 +95,7 @@
     severity,
     onRetry,
     onMarkDone,
+    onSkip,
     onRemove,
     hit = false,
     dimmed = false,
@@ -184,6 +192,7 @@
   {/if}
   {#if state === "running" || state === "stalled"}
     <IconButton icon={CheckCheck} label="Mark done" size={13} onclick={onMarkDone} />
+    <IconButton icon={SkipForward} label="Skip and proceed" size={13} onclick={onSkip} />
   {/if}
   {#if tool && tool.params.length > 0}
     <IconButton icon={Sliders} label="Tool parameters" size={13} onclick={onEditParams} />
@@ -261,6 +270,11 @@
   }
   .chip.done {
     border-color: var(--border-success);
+    color: var(--text-muted);
+  }
+  /* Muted like .done -- the rail is past both -- but the plain border,
+     never done's success green: nothing about a skipped step succeeded. */
+  .chip.skipped {
     color: var(--text-muted);
   }
   .chip.stalled {

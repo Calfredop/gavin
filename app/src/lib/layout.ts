@@ -338,18 +338,55 @@ export function allLeaves(node: LayoutNode): Leaf[] {
   return node.children.flatMap(allLeaves);
 }
 
-// Neither a file tab nor a board tab is a terminal session: closing one
-// ends no process, and no agent runs behind one. The two id maps are the
-// only thing that distinguishes them -- a tab absent from both IS a
+// A file, board or card tab is not a terminal session: closing one ends
+// no process, and no agent runs behind one. The three id maps are the
+// only thing that distinguishes them -- a tab absent from all three IS a
 // terminal session. Lives here, with allSessionIds, because both the
 // close-page prompt ("N terminal sessions will end") and the sidebar's
 // per-page recap have to mean the same thing by "session".
+//
+// Every map is a required argument rather than an optional or a rest
+// parameter on purpose: a fourth tab kind added later must break every
+// call site, because the failure of forgetting one is silent (a pane
+// counted as an agent, a close prompt threatening to end a process that
+// does not exist).
 export function sessionTabsOnly(
   ids: string[],
   fileTabsById: Record<string, unknown>,
-  boardTabsById: Record<string, unknown>
+  boardTabsById: Record<string, unknown>,
+  cardTabsById: Record<string, unknown>
 ): string[] {
-  return ids.filter((id) => !fileTabsById[id] && !boardTabsById[id]);
+  return ids.filter((id) => !fileTabsById[id] && !boardTabsById[id] && !cardTabsById[id]);
+}
+
+// Which pane on a page draws the row of actions at the top right --
+// exactly one of them, whatever the page is split into.
+//
+// Every pane used to draw its own. On a page split four ways that is
+// four copies of Split Right / Split Down / Close Pane / New page across
+// the top of the window, and the copies are not interchangeable: each
+// one acts on the pane it sits on, so the row a human reads as "the
+// window's toolbar" is really four toolbars that differ only in where
+// they are. The focused pane is the one the keyboard already addresses,
+// and the underline on its active tab already says which one it is, so
+// it is the pane whose actions are worth showing.
+//
+// The two fallbacks exist so the row can never go missing entirely --
+// New page lives in it, and a page with no toolbar at all is a dead end:
+//
+// - no tree to consult: show them (the caller has nothing better).
+// - a focus that names no pane on this page: the FIRST pane speaks for
+//   the page, matching the order resolveFocusForPage would pick anyway.
+export function paneOwnsActions(
+  tree: LayoutNode | null,
+  leaf: Leaf,
+  focusedSessionId: string | null
+): boolean {
+  if (focusedSessionId !== null && leaf.tabs.includes(focusedSessionId)) return true;
+  if (!tree) return true;
+  const ids = allSessionIds(tree);
+  if (focusedSessionId !== null && ids.includes(focusedSessionId)) return false;
+  return ids.length === 0 || leaf.tabs.includes(ids[0]);
 }
 
 export function activeSessionId(leaf: Extract<LayoutNode, { type: "leaf" }>): string {

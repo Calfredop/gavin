@@ -25,6 +25,9 @@
     selectionHint,
     sessionRows,
     sortRows,
+    totalUsage,
+    totalsCoverage,
+    totalsNote,
     type ManagedSessions,
     type Selection,
     type SessionRow,
@@ -96,6 +99,10 @@
   const picked = $derived(selectedRows(rows, selection));
   const pickedIds = $derived(new Set(picked.map((r) => r.id)));
   const staleCount = $derived(rows.filter((r) => r.stale).length);
+  /// What the list adds up to, from the same rows the grid is drawing --
+  /// so the bottom line can never describe a different sample than the
+  /// rows above it.
+  const total = $derived(totalUsage(rows));
 
   const metricsBlocked = $derived(featureBlockedReason($daemonCompat, "sessionMetrics"));
 
@@ -397,6 +404,24 @@
               </tr>
             {/each}
           </tbody>
+          <!-- Inside the table, not under it: with `table-layout: fixed`
+               this is the only way the two sums stay in the columns they
+               are sums of, whatever the grid's scrollbar does to the
+               width. It sticks to the bottom for the same reason the
+               headings stick to the top -- what the list costs in total
+               must not scroll away with the rows. -->
+          <tfoot>
+            <tr>
+              <td class="mark"></td>
+              <td class="total" colspan="3" use:tooltip={totalsNote(total)}>
+                <span class="word">Total</span>
+                <span class="cover">{totalsCoverage(total)}</span>
+              </td>
+              <td class="figure">{formatCpu(total.cpuPercent)}</td>
+              <td class="figure">{formatMemory(total.memBytes)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     {/if}
@@ -499,6 +524,40 @@
   }
   th.num {
     text-align: right;
+  }
+  /* Sticky at the foot of the grid, the mirror of the headings at its
+     top, and on the cells rather than the row: WebKit is reliable about
+     `position: sticky` on a table CELL and was never reliable about it
+     on `<tfoot>` or `<tr>`, which is the same reason `thead th` carries
+     it above. */
+  tfoot td {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    background: var(--surface-raised);
+    border-top: 1px solid var(--border);
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+  /* Not a flex container: `display: flex` on a `<td>` takes it out of
+     the table's cell layout, and an anonymous cell around it would put
+     the two figures back out of line with the columns they total. */
+  .total {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .total .word {
+    color: var(--text);
+  }
+  .total .cover {
+    color: var(--text-subtle);
+    margin-left: 8px;
+  }
+  /* The one place a figure is stated at full strength: the rows are a
+     list to scan, this is the answer to what the fleet costs. */
+  tfoot .figure {
+    color: var(--text);
   }
   .sort {
     display: inline-flex;

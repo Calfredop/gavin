@@ -34,6 +34,10 @@ vi.mock("./backend", () => ({
   signalFrontendReady: vi.fn(),
   getSessionNames: vi.fn(),
   setSessionName: vi.fn(),
+  // Resolved by default: armFailureDetection awaits this inside a
+  // try/catch that exists for an OLD daemon, so a mock returning
+  // undefined would look like the refusal it swallows.
+  setFailurePatterns: vi.fn().mockResolvedValue(undefined),
   deleteBoard: vi.fn(),
   // Resolved by default, like getBoardTabs below: loadTabMaps awaits both
   // before startup may leave "connecting", so a mock returning undefined
@@ -58,11 +62,24 @@ vi.mock("./backend", () => ({
   // vi.fn() returning undefined would throw rather than exercise the
   // real best-effort path.
   unwatchFileForViewer: vi.fn().mockResolvedValue(undefined),
+  // The window registry (workspace_window.rs). Resolved by default: every
+  // caller here is best-effort -- a window that will not open must never
+  // take the workspace with it.
+  workspaceWindows: vi.fn().mockResolvedValue({}),
+  openWorkspaceWindow: vi.fn().mockResolvedValue("ws-1"),
+  claimWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
+  focusWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
+  closeWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: setWorkspaceRoot and watchRootedWorkspaces call
   // .catch() on these.
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
   unwatchGavinRoot: vi.fn().mockResolvedValue(undefined),
   getBoardTabs: vi.fn().mockResolvedValue({}),
+  // Same as the two above: loadTabMaps awaits all three maps before
+  // startup may leave "connecting".
+  getCardTabs: vi.fn().mockResolvedValue({}),
+  // Resolved by default: pruneCardTabs calls .catch() on this.
+  setCardTabs: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: bootstrap calls this best-effort to refill the
   // maps a frontend reload starts blank on.
   getSessionBaselines: vi.fn().mockResolvedValue([]),
@@ -112,6 +129,7 @@ vi.mock("./notifications", () => ({
 import * as backend from "./backend";
 import * as notifications from "./notifications";
 import * as terminalRegistry from "./terminalRegistry";
+import { workspaceWindows } from "./appWindowState";
 import {
   layoutState,
   splitPane,
@@ -140,10 +158,12 @@ import {
   renameWorkspace,
   switchWorkspace,
   switchWorkspaceView,
+  handOffWorkspace,
   appHubOpen,
   openAppHub,
   closeWorkspace,
   createPage,
+  createSessionOnNewPage,
   createSessionForCard,
   openFileInSplit,
   renamePage,
@@ -155,6 +175,9 @@ import {
   movePageAction,
   setWorkspaceRoot,
   openBoardInSplit,
+  openCardInSplit,
+  setCardTabPath,
+  retargetCardTabs,
   repairUnknownTabs,
   handleAgentSessionSpawned,
   retryConnect,
@@ -162,6 +185,7 @@ import {
   teardown,
   startMainAgent,
   stopMainAgent,
+  agentProfilesStore,
   setWorkspaceColor,
   setWorkspaceFlag,
   setWorkspaceFontSize,
@@ -218,6 +242,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
+    cardTabsById: {},
     removedWorkspaces: [],
   });
 }
@@ -227,6 +252,9 @@ beforeEach(() => {
   // Module-level store: without this, one test's seeded agent config
   // resolves in the next one.
   gavinTrees.set({});
+  // Module-level store, same reason: the profile table carries the
+  // failure patterns a launch arms.
+  agentProfilesStore.set([]);
   // Module-level store, same reason: without this, a compat verdict set
   // by one test would leak into the next one's assertions.
   daemonCompat.set(null);
@@ -235,6 +263,9 @@ beforeEach(() => {
   // Module-level store, same reason: a queue seeded by one test would
   // otherwise still be pending in the next one.
   queuedInputsById.set({});
+  // Module-level store, same reason: a workspace parked in another window
+  // by one test would make the next one's activation refuse.
+  workspaceWindows.set({});
   layoutState.set({
     status: "connecting",
     errorMessage: "",
@@ -252,6 +283,7 @@ beforeEach(() => {
     failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
+    cardTabsById: {},
     removedWorkspaces: [],
   });
 });
@@ -493,6 +525,118 @@ describe("openBoardInSplit", () => {
     expect(backend.setBoardTabs).toHaveBeenCalledWith(state.boardTabsById);
     expect(backend.setWorkspacesState).toHaveBeenCalled();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("openCardInSplit", () => {
+  it("splits beside the anchor, records the card tab, persists, spawns nothing", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await openCardInSplit("a", "ws-1", "/ws/.gavin-root/plans/login.md", "plan");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout.type).toBe("split");
+    const cardTabIds = Object.keys(state.cardTabsById);
+    expect(cardTabIds).toHaveLength(1);
+    expect(state.cardTabsById[cardTabIds[0]]).toEqual({
+      workspaceId: "ws-1",
+      path: "/ws/.gavin-root/plans/login.md",
+      view: "plan",
+    });
+    expect(state.focusedSessionId).toBe(cardTabIds[0]);
+    expect(backend.setCardTabs).toHaveBeenCalledWith(state.cardTabsById);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("brings an already-open view of the same card forward instead of splitting again", async () => {
+    // The chip is on a terminal tab the human keeps coming back to; two
+    // clicks a minute apart must not leave the page two panes deep in the
+    // same card.
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    const first = Object.keys(get(layoutState).cardTabsById)[0];
+
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+
+    const state = get(layoutState);
+    expect(Object.keys(state.cardTabsById)).toEqual([first]);
+    expect(state.focusedSessionId).toBe(first);
+  });
+
+  it("treats the plan and the changes views of one card as different panes", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+
+    expect(Object.keys(get(layoutState).cardTabsById)).toHaveLength(2);
+  });
+
+  it("splits again when the only matching tab lives on another page", async () => {
+    // The dedupe is a "bring it forward" and cannot bring forward what
+    // this page does not hold -- switching pages under a chip click would
+    // move the human away from the agent they were watching.
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    const onPageOne = Object.keys(get(layoutState).cardTabsById)[0];
+    // Move that tab's page out from under the pane: the app is now on
+    // page-2, where nothing shows the card.
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) => ({ ...w, activePageId: "page-2" })),
+    }));
+
+    await openCardInSplit("b", "ws-1", "/ws/plans/login.md", "plan");
+
+    const ids = Object.keys(get(layoutState).cardTabsById);
+    expect(ids).toHaveLength(2);
+    expect(ids).toContain(onPageOne);
+  });
+
+  it("closes like any other non-session tab: no kill, pruned from the map", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+    const tabId = Object.keys(get(layoutState).cardTabsById)[0];
+    vi.mocked(backend.killSession).mockClear();
+
+    await closeSession(tabId);
+
+    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(get(layoutState).cardTabsById).toEqual({});
+    expect(backend.setCardTabs).toHaveBeenLastCalledWith({});
+  });
+});
+
+describe("card tabs following their card", () => {
+  it("setCardTabPath moves ONE pane, leaving a sibling view of the same card alone", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+    const [planTab, changesTab] = Object.keys(get(layoutState).cardTabsById);
+
+    await setCardTabPath(planTab, "/ws/plans/child.md");
+
+    const map = get(layoutState).cardTabsById;
+    expect(map[planTab].path).toBe("/ws/plans/child.md");
+    expect(map[changesTab].path).toBe("/ws/plans/login.md");
+  });
+
+  it("retargetCardTabs moves every pane on the card, because the FILE moved", async () => {
+    // Setting a card Done files it under plans/done/. Both panes are
+    // still looking at the same card, so both have to follow.
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+
+    await retargetCardTabs("/ws/plans/login.md", "/ws/plans/done/login.md");
+
+    const paths = Object.values(get(layoutState).cardTabsById).map((t) => t.path);
+    expect(paths).toEqual(["/ws/plans/done/login.md", "/ws/plans/done/login.md"]);
   });
 });
 
@@ -1564,6 +1708,99 @@ describe("switchWorkspace", () => {
     expect(state.activeWorkspaceId).toBe("ws-2");
     expect(state.focusedSessionId).toBe(null);
   });
+
+  // The rule this guard exists for: a workspace is on screen in exactly
+  // one window. Two panes over one PTY would each report their own
+  // cols/rows to the daemon and resize the program between them for as
+  // long as both were open. Every path that shows a workspace ends in
+  // activateWorkspace, so this one refusal covers all of them.
+  it("refuses a workspace another window is showing, and raises that window", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"]))]), ws("ws-2", [page("page-2", leaf(["x"]))])],
+      "ws-1",
+      "a"
+    );
+    workspaceWindows.set({ "ws-2": "ws-ws-2" });
+
+    await switchWorkspace("ws-2");
+
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-1");
+    expect(state.focusedSessionId).toBe("a");
+    expect(backend.focusWorkspaceWindow).toHaveBeenCalledWith("ws-2");
+  });
+
+  // Guarded separately, because switchWorkspaceView does not go through
+  // activateWorkspace: `activeView` is stored ON the workspace, so a
+  // click here would persist a tab change the other window then adopts --
+  // one window silently redrawing another.
+  it("refuses to change the tab of a workspace another window is showing", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+    workspaceWindows.set({ "ws-2": "ws-ws-2" });
+
+    await switchWorkspaceView("ws-2", "kanban");
+
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    expect(backend.focusWorkspaceWindow).toHaveBeenCalledWith("ws-2");
+  });
+});
+
+describe("handOffWorkspace", () => {
+  // Order is the whole of it: look away, give up the terminals, then ask
+  // for the window. Any other order has two live panes on one PTY, even
+  // briefly.
+  it("switches away, drops the terminals it was drawing, then opens the window", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a", "b"]))]), ws("ws-2", [page("page-2", leaf(["x"]))])],
+      "ws-1",
+      "a"
+    );
+
+    await handOffWorkspace("ws-1");
+
+    expect(get(layoutState).activeWorkspaceId).toBe("ws-2");
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("a");
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("b");
+    expect(terminalRegistry.destroyTerminal).not.toHaveBeenCalledWith("x");
+    expect(backend.openWorkspaceWindow).toHaveBeenCalledWith("ws-1");
+    // Not killed, not closed: the sessions run on in the daemon and the
+    // new window paints them from its screen model.
+    expect(backend.killSession).not.toHaveBeenCalled();
+  });
+
+  // The main agent sits outside every page tree (D12), so nothing that
+  // walks the layout would ever reach it.
+  it("gives up the main agent's terminal too", async () => {
+    setState([{ ...ws("ws-1", []), mainSessionId: "main-1" }], "ws-1", null);
+
+    await handOffWorkspace("ws-1");
+
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("main-1");
+  });
+
+  it("opens the hub when the window has nothing else to show", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await handOffWorkspace("ws-1");
+
+    expect(get(appHubOpen)).toBe(true);
+    expect(backend.openWorkspaceWindow).toHaveBeenCalledWith("ws-1");
+    // Module-level store: left up, it is the state every test after this
+    // one starts in.
+    appHubOpen.set(false);
+  });
+
+  // A stale click on a row whose window already exists must not open a
+  // second one onto the same workspace.
+  it("raises the existing window instead of opening a second one", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+    workspaceWindows.set({ "ws-2": "ws-ws-2" });
+
+    await handOffWorkspace("ws-2");
+
+    expect(backend.focusWorkspaceWindow).toHaveBeenCalledWith("ws-2");
+    expect(backend.openWorkspaceWindow).not.toHaveBeenCalled();
+  });
 });
 
 describe("the app hub", () => {
@@ -1752,6 +1989,49 @@ describe("createPage", () => {
     expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin-backend");
   });
 
+  // The "New page" dropdown's checkbox. A page of bare shells is still
+  // the default: nothing that already calls createPage passes this.
+  it("starts every pane on the workspace's agent when asked for one", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude --model opus" });
+    vi.mocked(backend.createSession).mockResolvedValueOnce("a").mockResolvedValueOnce("b");
+
+    await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1", { withAgent: true });
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/repos/gavin", "claude --model opus"],
+      ["/repos/gavin", "claude --model opus"],
+    ]);
+  });
+
+  // Without this a broken agent on the new page reads as one that
+  // finished -- the same pairing every other launcher makes.
+  it("arms failure detection on each of those sessions", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: null });
+    agentProfilesStore.set([agentProfile("claude-code", ["API Error:"])]);
+    vi.mocked(backend.createSession).mockResolvedValueOnce("a").mockResolvedValueOnce("b");
+
+    await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1", { withAgent: true });
+
+    expect(vi.mocked(backend.setFailurePatterns).mock.calls).toEqual([
+      ["a", ["API Error:"]],
+      ["b", ["API Error:"]],
+    ]);
+  });
+
+  it("leaves the panes as bare shells when no agent was asked for", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude" });
+    agentProfilesStore.set([agentProfile("claude-code", ["API Error:"])]);
+    vi.mocked(backend.createSession).mockResolvedValue("a");
+
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "Page 1", { withAgent: false });
+
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin");
+    expect(backend.setFailurePatterns).not.toHaveBeenCalled();
+  });
+
   // A rail spawning its own page must not yank the human off whatever
   // they are looking at -- the Orchestration tab they just pressed Start
   // in, usually.
@@ -1767,6 +2047,51 @@ describe("createPage", () => {
     expect(state.workspaces[0].pages[1].name).toBe("backend");
     expect(state.workspaces[0].activePageId).toBe(before);
     expect(state.focusedSessionId).toBe("s1");
+  });
+});
+
+// The bug this exists to prevent: a rail's page opened with a blank
+// shell of its own, and the agent the page was made FOR arrived beside
+// it as tab two -- an idle terminal nobody asked for, first in the strip
+// for the life of the page.
+describe("createSessionOnNewPage", () => {
+  it("makes the session the new page's only tab, with no blank shell ahead of it", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    const made = await createSessionOnNewPage("ws-1", "backend", "/repos/wt", "claude", {
+      activate: false,
+    });
+
+    expect(made).toEqual({ pageId: expect.any(String), sessionId: "agent" });
+    // ONE session, carrying the caller's own cwd and command -- not the
+    // workspace root, and not a bare shell.
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/wt", "claude");
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages).toHaveLength(2);
+    expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["agent"]));
+    // And the page it was told not to activate stays off the screen.
+    expect(state.workspaces[0].activePageId).toBe("p1");
+    expect(state.focusedSessionId).toBe("s1");
+  });
+
+  // "" and null are how a SessionLink spells "the default" -- a rail's
+  // launch carries them straight through.
+  it("treats an empty cwd and a null command as unset", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    await createSessionOnNewPage("ws-1", "backend", "", null);
+
+    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it("is null for an unknown workspace, and starts nothing", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    expect(await createSessionOnNewPage("missing", "backend", "/x", "claude")).toBeNull();
+    expect(backend.createSession).not.toHaveBeenCalled();
   });
 });
 
@@ -2777,6 +3102,28 @@ describe("the follow-up queue map", () => {
 /// Puts an [agent] block on a workspace's root context, the way a
 /// watcher push would. resolvedAgentFor reads gavinTrees directly, so
 /// this is how a test controls the resolved command/file.
+/// One row of the profile table, carrying the only field a launch
+/// reads off it here: the text this agent prints when it has broken.
+function agentProfile(id: string, failurePatterns: string[]) {
+  return {
+    id,
+    label: id,
+    instructionsFile: "CLAUDE.md",
+    command: "claude",
+    mcpSupported: true,
+    mcpConfigFile: ".mcp.json",
+    promptArgs: "",
+    headlessArgs: "",
+    modelFlag: "",
+    models: [],
+    failurePatterns,
+    failureCauses: [],
+    sessionIdArgs: "",
+    resumeArgs: "",
+    usageProbe: null,
+  };
+}
+
 function seedAgentConfig(
   workspaceId: string,
   agent: { profile: string | null; file: string | null; command: string | null }
@@ -3140,6 +3487,7 @@ describe("runningSessionCount", () => {
       failureReasonById: {},
       fileTabsById: {},
       boardTabsById: {},
+      cardTabsById: {},
       removedWorkspaces: [],
       ...overrides,
     };

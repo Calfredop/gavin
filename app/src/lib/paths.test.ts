@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { folderName, sessionLabel, boardTabLabel } from "./paths";
+import { folderName, sessionLabel, boardTabLabel, cardTabLabel } from "./paths";
 
 describe("folderName", () => {
   it("returns the last path segment", () => {
@@ -46,5 +46,12 @@ describe("boardTabLabel", () => {
     expect(boardTabLabel(null, "/ws/crates/backend")).toBe("backend · board");
     expect(boardTabLabel(undefined, "/ws/crates/backend")).toBe("backend · board");
     expect(boardTabLabel("", "/ws/crates/backend")).toBe("backend · board");
+  });
+});
+
+describe("cardTabLabel", () => {
+  it("names the card and which of its two views the pane holds", () => {
+    expect(cardTabLabel("Fix the login flow", "plan")).toBe("Fix the login flow · plan");
+    expect(cardTabLabel("Fix the login flow", "changes")).toBe("Fix the login flow · changes");
   });
 });

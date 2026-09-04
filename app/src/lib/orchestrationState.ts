@@ -18,6 +18,7 @@ import {
   setRailAutoResume,
   bindRail,
   deleteRail,
+  deleteRails,
   addStage,
   addStep,
   addToolStep,
@@ -40,6 +41,8 @@ import {
   findCardPlacement,
   sendCardToRail,
   pageToSpawnForRail,
+  firstColumnOf,
+  nestedChildrenOf,
   railCardsToMove,
   railDoneStepIds,
   removeSteps,
@@ -63,7 +66,7 @@ import type {
   Step,
   ToolSummary,
 } from "./orchestration";
-import { composeGeneratePrompt, composeRailPrompt } from "./orchestrationPrompts";
+import { composeOrganizePrompt, composeRailPrompt } from "./orchestrationPrompts";
 import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "./orchestrationTools";
 import type { Tool } from "./orchestrationTools";
 import {
@@ -81,8 +84,10 @@ import { stepsFromTemplate } from "./orchestrationGroups";
 import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
+import { breakOutChildren, guardCompletion } from "./cardCompletion";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore, refresh as refreshGit } from "./gitState";
+import { branchResolvable } from "./git";
 import {
   layoutState,
   resolvedAgentFor,
@@ -90,13 +95,15 @@ import {
   baseShaForLaunch,
   conversationIdForLaunch,
   createSessionOnPage,
-  createPage,
+  createSessionOnNewPage,
   handleAgentSessionSpawned,
   sessionExits,
   setOrchestrationAgent,
   setSessionName,
+  workspaceRootPath,
 } from "./layoutState";
-import { allSessionIds, presetSingle } from "./layout";
+import { decoyEditedSteps } from "./worktreeCards";
+import { allSessionIds } from "./layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
@@ -111,14 +118,16 @@ import { stripFrontmatter } from "./planChecklist";
 import { slugStatus } from "./planBoard";
 import { setRailNotificationVoice, type SessionStatus } from "./notifications";
 import {
-  GENERATE_LABEL,
+  ORGANIZE_LABEL,
   orchestrationAgentOver,
   reorganizeLabel,
 } from "./orchestrationAgent";
 import { sessionLiveness } from "./workspace";
+import { developingBlocker } from "./developingCardsState";
+import { DEVELOPING_STALL } from "./developingCards";
 import type { OrchestrationAgentRecord } from "./workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
-import { activePaused, mayStartWork } from "./agentPauseState";
+import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -137,6 +146,23 @@ export function dismissSaveError(workspaceId: string): void {
 /// persisted -- which is why it lives here and not in the plan.
 export const highlightedConflict = writable<number | null>(null);
 
+/// Which steps a rail's own worktree has had its CARD written in, per
+/// workspace and by step id -- the decoy edit (worktreeCards.ts).
+///
+/// Stored rather than derived, because unlike every other input to
+/// `stepAttentions` this one is not in any store: it is a question about
+/// files in a checkout nobody watches, and only a git call can answer
+/// it. `startDecoyWatch` below is what fills it.
+///
+/// An absent workspace means "not looked at", never "clean". That
+/// distinction is the whole reason the mark fires on presence only and
+/// never on absence.
+export const decoyEditsByWorkspace = writable<Record<string, ReadonlySet<string>>>({});
+
+/// Read as EMPTY_SET, and shared so the derived below hands the same
+/// object to every unswept workspace rather than a fresh one per tick.
+const EMPTY_DECOYS: ReadonlySet<string> = new Set<string>();
+
 /// Every running step that wants a human, per workspace (see
 /// stepAttentions). Derived rather than stored: it is a live read of the
 /// scheduler's own inputs, so it can never drift from what the rail is
@@ -153,9 +179,17 @@ export const highlightedConflict = writable<number | null>(null);
 /// looking at is exactly the one you would otherwise miss.
 export const stepAttentionsByWorkspace: Readable<Record<string, Map<string, StepAttention>>> =
   derived(
-    [orchestrations, kanbanState, gavinTrees, toolRecords, layoutState],
-    ([$orchestrations, $kanban, $trees, $tools, $layout]) => {
+    [orchestrations, kanbanState, gavinTrees, toolRecords, layoutState, decoyEditsByWorkspace, nowStore],
+    ([$orchestrations, $kanban, $trees, $tools, $layout, $decoys, $now]) => {
       const statuses = new Map(Object.entries($layout.sessionStatusById));
+      // `stale` is a function of the clock, so the clock has to be an
+      // input: a derived store re-runs on a store change and never on
+      // the passage of time. nowStore is the app's ONE ticker (30s) --
+      // see agentPauseState -- so this costs no new timer and no new
+      // idea of what time it is.
+      const since = new Map(
+        Object.entries($layout.statusSinceById ?? {}).map(([id, stamp]) => [id, stamp.at])
+      );
       const out: Record<string, Map<string, StepAttention>> = {};
       for (const [workspaceId, orch] of Object.entries($orchestrations)) {
         const board = $kanban[workspaceId];
@@ -165,12 +199,128 @@ export const stepAttentionsByWorkspace: Readable<Record<string, Map<string, Step
           board,
           $trees[workspaceId],
           libraryFor($tools, workspaceId),
-          statuses
+          statuses,
+          $decoys[workspaceId] ?? EMPTY_DECOYS,
+          since,
+          $now
         );
       }
       return out;
     }
   );
+
+/// How often each running step's own checkout is asked what it changed.
+/// The same cadence as the pause clock and the PR sweep: a decoy write
+/// is a mistake that has already happened, so nothing is lost by hearing
+/// about it half a minute late, and this is a git call per running step.
+const DECOY_POLL_MS = 30_000;
+
+let decoyTimer: ReturnType<typeof setInterval> | null = null;
+const decoyInFlight = new Set<string>();
+
+/// Ask every running card step's checkout what this run has changed in
+/// it, and record the ones that changed the step's own CARD.
+///
+/// `git_run_changes` rather than `git status`, and the difference
+/// matters: the baseline is the commit the run started on, so a decoy
+/// edit the agent went on to COMMIT is still reported. A plain status
+/// would show it for as long as it stayed uncommitted and then go quiet
+/// while the rail stayed just as wedged.
+///
+/// Only rails with a worktree, and only steps that are running: an
+/// unbound rail has no second copy of anything, and a step that is not
+/// running has no session to explain. A workspace where nothing is
+/// running therefore makes no git calls at all.
+///
+/// Every unknown is silence, not a mark. No baseline (a run launched
+/// before v26, outside a repo, or on an unborn HEAD), a failed git call,
+/// a workspace whose root gavin does not know -- none of them can
+/// produce a mark, so a sweep that hits one simply says nothing about
+/// that step until the next one. Warn-only and thirty seconds apart:
+/// nothing is stalled or persisted on the strength of this, so a mark
+/// that flickers off for one sweep costs nothing, and a mark invented
+/// out of an unanswered question would cost the human a search.
+export async function refreshDecoyEdits(workspaceId: string): Promise<void> {
+  if (decoyInFlight.has(workspaceId)) return;
+  const orch = get(orchestrations)[workspaceId];
+  if (!orch) return;
+  // The repository root where known, the workspace's bound root
+  // otherwise: run changes come back root-relative, so the two have to
+  // be measured from the same place. A workspace root INSIDE a larger
+  // repo simply matches nothing, which is the safe direction.
+  const rootPath = get(gitStore)[workspaceId]?.repo?.root ?? workspaceRootPath(workspaceId);
+  if (!rootPath) return;
+  const board = get(kanbanState)[workspaceId];
+  const work: Array<{ rail: Rail; cwd: string; baseSha: string }> = [];
+  for (const rail of orch.rails) {
+    if (!rail.worktreePath) continue;
+    for (const step of rail.stages.flatMap((stage) => stage.steps)) {
+      if (isToolStep(step) || stepStateOf(orch, step.id) !== "running") continue;
+      const binding = board ? cardSessionFor(board, step.cardPath) : null;
+      if (!binding?.baseSha) continue;
+      work.push({
+        rail,
+        cwd: binding.launchCwd ?? rail.worktreePath,
+        baseSha: binding.baseSha,
+      });
+    }
+  }
+  if (work.length === 0) {
+    // Nothing running means nothing to say, and a set left behind would
+    // keep marking a step whose run is over.
+    setDecoyEdits(workspaceId, EMPTY_DECOYS);
+    return;
+  }
+  decoyInFlight.add(workspaceId);
+  try {
+    const found = new Set<string>();
+    await Promise.all(
+      work.map(async ({ rail, cwd, baseSha }) => {
+        const changes = await backend.gitRunChanges(cwd, baseSha).catch(() => null);
+        if (!changes || changes.notARepo || changes.baseMissing) return;
+        for (const id of decoyEditedSteps(rail, rootPath, changes.files)) found.add(id);
+      })
+    );
+    setDecoyEdits(workspaceId, found);
+  } finally {
+    decoyInFlight.delete(workspaceId);
+  }
+}
+
+function setDecoyEdits(workspaceId: string, ids: ReadonlySet<string>): void {
+  decoyEditsByWorkspace.update((all) => {
+    const current = all[workspaceId];
+    // Same set, same object: this store feeds a derived one that four
+    // surfaces render, and a fresh Set every thirty seconds would redraw
+    // all of them to say nothing.
+    if (current && current.size === ids.size && [...ids].every((id) => current.has(id))) {
+      return all;
+    }
+    return { ...all, [workspaceId]: ids };
+  });
+}
+
+/// Start the decoy sweep. Module-level and self-paced for the reason
+/// `startScheduler` documents: a poll owned by whichever component
+/// happens to be mounted stops the moment the human navigates away, and
+/// a rail wedged on a decoy write is exactly what they navigated away
+/// from.
+export function startDecoyWatch(): () => void {
+  stopDecoyWatch();
+  const sweep = () => {
+    for (const workspaceId of Object.keys(get(orchestrations))) {
+      void refreshDecoyEdits(workspaceId);
+    }
+  };
+  decoyTimer = setInterval(sweep, DECOY_POLL_MS);
+  sweep();
+  return stopDecoyWatch;
+}
+
+export function stopDecoyWatch(): void {
+  if (decoyTimer !== null) clearInterval(decoyTimer);
+  decoyTimer = null;
+}
 
 const pendingSaves = new Map<string, number>();
 
@@ -341,87 +491,116 @@ function railOwning(orch: Orchestration, stepId: string): Rail | null {
   return orch.rails.find((r) => r.stages.some((s) => s.steps.some((t) => t.id === stepId))) ?? null;
 }
 
-const spawningPages = new Set<string>();
-
-/// A running rail gets a page of its OWN, named after it (spec O16): its
-/// agents get a home they can be found in rather than piling onto the
-/// workspace's active page with everyone else's. Only when the rail has
-/// no live page binding -- an explicit one is never overridden, and
-/// re-arming returns to the page the rail already has.
-///
-/// Called at arming (Start, Resume), so the chip names the page before
-/// the first tick -- and again before every launch that makes a session
-/// (createSessionOnRailPage), because arming is not the only way a run
-/// row reaches the store. Idempotent by construction: a bound page that
-/// still exists answers null from pageToSpawnForRail and nothing is made.
-///
-/// Failing to create one is not fatal, and deliberately not a stall: the
-/// rail arms anyway and its launches fall back to the Agents-page
-/// posture (spec §4.3 step 4). A page is where agents land, not a
-/// precondition for running them.
-async function ensureRailPage(workspaceId: string, railId: string): Promise<void> {
-  // One page per rail even under a double-click: creating it is an await
-  // long enough for a second Start to arrive while the rail is still
-  // unbound, and two pages named after one rail is exactly what
-  // pageToSpawnForRail's deduping exists to prevent.
-  if (spawningPages.has(railId)) return;
-  const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
-  if (!rail) return;
-  const pages = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.pages ?? [];
-  const name = pageToSpawnForRail(rail, pages);
-  if (name === null) return;
-  // The page's own blank shell opens in the rail's checkout -- spelled
-  // exactly as executeToolLaunch spells it -- so the page is the rail's
-  // in the way that matters, not just by name. Undefined only when the
-  // workspace has no root at all, and then $HOME is as good a guess as
-  // any.
-  const tree = get(gavinTrees)[workspaceId];
-  const checkout = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
-  spawningPages.add(railId);
-  try {
-    const pageId = await createPage(workspaceId, (ids) => presetSingle(ids[0]), 1, name, {
-      cwd: checkout ?? undefined,
-      // The human is on the Orchestration tab -- they pressed Start
-      // there. The page appears in the sidebar and the rail's chip names
-      // it; taking the screen as well would be a jump they did not ask
-      // for, and unbearable when arming several rails in a row.
-      activate: false,
-    });
-    if (pageId) await mutatePlan(workspaceId, (orch) => bindRail(orch, railId, { pageId }));
-  } finally {
-    spawningPages.delete(railId);
-  }
-}
+/// A rail's page while it is being made, so a second launch WAITS for it
+/// rather than racing it. Keyed by rail id and cleared when the page is
+/// bound.
+const spawningPages = new Map<string, Promise<unknown>>();
 
 /// The rail's page, then the session on it. The ONE seam every launch
 /// that makes a session goes through -- card launch, tool launch, step
-/// resume -- so a rail's own page is a launch-time invariant and not
-/// merely an arming-time one. Start and Resume still call ensureRailPage
-/// themselves, but a run row can reach the store without either: an
+/// resume, worktree setup -- so a rail's own page is a launch-time
+/// invariant. A run row reaches the store by more routes than Start: an
 /// agent writing SetRailRun straight to the daemon socket, a rail left
 /// running across a restart, a push for a workspace not loaded yet.
-/// Before this, every such rail launched onto the workspace's ACTIVE
-/// page (createSessionOnPage's null fallback) and kept doing so for
-/// every later stage, retry and resume -- twenty tabs on "Page 1".
+/// Before this seam, every such rail launched onto the workspace's
+/// ACTIVE page (createSessionOnPage's null fallback) and kept doing so
+/// for every later stage, retry and resume -- twenty tabs on "Page 1".
 ///
-/// The binding is RE-READ after the page is made: bindRail is an
-/// optimistic mutatePlan, so the `rail` a caller captured at its top
-/// still says null. Passing that would land the very first session on
-/// the fallback and leave the new page empty.
+/// A running rail gets a page of its OWN, named after it (spec O16): its
+/// agents get a home they can be found in rather than piling onto the
+/// workspace's active page with everyone else's. Only when the rail has
+/// no live page binding -- an explicit one is never overridden, and a
+/// rail that already has a page just gains a tab on it.
 ///
-/// Not a stall when the page cannot be made: ensureRailPage swallows
-/// that, the binding stays null, and the session takes the fallback
-/// (spec §4.3 step 4).
+/// The page is built AROUND this session (createSessionOnNewPage), not
+/// beside it. Making the page first and landing the session on it
+/// afterwards is what opened every rail page on a blank shell nobody
+/// asked for, first in the tab strip for the life of the page: createPage
+/// spawns the shells itself, so the agent the page existed for arrived as
+/// tab two. It is also why ARMING no longer spawns the page ahead of the
+/// first launch -- at that moment there is no session to build it around,
+/// and a page with no tabs is not something this app can draw. A rail
+/// that runs nothing needs no page.
+///
+/// Not a stall when the page cannot be made: the binding stays null and
+/// the session takes the Agents-page fallback (spec §4.3 step 4). A page
+/// is where agents land, not a precondition for running them.
 async function createSessionOnRailPage(
   workspaceId: string,
   railId: string,
   cwd: string,
   command: string | null
 ): Promise<string | null> {
-  await ensureRailPage(workspaceId, railId);
+  // One page per rail even under a double Start: making it is an await
+  // long enough for a second launch to arrive while the rail is still
+  // unbound, and two pages named after one rail is exactly what
+  // pageToSpawnForRail's deduping exists to prevent. The second caller
+  // WAITS for the first instead of giving up on a page -- giving up used
+  // to drop that session on the Agents page -- and what it waits for
+  // resolves only once the binding is WRITTEN, so the rail it re-reads
+  // below is the bound one.
+  const pending = spawningPages.get(railId);
+  if (pending) await pending;
+  else {
+    const sessionId = await spawnRailPageFor(workspaceId, railId, cwd, command);
+    if (sessionId) return sessionId;
+  }
   const pageId =
     get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId)?.pageId ?? null;
   return createSessionOnPage(workspaceId, pageId, cwd, command);
+}
+
+/// The rail's page and its first tab in one act, or null when the rail
+/// already has a page (or is gone). The session's own cwd is the page's
+/// -- a rail's launch already carries its checkout, spelled the way
+/// executeToolLaunch spells it -- so the page is the rail's in the way
+/// that matters, not just by name.
+///
+/// Everything from the lookup to the spawningPages write runs in ONE
+/// synchronous turn, deliberately: an await before that write would let
+/// a simultaneous launch read the map before the first wrote it, and
+/// both would then spawn a page. That is why the caller's guard above is
+/// a plain map read and not an `await spawningPages.get(...)`.
+async function spawnRailPageFor(
+  workspaceId: string,
+  railId: string,
+  cwd: string,
+  command: string | null
+): Promise<string | null> {
+  const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
+  if (!rail) return null;
+  const pages = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.pages ?? [];
+  const name = pageToSpawnForRail(rail, pages);
+  if (name === null) return null;
+  const spawning = spawnRailPage(workspaceId, railId, name, cwd, command);
+  spawningPages.set(railId, spawning.catch(() => null));
+  try {
+    return (await spawning)?.sessionId ?? null;
+  } finally {
+    spawningPages.delete(railId);
+  }
+}
+
+/// Bound only once the page exists, and awaited by whoever the guard
+/// above is holding -- a waiter that resumed on a half-written binding
+/// would find its rail naming a page the layout does not have yet, read
+/// that as the closed-page case, and spawn a second one.
+async function spawnRailPage(
+  workspaceId: string,
+  railId: string,
+  name: string,
+  cwd: string,
+  command: string | null
+): Promise<{ pageId: string; sessionId: string } | null> {
+  const made = await createSessionOnNewPage(workspaceId, name, cwd, command, {
+    // The human is on the Orchestration tab -- they pressed Start there.
+    // The page appears in the sidebar and the rail's chip names it;
+    // taking the screen as well would be a jump they did not ask for,
+    // and unbearable when arming several rails in a row.
+    activate: false,
+  });
+  if (made) await mutatePlan(workspaceId, (orch) => bindRail(orch, railId, { pageId: made.pageId }));
+  return made;
 }
 
 /// A session on the rail's page that is not a step: the `[worktree] setup`
@@ -448,9 +627,11 @@ export async function startRail(workspaceId: string, railId: string): Promise<vo
   if (!rail) return;
   const stageId = firstUnfinishedStageId(rail, orch);
   if (!stageId) return;
-  // Before the rail is armed, so the first launch of the very first tick
-  // already lands on it.
-  await ensureRailPage(workspaceId, railId);
+  // No page is spawned here. The rail's page is made by its first launch
+  // (createSessionOnRailPage), around the session that launch creates --
+  // arming it earlier meant opening a blank shell to have something to
+  // put on the page, and that shell then sat first in the tab strip
+  // forever. A rail that arms and launches nothing needs no page.
   await setRailRunAction(workspaceId, railId, "running", stageId);
   await tick(workspaceId);
 }
@@ -474,9 +655,8 @@ export async function resumeRail(workspaceId: string, railId: string): Promise<v
   const rail = orch?.rails.find((r) => r.id === railId);
   if (!rail) return;
   const current = orch.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
-  // Resume arms the rail too, and its page may well have been closed
-  // while it sat paused.
-  await ensureRailPage(workspaceId, railId);
+  // A page closed while the rail sat paused is replaced by the first
+  // launch after this, for the same reason Start spawns none.
   const stageId =
     current && rail.stages.some((s) => s.id === current)
       ? current
@@ -644,6 +824,51 @@ export async function markStepDone(workspaceId: string, stepId: string): Promise
   const sessionId =
     get(orchestrations)[workspaceId]?.stepRuns.find((r) => r.stepId === stepId)?.sessionId ?? null;
   await setStepRunAction(workspaceId, stepId, "done", sessionId, null);
+  await tick(workspaceId);
+}
+
+/// "Skip and proceed" -- the OTHER honest answer to a step that is not
+/// going to finish, and the one Mark done was being misused for.
+///
+/// Mark done says the work happened; a human who only wants the rail to
+/// move on had to say that anyway, and every surface downstream then
+/// counted a step nobody ran as delivered work -- the rail recap, the
+/// stage tally, the prompt an orchestration agent reads. `skipped` is a
+/// terminal state that says the opposite out loud: the rail is past this
+/// step BECAUSE someone decided it would not run.
+///
+/// Two halves, and the second is the "and proceed":
+///
+/// 1. The run row goes `skipped`, keeping the session id and the session
+///    itself, exactly as markStepDone does. The human has judged the step
+///    not worth finishing, not the transcript not worth reading -- and
+///    killing a live agent is a decision they can still make from the
+///    session itself, which is where it belongs.
+/// 2. A PAUSED rail is put back to `running`. Rule 5 pauses a rail
+///    around a stall, so the step most worth skipping sits on a rail
+///    that would otherwise skip it and then advance nothing -- the same
+///    trap resumeStep documents. Only from `paused`: a rail the human
+///    left idle stays idle, because skipping one step is not starting a
+///    rail.
+export async function skipStep(workspaceId: string, stepId: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  const sessionId = orch?.stepRuns.find((r) => r.stepId === stepId)?.sessionId ?? null;
+  const rail = orch ? railOwning(orch, stepId) : null;
+  // The reason goes with it: whatever stalled the step is no longer the
+  // reason the rail is where it is, and a bubble still quoting it would
+  // describe a decision nobody made.
+  await setStepRunAction(workspaceId, stepId, "skipped", sessionId, null);
+
+  if (rail && railStateOf(get(orchestrations)[workspaceId], rail.id) === "paused") {
+    const current = get(orchestrations)[workspaceId].railRuns.find(
+      (r) => r.railId === rail.id
+    )?.currentStageId;
+    // The stage this STEP sits in when the rail has no current one -- a
+    // step id would be accepted here and name nothing, leaving the rail
+    // running at a stage that does not exist (see resumeStep).
+    const owning = rail.stages.find((g) => g.steps.some((t) => t.id === stepId))?.id ?? null;
+    await setRailRunAction(workspaceId, rail.id, "running", current ?? owning);
+  }
   await tick(workspaceId);
 }
 
@@ -938,6 +1163,18 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
 
+  // A card being developed stalls its step rather than running it: the
+  // develop agent is rewriting the card file, so the prompt this step
+  // would compose is about to stop being true. A stall and not a failure
+  // -- the sweep frees the card when the develop run ends, and the rail
+  // picks the step up on the next tick with the card the human actually
+  // asked for.
+  const developing = developingBlocker(workspaceId, step.cardPath);
+  if (developing) {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, DEVELOPING_STALL);
+    return false;
+  }
+
   // The same gate a board Run uses, and for the same reason -- but here
   // the refusal STALLS the step instead of starting it. A rail that ran
   // a card with a dead attachment would carry the damage into every
@@ -949,6 +1186,12 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
 
+  // Resolved BEFORE the prompt, which is a change of order with a
+  // reason: a bound rail launches its agent in a checkout that carries
+  // its own copy of the card, and the prompt has to say so (see
+  // cardHomeNote). An agent that writes the copy leaves the board where
+  // it was and this step running forever.
+  const cwd = rail.worktreePath ?? entry.contextFolder;
   let prompt: string;
   if (entry.plan.kind === "task") {
     const file = await backend.readFileForViewer(step.cardPath);
@@ -960,10 +1203,11 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       step.cardPath,
       entry.plan.title,
       stripFrontmatter(file.content).trim(),
-      resolved.paths
+      resolved.paths,
+      cwd
     );
   } else {
-    prompt = composePlanPrompt(step.cardPath, resolved.paths);
+    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd);
   }
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"
@@ -983,7 +1227,6 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     await setStepRunAction(workspaceId, stepId, "stalled", null, noPromptReason(agent.label));
     return false;
   }
-  const cwd = rail.worktreePath ?? entry.contextFolder;
   const baseSha = await baseShaForLaunch(cwd);
   const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
@@ -1032,7 +1275,20 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
 }
 
 /// Put a rail's checkout on its branch (spec O15). Three steps, and the
-/// first is a refusal gate.
+/// first two are refusal gates.
+///
+/// A branch the repo does not HAVE refuses first. `git switch` cannot
+/// create one, so such a binding can only ever produce `fatal: invalid
+/// reference: <name>` on the rail's chips -- which reads as a gavin
+/// fault rather than as the binding it is. It is the branch half of the
+/// family launchBlocker already covers ("card file is missing", "tool is
+/// no longer in the library", "worktree ... is gone"), and the one that
+/// was missing: branchSwitchFor compares rail.branch against the
+/// WORKTREE list only, and gavin_set_orchestration takes any string, so
+/// an agent-written rail can bind a branch nobody ever made. Refused
+/// here rather than in that pure decision because a rail-wide stall has
+/// no Action kind to carry it -- the same reason the dirty gate lives
+/// here.
 ///
 /// A DIRTY checkout refuses -- deliberately stricter than git, which
 /// carries non-conflicting edits across a switch. Uncommitted work
@@ -1053,6 +1309,20 @@ async function executeSwitchBranch(
   path: string,
   branch: string
 ): Promise<boolean> {
+  // Read off the SAME snapshot branchSwitchFor read the worktrees from,
+  // and answer nothing when there is none: unknown must never read as
+  // "gone", the cold-start rule launchBlocker and branchSwitchFor both
+  // follow. A workspace whose git view was never opened has no snapshot,
+  // and stalling every bound rail over that would be the worse bug.
+  const refs = get(gitStore)[workspaceId]?.refs ?? null;
+  if (refs && !branchResolvable(refs, branch)) {
+    await stallStage(
+      workspaceId,
+      railId,
+      `${branch} is not a branch of this repo — create it, or bind this rail to one that exists`
+    );
+    return false;
+  }
   try {
     const status = await backend.gitStatus(path);
     if (status.staged.length > 0 || status.unstaged.length > 0) {
@@ -1467,9 +1737,16 @@ export function startScheduler(): () => void {
 /// The agent stopped; the work is still undone and the rail is still
 /// waiting on it.
 ///
-/// Only `turn-ended`. `asking` already says "needs your input", which is
-/// right, and an agent TOOL step going idle really has finished, because
+/// Only the marks that mean "this step is not going to finish".
+/// `asking` already says "needs your input", which is right, and an
+/// agent TOOL step going idle really has finished, because
 /// agentTurnEnded marks it done on that same tick.
+///
+/// `decoy-edit` gets a sentence of its own rather than the generic one.
+/// It is the same silence to the daemon and a completely different
+/// thing to the human: the work may well be done, in a file the board
+/// will never read, and "stopped without finishing its card" would send
+/// them to restart an agent that would make the same mistake again.
 export function railStatusVoice(sessionId: string, status: SessionStatus): string | null {
   if (status !== "idle") return null;
   // Reads the same derived map the chips do, and the layout store it
@@ -1482,10 +1759,13 @@ export function railStatusVoice(sessionId: string, status: SessionStatus): strin
     if (!orch) continue;
     for (const run of orch.stepRuns) {
       if (run.sessionId !== sessionId) continue;
-      if (marks.get(run.stepId) !== "turn-ended") continue;
+      const mark = marks.get(run.stepId);
+      if (mark !== "turn-ended" && mark !== "stale" && mark !== "decoy-edit") continue;
       const step = findStep(orch, run.stepId);
       const label = step ? cardTitleFor(workspaceId, step) : null;
-      return `${label ?? "a rail step"} stopped without finishing its card`;
+      return mark === "decoy-edit"
+        ? `${label ?? "a rail step"} edited its worktree's copy of the card, so the board never saw it`
+        : `${label ?? "a rail step"} stopped without finishing its card`;
     }
   }
   return null;
@@ -1557,8 +1837,12 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // poll behind a `pr` step has to keep running whatever view is
   // mounted, exactly as the tick does.
   const stopPolling = startPrPolling();
+  // And beside it for the same reason: a rail whose agent edited the
+  // worktree's copy of its card is wedged whatever tab is on screen, and
+  // it is the tab NOT on screen where nobody would ever find out.
+  const stopDecoys = startDecoyWatch();
   // Started here for the reason the scheduler is: it belongs to the app,
-  // not to a tab. A Generate that finishes while the human is reading the
+  // not to a tab. An Organize that finishes while the human is reading the
   // board still has to release the button, and the record it clears was
   // loaded from config.json a moment ago -- this first pass is also how a
   // run that outlived the last window gets adopted or written off.
@@ -1577,6 +1861,7 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   return () => {
     stop();
     stopPolling();
+    stopDecoys();
     stopAgents();
     stopAutoResume();
     setRailNotificationVoice(null);
@@ -1588,6 +1873,10 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
 export function __resetForTesting(): void {
   orchestrations.set({});
   saveErrors.set({});
+  // A sweep left running would ask git about the next test's rails.
+  stopDecoyWatch();
+  decoyEditsByWorkspace.set({});
+  decoyInFlight.clear();
   pendingSaves.clear();
   ticking.clear();
   tickAgain.clear();
@@ -1635,6 +1924,25 @@ export function setRailAutoResumeAction(
 
 export function deleteRailAction(workspaceId: string, railId: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => deleteRail(o, railId));
+}
+
+/// Every finished rail in ONE plan write, for the toolbar's "Clear done".
+///
+/// One write and not a loop over `deleteRailAction`, for two reasons that
+/// both bite. The plan is persisted wholesale, so N calls are N round
+/// trips over a plan that shrinks under each of them -- and each one
+/// opens its own optimistic-rollback window, so a failure halfway leaves
+/// some rails gone and some back, with no single state to roll back to.
+///
+/// Takes the ids rather than re-deriving them, so what goes is exactly
+/// what the confirm named. The plan can reload between the prompt opening
+/// and the human pressing; re-deriving here would sweep a rail that
+/// finished in that gap and was never on the list they agreed to.
+export function deleteRailsAction(
+  workspaceId: string,
+  railIds: string[]
+): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => deleteRails(o, railIds));
 }
 
 /// Adds the card as its OWN new stage -- a sequential beat, the safe
@@ -1809,11 +2117,37 @@ export async function moveRailCardsAction(
 ): Promise<string | null> {
   const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
   if (!rail) return null;
-  const paths = railCardsToMove(rail, cardIndex(get(gavinTrees)[workspaceId]), columnName);
+  const cards = cardIndex(get(gavinTrees)[workspaceId]);
+  const paths = railCardsToMove(rail, cards, columnName);
+  const columns = get(kanbanState)[workspaceId]?.columns ?? [];
   let current = "";
   try {
     for (const path of paths) {
       current = path;
+      // Filing a plan carries its nested tasks with it (cardCompletion.ts).
+      // Asked per card rather than once for the rail: the question names
+      // the plan and its children, and a rail carrying two such plans is
+      // two different answers, not one.
+      const entry = cards.get(path);
+      if (entry) {
+        const decision = await guardCompletion(
+          workspaceId,
+          {
+            title: entry.plan.title,
+            kind: entry.plan.kind,
+            status: entry.plan.status,
+            children: nestedChildrenOf(path, cards).map((c) => ({
+              path: c.plan.path,
+              title: c.plan.title,
+            })),
+          },
+          columnName,
+          columns
+        );
+        if (decision.error) return decision.error;
+        // Declined for THIS card only: the rest of the rail still files.
+        if (!decision.proceed) continue;
+      }
       await backend.setPlanFrontmatterField(path, "status", columnName);
       patchPlanField(workspaceId, path, "status", columnName);
     }
@@ -1822,6 +2156,31 @@ export async function moveRailCardsAction(
     const fileName = current.split("/").at(-1) ?? current;
     return `Couldn't move ${fileName} to ${columnName}: ${e instanceof Error ? e.message : e}`;
   }
+}
+
+/// The `nested-with-parent` repair: give the nested child a status of its
+/// own, which un-nests it into the board's first column while keeping the
+/// `parent:` link. Both halves of that conflict then stop being one piece
+/// of work, and the pair's badge clears without either step leaving a
+/// rail -- which is the answer a human who deliberately placed the child
+/// was reaching for.
+///
+/// Null on success and when there is nothing to do (a board with no
+/// columns, or a card the tree has lost); a message naming the file
+/// otherwise, in the same voice as `moveRailCardsAction`.
+export async function breakOutNestedCardAction(
+  workspaceId: string,
+  cardPath: string
+): Promise<string | null> {
+  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(cardPath);
+  const column = firstColumnOf(get(kanbanState)[workspaceId]?.columns ?? []);
+  if (!entry || !column) return null;
+  const decision = await breakOutChildren(
+    workspaceId,
+    [{ path: cardPath, title: entry.plan.title }],
+    column.name
+  );
+  return decision.error;
 }
 
 /// Take a rail's finished steps OFF it in one plan write -- the header's
@@ -1968,7 +2327,7 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
 
 // ---- the tab's own agent runs ----------------------------------------------
 //
-// Generate and a rail's Reorganize each spawn a DEDICATED session (the
+// Organize and a rail's Reorganize each spawn a DEDICATED session (the
 // shape "Develop into a plan…" uses) instead of pasting into the
 // workspace's main agent. Two things follow, and both are the point:
 // the request no longer needs the human to have started the Home agent,
@@ -2035,7 +2394,7 @@ async function launchOrchestrationAgent(
 /// what the tab currently shows, so the agent starts from the same
 /// picture the human is looking at -- it still calls
 /// gavin_get_orchestration for the authoritative read.
-export function requestGenerate(
+export function requestOrganize(
   workspaceId: string,
   unplaced: CardEntry[],
   conflictSummary: string[]
@@ -2043,8 +2402,8 @@ export function requestGenerate(
   const orch = get(orchestrations)[workspaceId] ?? null;
   return launchOrchestrationAgent(
     workspaceId,
-    { railId: null, label: GENERATE_LABEL },
-    composeGeneratePrompt(orch, unplaced, conflictSummary)
+    { railId: null, label: ORGANIZE_LABEL },
+    composeOrganizePrompt(orch, unplaced, conflictSummary)
   );
 }
 
