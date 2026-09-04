@@ -8,14 +8,25 @@
   import { presetSingle } from "./layout";
   import { freeBranchNameFrom, validateBranchName } from "./git";
   import { featureBlockedReason } from "./daemonCompat";
+  import {
+    RAIL_BIND_TABS,
+    railBindChip,
+    railBindTabAfterKey,
+    type RailBindTab,
+  } from "./railBind";
   import type { Rail } from "./orchestration";
 
   interface Props {
     workspaceId: string;
     rail: Rail;
+    /// Which binding the human came here to change. The conflict box
+    /// knows (a missing branch is a branch question), and so does each
+    /// chip in the rail header, so neither has to drop the reader at the
+    /// top of a dialog and let them find the right list.
+    initialTab?: RailBindTab;
     onClose: () => void;
   }
-  let { workspaceId, rail, onClose }: Props = $props();
+  let { workspaceId, rail, initialTab = "worktree", onClose }: Props = $props();
 
   /// Which rail this dialog is for, read ONCE. `rail` is a lazy prop over
   /// the hub view's `{@const bindingRail = orch.rails.find(r => r.id ===
@@ -34,12 +45,27 @@
   /// rail's name stays live, so a rename still redraws the header.
   const railId = rail.id;
 
+  /// Snapshotted for the same reason, and deliberately not re-synced from
+  /// the prop: which tab you land on is a question asked once, when the
+  /// dialog opens. After that the strip belongs to the human.
+  let tab = $state<RailBindTab>(initialTab);
+
   let forking = $state(false);
 
   const worktrees = $derived($gitStore[workspaceId]?.refs?.worktrees ?? []);
   const branches = $derived($gitStore[workspaceId]?.refs?.branches ?? []);
   const headBranch = $derived($gitStore[workspaceId]?.refs?.headBranch ?? null);
   const pages = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.pages ?? []);
+
+  /// The bound page's name, or null when the rail has none -- and equally
+  /// when it points at a page that has since been closed, which the tab
+  /// strip and the panel below both report as "made at the next launch".
+  const pageName = $derived(pages.find((p) => p.id === rail.pageId)?.name ?? null);
+
+  /// What each tab is currently set to, so the strip says the answers as
+  /// well as the questions: a human who opened this to check where a rail
+  /// runs never has to visit all three panels to find out.
+  const chips = $derived(RAIL_BIND_TABS.map((t) => railBindChip(t.id, rail, pageName)));
 
   /// Where each branch is currently checked out, so the list can say so.
   /// A branch checked out in ANOTHER worktree is the one binding git
@@ -101,6 +127,18 @@
     return null;
   });
 
+  /// Roving focus across the strip, per the WAI-ARIA tabs pattern. Only
+  /// the keys `railBindTabAfterKey` claims are swallowed -- Escape has to
+  /// keep reaching the modal stack.
+  function onTabKey(event: KeyboardEvent): void {
+    const next = railBindTabAfterKey(tab, event.key);
+    if (!next) return;
+    event.preventDefault();
+    tab = next;
+    const el = document.getElementById(`rail-bind-tab-${next}`);
+    if (el instanceof HTMLElement) el.focus();
+  }
+
   /// The page the rail's first launch would spawn on its own (spec O16),
   /// made early: named after the rail, opened in the rail's checkout.
   ///
@@ -155,161 +193,188 @@
 {:else}
   <Modal {onClose}>
     <div class="bind">
-      <h3>Bind “{rail.name}”</h3>
+      <!-- The dialog names all three bindings before the strip does, so
+           a human who opened it from the worktree chip learns here that
+           the branch and the page are the same dialog away. -->
+      <h3>Where “{rail.name}” runs</h3>
+      <p class="lede">Its checkout, the branch that checkout sits on, and the page its sessions land on.</p>
 
-      <section>
-        <h4>Worktree</h4>
-        <p class="note">
-          Where this rail's steps run. Re-binding affects steps started from now on.
-        </p>
-        <ul>
-          <li>
-            <button
-              type="button"
-              class:on={rail.worktreePath === null}
-              onclick={() => void bindRailAction(workspaceId, railId, { worktreePath: null })}
-            >
-              <span class="path">None — each card's own folder</span>
-            </button>
-          </li>
-          {#each worktrees as wt (wt.path)}
-            <li>
-              <button
-                type="button"
-                class:on={rail.worktreePath === wt.path}
-                onclick={() => void bindRailAction(workspaceId, railId, { worktreePath: wt.path })}
-              >
-                <span class="path">{wt.path}</span>
-                <span class="branch">
-                  {wt.branch ?? "detached"}{wt.isMain ? " · main checkout" : ""}
-                </span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-        <button type="button" class="secondary" onclick={() => (forking = true)}>New worktree…</button>
-      </section>
-
-      <section title={branchBlocked ?? undefined}>
-        <h4>Branch</h4>
-        <p class="note">
-          Which branch that checkout sits on. Gavin switches
-          {railCheckout ?? "the checkout"} before the rail's first step, and refuses while it has
-          uncommitted changes.
-        </p>
-        {#if branchBlocked}
-          <p class="err">{branchBlocked}</p>
-        {/if}
-        <ul>
-          <li>
-            <button
-              type="button"
-              class:on={!rail.branch}
-              disabled={Boolean(branchBlocked)}
-              onclick={() => void bindRailAction(workspaceId, railId, { branch: null })}
-            >
-              <span class="path">None — whatever is checked out</span>
-            </button>
-          </li>
-          {#each branches as b (b.name)}
-            {@const where = checkedOutIn.get(b.name) ?? null}
-            <li>
-              <button
-                type="button"
-                class:on={rail.branch === b.name}
-                disabled={Boolean(branchBlocked)}
-                onclick={() => void bindRailAction(workspaceId, railId, { branch: b.name })}
-              >
-                <span class="path">{b.name}</span>
-                {#if where === railCheckout && where !== null}
-                  <span class="branch">already checked out here</span>
-                {:else if where}
-                  <!-- git refuses to check a branch out twice, so this
-                       binding stalls at Start until the other checkout
-                       moves. Better said here than in a stall reason. -->
-                  <span class="branch warn">checked out at {where} — gavin cannot switch to it</span>
-                {/if}
-              </button>
-            </li>
-          {/each}
-        </ul>
-        <!-- Without this the list simply shows nothing selected, which
-             reads as "unbound" rather than "bound to something gone". -->
-        {#if rail.branch && !branches.some((b) => b.name === rail.branch)}
-          <p class="err">Bound to {rail.branch}, which this repo no longer has.</p>
-        {/if}
-        {#if naming}
-          <form class="new-branch" onsubmit={(e) => { e.preventDefault(); void createAndBind(); }}>
-            <!-- svelte-ignore a11y_autofocus -->
-            <input type="text" bind:value={draftBranch} placeholder="feature/thing" autofocus />
-            <select bind:value={draftFrom}>
-              <option value="HEAD">from HEAD{headBranch ? ` (${headBranch})` : ""}</option>
-              {#each branches as b (b.name)}
-                <option value={b.name}>from {b.name}</option>
-              {/each}
-            </select>
-            <div class="row">
-              <button type="button" class="secondary" onclick={() => (naming = false)}>Cancel</button>
-              <button
-                type="submit"
-                class="secondary"
-                disabled={!!draftError || creating || Boolean(branchBlocked)}
-              >
-                {creating ? "Creating…" : "Create and bind"}
-              </button>
-            </div>
-            {#if draftError && draftBranch}<div class="err">{draftError}</div>{/if}
-          </form>
-        {:else}
+      <div class="tabs" role="tablist" aria-label="Rail bindings">
+        {#each chips as chip (chip.tab)}
           <button
             type="button"
-            class="secondary"
-            disabled={Boolean(branchBlocked)}
-            onclick={startNaming}>New branch…</button
+            role="tab"
+            id="rail-bind-tab-{chip.tab}"
+            aria-selected={tab === chip.tab}
+            aria-controls="rail-bind-panel"
+            tabindex={tab === chip.tab ? 0 : -1}
+            class:on={tab === chip.tab}
+            onclick={() => (tab = chip.tab)}
+            onkeydown={onTabKey}
           >
-        {/if}
-      </section>
+            <span class="tab-label">{chip.label}</span>
+            <span class="tab-value" class:unset={!chip.bound}>{chip.value}</span>
+          </button>
+        {/each}
+      </div>
 
-      <section>
-        <h4>Page</h4>
-        <p class="note">
-          Where this rail's agent sessions land. Unbound, the rail's first launch gives it a page
-          of its own, named after it, opening on that session.
-        </p>
-        <ul>
-          <li>
-            <button
-              type="button"
-              class:on={rail.pageId === null}
-              onclick={() => void bindRailAction(workspaceId, railId, { pageId: null })}
-            >
-              <span class="path">None — a page of its own, made at its first launch</span>
-            </button>
-          </li>
-          {#each pages as page (page.id)}
-            <li>
+      <!-- One panel at a time, and only the one on screen is built: the
+           three lists together were a 900px scroll in a dialog whose job
+           is one question. -->
+      <div class="tab-panel" id="rail-bind-panel" role="tabpanel" aria-labelledby="rail-bind-tab-{tab}">
+        {#if tab === "worktree"}
+          <section>
+            <p class="note">
+              Where this rail's steps run. Re-binding affects steps started from now on.
+            </p>
+            <ul>
+              <li>
+                <button
+                  type="button"
+                  class:on={rail.worktreePath === null}
+                  onclick={() => void bindRailAction(workspaceId, railId, { worktreePath: null })}
+                >
+                  <span class="path">None — each card's own folder</span>
+                </button>
+              </li>
+              {#each worktrees as wt (wt.path)}
+                <li>
+                  <button
+                    type="button"
+                    class:on={rail.worktreePath === wt.path}
+                    onclick={() => void bindRailAction(workspaceId, railId, { worktreePath: wt.path })}
+                  >
+                    <span class="path">{wt.path}</span>
+                    <span class="branch">
+                      {wt.branch ?? "detached"}{wt.isMain ? " · main checkout" : ""}
+                    </span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+            <button type="button" class="secondary" onclick={() => (forking = true)}>New worktree…</button>
+          </section>
+        {:else if tab === "branch"}
+          <section title={branchBlocked ?? undefined}>
+            <p class="note">
+              Which branch that checkout sits on. Gavin switches
+              {railCheckout ?? "the checkout"} before the rail's first step, and refuses while it has
+              uncommitted changes.
+            </p>
+            {#if branchBlocked}
+              <p class="err">{branchBlocked}</p>
+            {/if}
+            <ul>
+              <li>
+                <button
+                  type="button"
+                  class:on={!rail.branch}
+                  disabled={Boolean(branchBlocked)}
+                  onclick={() => void bindRailAction(workspaceId, railId, { branch: null })}
+                >
+                  <span class="path">None — whatever is checked out</span>
+                </button>
+              </li>
+              {#each branches as b (b.name)}
+                {@const where = checkedOutIn.get(b.name) ?? null}
+                <li>
+                  <button
+                    type="button"
+                    class:on={rail.branch === b.name}
+                    disabled={Boolean(branchBlocked)}
+                    onclick={() => void bindRailAction(workspaceId, railId, { branch: b.name })}
+                  >
+                    <span class="path">{b.name}</span>
+                    {#if where === railCheckout && where !== null}
+                      <span class="branch">already checked out here</span>
+                    {:else if where}
+                      <!-- git refuses to check a branch out twice, so this
+                           binding stalls at Start until the other checkout
+                           moves. Better said here than in a stall reason. -->
+                      <span class="branch warn">checked out at {where} — gavin cannot switch to it</span>
+                    {/if}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+            <!-- Without this the list simply shows nothing selected, which
+                 reads as "unbound" rather than "bound to something gone". -->
+            {#if rail.branch && !branches.some((b) => b.name === rail.branch)}
+              <p class="err">Bound to {rail.branch}, which this repo no longer has.</p>
+            {/if}
+            {#if naming}
+              <form class="new-branch" onsubmit={(e) => { e.preventDefault(); void createAndBind(); }}>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input type="text" bind:value={draftBranch} placeholder="feature/thing" autofocus />
+                <select bind:value={draftFrom}>
+                  <option value="HEAD">from HEAD{headBranch ? ` (${headBranch})` : ""}</option>
+                  {#each branches as b (b.name)}
+                    <option value={b.name}>from {b.name}</option>
+                  {/each}
+                </select>
+                <div class="row">
+                  <button type="button" class="secondary" onclick={() => (naming = false)}>Cancel</button>
+                  <button
+                    type="submit"
+                    class="secondary"
+                    disabled={!!draftError || creating || Boolean(branchBlocked)}
+                  >
+                    {creating ? "Creating…" : "Create and bind"}
+                  </button>
+                </div>
+                {#if draftError && draftBranch}<div class="err">{draftError}</div>{/if}
+              </form>
+            {:else}
               <button
                 type="button"
-                class:on={rail.pageId === page.id}
-                onclick={() => void bindRailAction(workspaceId, railId, { pageId: page.id })}
+                class="secondary"
+                disabled={Boolean(branchBlocked)}
+                onclick={startNaming}>New branch…</button
               >
-                <span class="path">{page.name}</span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-        <!-- Same honesty the branch list above shows: a binding to
-             something gone reads as "unbound" otherwise, since nothing
-             in the list is selected. -->
-        {#if rail.pageId && !pages.some((p) => p.id === rail.pageId)}
-          <p class="note">
-            Bound to a page that has since been closed — the next launch will make a new one.
-          </p>
+            {/if}
+          </section>
+        {:else}
+          <section>
+            <p class="note">
+              Where this rail's agent sessions land. Unbound, the rail's first launch gives it a page
+              of its own, named after it, opening on that session.
+            </p>
+            <ul>
+              <li>
+                <button
+                  type="button"
+                  class:on={rail.pageId === null}
+                  onclick={() => void bindRailAction(workspaceId, railId, { pageId: null })}
+                >
+                  <span class="path">None — a page of its own, made at its first launch</span>
+                </button>
+              </li>
+              {#each pages as page (page.id)}
+                <li>
+                  <button
+                    type="button"
+                    class:on={rail.pageId === page.id}
+                    onclick={() => void bindRailAction(workspaceId, railId, { pageId: page.id })}
+                  >
+                    <span class="path">{page.name}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+            <!-- Same honesty the branch list above shows: a binding to
+                 something gone reads as "unbound" otherwise, since nothing
+                 in the list is selected. -->
+            {#if rail.pageId && !pages.some((p) => p.id === rail.pageId)}
+              <p class="note">
+                Bound to a page that has since been closed — the next launch will make a new one.
+              </p>
+            {/if}
+            <button type="button" class="secondary" onclick={() => void bindNewPage()}>
+              New page “{rail.name}”
+            </button>
+          </section>
         {/if}
-        <button type="button" class="secondary" onclick={() => void bindNewPage()}>
-          New page “{rail.name}”
-        </button>
-      </section>
+      </div>
 
       <div class="actions">
         <button type="button" onclick={onClose}>Done</button>
@@ -322,17 +387,70 @@
   .bind {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    min-width: 380px;
+    gap: 10px;
+    min-width: 420px;
   }
   h3 {
     margin: 0;
     font-size: 14px;
   }
-  h4 {
-    margin: 0 0 2px;
-    font-size: 12px;
+  .lede {
+    margin: -6px 0 0;
+    font-size: 11px;
+    color: var(--text-subtle);
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tabs button {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 5px 8px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
     color: var(--text-muted);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tabs button:hover {
+    background: var(--surface-hover);
+  }
+  .tabs button.on {
+    border-bottom-color: var(--border-focus);
+    color: var(--text);
+  }
+  .tab-label {
+    font-size: 12px;
+  }
+  /* The answer under the question. Ellipsised rather than wrapped: a tab
+     that grows a line taller than its neighbours moves the panel under
+     it every time the strip is used. */
+  .tab-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    color: var(--text-subtle);
+  }
+  .tab-value.unset {
+    opacity: 0.7;
+  }
+  /* A floor, not a height: the three panels are different lengths, and a
+     dialog that resizes under the pointer on every tab press is what
+     makes a strip feel unusable. */
+  .tab-panel {
+    min-height: 220px;
+  }
+  section {
+    display: flex;
+    flex-direction: column;
   }
   .note {
     margin: 0 0 6px;
@@ -343,7 +461,7 @@
     list-style: none;
     margin: 0 0 6px;
     padding: 0;
-    max-height: 30vh;
+    max-height: 34vh;
     overflow-y: auto;
   }
   li button {

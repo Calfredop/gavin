@@ -5,6 +5,7 @@
   import { loadConflictsCollapsed, saveConflictsCollapsed } from "./orchestrationConflictBanner";
   import type { CardEntry, NumberedConflict, Orchestration } from "./orchestration";
   import type { Tool } from "./orchestrationTools";
+  import { railBindFix, type RailBindTab } from "./railBind";
 
   interface Props {
     /// Whose box this is: the collapse is remembered per workspace.
@@ -15,7 +16,11 @@
     /// Tool names, so a conflict naming a tool step reads as "Push
     /// branch" rather than as a uuid.
     tools: Tool[];
-    onBindWorktree: (railId: string) => void;
+    /// Opens the rail's bind dialog on the tab that actually repairs
+    /// this conflict. One label served every rail-level conflict before,
+    /// naming the worktree even when the cause was a missing BRANCH --
+    /// and then landing on the worktree list.
+    onBindRail: (railId: string, tab: RailBindTab) => void;
     /// The repair for a parallel stage (grouping spec G5): tell the group
     /// to run its members one at a time. The group stays whole.
     onMakeSequential: (stageId: string) => void;
@@ -42,7 +47,7 @@
     cards,
     orch,
     tools,
-    onBindWorktree,
+    onBindRail,
     onMakeSequential,
     onBreakOut,
     breakOutColumn,
@@ -97,8 +102,9 @@
             <span class="text">{describeConflict(conflict, cards, orch, tools)}</span>
             {#if conflict.kind === "declared"}<span class="tag">agent note</span>{/if}
             {#if railId}
-              <button type="button" class="fix" onclick={() => onBindWorktree(railId)}>
-                {conflict.kind === "branch-missing" ? "Bind branch…" : "Bind worktree…"}
+              {@const fix = railBindFix(conflict.kind)}
+              <button type="button" class="fix" onclick={() => onBindRail(railId, fix.tab)}>
+                {fix.label}
               </button>
             {:else if conflict.kind === "same-worktree" && conflict.stageId}
               <button

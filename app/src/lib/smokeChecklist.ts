@@ -2227,6 +2227,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Rail bindings dialog",
+    items: [
+      {
+        id: "bind-chips-three",
+        text: "A rail header shows THREE binding chips — worktree, branch, page — and each opens the dialog on its own tab",
+        hint: "Worktree and branch share the first line, the page has the second. Hover each: an unset one says what the default does (\u201ceach card's own folder\u201d, \u201cwhatever is checked out\u201d, \u201ca page of its own at first launch\u201d), a set one says the whole worktree path the chip abbreviates to a folder name.",
+      },
+      {
+        id: "bind-chips-narrow",
+        text: "At 280px the chips ellipsise their VALUE and keep their glyphs, and the header stays at the same height as before",
+        hint: "Bind a rail to a worktree with a long folder name and a long branch. Nothing may wrap to a fourth header row.",
+      },
+      {
+        id: "bind-tab-strip",
+        text: "The dialog is a tab strip: Worktree / Branch / Page, each tab showing what that binding is set to right now",
+        hint: "Only one list is on screen at a time. Picking a value updates the tab's own sub-label immediately, without leaving the tab.",
+      },
+      {
+        id: "bind-tab-keys",
+        text: "With a tab focused, \u2190/\u2192 move across the strip (wrapping) and Home/End jump to the ends; Escape still closes the dialog",
+        hint: "Escape is the one that matters: a tablist that swallows it leaves the modal stuck open.",
+      },
+      {
+        id: "bind-tab-deep-link",
+        text: "The conflict box's repair button names the binding it repairs and lands on that tab",
+        hint: "A rail bound to a deleted branch offers \u201cPick another branch\u201d and opens on Branch; a deleted worktree offers \u201cPick another worktree\u201d; a rail with no worktree offers \u201cGive it a worktree\u201d. All three used to say \u201cBind worktree…\u201d and open at the top.",
+      },
+      {
+        id: "bind-tab-height",
+        text: "Switching tabs does not resize the dialog under the pointer",
+        hint: "The Page tab on a workspace with one page is the short one — the panel keeps a floor so the Done button stays put.",
+      },
+    ],
+  },
+  {
     title: "Rail branch/worktree defaults",
     items: [
       {

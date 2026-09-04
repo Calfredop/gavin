@@ -5,6 +5,7 @@
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
   import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
   import RailBindDialog from "./RailBindDialog.svelte";
+  import type { RailBindTab } from "./railBind";
   import SearchInput from "./ui/SearchInput.svelte";
   import { searchOrchestration } from "./orchestrationSearch";
   import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
@@ -179,6 +180,16 @@
   // The rail whose bindings are being edited, set by the rail header and
   // by the conflicts box's inline fix.
   let binding = $state<string | null>(null);
+  // WHICH of that rail's three bindings the human came for. Held beside
+  // `binding` rather than folded into it, because `binding` is what the
+  // dialog's rail prop resolves through (see railSelection.svelte.ts) and
+  // that lookup has to stay a plain id -- the tab is only a starting
+  // point, and the dialog owns it from the first click on its strip.
+  let bindingTab = $state<RailBindTab>("worktree");
+  function openBind(railId: string, tab: RailBindTab): void {
+    bindingTab = tab;
+    binding = railId;
+  }
 
   // A rail's two destructive header buttons ask first, in the app's own
   // ConfirmPrompt: both take steps off the plan for good, and neither is
@@ -773,7 +784,7 @@
       {orch}
       {tools}
       {groupsBlocked}
-      onBindWorktree={(railId) => (binding = railId)}
+      onBindRail={openBind}
       onMakeSequential={(stageId) => void makeStageSequentialAction(workspaceId, stageId)}
       breakOutColumn={firstColumnOf(board?.columns ?? [])?.name ?? null}
       onBreakOut={(cardPath) => {
@@ -836,7 +847,7 @@
             editingRailId = null;
           }}
           onCancelEdit={() => (editingRailId = null)}
-          onBind={() => (binding = rail.id)}
+          onBind={(tab) => openBind(rail.id, tab)}
           onReorganize={() => pressReorganize(rail.id)}
           reorganize={reorganizeFor(rail.id)}
           onAddStep={() => (picking = rail.id)}
@@ -960,7 +971,12 @@
 {#if binding && orch}
   {@const bindingRail = orch.rails.find((r) => r.id === binding)}
   {#if bindingRail}
-    <RailBindDialog {workspaceId} rail={bindingRail} onClose={() => (binding = null)} />
+    <RailBindDialog
+      {workspaceId}
+      rail={bindingRail}
+      initialTab={bindingTab}
+      onClose={() => (binding = null)}
+    />
   {/if}
 {/if}
 
