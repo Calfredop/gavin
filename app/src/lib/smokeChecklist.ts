@@ -1731,8 +1731,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "tasks-clear-stale",
-        text: "With an exited row and a live one, “Clear stale (1)” is enabled; pressing it asks once, spelling out what clearing an exited row does, and leaves the live row alone",
-        hint: "Clearing an exited row deletes a record; clearing an orphan sends SIGTERM to a live process. One word covering both would hide the one that matters, so the prompt lists each kind present.",
+        text: "With a stale row and a live one, “Clear stale (1)” is enabled; pressing it asks once, spelling out what clearing each kind present does, and leaves the live row alone",
+        hint: "Clearing an exited row deletes a record; clearing an orphan sends SIGTERM to a live process. One word covering both would hide the one that matters, so the prompt lists each kind present. A run that simply ends no longer leaves a row at all, so stage this with an orphan (`trap '' HUP; sleep 900`, then restart the daemon) or an interrupted one.",
       },
       {
         id: "tasks-grid-scrolls-inside",
