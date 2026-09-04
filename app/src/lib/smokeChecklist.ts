@@ -1578,6 +1578,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The figure covers the session's process and everything it started, and is not clamped at 100. A shell showing 0.2% while its children pin four cores is the failure this shape avoids.",
       },
       {
+        id: "tasks-totals-sum-the-two-columns",
+        text: "Under the last row a pinned “Total” line sums the CPU and Mem columns and names what it covers (“14 sessions · 37 processes”); start four `yes > /dev/null` in one tab and the total climbs by ~400% too",
+        hint: "It is a `<tfoot>` INSIDE the table, not a strip under the grid: `table-layout: fixed` makes the columns exact, and anything outside would be a scrollbar's width out of line the moment the list overflows.",
+      },
+      {
+        id: "tasks-totals-stay-at-the-foot",
+        text: "With ~30 terminals open, the Total line stays at the bottom of the grid while the rows scroll under it — the mirror of the headings staying at the top",
+        hint: "Sticky is on the CELLS, never on `<tfoot>` or `<tr>`: this is WKWebView, and a cell is the form it has always honoured. What the fleet costs must not scroll away.",
+      },
+      {
+        id: "tasks-totals-wait-for-a-rate",
+        text: "For the first two seconds the total CPU reads “—”, never 0.0%; open a new terminal and for one poll the coverage line reads “… · 1 not rated yet”, with the reason on hover",
+        hint: "A total that counted an unrated row as zero would be the one lie the per-row arithmetic was written to avoid, told once more at the bottom of the table. Hover also says what kind of number each sum is — shares of ONE core, and resident sizes that count a shared page twice.",
+      },
+      {
         id: "tasks-hidden-session-listed",
         text: "Press “Commit via agent” on the Git tab and open the panel while it runs: the hidden run is listed, marked with no tab",
         hint: "The card's “invisible sessions”. A commit agent, an orchestration Generate and a rail's Reorganize all run with nothing rendering them; before this they were visible only as a spinner.",
@@ -1611,6 +1626,11 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "tasks-kill-selected-names-them",
         text: "Press “Kill N selected…”: ONE in-app confirmation lists the picked sessions by name; confirming ends only those and the selection clears",
         hint: "The prompt is the only place a mis-click shows. With one row picked it is worded as that row's own ✕ would be.",
+      },
+      {
+        id: "tasks-kill-selected-states-the-cost",
+        text: "Select two busy sessions and press “Kill N selected…”: the prompt also says what they are using together (“Together they are using 1.4 GB of memory and 210.0% of one core.”)",
+        hint: "Every other number in that prompt can be checked against the rows behind it; a sum over a SELECTION appears nowhere else on screen, and it is usually the reason someone reached for the button.",
       },
       {
         id: "tasks-clear-stale",

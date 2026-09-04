@@ -20,6 +20,9 @@ import {
   sessionRows,
   sortRows,
   survivorsAlert,
+  totalUsage,
+  totalsCoverage,
+  totalsNote,
   type ManagedSession,
   type SessionRow,
 } from "./sessionsManager";
@@ -694,5 +697,146 @@ describe("selectionHint", () => {
     expect(selectionHint(false)).toContain("Ctrl");
     expect(selectionHint(false)).toContain("Shift");
     expect(selectionHint(false)).not.toContain("⌘");
+  });
+});
+
+describe("the totals under the list", () => {
+  /// Two polls a second apart, so the rows carry a real CPU rate: the
+  /// sums this section is about only exist once a rate does.
+  function rated(sessions: ManagedSession[], workspaces = [workspace()]) {
+    const before = { sessions, metrics: true };
+    const after = {
+      sessions: sessions.map((s) => ({
+        ...s,
+        cpuTimeUs: s.cpuTimeUs + (s.processCount > 0 ? SECOND / 2 : 0),
+        sampledAtUs: s.sampledAtUs + SECOND,
+      })),
+      metrics: true,
+    };
+    return sessionRows({
+      sample: after,
+      previous: before,
+      workspaces,
+      sessionNames: {},
+    });
+  }
+
+  it("adds up what the whole list is costing", () => {
+    const rows = rated([
+      session({ id: "a", rssBytes: 300 * 1024 * 1024, processCount: 3 }),
+      session({ id: "b", rssBytes: 100 * 1024 * 1024, processCount: 2, pid: 99 }),
+    ]);
+    const total = totalUsage(rows);
+    expect(total.sessions).toBe(2);
+    expect(total.processes).toBe(5);
+    expect(total.memBytes).toBe(400 * 1024 * 1024);
+    // Half a second of CPU each across a one-second interval.
+    expect(total.cpuPercent).toBeCloseTo(100, 5);
+    expect(total.cpuPending).toBe(0);
+  });
+
+  it("says nothing rather than zero before a rate exists", () => {
+    // The first poll has no interval to divide against, and a bottom
+    // line reading 0.0% would be the panel stating a measurement nobody
+    // took -- the same lie the per-row em dash exists to avoid.
+    const rows = rowsFor([session({ id: "a" }), session({ id: "b", pid: 22 })]);
+    const total = totalUsage(rows);
+    expect(total.cpuPercent).toBe(null);
+    expect(formatCpu(total.cpuPercent)).toBe("—");
+    // Memory is an instantaneous reading, so it has an answer straight away.
+    expect(total.memBytes).toBe(200 * 1024 * 1024);
+  });
+
+  it("says nothing at all when the daemon measured nothing", () => {
+    const rows = sessionRows({
+      sample: { sessions: [session()], metrics: false },
+      previous: null,
+      workspaces: [workspace()],
+      sessionNames: {},
+    });
+    const total = totalUsage(rows);
+    expect(total.cpuPercent).toBe(null);
+    expect(total.memBytes).toBe(null);
+    expect(formatMemory(total.memBytes)).toBe("—");
+  });
+
+  it("counts a live row it could not rate, so the CPU sum reads as a floor", () => {
+    // "b" appeared between the two polls, so it has no baseline and no
+    // rate. Dropping it silently would understate the total with nothing
+    // saying so.
+    const before = { sessions: [session({ id: "a" })], metrics: true };
+    const after = {
+      sessions: [
+        { ...session({ id: "a" }), cpuTimeUs: SECOND / 4, sampledAtUs: 11 * SECOND },
+        session({ id: "b", pid: 77, sampledAtUs: 11 * SECOND }),
+      ],
+      metrics: true,
+    };
+    const rows = sessionRows({ sample: after, previous: before, workspaces: [workspace()], sessionNames: {} });
+    const total = totalUsage(rows);
+    expect(total.cpuPercent).toBeCloseTo(25, 5);
+    expect(total.cpuPending).toBe(1);
+    expect(totalsCoverage(total)).toContain("1 not rated yet");
+    expect(totalsNote(total)).toContain("at least this much");
+  });
+
+  it("does not call an ended row unrated — there is nothing there to rate", () => {
+    // processCount 0 is the daemon saying it looked and found nothing,
+    // which is a real zero rather than a gap in the sum.
+    const rows = rated([
+      session({ id: "a" }),
+      session({ id: "gone", status: "exited", pid: null, processCount: 0, rssBytes: 0 }),
+    ]);
+    const total = totalUsage(rows);
+    expect(total.cpuPending).toBe(0);
+    expect(total.sessions).toBe(2);
+    expect(total.processes).toBe(1);
+  });
+
+  it("names how many sessions and processes the two figures cover", () => {
+    const rows = rated([session({ id: "a", processCount: 4 })]);
+    expect(totalsCoverage(totalUsage(rows))).toBe("1 session · 4 processes");
+    const two = rated([session({ id: "a" }), session({ id: "b", pid: 8 })]);
+    expect(totalsCoverage(totalUsage(two))).toBe("2 sessions · 2 processes");
+  });
+
+  it("says on hover what kind of number each sum is", () => {
+    // Neither is a machine reading: CPU adds shares of ONE core, so its
+    // ceiling is the core count; memory adds resident sizes, so a shared
+    // page is counted in every process holding it.
+    const note = totalsNote(totalUsage(rated([session()])));
+    expect(note).toContain("share of one core");
+    expect(note).toContain("upper bound");
+  });
+
+  it("has an answer for an empty list", () => {
+    expect(totalUsage([])).toEqual({
+      sessions: 0,
+      processes: 0,
+      cpuPercent: null,
+      memBytes: null,
+      cpuPending: 0,
+    });
+  });
+});
+
+describe("what a batch kill says it is freeing", () => {
+  it("puts the sum in the prompt, because it is nowhere else on screen", () => {
+    const rows = rowsFor([
+      session({ id: "a", rssBytes: 768 * 1024 * 1024 }),
+      session({ id: "b", rssBytes: 256 * 1024 * 1024, pid: 12 }),
+    ]);
+    const text = killBatchConfirm(rows, "selected")!.lines.join(" ");
+    expect(text).toContain("1.0 GB of memory");
+  });
+
+  it("leaves the figure out when there is nothing measured to state", () => {
+    const rows = sessionRows({
+      sample: { sessions: [session({ id: "a" }), session({ id: "b", pid: 12 })], metrics: false },
+      previous: null,
+      workspaces: [workspace()],
+      sessionNames: {},
+    });
+    expect(killBatchConfirm(rows, "all")!.lines.join(" ")).not.toContain("Together they are using");
   });
 });
