@@ -84,6 +84,7 @@ import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore, refresh as refreshGit } from "./gitState";
+import { branchResolvable } from "./git";
 import {
   layoutState,
   resolvedAgentFor,
@@ -1078,7 +1079,20 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
 }
 
 /// Put a rail's checkout on its branch (spec O15). Three steps, and the
-/// first is a refusal gate.
+/// first two are refusal gates.
+///
+/// A branch the repo does not HAVE refuses first. `git switch` cannot
+/// create one, so such a binding can only ever produce `fatal: invalid
+/// reference: <name>` on the rail's chips -- which reads as a gavin
+/// fault rather than as the binding it is. It is the branch half of the
+/// family launchBlocker already covers ("card file is missing", "tool is
+/// no longer in the library", "worktree ... is gone"), and the one that
+/// was missing: branchSwitchFor compares rail.branch against the
+/// WORKTREE list only, and gavin_set_orchestration takes any string, so
+/// an agent-written rail can bind a branch nobody ever made. Refused
+/// here rather than in that pure decision because a rail-wide stall has
+/// no Action kind to carry it -- the same reason the dirty gate lives
+/// here.
 ///
 /// A DIRTY checkout refuses -- deliberately stricter than git, which
 /// carries non-conflicting edits across a switch. Uncommitted work
@@ -1099,6 +1113,20 @@ async function executeSwitchBranch(
   path: string,
   branch: string
 ): Promise<boolean> {
+  // Read off the SAME snapshot branchSwitchFor read the worktrees from,
+  // and answer nothing when there is none: unknown must never read as
+  // "gone", the cold-start rule launchBlocker and branchSwitchFor both
+  // follow. A workspace whose git view was never opened has no snapshot,
+  // and stalling every bound rail over that would be the worse bug.
+  const refs = get(gitStore)[workspaceId]?.refs ?? null;
+  if (refs && !branchResolvable(refs, branch)) {
+    await stallStage(
+      workspaceId,
+      railId,
+      `${branch} is not a branch of this repo — create it, or bind this rail to one that exists`
+    );
+    return false;
+  }
   try {
     const status = await backend.gitStatus(path);
     if (status.staged.length > 0 || status.unstaged.length > 0) {

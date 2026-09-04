@@ -458,13 +458,26 @@ describe("executeActions — switchBranch (spec O15)", () => {
   });
 
   /// Point the mocked refs snapshot at a branch for /x/wt.
-  function refsSay(branch: string): void {
+  ///
+  /// A COMPLETE snapshot, because `refs` is never partial in the app --
+  /// gitState publishes what `refs()` returned or nothing at all -- and
+  /// executeSwitchBranch now reads the branch lists out of the same one
+  /// it reads the worktrees from. `has` is what the repo itself holds,
+  /// SWITCH's branch included by default: every test here but the
+  /// missing-branch one is about a binding that exists.
+  function refsSay(branch: string, has: string[] = ["main", "feature/api"]): void {
     (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({
       "ws-1": {
         refs: {
+          branches: has.map((name) => ({
+            name, current: name === branch, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "s",
+          })),
+          remotes: [],
+          stashes: [],
           worktrees: [
             { path: "/x/wt", head: "a", branch, isMain: false, locked: false, prunable: false },
           ],
+          headBranch: branch,
         },
       },
     });
@@ -565,6 +578,65 @@ describe("executeActions — switchBranch (spec O15)", () => {
 
     const stalled = vi.mocked(backend.setStepRun).mock.calls.map((c) => c[0]);
     expect(stalled).toEqual(["t1", "t2"]);
+  });
+
+  it("refuses a branch this repo does not have, without calling git at all", async () => {
+    // git's own answer is `fatal: invalid reference: <name>`, which
+    // reads as a gavin fault rather than the binding it is -- and the
+    // binding is the one an agent-written rail arrives with, since
+    // gavin_set_orchestration takes any string.
+    refsSay("main", ["main"]);
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+
+    await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.gitCheckout).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("feature/api is not a branch of this repo"),
+      null,
+      null,
+      null,
+    );
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
+  });
+
+  it("switches to a branch that exists only on a remote", async () => {
+    // `git switch feature/api` with nothing local but origin/feature/api
+    // creates the tracking branch itself. Refusing it would refuse a
+    // binding that works.
+    (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({
+      "ws-1": {
+        refs: {
+          branches: [{ name: "main", current: true, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "s" }],
+          remotes: [{ name: "origin", url: "u", branches: ["main", "feature/api"] }],
+          stashes: [],
+          worktrees: [{ path: "/x/wt", head: "a", branch: "main", isMain: false, locked: false, prunable: false }],
+          headBranch: "main",
+        },
+      },
+    });
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("feature/api"));
+
+    expect(await executeActions("ws-1", [SWITCH])).toBe(true);
+    expect(backend.gitCheckout).toHaveBeenCalledWith("/x/wt", "feature/api", null);
+  });
+
+  it("switches when the refs snapshot has not loaded — unknown is not gone", async () => {
+    // The same cold-start rule launchBlocker and branchSwitchFor follow.
+    // A workspace whose git view was never opened has no snapshot, and
+    // reading that as "no branch exists" would stall every bound rail.
+    (gitStateModule as unknown as { __setGitStore: (v: unknown) => void }).__setGitStore({});
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] });
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("feature/api"));
+
+    expect(await executeActions("ws-1", [SWITCH])).toBe(true);
+    expect(backend.gitCheckout).toHaveBeenCalledWith("/x/wt", "feature/api", null);
   });
 
   it("leaves a step that is not pending alone", async () => {

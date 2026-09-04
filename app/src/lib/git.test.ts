@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, branchNameFrom, freeBranchNameFrom, type RepoInfo } from "./git";
+import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, branchNameFrom, freeBranchNameFrom, branchResolvable, type RepoInfo, type RefsSnapshot } from "./git";
 
 const repo: RepoInfo = {
   notARepo: false, root: "/r", branch: "main", detached: false, unborn: false,
@@ -117,5 +117,46 @@ describe("freeBranchNameFrom", () => {
   it("numbers a name git still accepts", () => {
     expect(validateBranchName(freeBranchNameFrom("Feature/Auth", ["feature/auth"]))).toBeNull();
     expect(freeBranchNameFrom("Feature/Auth", ["feature/auth"])).toBe("feature/auth-2");
+  });
+});
+
+describe("branchResolvable", () => {
+  /// Only the two lists the answer reads; the rest of a snapshot has no
+  /// bearing on whether git can find a branch.
+  function refs(local: string[], remote: Record<string, string[]> = {}): RefsSnapshot {
+    return {
+      branches: local.map((name) => ({
+        name, current: false, upstream: null, ahead: 0, behind: 0, sha: "a", subject: "s",
+      })),
+      remotes: Object.entries(remote).map(([name, branches]) => ({ name, url: "u", branches })),
+      stashes: [],
+      worktrees: [],
+      headBranch: null,
+    };
+  }
+
+  it("finds a local branch", () => {
+    expect(branchResolvable(refs(["main", "feat/api"]), "feat/api")).toBe(true);
+  });
+
+  it("finds a branch that exists only on a remote", () => {
+    // `git switch feat/api` with only origin/feat/api creates the local
+    // tracking branch itself, so refusing this would refuse a binding
+    // that works.
+    expect(branchResolvable(refs(["main"], { origin: ["feat/api"] }), "feat/api")).toBe(true);
+  });
+
+  it("finds a remote branch whose own name contains slashes", () => {
+    // parse_remotes splits `origin/feat/layout` on the FIRST slash, so
+    // the branch it records keeps the rest of the path.
+    expect(branchResolvable(refs([], { origin: ["feat/layout/deep"] }), "feat/layout/deep")).toBe(true);
+  });
+
+  it("answers false for a branch no ref names", () => {
+    expect(branchResolvable(refs(["main"], { origin: ["main"] }), "feat/layout-homologation")).toBe(false);
+  });
+
+  it("answers false for a repo with no refs at all", () => {
+    expect(branchResolvable(refs([]), "main")).toBe(false);
   });
 });
