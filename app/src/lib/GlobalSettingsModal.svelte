@@ -17,6 +17,7 @@
     autoCommitOptions,
     autoCommitToSelect,
   } from "./autoCommit";
+  import { scratchpadEnabled, setScratchpadEnabled } from "./sidebarPrefs";
   import { themeState } from "./ui/themeState.svelte";
   import type { ThemePref } from "./ui/theme";
   import IconButton from "./ui/IconButton.svelte";
@@ -131,6 +132,26 @@
           {/each}
         </div>
       </div>
+    </section>
+
+    <section>
+      <h3>Sidebar</h3>
+      <div class="row">
+        <span>Scratchpad</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$scratchpadEnabled}
+            onchange={(e) => void setScratchpadEnabled(e.currentTarget.checked)}
+          />
+          <span>Keep its row in the sidebar</span>
+        </label>
+      </div>
+      <p class="hint">
+        The Scratchpad is the pinned drawer a page with no workspace of its own lands in. Switching
+        it off takes its row out of the sidebar and out of ⌘⌥-number; nothing inside it is closed or
+        deleted, and switching it back on brings the row and its pages straight back.
+      </p>
     </section>
 
     <section>

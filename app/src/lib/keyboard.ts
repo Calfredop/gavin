@@ -15,6 +15,7 @@ import { confirmTabClose } from "./confirmClose";
 import { findLeafPath, getNodeAtPath, isPinned } from "./layout";
 import { getActiveTree, getActiveWorkspace, getActiveView, sidebarWorkspaceOrder } from "./workspace";
 import { tabStripHubViewIds } from "./hubViewMeta";
+import { scratchpadEnabled } from "./sidebarPrefs";
 import { cmdHeld, isMacSync } from "./platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "./shortcuts";
 import { requestedCompose, resolveComposeTarget } from "./composeRequest";
@@ -81,7 +82,11 @@ function routeDigit(
   if (!isMac && event.ctrlKey && event.altKey) return null;
 
   if (altKey) {
-    const list = sidebarWorkspaceOrder(state.workspaces);
+    // The same list the sidebar draws, Scratchpad included or not: these
+    // digits are the sidebar's rows counted from the top, and a router
+    // that counted a row nothing draws would be off by one for every
+    // workspace below it.
+    const list = sidebarWorkspaceOrder(state.workspaces, get(scratchpadEnabled));
     const index = resolveIndex(digit, list.length);
     if (index === null) return null;
     const workspaceId = list[index].id;

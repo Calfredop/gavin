@@ -193,13 +193,14 @@ export interface WorkspacesData {
   removedWorkspaces?: RemovedWorkspace[];
 }
 
-/// Whether two root paths name the same directory as far as a reclaim is
-/// concerned. Only trailing separators are normalized: a path that came
-/// from the folder picker and one persisted months ago differ by a
-/// trailing slash often enough to matter, and nothing else about them can
-/// be compared without touching the filesystem, which this module never
-/// does.
-function sameRoot(a: string, b: string): boolean {
+/// Whether two root paths name the same directory as far as gavin is
+/// concerned -- a reclaim match, and "is this folder already open in a
+/// workspace?" when one is picked (workspaceOpen.ts). Only trailing
+/// separators are normalized: a path that came from the folder picker
+/// and one persisted months ago differ by a trailing slash often enough
+/// to matter, and nothing else about them can be compared without
+/// touching the filesystem, which this module never does.
+export function sameRoot(a: string, b: string): boolean {
   const trim = (p: string) => p.replace(/[/\\]+$/, "");
   return trim(a) === trim(b) && trim(a) !== "";
 }
@@ -631,8 +632,20 @@ export function allSessionIdsInWorkspace(workspace: Workspace): string[] {
 /// to the top, then the rest as stored. Shared with the ⌘⌥-number
 /// router so a hint badge and the shortcut can never point at
 /// different workspaces.
-export function sidebarWorkspaceOrder(workspaces: Workspace[]): Workspace[] {
-  const unfiled = workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID);
+///
+/// `showScratchpad` is that same contract's other half. A human who has
+/// switched the Scratchpad off (sidebarPrefs.ts) has no row for it, so
+/// the digits must close up over the gap rather than spend one on a
+/// workspace nothing on screen names -- and both readers have to make
+/// that decision the same way, which is why it is a parameter here and
+/// not a filter each of them applies afterwards. It defaults to true so
+/// the app hub, which lists what EXISTS rather than what is pinned,
+/// keeps its own answer without asking.
+export function sidebarWorkspaceOrder(
+  workspaces: Workspace[],
+  showScratchpad = true
+): Workspace[] {
+  const unfiled = showScratchpad ? workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID) : [];
   const rest = workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID);
   return [...unfiled, ...rest];
 }

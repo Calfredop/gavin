@@ -3391,6 +3391,79 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Sidebar rework",
+    items: [
+      {
+        id: "sidebar-gavin-footer",
+        text: "“Gavin” is the FIRST row of the sidebar's footer, above Task manager / Usage / Settings, with a short rule under it that does not reach either edge",
+        hint: "It used to sit above the workspace list. Clicking it still opens the app hub, and the row fills while the hub is up.",
+      },
+      {
+        id: "sidebar-no-workspaces-header",
+        text: "There is no “Workspaces” heading row and no + on it — the list starts at the first workspace",
+      },
+      {
+        id: "sidebar-collapse",
+        text: "The strip over the sidebar has a collapse button on the far side from the traffic lights; clicking it narrows the column to an icon rail — it never disappears",
+        hint: "The traffic lights live in that same column, so a hidden sidebar would be a window with no controls. The rail is as wide as the controls need and no wider.",
+      },
+      {
+        id: "sidebar-collapse-rows",
+        text: "Collapsed, each workspace is one row showing its initial, its accent stripe and its active fill; hovering names it in full, clicking switches to it, right-click still opens its menu",
+      },
+      {
+        id: "sidebar-collapse-persists",
+        text: "Collapsed, reload the frontend (⌘R) — it comes back collapsed, and the expand button puts it back",
+        hint: "localStorage, like the row expansion beside it. A reload used to be the only way to lose it.",
+      },
+      {
+        id: "sidebar-open-workspace",
+        text: "The folder button on that strip opens a picker; choosing a folder that already holds .gavin* makes a workspace named after the folder and binds it in one step",
+      },
+      {
+        id: "sidebar-open-workspace-fresh",
+        text: "Choosing a folder with no .gavin* asks Initialize / Open without initializing / Cancel — and Cancel leaves NO new workspace behind",
+        hint: "The old sidebar + created the workspace first and asked afterwards, which is how a nameless rootless row got left on every escape.",
+      },
+      {
+        id: "sidebar-open-workspace-already",
+        text: "Picking a folder a workspace is already on switches to that workspace instead of building a second one on the same root",
+      },
+      {
+        id: "sidebar-search-row",
+        text: "The magnifier opens a search box as the sidebar's second row, focused and ready to type; Escape, the ✕, or the magnifier again closes it AND clears what was typed",
+      },
+      {
+        id: "sidebar-search-order",
+        text: "Type a word several things share: matching workspaces come first, then pages, then sessions — never interleaved",
+        hint: "The ranking is the feature. Seed it by naming a workspace, one of its pages and a terminal in it the same thing.",
+      },
+      {
+        id: "sidebar-search-open",
+        text: "Clicking a hit lands on it — a workspace switches, a page opens, a session gets focus in its page — and the search row closes behind you",
+      },
+      {
+        id: "sidebar-scratchpad-off",
+        text: "Settings → Sidebar → untick “Keep its row in the sidebar”: the Scratchpad row goes, and ⌘⌥1 now means the FIRST remaining workspace",
+        hint: "The sidebar and the shortcut read one ordering on purpose. If the digits are off by one, they have stopped sharing it.",
+      },
+      {
+        id: "sidebar-scratchpad-off-while-in-it",
+        text: "Switch to the Scratchpad first, THEN untick it: the app moves you to another workspace rather than leaving you on one with no row",
+      },
+      {
+        id: "sidebar-scratchpad-back",
+        text: "Tick it again: the row is back, with every page that was in it",
+        hint: "Nothing is closed or deleted by switching it off — only the row goes.",
+      },
+      {
+        id: "sidebar-cards-badge-quiet",
+        text: "Hover the card-count badge on a workspace's recap strip: a tooltip names every column, and the strip does NOT rearrange itself — git and rails stay put",
+        hint: "It used to take over the whole row after 250ms of hover. Crossing the strip on the way elsewhere is far more common than wanting the breakdown.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

@@ -35,6 +35,7 @@
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
+  import { sidebarCollapsed } from "$lib/sidebarPrefs";
   import { tabStripHubViews, visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
@@ -178,7 +179,7 @@
      marker inside (Pane.svelte's var(--ws-accent)). On .app rather than
      on the body row below it, so the strip over the sidebar is inside
      it too. -->
-<div class="app" style:--ws-accent={accent}>
+<div class="app" class:sidebar-collapsed={$sidebarCollapsed} style:--ws-accent={accent}>
   <div class="body">
     <!-- The window's own column: the title strip, and the sidebar under
          it. It is the whole reason the hub and the page beside it reach
@@ -423,6 +424,26 @@
     min-height: 0;
     background: var(--surface-raised);
     border-right: 1px solid var(--border);
+  }
+  /* Collapsed, the column narrows to an icon rail -- it never goes away.
+     It cannot: the window's traffic lights live in the strip at the top
+     of this very column, so a hidden sidebar would be a window with no
+     controls. The class rides .app rather than .rail so the rail's own
+     rule stays the one statement of the expanded width.
+
+     Sized by its content rather than to a literal, because the width
+     that has to fit is the window controls', and that is the platform's
+     to decide -- macOS draws three 12px lights, Windows three 40px
+     buttons. Capped at the expanded width so nothing inside the sidebar
+     can make "collapsed" wider than "open". */
+  .app.sidebar-collapsed .rail {
+    width: auto;
+    /* The floor is the strip's own content -- the window controls plus
+       the expand toggle. Shrink-to-fit above would normally land there
+       anyway; stating it means the column cannot end up narrower than
+       the controls it has to keep reachable. */
+    min-width: min-content;
+    max-width: 200px;
   }
   /* Everything that is not the window's own column, from the top of the
      window down: the banners, and whichever of the app hub, a hub tab or
