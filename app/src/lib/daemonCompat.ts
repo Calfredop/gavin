@@ -216,6 +216,25 @@ export const FEATURE_MIN_VERSION = {
   // strip, and "Send to workspace agent" when the agent is busy) reads
   // this through `featureBlockedReason`.
   queuedFollowUps: 29,
+  // Standalone tool runs. All three requests are new TYPES, so the wire
+  // gate in min_version_for genuinely stops them -- nothing is silently
+  // stored or dropped. The entry exists because a Run button that
+  // launches a session and then reports nothing about it is worse than
+  // one that is dark: the whole promise of the Tools tab is that a
+  // failure nobody watched is still on the row afterwards, and against a
+  // v29 daemon there is nowhere to keep it. The tab greys Run and says
+  // this instead.
+  toolRuns: 30,
+  // A tool's own working directory. The OTHER half of v30, and the half
+  // min_version_for is structurally blind to: `cwd` widens `SaveTool`'s
+  // ToolDef, which the wire gate sorts by request TYPE. A v29 daemon
+  // takes the save, drops the directory and hands the tool back rooted
+  // wherever the launcher stood -- the human's choice gone with no
+  // error, which is exactly the `groups`/`railBranch` failure again.
+  // The library dialog's working-directory field is the one surface
+  // that can produce the payload, and it reads this through
+  // featureBlockedReason.
+  toolCwd: 30,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

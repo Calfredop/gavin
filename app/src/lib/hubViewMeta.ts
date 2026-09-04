@@ -24,6 +24,11 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   { id: "git", label: "Git", requiresRoot: true },
   { id: "kanban", label: "Kanban" },
   { id: "orchestration", label: "Orchestration", requiresRoot: true },
+  // Sibling of Orchestration and next to it deliberately: both run the
+  // same tool library, and the difference between them is only whether
+  // a rail is carrying the tool. requiresRoot because a tool runs in a
+  // checkout -- a workspace with no folder has nowhere to run one.
+  { id: "tools", label: "Tools", requiresRoot: true },
   { id: "prd", label: "PRD", requiresRoot: true },
   { id: "agent-file", label: "CLAUDE.md", requiresRoot: true },
   { id: "plans", label: "Plans", requiresRoot: true },

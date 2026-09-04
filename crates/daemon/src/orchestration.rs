@@ -1,6 +1,6 @@
 use protocol::{
     default_stage_mode, ConflictNote, GroupTemplate, GroupTemplateStep, Orchestration, Rail,
-    RailRun, Stage, Step, StepRun, ToolDef, ToolParam,
+    RailRun, Stage, Step, StepRun, ToolDef, ToolParam, ToolRun,
 };
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
@@ -84,7 +84,40 @@ impl OrchestrationStore {
                 mode TEXT NOT NULL,
                 steps TEXT NOT NULL,
                 position INTEGER NOT NULL
-            );",
+            );
+            -- v30: a run of a tool launched STANDALONE from the Tools
+            -- tab. Shaped like kanban.sqlite's `card_runs` and here
+            -- rather than there because a tool lives here: `orch_tools`
+            -- is the library these rows point into, and a run whose tool
+            -- is two files away is a join nobody can make.
+            --
+            -- A rail's steps are NOT in this table. A step already has
+            -- an `orch_step_runs` row, and filing a second record for it
+            -- would double-count one piece of work on two surfaces.
+            --
+            -- Append-only, like card_runs: the Tools tab reads only the
+            -- LAST run per tool, but keeping just that one would mean
+            -- overwriting a row while its session might still be
+            -- running, which is the exact bug card_runs was written to
+            -- fix.
+            CREATE TABLE IF NOT EXISTS tool_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                command TEXT,
+                launch_cwd TEXT,
+                conversation_id TEXT,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                exit_code INTEGER,
+                -- running | passed | failed | abandoned. Never null.
+                outcome TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS tool_runs_by_tool
+                ON tool_runs (workspace_id, tool_id, id);
+            CREATE INDEX IF NOT EXISTS tool_runs_by_session
+                ON tool_runs (session_id);",
         )?;
         // orch_steps predates tool steps and is already live on disk, so
         // CREATE TABLE IF NOT EXISTS above would silently keep the old
@@ -113,6 +146,28 @@ impl OrchestrationStore {
         // run that was never resumed has no count, which reads as zero.
         add_column_if_missing(&conn, "orch_rails", "auto_resume", "INTEGER")?;
         add_column_if_missing(&conn, "orch_step_runs", "resume_attempts", "INTEGER")?;
+        // v30: a tool's own working directory, for a standalone run from
+        // the Tools tab. orch_tools is already live on disk in every
+        // install, so the CREATE TABLE above keeps the old shape and
+        // `tools()` -- which selects the column by name -- would fail the
+        // whole library read with "no such column: cwd". Nullable, and
+        // NULL is the honest reading: a tool authored before v30 has no
+        // directory of its own and runs at the workspace root.
+        add_column_if_missing(&conn, "orch_tools", "cwd", "TEXT")?;
+        // Every tool run still open belongs to a daemon that is gone.
+        // This runs once per process, before any launch of this lifetime
+        // has reached the store, so an open row here is by construction
+        // one this process inherited. `ended_at` stays NULL rather than
+        // being back-filled with now(): the run ended when its daemon
+        // did, and nobody watched that happen. Same sweep card_runs
+        // performs on open, and for the same reason -- without it the
+        // Tools tab would show a run that has been over for days as
+        // still going.
+        conn.execute(
+            "UPDATE tool_runs SET outcome = 'abandoned'
+             WHERE ended_at IS NULL AND outcome = 'running'",
+            [],
+        )?;
         Ok(Self { conn })
     }
 
@@ -532,7 +587,7 @@ impl OrchestrationStore {
         let tools = self
             .conn
             .prepare(
-                "SELECT id, workspace_id, name, description, kind, body, params, position
+                "SELECT id, workspace_id, name, description, kind, body, params, position, cwd
                  FROM orch_tools
                  WHERE workspace_id = ?1 OR workspace_id IS NULL
                  ORDER BY workspace_id IS NULL, position, name",
@@ -551,6 +606,7 @@ impl OrchestrationStore {
                     // the worse failure.
                     params: serde_json::from_str::<Vec<ToolParam>>(&params_json).unwrap_or_default(),
                     position: row.get(7)?,
+                    cwd: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -573,12 +629,16 @@ impl OrchestrationStore {
         if !matches!(tool.kind.as_str(), "agent" | "command" | "script") {
             anyhow::bail!("unknown tool kind {}", tool.kind);
         }
+        // An empty string is not a directory, it is an untouched text
+        // field: stored as NULL so "runs at the workspace root" has one
+        // representation rather than two the readers have to agree on.
+        let cwd = tool.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty());
         self.conn.execute(
-            "INSERT INTO orch_tools (id, workspace_id, name, description, kind, body, params, position)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO orch_tools (id, workspace_id, name, description, kind, body, params, position, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                workspace_id = ?2, name = ?3, description = ?4, kind = ?5,
-               body = ?6, params = ?7, position = ?8",
+               body = ?6, params = ?7, position = ?8, cwd = ?9",
             params![
                 tool.id,
                 tool.workspace_id,
@@ -587,7 +647,8 @@ impl OrchestrationStore {
                 tool.kind,
                 tool.body,
                 serde_json::to_string(&tool.params)?,
-                tool.position
+                tool.position,
+                cwd
             ],
         )?;
         Ok(())
@@ -681,6 +742,160 @@ impl OrchestrationStore {
         self.conn.execute("DELETE FROM orch_group_templates WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    // ---- Standalone tool runs (v30) ----------------------------------------
+    // A run of a library tool launched from the Tools tab, rather than as
+    // a step on a rail. Opened by the app at launch and closed either by
+    // the daemon (a shell exits, and its code is the verdict) or by the
+    // app (an agent's turn ends, which no process event marks).
+
+    /// Opens a run. Any run this session already had open is closed as
+    /// `abandoned` first: one session hosts one tool run, so a second
+    /// open row for it could only be a record whose end nobody saw.
+    pub fn start_tool_run(
+        &mut self,
+        workspace_id: &str,
+        tool_id: &str,
+        session_id: &str,
+        command: Option<&str>,
+        launch_cwd: Option<&str>,
+        conversation_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE tool_runs SET outcome = 'abandoned'
+             WHERE session_id = ?1 AND outcome = 'running'",
+            params![session_id],
+        )?;
+        tx.execute(
+            "INSERT INTO tool_runs (workspace_id, tool_id, session_id, command, launch_cwd,
+               conversation_id, started_at, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'running')",
+            params![workspace_id, tool_id, session_id, command, launch_cwd, conversation_id, now_secs()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records a verdict the daemon could not reach on its own -- an
+    /// `agent` tool, whose session is still alive when its turn ends.
+    ///
+    /// Only a row that is still `running` is touched, so a later exit can
+    /// never overwrite a verdict already recorded, and a second call for
+    /// the same session is a no-op rather than a rewrite. `ended_at` is
+    /// stamped for anything but `running`, because this caller DID watch
+    /// the run end.
+    pub fn set_tool_run_outcome(
+        &mut self,
+        session_id: &str,
+        outcome: &str,
+        exit_code: Option<i32>,
+    ) -> anyhow::Result<()> {
+        if !matches!(outcome, "running" | "passed" | "failed" | "abandoned") {
+            anyhow::bail!("unknown tool run outcome {outcome}");
+        }
+        let ended_at = if outcome == "running" { None } else { Some(now_secs()) };
+        self.conn.execute(
+            "UPDATE tool_runs SET outcome = ?2, ended_at = ?3, exit_code = ?4
+             WHERE session_id = ?1 AND outcome = 'running'",
+            params![session_id, outcome, ended_at, exit_code],
+        )?;
+        Ok(())
+    }
+
+    /// Closes whatever tool run a session WAS, off the exit the daemon
+    /// already watches. The counterpart to `card_runs`'
+    /// `finish_runs_for_session`, and called from the same place -- the
+    /// one block that runs for both a natural exit and a kill.
+    ///
+    /// The exit code IS the verdict for a `command` or `script` tool
+    /// (tools spec T5), so it is turned into `passed`/`failed` here
+    /// rather than left for a reader to interpret. An `agent` tool's row
+    /// is already closed by the time its session ends -- the app filed
+    /// the turn's verdict when the agent went quiet -- so this leaves it
+    /// alone, exactly as the `outcome = 'running'` guard says.
+    pub fn finish_tool_runs_for_session(
+        &mut self,
+        session_id: &str,
+        exit_code: Option<i32>,
+    ) -> anyhow::Result<()> {
+        // An exit nobody could read a code from is not a pass. `failed`
+        // rather than `abandoned`: the daemon DID watch this session
+        // end, so the one thing it is not is unobserved.
+        let outcome = if exit_code == Some(0) { "passed" } else { "failed" };
+        self.conn.execute(
+            "UPDATE tool_runs SET outcome = ?2, ended_at = ?3, exit_code = ?4
+             WHERE session_id = ?1 AND outcome = 'running'",
+            params![session_id, outcome, now_secs(), exit_code],
+        )?;
+        Ok(())
+    }
+
+    /// Downgrades tool runs that still CLAIM to be running but whose
+    /// session is gone. The same sweep `card_runs` has, for the same
+    /// reason: a session that ends with nothing attached has no pump to
+    /// report its exit, so its row would sit open forever.
+    pub fn abandon_tool_runs_for_sessions(&mut self, session_ids: &[String]) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        for id in session_ids {
+            tx.execute(
+                "UPDATE tool_runs SET outcome = 'abandoned' WHERE session_id = ?1 AND outcome = 'running'",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The LAST run of each of this workspace's tools. Not a history:
+    /// the Tools tab draws one chip per row and would throw the rest
+    /// away, and a response that grew with every run would be paid for
+    /// on every tab visit.
+    ///
+    /// `MAX(id)` rather than `MAX(started_at)`: two runs of one tool can
+    /// land in the same second, and the row id is the only total order
+    /// there is.
+    pub fn tool_runs(&self, workspace_id: &str) -> anyhow::Result<Vec<ToolRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, tool_id, session_id, command, launch_cwd, conversation_id,
+                    started_at, ended_at, exit_code, outcome
+             FROM tool_runs
+             WHERE id IN (
+               SELECT MAX(id) FROM tool_runs WHERE workspace_id = ?1 GROUP BY tool_id
+             )
+             ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], |row| {
+            Ok(ToolRun {
+                id: row.get(0)?,
+                tool_id: row.get(1)?,
+                session_id: row.get(2)?,
+                command: row.get(3)?,
+                launch_cwd: row.get(4)?,
+                conversation_id: row.get(5)?,
+                started_at: row.get(6)?,
+                ended_at: row.get(7)?,
+                exit_code: row.get(8)?,
+                outcome: row.get(9)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}
+
+/// Wall-clock epoch seconds. The registry's `started_at_us` is a process
+/// start time kept as a pid-reuse guard, not a clock anyone can
+/// subtract, so a run keeps its own -- the same call `kanban.rs` makes
+/// for `card_runs`.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// `ALTER TABLE ... ADD COLUMN` is not idempotent and SQLite has no
@@ -960,6 +1175,7 @@ mod tests {
                 default: "hi".into(),
             }],
             position: 0,
+            cwd: None,
         }
     }
 
@@ -1176,6 +1392,216 @@ mod tests {
         let got = s.group_templates("ws-1").unwrap();
         assert_eq!(got.len(), 1);
         assert!(got[0].steps.is_empty());
+    }
+
+    // ---- The tool's working directory and its standalone runs (v30) ----
+
+    #[test]
+    fn a_tools_working_directory_round_trips() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.cwd = Some("apps/web".into());
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].cwd.as_deref(), Some("apps/web"));
+    }
+
+    /// An untouched text field is not a directory. Both spellings of "no
+    /// directory" have to read back the same, or the launcher would have
+    /// to resolve `""` against the root and hope.
+    #[test]
+    fn a_blank_working_directory_is_stored_as_absent() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.cwd = Some("   ".into());
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].cwd, None);
+    }
+
+    /// Clearing the field has to REACH the row. The upsert lists `cwd`
+    /// in its UPDATE for exactly this: a re-save that dropped the column
+    /// would leave a tool running in a directory the human just deleted.
+    #[test]
+    fn clearing_a_working_directory_on_re_save_removes_it() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.cwd = Some("apps/web".into());
+        s.save_tool(&t).unwrap();
+        t.cwd = None;
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].cwd, None);
+    }
+
+    #[test]
+    fn a_workspace_with_no_tool_runs_reads_as_an_empty_list() {
+        let s = store();
+        assert!(s.tool_runs("ws-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn starting_a_tool_run_records_the_launch() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "builtin:push", "s-1", Some("git push"), Some("/r/app"), None)
+            .unwrap();
+        let runs = s.tool_runs("ws-1").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].tool_id, "builtin:push");
+        assert_eq!(runs[0].session_id, "s-1");
+        assert_eq!(runs[0].command.as_deref(), Some("git push"));
+        assert_eq!(runs[0].launch_cwd.as_deref(), Some("/r/app"));
+        assert_eq!(runs[0].outcome, "running");
+        assert_eq!(runs[0].ended_at, None);
+    }
+
+    /// The tab draws one chip per tool, so the read answers exactly
+    /// that: the newest run of each tool and nothing behind it.
+    #[test]
+    fn tool_runs_returns_only_the_last_run_of_each_tool() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        s.finish_tool_runs_for_session("s-1", Some(0)).unwrap();
+        s.start_tool_run("ws-1", "t-a", "s-2", None, None, None).unwrap();
+        s.start_tool_run("ws-1", "t-b", "s-3", None, None, None).unwrap();
+        let runs = s.tool_runs("ws-1").unwrap();
+        assert_eq!(runs.len(), 2);
+        let a = runs.iter().find(|r| r.tool_id == "t-a").unwrap();
+        assert_eq!(a.session_id, "s-2");
+    }
+
+    #[test]
+    fn tool_runs_are_workspace_scoped() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        s.start_tool_run("ws-2", "t-a", "s-2", None, None, None).unwrap();
+        assert_eq!(s.tool_runs("ws-1").unwrap()[0].session_id, "s-1");
+        assert_eq!(s.tool_runs("ws-2").unwrap()[0].session_id, "s-2");
+    }
+
+    /// The exit code IS a shell tool's verdict (tools spec T5), so the
+    /// daemon's own hook is the whole of that tool's result -- nobody
+    /// has to have been watching.
+    #[test]
+    fn a_shell_tools_exit_code_becomes_its_verdict() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        s.finish_tool_runs_for_session("s-1", Some(0)).unwrap();
+        let passed = s.tool_runs("ws-1").unwrap().remove(0);
+        assert_eq!(passed.outcome, "passed");
+        assert_eq!(passed.exit_code, Some(0));
+        assert!(passed.ended_at.is_some());
+
+        s.start_tool_run("ws-1", "t-b", "s-2", None, None, None).unwrap();
+        s.finish_tool_runs_for_session("s-2", Some(2)).unwrap();
+        let failed = s.tool_runs("ws-1").unwrap().into_iter().find(|r| r.tool_id == "t-b").unwrap();
+        assert_eq!(failed.outcome, "failed");
+        assert_eq!(failed.exit_code, Some(2));
+    }
+
+    /// An agent's session is still alive when its turn ends, so the app
+    /// files the verdict. The exit that comes later must not rewrite it
+    /// -- an agent quitting cleanly after a failure would otherwise turn
+    /// a failed run into a passed one.
+    #[test]
+    fn a_verdict_already_recorded_survives_the_sessions_later_exit() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        s.set_tool_run_outcome("s-1", "failed", None).unwrap();
+        s.finish_tool_runs_for_session("s-1", Some(0)).unwrap();
+        let run = s.tool_runs("ws-1").unwrap().remove(0);
+        assert_eq!(run.outcome, "failed");
+        assert_eq!(run.exit_code, None);
+    }
+
+    #[test]
+    fn an_unknown_tool_run_outcome_is_refused() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        assert!(s.set_tool_run_outcome("s-1", "finished-ish", None).is_err());
+        assert_eq!(s.tool_runs("ws-1").unwrap()[0].outcome, "running");
+    }
+
+    #[test]
+    fn a_session_whose_end_nobody_saw_is_abandoned_not_ended() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        s.abandon_tool_runs_for_sessions(&["s-1".to_string()]).unwrap();
+        let run = s.tool_runs("ws-1").unwrap().remove(0);
+        assert_eq!(run.outcome, "abandoned");
+        // Not back-filled with the time somebody LOOKED.
+        assert_eq!(run.ended_at, None);
+    }
+
+    /// One session hosts one tool run. A second open row for it could
+    /// only be a record whose end nobody saw, so the first is closed as
+    /// such rather than left claiming to be running forever.
+    #[test]
+    fn relaunching_into_the_same_session_id_closes_the_previous_run() {
+        let mut s = store();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        s.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+        let runs: Vec<String> = s
+            .conn
+            .prepare("SELECT outcome FROM tool_runs ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(runs, vec!["abandoned".to_string(), "running".to_string()]);
+    }
+
+    /// A run still open on start-up belongs to a daemon that is gone.
+    /// Without this sweep the Tools tab shows a run that has been over
+    /// for days as still going.
+    #[test]
+    fn a_run_left_open_by_a_previous_daemon_is_abandoned_on_open() {
+        let dir = std::env::temp_dir().join(format!("gavin-tool-runs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut first = OrchestrationStore::open(&path).unwrap();
+            first.start_tool_run("ws-1", "t-a", "s-1", None, None, None).unwrap();
+            assert_eq!(first.tool_runs("ws-1").unwrap()[0].outcome, "running");
+        }
+        let second = OrchestrationStore::open(&path).unwrap();
+        let run = second.tool_runs("ws-1").unwrap().remove(0);
+        assert_eq!(run.outcome, "abandoned");
+        assert_eq!(run.ended_at, None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The migration that CREATE TABLE IF NOT EXISTS cannot perform. A
+    /// live orch_tools keeps its old shape, and `tools()` selects `cwd`
+    /// by name -- so without the ALTER the whole library read fails with
+    /// "no such column: cwd" the first time a v30 daemon opens a v29
+    /// file.
+    #[test]
+    fn opening_a_pre_v30_database_adds_the_tool_cwd_column() {
+        let dir = std::env::temp_dir().join(format!("gavin-tool-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE orch_tools (
+                    id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT NOT NULL,
+                    description TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL,
+                    params TEXT NOT NULL, position INTEGER NOT NULL);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO orch_tools (id, workspace_id, name, description, kind, body, params, position)
+                 VALUES ('u1','ws-1','Old','','command','echo hi','[]',0)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = OrchestrationStore::open(&path).unwrap();
+        let tools = s.tools("ws-1").unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].cwd, None);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

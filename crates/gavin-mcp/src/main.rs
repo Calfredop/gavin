@@ -1740,6 +1740,7 @@ mod tests {
                     default: "origin".into(),
                 }],
                 position: 0,
+                cwd: None,
             }],
         }
     }

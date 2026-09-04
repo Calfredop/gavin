@@ -1018,6 +1018,14 @@ export async function bootstrap(): Promise<void> {
   // workspaces. Dynamically imported for the cycle reason above.
   const { startDevelopingCardsWatch } = await import("./developingCardsState");
   unlisteners.push(startDevelopingCardsWatch());
+  // And once more for the Tools tab's two watchers. The daemon closes a
+  // shell tool's run by itself and pushes nothing, and an agent tool's
+  // run is closed by watching its session go quiet -- neither can be
+  // owned by the tab, because a tool finishing while the human is
+  // looking at its terminal is the ordinary case, not the exception.
+  // Dynamically imported for the cycle reason above.
+  const { initWorkspaceToolListeners } = await import("./workspaceToolsActions");
+  unlisteners.push(initWorkspaceToolListeners());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);

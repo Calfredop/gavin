@@ -10,6 +10,7 @@ import type { BoardTab, CardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { ToolRecord } from "./orchestrationTools";
+import type { ToolRun } from "./workspaceTools";
 import type { GroupTemplateRecord } from "./orchestrationGroups";
 import type { DaemonCompat } from "./daemonCompat";
 import type { SessionStatus } from "./notifications";
@@ -963,6 +964,44 @@ export function saveTool(tool: ToolRecord): Promise<void> {
 
 export function deleteTool(id: string): Promise<void> {
   return invoke("delete_tool", { id });
+}
+
+// --- Standalone tool runs (v30) ---------------------------------------------
+//
+// Gate on FEATURE_MIN_VERSION.toolRuns before calling any of these: they
+// are new request types, so an older daemon refuses them, and "this
+// daemon does not track tool runs" is a different sentence from "this
+// tool has never been run".
+
+/// Opens a run for a tool launched from the Tools tab. The daemon closes
+/// it itself when the session exits, which is the whole of a `command` or
+/// `script` tool's verdict; an `agent` tool's is filed by
+/// `setToolRunOutcome` when its turn ends.
+export function startToolRun(input: {
+  workspaceId: string;
+  toolId: string;
+  sessionId: string;
+  command: string | null;
+  launchCwd: string | null;
+  conversationId: string | null;
+}): Promise<void> {
+  return invoke("start_tool_run", input);
+}
+
+/// Records a verdict the daemon cannot reach on its own. Only ever an
+/// `agent` tool: its session is still alive when its turn ends.
+export function setToolRunOutcome(
+  sessionId: string,
+  outcome: string,
+  exitCode: number | null = null
+): Promise<void> {
+  return invoke("set_tool_run_outcome", { sessionId, outcome, exitCode });
+}
+
+/// The LAST run of each of this workspace's tools -- not a history. The
+/// Tools tab draws one chip per row, so this is exactly what it needs.
+export function toolRuns(workspaceId: string): Promise<ToolRun[]> {
+  return invoke("tool_runs", { workspaceId });
 }
 
 // --- Group templates --------------------------------------------------------
