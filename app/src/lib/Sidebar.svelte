@@ -942,17 +942,28 @@
                    needing-you / idle borrow the agent badge rather than
                    drawing a third vocabulary for the same three facts.
                    Only `done` is the rail's own word -- an agent has no
-                   such state. -->
+                   such state.
+
+                   11px, the size the branch and board glyphs beside them
+                   are drawn at, because in THIS group the badge is the
+                   whole content: git and cards each open with a category
+                   glyph and put their tally after it, and the rails
+                   group has no such glyph to open with. 10px is the size
+                   a badge takes where it is a breakdown hanging off a
+                   leading stat -- the page row below, the app hub's
+                   strip -- and borrowing that size here made the one
+                   group whose badge carries the axis the smallest thing
+                   in the row. -->
               {#each railStripStats(rails) as key (key)}
                 {#if key === "done"}
                   <span class="rail-stat done">
-                    <Check size={10} />
+                    <Check size={11} />
                     <span class="recap-count">{rails[key]}</span>
                   </span>
                 {:else}
                   <StatusBadge
                     indicator={agentIndicatorByState(key === "running" ? "working" : key === "attention" ? "waiting_for_input" : "idle")}
-                    size={10}
+                    size={11}
                     tip={null}
                     text={rails[key]}
                   />
@@ -1911,6 +1922,16 @@
   }
   .recap-count {
     font-variant-numeric: tabular-nums;
+  }
+  /* The counts in this strip are one row of numbers and have to be one
+     size. StatusBadge draws its own text at 0.85em, which is right where
+     the badge trails a bigger stat, and wrong here: the rails group's
+     tally sat beside the git and card tallies a whole step smaller than
+     them, which is what reading it as "the rail badge is smaller" was.
+     Descendant :global(), never a leading one -- a bare `:global(.badge-text)`
+     would resize every badge in the app. */
+  .recap-body :global(.badge-text) {
+    font-size: inherit;
   }
   /* "of those repos, this many have uncommitted changes" -- the app's
      one meaning for amber (ui/indicators.ts): this wants a human. */
