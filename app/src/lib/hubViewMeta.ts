@@ -12,6 +12,11 @@ export interface HubViewMeta {
   /// Only offered once the workspace is bound to a root folder: these
   /// views edit files that live under it.
   requiresRoot?: boolean;
+  /// Offered, but NOT as a tab in the strip -- reached by a button in the
+  /// row's actions instead. The view itself is unchanged: it still has an
+  /// id the workspace remembers, and switchWorkspaceView still opens it.
+  /// This only says the strip is the wrong place to spend a tab on it.
+  viaAction?: boolean;
 }
 
 export const HUB_VIEW_META: HubViewMeta[] = [
@@ -23,14 +28,35 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   { id: "agent-file", label: "CLAUDE.md", requiresRoot: true },
   { id: "plans", label: "Plans", requiresRoot: true },
   { id: "files", label: "Files", requiresRoot: true },
-  // No requiresRoot: binding the root is one of this tab's jobs.
-  { id: "settings", label: "Settings" },
+  // No requiresRoot: binding the root is one of this view's jobs.
+  //
+  // viaAction: it is the workspace's own settings, not a view OF the
+  // workspace like the eight above -- and it is the one a human opens to
+  // change something and then leaves, rather than one they work in. A
+  // tab of its own put it in the same rank as Kanban and Git and pushed
+  // them all one place left; the gear at the right of the row says the
+  // same thing in the place the OS has been putting it for forty years.
+  { id: "settings", label: "Settings", viaAction: true },
   { id: "checklist", label: "Checklist", devOnly: true },
 ];
 
-/// The hub tab ids a given workspace offers, in the order they render.
+/// Every hub view a given workspace offers, in the order they render --
+/// including the ones reached by a button rather than a tab. This is the
+/// "is this view on offer here" question: what resolveHubView may land
+/// on, and what the sidebar's recap chips may jump to.
 export function visibleHubViewIds(workspaceId: string, isDev: boolean, hasRoot: boolean): string[] {
   return HUB_VIEW_META.filter((v) => hubViewIsVisible(v, workspaceId, isDev, hasRoot)).map((v) => v.id);
+}
+
+/// The subset that renders as a tab, in strip order.
+///
+/// Separate from visibleHubViewIds because the ⌘-digit router addresses
+/// tabs BY POSITION: it and the strip have to count the same things, or
+/// the badge a tab wears while ⌘ is held opens a different tab.
+export function tabStripHubViewIds(workspaceId: string, isDev: boolean, hasRoot: boolean): string[] {
+  return HUB_VIEW_META.filter(
+    (v) => !v.viaAction && hubViewIsVisible(v, workspaceId, isDev, hasRoot)
+  ).map((v) => v.id);
 }
 
 /// What a hub tab can be busy WITH. One field today -- the Git tab's

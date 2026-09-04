@@ -19,7 +19,7 @@
   import ContextMenu from "$lib/ContextMenu.svelte";
   import AppDialog from "$lib/AppDialog.svelte";
   import ReviewDialog from "$lib/ReviewDialog.svelte";
-  import { askConfirm } from "$lib/dialog";
+  import { confirmWindowClose } from "$lib/appClose";
   import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
   import {
@@ -35,10 +35,11 @@
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
-  import { visibleHubViews } from "$lib/workspaceViews";
+  import { tabStripHubViews, visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import NewPageButton from "$lib/NewPageButton.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
   import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
@@ -69,7 +70,15 @@
   const hubViews = $derived(
     visibleHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV, Boolean(activeWorkspace?.rootPath))
   );
-  const activeViewDef = $derived(hubViews.find((v) => v.id === activeView) ?? hubViews[0]);
+  // What the strip draws. Settings is offered (it is in hubViews, and
+  // activeViewDef below still resolves it) but is reached by the gear in
+  // the row's actions rather than by a tab -- so this list, not hubViews,
+  // is what the tabs and their ⌘-digit badges are counted from.
+  const tabViews = $derived(
+    tabStripHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV, Boolean(activeWorkspace?.rootPath))
+  );
+  const settingsView = $derived(hubViews.find((v) => v.id === "settings") ?? null);
+  const activeViewDef = $derived(hubViews.find((v) => v.id === activeView) ?? tabViews[0]);
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
   // the accent every tab indicator in this workspace reads.
   const activeAgent = $derived(
@@ -127,12 +136,10 @@
       closePromptOpen = true;
       let shouldClose = false;
       try {
-        shouldClose = await askConfirm({
-          title: "Close this window?",
-          lines: ["Your terminal sessions keep running — reopen the app to resume them."],
-          confirmLabel: "Close window",
-          cancelLabel: "Keep open",
-        });
+        // Asks, and -- if the human ticked the box -- ends every session
+        // before returning, because a destroyed window has no frontend
+        // left to await the kills with.
+        shouldClose = await confirmWindowClose();
       } finally {
         closePromptOpen = false;
       }
@@ -242,7 +249,7 @@
                    button that adds a page must not be the first thing a
                    narrow window pushes out of reach. -->
               <div class="tab-strip" use:wheelScrollsSideways>
-                {#each hubViews as view, viewIndex (view.id)}
+                {#each tabViews as view, viewIndex (view.id)}
                   {@const busy = hubViewBusy(view.id, activity)}
                   {@const wantsYou = hubViewAttention(view.id, activity)}
                   <button
@@ -277,7 +284,7 @@
                       <span class="tab-attention" aria-hidden="true"></span>
                     {/if}
                     {#if $hintMode === "cmd"}
-                      {@const digit = hintDigitFor(viewIndex, hubViews.length)}
+                      {@const digit = hintDigitFor(viewIndex, tabViews.length)}
                       {#if digit !== null}
                         <ShortcutHint text={String(digit)} />
                       {/if}
@@ -293,6 +300,26 @@
                    pane") -- see windowDrag.ts. -->
               <div class="drag-spacer" use:windowDrag></div>
               <div class="tab-actions">
+                <!-- The workspace's own settings, off the strip and into
+                     the actions: it is the thing you open to change
+                     something and then leave, not a view you work in,
+                     and as a tab it ranked with Kanban and Git and cost
+                     every one of them a place. `active` is what says it
+                     is the view on screen, since it has no tab left to
+                     underline. -->
+                {#if settingsView}
+                  <IconButton
+                    icon={settingsView.icon}
+                    label="Workspace settings"
+                    size={14}
+                    active={activeView === settingsView.id}
+                    onclick={() => switchWorkspaceView(activeWorkspace.id, settingsView.id)}
+                  />
+                {/if}
+                <!-- Behind a rule, like the pane row's own: everything
+                     left of it acts on THIS workspace, and what follows
+                     adds a page to it. -->
+                <span class="divider"></span>
                 <NewPageButton />
               </div>
             </div>
@@ -425,6 +452,11 @@
     box-sizing: border-box;
     padding: var(--header-pad-top) 10px 0;
     flex: 0 0 auto;
+    /* The same surface as the view under it, stated rather than
+       inherited from .app: a page's tab row has to be able to name the
+       colour it must match, and a row that only inherits gives it
+       nothing to match against. */
+    background: var(--surface-base);
   }
   /* Grows only as far as its tabs: the leftover belongs to the drag
      spacer, so an empty stretch of this row moves the window instead of
@@ -432,7 +464,7 @@
   .tab-strip {
     display: flex;
     align-items: stretch;
-    gap: 4px;
+    gap: var(--tab-gap);
     flex: 0 1 auto;
     min-width: 0;
     overflow-x: auto;
@@ -454,6 +486,16 @@
     gap: 4px;
     flex: 0 0 auto;
     padding-left: 6px;
+  }
+  /* The pane row's rule, to the pixel (Pane.svelte's .divider): it
+     groups the actions by what they act on without spending a row of
+     labels on saying so. */
+  .divider {
+    width: 1px;
+    align-self: center;
+    height: var(--tab-divider);
+    margin: 0 3px;
+    background: var(--border);
   }
   .tab {
     /* Anchors the hold-⌘ hint badge (absolutely positioned, so holding
@@ -501,6 +543,20 @@
     height: 6px;
     border-radius: 50%;
     background: var(--warning-text);
+  }
+  /* The only thing separating two tabs on a flat bar. Down the middle
+     of the gap (half of it, negated), and short of the row's height, so
+     it reads as a separator rather than as a box around each tab. Off
+     .tab, which is already `position: relative` for the hold-⌘ hint. */
+  .tab + .tab::before {
+    content: "";
+    position: absolute;
+    left: calc(var(--tab-gap) / -2);
+    top: 50%;
+    height: var(--tab-divider);
+    width: 1px;
+    transform: translateY(-50%);
+    background: var(--border);
   }
   .tab.active {
     color: var(--text);

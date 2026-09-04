@@ -36,7 +36,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "root-banner", text: "Unrooted workspace hub shows the “No root folder set” banner" },
       {
         id: "root-banner-no-picker",
-        text: "That banner sits above the tabs and offers no picker — only “Open settings”, which jumps to the Settings tab",
+        text: "That banner sits above the tabs and offers no picker — only “Open settings”, which opens the workspace's settings",
       },
       {
         id: "root-banner-quiet",
@@ -1462,6 +1462,36 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "header-pane-drag-unchanged",
         text: "The empty part of a PANE's tab row still drags the pane, not the window — grab it and drop the pane elsewhere on the page",
         hint: "The one row that deliberately does not move the window: a bar that did either depending on invisible state would be worse than a small handle.",
+      },
+      {
+        id: "header-rows-one-black",
+        text: "A page's tab row is the same black as the terminal under it and as the hub tab row — no grey band across the top, and no grey margin around the active tab",
+        hint: "It used to be --surface-raised, the colour the sidebar's strip still is. Switch between a hub tab and a page and the only thing that changes above the view is the tabs themselves. Check the light theme too.",
+      },
+      {
+        id: "header-tab-dividers",
+        text: "A short vertical hairline sits between neighbouring tabs on BOTH rows, stopping well short of the row's height",
+        hint: "It is what separates the tabs now that no tab has a fill of its own. Full height would read as a box around each tab. The first tab of a row has none to its left.",
+      },
+      {
+        id: "header-one-action-group",
+        text: "Split a page in two: only ONE row of actions is drawn, on the focused pane — click into the other pane and the whole group moves there with the underline",
+        hint: "Every pane used to draw its own, four copies on a 2×2. Split further and check no pane is ever left without one — New page lives in that group.",
+      },
+      {
+        id: "header-workspace-settings-gear",
+        text: "Settings is a gear at the right of the hub tab row, not a tab: click it to open the Settings view, and it stays lit while that view is on screen",
+        hint: "The strip has one tab fewer, so ⌘1–⌘9 and the hold-⌘ badges must line up with the tabs that are left. The root banner's “Open settings” and the sidebar's recap still land there too.",
+      },
+      {
+        id: "close-window-keeps-sessions",
+        text: "Close the window (⌘W on the window, the red light, ⌘Q): the prompt offers Close window / Keep open with an unticked “End every terminal session too” — close with it UNTICKED and reopen; every session is still there",
+        hint: "The box must come up clear every time. Escape and Keep open both leave the window open.",
+      },
+      {
+        id: "close-window-kills-sessions",
+        text: "Close it again with the box TICKED: every terminal and agent is gone when the app is reopened — not just the tabs, the sessions behind them",
+        hint: "Check with the Sessions manager after relaunching, not just by counting tabs. Leave a long-running command in one tab first. Anything already written to disk stays.",
       },
     ],
   },

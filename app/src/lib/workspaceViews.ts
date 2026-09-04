@@ -10,7 +10,7 @@ import PrdHubView from "./PrdHubView.svelte";
 import AgentFileHubView from "./AgentFileHubView.svelte";
 import PlanExplorerHubView from "./PlanExplorerHubView.svelte";
 import FilesHubView from "./FilesHubView.svelte";
-import { HUB_VIEW_META, visibleHubViewIds, type HubViewMeta } from "./hubViewMeta";
+import { HUB_VIEW_META, tabStripHubViewIds, visibleHubViewIds, type HubViewMeta } from "./hubViewMeta";
 
 /// A hub tab: the metadata from hubViewMeta.ts plus what renders it.
 /// The id/label/visibility rules live there so modules that only need
@@ -51,5 +51,14 @@ export const HUB_VIEWS: HubView[] = HUB_VIEW_META.map((meta) => ({ ...meta, ...C
 // callers must render from this, not from HUB_VIEWS directly.
 export function visibleHubViews(workspaceId: string, isDev: boolean, hasRoot: boolean): HubView[] {
   const visible = new Set(visibleHubViewIds(workspaceId, isDev, hasRoot));
+  return HUB_VIEWS.filter((v) => visible.has(v.id));
+}
+
+// The ones that render as a tab. The rest are still offered -- they are
+// in visibleHubViews, switchWorkspaceView opens them, and a workspace
+// remembers landing on one -- they are just reached by a button in the
+// row's actions instead of by a tab of their own.
+export function tabStripHubViews(workspaceId: string, isDev: boolean, hasRoot: boolean): HubView[] {
+  const visible = new Set(tabStripHubViewIds(workspaceId, isDev, hasRoot));
   return HUB_VIEWS.filter((v) => visible.has(v.id));
 }

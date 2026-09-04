@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   HUB_VIEW_META,
   visibleHubViewIds,
+  tabStripHubViewIds,
   resolveHubView,
   hubViewBusy,
   hubViewAttention,
@@ -29,6 +30,35 @@ describe("visibleHubViewIds", () => {
   });
 });
 
+
+describe("tabStripHubViewIds", () => {
+  // Settings is still OFFERED -- switchWorkspaceView opens it, a
+  // workspace remembers landing on it -- it just has no tab. The gear in
+  // the hub row's actions is where it is reached from.
+  it("drops the views reached by a button, keeping every other one", () => {
+    const ids = tabStripHubViewIds("ws-1", false, true);
+    expect(ids).not.toContain("settings");
+    expect(visibleHubViewIds("ws-1", false, true)).toContain("settings");
+    expect(ids).toEqual(visibleHubViewIds("ws-1", false, true).filter((id) => id !== "settings"));
+  });
+
+  // The ⌘-digit router counts along this list, so it has to be the same
+  // list the strip renders -- and it still has to obey the same
+  // visibility rules, or a digit would open a tab that is not offered.
+  it("keeps the strip order and the same visibility rules", () => {
+    expect(tabStripHubViewIds("ws-1", false, true)[0]).toBe("home");
+    expect(tabStripHubViewIds("ws-1", false, false)).not.toContain("home");
+    expect(tabStripHubViewIds(SMOKETEST_WORKSPACE_ID, true, true)).toContain("checklist");
+    expect(tabStripHubViewIds("ws-1", true, true)).not.toContain("checklist");
+  });
+
+  // An unrooted workspace offered Kanban and Settings; take the tab away
+  // and Kanban is the only one left. A strip that could empty would be a
+  // row of nothing at the top of the window.
+  it("never empties a workspace's strip", () => {
+    expect(tabStripHubViewIds("ws-1", false, false)).toEqual(["kanban"]);
+  });
+});
 
 describe("resolveHubView", () => {
   function workspace(fields: Partial<Workspace>): Workspace {

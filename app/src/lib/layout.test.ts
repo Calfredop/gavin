@@ -26,6 +26,7 @@ import {
   clampReorderIndex,
   bulkCloseTargets,
   presetTiled,
+  paneOwnsActions,
 } from "./layout";
 import type { LayoutNode, Leaf } from "./layout";
 
@@ -739,5 +740,53 @@ describe("presetTiled", () => {
       const ids = Array.from({ length: n }, (_, i) => `s${i}`);
       expect(allSessionIds(presetTiled(ids))).toEqual(ids);
     }
+  });
+});
+
+describe("paneOwnsActions", () => {
+  const split = presetSideBySide("a", "b");
+  const left: Leaf = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+  const right: Leaf = { type: "leaf", tabs: ["b"], activeTabIndex: 0 };
+
+  it("gives the row to the focused pane, and to no other", () => {
+    expect(paneOwnsActions(split, left, "a")).toBe(true);
+    expect(paneOwnsActions(split, right, "a")).toBe(false);
+    expect(paneOwnsActions(split, left, "b")).toBe(false);
+    expect(paneOwnsActions(split, right, "b")).toBe(true);
+  });
+
+  // A pane holds several tabs, and the focus is on ONE of them: the pane
+  // owns the row whichever of its own tabs the focus is on, not only when
+  // that tab is also the active one.
+  it("follows the pane, not the tab", () => {
+    const many: Leaf = { type: "leaf", tabs: ["a", "b", "c"], activeTabIndex: 0 };
+    for (const id of many.tabs) {
+      expect(paneOwnsActions(many, many, id)).toBe(true);
+    }
+  });
+
+  // New page lives in this row, so a page that draws it nowhere is a
+  // dead end. Both ways the focus can fail to name a pane on this page
+  // fall back to the first pane, which is the one resolveFocusForPage
+  // would have picked anyway.
+  it("falls back to the first pane when nothing on the page holds the focus", () => {
+    expect(paneOwnsActions(split, left, null)).toBe(true);
+    expect(paneOwnsActions(split, right, null)).toBe(false);
+    // A focus left behind on some other page.
+    expect(paneOwnsActions(split, left, "elsewhere")).toBe(true);
+    expect(paneOwnsActions(split, right, "elsewhere")).toBe(false);
+  });
+
+  it("shows them when there is no tree to consult", () => {
+    expect(paneOwnsActions(null, left, null)).toBe(true);
+    expect(paneOwnsActions(null, right, "a")).toBe(true);
+  });
+
+  // The single-pane page, which is most of them: the row is always there.
+  it("always gives the only pane its row", () => {
+    const only = presetSingle("a") as Leaf;
+    expect(paneOwnsActions(only, only, "a")).toBe(true);
+    expect(paneOwnsActions(only, only, null)).toBe(true);
+    expect(paneOwnsActions(only, only, "elsewhere")).toBe(true);
   });
 });

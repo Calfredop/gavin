@@ -35,7 +35,15 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
 /// variables: a row that goes back to a literal drifts alone, while a
 /// variable that loses its definition breaks all three together and is
 /// visible in the first frame.
-const METRICS = ["--header-height", "--header-pad-top", "--tab-pad", "--tab-font-size", "--tab-indicator"];
+const METRICS = [
+  "--header-height",
+  "--header-pad-top",
+  "--tab-pad",
+  "--tab-font-size",
+  "--tab-indicator",
+  "--tab-gap",
+  "--tab-divider",
+];
 
 function source(name: string): string {
   const text = SOURCES[`./${name}`] ?? ROUTES[`../routes/${name}`];
@@ -94,6 +102,43 @@ describe("the app's three header rows", () => {
     expect(pageTab.padding).toBe(hubTab.padding);
     expect(pageTab["font-size"]).toBe(hubTab["font-size"]);
     expect(pageTab["font-family"]).toBe(hubTab["font-family"]);
+  });
+
+  // Both rows are the surface the view under them is, so the top of the
+  // window is one unbroken colour whichever row is on screen. A page's
+  // row used to be --surface-raised: a grey band with the active tab cut
+  // out of it in black, whose padding read as a margin of the sidebar's
+  // grey leaking over the page. Only the strip over the sidebar stays
+  // raised, because the sidebar under it is.
+  it("paints both tab rows the surface of the view they open", () => {
+    expect(rule(PAGE, ".tabs").background).toBe("var(--surface-base)");
+    expect(rule(PANE, ".tab-bar").background).toBe("var(--surface-base)");
+    expect(rule(TITLE_BAR, ".titlebar").background).toBe("var(--surface-raised)");
+  });
+
+  // What a flat row costs: the active tab can no longer be a differently
+  // coloured box, so nothing but this hairline says where one tab ends.
+  // Short of the row's height on purpose -- a full-height rule reads as a
+  // frame around each tab, which is the boxed look the flat bar removed.
+  it("separates the tabs of both rows with the same short rule", () => {
+    const dividers = [rule(PAGE, ".tab + .tab::before"), rule(PANE, ".tab + .tab::before")];
+    for (const divider of dividers) {
+      expect(divider.height).toBe("var(--tab-divider)");
+      expect(divider.width).toBe("1px");
+      expect(divider.background).toBe("var(--border)");
+      // Centred in the gap between the two tabs it separates, so the
+      // gap and the rule can never be set independently.
+      expect(divider.left).toBe("calc(var(--tab-gap) / -2)");
+      expect(divider.position).toBe("absolute");
+    }
+    for (const strip of [rule(PAGE, ".tab-strip"), rule(PANE, ".tab-strip")]) {
+      expect(strip.gap).toBe("var(--tab-gap)");
+    }
+    // A fill on the active tab would be the boxed look again, and on a
+    // row that is already the view's own colour there is nothing left
+    // for it to be filled WITH.
+    expect(rule(PANE, ".tab.active").background).toBeUndefined();
+    expect(rule(PAGE, ".tab.active").background).toBeUndefined();
   });
 
   // The page tab's indicator used to be a bar over the tab in a blue of
@@ -159,6 +204,29 @@ describe("the tab lists scroll and their actions do not", () => {
     for (const actions of [rule(PAGE, ".tab-actions"), rule(PANE, ".tab-actions")]) {
       expect(actions.flex).toBe("0 0 auto");
     }
+  });
+});
+
+describe("one row of actions per page", () => {
+  // Every pane used to draw its own. On a page split four ways that is
+  // four copies of Split/Close across the top of the window, and they
+  // are not interchangeable -- each acts on the pane it sits on. The
+  // decision is layout.ts's (paneOwnsActions, with its own tests); this
+  // pins that the template actually asks.
+  it("draws a pane's actions only on the pane that owns them", () => {
+    expect(PANE).toContain("paneOwnsActions(getActiveTree($layoutState), leaf, $layoutState.focusedSessionId)");
+    expect(PANE).toMatch(/\{#if ownsActions\}\s*<div class="tab-actions">/);
+  });
+
+  // The hub row is one per window already, so the gear that replaced the
+  // Settings TAB belongs in its actions rather than in the strip.
+  it("reaches the workspace's settings from the hub row's actions", () => {
+    expect(PAGE).toContain('label="Workspace settings"');
+    expect(PAGE).toContain("switchWorkspaceView(activeWorkspace.id, settingsView.id)");
+    // The strip is counted from the tab subset, not from every offered
+    // view -- otherwise the ⌘-digit badges count a tab that is not there.
+    expect(PAGE).toContain("{#each tabViews as view, viewIndex (view.id)}");
+    expect(PAGE).toContain("hintDigitFor(viewIndex, tabViews.length)");
   });
 });
 
