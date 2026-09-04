@@ -30,6 +30,10 @@ import {
   showsDevOnlyViews,
   hubViewIsVisible,
   sidebarWorkspaceOrder,
+  sidebarPageOrder,
+  setPagePinnedAt,
+  pinnedFirst,
+  isPinned,
   type WorkspacesData,
   type Workspace,
   type Page,
@@ -591,9 +595,106 @@ describe("sidebarWorkspaceOrder", () => {
     expect(sidebarWorkspaceOrder(list, false).map((x) => x.id)).toEqual(["a", "b"]);
   });
 
+  // Pinned rows sit between the Scratchpad and the rest. The Scratchpad
+  // is not a workspace the human chose to pin -- it is the drawer every
+  // loose page falls into -- so a pin cannot climb above it.
+  it("puts pinned workspaces under the Scratchpad and over the rest", () => {
+    const list = [w("a"), w(UNFILED_WORKSPACE_ID), w("b"), { ...w("c"), pinnedAt: 10 }];
+    expect(sidebarWorkspaceOrder(list).map((x) => x.id)).toEqual([UNFILED_WORKSPACE_ID, "c", "a", "b"]);
+  });
+
+  it("still hoists a pinned workspace with the Scratchpad switched off", () => {
+    const list = [w("a"), w(UNFILED_WORKSPACE_ID), { ...w("b"), pinnedAt: 10 }];
+    expect(sidebarWorkspaceOrder(list, false).map((x) => x.id)).toEqual(["b", "a"]);
+  });
+
   it("shows it by default, so the hub keeps listing what exists", () => {
     const list = [w(UNFILED_WORKSPACE_ID), w("a")];
     expect(sidebarWorkspaceOrder(list).map((x) => x.id)).toEqual(sidebarWorkspaceOrder(list, true).map((x) => x.id));
+  });
+});
+
+describe("setPagePinnedAt", () => {
+  const pg = (id: string, pinnedAt?: number): Page => ({
+    id,
+    name: id,
+    layout: { type: "leaf", tabs: [], activeTabIndex: 0 },
+    focusedSessionId: null,
+    ...(pinnedAt === undefined ? {} : { pinnedAt }),
+  });
+  const state = () => ({
+    workspaces: [
+      { id: "w1", name: "w1", pages: [pg("p1"), pg("p2", 10)], activePageId: "p1" },
+      { id: "w2", name: "w2", pages: [pg("q1")], activePageId: "q1" },
+    ],
+    activeWorkspaceId: "w1",
+  });
+
+  it("stamps one page and leaves its neighbours and the other workspace alone", () => {
+    const next = setPagePinnedAt(state() as never, "w1", "p1", 42);
+    expect(next.workspaces[0].pages.map((p) => p.pinnedAt)).toEqual([42, 10]);
+    expect(next.workspaces[1].pages[0].pinnedAt).toBeUndefined();
+  });
+
+  // Unpinning has to leave ABSENCE behind, not a zero: pinnedFirst reads
+  // the field's type, so a cleared pin stored as 0 would still hoist the
+  // row -- and hoist it above every genuinely pinned one at that.
+  it("clears a pin to absent rather than to zero", () => {
+    const next = setPagePinnedAt(state() as never, "w1", "p2", undefined);
+    expect(next.workspaces[0].pages[1].pinnedAt).toBeUndefined();
+    expect(sidebarPageOrder(next.workspaces[0].pages as Page[]).map((p) => p.id)).toEqual(["p1", "p2"]);
+  });
+
+  it("does not mutate the state it was handed", () => {
+    const before = state();
+    setPagePinnedAt(before as never, "w1", "p1", 42);
+    expect(before.workspaces[0].pages[0].pinnedAt).toBeUndefined();
+  });
+});
+
+describe("pinnedFirst / sidebarPageOrder", () => {
+  const pg = (id: string, pinnedAt?: number): Page => ({
+    id,
+    name: id,
+    layout: { type: "leaf", tabs: [], activeTabIndex: 0 },
+    focusedSessionId: null,
+    ...(pinnedAt === undefined ? {} : { pinnedAt }),
+  });
+
+  it("leaves a list with nothing pinned exactly as it was", () => {
+    expect(sidebarPageOrder([pg("a"), pg("b"), pg("c")]).map((p) => p.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("hoists a pinned page above the rest, which keep their order", () => {
+    expect(sidebarPageOrder([pg("a"), pg("b"), pg("c", 10)]).map((p) => p.id)).toEqual(["c", "a", "b"]);
+  });
+
+  // The rule the human already holds: the row you pinned first is the
+  // row at the top. Pinning a second one puts it UNDER the first rather
+  // than above it, so a pin never moves a row that was already pinned.
+  it("orders several pinned rows by when they were pinned", () => {
+    const list = [pg("a", 30), pg("b"), pg("c", 10), pg("d", 20)];
+    expect(sidebarPageOrder(list).map((p) => p.id)).toEqual(["c", "d", "a", "b"]);
+  });
+
+  it("breaks a same-millisecond tie on stored position, not on sort luck", () => {
+    const list = [pg("a", 10), pg("b", 10), pg("c", 10)];
+    expect(sidebarPageOrder(list).map((p) => p.id)).toEqual(["a", "b", "c"]);
+  });
+
+  // Absence and zero are different answers -- one is "never pinned",
+  // the other is a real (if implausible) pin -- and pinnedFirst reads
+  // the field's type rather than its truthiness to tell them apart.
+  it("treats a pinnedAt of 0 as pinned and an absent one as not", () => {
+    expect(sidebarPageOrder([pg("a"), pg("b", 0)]).map((p) => p.id)).toEqual(["b", "a"]);
+    expect(isPinned(pg("b", 0))).toBe(true);
+    expect(isPinned(pg("a"))).toBe(false);
+  });
+
+  it("does not mutate the array it was given", () => {
+    const list = [pg("a"), pg("b", 10)];
+    pinnedFirst(list);
+    expect(list.map((p) => p.id)).toEqual(["a", "b"]);
   });
 });
 

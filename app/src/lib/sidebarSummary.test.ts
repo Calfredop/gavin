@@ -843,7 +843,18 @@ describe("the workspace recap strip is drawn at one scale", () => {
 
   /// The strip's markup only: from the guard that renders it to the page
   /// rows below, which are a tier of their own and keep their own sizes.
-  const strip = source.slice(source.indexOf("{#if hasRecap("), source.indexOf("{#each ws.pages"));
+  /// Both markers are asserted rather than assumed -- an `indexOf` of -1
+  /// silently widens this slice to most of the file, which is how the
+  /// page loop being renamed once turned this guard into a grep over
+  /// every sized glyph in the sidebar.
+  const stripStart = source.indexOf("{#if hasRecap(");
+  const stripEnd = source.indexOf("{#each orderedPages(ws)");
+  const strip = source.slice(stripStart, stripEnd);
+
+  it("still knows where the strip starts and ends", () => {
+    expect(stripStart, "the recap strip's opening guard has moved").toBeGreaterThan(-1);
+    expect(stripEnd, "the page loop below the strip has moved").toBeGreaterThan(stripStart);
+  });
 
   it("draws every glyph in it at the same size", () => {
     const sizes = [...strip.matchAll(/size=\{(\d+)\}/g)].map((m) => m[1]);

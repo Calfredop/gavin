@@ -17,6 +17,8 @@
     closeWorkspace,
     closePage,
     setSessionName,
+    setWorkspacePinned,
+    setPagePinned,
     appHubOpen,
     openAppHub,
   } from "./layoutState";
@@ -55,6 +57,7 @@
     Boxes,
     Activity,
     Search,
+    Pin,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -74,7 +77,16 @@
     type ReorderPosition,
   } from "./dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
-  import { UNFILED_WORKSPACE_ID, getActiveView, sidebarWorkspaceOrder, type Workspace, type Page, type GitStatus } from "./workspace";
+  import {
+    UNFILED_WORKSPACE_ID,
+    getActiveView,
+    isPinned,
+    sidebarPageOrder,
+    sidebarWorkspaceOrder,
+    type Workspace,
+    type Page,
+    type GitStatus,
+  } from "./workspace";
   import {
     workspaceGitSummary,
     kanbanSummary,
@@ -284,9 +296,18 @@
     }
   }
 
+  /// The pages of a workspace in the order this sidebar draws them:
+  /// pinned first. Shared with the ⌘⇧-number router (keyboard.ts calls
+  /// the same helper) so a hint badge and the shortcut it promises can
+  /// never name different pages.
+  function orderedPages(ws: Workspace): Page[] {
+    return sidebarPageOrder(ws.pages);
+  }
+
   /// ⌘⇧-number switches pages, and only within the ACTIVE workspace --
   /// badging another workspace's pages would promise a jump that
-  /// shortcut does not make.
+  /// shortcut does not make. `index` counts the RENDERED rows, which is
+  /// what the router counts too.
   function pageHint(ws: Workspace, index: number): string | null {
     if ($hintMode !== "cmd-shift" || ws.id !== $layoutState.activeWorkspaceId) return null;
     const digit = hintDigitFor(index, ws.pages.length);
@@ -705,6 +726,16 @@
     openContextMenuFromEvent(e, buildSessionRowMenuEntries(ws, page, rowMenuContext(page, row), menuHooks()));
   }
 
+  /// Whether this workspace's row can be dragged to a new position, or
+  /// be a reorder target. The Scratchpad never could; a pinned row is
+  /// the same case -- `pinnedFirst` decides where it goes, so a drop
+  /// would land it in the stored array without moving it on screen.
+  function isReorderable(workspaceId: string): boolean {
+    if (workspaceId === UNFILED_WORKSPACE_ID) return false;
+    const ws = $layoutState.workspaces.find((w) => w.id === workspaceId);
+    return !!ws && !isPinned(ws);
+  }
+
   function handleWorkspaceDragStart(event: DragEvent, workspaceId: string): void {
     setDragPayload(event, { kind: "workspace", workspaceId });
   }
@@ -716,10 +747,12 @@
     // to land here -- refusing it in the dragover is what keeps the
     // sidebar from lighting up under a drag it cannot accept.
     if (kind === "hub-tab") return;
-    // The pinned Scratchpad workspace isn't part of the reorderable
-    // list, so a dragged workspace has nowhere meaningful to land on
-    // it -- ignore.
-    if (kind === "workspace" && workspaceId === UNFILED_WORKSPACE_ID) return;
+    // Neither the Scratchpad nor a pinned workspace is part of the
+    // reorderable list: where they sit is decided for them (top, then
+    // pin order), so a dragged workspace has nowhere meaningful to land
+    // on either -- ignore. Only the REORDER drop is refused; a page or a
+    // pane dropped onto a pinned row still lands in it.
+    if (kind === "workspace" && !isReorderable(workspaceId)) return;
     event.preventDefault();
     // Without an explicit dropEffect, the browser shows the "copy" (+)
     // cursor even though setDragPayload set effectAllowed to "move" --
@@ -740,7 +773,7 @@
     clearHover();
     if (!payload) return;
     if (payload.kind === "workspace") {
-      if (ws.id === UNFILED_WORKSPACE_ID) return;
+      if (!isReorderable(ws.id)) return;
       // Looked up live from the authoritative array (not a loop index
       // passed in) so this is correct regardless of whether the pinned
       // Scratchpad workspace occupies a slot ahead of this row or not.
@@ -769,26 +802,38 @@
     setDragPayload(event, { kind: "page", workspaceId, pageId });
   }
 
-  function handlePageDragOver(event: DragEvent, pageId: string): void {
+  function handlePageDragOver(event: DragEvent, page: Page): void {
     const kind = getDragKind(event);
     if (!kind || kind === "workspace" || kind === "hub-tab") return;
+    // A pinned page is placed by its pin, not by the list -- the same
+    // refusal the workspace rows make one level up, and for the same
+    // reason. Panes and tabs still drop into it.
+    if (kind === "page" && isPinned(page)) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (kind === "page") {
-      hoverState = { targetId: pageId, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };
+      hoverState = { targetId: page.id, kind: "reorder", position: computeReorderPosition(rect, event.clientY) };
     } else {
-      hoverState = { targetId: pageId, kind: "zone", zone: computeDropZone(rect, event.clientX, event.clientY) };
+      hoverState = { targetId: page.id, kind: "zone", zone: computeDropZone(rect, event.clientX, event.clientY) };
     }
   }
 
-  async function handlePageDrop(event: DragEvent, ws: Workspace, page: Page, index: number): Promise<void> {
+  async function handlePageDrop(event: DragEvent, ws: Workspace, page: Page): Promise<void> {
     event.preventDefault();
     const payload = getDragPayload(event);
     clearHover();
     if (!payload || payload.kind === "workspace" || payload.kind === "hub-tab") return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (payload.kind === "page") {
+      if (isPinned(page)) return;
+      // Looked up in the AUTHORITATIVE array rather than taken as the
+      // loop index, because the two stopped agreeing the moment pinned
+      // pages started rendering out of stored order -- and movePage
+      // indexes the stored array. The same lookup the workspace drop
+      // above has always done.
+      const index = ws.pages.findIndex((p) => p.id === page.id);
+      if (index === -1) return;
       const position = computeReorderPosition(rect, event.clientY);
       const targetIndex = position === "before" ? index : index + 1;
       await movePageAction(payload.pageId, ws.id, targetIndex);
@@ -974,8 +1019,9 @@
         {/if}
       </div>
     {/if}
-    {#each ws.pages as page, pageIndex (page.id)}
+    {#each orderedPages(ws) as page, pageIndex (page.id)}
       {@const tabs = tabsRecap(page)}
+      {@const pagePinned = isPinned(page)}
       <div class="page-row-group">
         <div
           class="page-row"
@@ -991,12 +1037,12 @@
           class:drop-zone-top={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "top"}
           class:drop-zone-bottom={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "bottom"}
           class:drop-zone-center={hoverState?.targetId === page.id && hoverState.kind === "zone" && hoverState.zone === "center"}
-          draggable={editingPageId !== page.id}
+          draggable={editingPageId !== page.id && !pagePinned}
           ondragstart={(e) => handlePageDragStart(e, ws.id, page.id)}
-          ondragover={(e) => handlePageDragOver(e, page.id)}
+          ondragover={(e) => handlePageDragOver(e, page)}
           ondragleave={clearHover}
           ondragend={clearHover}
-          ondrop={(e) => handlePageDrop(e, ws, page, pageIndex)}
+          ondrop={(e) => handlePageDrop(e, ws, page)}
           oncontextmenu={(e) => openPageMenu(e, ws, page)}
         >
           <!-- Pages expand the way workspaces do, and for the same reason:
@@ -1086,18 +1132,35 @@
               class="waiting-badge"
             />
           {/if}
-          <button
-            class="close-page"
-            aria-label="Close Page"
-            title="Close Page"
-            onclick={async () => {
-              if (await confirmPageClose(ws.id, page.id)) {
-                void closePage(ws.id, page.id);
-              }
-            }}
-          >
-            <X size={10} />
-          </button>
+          <!-- A pinned row keeps the slot but not the action: the close
+               is the very thing a pin takes away, and leaving an X there
+               (disabled or otherwise) would offer it anyway. Unpin is
+               what belongs in its place -- it is the only way back to a
+               closable row, it says why the X is gone, and a click aimed
+               at the old X does something harmless and reversible
+               instead of destroying a page. -->
+          {#if pagePinned}
+            <IconButton
+              icon={Pin}
+              label="Unpin"
+              size={10}
+              class="pin-mark"
+              onclick={() => void setPagePinned(ws.id, page.id, false)}
+            />
+          {:else}
+            <button
+              class="close-page"
+              aria-label="Close Page"
+              title="Close Page"
+              onclick={async () => {
+                if (await confirmPageClose(ws.id, page.id)) {
+                  void closePage(ws.id, page.id);
+                }
+              }}
+            >
+              <X size={10} />
+            </button>
+          {/if}
         </div>
         <!-- The page's contents. One row per tab in layout order, each
              saying what it is (an agent and its state, or a file / board
@@ -1326,7 +1389,7 @@
           style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
         >
           <div
-            class="workspace-row pinned"
+            class="workspace-row scratchpad"
             class:active={ws.id === $layoutState.activeWorkspaceId}
             class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
             ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
@@ -1369,6 +1432,7 @@
         </div>
       {/if}
       {#each regularWorkspaces as ws (ws.id)}
+        {@const wsPinned = isPinned(ws)}
         <div
           class="workspace-row-group"
           style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
@@ -1383,7 +1447,7 @@
               hoverState.kind === "reorder" &&
               hoverState.position === "after"}
             class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
-            draggable={editingWorkspaceId !== ws.id}
+            draggable={editingWorkspaceId !== ws.id && !wsPinned}
             ondragstart={(e) => handleWorkspaceDragStart(e, ws.id)}
             ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
             ondragleave={clearHover}
@@ -1443,18 +1507,32 @@
               />
             {/if}
             <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
-            <button
-              class="close-workspace"
-              aria-label="Close Workspace"
-              title="Close Workspace"
-              onclick={async () => {
-                if (await confirmWorkspaceClose(ws.id)) {
-                  void closeWorkspace(ws.id);
-                }
-              }}
-            >
-              <X size={12} />
-            </button>
+            <!-- Unpin stands where the X does on an unpinned row, for the
+                 reason the page rows spell out: a pin is what removed
+                 the close, so the way back is what belongs in its
+                 place. -->
+            {#if wsPinned}
+              <IconButton
+                icon={Pin}
+                label="Unpin"
+                size={12}
+                class="pin-mark"
+                onclick={() => void setWorkspacePinned(ws.id, false)}
+              />
+            {:else}
+              <button
+                class="close-workspace"
+                aria-label="Close Workspace"
+                title="Close Workspace"
+                onclick={async () => {
+                  if (await confirmWorkspaceClose(ws.id)) {
+                    void closeWorkspace(ws.id);
+                  }
+                }}
+              >
+                <X size={12} />
+              </button>
+            {/if}
           </div>
           {#if isExpanded(ws.id)}
             {@render pageList(ws)}
@@ -1750,13 +1828,18 @@
   .workspace-row.active {
     background: var(--surface-raised);
   }
-  .workspace-row.pinned {
+  /* The Scratchpad's own row. Named for what it is rather than for
+     being first: a workspace the human PINNED is first too now, and one
+     class covering both would have styled every pinned row italic and
+     muted -- which is the Scratchpad saying "this is the drawer, not a
+     project", not something a pin means. */
+  .workspace-row.scratchpad {
     font-style: italic;
     color: var(--text-muted);
     border-bottom: 1px solid var(--border);
     margin-bottom: 2px;
   }
-  .workspace-row.pinned.active {
+  .workspace-row.scratchpad.active {
     color: var(--text);
   }
   .workspace-name {
@@ -1810,6 +1893,16 @@
   .close-workspace:hover,
   .close-page:hover {
     opacity: 1;
+  }
+  /* Unpin sits in the close button's slot, so it wears the close
+     button's metrics -- IconButton's own roomier padding there would
+     make a row jump sideways the moment it was pinned. Scoped to the two
+     rows rather than left bare: a leading :global(.pin-mark) would style
+     every pin glyph in the app. */
+  .workspace-row :global(.pin-mark),
+  .page-row :global(.pin-mark) {
+    padding: 2px;
+    flex: 0 0 auto;
   }
   .page-list {
     display: flex;

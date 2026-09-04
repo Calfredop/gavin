@@ -3587,6 +3587,50 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Pinned sidebar rows",
+    items: [
+      {
+        id: "pin-workspace-hoists",
+        text: "Right-click a workspace → Pin lifts its row above the unpinned ones (and stays under the Scratchpad)",
+      },
+      {
+        id: "pin-page-hoists",
+        text: "Right-click a page → Pin lifts it to the top of its workspace's page list",
+      },
+      {
+        id: "pin-order-is-pin-time",
+        text: "Pin a second workspace: it lands UNDER the first, not above it",
+        hint: "The order is when you pinned, not the stored order — the row you pinned first stays the row on top. Same for pages.",
+      },
+      {
+        id: "pin-x-becomes-unpin",
+        text: "A pinned row's X is replaced by a pin glyph, and clicking it unpins the row",
+      },
+      {
+        id: "pin-menu-close-greys",
+        text: "A pinned row's own menu says “Unpin” and greys out its Close Workspace / Close Page",
+      },
+      {
+        id: "pin-survives-close-others",
+        text: "“Close Other Pages” on an unpinned page leaves every pinned page open, without asking about them",
+      },
+      {
+        id: "pin-not-draggable",
+        text: "A pinned row cannot be dragged, and dragging another row onto it shows no insertion line",
+        hint: "Panes and tabs still drop INTO a pinned page — only the reorder is refused.",
+      },
+      {
+        id: "pin-digits-follow",
+        text: "⌘⌥-digits and ⌘⇧-digits address the rows as drawn: ⌘⇧1 goes to the pinned page",
+        hint: "Hold ⌘⌥ / ⌘⇧ to see the hint badges; the badge and the shortcut must name the same row.",
+      },
+      {
+        id: "pin-survives-restart",
+        text: "Pins survive an app restart, and unpinning leaves no trace in config.json",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

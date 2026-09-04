@@ -7,6 +7,10 @@ export interface Page {
   name: string;
   layout: LayoutNode;
   focusedSessionId: string | null;
+  /// When this page was pinned, epoch milliseconds; absent means not
+  /// pinned. See `pinnedFirst` for why the pin is a moment rather than
+  /// a flag, and why it never touches the stored order.
+  pinnedAt?: number;
 }
 
 export interface GitViewPrefs {
@@ -155,6 +159,10 @@ export interface Workspace {
   /// app-wide one, which is not the same as off: a workspace that wants
   /// no pause while the app has one stores a cycle with `enabled: false`.
   agentPause?: PauseCycle;
+  /// When this workspace was pinned to the top of the sidebar, epoch
+  /// milliseconds; absent means not pinned. Same rule and same reason as
+  /// `Page.pinnedAt`, one level up.
+  pinnedAt?: number;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its
@@ -436,6 +444,26 @@ export function renamePage(state: WorkspacesData, workspaceId: string, pageId: s
   };
 }
 
+/// Stamps (or clears) a page's pin. `undefined` unpins, and stores the
+/// absence rather than a zero: "never pinned" and "pinned at the epoch"
+/// have to stay different answers, since `pinnedFirst` reads the field's
+/// TYPE to decide which group a row is in.
+export function setPagePinnedAt(
+  state: WorkspacesData,
+  workspaceId: string,
+  pageId: string,
+  pinnedAt: number | undefined
+): WorkspacesData {
+  return {
+    ...state,
+    workspaces: state.workspaces.map((w) =>
+      w.id === workspaceId
+        ? { ...w, pages: w.pages.map((p) => (p.id === pageId ? { ...p, pinnedAt } : p)) }
+        : w
+    ),
+  };
+}
+
 export function switchPage(state: WorkspacesData, workspaceId: string, pageId: string): WorkspacesData {
   return {
     ...state,
@@ -647,7 +675,47 @@ export function sidebarWorkspaceOrder(
 ): Workspace[] {
   const unfiled = showScratchpad ? workspaces.filter((w) => w.id === UNFILED_WORKSPACE_ID) : [];
   const rest = workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID);
-  return [...unfiled, ...rest];
+  return [...unfiled, ...pinnedFirst(rest)];
+}
+
+/// The order the sidebar renders a workspace's pages in: pinned ones
+/// first, then the rest as stored. Shared with the ⌘⇧-number router for
+/// the same reason `sidebarWorkspaceOrder` is -- a hint badge and the
+/// shortcut it promises must count the same rows.
+export function sidebarPageOrder(pages: Page[]): Page[] {
+  return pinnedFirst(pages);
+}
+
+/// Whether a row is pinned. One reader for the field's absence rule, so
+/// no surface decides for itself whether a `pinnedAt` of 0 counts.
+export function isPinned(item: { pinnedAt?: number }): boolean {
+  return typeof item.pinnedAt === "number";
+}
+
+/// Pinned rows first, in the order they were pinned; everything else
+/// after them in the order it was already in.
+///
+/// The pin is a MOMENT rather than a flag, and it deliberately leaves
+/// the stored array alone. Hoisting the row in the array instead would
+/// answer "on top" for one pin and lose the question for two, and worse:
+/// unpinning would have nowhere to put the row back, so a pin the human
+/// undid a second later would still have rearranged their sidebar for
+/// good. Ordering pinned rows by when they were pinned is also the only
+/// rule a human already holds -- the row you pinned first is the row at
+/// the top -- so it needs no explaining anywhere in the UI.
+///
+/// Ties break on stored position, so two rows pinned in the same
+/// millisecond sort deterministically rather than by whatever the
+/// engine's sort happens to do.
+export function pinnedFirst<T extends { pinnedAt?: number }>(items: T[]): T[] {
+  const indexed = items.map((item, index) => ({ item, index }));
+  const pinned = indexed.filter((e) => typeof e.item.pinnedAt === "number");
+  const rest = indexed.filter((e) => typeof e.item.pinnedAt !== "number");
+  pinned.sort((a, b) => {
+    const diff = (a.item.pinnedAt ?? 0) - (b.item.pinnedAt ?? 0);
+    return diff !== 0 ? diff : a.index - b.index;
+  });
+  return [...pinned, ...rest].map((e) => e.item);
 }
 
 // Searches every workspace's every page for sessionId, fresh at call time

@@ -15,6 +15,21 @@ pub struct Page {
     /// (a later plan) target a well-defined pane even in a page that isn't
     /// currently rendered.
     pub focused_session_id: Option<String>,
+    /// When this page was pinned to the top of its workspace's list,
+    /// epoch milliseconds. Absent means not pinned.
+    ///
+    /// A timestamp rather than a boolean because "on top" stops being a
+    /// position as soon as there are two of them, and the stored order
+    /// cannot answer it: pinning deliberately does NOT reorder `pages`,
+    /// or unpinning would have nowhere to put the row back. The moment
+    /// the human pinned it is the one ordering they already have in
+    /// mind -- the row pinned first stays the row at the top.
+    ///
+    /// Written by the frontend (which owns the clock) through the
+    /// ordinary workspaces save, like `Workspace::last_active_at`, so an
+    /// older config simply loads with it absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<i64>,
 }
 
 /// Well-known id for the always-present "Unfiled" pseudo-workspace -- a
@@ -274,6 +289,11 @@ pub struct Workspace {
     /// config.json entirely for the ordinary inheriting case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_pause: Option<AgentPauseConfig>,
+    /// When this workspace was pinned to the top of the sidebar, epoch
+    /// milliseconds; absent means not pinned. Same rule and same reason
+    /// as `Page::pinned_at`, one level up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<i64>,
 }
 
 fn default_true() -> bool {
@@ -545,6 +565,7 @@ mod tests {
             name: "Page 1".to_string(),
             layout: sample_layout(),
             focused_session_id: None,
+            pinned_at: None,
         }
     }
 
@@ -572,6 +593,7 @@ mod tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pinned_at: None,
         }
     }
 
@@ -596,6 +618,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(config_path(dir.path()), r#"{"workspaces":[]}"#).unwrap();
         assert_eq!(load(dir.path()).unwrap().theme, None);
+    }
+
+    /// A pin round-trips at both levels, and a config written before the
+    /// field existed loads with nothing pinned. Absence is the only
+    /// correct answer for an upgrade: a stamp invented at load time
+    /// would silently hoist rows the human never pinned, and every
+    /// workspace would claim the same "pinned first" moment.
+    #[test]
+    fn pins_roundtrip_and_default_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.pinned_at = Some(1_700_000_000_000);
+        ws.pages[0].pinned_at = Some(1_700_000_001_000);
+        let config = AppConfig { workspaces: vec![ws], ..Default::default() };
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.workspaces[0].pinned_at, Some(1_700_000_000_000));
+        assert_eq!(loaded.workspaces[0].pages[0].pinned_at, Some(1_700_000_001_000));
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[{"id":"w","name":"W","pages":[{"id":"p","name":"P","layout":{"type":"leaf","tabs":[],"activeTabIndex":0},"focusedSessionId":null}],"activePageId":null,"activeView":null}]}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap();
+        assert_eq!(old.workspaces[0].pinned_at, None);
+        assert_eq!(old.workspaces[0].pages[0].pinned_at, None);
     }
 
     /// Both halves of the setting round-trip, and both read as absent from

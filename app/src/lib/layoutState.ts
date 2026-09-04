@@ -1695,6 +1695,37 @@ export async function setWorkspaceColor(workspaceId: string, color: string): Pro
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
+/// Pins or unpins a workspace's sidebar row. The stamp is taken here
+/// rather than passed in because this is the only place a pin is made,
+/// and `pinnedFirst` sorts on it -- a caller free to supply its own
+/// moment could reorder rows that were pinned long ago.
+///
+/// Unpinning stores `undefined`, which `persistWorkspaces` drops from
+/// config.json entirely (`skip_serializing_if` on the Rust side): an
+/// unpinned row leaves no trace of having been pinned, so a later pin
+/// starts from a clean moment instead of an old one.
+export async function setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
+  const state = get(layoutState);
+  const pinnedAt = pinned ? Date.now() : undefined;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, pinnedAt } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// The same, one level down: a page's row inside its workspace.
+export async function setPagePinned(
+  workspaceId: string,
+  pageId: string,
+  pinned: boolean
+): Promise<void> {
+  const state = get(layoutState);
+  const data = workspace.setPagePinnedAt(state, workspaceId, pageId, pinned ? Date.now() : undefined);
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+}
+
 /// One writer for every boolean workspace preference that lives in
 /// config.json -- the notification toggles and the close confirm. Keyed
 /// rather than one function each so a new toggle costs a union member,

@@ -13,7 +13,13 @@ import {
 import { copySelection, pasteClipboard } from "./clipboard";
 import { confirmTabClose } from "./confirmClose";
 import { findLeafPath, getNodeAtPath, isPinned } from "./layout";
-import { getActiveTree, getActiveWorkspace, getActiveView, sidebarWorkspaceOrder } from "./workspace";
+import {
+  getActiveTree,
+  getActiveWorkspace,
+  getActiveView,
+  sidebarPageOrder,
+  sidebarWorkspaceOrder,
+} from "./workspace";
 import { tabStripHubViewIds } from "./hubViewMeta";
 import { currentHubTabPrefs } from "./hubTabPrefs";
 import { scratchpadEnabled } from "./sidebarPrefs";
@@ -98,9 +104,13 @@ function routeDigit(
   if (!ws) return null;
 
   if (shiftKey) {
-    const index = resolveIndex(digit, ws.pages.length);
+    // The sidebar's own order, pinned pages first -- these digits count
+    // the rows it draws, and a router counting the stored array instead
+    // would address a different page than the badge on the row promises.
+    const pages = sidebarPageOrder(ws.pages);
+    const index = resolveIndex(digit, pages.length);
     if (index === null) return null;
-    const pageId = ws.pages[index].id;
+    const pageId = pages[index].id;
     return () => switchPage(ws.id, pageId);
   }
 

@@ -18,6 +18,8 @@ vi.mock("./layoutState", () => ({
   closeSession: vi.fn().mockResolvedValue(undefined),
   setWorkspaceRoot: vi.fn().mockResolvedValue(undefined),
   setTabPinned: vi.fn().mockResolvedValue(undefined),
+  setWorkspacePinned: vi.fn().mockResolvedValue(undefined),
+  setPagePinned: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
@@ -40,6 +42,8 @@ import {
   closeSession,
   setWorkspaceRoot,
   setTabPinned,
+  setWorkspacePinned,
+  setPagePinned,
   splitPane,
 } from "./layoutState";
 import { closeTabs } from "./tabActions";
@@ -106,7 +110,31 @@ beforeEach(() => {
 describe("buildWorkspaceMenuEntries", () => {
   it("lists the regular workspace menu", () => {
     const labels = items(buildWorkspaceMenuEntries(ws("w1", [page("p1")], "/r"), hooks())).map((e) => e.label);
-    expect(labels).toEqual(["Rename…", "New Page", "Open Root in Finder", "Change Root Folder…", "Close Workspace"]);
+    expect(labels).toEqual([
+      "Rename…",
+      "New Page",
+      "Pin",
+      "Open Root in Finder",
+      "Change Root Folder…",
+      "Close Workspace",
+    ]);
+  });
+  // A pin is what makes a row unclosable, so the two entries have to be
+  // read together: the close greys out, and the entry that undoes it is
+  // in the same menu saying "Unpin".
+  it("pins, and greys out the close it took away", () => {
+    const pinned = { ...ws("w1", [], "/r"), pinnedAt: 5 };
+    const entries = buildWorkspaceMenuEntries(pinned, hooks());
+    expect(find(entries, "Unpin").disabled).toBeFalsy();
+    expect(find(entries, "Close Workspace").disabled).toBe(true);
+    find(entries, "Unpin").onPick();
+    expect(setWorkspacePinned).toHaveBeenCalledWith("w1", false);
+  });
+  it("pins an unpinned workspace and leaves its close alone", () => {
+    const entries = buildWorkspaceMenuEntries(ws("w1", [], "/r"), hooks());
+    expect(find(entries, "Close Workspace").disabled).toBe(false);
+    find(entries, "Pin").onPick();
+    expect(setWorkspacePinned).toHaveBeenCalledWith("w1", true);
   });
   it("gives the Scratchpad only New Page", () => {
     const entries = buildWorkspaceMenuEntries(ws(UNFILED_WORKSPACE_ID, []), hooks());
@@ -175,6 +203,7 @@ describe("buildPageMenuEntries", () => {
     expect(labels).toEqual([
       "Rename…",
       "New Page",
+      "Pin",
       "Move to w2",
       `Move to ${UNFILED_WORKSPACE_ID}`,
       "Close Idle Tabs",
@@ -206,6 +235,35 @@ describe("buildPageMenuEntries", () => {
     const entry = find(buildPageMenuEntries(all[0], all[0].pages[0], all, state, hooks()), "Close Idle Tabs");
     expect(entry.disabled).toBe(true);
     expect(entry.danger).toBe(true);
+  });
+  it("pins a page, and greys out the close it took away", () => {
+    const pinned = { ...page("p1"), pinnedAt: 5 };
+    const w = ws("w1", [pinned, page("p2")]);
+    const entries = buildPageMenuEntries(w, pinned, [w], tabState(), hooks());
+    expect(find(entries, "Close Page").disabled).toBe(true);
+    find(entries, "Unpin").onPick();
+    expect(setPagePinned).toHaveBeenCalledWith("w1", "p1", false);
+  });
+  it("pins an unpinned page and leaves its close alone", () => {
+    const w = ws("w1", [page("p1")]);
+    const entries = buildPageMenuEntries(w, w.pages[0], [w], tabState(), hooks());
+    expect(find(entries, "Close Page").disabled).toBe(false);
+    find(entries, "Pin").onPick();
+    expect(setPagePinned).toHaveBeenCalledWith("w1", "p1", true);
+  });
+  // The one action in this menu that closes pages it does not name. A
+  // pinned page has to survive it, or the promise the pin makes is kept
+  // everywhere except the place it matters most.
+  it("leaves pinned pages out of Close Other Pages", async () => {
+    const w = ws("w1", [page("p1"), { ...page("p2"), pinnedAt: 5 }, page("p3")]);
+    find(buildPageMenuEntries(w, w.pages[0], [w], tabState(), hooks()), "Close Other Pages").onPick();
+    await flush();
+    expect(vi.mocked(closePage).mock.calls).toEqual([["w1", "p3"]]);
+  });
+  it("disables Close Other Pages when every other page is pinned", () => {
+    const w = ws("w1", [page("p1"), { ...page("p2"), pinnedAt: 5 }]);
+    const entries = buildPageMenuEntries(w, w.pages[0], [w], tabState(), hooks());
+    expect(find(entries, "Close Other Pages").disabled).toBe(true);
   });
   it("disables Close Other Pages when the page is alone", () => {
     const entries = buildPageMenuEntries(all[1], all[1].pages[0], all, tabState(), hooks());

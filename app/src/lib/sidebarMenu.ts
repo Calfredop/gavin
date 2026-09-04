@@ -11,12 +11,14 @@ import {
   switchWorkspaceView,
   switchToSessionInPage,
   setWorkspaceRoot,
+  setWorkspacePinned,
+  setPagePinned,
 } from "./layoutState";
 import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
 import { buildTabMenuEntries, type TabMenuContext } from "./tabMenu";
 import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "./idleTabs";
 import type { PageTabState } from "./sidebarSummary";
-import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
+import { UNFILED_WORKSPACE_ID, isPinned, type Workspace, type Page } from "./workspace";
 import type { ContextMenuEntry } from "./contextMenu";
 
 export interface SidebarMenuHooks {
@@ -38,9 +40,12 @@ export function buildWorkspaceMenuEntries(ws: Workspace, hooks: SidebarMenuHooks
     return [{ label: "New Page", onPick: () => hooks.newPage(ws.id) }];
   }
   const root = ws.rootPath ?? null;
+  const pinned = isPinned(ws);
   return [
     { label: "Rename…", onPick: () => hooks.startRenameWorkspace(ws.id) },
     { label: "New Page", onPick: () => hooks.newPage(ws.id) },
+    { separator: true },
+    { label: pinned ? "Unpin" : "Pin", onPick: () => void setWorkspacePinned(ws.id, !pinned) },
     { separator: true },
     {
       label: "Open Root in Finder",
@@ -52,8 +57,13 @@ export function buildWorkspaceMenuEntries(ws: Workspace, hooks: SidebarMenuHooks
     { label: "Change Root Folder…", onPick: () => void changeWorkspaceRoot(ws.id, hooks.reportError) },
     { separator: true },
     {
+      // A pin is what makes a row unclosable, so the entry stays and
+      // greys out rather than disappearing: the human is one item up
+      // this same menu from being able to close it again, and a
+      // vanished action would read as a broken menu instead.
       label: "Close Workspace",
       danger: true,
+      disabled: pinned,
       onPick: () => {
         void confirmWorkspaceClose(ws.id).then((ok) => (ok ? closeWorkspace(ws.id) : undefined));
       },
@@ -90,10 +100,18 @@ export function buildPageMenuEntries(
   tabs: PageTabState,
   hooks: SidebarMenuHooks
 ): ContextMenuEntry[] {
-  const others = ws.pages.filter((p) => p.id !== page.id);
+  // "Other pages" a bulk close may actually take: pinned ones are not
+  // among them. A pin says this page survives what closes its
+  // neighbours, so an action that names the neighbours rather than the
+  // page is exactly where that promise would otherwise be broken --
+  // quietly, and for every pinned page at once.
+  const others = ws.pages.filter((p) => p.id !== page.id && !isPinned(p));
+  const pinned = isPinned(page);
   const entries: ContextMenuEntry[] = [
     { label: "Rename…", onPick: () => hooks.startRenamePage(page.id) },
     { label: "New Page", onPick: () => hooks.newPage(ws.id) },
+    { separator: true },
+    { label: pinned ? "Unpin" : "Pin", onPick: () => void setPagePinned(ws.id, page.id, !pinned) },
   ];
   const targets = allWorkspaces.filter((w) => w.id !== ws.id);
   if (targets.length > 0) {
@@ -132,8 +150,11 @@ export function buildPageMenuEntries(
       },
     },
     {
+      // Greyed rather than gone, for the reason the workspace menu's own
+      // close spells out.
       label: "Close Page",
       danger: true,
+      disabled: pinned,
       onPick: () => {
         void confirmPageClose(ws.id, page.id).then((ok) => (ok ? closePage(ws.id, page.id) : undefined));
       },

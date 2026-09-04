@@ -229,6 +229,40 @@ describe("digit navigation", () => {
     expect(switchPage).toHaveBeenCalledWith("ws-1", "p2");
   });
 
+  // The digits count the rows the sidebar DRAWS, and a pinned page is
+  // drawn first -- so ⌘⇧1 has to be that page, not whatever sits first
+  // in the stored array. Both readers go through sidebarPageOrder for
+  // exactly this reason.
+  it("⌘⇧1 follows the sidebar's pinned page order", async () => {
+    setState({
+      workspaces: [
+        {
+          id: "ws-1",
+          name: "ws-1",
+          activeView: "terminal",
+          activePageId: "p1",
+          pages: [
+            { id: "p1", name: "p1", layout: leaf(["a"]), focusedSessionId: "a" },
+            { id: "p2", name: "p2", layout: leaf(["d"]), focusedSessionId: "d", pinnedAt: 10 },
+          ],
+        },
+      ],
+    });
+    await press("Digit1", { shiftKey: true });
+    expect(switchPage).toHaveBeenCalledWith("ws-1", "p2");
+  });
+
+  it("⌘⌥1 follows the sidebar's pinned workspace order", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", activeView: "terminal", activePageId: null, pages: [] },
+        { id: "ws-2", name: "ws-2", activeView: "terminal", activePageId: null, pages: [], pinnedAt: 10 },
+      ],
+    });
+    await press("Digit1", { altKey: true });
+    expect(switchWorkspace).toHaveBeenCalledWith("ws-2");
+  });
+
   it("⌘⌥2 switches workspace in sidebar order (Scratchpad first)", async () => {
     await press("Digit2", { altKey: true });
     expect(switchWorkspace).toHaveBeenCalledWith("ws-1");
