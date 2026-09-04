@@ -22,6 +22,7 @@ import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "./notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
 import { followRenamedContext } from "./planExplorer";
+import { retargetPath } from "./fileTree";
 import {
   normalizeColor,
   resolveAgentConfig,
@@ -431,6 +432,43 @@ async function pruneFileTabs(closedIds: string[]): Promise<void> {
   // Best-effort, matching how this map is loaded: a failed prune costs a
   // stale entry, never a broken close.
   await backend.setFileTabs(asPathMap).catch(() => {});
+}
+
+// Points every open file tab at a path that has just been renamed or
+// moved -- the path itself, and anything that was under it when the
+// renamed entry was a directory.
+//
+// Without this the Files tab's own rename would leave a tab titled after
+// a file that no longer exists, over an editor reporting it deleted: the
+// human performed a rename and the app reported a loss. FileEditor
+// follows the prop change in place rather than remounting (see the
+// path effect there), so an unsaved buffer survives the move.
+//
+// Returns how many tabs moved, so the caller can say so.
+export async function retargetFileTabs(from: string, to: string): Promise<number> {
+  const state = get(layoutState);
+  const fileTabsById: Record<string, FileTab> = {};
+  let moved = 0;
+  for (const [id, tab] of Object.entries(state.fileTabsById)) {
+    const next = retargetPath(tab.path, from, to);
+    if (next === tab.path) {
+      fileTabsById[id] = tab;
+      continue;
+    }
+    moved += 1;
+    fileTabsById[id] = { ...tab, path: next };
+  }
+  if (moved === 0) return 0;
+  layoutState.update((s) => ({ ...s, fileTabsById }));
+
+  const asPathMap: Record<string, string> = {};
+  for (const [id, tab] of Object.entries(fileTabsById)) {
+    asPathMap[id] = tab.path;
+  }
+  // Best-effort, like pruneFileTabs: a failed persist costs a stale
+  // entry in config.json, never a tab left pointing at the old name.
+  await backend.setFileTabs(asPathMap).catch(() => {});
+  return moved;
 }
 
 // The active page's identity plus its current tree, or null if there's no

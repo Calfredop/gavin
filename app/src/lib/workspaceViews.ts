@@ -1,5 +1,5 @@
 import type { Component } from "svelte";
-import { LayoutDashboard, Kanban, ListChecks, FileText, Bot, FolderTree, Settings, GitBranch, Waypoints } from "@lucide/svelte";
+import { LayoutDashboard, Kanban, ListChecks, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints } from "@lucide/svelte";
 import HomeHubView from "./HomeHubView.svelte";
 import GitHubView from "./GitHubView.svelte";
 import SettingsHubView from "./SettingsHubView.svelte";
@@ -9,6 +9,7 @@ import SmokeChecklist from "./SmokeChecklist.svelte";
 import PrdHubView from "./PrdHubView.svelte";
 import AgentFileHubView from "./AgentFileHubView.svelte";
 import PlanExplorerHubView from "./PlanExplorerHubView.svelte";
+import FilesHubView from "./FilesHubView.svelte";
 import { HUB_VIEW_META, visibleHubViewIds, type HubViewMeta } from "./hubViewMeta";
 
 /// A hub tab: the metadata from hubViewMeta.ts plus what renders it.
@@ -32,6 +33,7 @@ const COMPONENTS: Record<HubViewId, { icon: Component; component: Component<{ wo
   prd: { icon: FileText, component: PrdHubView },
   "agent-file": { icon: Bot, component: AgentFileHubView },
   plans: { icon: FolderTree, component: PlanExplorerHubView },
+  files: { icon: Files, component: FilesHubView },
   settings: { icon: Settings, component: SettingsHubView },
   checklist: { icon: ListChecks, component: SmokeChecklist },
 };

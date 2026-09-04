@@ -253,6 +253,45 @@
     }
   }
 
+  // The only thing that moves a MOUNTED editor's path is a rename of the
+  // file it is holding: the Files tab renames on disk and then retargets
+  // every tab and pane pointing at the old path.
+  //
+  // Following the move in place, rather than letting the host remount on
+  // a new path, is what makes that safe. A remount runs onDestroy, whose
+  // last-chance write would land on the path that has just stopped
+  // existing -- resurrecting the file the human renamed away, with the
+  // unsaved buffer inside it. So the buffer, its dirty flag and the mode
+  // all stay put; only the watch and the dirty-path bookkeeping move.
+  //
+  // Plain `let`, not $state: it is read inside the effect that writes it,
+  // and the initial value is exactly what is wanted -- the effect below
+  // is what tracks every later one.
+  // svelte-ignore state_referenced_locally
+  let watchedPath = path;
+  $effect(() => {
+    const next = path;
+    if (next === watchedPath) return;
+    const previous = watchedPath;
+    watchedPath = next;
+    // The pending autosave was aimed at the old path's content; the one
+    // re-armed below writes the same buffer to the new one.
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    setPathDirty(previous, false);
+    setPathDirty(next, dirty);
+    void backend.unwatchFileForViewer(previous).catch(() => {});
+    void backend.watchFileForViewer(next).catch(() => {});
+    // A rename moves the file whole, so what sits at the new path is
+    // what `onDisk` already holds -- there is nothing to re-read, and
+    // re-reading would throw away a dirty buffer.
+    deleted = false;
+    exists = true;
+    if (dirty) saveTimer = setTimeout(() => void save(), AUTOSAVE_MS);
+  });
+
   onMount(async () => {
     await load();
     await backend.watchFileForViewer(path).catch(() => {});

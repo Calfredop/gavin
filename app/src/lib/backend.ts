@@ -47,6 +47,44 @@ export function resolvePathUnderCursor(candidate: string, cwd: string): Promise<
   return invoke("resolve_path_under_cursor", { candidate, cwd });
 }
 
+/// The Files tab's directory explorer. Every one of these takes the
+/// workspace ROOT alongside its target and the host refuses anything
+/// that resolves outside it -- see fileviewer.rs. One `list_directory`
+/// per opened folder, never a recursive walk and never a watcher: the
+/// tree refreshes on demand and after its own mutations.
+export function listDirectory(
+  root: string,
+  path: string
+): Promise<{ name: string; isDir: boolean; size: number; symlink: boolean }[]> {
+  return invoke("list_directory", { root, path });
+}
+
+/// Creates an empty file. Rejects an existing path rather than
+/// truncating it.
+export function createFile(root: string, path: string): Promise<void> {
+  return invoke("create_file", { root, path });
+}
+
+/// Creates one directory. A missing parent is an error, not a folder to
+/// invent.
+export function createDirectory(root: string, path: string): Promise<void> {
+  return invoke("create_directory", { root, path });
+}
+
+/// Renames or moves an entry inside the root. Refuses to overwrite the
+/// destination -- `fs::rename` would do it silently, turning a mistyped
+/// rename into a delete with no trip through the Trash.
+export function renamePath(root: string, from: string, to: string): Promise<void> {
+  return invoke("rename_path", { root, from, to });
+}
+
+/// Moves an entry to the OS Trash, through the same route the workspace
+/// delete wizard takes. Nothing gavin removes on the human's behalf is
+/// unrecoverable.
+export function trashEntry(root: string, path: string): Promise<void> {
+  return invoke("trash_entry", { root, path });
+}
+
 export function viewableExtensions(): Promise<string[]> {
   return invoke("viewable_extensions");
 }

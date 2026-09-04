@@ -36,6 +36,22 @@ export function isViewableExtension(path: string, viewableExtensions: string[]):
 // sends everything to the OS: the wrong-but-harmless direction.
 let viewableExtensionsCache: string[] | null = null;
 
+/// The extension list itself, through the same one cache.
+///
+/// For a surface that has to answer the question SYNCHRONOUSLY, many
+/// times, for rows it is already rendering: the Files tree labels every
+/// row by where it would open, and awaiting a promise per row (or
+/// keeping a second copy of a compile-time constant) would be the two
+/// wrong ways to do it. Fetched once here, held by the caller, and
+/// answered with `isViewableExtension`.
+export async function loadViewableExtensions(): Promise<string[]> {
+  if (viewableExtensionsCache === null) {
+    const backend = await import("./backend");
+    viewableExtensionsCache = await backend.viewableExtensions().catch(() => []);
+  }
+  return viewableExtensionsCache;
+}
+
 /// The one place that decides "gavin's viewer or the OS's app" -- a
 /// terminal path link and a card's attachment chip must not disagree
 /// about the same file.
@@ -44,11 +60,7 @@ let viewableExtensionsCache: string[] | null = null;
 /// static Tauri dependency; everything above is pure path arithmetic and
 /// is tested as such.
 export async function isViewableInApp(path: string): Promise<boolean> {
-  if (viewableExtensionsCache === null) {
-    const backend = await import("./backend");
-    viewableExtensionsCache = await backend.viewableExtensions().catch(() => []);
-  }
-  return isViewableExtension(path, viewableExtensionsCache);
+  return isViewableExtension(path, await loadViewableExtensions());
 }
 
 /** @internal test-only reset for the module-level cache */

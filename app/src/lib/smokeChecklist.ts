@@ -2934,6 +2934,105 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Files tab",
+    items: [
+      {
+        id: "files-tree-opens-over-the-root",
+        text: "The Files tab opens with the workspace root's own row expanded and its top level listed — dotfiles, target/ and node_modules/ included",
+        hint: "The tree shows everything on disk on purpose: no .gitignore filter and no dotfile rule. A missing .gitignore or a missing target/ means something is filtering that was never meant to.",
+      },
+      {
+        id: "files-large-dir-stays-responsive",
+        text: "Expanding node_modules/ (or target/) lists it without the window stuttering, and expanding it a second time after collapsing is instant",
+        hint: "One read_dir per opened directory, no recursive walk and no watcher on the repo tree — the 3000-folder FSEvents stall is exactly what this shape avoids. The second open is instant because a collapse keeps the listing.",
+      },
+      {
+        id: "files-symlink-is-a-leaf",
+        text: "A symlink is listed with a link glyph, no chevron, and clicking it does not walk into it",
+        hint: "The host reports a link's kind from symlink metadata, so a link to a directory is never a directory here.",
+      },
+      {
+        id: "files-click-opens-in-the-pane",
+        text: "Clicking a .ts/.md/.rs file opens it in the editor pane on the right, editable",
+      },
+      {
+        id: "files-binary-opens-in-the-os",
+        text: "Clicking a .png (or any type outside viewable_extensions) opens it in the OS's default app and leaves the editor pane alone — and its menu entry reads “Open in the default app”",
+        hint: "The PRD's standing rule for binaries and media. The label saying so before the click is the point: nobody should have to click to find out it leaves the app.",
+      },
+      {
+        id: "files-open-in-a-tab",
+        text: "“Open in a tab” on a file row opens it as a file tab beside the focused terminal",
+        hint: "Needs a terminal session focused to anchor the split; with a file or board tab focused the entry is absent rather than dead.",
+      },
+      {
+        id: "files-copy-path-and-reveal",
+        text: "“Copy path” puts the absolute path on the clipboard, and “Reveal in Finder” selects the entry in its folder",
+      },
+      {
+        id: "files-new-file-and-folder",
+        text: "“New file…” and “New folder…” on a folder row create it in place; the new file opens in the editor pane and the new folder opens empty",
+        hint: "Creating into a folder never opened before must work too — the tree reads it rather than inventing a listing.",
+      },
+      {
+        id: "files-create-refuses-to-clobber",
+        text: "Creating a file whose name is already taken refuses with “already exists” and leaves the existing file untouched",
+      },
+      {
+        id: "files-rename-in-place",
+        text: "Rename a folder that has open subfolders inside it: the row renames and the subfolders STAY open",
+        hint: "The tree re-keys the subtree instead of re-reading it. Folders folding shut on the human's own rename is the failure this catches.",
+      },
+      {
+        id: "files-rename-follows-an-open-tab",
+        text: "With a file open as a tab, rename it from the Files tab: the tab's title follows, its editor keeps showing the file, and no “deleted” banner appears",
+        hint: "Retargeting, not remounting. A file reappearing at the OLD name afterwards means the editor's last-chance write landed on the path that had just stopped existing.",
+      },
+      {
+        id: "files-trash-asks-first",
+        text: "“Move to Trash” asks in gavin's own dialog — never a macOS one — with a red button, focus left on Cancel, and the folder case saying it takes everything inside",
+        hint: "plugin-dialog is capability-narrowed; a native confirm fails at the permission layer instead of appearing.",
+      },
+      {
+        id: "files-trash-keeps-the-buffer",
+        text: "Trash the file the editor pane is showing WITH unsaved edits: the pane keeps the text under its “deleted” banner rather than clearing",
+        hint: "That buffer is the only copy left. Tidying the pane would throw it away.",
+      },
+      {
+        id: "files-trash-is-recoverable",
+        text: "A trashed file is in the Finder Trash and can be put back — never gone",
+      },
+      {
+        id: "files-filter-keeps-ancestors",
+        text: "Typing in the filter box narrows to matching names and keeps each match's parent folders visible above it",
+      },
+      {
+        id: "files-filter-empty-state-says-loaded-only",
+        text: "A filter matching nothing says “No match in the folders you have opened” — never a bare “No match”",
+        hint: "The filter only ever sees loaded nodes; walking the repo to find the rest is the trap the lazy tree exists to avoid. The wording is the honest difference between “not in this repo” and “open the folder it is in”.",
+      },
+      {
+        id: "files-selection-survives-a-tab-switch",
+        text: "Open a file three folders deep, switch to Kanban and back: the same folders are open and the same file is in the editor",
+        hint: "The hub view is destroyed on every switch, so this comes back out of localStorage, per workspace.",
+      },
+      {
+        id: "files-restored-selection-verified",
+        text: "Delete the remembered file outside gavin, then return to the Files tab: the pane opens empty rather than on a phantom",
+        hint: "The restore is verified against the tree — but only once the containing folder has actually been read.",
+      },
+      {
+        id: "files-split-is-a-share",
+        text: "Drag the divider, then resize the window: the two panes keep their proportion and neither collapses; double-click resets it",
+      },
+      {
+        id: "files-refresh-catches-up",
+        text: "Have an agent write a file into an open folder, then press Refresh: the new file appears and the open folders stay open",
+        hint: "There is deliberately no watcher on the repo tree, so nothing appears until Refresh — that is the design, not a bug.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

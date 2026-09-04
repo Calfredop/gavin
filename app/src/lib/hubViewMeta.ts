@@ -22,6 +22,7 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   { id: "prd", label: "PRD", requiresRoot: true },
   { id: "agent-file", label: "CLAUDE.md", requiresRoot: true },
   { id: "plans", label: "Plans", requiresRoot: true },
+  { id: "files", label: "Files", requiresRoot: true },
   // No requiresRoot: binding the root is one of this tab's jobs.
   { id: "settings", label: "Settings" },
   { id: "checklist", label: "Checklist", devOnly: true },
