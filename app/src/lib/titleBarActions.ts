@@ -52,9 +52,26 @@ export function paneControlsApply(state: WorkspacesData, appHubOpen: boolean): b
   return ws !== null && getActiveView(ws) === "terminal";
 }
 
+/// The label of the dropdown's one non-preset row.
+export const WITH_AGENT_LABEL = "With agent";
+
 /// The "New page" dropdown's entries, built over the shared context menu
 /// layer -- one menu implementation in the app, with its viewport
 /// clamping, Escape and click-away already solved.
-export function newPageEntries(onPick: (preset: PagePreset) => void): ContextMenuEntry[] {
-  return PAGE_PRESETS.map((preset) => ({ label: preset.label, onPick: () => onPick(preset) }));
+///
+/// "With agent" leads, as a checkbox: it qualifies every row under it
+/// rather than being a fourth thing to pick, so it has to be readable
+/// BEFORE the preset that consumes it. It keeps the menu open (the
+/// checkbox is in the menu it changes) and the presets stay plain
+/// picks, so one click still adds a page.
+export function newPageEntries(
+  withAgent: boolean,
+  onToggleAgent: () => void,
+  onPick: (preset: PagePreset) => void
+): ContextMenuEntry[] {
+  return [
+    { label: WITH_AGENT_LABEL, checked: withAgent, keepOpen: true, onPick: onToggleAgent },
+    { separator: true },
+    ...PAGE_PRESETS.map((preset) => ({ label: preset.label, onPick: () => onPick(preset) })),
+  ];
 }

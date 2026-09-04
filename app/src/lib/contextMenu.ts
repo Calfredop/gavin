@@ -13,6 +13,15 @@ export interface ContextMenuItem {
   disabled?: boolean;
   // A checkmark-style marker (e.g. the card's current column).
   active?: boolean;
+  // A checkbox: the item states a setting the next pick will obey,
+  // rather than naming the value already chosen. Drawn with its own
+  // marker so a menu can carry both without the two reading alike.
+  checked?: boolean;
+  // Picking this item does NOT dismiss the menu. Only right for an item
+  // that toggles something the menu itself displays -- a checkbox whose
+  // menu closed on the tick would hide the state it just changed, and
+  // the human would have to reopen it to act on the choice they made.
+  keepOpen?: boolean;
   onPick: () => void;
 }
 
@@ -41,6 +50,19 @@ export function openContextMenuFromEvent(e: MouseEvent, entries: ContextMenuEntr
   e.preventDefault();
   e.stopPropagation();
   openContextMenu(e.clientX, e.clientY, entries);
+}
+
+/// Swaps the entries of the menu that is already open, keeping its
+/// position. What a `keepOpen` toggle needs: its own click changed the
+/// state the entries were built from, and the list is a plain array
+/// captured at open time, so the tick it just set would not appear
+/// until the menu was closed and opened again.
+///
+/// A no-op when no menu is up -- a toggle can only be picked from an
+/// open menu, so this is a late/duplicate call rather than a reason to
+/// reopen one somewhere the human is not looking.
+export function setContextMenuEntries(entries: ContextMenuEntry[]): void {
+  contextMenu.update((m) => (m ? { ...m, entries } : m));
 }
 
 export function closeContextMenu(): void {

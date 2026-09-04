@@ -2462,27 +2462,39 @@ export function deleteWorkspaceFromApp(workspaceId: string): Promise<void> {
 /// Start on a rail would otherwise throw them off the Orchestration tab
 /// they pressed it in. Same posture createSessionOnPage already takes
 /// when it drops a rail's agent onto a page that is not on screen.
+///
+/// `withAgent` starts EVERY pane on the workspace's configured agent
+/// instead of a bare shell -- the "New page" dropdown's checkbox. The
+/// agent is resolved here rather than by the caller, because a launch
+/// is more than a command: it also has to arm failure detection, or a
+/// broken agent on the new page reads as one that finished (the same
+/// pairing startMainAgent makes). Resolution is per PAGE, not per pane:
+/// four panes of a 2x2 are four sessions of one workspace's agent.
 export async function createPage(
   workspaceId: string,
   buildTree: (freshIds: string[]) => LayoutNode,
   sessionCount: number,
   name: string,
-  opts: { cwd?: string; activate?: boolean } = {}
+  opts: { cwd?: string; activate?: boolean; withAgent?: boolean } = {}
 ): Promise<string | null> {
   const state = get(layoutState);
   const target = state.workspaces.find((w) => w.id === workspaceId);
   if (!target) return null;
   const previousPageId = target.activePageId;
+  const agent = opts.withAgent ? resolvedAgentFor(workspaceId) : null;
   let freshIds: string[];
   try {
     const sessionCwd = opts.cwd || freshSessionCwd(workspaceId);
     freshIds = await Promise.all(
-      Array.from({ length: sessionCount }, () => backend.createSession(sessionCwd))
+      Array.from({ length: sessionCount }, () =>
+        agent ? backend.createSession(sessionCwd, agent.launchCommand) : backend.createSession(sessionCwd)
+      )
     );
   } catch (e) {
     setError(String(e));
     return null;
   }
+  if (agent) for (const id of freshIds) void armFailureDetection(id, agent.failurePatterns);
   const tree = buildTree(freshIds);
   const pageId = crypto.randomUUID();
   const created = workspace.createPage(state, workspaceId, pageId, name, tree);

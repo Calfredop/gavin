@@ -12,7 +12,7 @@
   } from "./layoutState";
   import { confirmPaneClose } from "./confirmClose";
   import { getActiveWorkspace } from "./workspace";
-  import { contextMenu, openMenuUnder } from "./contextMenu";
+  import { contextMenu, openMenuUnder, setContextMenuEntries, type ContextMenuEntry } from "./contextMenu";
   import { paneControlsApply, newPageEntries, type PagePreset } from "./titleBarActions";
   import { Columns2, Rows2, X, Plus, ChevronDown } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -79,6 +79,13 @@
     }
   }
 
+  // Whether the next preset opens its panes on the workspace's agent or
+  // on bare shells. Component state, not a stored preference: launching
+  // an agent per pane is a deliberate act, and a tick remembered from
+  // last week would spend a workspace's agent slots on a page the human
+  // asked for as terminals.
+  let withAgent = $state(false);
+
   // A preset creates a new page in the active workspace rather than
   // replacing the current one -- the one, unified way to add a page, per
   // this milestone's design. The view switch is what makes the page
@@ -92,7 +99,8 @@
       ws.id,
       preset.build,
       preset.sessionCount,
-      `Page ${ws.pages.length + 1}`
+      `Page ${ws.pages.length + 1}`,
+      { withAgent }
     );
     if (pageId) await switchWorkspaceView(ws.id, "terminal");
   }
@@ -110,14 +118,23 @@
     dismissedMenu = get(contextMenu) !== null;
   }
 
+  function newPageMenu(): ContextMenuEntry[] {
+    return newPageEntries(withAgent, toggleWithAgent, (preset) => void createPresetPage(preset));
+  }
+
+  // The checkbox leaves the menu up, so the list it lives in has to be
+  // re-published for the tick to appear -- the entries are a plain array
+  // captured when the menu opened.
+  function toggleWithAgent(): void {
+    withAgent = !withAgent;
+    setContextMenuEntries(newPageMenu());
+  }
+
   function openNewPageMenu(event: MouseEvent): void {
     const dismissed = dismissedMenu;
     dismissedMenu = false;
     if (dismissed) return;
-    openMenuUnder(
-      event.currentTarget as HTMLElement,
-      newPageEntries((preset) => void createPresetPage(preset))
-    );
+    openMenuUnder(event.currentTarget as HTMLElement, newPageMenu());
   }
 </script>
 

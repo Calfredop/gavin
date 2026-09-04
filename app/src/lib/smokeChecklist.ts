@@ -1381,6 +1381,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Picking a preset adds a page with that layout to the current workspace AND brings it on screen — do it from the Kanban tab and from the app hub as well, not only from a terminal",
         hint: "Sessions start in the workspace's bound root, and the page is named after the count it already had (Page 3, Page 4…).",
       },
+      {
+        id: "bar-new-page-with-agent-toggle",
+        text: "“With agent” heads the menu as a checkbox: clicking it ticks it and the menu STAYS OPEN, so the preset under it is still one click away",
+        hint: "It qualifies the rows under it rather than being a fourth thing to pick. A menu that closed on the tick would hide the state it just set.",
+      },
+      {
+        id: "bar-new-page-with-agent-lands",
+        text: "With it ticked, a preset opens every pane on the workspace's configured agent instead of a bare shell — try 2×2 and confirm all four panes are agents",
+        hint: "The agent is the one Settings names for this workspace; a 2×2 spends four sessions on it.",
+      },
+      {
+        id: "bar-new-page-with-agent-forgets",
+        text: "Untick it, or reopen the menu after adding an agent page, and the box is still whatever you last left it — but a fresh app start has it clear",
+        hint: "Deliberately not a stored preference: a tick remembered from last week would spend agent sessions on a page asked for as terminals.",
+      },
     ],
   },
   {

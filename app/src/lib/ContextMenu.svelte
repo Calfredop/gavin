@@ -15,9 +15,13 @@
     };
   });
 
+  // A toggle acts WITHOUT dismissing: it changed the state the entries
+  // were built from, and its handler re-publishes them (see
+  // setContextMenuEntries), so the tick lands under the cursor that set
+  // it and the pick it qualifies is still one click away.
   function pick(item: ContextMenuItem): void {
     if (item.disabled) return;
-    closeContextMenu();
+    if (!item.keepOpen) closeContextMenu();
     item.onPick();
   }
 
@@ -59,10 +63,11 @@
           class:danger={entry.danger}
           class:active={entry.active}
           disabled={entry.disabled}
-          role="menuitem"
+          role={entry.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+          aria-checked={entry.checked === undefined ? undefined : entry.checked}
           onclick={() => pick(entry)}
         >
-          <span class="marker">{entry.active ? "•" : ""}</span>
+          <span class="marker">{entry.checked ? "✓" : entry.active ? "•" : ""}</span>
           {entry.label}
         </button>
       {/if}

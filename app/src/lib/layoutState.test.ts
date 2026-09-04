@@ -34,6 +34,10 @@ vi.mock("./backend", () => ({
   signalFrontendReady: vi.fn(),
   getSessionNames: vi.fn(),
   setSessionName: vi.fn(),
+  // Resolved by default: armFailureDetection awaits this inside a
+  // try/catch that exists for an OLD daemon, so a mock returning
+  // undefined would look like the refusal it swallows.
+  setFailurePatterns: vi.fn().mockResolvedValue(undefined),
   deleteBoard: vi.fn(),
   // Resolved by default, like getBoardTabs below: loadTabMaps awaits both
   // before startup may leave "connecting", so a mock returning undefined
@@ -160,6 +164,7 @@ import {
   teardown,
   startMainAgent,
   stopMainAgent,
+  agentProfilesStore,
   setWorkspaceColor,
   setWorkspaceFlag,
   setWorkspaceFontSize,
@@ -223,6 +228,9 @@ beforeEach(() => {
   // Module-level store: without this, one test's seeded agent config
   // resolves in the next one.
   gavinTrees.set({});
+  // Module-level store, same reason: the profile table carries the
+  // failure patterns a launch arms.
+  agentProfilesStore.set([]);
   // Module-level store, same reason: without this, a compat verdict set
   // by one test would leak into the next one's assertions.
   daemonCompat.set(null);
@@ -1745,6 +1753,49 @@ describe("createPage", () => {
     expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin-backend");
   });
 
+  // The "New page" dropdown's checkbox. A page of bare shells is still
+  // the default: nothing that already calls createPage passes this.
+  it("starts every pane on the workspace's agent when asked for one", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude --model opus" });
+    vi.mocked(backend.createSession).mockResolvedValueOnce("a").mockResolvedValueOnce("b");
+
+    await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1", { withAgent: true });
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/repos/gavin", "claude --model opus"],
+      ["/repos/gavin", "claude --model opus"],
+    ]);
+  });
+
+  // Without this a broken agent on the new page reads as one that
+  // finished -- the same pairing every other launcher makes.
+  it("arms failure detection on each of those sessions", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: null });
+    agentProfilesStore.set([agentProfile("claude-code", ["API Error:"])]);
+    vi.mocked(backend.createSession).mockResolvedValueOnce("a").mockResolvedValueOnce("b");
+
+    await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1", { withAgent: true });
+
+    expect(vi.mocked(backend.setFailurePatterns).mock.calls).toEqual([
+      ["a", ["API Error:"]],
+      ["b", ["API Error:"]],
+    ]);
+  });
+
+  it("leaves the panes as bare shells when no agent was asked for", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude" });
+    agentProfilesStore.set([agentProfile("claude-code", ["API Error:"])]);
+    vi.mocked(backend.createSession).mockResolvedValue("a");
+
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "Page 1", { withAgent: false });
+
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin");
+    expect(backend.setFailurePatterns).not.toHaveBeenCalled();
+  });
+
   // A rail spawning its own page must not yank the human off whatever
   // they are looking at -- the Orchestration tab they just pressed Start
   // in, usually.
@@ -2722,6 +2773,28 @@ describe("bootstrap seeds the push-fed session maps", () => {
 /// Puts an [agent] block on a workspace's root context, the way a
 /// watcher push would. resolvedAgentFor reads gavinTrees directly, so
 /// this is how a test controls the resolved command/file.
+/// One row of the profile table, carrying the only field a launch
+/// reads off it here: the text this agent prints when it has broken.
+function agentProfile(id: string, failurePatterns: string[]) {
+  return {
+    id,
+    label: id,
+    instructionsFile: "CLAUDE.md",
+    command: "claude",
+    mcpSupported: true,
+    mcpConfigFile: ".mcp.json",
+    promptArgs: "",
+    headlessArgs: "",
+    modelFlag: "",
+    models: [],
+    failurePatterns,
+    failureCauses: [],
+    sessionIdArgs: "",
+    resumeArgs: "",
+    usageProbe: null,
+  };
+}
+
 function seedAgentConfig(
   workspaceId: string,
   agent: { profile: string | null; file: string | null; command: string | null }
