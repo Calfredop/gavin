@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   emptyOrchestration,
   doneColumn,
+  firstColumnOf,
   cardIndex,
   effectiveWorktree,
   stepStateOf,
@@ -42,6 +43,7 @@ import {
   groupUnplacedByStatus,
   availableCards,
   nestedChildCounts,
+  nestedChildrenOf,
   unfinishedCards,
   unplacedCount,
   addCardAsStage,
@@ -156,6 +158,18 @@ describe("doneColumn", () => {
 
   it("is null for a board with no columns", () => {
     expect(doneColumn(board([]))).toBeNull();
+  });
+});
+
+describe("firstColumnOf", () => {
+  it("is the column with the lowest position, whatever the array order", () => {
+    const b = board(["To Do", "In Progress", "Done"]);
+    b.columns = [b.columns[2], b.columns[0], b.columns[1]];
+    expect(firstColumnOf(b.columns)?.name).toBe("To Do");
+  });
+
+  it("is null for a board with no columns", () => {
+    expect(firstColumnOf([])).toBeNull();
   });
 });
 
@@ -2575,6 +2589,33 @@ describe("availableCards", () => {
     const child = nested("child.md");
     const out = availableCards(index([parent, child]), new Set([child.plan.path]));
     expect(out.map((e) => e.plan.path)).toEqual([parent.plan.path]);
+  });
+});
+
+describe("nestedChildrenOf", () => {
+  const index = (plans: PlanFileInfo[]) => cardIndex(tree(plans));
+
+  it("lists the children the plan carries, and nobody else's", () => {
+    const idx = index([
+      plan("big.md", { kind: "plan", status: "To Do" }),
+      plan("other.md", { kind: "plan", status: "To Do" }),
+      plan("one.md", { kind: "task", status: null, parent: "big.md" }),
+      plan("two.md", { kind: "task", status: null, parent: "big.md" }),
+      plan("elsewhere.md", { kind: "task", status: null, parent: "other.md" }),
+      // Free-standing: it has a status of its own, so it is a card on the
+      // board and files itself.
+      plan("free.md", { kind: "task", status: "To Do", parent: "big.md" }),
+    ]);
+    expect(nestedChildrenOf("/ws/.gavin-root/plans/big.md", idx).map((e) => e.plan.fileName)).toEqual([
+      "one.md",
+      "two.md",
+    ]);
+  });
+
+  it("is empty for a plan carrying nothing, and for a path the tree lost", () => {
+    const idx = index([plan("big.md", { kind: "plan", status: "To Do" })]);
+    expect(nestedChildrenOf("/ws/.gavin-root/plans/big.md", idx)).toEqual([]);
+    expect(nestedChildrenOf("/ws/.gavin-root/plans/gone.md", idx)).toEqual([]);
   });
 });
 

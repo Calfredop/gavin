@@ -5,6 +5,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("./dialog", () => ({
+  askConfirm: vi.fn(),
+  askConfirmChecked: vi.fn(),
+}));
 vi.mock("./backend", () => ({
   setPlanFrontmatterField: vi.fn(),
   getBoard: vi.fn(),
@@ -81,6 +85,7 @@ vi.mock("./workspace", () => {
 });
 
 import * as backend from "./backend";
+import { askConfirmChecked } from "./dialog";
 import { findSessionLocation } from "./workspace";
 import { requestCardReview } from "./codeReviewActions";
 import { layoutState } from "./layoutState";
@@ -171,6 +176,40 @@ beforeEach(() => {
 });
 
 describe("buildCardMenuEntries", () => {
+  // The menu's "Move to Done" is the same write the board's drag makes,
+  // so it owes the human the same warning (cardCompletion.ts).
+  describe("Move to, on a plan carrying nested tasks", () => {
+    const withChild = () =>
+      card("plan", "To Do", {
+        nestedChildren: [card("task", null, { id: "/p/lens.md", title: "Tree lens", fileName: "lens.md", parent: "t.md" })],
+      });
+    function pick(entries: ReturnType<typeof buildCardMenuEntries>, label: string): void {
+      const entry = entries.find((e): e is ContextMenuItem => !isSeparator(e) && e.label === label);
+      entry?.onPick?.();
+    }
+
+    beforeEach(() => {
+      vi.mocked(askConfirmChecked).mockReset();
+      vi.mocked(backend.setPlanFrontmatterField).mockReset();
+      vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p: string) => p);
+    });
+
+    it("asks first, and does not file the plan when the human cancels", async () => {
+      vi.mocked(askConfirmChecked).mockResolvedValue({ confirmed: false, checked: false });
+      pick(buildCardMenuEntries(withChild(), hooks()), "Move to Done");
+      await vi.waitFor(() => expect(askConfirmChecked).toHaveBeenCalled());
+      expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    });
+
+    it("asks nothing on a move that is not into the done column", async () => {
+      pick(buildCardMenuEntries(card("plan", "Done", { nestedChildren: withChild().nestedChildren }), hooks()), "Move to To Do");
+      await vi.waitFor(() =>
+        expect(backend.setPlanFrontmatterField).toHaveBeenCalledWith("/p/t.md", "status", "To Do")
+      );
+      expect(askConfirmChecked).not.toHaveBeenCalled();
+    });
+  });
+
   it("a note gets open/move/delete but no run entry", () => {
     const l = labels(buildCardMenuEntries(card("note", "To Do"), hooks()));
     expect(l).toContain("Open");

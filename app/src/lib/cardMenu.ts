@@ -9,6 +9,7 @@ import { kanbanState, cardSessionFor } from "./kanbanState";
 import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
 import { patchPlanField } from "./gavinState";
 import { requestedExplorerFile } from "./planExplorer";
+import { guardCompletion, subjectFromCard } from "./cardCompletion";
 import { jumpToBoundSession, relaunchCard, developCard, resumeCard } from "./cardRunActions";
 import { requestCardReview } from "./codeReviewActions";
 import { developAvailable } from "./cardRun";
@@ -232,11 +233,22 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       label: `Move to ${col.name}`,
       active,
       disabled: active,
+      // Filing a plan takes its nested tasks with it, so the same
+      // question the board's drag asks is asked here (cardCompletion.ts)
+      // -- a card menu and a drag must not disagree about what a status
+      // write costs.
       onPick: () => {
-        void backend
-          .setPlanFrontmatterField(card.id, "status", col.name)
-          .then(() => patchPlanField(workspaceId, card.id, "status", col.name))
-          .catch((e) => hooks.reportError(String(e)));
+        void (async () => {
+          const decision = await guardCompletion(workspaceId, subjectFromCard(card), col.name, columns);
+          if (decision.error) return hooks.reportError(decision.error);
+          if (!decision.proceed) return;
+          try {
+            await backend.setPlanFrontmatterField(card.id, "status", col.name);
+            patchPlanField(workspaceId, card.id, "status", col.name);
+          } catch (e) {
+            hooks.reportError(String(e));
+          }
+        })();
       },
     });
   }

@@ -258,6 +258,22 @@ export function doneColumnOf(columns: Column[]): Column | null {
   return best;
 }
 
+/// Its opposite, by the same rule read the other way: the column with
+/// the LOWEST `position`, which is where work that has not started
+/// belongs. Breaking a nested task out of its parent (cardCompletion.ts)
+/// files it here rather than into whatever column the parent was in --
+/// inheriting the parent's column would claim the child was under way.
+///
+/// Lives beside `doneColumnOf` for the reason that one exists: which
+/// column is which is decided in one place, or two surfaces disagree.
+export function firstColumnOf(columns: Column[]): Column | null {
+  let best: Column | null = null;
+  for (const c of columns) {
+    if (!best || c.position < best.position) best = c;
+  }
+  return best;
+}
+
 export function cardIndex(tree: GavinTree | undefined): Map<string, CardEntry> {
   const index = new Map<string, CardEntry>();
   if (!tree || tree.rootMissing) return index;
@@ -2447,6 +2463,22 @@ export function availableCards(
 /// the drawer as one row like any other and the children the human wrote
 /// would simply have vanished from the panel. The number is what says
 /// they went INTO the plan rather than away.
+/// The nested children of ONE plan, in tree order -- what a surface
+/// holding `CardEntry`s (the rail header's "Move all to …") needs when
+/// it has to name what a status write is about to carry with it. The
+/// board's own cards already carry `nestedChildren`; this is the same
+/// list for the side of the app that reads the tree instead.
+export function nestedChildrenOf(
+  parentPath: string,
+  cards: Map<string, CardEntry>
+): CardEntry[] {
+  const plans = planIndex(cards);
+  // Matched by path, never by object identity: the map these entries
+  // come from is rebuilt on every tree push, and a `$state` proxy is
+  // never identical to the object it wraps.
+  return [...cards.values()].filter((e) => nestedParent(e, plans)?.plan.path === parentPath);
+}
+
 export function nestedChildCounts(cards: Map<string, CardEntry>): Map<string, number> {
   const plans = planIndex(cards);
   const counts = new Map<string, number>();

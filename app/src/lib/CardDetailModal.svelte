@@ -52,7 +52,7 @@
   import { historyBlockedReason } from "./runHistory";
   import RunHistoryModal from "./RunHistoryModal.svelte";
   import { resumeTrail } from "./autoResumeState";
-  import { doneColumnOf, findCardPlacement, stepStateOf } from "./orchestration";
+  import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "./orchestration";
   import { adoptMemory, isMemoryCard } from "./memoryCard";
   import {
     orchestrations,
@@ -60,6 +60,7 @@
     removeCardFromRailAction,
   } from "./orchestrationState";
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
+  import { breakOutChildren, guardCompletion, subjectFromCard } from "./cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
   import { interruptedCardNote } from "./orphan";
@@ -210,6 +211,24 @@
     }
   }
 
+  // The one escape from nesting, offered where the human is looking at
+  // the children rather than only at the moment the plan is being filed
+  // (cardCompletion.ts). It is a `status:` write and nothing else: the
+  // child becomes a card of its own in the first column and KEEPS its
+  // `parent:` link, which is what makes it different from "Un-parent"
+  // right beside it.
+  const breakOutTarget = $derived(firstColumnOf(columns));
+  async function breakOutChild(child: CardView): Promise<void> {
+    errorMessage = null;
+    if (!breakOutTarget) return;
+    const decision = await breakOutChildren(
+      workspaceId,
+      [{ path: child.id, title: child.title }],
+      breakOutTarget.name
+    );
+    errorMessage = decision.error;
+  }
+
   // --- field writes (surgical, patch-on-success) -----------------------
   async function writeField(
     key: "title" | "status" | "priority" | "labels" | "attachments",
@@ -256,8 +275,19 @@
   $effect(() => {
     statusChoice = card.status ?? "";
   });
-  function commitStatus(): void {
-    if (statusChoice !== (card.status ?? "")) void writeField("status", statusChoice);
+  // Filing a plan carries its nested tasks with it, so the select owes
+  // the human the same question the board's drag asks (cardCompletion.ts).
+  // On any answer but "go", the select is put back: leaving it showing a
+  // column the card is not in would be the modal telling a lie.
+  async function commitStatus(): Promise<void> {
+    if (statusChoice === (card.status ?? "")) return;
+    const decision = await guardCompletion(workspaceId, subjectFromCard(card), statusChoice, columns);
+    if (!decision.proceed) {
+      errorMessage = decision.error;
+      statusChoice = card.status ?? "";
+      return;
+    }
+    await writeField("status", statusChoice);
   }
 
   let priority = $state<Priority>("none");
@@ -761,7 +791,7 @@
   {/if}
   <label class="row">
     <span class="label">Status</span>
-    <select bind:value={statusChoice} onchange={commitStatus}>
+    <select bind:value={statusChoice} onchange={() => void commitStatus()}>
       {#if nested}
         <option value="">(nested in {card.parentTitle})</option>
       {:else if card.status === null}
@@ -906,15 +936,37 @@
   {#if children.length > 0}
     <div class="section">
       <div class="section-title">Tasks</div>
+      <!-- Said once, above the list: a nested task has no status of its
+           own, so nothing else on this modal can tell the human that
+           finishing this plan finishes it too. -->
+      {#if children.some((c) => c.status === null)}
+        <p class="quiet">
+          A nested task has no status of its own — it is done when this plan is, and travels
+          into plans/done/ with it. Break one out to give it a column of its own; it keeps
+          the link back here.
+        </p>
+      {/if}
       {#each children as child (child.id)}
         <div class="child-row">
           <button type="button" class="child-open" title="Open this task's card" onclick={() => onOpenCard(child.id)}>
             <span class="child-title" title={child.title}>{child.title}</span>
             <span class="child-status">{child.status ?? "(nested)"}</span>
           </button>
-          <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
-            Un-parent
-          </button>
+          <div class="child-actions">
+            {#if child.status === null && breakOutTarget}
+              <button
+                type="button"
+                class="unparent"
+                title={`Give it its own card in ${breakOutTarget.name} — it stays part of this plan`}
+                onclick={() => void breakOutChild(child)}
+              >
+                Break out
+              </button>
+            {/if}
+            <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
+              Un-parent
+            </button>
+          </div>
         </div>
       {/each}
     </div>
@@ -1409,6 +1461,14 @@
     font-family: monospace;
     font-size: 0.75em;
     padding: 0 6px;
+  }
+  /* The row's actions travel together against the right edge: with the
+     margin on each button, a second one would push the first away from
+     it rather than sit beside it. */
+  .child-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     margin-left: auto;
   }
   .check-item input {

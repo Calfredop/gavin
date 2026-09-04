@@ -27,6 +27,7 @@
   import {
     cardIndex,
     doneColumn,
+    firstColumnOf,
     railCardsToMove,
     detectConflicts,
     numberConflicts,
@@ -98,6 +99,7 @@
     addTemplateToStageAction,
     setStepParamsAction,
     moveRailCardsAction,
+    breakOutNestedCardAction,
     clearDoneStepsAction,
     stepAttentionsByWorkspace,
     setStageModeAction,
@@ -773,6 +775,12 @@
       {groupsBlocked}
       onBindWorktree={(railId) => (binding = railId)}
       onMakeSequential={(stageId) => void makeStageSequentialAction(workspaceId, stageId)}
+      breakOutColumn={firstColumnOf(board?.columns ?? [])?.name ?? null}
+      onBreakOut={(cardPath) => {
+        void breakOutNestedCardAction(workspaceId, cardPath).then((err) => {
+          if (err) cardWriteError = err;
+        });
+      }}
     />
   {/if}
 

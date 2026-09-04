@@ -135,6 +135,15 @@
 
   const cascade = $derived(columnDeletionPlan(planCards, allCards));
 
+  // What a MOVE carries, as opposed to what a delete does. Relocating
+  // this column's cards rewrites each plan's `status:`, and a nested task
+  // has none of its own -- it reads as whatever its parent reads as, and
+  // lands in `plans/done/` with it when the column picked is Done. The
+  // prompt says so here rather than raising a second dialog of its own
+  // (cardCompletion.ts): two prompts in a row is how a human learns to
+  // dismiss the second one unread.
+  const travellingChildren = $derived(planCards.reduce((n, c) => n + c.nestedChildren.length, 0));
+
   function requestDeleteColumn(): void {
     if (filtered) return;
     if (planCards.length === 0) {
@@ -435,6 +444,11 @@
     lines={[
       `${planCards.length} ${planCards.length === 1 ? "card is" : "cards are"} in this column.`,
       `Move: each card's status: is rewritten to the column you pick.`,
+      ...(travellingChildren > 0
+        ? [
+            `${travellingChildren} nested ${travellingChildren === 1 ? "task has" : "tasks have"} no status of ${travellingChildren === 1 ? "its" : "their"} own and ${travellingChildren === 1 ? "follows its plan" : "follow their plans"} into that column.`,
+          ]
+        : []),
       `Leave: the cards fall back to an auto column named "${column.name}".`,
       `Cascade: ${cascade.files.length} card ${cascade.files.length === 1 ? "file" : "files"} deleted (nested tasks included)` +
         (cascade.unparent.length > 0 ? `; ${cascade.unparent.length} elsewhere un-parented.` : "."),

@@ -19,6 +19,16 @@
     /// The repair for a parallel stage (grouping spec G5): tell the group
     /// to run its members one at a time. The group stays whole.
     onMakeSequential: (stageId: string) => void;
+    /// The repair for a nested task placed on a rail beside its parent:
+    /// give it a status, which makes it a card of its own instead of one
+    /// the plan's agent already carries (cardCompletion.ts). Both steps
+    /// stay where the human put them -- this settles which of the two is
+    /// the piece of work, rather than taking one off.
+    onBreakOut: (cardPath: string) => void;
+    /// The column that repair would file it into, for the button's own
+    /// words. Null on a board with no columns, where the button cannot
+    /// name a destination and so is not offered.
+    breakOutColumn: string | null;
     /// featureBlockedReason(compat, "groups"), or null when the daemon can
     /// take a mode write. The repair now flips `mode` (Task 6) instead of
     /// splitting the stage -- an older daemon drops that field silently,
@@ -34,6 +44,8 @@
     tools,
     onBindWorktree,
     onMakeSequential,
+    onBreakOut,
+    breakOutColumn,
     groupsBlocked,
   }: Props = $props();
 
@@ -97,6 +109,15 @@
                 onclick={() => onMakeSequential(conflict.stageId as string)}
               >
                 Run in sequence
+              </button>
+            {:else if conflict.kind === "nested-with-parent" && breakOutColumn}
+              <button
+                type="button"
+                class="fix"
+                title={`Give it a status of its own in ${breakOutColumn} — it stays part of the plan`}
+                onclick={() => onBreakOut(conflict.cardPath)}
+              >
+                Break out
               </button>
             {/if}
           </li>
