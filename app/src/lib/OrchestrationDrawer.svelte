@@ -34,14 +34,22 @@
     /// board and on a rail alike -- so the plan's row says how many it
     /// carries rather than letting them look lost.
     nestedCounts: Map<string, number>;
-    /// Clicking a row adds it to this rail as its own stage; null when
-    /// there is no rail to add to yet. The tab renders this drawer with
-    /// no rails too (it used to withhold it with the whole body), so null
-    /// is a state the rows are SEEN in: they stay listed but inert -- no
-    /// drag handle, click-to-add disabled -- the same degradation
-    /// toolsBlocked gives a tool row, and the hint says to add a rail.
+    /// Clicking a TOOL or GROUP row adds it to this rail as its own
+    /// stage; null when there is no rail to add to yet. The tab renders
+    /// this drawer with no rails too (it used to withhold it with the
+    /// whole body), so null is a state the rows are SEEN in: those rows
+    /// stay listed but inert -- no drag handle, click-to-add disabled --
+    /// the same degradation toolsBlocked gives a tool row, and the hint
+    /// says to add a rail. A CARD row only loses its drag handle: a
+    /// press on one reads the card, which needs no rail at all.
     targetRailId: string | null;
-    onAdd: (cardPath: string) => void;
+    /// A press on a card row opens that card's detail modal -- the row
+    /// IS a kanban card, and the tab already owns the board's modal for
+    /// its placed steps. Placement from here is the deliberate gesture:
+    /// drag the row onto the rail you mean, or use that rail's own
+    /// "+ Add step". (It used to append to whichever rail happened to be
+    /// first, a target the row never named.)
+    onOpenCard: (cardPath: string) => void;
     /// The tab's search box holds a query: the rows below are the
     /// matches, not the whole pool, and dragging is off.
     filtering?: boolean;
@@ -69,7 +77,7 @@
     templates,
     nestedCounts,
     targetRailId,
-    onAdd,
+    onOpenCard,
     onAddTool,
     onManageTools,
     onAddTemplate,
@@ -144,15 +152,17 @@
     {#if !targetRailId}
       <!-- No rail means nothing to place onto: the rows below stay
            listed, so the human can see what a first rail would be built
-           from, but carry no drag handle and no click-to-add. The tab
-           keeps this drawer on screen with no rails on purpose. -->
+           from, but carry no drag handle, and the tool and group rows
+           no click-to-add. A card row stays live -- opening one is
+           reading, not placing. The tab keeps this drawer on screen with
+           no rails on purpose. -->
       <p class="hint quiet">No rail to place these on yet — add one with “+ Rail”.</p>
     {:else if filtering}
       <p class="hint quiet">Filtered — clear the search to drag.</p>
     {:else if dragging && $orchDragState?.kind === "step"}
       <p class="hint">Drop here to take a step off its rail.</p>
     {:else if !dragging}
-      <p class="hint quiet">Drag a card or a tool onto a rail, or click to append it.</p>
+      <p class="hint quiet">Drag onto a rail. Click a card to open it, a tool to append it.</p>
     {/if}
 
     <button
@@ -259,11 +269,10 @@
                 type="button"
                 data-orch-card={targetRailId ? entry.plan.path : undefined}
                 class:dragging={$orchDragState?.id === entry.plan.path}
-                disabled={!targetRailId}
                 title={nested > 0
                   ? `Carries ${nested} nested ${nested === 1 ? "task" : "tasks"} — placing this plan places them too`
                   : undefined}
-                onclick={() => onAdd(entry.plan.path)}
+                onclick={() => onOpenCard(entry.plan.path)}
               >
                 {#if entry.plan.kind === "plan"}<ListChecks size={12} />{:else}<FileText size={12} />{/if}
                 <span>{entry.plan.title}</span>

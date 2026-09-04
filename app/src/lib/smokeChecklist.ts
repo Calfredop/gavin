@@ -2832,13 +2832,38 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     items: [
       {
         id: "orch-no-rails-drawer-shown",
-        text: "On a workspace with no rails the Orchestration tab still shows the Unplaced drawer at its right edge — its cards, Groups and Tools listed, greyed — and “No rails yet” stands in the empty strip beside it",
+        text: "On a workspace with no rails the Orchestration tab still shows the Unplaced drawer at its right edge — its cards live, its Groups and Tools listed but greyed — and “No rails yet” stands in the empty strip beside it",
         hint: "Delete every rail, or open a fresh workspace. Before this the whole lower half was that one line and the drawer — the list a first rail is built from — was nowhere. The drawer's hint should read “No rail to place these on yet — add one with “+ Rail””.",
       },
       {
         id: "orch-no-rails-drawer-inert",
-        text: "With no rails, no drawer row drags and none click-adds; press “+ Rail” and the same rows light up, click-add to the new rail and drag onto it",
-        hint: "Pressing and moving on a greyed card row must show no drag ghost — the rows carry no drag handle at all in this state, not merely a disabled look. The new rail is the drawer's click-to-add target the moment it exists.",
+        text: "With no rails, no drawer row drags and no tool or group row click-adds; press “+ Rail” and the same rows light up, click a tool onto the new rail and drag onto it",
+        hint: "Pressing and moving on a card row must show no drag ghost — the rows carry no drag handle at all in this state, not merely a disabled look. A card row still CLICKS, though: it opens the card, which needs no rail. The new rail is the drawer's click-to-add target for tools and groups the moment it exists.",
+      },
+    ],
+  },
+  {
+    title: "Opening a card from the Unplaced drawer",
+    items: [
+      {
+        id: "orch-drawer-click-opens",
+        text: "Clicking a card row in the Orchestration tab's Unplaced drawer opens that card's detail modal — and places nothing on any rail",
+        hint: "It used to append the card to whichever rail was first, a target the row never named. Check the rails after the press: no new step anywhere. The modal is the board's own — same columns, same labels, same nested children — so an edit made in it shows on the Kanban tab too.",
+      },
+      {
+        id: "orch-drawer-click-still-places",
+        text: "Placement still works both ways: drag a card row onto the rail you mean, or use that rail's “+ Add step”; a Tools or Groups row still appends on a click",
+        hint: "The drawer's hint says which is which: “Drag onto a rail. Click a card to open it, a tool to append it.” A press-and-move on a card row must still raise the drag ghost — opening on click cannot have cost the row its drag.",
+      },
+      {
+        id: "orch-drawer-click-no-rail",
+        text: "On a workspace with no rails a card row still opens its modal, while the Tools and Groups rows stay greyed and inert",
+        hint: "Reading a card needs no rail; appending one does. The card row must not look or behave disabled here even though nothing can be placed yet.",
+      },
+      {
+        id: "orch-drawer-click-follows-edit",
+        text: "Moving that card to Done from the modal drops it into the drawer's collapsed Done group and out of the “Unplaced (n)” count, with the modal still open",
+        hint: "The row and the modal read one projection. If the row stays put in its old group, the drawer is holding a snapshot rather than the board's live cards.",
       },
     ],
   },

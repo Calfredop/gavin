@@ -419,10 +419,11 @@
   const unplacedGroups = $derived(unplaced.groups);
   const shownRails = $derived(rails.filter((r) => lens.railShown(r.id)));
 
-  /// The drawer's click-to-add appends to the FIRST rail. The drawer is
-  /// rendered with no rails too (it disables every row then, on the null
-  /// target it is handed), so a stray call in that state does nothing
-  /// rather than throw on `rails[0].id`.
+  /// The drawer's click-to-add -- tool and group rows only -- appends to
+  /// the FIRST rail. The drawer is rendered with no rails too (it
+  /// disables those rows then, on the null target it is handed), so a
+  /// stray call in that state does nothing rather than throw on
+  /// `rails[0].id`.
   function onFirstRail(place: (rail: Rail) => void): void {
     const rail = rails[0];
     if (rail) place(rail);
@@ -859,14 +860,14 @@
         {templates}
         {nestedCounts}
         targetRailId={rails[0]?.id ?? null}
-        onAdd={(cardPath) =>
-          onFirstRail((rail) => void addStepAsStageAction(workspaceId, rail.id, cardPath))}
+        onOpenCard={(path) => (openCardPath = path)}
         onAddTool={(toolId) =>
           onFirstRail((rail) => void addToolAsStepAction(workspaceId, rail.id, toolId))}
         onAddTemplate={(templateId) => {
-          // The click-to-add path every drawer row gets: appended as its
-          // own new group at this rail's end, the same "past the end"
-          // append addToolAsStepAction gives a clicked tool.
+          // The click-to-add path a tool or group row gets: appended as
+          // its own new group at this rail's end, the same "past the end"
+          // append addToolAsStepAction gives a clicked tool. (A CARD row
+          // opens instead -- see the drawer's onOpenCard.)
           const template = templates.find((t) => t.id === templateId);
           if (template) {
             onFirstRail(
@@ -1038,8 +1039,9 @@
     <div class="picker-body">
       <h3>Add a step</h3>
       <!-- Both step kinds, because the drawer's click-to-add can only
-           reach the FIRST rail; this picker is how a card or a tool
-           lands on a specific one without dragging. -->
+           reach the FIRST rail and a card row does not append at all;
+           this picker is how a card or a tool lands on a specific rail
+           without dragging. -->
       <p class="pick-head">Cards</p>
       {#if pickable.length === 0}
         <!-- Two different nothings, and the human is owed the difference:
