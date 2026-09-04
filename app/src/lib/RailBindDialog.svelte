@@ -17,6 +17,23 @@
   }
   let { workspaceId, rail, onClose }: Props = $props();
 
+  /// Which rail this dialog is for, read ONCE. `rail` is a lazy prop over
+  /// the hub view's `{@const bindingRail = orch.rails.find(r => r.id ===
+  /// binding)}`, so it resolves the rail through the very state `onClose`
+  /// clears: every read after the close re-runs that derived against a
+  /// null `binding` and hands back `undefined`. Both of the fork dialog's
+  /// callbacks run after that close on purpose -- the dialog must not
+  /// hang on a save round trip -- and reading `rail.id` there threw a
+  /// TypeError the calling `void submit()` swallowed, which is what left
+  /// a freshly cut worktree with no binding and no setup session while
+  /// the button looked like it had done nothing at all.
+  ///
+  /// A snapshot is safe because the id is what SELECTS this dialog: the
+  /// hub unmounts it to point at another rail, so it cannot change while
+  /// the dialog is open. Every action here goes through it; only the
+  /// rail's name stays live, so a rename still redraws the header.
+  const railId = rail.id;
+
   let forking = $state(false);
 
   const worktrees = $derived($gitStore[workspaceId]?.refs?.worktrees ?? []);
@@ -97,7 +114,7 @@
     const pageId = await createPage(workspaceId, (ids) => presetSingle(ids[0]), 1, rail.name, {
       cwd: railCheckout ?? undefined,
     });
-    if (pageId) await bindRailAction(workspaceId, rail.id, { pageId });
+    if (pageId) await bindRailAction(workspaceId, railId, { pageId });
   }
 
   /// Creates the branch WITHOUT checking it out: the rail's own Start is
@@ -109,7 +126,7 @@
     const ok = await createBranch(workspaceId, name, draftFrom === "HEAD" ? null : draftFrom, false);
     creating = false;
     if (!ok) return; // the Git tab's error banner carries git's message
-    await bindRailAction(workspaceId, rail.id, { branch: name });
+    await bindRailAction(workspaceId, railId, { branch: name });
     naming = false;
     draftBranch = "";
   }
@@ -120,17 +137,18 @@
     {workspaceId}
     agentCommand={resolvedAgentFor(workspaceId).launchCommand}
     branchSeed={seedBranch}
-    onRunInWorktree={(path, command) => void runOnRailPage(workspaceId, rail.id, path, command)}
+    onRunInWorktree={(path, command) => void runOnRailPage(workspaceId, railId, path, command)}
     allowSpawn={false}
     switchAfter={false}
     onPicked={async (path) => {
       // Closed first, awaited second: the dialog must not hang on a save
       // round trip, but the fork dialog does have to wait for the binding
       // before it opens the setup session, so that session's page is
-      // created in the new worktree.
+      // created in the new worktree. `railId`, never `rail.id`: the close
+      // below is exactly what makes that prop read `undefined`.
       forking = false;
       onClose();
-      await bindRailAction(workspaceId, rail.id, { worktreePath: path });
+      await bindRailAction(workspaceId, railId, { worktreePath: path });
     }}
     onClose={() => (forking = false)}
   />
@@ -149,7 +167,7 @@
             <button
               type="button"
               class:on={rail.worktreePath === null}
-              onclick={() => void bindRailAction(workspaceId, rail.id, { worktreePath: null })}
+              onclick={() => void bindRailAction(workspaceId, railId, { worktreePath: null })}
             >
               <span class="path">None — each card's own folder</span>
             </button>
@@ -159,7 +177,7 @@
               <button
                 type="button"
                 class:on={rail.worktreePath === wt.path}
-                onclick={() => void bindRailAction(workspaceId, rail.id, { worktreePath: wt.path })}
+                onclick={() => void bindRailAction(workspaceId, railId, { worktreePath: wt.path })}
               >
                 <span class="path">{wt.path}</span>
                 <span class="branch">
@@ -188,7 +206,7 @@
               type="button"
               class:on={!rail.branch}
               disabled={Boolean(branchBlocked)}
-              onclick={() => void bindRailAction(workspaceId, rail.id, { branch: null })}
+              onclick={() => void bindRailAction(workspaceId, railId, { branch: null })}
             >
               <span class="path">None — whatever is checked out</span>
             </button>
@@ -200,7 +218,7 @@
                 type="button"
                 class:on={rail.branch === b.name}
                 disabled={Boolean(branchBlocked)}
-                onclick={() => void bindRailAction(workspaceId, rail.id, { branch: b.name })}
+                onclick={() => void bindRailAction(workspaceId, railId, { branch: b.name })}
               >
                 <span class="path">{b.name}</span>
                 {#if where === railCheckout && where !== null}
@@ -263,7 +281,7 @@
             <button
               type="button"
               class:on={rail.pageId === null}
-              onclick={() => void bindRailAction(workspaceId, rail.id, { pageId: null })}
+              onclick={() => void bindRailAction(workspaceId, railId, { pageId: null })}
             >
               <span class="path">None — a page of its own, made at its first launch</span>
             </button>
@@ -273,7 +291,7 @@
               <button
                 type="button"
                 class:on={rail.pageId === page.id}
-                onclick={() => void bindRailAction(workspaceId, rail.id, { pageId: page.id })}
+                onclick={() => void bindRailAction(workspaceId, railId, { pageId: page.id })}
               >
                 <span class="path">{page.name}</span>
               </button>
