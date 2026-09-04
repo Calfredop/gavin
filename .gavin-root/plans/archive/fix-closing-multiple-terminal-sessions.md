@@ -2,7 +2,7 @@
 order: 13312
 kind: task
 title: [fix] closing multiple terminal sessions
-status: To Do
+status: Done
 ---
 Closing multiple terminal sessions (from task manager, kanban archive, closing workspace’s page) makes the ui hang. Make the process async from ui.
 
