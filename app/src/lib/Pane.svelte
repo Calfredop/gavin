@@ -12,6 +12,8 @@
     switchToTab,
     addTab,
     closeSession,
+    splitPane,
+    closePane,
     focusPane,
     setSessionName,
     openBoardInSplit,
@@ -25,15 +27,16 @@
   import { linkedCardFor, linkForCardPath, type LinkedCard } from "./cardTabLink";
   import { chipTooltip, runBaseline } from "./runChanges";
   import { nearestContext } from "./planBoard";
-  import { confirmTabClose } from "./confirmClose";
+  import { confirmTabClose, confirmPaneClose } from "./confirmClose";
   import { restoredBadge, type RestoredBadge } from "./orphan";
   import { endSessionOrphan } from "./orphanActions";
   import { dirtyPaths } from "./fileEditing";
   import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
-  import { X, Plus, Kanban, Pin, ListChecks, FileDiff } from "@lucide/svelte";
+  import { X, Plus, Kanban, Pin, ListChecks, FileDiff, Columns2, Rows2 } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
+  import NewPageButton from "./NewPageButton.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
@@ -48,6 +51,7 @@
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import { tooltip } from "./tooltip";
+  import { wheelScrollsSideways } from "./wheelScroll";
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel } from "./paths";
   import {
     setDragPayload,
@@ -278,6 +282,23 @@
     return gitIndicator(status.dirty);
   }
 
+  // The three pane controls, on the pane. They used to live in the app's
+  // title bar and act on `focusedSessionId`, which is why that bar had to
+  // withdraw them on every hub tab: the focused pane survives a switch to
+  // Kanban, so Split there spawned a session into a page nowhere on
+  // screen and Close Pane killed one. Read off `active` instead and the
+  // question cannot come up -- the pane doing the splitting is the one
+  // whose bar was clicked, and it is by definition on screen.
+  async function split(direction: "row" | "column"): Promise<void> {
+    await splitPane(active, direction);
+  }
+
+  async function handleClosePane(): Promise<void> {
+    if (await confirmPaneClose(active)) {
+      await closePane(active);
+    }
+  }
+
   function startEditing(sessionId: string): void {
     // File, board and card tabs are never renameable -- their labels are
     // exact.
@@ -443,172 +464,196 @@
 </script>
 
 <div class="pane-wrapper">
-  <div class="tab-bar" draggable={editingSessionId === null} ondragstart={handlePaneDragStart}>
-    {#each leaf.tabs as sessionId, tabIndex (sessionId)}
-      <button
-        class="tab"
-        class:active={sessionId === active}
-        class:focused={sessionId === active && isFocused}
-        class:drop-before={tabReorderState?.sessionId === sessionId && tabReorderState.position === "before"}
-        class:drop-after={tabReorderState?.sessionId === sessionId && tabReorderState.position === "after"}
-        draggable={editingSessionId !== sessionId}
-        ondragstart={(e) => handleTabDragStart(e, sessionId)}
-        ondragover={(e) => handleTabDragOver(e, sessionId)}
-        ondragleave={clearTabReorder}
-        ondragend={clearTabReorder}
-        ondrop={(e) => handleTabDrop(e, sessionId, tabIndex)}
-        onclick={() => switchToTab(sessionId)}
-        class:pinned={isPinnedTab(sessionId)}
-        oncontextmenu={(e) => openTabMenu(e, sessionId)}
-      >
-        {#if isPinnedTab(sessionId)}
-          <span class="pin-glyph" title="Pinned"><Pin size={10} /></span>
-        {/if}
-        <!-- Only the focused pane: ⌘-digits act on the focused pane's
-             tabs, so badging any other pane would be a lie. -->
-        {#if $hintMode === "cmd" && isFocused}
-          {@const digit = hintDigitFor(tabIndex, leaf.tabs.length)}
-          {#if digit !== null}
-            <ShortcutHint text={String(digit)} />
+  <div class="tab-bar">
+    <!-- The tabs scroll under the actions rather than pushing them off
+         the pane: a pane with six tabs open must still offer Close Pane.
+         The pane drag lives on the strip, not the bar around it, so
+         grabbing an action button never starts one. -->
+    <div
+      class="tab-strip"
+      use:wheelScrollsSideways
+      draggable={editingSessionId === null}
+      ondragstart={handlePaneDragStart}
+    >
+        {#each leaf.tabs as sessionId, tabIndex (sessionId)}
+        <button
+          class="tab"
+          class:active={sessionId === active}
+          class:focused={sessionId === active && isFocused}
+          class:drop-before={tabReorderState?.sessionId === sessionId && tabReorderState.position === "before"}
+          class:drop-after={tabReorderState?.sessionId === sessionId && tabReorderState.position === "after"}
+          draggable={editingSessionId !== sessionId}
+          ondragstart={(e) => handleTabDragStart(e, sessionId)}
+          ondragover={(e) => handleTabDragOver(e, sessionId)}
+          ondragleave={clearTabReorder}
+          ondragend={clearTabReorder}
+          ondrop={(e) => handleTabDrop(e, sessionId, tabIndex)}
+          onclick={() => switchToTab(sessionId)}
+          class:pinned={isPinnedTab(sessionId)}
+          oncontextmenu={(e) => openTabMenu(e, sessionId)}
+        >
+          {#if isPinnedTab(sessionId)}
+            <span class="pin-glyph" title="Pinned"><Pin size={10} /></span>
           {/if}
-        {/if}
-        {#if editingSessionId === sessionId}
-          <input
-            class="tab-label-input"
-            bind:this={editInput}
-            bind:value={editValue}
-            onclick={(e) => e.stopPropagation()}
-            onblur={commitEdit}
-            onkeydown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitEdit();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancelEdit();
-              }
-            }}
-          />
-        {:else}
-          <span
-            class="tab-label"
-            use:tooltip={tabTooltip(sessionId)}
-            ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span
-          >
-        {/if}
-        {#if tabStatusBadge(sessionId)}
-          {@const status = tabStatusBadge(sessionId)}
-          {#if status}<StatusBadge indicator={status} size={10} />{/if}
-        {/if}
-        {#if fileTabPath(sessionId) && $dirtyPaths.has(fileTabPath(sessionId) ?? "")}
-          <StatusBadge indicator={unsavedEditsIndicator()} size={10} />
-        {/if}
-        {#if tabGitBadge(sessionId)}
-          {@const git = tabGitBadge(sessionId)}
-          {#if git}<StatusBadge indicator={git} size={10} />{/if}
-        {/if}
-        <!-- Both chips split their answer in beside the agent rather
-             than taking the human away from it: the plan opens as a pane
-             to the right, and so does the diff. The jump to the board or
-             to this card's rail did not disappear with the old chip --
-             it moved one click in, onto the plan panel itself, where it
-             sits next to the card it would navigate to. -->
-        {#if linkedCard(sessionId)}
-          {@const link = linkedCard(sessionId)}
-          <span
-            class="card-link"
-            aria-label="Show the plan this agent is running"
-            use:tooltip={`Show plan · ${link?.title}`}
-            onclick={(e) => {
-              e.stopPropagation();
-              const ws = getActiveWorkspace($layoutState);
-              if (link && ws) void openCardInSplit(sessionId, ws.id, link.path, "plan");
-            }}
-          >
-            <ListChecks size={11} />
-          </span>
-        {/if}
-        {#if runChangesFor(sessionId)}
-          {@const run = runChangesFor(sessionId)}
-          <span
-            class="card-link"
-            aria-label="See what this run changed"
-            use:tooltip={run ? chipTooltip(run.baseSha) : undefined}
-            onclick={(e) => {
-              e.stopPropagation();
-              const ws = getActiveWorkspace($layoutState);
-              if (run && ws) void openCardInSplit(sessionId, ws.id, run.path, "changes");
-            }}
-          >
-            <FileDiff size={11} />
-          </span>
-        {/if}
-        <!-- `restored` still decides whether the badge is THERE, exactly
-             as it always did: it is a note about the screen, and typing
-             into the tab dismisses it (clearRestoredMarker). `interrupted`
-             only decides what it SAYS while it is up — that half is
-             sticky, because the run really is gone, and the card, rail
-             step or commit record bound to this session reads it there.
-             A tab the human has taken over as a plain shell does not need
-             a permanent warning on it.
-
-             An ORPHAN overrides both, including the dismissal: a live
-             agent editing this checkout does not stop mattering because
-             someone ran `ls` in the shell that replaced its tab. That
-             case is the only one with an action behind it, and all three
-             wordings come from orphan.ts so no second surface can
-             describe them differently. The glyph and the tone come from
-             the shared vocabulary (ui/indicators.ts): the shell axis,
-             with the orphan as its one danger-toned state. -->
-        {#if tabBadge(sessionId)}
-          {@const badge = tabBadge(sessionId)!}
-          <span
-            class="restored-badge"
-            class:orphaned={badge.tone === "orphaned"}
-            role={badge.canEnd ? "button" : undefined}
-            aria-label={badge.canEnd ? "End the process this session left running" : undefined}
-            onclick={(e) => {
-              if (!badge.canEnd) return;
-              e.stopPropagation();
-              void endSessionOrphan(sessionId);
-            }}
-          >
-            <StatusBadge
-              indicator={badge.tone === "orphaned"
-                ? shellOrphanIndicator()
-                : shellRestartedIndicator(badge.tone === "interrupted")}
-              size={10}
-              tip={badge.title}
+          <!-- Only the focused pane: ⌘-digits act on the focused pane's
+               tabs, so badging any other pane would be a lie. -->
+          {#if $hintMode === "cmd" && isFocused}
+            {@const digit = hintDigitFor(tabIndex, leaf.tabs.length)}
+            {#if digit !== null}
+              <ShortcutHint text={String(digit)} />
+            {/if}
+          {/if}
+          {#if editingSessionId === sessionId}
+            <input
+              class="tab-label-input"
+              bind:this={editInput}
+              bind:value={editValue}
+              onclick={(e) => e.stopPropagation()}
+              onblur={commitEdit}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitEdit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelEdit();
+                }
+              }}
             />
-          </span>
-        {/if}
-        {#if !isPinnedTab(sessionId)}
-          <span
-            class="close"
-            aria-label="Close Tab"
-            title="Close Tab"
-            onclick={async (e) => {
-              e.stopPropagation();
-              if (await confirmTabClose(sessionId)) {
-                closeSession(sessionId);
-              }
-            }}
-          >
-            <X size={12} />
-          </span>
-        {/if}
-      </button>
-    {/each}
-    <IconButton icon={Plus} label="New Tab" size={14} shortcut="new-tab" onclick={() => addTab(active)} />
-    {#if activeBoardContext}
-      <IconButton
-        icon={Kanban}
-        label="Open context board"
-        tip={`Open board · ${activeBoardContext.name}`}
-        size={14}
-        onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
-      />
-    {/if}
+          {:else}
+            <span
+              class="tab-label"
+              use:tooltip={tabTooltip(sessionId)}
+              ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span
+            >
+          {/if}
+          {#if tabStatusBadge(sessionId)}
+            {@const status = tabStatusBadge(sessionId)}
+            {#if status}<StatusBadge indicator={status} size={10} />{/if}
+          {/if}
+          {#if fileTabPath(sessionId) && $dirtyPaths.has(fileTabPath(sessionId) ?? "")}
+            <StatusBadge indicator={unsavedEditsIndicator()} size={10} />
+          {/if}
+          {#if tabGitBadge(sessionId)}
+            {@const git = tabGitBadge(sessionId)}
+            {#if git}<StatusBadge indicator={git} size={10} />{/if}
+          {/if}
+          <!-- `restored` still decides whether the badge is THERE, exactly
+               as it always did: it is a note about the screen, and typing
+               into the tab dismisses it (clearRestoredMarker). `interrupted`
+               only decides what it SAYS while it is up — that half is
+               sticky, because the run really is gone, and the card, rail
+               step or commit record bound to this session reads it there.
+               A tab the human has taken over as a plain shell does not need
+               a permanent warning on it.
+
+               An ORPHAN overrides both, including the dismissal: a live
+               agent editing this checkout does not stop mattering because
+               someone ran `ls` in the shell that replaced its tab. That
+               case is the only one with an action behind it, and all three
+               wordings come from orphan.ts so no second surface can
+               describe them differently. The glyph and the tone come from
+               the shared vocabulary (ui/indicators.ts): the shell axis,
+               with the orphan as its one danger-toned state. -->
+          {#if tabBadge(sessionId)}
+            {@const badge = tabBadge(sessionId)!}
+            <span
+              class="restored-badge"
+              class:orphaned={badge.tone === "orphaned"}
+              role={badge.canEnd ? "button" : undefined}
+              aria-label={badge.canEnd ? "End the process this session left running" : undefined}
+              onclick={(e) => {
+                if (!badge.canEnd) return;
+                e.stopPropagation();
+                void endSessionOrphan(sessionId);
+              }}
+            >
+              <StatusBadge
+                indicator={badge.tone === "orphaned"
+                  ? shellOrphanIndicator()
+                  : shellRestartedIndicator(badge.tone === "interrupted")}
+                size={10}
+                tip={badge.title}
+              />
+            </span>
+          {/if}
+          {#if !isPinnedTab(sessionId)}
+            <span
+              class="close"
+              aria-label="Close Tab"
+              title="Close Tab"
+              onclick={async (e) => {
+                e.stopPropagation();
+                if (await confirmTabClose(sessionId)) {
+                  closeSession(sessionId);
+                }
+              }}
+            >
+              <X size={12} />
+            </span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+    <!-- Everything the bar offers, pinned to the right of it. Three of
+         these used to sit in the app's title bar, where they addressed
+         "the focused pane" -- a pane the human could not see from a hub
+         tab, and could not tell apart from any other one on a split
+         page. Here they name their subject by being ON it. The two
+         chips beside them came the other way, off the individual tab:
+         a tab is a label with a close box, and hanging a second and
+         third action inside it made a tab something you had to aim at.
+         Both act on the ACTIVE tab, like every other control here. -->
+    <div class="tab-actions">
+      {#if linkedCard(active)}
+        {@const link = linkedCard(active)}
+        <IconButton
+          icon={ListChecks}
+          label="Show the plan this agent is running"
+          tip={`Show plan · ${link?.title}`}
+          tone="accent"
+          size={14}
+          onclick={() => {
+            const ws = getActiveWorkspace($layoutState);
+            if (link && ws) void openCardInSplit(active, ws.id, link.path, "plan");
+          }}
+        />
+      {/if}
+      {#if runChangesFor(active)}
+        {@const run = runChangesFor(active)}
+        <IconButton
+          icon={FileDiff}
+          label="See what this run changed"
+          tip={run ? chipTooltip(run.baseSha) : null}
+          tone="accent"
+          size={14}
+          onclick={() => {
+            const ws = getActiveWorkspace($layoutState);
+            if (run && ws) void openCardInSplit(active, ws.id, run.path, "changes");
+          }}
+        />
+      {/if}
+      {#if activeBoardContext}
+        <IconButton
+          icon={Kanban}
+          label="Open context board"
+          tip={`Open board · ${activeBoardContext.name}`}
+          size={14}
+          onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
+        />
+      {/if}
+      <IconButton icon={Plus} label="New Tab" size={14} shortcut="new-tab" onclick={() => addTab(active)} />
+      <span class="divider"></span>
+      <IconButton icon={Columns2} label="Split Right" size={14} shortcut="split-right" onclick={() => split("row")} />
+      <IconButton icon={Rows2} label="Split Down" size={14} shortcut="split-down" onclick={() => split("column")} />
+      <IconButton icon={X} label="Close Pane" size={14} onclick={handleClosePane} />
+      <!-- Last, and behind a rule: the only control here that is not
+           about this pane. It adds a PAGE, and it rides on this row
+           because this row is the top of the window on a terminal page,
+           exactly as the hub tab row is on every other tab. -->
+      <span class="divider"></span>
+      <NewPageButton />
+    </div>
   </div>
   <div
     class="content"
@@ -670,16 +715,56 @@
     height: 100%;
     box-sizing: border-box;
   }
+  /* One of the app's three header rows (see theme.css): this one, the
+     workspace's hub tabs and the strip over the sidebar are the same
+     height to the pixel. On a terminal page THIS is the top edge of the
+     window, so a page and a hub tab have to hand the view under them the
+     same starting line. */
   .tab-bar {
     display: flex;
+    align-items: stretch;
+    height: var(--header-height);
+    box-sizing: border-box;
+    padding: var(--header-pad-top) 6px 0;
     background: var(--surface-raised);
     flex: 0 0 auto;
-    /* A pane no longer widens itself to fit its tabs (see .child in
-       LayoutTree), so the strip has to carry its own overflow -- without
-       this, splitting a pane with several tabs open would clip the last
-       ones out of reach instead of merely making them scroll. */
-    overflow-x: auto;
     min-width: 0;
+  }
+  /* A pane no longer widens itself to fit its tabs (see .child in
+     LayoutTree), so the strip carries its own overflow -- without this,
+     splitting a pane with several tabs open would clip the last ones out
+     of reach instead of merely making them scroll. The actions sit
+     outside it, so what scrolls away is only ever a tab. */
+  .tab-strip {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    /* No visible scrollbar: an overlay bar would land on the active
+       tab's indicator, in a row this short. wheelScrollsSideways is what
+       reaches the tabs it hides. */
+    scrollbar-width: none;
+  }
+  .tab-strip::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+  .tab-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+    padding-left: 6px;
+  }
+  /* Groups the actions by what they act on -- this tab, this pane, the
+     page -- without spending a row of labels on saying so. */
+  .divider {
+    width: 1px;
+    align-self: center;
+    height: 14px;
+    margin: 0 3px;
+    background: var(--border);
   }
   .tab {
     /* Anchors the hold-⌘ hint badge, which overlays rather than
@@ -688,25 +773,35 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 8px;
+    /* The hub tabs' own metrics, from theme.css. These were smaller --
+       4px/8px at 0.8em against 6px/10px at 0.85em -- which was invisible
+       while the two rows lived on different parts of the window and is
+       not now that either of them can be its top edge. */
+    padding: var(--tab-pad);
     background: transparent;
-    /* border-top is always present (transparent when inactive) so toggling
-       the indicator on/off never changes the tab's box height -- box-sizing
-       keeps that same 2px folded into the height in both states. */
+    /* Always present (transparent when inactive) so toggling the
+       indicator never changes the tab's box height -- box-sizing keeps
+       it folded into the height in both states. Underneath, not on top:
+       the hub tab's indicator sits on the edge it shares with the view
+       it opens, and a page's tabs now say it the same way. */
     border: none;
-    border-top: 2px solid transparent;
+    border-bottom: var(--tab-indicator) solid transparent;
     box-sizing: border-box;
     color: var(--text-muted);
     font-family: monospace;
-    font-size: 0.8em;
+    font-size: var(--tab-font-size);
     cursor: pointer;
   }
   .tab.active {
     background: var(--surface-base);
     color: var(--text);
   }
+  /* The workspace's accent, exactly as the hub tabs draw it -- including
+     the amber a workspace with no colour of its own falls back to. It
+     still marks the FOCUSED pane's active tab and nothing else: which
+     pane the keyboard is in is a fact only this row can state. */
   .tab.focused {
-    border-top-color: var(--ws-accent, #4a9eff);
+    border-bottom-color: var(--ws-accent, #d9a648);
   }
   .tab.drop-before {
     box-shadow: inset 2px 0 0 0 var(--ws-accent, #4a9eff);
@@ -758,18 +853,6 @@
     opacity: 0.6;
   }
   .close:hover {
-    opacity: 1;
-  }
-  /* Quieter than the close control until hovered: it is an offer, not a
-     thing every tab wants you to press. */
-  .card-link {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-    opacity: 0.55;
-    color: var(--accent-text);
-  }
-  .card-link:hover {
     opacity: 1;
   }
   .content {

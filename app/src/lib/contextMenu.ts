@@ -25,7 +25,14 @@ export interface ContextMenuItem {
   onPick: () => void;
 }
 
-export type ContextMenuEntry = ContextMenuItem | { separator: true };
+/// A row that names the menu rather than offering anything: what a
+/// DROPDOWN needs and a right-click menu never does. A context menu is
+/// opened at a thing, so its subject is obvious; a menu hanging off a
+/// button whose label has been reduced to an icon has lost the words,
+/// and this is where they go.
+export type ContextMenuHeading = { heading: string };
+
+export type ContextMenuEntry = ContextMenuItem | { separator: true } | ContextMenuHeading;
 
 export interface ContextMenuState {
   x: number;
@@ -39,7 +46,9 @@ export const contextMenu = writable<ContextMenuState | null>(null);
 const MENU_GAP_PX = 4;
 
 export function openContextMenu(x: number, y: number, entries: ContextMenuEntry[]): void {
-  const hasAction = entries.some((e) => !("separator" in e));
+  // Neither a separator nor a heading is a reason to open a menu: a
+  // list of nothing but decoration is an empty menu with a title on it.
+  const hasAction = entries.some((e) => !isSeparator(e) && !isHeading(e));
   contextMenu.set(hasAction ? { x, y, entries } : null);
 }
 
@@ -71,6 +80,18 @@ export function closeContextMenu(): void {
 
 export function isSeparator(entry: ContextMenuEntry): entry is { separator: true } {
   return "separator" in entry;
+}
+
+export function isHeading(entry: ContextMenuEntry): entry is ContextMenuHeading {
+  return "heading" in entry;
+}
+
+/// The entries that actually offer something. Every caller that walks a
+/// menu wants this rather than "not a separator": that test was the whole
+/// narrowing before headings existed, and it silently stops narrowing the
+/// moment a third kind of row joins the union.
+export function isMenuItem(entry: ContextMenuEntry): entry is ContextMenuItem {
+  return !isSeparator(entry) && !isHeading(entry);
 }
 
 // Anchors the shared menu under an element instead of at the pointer:

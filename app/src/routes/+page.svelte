@@ -38,6 +38,7 @@
   import { visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
+  import NewPageButton from "$lib/NewPageButton.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
   import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
@@ -48,6 +49,8 @@
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
   import { tooltip } from "$lib/tooltip";
+  import { wheelScrollsSideways } from "$lib/wheelScroll";
+  import { windowDrag } from "$lib/windowDrag";
 
   let closeConfirmed = false;
   // The prompt is a DOM modal now, so the window can keep sending close
@@ -164,111 +167,143 @@
   });
 </script>
 
-<div class="app">
-  <TitleBar />
-  {#if $layoutState.status === "connecting"}
-    <div class="overlay">
-      <p>Connecting…</p>
-    </div>
-  {:else if $layoutState.status === "error"}
-    <div class="overlay">
-      <p>Couldn't connect to the daemon.</p>
-      <p class="detail">{$layoutState.errorMessage}</p>
-      <button onclick={retryConnect}>Restart daemon &amp; retry</button>
-    </div>
-  {:else}
-    <!-- A degraded-but-usable daemon connection is a caveat
-         on a working app, not an error -- rendered here in the working
-         branch, spanning above the sidebar so it stays visible regardless
-         of which workspace or tab is active. -->
-    <DaemonCompatBanner />
-    <!-- Beside the compat banner, and for the same reason: a request
-         the daemon refused is a caveat on a working app, not a lost
-         connection, so it never belongs in the error branch above. -->
-    <DaemonRequestErrorBanner />
-    <!-- The active workspace's accent, read by every tab indicator and
-         drop marker inside (Pane.svelte's var(--ws-accent)). -->
-    <div class="body" style:--ws-accent={accent}>
-      <Sidebar />
-      <!-- Ahead of every workspace branch, not inside one: the hub is
-           app-level -- it belongs to no workspace, and it must be
-           reachable with one open as well as with none. Switching to a
-           workspace clears the flag (layoutState's activateWorkspace),
-           so nothing here has to close it. -->
-      {#if $appHubOpen}
-        <div class="view">
-          <AppHubView />
-        </div>
-      {:else if !activeWorkspace}
-        <div class="overlay">
-          <button onclick={createFirstWorkspace}>New Workspace</button>
-        </div>
-      {:else if activeView === "terminal"}
-        <div class="view">
-          <TerminalView workspaceId={activeWorkspace.id} />
-        </div>
-      {:else}
-        <div class="content">
-          <!-- Above the tabs: an unbound or missing root is the whole
-               workspace's problem, not a property of whichever page is
-               open. A healthy root renders nothing here (D64) -- the path
-               itself is Settings' to state. The Settings tab embeds this
-               control itself; showing the banner there too would double
-               it up. -->
-          {#if activeView !== "settings"}
-            <WorkspaceRootControl workspace={activeWorkspace} />
-          {/if}
-          <div class="tabs">
-            {#each hubViews as view, viewIndex (view.id)}
-              {@const busy = hubViewBusy(view.id, activity)}
-              {@const wantsYou = hubViewAttention(view.id, activity)}
-              <button
-                type="button"
-                class="tab"
-                class:active={activeView === view.id}
-                use:tooltip={busy
-                  ? "An agent is committing"
-                  : wantsYou
-                    ? "A rail is waiting on you"
-                    : ""}
-                aria-label={busy
-                  ? `${hubLabel(view, activeAgent.file)} — an agent is committing`
-                  : wantsYou
-                    ? `${hubLabel(view, activeAgent.file)} — a rail is waiting on you`
-                    : undefined}
-                onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
-              >
-                <!-- In the icon's place, not beside it: the tab row must
-                     not reflow when a run starts or ends. -->
-                {#if busy}
-                  <span class="tab-spinner" aria-hidden="true"></span>
-                {:else}
-                  <view.icon size={14} />
-                {/if}
-                {hubLabel(view, activeAgent.file)}
-                <!-- A dot, not a spinner: the rail is not the one working,
-                     the human is. Absolutely positioned so the tab row
-                     never reflows when a rail starts or stops wanting
-                     something. -->
-                {#if wantsYou}
-                  <span class="tab-attention" aria-hidden="true"></span>
-                {/if}
-                {#if $hintMode === "cmd"}
-                  {@const digit = hintDigitFor(viewIndex, hubViews.length)}
-                  {#if digit !== null}
-                    <ShortcutHint text={String(digit)} />
-                  {/if}
-                {/if}
-              </button>
-            {/each}
-          </div>
-          <div class="view">
-            <activeViewDef.component workspaceId={activeWorkspace.id} />
-          </div>
-        </div>
+<!-- The active workspace's accent, read by every tab indicator and drop
+     marker inside (Pane.svelte's var(--ws-accent)). On .app rather than
+     on the body row below it, so the strip over the sidebar is inside
+     it too. -->
+<div class="app" style:--ws-accent={accent}>
+  <div class="body">
+    <!-- The window's own column: the title strip, and the sidebar under
+         it. It is the whole reason the hub and the page beside it reach
+         the top of the window -- the strip used to span the app and push
+         everything down by its own height.
+
+         Ahead of the connection branches, not inside the working one: a
+         window that cannot reach its daemon still has to be movable,
+         zoomable and closable. -->
+    <div class="rail">
+      <TitleBar />
+      {#if $layoutState.status === "ready"}
+        <Sidebar />
       {/if}
     </div>
-  {/if}
+    <div class="main">
+      {#if $layoutState.status === "connecting"}
+        <div class="overlay">
+          <p>Connecting…</p>
+        </div>
+      {:else if $layoutState.status === "error"}
+        <div class="overlay">
+          <p>Couldn't connect to the daemon.</p>
+          <p class="detail">{$layoutState.errorMessage}</p>
+          <button onclick={retryConnect}>Restart daemon &amp; retry</button>
+        </div>
+      {:else}
+        <!-- A degraded-but-usable daemon connection is a caveat on a
+             working app, not an error -- rendered here in the working
+             branch, above every workspace branch so it stays visible
+             regardless of which workspace or tab is active. -->
+        <DaemonCompatBanner />
+        <!-- Beside the compat banner, and for the same reason: a request
+             the daemon refused is a caveat on a working app, not a lost
+             connection, so it never belongs in the error branch above. -->
+        <DaemonRequestErrorBanner />
+        <!-- Ahead of every workspace branch, not inside one: the hub is
+             app-level -- it belongs to no workspace, and it must be
+             reachable with one open as well as with none. Switching to a
+             workspace clears the flag (layoutState's activateWorkspace),
+             so nothing here has to close it. -->
+        {#if $appHubOpen}
+          <div class="view">
+            <AppHubView />
+          </div>
+        {:else if !activeWorkspace}
+          <div class="overlay">
+            <button onclick={createFirstWorkspace}>New Workspace</button>
+          </div>
+        {:else if activeView === "terminal"}
+          <div class="view">
+            <TerminalView workspaceId={activeWorkspace.id} />
+          </div>
+        {:else}
+          <div class="content">
+            <!-- Above the tabs: an unbound or missing root is the whole
+                 workspace's problem, not a property of whichever page is
+                 open. A healthy root renders nothing here (D64) -- the path
+                 itself is Settings' to state. The Settings tab embeds this
+                 control itself; showing the banner there too would double
+                 it up. -->
+            {#if activeView !== "settings"}
+              <WorkspaceRootControl workspace={activeWorkspace} />
+            {/if}
+            <div class="tabs">
+              <!-- The tabs scroll; what follows them does not. A
+                   workspace with a root offers nine of them, and the
+                   button that adds a page must not be the first thing a
+                   narrow window pushes out of reach. -->
+              <div class="tab-strip" use:wheelScrollsSideways>
+                {#each hubViews as view, viewIndex (view.id)}
+                  {@const busy = hubViewBusy(view.id, activity)}
+                  {@const wantsYou = hubViewAttention(view.id, activity)}
+                  <button
+                    type="button"
+                    class="tab"
+                    class:active={activeView === view.id}
+                    use:tooltip={busy
+                      ? "An agent is committing"
+                      : wantsYou
+                        ? "A rail is waiting on you"
+                        : ""}
+                    aria-label={busy
+                      ? `${hubLabel(view, activeAgent.file)} — an agent is committing`
+                      : wantsYou
+                        ? `${hubLabel(view, activeAgent.file)} — a rail is waiting on you`
+                        : undefined}
+                    onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
+                  >
+                    <!-- In the icon's place, not beside it: the tab row must
+                         not reflow when a run starts or ends. -->
+                    {#if busy}
+                      <span class="tab-spinner" aria-hidden="true"></span>
+                    {:else}
+                      <view.icon size={14} />
+                    {/if}
+                    {hubLabel(view, activeAgent.file)}
+                    <!-- A dot, not a spinner: the rail is not the one working,
+                         the human is. Absolutely positioned so the tab row
+                         never reflows when a rail starts or stops wanting
+                         something. -->
+                    {#if wantsYou}
+                      <span class="tab-attention" aria-hidden="true"></span>
+                    {/if}
+                    {#if $hintMode === "cmd"}
+                      {@const digit = hintDigitFor(viewIndex, hubViews.length)}
+                      {#if digit !== null}
+                        <ShortcutHint text={String(digit)} />
+                      {/if}
+                    {/if}
+                  </button>
+                {/each}
+              </div>
+              <!-- What the window lost when the title strip came down to
+                   the sidebar's width: somewhere roomy to grab it. The
+                   run of bar after the last tab moves the window, the way
+                   an empty toolbar does on macOS. A pane's tab row
+                   pointedly does not (there, empty bar means "drag this
+                   pane") -- see windowDrag.ts. -->
+              <div class="drag-spacer" use:windowDrag></div>
+              <div class="tab-actions">
+                <NewPageButton />
+              </div>
+            </div>
+            <div class="view">
+              <activeViewDef.component workspaceId={activeWorkspace.id} />
+            </div>
+          </div>
+        {/if}
+      {/if}
+    </div>
+  </div>
   <!-- The one context-menu layer for the whole app: its store is a
        singleton, so a second mount would draw a duplicate menu. -->
   <ContextMenu />
@@ -349,6 +384,29 @@
     flex-direction: row;
     min-height: 0;
   }
+  /* The window's column: title strip on top, sidebar filling the rest.
+     The width and the divider live here rather than on the sidebar, so
+     the strip above it is the same width and the rule between the two
+     columns runs the full height of the window. */
+  .rail {
+    flex: 0 0 auto;
+    width: 200px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--surface-raised);
+    border-right: 1px solid var(--border);
+  }
+  /* Everything that is not the window's own column, from the top of the
+     window down: the banners, and whichever of the app hub, a hub tab or
+     a page is on screen. */
+  .main {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
   .content {
     flex: 1 1 auto;
     display: flex;
@@ -356,11 +414,46 @@
     min-width: 0;
     min-height: 0;
   }
+  /* One of the app's three header rows (see theme.css): this one, a
+     pane's tab row, and the strip over the sidebar are the same height
+     to the pixel, because whichever is on screen is the top edge of the
+     window and switching between them must not move the view under it. */
   .tabs {
     display: flex;
-    gap: 4px;
-    padding: 6px 10px 0;
+    align-items: stretch;
+    height: var(--header-height);
+    box-sizing: border-box;
+    padding: var(--header-pad-top) 10px 0;
     flex: 0 0 auto;
+  }
+  /* Grows only as far as its tabs: the leftover belongs to the drag
+     spacer, so an empty stretch of this row moves the window instead of
+     being dead space inside a scroller. */
+  .tab-strip {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    /* No visible scrollbar: an overlay bar would sit exactly on the
+       active tab's indicator, in a row this short. wheelScrollsSideways
+       is what reaches the tabs it hides. */
+    scrollbar-width: none;
+  }
+  .tab-strip::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+  .drag-spacer {
+    flex: 1 1 auto;
+  }
+  .tab-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+    padding-left: 6px;
   }
   .tab {
     /* Anchors the hold-⌘ hint badge (absolutely positioned, so holding
@@ -371,12 +464,12 @@
     gap: 6px;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: var(--tab-indicator) solid transparent;
     color: var(--text-muted);
-    padding: 6px 10px;
+    padding: var(--tab-pad);
     cursor: pointer;
     font-family: monospace;
-    font-size: 0.85em;
+    font-size: var(--tab-font-size);
   }
   .tab-spinner {
     width: 10px;

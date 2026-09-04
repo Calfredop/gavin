@@ -56,7 +56,9 @@ describe("the tab chip", () => {
     // `runChangesFor` returns null unless runBaseline is "ready", so the
     // chip cannot open a view with nothing to diff.
     const text = source(PANE);
-    expect(text).toContain("{#if runChangesFor(sessionId)}");
+    // Read off the ACTIVE tab: the chip lives in the tab bar's action
+    // group now rather than inside every tab.
+    expect(text).toContain("{#if runChangesFor(active)}");
     expect(text).toContain('baseline.kind === "ready" ? { path: link.path, baseSha: baseline.baseSha } : null');
   });
 
@@ -70,7 +72,7 @@ describe("the tab chip", () => {
 
   it("splits the diff in beside the agent rather than throwing a modal over it", () => {
     const text = source(PANE);
-    expect(text).toContain('openCardInSplit(sessionId, ws.id, run.path, "changes")');
+    expect(text).toContain('openCardInSplit(active, ws.id, run.path, "changes")');
     // The old modal mount is gone: the pane owns it now, so the diff can
     // sit next to the terminal that produced it.
     expect(text).not.toContain("<RunChangesModal");

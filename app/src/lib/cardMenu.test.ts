@@ -94,7 +94,7 @@ import { orchestrations } from "./orchestrationState";
 import { emptyOrchestration, addRail, addStage, addStep } from "./orchestration";
 import { buildCardMenuEntries, type CardMenuHooks } from "./cardMenu";
 import { bestOfNRequest, bestOfNRuns } from "./bestOfNState";
-import { isSeparator, type ContextMenuItem } from "./contextMenu";
+import { isMenuItem, type ContextMenuItem } from "./contextMenu";
 import type { CardView } from "./planBoard";
 import type { Board } from "./kanban";
 
@@ -139,7 +139,7 @@ function hooks(over: Partial<CardMenuHooks> = {}): CardMenuHooks {
 }
 
 function labels(entries: ReturnType<typeof buildCardMenuEntries>): string[] {
-  return entries.filter((e): e is ContextMenuItem => !isSeparator(e)).map((e) => e.label);
+  return entries.filter(isMenuItem).map((e) => e.label);
 }
 
 function board(cardSessions: Board["cardSessions"] = []): Board {
@@ -147,7 +147,7 @@ function board(cardSessions: Board["cardSessions"] = []): Board {
 }
 
 function item(entries: ReturnType<typeof buildCardMenuEntries>, label: string): ContextMenuItem | undefined {
-  return entries.find((e): e is ContextMenuItem => !isSeparator(e) && e.label === label);
+  return entries.find((e): e is ContextMenuItem => isMenuItem(e) && e.label === label);
 }
 
 /// Two rails, "backend" and "ui"; `on` optionally puts the card on one of
@@ -184,7 +184,7 @@ describe("buildCardMenuEntries", () => {
         nestedChildren: [card("task", null, { id: "/p/lens.md", title: "Tree lens", fileName: "lens.md", parent: "t.md" })],
       });
     function pick(entries: ReturnType<typeof buildCardMenuEntries>, label: string): void {
-      const entry = entries.find((e): e is ContextMenuItem => !isSeparator(e) && e.label === label);
+      const entry = entries.find((e): e is ContextMenuItem => isMenuItem(e) && e.label === label);
       entry?.onPick?.();
     }
 
@@ -224,11 +224,11 @@ describe("buildCardMenuEntries", () => {
     const l = labels(entries);
     expect(l).toContain("Run in dedicated session");
     const send = entries.find(
-      (e): e is ContextMenuItem => !isSeparator(e) && e.label === "Send to workspace agent"
+      (e): e is ContextMenuItem => isMenuItem(e) && e.label === "Send to workspace agent"
     );
     expect(send?.disabled).toBe(true); // no main agent in these hooks
     const current = entries.find(
-      (e): e is ContextMenuItem => !isSeparator(e) && e.label === "Move to To Do"
+      (e): e is ContextMenuItem => isMenuItem(e) && e.label === "Move to To Do"
     );
     expect(current?.disabled).toBe(true);
     expect(current?.active).toBe(true);

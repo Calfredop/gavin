@@ -41,7 +41,11 @@ describe("the tab bar's two chips", () => {
   it("offers Show plan, not a jump that leaves the terminal behind", () => {
     const text = source(PANE);
     expect(text).toContain("Show the plan this agent is running");
-    expect(text).toContain('openCardInSplit(sessionId, ws.id, link.path, "plan")');
+    // On the ACTIVE tab, not on each one: both chips left the individual
+    // tab for the bar's action group, where they sit beside the other
+    // controls that act on what the pane is showing. A tab is a label
+    // with a close box again.
+    expect(text).toContain('openCardInSplit(active, ws.id, link.path, "plan")');
     // The jump did not vanish, it moved onto the plan panel -- so the tab
     // bar must no longer hold it.
     expect(text).not.toContain("openLinkedCard(");
@@ -49,7 +53,9 @@ describe("the tab bar's two chips", () => {
 
   it("wears a plan glyph rather than the old open-elsewhere arrow", () => {
     const text = source(PANE);
-    expect(text).toContain("<ListChecks size={11} />");
+    // One of the bar's IconButtons now, so it carries the same label,
+    // tooltip and hit area as Split Right beside it.
+    expect(text).toContain("icon={ListChecks}");
     expect(text).not.toContain("SquareArrowOutUpRight");
   });
 

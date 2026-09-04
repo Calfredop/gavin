@@ -1,47 +1,18 @@
 import { describe, it, expect } from "vitest";
 import {
+  NEW_PAGE_TITLE,
   PAGE_PRESETS,
   WITH_AGENT_LABEL,
   newPageEntries,
-  paneControlsApply,
   type PagePreset,
-} from "./titleBarActions";
+} from "./newPage";
+import { isHeading, isMenuItem, isSeparator, type ContextMenuEntry, type ContextMenuItem } from "./contextMenu";
 import { allSessionIds } from "./layout";
-import type { Workspace, WorkspacesData } from "./workspace";
 
-function ws(over: Partial<Workspace> = {}): Workspace {
-  return { id: "ws-1", name: "ws-1", pages: [], activePageId: null, ...over };
+/// The entries a caller can actually pick, in order.
+function items(entries: ContextMenuEntry[]): ContextMenuItem[] {
+  return entries.filter(isMenuItem);
 }
-
-function state(over: Partial<Workspace> = {}): WorkspacesData {
-  return { workspaces: [ws(over)], activeWorkspaceId: "ws-1" };
-}
-
-describe("paneControlsApply", () => {
-  it("offers the pane controls on the terminal view", () => {
-    expect(paneControlsApply(state({ activeView: "terminal" }), false)).toBe(true);
-  });
-
-  it("withdraws them on every hub tab", () => {
-    for (const view of ["home", "kanban", "git", "settings"]) {
-      expect(paneControlsApply(state({ activeView: view }), false)).toBe(false);
-    }
-  });
-
-  it("withdraws them under the app hub, whatever the workspace was showing", () => {
-    expect(paneControlsApply(state({ activeView: "terminal" }), true)).toBe(false);
-  });
-
-  it("follows the default view of a workspace that has never picked one", () => {
-    // A rooted workspace lands on Home; a rootless one on the terminal.
-    expect(paneControlsApply(state({ rootPath: "/r" }), false)).toBe(false);
-    expect(paneControlsApply(state(), false)).toBe(true);
-  });
-
-  it("withdraws them when no workspace is active at all", () => {
-    expect(paneControlsApply({ workspaces: [], activeWorkspaceId: null }, false)).toBe(false);
-  });
-});
 
 describe("PAGE_PRESETS", () => {
   it("builds a tree over exactly the ids its session count asks for", () => {
@@ -58,21 +29,24 @@ describe("PAGE_PRESETS", () => {
 });
 
 describe("newPageEntries", () => {
-  it("leads with the agent checkbox, then lists every preset in table order", () => {
+  it("leads with the title, then the agent checkbox, then every preset in table order", () => {
     const entries = newPageEntries(false, () => {}, () => {});
-    expect(entries.map((e) => ("separator" in e ? "--" : e.label))).toEqual([
-      WITH_AGENT_LABEL,
-      "--",
-      ...PAGE_PRESETS.map((p) => p.label),
-    ]);
+    expect(
+      entries.map((e) => (isSeparator(e) ? "--" : isHeading(e) ? `# ${e.heading}` : e.label))
+    ).toEqual([`# ${NEW_PAGE_TITLE}`, WITH_AGENT_LABEL, "--", ...PAGE_PRESETS.map((p) => p.label)]);
+  });
+
+  // The button that opens this menu is a bare "+" on a tab row now, so
+  // the menu is the only place left that says what it makes.
+  it("titles itself, since the button no longer carries the words", () => {
+    const [first] = newPageEntries(false, () => {}, () => {});
+    expect(isHeading(first) && first.heading).toBe(NEW_PAGE_TITLE);
   });
 
   it("hands the picked preset back whole, so the caller never re-looks it up", () => {
     const picked: PagePreset[] = [];
     const entries = newPageEntries(false, () => {}, (p) => picked.push(p));
-    for (const entry of entries.slice(2)) {
-      if (!("separator" in entry)) entry.onPick();
-    }
+    for (const entry of items(entries).slice(1)) entry.onPick();
     expect(picked).toEqual(PAGE_PRESETS);
   });
 
@@ -81,17 +55,17 @@ describe("newPageEntries", () => {
   // the menu it is a row of, or the tick would never be seen.
   it("draws the checkbox from the state it was given, and keeps the menu open", () => {
     for (const withAgent of [false, true]) {
-      const [toggle] = newPageEntries(withAgent, () => {}, () => {});
-      expect("separator" in toggle ? null : toggle.checked).toBe(withAgent);
-      expect("separator" in toggle ? null : toggle.keepOpen).toBe(true);
+      const [toggle] = items(newPageEntries(withAgent, () => {}, () => {}));
+      expect(toggle.checked).toBe(withAgent);
+      expect(toggle.keepOpen).toBe(true);
     }
   });
 
   it("routes the checkbox to the toggle callback and nothing else", () => {
     let toggles = 0;
     const picked: PagePreset[] = [];
-    const [toggle] = newPageEntries(false, () => (toggles += 1), (p) => picked.push(p));
-    if (!("separator" in toggle)) toggle.onPick();
+    const [toggle] = items(newPageEntries(false, () => (toggles += 1), (p) => picked.push(p)));
+    toggle.onPick();
     expect(toggles).toBe(1);
     expect(picked).toEqual([]);
   });
@@ -100,8 +74,7 @@ describe("newPageEntries", () => {
   // click still adds a page, and the tick only changes what starts in
   // its panes.
   it("leaves the presets as one-click picks that dismiss the menu", () => {
-    for (const entry of newPageEntries(true, () => {}, () => {}).slice(2)) {
-      if ("separator" in entry) continue;
+    for (const entry of items(newPageEntries(true, () => {}, () => {})).slice(1)) {
       expect(entry.keepOpen).toBeUndefined();
       expect(entry.checked).toBeUndefined();
     }

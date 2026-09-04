@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { contextMenu, closeContextMenu, isSeparator, type ContextMenuItem } from "./contextMenu";
+  import {
+    contextMenu,
+    closeContextMenu,
+    isSeparator,
+    isHeading,
+    type ContextMenuItem,
+  } from "./contextMenu";
 
   let menuEl = $state<HTMLElement | null>(null);
   let clamped = $state({ x: 0, y: 0 });
@@ -56,6 +62,8 @@
     {#each $contextMenu.entries as entry, i (i)}
       {#if isSeparator(entry)}
         <div class="separator"></div>
+      {:else if isHeading(entry)}
+        <div class="heading">{entry.heading}</div>
       {:else}
         <button
           type="button"
@@ -128,5 +136,16 @@
     height: 1px;
     background: var(--surface-overlay);
     margin: 4px 6px;
+  }
+  /* Names the menu; never picked. Indented to the items' own text
+     column (their 10px marker plus its 4px gap) so the title and the
+     rows below it read off one left edge. */
+  .heading {
+    color: var(--text-subtle);
+    font-family: monospace;
+    font-size: 0.75em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 8px 4px 22px;
   }
 </style>

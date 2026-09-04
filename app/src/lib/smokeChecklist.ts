@@ -1356,30 +1356,47 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
-    title: "Title bar",
+    title: "App header",
     items: [
       {
-        id: "bar-pane-controls-terminal",
-        text: "On a terminal page the bar shows Split Right, Split Down and Close Pane, and all three act on the focused pane",
+        id: "header-full-height",
+        text: "The hub tabs and a page's tabs sit at the very top of the window; only the traffic lights' strip is above the sidebar, and nothing spans the window any more",
+        hint: "The strip and both tab rows are the same height, so the sidebar's first row (“Gavin”) starts on exactly the line the view beside it does — and switching between a hub tab and a page must not nudge the content up or down.",
       },
       {
-        id: "bar-pane-controls-hub",
-        text: "Switching to any hub tab (Home, Kanban, Git…) takes those three away; going back to the terminal brings them back",
-        hint: "They address the focused pane of the active page, which a hub tab keeps but never shows — clicking Split there used to spawn a session into a page nowhere on screen. ⌘D already refused from a hub tab.",
+        id: "header-page-tabs-match-hub",
+        text: "A page's tabs are the same size as the hub tabs above the Kanban board — same height, same text",
+        hint: "They were smaller (4/8px at 0.8em against 6/10px at 0.85em). Both take their metrics from theme.css now, so a difference is a regression rather than a tweak.",
       },
       {
-        id: "bar-pane-controls-app-hub",
-        text: "Opening the app hub takes them away too, even though the workspace under it was on a terminal page",
+        id: "header-page-tab-indicator",
+        text: "The active tab of the FOCUSED pane is underlined in the workspace's accent, the way the active hub tab is — split the page and the underline follows the focus, one pane at a time",
+        hint: "It used to be a blue bar over the tab. An uncoloured workspace falls back to the same amber the hub tabs use.",
+      },
+      {
+        id: "header-pane-controls",
+        text: "Every pane's own tab row ends with Split Right, Split Down and Close Pane, and each acts on THAT pane — split the page in two and check both",
+        hint: "They used to be app-wide and addressed “the focused pane”, which a hub tab kept but never showed; from there Split spawned a session into a page nowhere on screen. On the pane there is nothing to get wrong.",
+      },
+      {
+        id: "header-tab-chips-moved",
+        text: "The plan and diff buttons are on the tab row's right, not inside the tab: run a card, and the tab carries a label and a close box while the row offers Show plan and See what this run changed",
+        hint: "Both act on the ACTIVE tab — switch tabs in that pane and they appear, change or go. Each still opens its pane beside the agent rather than over it.",
+      },
+      {
+        id: "header-tabs-scroll",
+        text: "Open enough tabs (and shrink the window) to overflow a row, then scroll it with a plain mouse wheel over the tabs — the row scrolls sideways and the actions on its right never move",
+        hint: "Both rows: a pane's tabs and the workspace's hub tabs. A trackpad's sideways swipe works too, and once the row is at either end the wheel goes back to whatever is under it.",
       },
       {
         id: "bar-new-page-menu",
-        text: "“New page” stays put on every tab; clicking it drops a menu of the presets — Single, Side by Side, 2×2 Grid",
+        text: "“New page” is a “+” with a chevron at the right of both rows; clicking it drops a menu TITLED “New page” over the presets — Single, Side by Side, 2×2 Grid",
         hint: "The menu is the app's one context-menu layer, so Escape, a click elsewhere and the window losing focus all close it, and a second click on the button closes it rather than reopening it.",
       },
       {
         id: "bar-new-page-lands",
-        text: "Picking a preset adds a page with that layout to the current workspace AND brings it on screen — do it from the Kanban tab and from the app hub as well, not only from a terminal",
-        hint: "Sessions start in the workspace's bound root, and the page is named after the count it already had (Page 3, Page 4…).",
+        text: "Picking a preset adds a page with that layout to the current workspace AND brings it on screen — do it from a hub tab and from a pane's row, not only from one of them",
+        hint: "Sessions start in the workspace's bound root, and the page is named after the count it already had (Page 3, Page 4…). The app hub has no row of its own; the sidebar's per-workspace + is the route from there.",
       },
       {
         id: "bar-new-page-with-agent-toggle",
@@ -1394,7 +1411,17 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "bar-new-page-with-agent-forgets",
         text: "Untick it, or reopen the menu after adding an agent page, and the box is still whatever you last left it — but a fresh app start has it clear",
-        hint: "Deliberately not a stored preference: a tick remembered from last week would spend agent sessions on a page asked for as terminals.",
+        hint: "Deliberately not a stored preference: a tick remembered from last week would spend agent sessions on a page asked for as terminals. Each row's button keeps its own tick, so check the one you are using.",
+      },
+      {
+        id: "header-window-drag",
+        text: "The window still moves: drag it by the strip beside the traffic lights, and by the empty run of the hub tab row after the last tab",
+        hint: "Double-clicking either one zooms the window (or whatever “Double-click a window's title bar to” is set to). The strip is all that is left of the old full-width bar, which is why the hub row gives some of the room back.",
+      },
+      {
+        id: "header-pane-drag-unchanged",
+        text: "The empty part of a PANE's tab row still drags the pane, not the window — grab it and drop the pane elsewhere on the page",
+        hint: "The one row that deliberately does not move the window: a bar that did either depending on invisible state would be worse than a small handle.",
       },
     ],
   },

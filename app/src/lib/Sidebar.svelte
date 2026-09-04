@@ -1371,8 +1371,13 @@
 
 <style>
   .sidebar {
-    width: 200px;
-    flex: 0 0 auto;
+    /* Fills the window's own column under the title strip: the width and
+       the divider between the columns belong to that column now (.rail
+       in +page.svelte), so the strip carrying the traffic lights is the
+       same width as the sidebar and the rule runs the full height. */
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
     background: var(--surface-raised);
     color: var(--text);
     font-family: monospace;
@@ -1383,7 +1388,6 @@
        scrolling sidebar would slide away with the content. Pinning it
        pins the header too, which it wasn't before. */
     overflow: hidden;
-    border-right: 1px solid var(--border);
   }
   .workspace-list {
     flex: 1 1 auto;
