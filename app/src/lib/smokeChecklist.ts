@@ -233,7 +233,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "attach-blocks-run",
-        text: "▶ session on a card with a missing attachment refuses by NAME and starts nothing — and the card stays in its column",
+        text: "▶ new session on a card with a missing attachment refuses by NAME and starts nothing — and the card stays in its column",
         hint: "The status write happens after the gate, so a refused run must not leave the card in In Progress.",
       },
       {
@@ -321,12 +321,12 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "run-task",
-        text: "Hover pills: blue ▶ session spawns a dedicated bound agent (Agents page, attached, no focus steal) and sets In Progress",
+        text: "Hover pills: blue ▶ new session spawns a dedicated bound agent (Agents page, attached, no focus steal) and sets In Progress",
         hint: "The composed command is agentCommand + the quoted prompt; cwd = the card's context folder.",
       },
       {
         id: "run-plan",
-        text: "▶ session on a plan hands the agent a pointer prompt (read the file, tick items, promote, keep status)",
+        text: "▶ new session on a plan hands the agent a pointer prompt (read the file, tick items, promote, keep status)",
       },
       {
         id: "run-dot",
@@ -345,7 +345,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "run-unlink", text: "Unlink clears the dot and the binding; the next Run spawns fresh" },
       {
         id: "run-send-agent",
-        text: "Green ▶ agent pill pastes the prompt into the RUNNING main agent and jumps Home; disabled (with tooltip) when none runs",
+        text: "Green ▶ hub pill pastes the prompt into the RUNNING main agent and jumps Home; disabled (with tooltip) when none runs",
         hint: "No binding/dot for main-agent sends — the card's status is the tracking.",
       },
       {
@@ -1290,7 +1290,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "oc-cursor-still-blocked",
-        text: "Switch the profile to Cursor: the card's ▶ session pill is disabled and hovering the row says the agent takes no prompt",
+        text: "Switch the profile to Cursor: the card's ▶ new session pill is disabled and hovering the row says the agent takes no prompt",
         hint: "Hover the ROW, not the greyed pill — a disabled element fires no mouseenter. Same sentence on the card modal, inline.",
       },
     ],

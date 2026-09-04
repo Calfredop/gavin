@@ -322,7 +322,7 @@
     <!-- The block's reason hangs HERE, on the row, not on the button it
          disables: a disabled element fires no mouseenter, so a tooltip
          bound to one can never appear. The row is never disabled.
-         "▶ agent" is deliberately NOT gated -- it pastes into a session
+         "▶ hub" is deliberately NOT gated -- it pastes into a session
          that is already running, and builds no argv at all. -->
     <div class="run-pills" use:tooltip={runBlocked}>
       {#if onRun}
@@ -339,7 +339,7 @@
             if (runBlocked === null) onRun?.(card);
           }}
         >
-          ▶ session
+          ▶ new session
         </button>
       {/if}
       {#if onSendToAgent}
@@ -356,7 +356,7 @@
             if (agentAvailable) onSendToAgent?.(card);
           }}
         >
-          ▶ agent
+          ▶ hub
         </button>
       {/if}
     </div>
