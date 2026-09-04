@@ -2057,13 +2057,27 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Ends a session and answers without waiting for its process to go.
+    ///
+    /// `retire` rather than `kill` + drop, and the difference is the
+    /// whole latency of this request: both of those spend up to a fifth
+    /// of a second inside portable-pty's SIGHUP grace loop (see
+    /// `PtySession::retire`), and this reply is what the app's UI thread
+    /// blocks on -- once per session, on every close that ends several.
+    /// The signal still goes out before this returns; only the waiting
+    /// moved.
+    ///
+    /// Taken out of the map before the row is deleted, and the guard is
+    /// held across both, because `list_sessions` reads liveness from the
+    /// map and existence from the registry: releasing it in between
+    /// would let a reader see a row that no longer has a session, and
+    /// report a live session as exited.
     pub fn kill_session(&self, id: &str) -> anyhow::Result<()> {
         let mut sessions = self.sessions.lock().unwrap();
-        if let Some(session) = sessions.get_mut(id) {
-            session.kill()?;
+        if let Some(session) = sessions.remove(id) {
+            session.retire();
         }
         self.registry.lock().unwrap().remove(id)?;
-        sessions.remove(id);
         Ok(())
     }
 
@@ -7201,6 +7215,80 @@ mod tests {
             "the screen model -- grid plus scrollback, the largest thing held \
              per session -- must be dropped on teardown, not leaked for the \
              daemon's lifetime"
+        );
+    }
+
+    #[test]
+    fn kill_session_answers_without_waiting_for_the_process_to_go() {
+        // The UI hang this exists to prevent. The app's `kill_session`
+        // is a synchronous Tauri command, so it runs on the thread that
+        // draws the window, and every close that ends more than one
+        // session -- a task-manager batch, archiving a card with live
+        // agents, closing a page or a workspace -- issues one per
+        // session, one after another. Whatever this reply waits for is
+        // a frozen window, multiplied by the tab count.
+        //
+        // The command ignores SIGHUP, which is what makes the wait
+        // measurable: portable-pty's `Child::kill` gives the process
+        // five `try_wait` attempts 50ms apart before escalating to
+        // SIGKILL, and dropping the session pays that loop again. This
+        // request used to take ~250ms for a session like this one (and
+        // ~55ms for an ordinary shell); the bound below is far enough
+        // under that to fail if the wait ever comes back, and far
+        // enough over the ~1ms it costs now to survive a loaded
+        // machine.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager
+            .create_session("/tmp", "/tmp", Some("trap '' HUP; sleep 30"))
+            .unwrap();
+        let process = manager.registry.lock().unwrap().list().unwrap()[0]
+            .process
+            .expect("a session just spawned records the process it is holding");
+
+        // Wait for the shell to reach `sleep`, which is the only proof
+        // that it has already run `trap`. Killed any earlier it dies on
+        // the hangup like any other shell, and the test would be timing
+        // the fast path it is not about -- which is exactly what it did
+        // before this wait existed.
+        let ignoring_hangup = |manager: &SessionManager| {
+            manager
+                .session_processes()
+                .unwrap()
+                .iter()
+                .any(|p| p.session_id == id && p.process_count >= 2)
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !ignoring_hangup(&manager) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            ignoring_hangup(&manager),
+            "precondition: the session's shell never got as far as `sleep`, so it has not \
+             installed the SIGHUP trap this test needs it to ignore the hangup with"
+        );
+
+        let started = Instant::now();
+        manager.kill_session(&id).unwrap();
+        let waited = started.elapsed();
+
+        assert!(
+            waited < Duration::from_millis(200),
+            "kill_session waited {waited:?} for the process to die -- the grace period \
+             belongs on the reaper thread, not on the reply the app's UI blocks on"
+        );
+
+        // And the escalation still happens: a process that ignored the
+        // hangup is SIGKILLed once the grace period passes, so ending a
+        // session asynchronously must not mean ending it never.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && crate::proc::still_running(process) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !crate::proc::still_running(process),
+            "the retired session's process is still running: the reaper never escalated \
+             to SIGKILL, so the session was answered for but never actually ended"
         );
     }
 

@@ -155,6 +155,58 @@ impl PtySession {
         self.child.kill()?;
         Ok(())
     }
+
+    /// Ends this session and hands the WAITING to a thread of its own.
+    ///
+    /// `kill` is not the cheap syscall its name suggests. portable-pty
+    /// sends SIGHUP and then gives the process a grace period to act on
+    /// it -- `try_wait` in five attempts, sleeping 50ms between them --
+    /// before escalating to SIGKILL, and dropping the session pays that
+    /// same loop a second time through `Drop`. Measured against this
+    /// daemon: ~55ms per session when a client is draining the pty,
+    /// ~430ms when nothing is, every millisecond of it on the connection
+    /// thread that owes the caller a reply.
+    ///
+    /// That reply is what the app blocks on. Its `kill_session` is a
+    /// synchronous Tauri command, so it runs on the thread that draws
+    /// the window, and every close that ends more than one session --
+    /// the task manager's batches, archiving a card with live agents,
+    /// closing a page or a workspace -- issues them one after another.
+    /// A page of eight tabs froze the window for half a second; a
+    /// workspace could freeze it for several.
+    ///
+    /// So the signal goes out here, on the caller's thread, because it
+    /// is only a `kill(2)` and the process must learn its terminal is
+    /// gone NOW; everything that waits for it to act moves off. A thread
+    /// per session rather than one shared reaper, deliberately: a queue
+    /// would make each session's SIGKILL escalation and pty close wait
+    /// out every grace period ahead of it, and the pty closing is what
+    /// gives the pump its EOF -- which is the `session-exited` push a
+    /// rail step's completion is read from. These threads live a few
+    /// hundred milliseconds and are spawned only by an explicit close.
+    ///
+    /// Consuming `self` is the guarantee that nothing observes the gap:
+    /// a retired session cannot be read, written or resized afterwards,
+    /// so "the reply came back before the process died" is not a state
+    /// any caller can reach.
+    pub fn retire(self) {
+        self.hangup();
+        std::thread::spawn(move || {
+            let mut session = self;
+            // Escalates to SIGKILL once the grace period has passed, and
+            // the drop that follows closes the pty master.
+            let _ = session.kill();
+        });
+    }
+
+    /// SIGHUP and return -- portable-pty's own signaller, which is the
+    /// first half of `Child::kill` without the grace loop bolted onto
+    /// it. Re-sending it from `kill` on the reaper thread is harmless:
+    /// a process that already acted on the first one is gone, and one
+    /// that ignored it ignores the second too.
+    fn hangup(&self) {
+        let _ = self.child.clone_killer().kill();
+    }
 }
 
 impl Drop for PtySession {

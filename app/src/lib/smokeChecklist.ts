@@ -1650,6 +1650,30 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Ending many sessions at once",
+    items: [
+      {
+        id: "close-many-task-manager",
+        text: "Open ~10 terminals, then “Kill all…” from the task manager: the rows clear and their tabs go in well under a second, with the window still redrawing throughout",
+        hint: "The one gesture that used to freeze the app. Each kill is a blocking Tauri command on the thread that draws the window, so the daemon's reply latency is frozen window time multiplied by the tab count — it now answers before the process has finished dying.",
+      },
+      {
+        id: "close-many-page",
+        text: "Split a page into ~8 terminal tabs and close the whole page from the sidebar: it disappears at once, with no beachball and no half-drawn layout",
+      },
+      {
+        id: "close-many-archive",
+        text: "Archive a card carrying several live agents: the confirmation names them, and after it the tabs and the card go together without a pause",
+        hint: "Same path one level up — executeArchive closes the card's sessions one after another, so a slow close showed up here as an archive that appeared to stick.",
+      },
+      {
+        id: "close-many-really-ends-them",
+        text: "After any of the above, reopen the task manager: the killed sessions are gone from the list, and `pgrep -f claude` (or whatever they were running) finds nothing left over",
+        hint: "The reply comes back before the process does, so this is the half that could regress silently: the hangup goes out immediately and a reaper thread escalates to SIGKILL if the process ignores it.",
+      },
+    ],
+  },
+  {
     title: "Git tab",
     items: [
       {
