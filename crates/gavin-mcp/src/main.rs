@@ -175,7 +175,7 @@ fn tool_definitions() -> Value {
             "parent": { "type": "string", "description": "Parent plan's file name (kind task only); no status -> nests inside it" },
             "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back); the reply carries the card's path afterwards.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, or integer order) of a plan file, preserving every other byte. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
             "key": { "type": "string", "enum": ["status", "priority", "order"] },
             "value": { "type": "string" }
@@ -354,7 +354,10 @@ fn dispatch_tool(
             Ok(format!("spawned session {id} — visible on the Agents page in gavin"))
         }
         Response::PlanFieldSet { path } => Ok(match requested_path {
-            Some(before) if before != path => format!("ok — the card now lives at {path}"),
+            Some(before) if before != path => {
+                let carried = nested_children_titles(root, &path, transport);
+                moved_card_note(&path, &carried)
+            }
             _ => "ok".to_string(),
         }),
         Response::Ok => Ok("ok".to_string()),
@@ -437,6 +440,63 @@ fn claim_card(
         path: path.to_string(),
         session_id,
     });
+}
+
+/// What the agent is told after a status write MOVED its card: where the
+/// file is now, and which nested tasks went with it.
+fn moved_card_note(path: &str, carried: &[String]) -> String {
+    let mut line = format!("ok — the card now lives at {path}");
+    if !carried.is_empty() {
+        let names =
+            carried.iter().map(|t| format!("\u{201c}{t}\u{201d}")).collect::<Vec<_>>().join(", ");
+        let (verb, plural, clause) = if carried.len() == 1 {
+            ("does", "task", "which has no status of its own")
+        } else {
+            ("do", "tasks", "which have no status of their own")
+        };
+        line.push_str(&format!(
+            " — and so {verb} its {} nested {plural}, {clause}: {names}",
+            carried.len(),
+        ));
+    }
+    line
+}
+
+/// The nested tasks a status write just carried with their plan, by
+/// title.
+///
+/// A nested task has no status of its own, so it cannot be filed or
+/// un-filed on its own either: the daemon moves it with the parent, and
+/// the agent that asked for the write is never told. Filing a plan whose
+/// checklist is complete is exactly when a card written as "do not start
+/// this before the parent lands" goes quietly into `plans/done/`, so the
+/// reply says which ones went.
+///
+/// One extra scan, and only on a write that MOVED the file -- an
+/// ordinary status change costs nothing. Best-effort throughout: this is
+/// a sentence appended to a reply, never a reason to fail a write that
+/// already landed.
+fn nested_children_titles(
+    root: &Path,
+    plan_path: &str,
+    transport: &mut dyn DaemonTransport,
+) -> Vec<String> {
+    let Ok(Response::GavinTreeScanned { tree }) =
+        transport.request(&Request::ScanGavinRoot { root_path: root.to_string_lossy().to_string() })
+    else {
+        return Vec::new();
+    };
+    for ctx in &tree.contexts {
+        let Some(parent) = ctx.plans.iter().find(|p| p.path == plan_path) else { continue };
+        let names: HashSet<&str> = ctx.plans.iter().map(|p| p.file_name.as_str()).collect();
+        return ctx
+            .plans
+            .iter()
+            .filter(|p| p.parent.as_deref() == Some(parent.file_name.as_str()) && is_nested(p, &names))
+            .map(|p| p.title.clone())
+            .collect();
+    }
+    Vec::new()
 }
 
 const NOT_IN_A_SESSION: &str =
@@ -1239,6 +1299,62 @@ mod tests {
         tree.contexts[0].plans.push(child("free.md", "Free child", "big.md", Some("To Do")));
         tree.contexts[0].plans.push(child("orphan.md", "Orphan", "gone.md", None));
         tree
+    }
+
+    /// A nested task has no status of its own, so an agent filing its
+    /// parent never asked to file it and is never told that it did. That
+    /// silence is what put two untouched follow-on cards one keystroke
+    /// away from `plans/done/`.
+    #[test]
+    fn the_scan_names_only_the_children_that_actually_travelled() {
+        let mut tree = nesting_tree();
+        // The move has already happened by the time the scan runs: parent
+        // and nested child are both under done/.
+        for plan in &mut tree.contexts[0].plans {
+            if plan.file_name == "big.md" || plan.file_name == "nested.md" {
+                plan.path = format!("/ws/.gavin-root/plans/done/{}", plan.file_name);
+            }
+        }
+        let mut t = mock(vec![Response::GavinTreeScanned { tree }]);
+        let carried = nested_children_titles(
+            Path::new("/ws"),
+            "/ws/.gavin-root/plans/done/big.md",
+            &mut t,
+        );
+        // "Free child" has a status of its own, so it is a card in its
+        // own right and stayed where it was; "Orphan" never nested at all.
+        assert_eq!(carried, vec!["Nested child".to_string()]);
+    }
+
+    #[test]
+    fn a_plan_with_no_nested_children_carries_nothing_and_a_refused_scan_says_so_too() {
+        let mut t = mock(vec![Response::GavinTreeScanned { tree: two_card_tree() }]);
+        assert!(nested_children_titles(Path::new("/ws"), "/ws/.gavin-root/plans/a.md", &mut t)
+            .is_empty());
+        // A daemon that refuses the scan must not turn a write that
+        // already landed into an error.
+        let mut t = mock(vec![]);
+        assert!(nested_children_titles(Path::new("/ws"), "/ws/.gavin-root/plans/a.md", &mut t)
+            .is_empty());
+    }
+
+    #[test]
+    fn the_moved_note_says_where_the_card_went_and_what_went_with_it() {
+        assert_eq!(
+            moved_card_note("/ws/plans/done/big.md", &[]),
+            "ok — the card now lives at /ws/plans/done/big.md"
+        );
+        assert_eq!(
+            moved_card_note("/ws/plans/done/big.md", &["Tree lens".to_string()]),
+            "ok — the card now lives at /ws/plans/done/big.md — and so does its 1 nested task, \
+             which has no status of its own: \u{201c}Tree lens\u{201d}"
+        );
+        let two = moved_card_note(
+            "/ws/plans/done/big.md",
+            &["Tree lens".to_string(), "Changes chip".to_string()],
+        );
+        assert!(two.contains("and so do its 2 nested tasks"), "{two}");
+        assert!(two.contains("\u{201c}Tree lens\u{201d}, \u{201c}Changes chip\u{201d}"), "{two}");
     }
 
     fn unplaced_titles(tree: protocol::GavinTree) -> Vec<String> {
