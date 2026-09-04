@@ -1,7 +1,7 @@
 ---
 order: 2048
 title: [feat] file explorer integration
-status: In Progress
+status: Done
 ---
 In something like vscode and cursor do, I would like to implement a file
 explorer with basic editing features. Editing already exists — `FileEditor` +
