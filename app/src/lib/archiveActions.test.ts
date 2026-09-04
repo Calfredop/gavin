@@ -30,6 +30,7 @@ vi.mock("./layoutState", () => ({
     ],
     activeWorkspaceId: "ws",
     fileTabsById: {},
+    cardTabsById: {},
   }),
   closeSession: vi.fn().mockResolvedValue(undefined),
 }));

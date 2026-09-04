@@ -36,6 +36,7 @@ function inboxState(workspaces: Workspace[], overrides: Partial<AttentionState> 
     activeWorkspaceId: workspaces[0]?.id ?? null,
     sessionStatusById: {},
     fileTabsById: {},
+    cardTabsById: {},
     boardTabsById: {},
     interruptedSessionIds: new Set(),
     sessionNames: {},

@@ -3048,6 +3048,110 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Nested tasks and Done",
+    items: [
+      {
+        id: "completion-drag-to-done-asks",
+        text: "Drag a plan carrying two nested tasks into Done: gavin asks first, names both tasks by title, and says plans/done/ takes their files too",
+        hint: "The prompt is the whole fix. A plan whose own checklist is complete can still be carrying untouched follow-on work, and nothing else on the board can say so — a nested task has no status of its own to look unfinished with.",
+      },
+      {
+        id: "completion-box-left-alone-files-everything",
+        text: "Answer that prompt with the box left alone: the plan and both tasks land in Done, exactly as before",
+        hint: "The default has to stay what the app has always done. The prompt exists to make the sweep loud, not to reverse it.",
+      },
+      {
+        id: "completion-box-ticked-keeps-them",
+        text: "Do it again with the box ticked: the plan files, and both tasks appear as their own cards in the first column, each still showing “Part of” the plan",
+        hint: "Break-out is one status: write. Losing the parent link would be “Un-parent”, which is a different action and stays a different action.",
+      },
+      {
+        id: "completion-cancel-snaps-back",
+        text: "Cancel the prompt: the card returns to the column it was dragged from with nothing written, and no placeholder is left behind in Done",
+        hint: "The question is asked before the drop is held, so the board must never show the drop as already made while the modal is up.",
+      },
+      {
+        id: "completion-asked-on-every-route",
+        text: "The same prompt appears from the card menu's “Move to Done”, the detail modal's Status select, a rail header's “Move all to Done” and the Plans tab's Status select — and both selects snap back on Cancel",
+        hint: "Four gestures, one question. A select still reading “Done” after a cancel is the modal lying about where the card is.",
+      },
+      {
+        id: "completion-tasks-list-breaks-one-out",
+        text: "Open a plan's card: the Tasks list says a nested task has no status of its own, and “Break out” beside a nested child moves it to the first column while it keeps the link back",
+      },
+      {
+        id: "completion-conflict-repairs-itself",
+        text: "Put a nested child on a rail beside its parent: the conflicts box's “Break out” button clears the pair without either step leaving its rail",
+        hint: "The escape offered where the complaint is. Taking one step off a rail was the only advice this row used to be able to give.",
+      },
+    ],
+  },
+  {
+    title: "Card panes from a terminal tab",
+    items: [
+      {
+        id: "cardpane-show-plan-splits",
+        text: "Run a card, then click the ☑ chip on its terminal tab: the card's detail panel opens as a pane to the RIGHT, with the terminal still on screen beside it",
+        hint: "This chip used to be an arrow that switched the whole window to the Kanban or Orchestration tab. Watching an agent and reading its card are the same act; taking the terminal away to do the second was the bug.",
+      },
+      {
+        id: "cardpane-show-plan-once",
+        text: "Click that same chip again: nothing splits — the pane already open comes forward instead",
+        hint: "The chip is clicked repeatedly by anyone checking on a run. Splitting per click is how a page ends up four copies deep in one card.",
+      },
+      {
+        id: "cardpane-go-to-board",
+        text: "The plan pane's header carries “Show on the board”, and it lands on the card's own hub tab — the Orchestration tab for a railed card, Kanban for any other",
+        hint: "The old chip's jump did not disappear, it moved one click in. Check BOTH kinds of card: a railed one must not land on the board.",
+      },
+      {
+        id: "cardpane-no-go-to-board-on-the-hub",
+        text: "Open the same card from the Kanban tab: the modal there has NO “Show on the board” button",
+        hint: "It would go where it already is. The action is passed per host, so only the pane offers it.",
+      },
+      {
+        id: "cardpane-changes-splits-too",
+        text: "The ⑂ Changes chip splits the diff in as a pane as well, no longer as a modal over the terminal",
+      },
+      {
+        id: "cardpane-both-views-coexist",
+        text: "Open the plan pane and the changes pane for one card: they are two tabs, not one that keeps swapping",
+      },
+      {
+        id: "cardpane-escape-does-not-close-it",
+        text: "With a card pane focused, press Escape: the pane stays. Clicking the terminal beside it does not close it either",
+        hint: "The panel is the card detail component drawn inline. If it still behaved like a dialog it would vanish on the Escape meant for the terminal.",
+      },
+      {
+        id: "cardpane-tasks-list-moves-only-this-pane",
+        text: "Open a plan's pane AND its changes pane, then click a nested task in the Tasks list: only the plan pane follows",
+        hint: "Navigating within a pane and following a card whose FILE moved are two different writes.",
+      },
+      {
+        id: "cardpane-done-follows-the-file",
+        text: "Set the card Done from inside the pane: it files into plans/done/ and the pane follows it there rather than reading “No card at …”",
+      },
+      {
+        id: "cardpane-survives-a-restart",
+        text: "Leave a card pane open and restart the app: it comes back as the same card pane — NOT as a terminal, and no extra shell is spawned",
+        hint: "The dangerous one. A tab id in a layout tree that no tab map claims is treated as a dead session and replaced by a fresh shell, so a card tab that failed to persist would not go missing quietly.",
+      },
+      {
+        id: "cardpane-closes-without-killing",
+        text: "Close a card pane: no confirm about ending a terminal session, and the sidebar's page expansion drops its row",
+        hint: "A card pane runs no process. The close prompt saying “The terminal session will end” would be a lie.",
+      },
+      {
+        id: "cardpane-sidebar-row",
+        text: "The sidebar's page expansion lists a card pane with the ☑ glyph and the label “<card> · plan” / “<card> · changes”, matching the tab bar exactly",
+      },
+      {
+        id: "cardpane-archive-closes-it",
+        text: "Archive a card that has a pane open: the pane closes with it, like its file tabs already did",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

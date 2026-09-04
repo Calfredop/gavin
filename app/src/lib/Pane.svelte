@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { LayoutNode } from "./layout";
+  import type { CardTab } from "./gavin";
   import TerminalPane from "./TerminalPane.svelte";
   import FileViewerPane from "./FileViewerPane.svelte";
   import BoardPane from "./BoardPane.svelte";
+  import CardTabPane from "./CardTabPane.svelte";
   import {
     layoutState,
     daemonCompat,
@@ -13,16 +15,15 @@
     focusPane,
     setSessionName,
     openBoardInSplit,
+    openCardInSplit,
     repairUnknownTabs,
     terminalFontSize,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { kanbanState, cardSessionFor, fetchBoard } from "./kanbanState";
   import { orchestrations, fetchOrchestration } from "./orchestrationState";
-  import { linkedCardFor, openLinkedCard, type LinkedCard } from "./cardTabLink";
-  import { cardSessionState } from "./columnRunAction";
+  import { linkedCardFor, linkForCardPath, type LinkedCard } from "./cardTabLink";
   import { chipTooltip, runBaseline } from "./runChanges";
-  import RunChangesModal from "./RunChangesModal.svelte";
   import { nearestContext } from "./planBoard";
   import { confirmTabClose } from "./confirmClose";
   import { restoredBadge, type RestoredBadge } from "./orphan";
@@ -31,7 +32,7 @@
   import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
-  import { X, Plus, Kanban, Pin, SquareArrowOutUpRight, FileDiff } from "@lucide/svelte";
+  import { X, Plus, Kanban, Pin, ListChecks, FileDiff } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
@@ -47,7 +48,7 @@
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import { tooltip } from "./tooltip";
-  import { sessionLabel, folderName, boardTabLabel } from "./paths";
+  import { sessionLabel, folderName, boardTabLabel, cardTabLabel } from "./paths";
   import {
     setDragPayload,
     getDragKind,
@@ -99,6 +100,18 @@
     return $layoutState.boardTabsById[tabId] ?? null;
   }
 
+  function cardTab(tabId: string): CardTab | null {
+    return $layoutState.cardTabsById[tabId] ?? null;
+  }
+
+  /// True for every tab this pane renders as something other than a
+  /// terminal. The chips below hang off a SESSION, so each of them opens
+  /// with this -- and a card pane offering to open a card pane beside
+  /// itself is exactly what a missing check here would produce.
+  function isViewTab(tabId: string): boolean {
+    return Boolean(boardTab(tabId) || fileTabPath(tabId) || cardTab(tabId));
+  }
+
   // A board tab's label names its context, live from the tree -- exact
   // information like a file tab's filename, and equally not renameable.
   // The format itself lives in paths.ts, shared with the sidebar's page
@@ -110,8 +123,23 @@
     return boardTabLabel(name, tab.contextFolder);
   }
 
+  // A card tab's label names the card and which of its two views this
+  // pane holds -- exact information from the tree, like a board tab's, so
+  // it is not renameable either (see startEditing).
+  function cardLabel(tabId: string): string {
+    const tab = cardTab(tabId);
+    if (!tab) return tabId;
+    const title = linkForCardPath(
+      $orchestrations[tab.workspaceId],
+      $gavinTrees[tab.workspaceId],
+      tab.path
+    ).title;
+    return cardTabLabel(title, tab.view);
+  }
+
   function tabLabel(sessionId: string): string {
     if (boardTab(sessionId)) return boardLabel(sessionId);
+    if (cardTab(sessionId)) return cardLabel(sessionId);
     const path = fileTabPath(sessionId);
     // A file tab's label is always its filename -- exact, known
     // information, unlike a terminal's cwd-derived guess, which is why it
@@ -123,6 +151,8 @@
   function tabTooltip(sessionId: string): string {
     const tab = boardTab(sessionId);
     if (tab) return tab.contextFolder;
+    const card = cardTab(sessionId);
+    if (card) return card.path;
     const path = fileTabPath(sessionId);
     if (path) return path;
     return $layoutState.sessionNames[sessionId] ?? $layoutState.cwdBySessionId[sessionId] ?? sessionId;
@@ -132,7 +162,7 @@
   // board icon at the end of the tab bar. Follows the LIVE cwd; the tab a
   // click opens is then pinned to the context captured at that moment.
   const activeBoardContext = $derived.by(() => {
-    if (fileTabPath(active) || boardTab(active)) return null;
+    if (isViewTab(active)) return null;
     const ws = getActiveWorkspace($layoutState);
     if (!ws) return null;
     const ctx = nearestContext($gavinTrees[ws.id], $layoutState.cwdBySessionId[active]);
@@ -143,53 +173,34 @@
   // orchestration launch both write a card_sessions binding, so one
   // reverse lookup covers both. Null for every ordinary terminal.
   function linkedCard(sessionId: string): LinkedCard | null {
-    if (fileTabPath(sessionId) || boardTab(sessionId)) return null;
+    if (isViewTab(sessionId)) return null;
     const ws = getActiveWorkspace($layoutState);
     if (!ws) return null;
     return linkedCardFor($kanbanState[ws.id], $orchestrations[ws.id], $gavinTrees[ws.id], sessionId);
   }
 
-  // The same reverse lookup, one step further: the binding this tab's
-  // agent runs under, and the commit its checkout was on when it
-  // started. Null for a run with no baseline -- an older daemon, a
-  // launch outside a repository -- because a chip is a glyph with no
-  // room to explain itself. The card detail modal is where the reason
-  // is said; this only appears when there is something to open.
+  // The same reverse lookup, one step further: whether this tab's run has
+  // a baseline to diff against, and which commit that is. Null for a run
+  // with no baseline -- an older daemon, a launch outside a repository --
+  // because a chip is a glyph with no room to explain itself. The card
+  // detail panel is where the reason is said; this only appears when
+  // there is something to open.
+  //
+  // Only the sha, because the pane the chip opens re-derives the rest
+  // from the binding for itself: copying cwd/live through here would pin
+  // the pane to whatever the binding said at the moment of the click, and
+  // a re-launch replaces it.
   //
   // Deliberately fetches NOTHING. A count on the chip would be a `git
   // diff` per tab per render, across every pane in the window.
-  function runChangesFor(sessionId: string): {
-    path: string;
-    title: string;
-    cwd: string;
-    baseSha: string;
-    live: boolean;
-  } | null {
+  function runChangesFor(sessionId: string): { path: string; baseSha: string } | null {
     const link = linkedCard(sessionId);
     if (!link) return null;
     const ws = getActiveWorkspace($layoutState);
     if (!ws) return null;
-    const binding = cardSessionFor($kanbanState[ws.id], link.path);
-    const baseline = runBaseline(binding, $daemonCompat);
-    if (baseline.kind !== "ready") return null;
-    return {
-      path: link.path,
-      title: link.title,
-      cwd: baseline.cwd,
-      baseSha: baseline.baseSha,
-      live: cardSessionState($layoutState, binding) === "live",
-    };
+    const baseline = runBaseline(cardSessionFor($kanbanState[ws.id], link.path), $daemonCompat);
+    return baseline.kind === "ready" ? { path: link.path, baseSha: baseline.baseSha } : null;
   }
-
-  /// The tab whose Changes modal is open, if any. One at a time: it is
-  /// opened from a tab click and closed from its own header.
-  let changesFor = $state<{
-    path: string;
-    title: string;
-    cwd: string;
-    baseSha: string;
-    live: boolean;
-  } | null>(null);
 
   // The card link reads two things a terminal page never loads on its
   // own: the board (which holds the card bindings) and the orchestration
@@ -268,8 +279,9 @@
   }
 
   function startEditing(sessionId: string): void {
-    // File and board tabs are never renameable -- their labels are exact.
-    if (fileTabPath(sessionId) || boardTab(sessionId)) return;
+    // File, board and card tabs are never renameable -- their labels are
+    // exact.
+    if (isViewTab(sessionId)) return;
     editingSessionId = sessionId;
     editValue = tabLabel(sessionId);
   }
@@ -495,18 +507,25 @@
           {@const git = tabGitBadge(sessionId)}
           {#if git}<StatusBadge indicator={git} size={10} />{/if}
         {/if}
+        <!-- Both chips split their answer in beside the agent rather
+             than taking the human away from it: the plan opens as a pane
+             to the right, and so does the diff. The jump to the board or
+             to this card's rail did not disappear with the old chip --
+             it moved one click in, onto the plan panel itself, where it
+             sits next to the card it would navigate to. -->
         {#if linkedCard(sessionId)}
           {@const link = linkedCard(sessionId)}
           <span
             class="card-link"
-            aria-label="Open the card this agent is running"
-            use:tooltip={`Open card · ${link?.title}`}
+            aria-label="Show the plan this agent is running"
+            use:tooltip={`Show plan · ${link?.title}`}
             onclick={(e) => {
               e.stopPropagation();
-              if (link) void openLinkedCard(getActiveWorkspace($layoutState)?.id ?? "", link);
+              const ws = getActiveWorkspace($layoutState);
+              if (link && ws) void openCardInSplit(sessionId, ws.id, link.path, "plan");
             }}
           >
-            <SquareArrowOutUpRight size={11} />
+            <ListChecks size={11} />
           </span>
         {/if}
         {#if runChangesFor(sessionId)}
@@ -517,7 +536,8 @@
             use:tooltip={run ? chipTooltip(run.baseSha) : undefined}
             onclick={(e) => {
               e.stopPropagation();
-              changesFor = run;
+              const ws = getActiveWorkspace($layoutState);
+              if (run && ws) void openCardInSplit(sessionId, ws.id, run.path, "changes");
             }}
           >
             <FileDiff size={11} />
@@ -619,6 +639,16 @@
           path={fileTabPath(sessionId) ?? ""}
           visible={sessionId === active}
         />
+      {:else if cardTab(sessionId)}
+        {@const tab = cardTab(sessionId)!}
+        <CardTabPane
+          bind:this={paneRefs[sessionId]}
+          workspaceId={tab.workspaceId}
+          path={tab.path}
+          view={tab.view}
+          tabId={sessionId}
+          visible={sessionId === active}
+        />
       {:else}
         <TerminalPane
           bind:this={paneRefs[sessionId]}
@@ -631,21 +661,6 @@
     {/each}
   </div>
 </div>
-
-<!-- Opened from a tab chip, so it lives here rather than in the hub:
-     the human is looking at the agent, and the answer to "what has it
-     actually done to my checkout" should not require finding its card
-     first. -->
-{#if changesFor}
-  <RunChangesModal
-    path={changesFor.path}
-    title={changesFor.title}
-    cwd={changesFor.cwd}
-    baseSha={changesFor.baseSha}
-    sessionIsLive={changesFor.live}
-    onClose={() => (changesFor = null)}
-  />
-{/if}
 
 <style>
   .pane-wrapper {

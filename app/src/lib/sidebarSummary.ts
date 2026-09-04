@@ -283,6 +283,7 @@ export interface PageTabState {
   sessionStatusById: Record<string, SessionStatus>;
   fileTabsById: Record<string, unknown>;
   boardTabsById: Record<string, unknown>;
+  cardTabsById: Record<string, unknown>;
 }
 
 export interface PageAgentsSummary {
@@ -317,7 +318,7 @@ export interface PageAgentsSummary {
 /// about are the same number.
 export function pageAgentsSummary(page: Page, state: PageTabState): PageAgentsSummary {
   const ids = allSessionIds(page.layout);
-  const agentIds = sessionTabsOnly(ids, state.fileTabsById, state.boardTabsById);
+  const agentIds = sessionTabsOnly(ids, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   let running = 0;
   let waiting = 0;
   let failed = 0;
@@ -391,13 +392,13 @@ export function workspaceAgentsSummary(ws: Workspace, state: PageTabState): Work
   return total;
 }
 
-export type PageTabKind = "session" | "file" | "board";
+export type PageTabKind = "session" | "file" | "board" | "card";
 
 export interface PageTabRow {
   id: string;
   kind: PageTabKind;
-  /// The agent's live status -- null for a file or board tab, which no
-  /// agent runs behind. A session that has not reported in yet reads as
+  /// The agent's live status -- null for a file, board or card tab, which
+  /// no agent runs behind. A session that has not reported in yet reads as
   /// idle, the same default pageAgentsSummary counts by, so an expanded
   /// page's rows can never disagree with the tallies on its own row.
   status: SessionStatus | null;
@@ -412,6 +413,7 @@ export function pageTabRows(page: Page, state: PageTabState): PageTabRow[] {
   return allSessionIds(page.layout).map((id): PageTabRow => {
     if (state.boardTabsById[id]) return { id, kind: "board", status: null };
     if (state.fileTabsById[id]) return { id, kind: "file", status: null };
+    if (state.cardTabsById[id]) return { id, kind: "card", status: null };
     return { id, kind: "session", status: state.sessionStatusById[id] ?? "idle" };
   });
 }

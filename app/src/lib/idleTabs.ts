@@ -40,7 +40,7 @@ export interface IdleTabs {
 
 export function idleTabsOnPage(page: Page, state: PageTabState): IdleTabs {
   const ids = allSessionIds(page.layout);
-  const sessions = sessionTabsOnly(ids, state.fileTabsById, state.boardTabsById);
+  const sessions = sessionTabsOnly(ids, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   const idle = sessions.filter((id) => {
     const status = state.sessionStatusById[id];
     return status !== "working" && status !== "waiting_for_input";

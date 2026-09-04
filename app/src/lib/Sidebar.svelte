@@ -43,6 +43,7 @@
     Gauge,
     GitBranch,
     Kanban,
+    ListChecks,
     Check,
     FileText,
     PanelsTopLeft,
@@ -55,7 +56,7 @@
   import StatusBadge from "./ui/StatusBadge.svelte";
   import { agentIndicator, agentIndicatorByState, gitIndicator } from "./ui/indicators";
 
-  import { sessionLabel, folderName, boardTabLabel } from "./paths";
+  import { sessionLabel, folderName, boardTabLabel, cardTabLabel } from "./paths";
   import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
   import {
     setDragPayload,
@@ -84,7 +85,7 @@
     type PageAgentsSummary,
     type PageTabRow,
   } from "./sidebarSummary";
-  import { rowLinkedCard, openLinkedCard, type LinkedCard } from "./cardTabLink";
+  import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "./cardTabLink";
   import { createHoverIntent } from "./hoverIntent";
   import {
     orchestrations,
@@ -289,9 +290,10 @@
   }
 
   // A tab's name in the expansion, by the same rules the tab bar itself
-  // uses: a board tab names its context, a file tab its filename, a
-  // terminal its custom name or cwd. The two exact ones share paths.ts
-  // helpers with Pane.svelte so one tab never goes by two names.
+  // uses: a board tab names its context, a file tab its filename, a card
+  // tab its card and view, a terminal its custom name or cwd. The exact
+  // ones share paths.ts helpers with Pane.svelte so one tab never goes by
+  // two names.
   function tabRowLabel(row: PageTabRow): string {
     if (row.kind === "board") {
       const tab = $layoutState.boardTabsById[row.id];
@@ -300,6 +302,16 @@
       return boardTabLabel(name, tab.contextFolder);
     }
     if (row.kind === "file") return folderName($layoutState.fileTabsById[row.id]?.path ?? row.id);
+    if (row.kind === "card") {
+      const tab = $layoutState.cardTabsById[row.id];
+      if (!tab) return row.id;
+      const title = linkForCardPath(
+        $orchestrations[tab.workspaceId],
+        $gavinTrees[tab.workspaceId],
+        tab.path
+      ).title;
+      return cardTabLabel(title, tab.view);
+    }
     return sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, row.id);
   }
 
@@ -327,13 +339,17 @@
   // on the git line: mouseenter does not bubble, so a nested one would
   // take over the row's and never hand it back.
   function tabRowTip(row: PageTabRow, status: GitStatus | null): string {
-    const lines = [row.status ? statusWord(row.status) : row.kind === "file" ? "File" : "Board"];
+    const kindWord =
+      row.kind === "file" ? "File" : row.kind === "card" ? "Card" : "Board";
+    const lines = [row.status ? statusWord(row.status) : kindWord];
     const where =
       row.kind === "board"
         ? ($layoutState.boardTabsById[row.id]?.contextFolder ?? "")
         : row.kind === "file"
           ? ($layoutState.fileTabsById[row.id]?.path ?? "")
-          : ($layoutState.cwdBySessionId[row.id] ?? "");
+          : row.kind === "card"
+            ? ($layoutState.cardTabsById[row.id]?.path ?? "")
+            : ($layoutState.cwdBySessionId[row.id] ?? "");
     if (where) lines.push(where);
     if (status) {
       const sync = formatAheadBehind(status).replace("\u2191", "ahead ").replace("\u2193", "behind ");
@@ -503,9 +519,14 @@
   }
 
   function startEditingSession(sessionId: string): void {
-    // File and board tabs are never renameable -- their labels are exact
-    // (the same rule the tab bar's own rename applies).
-    if ($layoutState.fileTabsById[sessionId] || $layoutState.boardTabsById[sessionId]) return;
+    // File, board and card tabs are never renameable -- their labels are
+    // exact (the same rule the tab bar's own rename applies).
+    if (
+      $layoutState.fileTabsById[sessionId] ||
+      $layoutState.boardTabsById[sessionId] ||
+      $layoutState.cardTabsById[sessionId]
+    )
+      return;
     editingSessionId = sessionId;
     sessionEditValue = sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId);
   }
@@ -584,10 +605,13 @@
     const leaf = leafOf(page, row.id);
     const board = $layoutState.boardTabsById[row.id];
     const file = $layoutState.fileTabsById[row.id];
+    const card = $layoutState.cardTabsById[row.id];
     return {
       tabId: row.id,
       kind: row.kind === "session" ? "terminal" : row.kind,
-      path: board ? board.contextFolder : (file?.path ?? $layoutState.cwdBySessionId[row.id] ?? null),
+      path: board
+        ? board.contextFolder
+        : (file?.path ?? card?.path ?? $layoutState.cwdBySessionId[row.id] ?? null),
       pinned: leaf.pinned.includes(row.id),
       tabs: leaf.tabs,
       pinnedTabs: leaf.pinned,
@@ -1021,9 +1045,11 @@
                      plain kind glyph instead. The row already carries its
                      own bubble (tabRowTip), so the badge does not add a
                      second one. -->
-                {#if row.kind === "board" || row.kind === "file"}
+                {#if row.kind !== "session"}
                   <span class="tab-kind">
-                    {#if row.kind === "board"}<Kanban size={10} />{:else}<FileText size={10} />{/if}
+                    {#if row.kind === "board"}<Kanban size={10} />{:else if row.kind === "card"}<ListChecks
+                        size={10}
+                      />{:else}<FileText size={10} />{/if}
                   </span>
                 {:else}
                   <StatusBadge indicator={agentIndicator(row.status)} size={10} tip={null} class="tab-kind" />

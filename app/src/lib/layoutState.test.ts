@@ -67,6 +67,11 @@ vi.mock("./backend", () => ({
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
   unwatchGavinRoot: vi.fn().mockResolvedValue(undefined),
   getBoardTabs: vi.fn().mockResolvedValue({}),
+  // Same as the two above: loadTabMaps awaits all three maps before
+  // startup may leave "connecting".
+  getCardTabs: vi.fn().mockResolvedValue({}),
+  // Resolved by default: pruneCardTabs calls .catch() on this.
+  setCardTabs: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: bootstrap calls this best-effort to refill the
   // maps a frontend reload starts blank on.
   getSessionBaselines: vi.fn().mockResolvedValue([]),
@@ -157,6 +162,9 @@ import {
   movePageAction,
   setWorkspaceRoot,
   openBoardInSplit,
+  openCardInSplit,
+  setCardTabPath,
+  retargetCardTabs,
   repairUnknownTabs,
   handleAgentSessionSpawned,
   retryConnect,
@@ -219,6 +227,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
+    cardTabsById: {},
     removedWorkspaces: [],
   });
 }
@@ -253,6 +262,7 @@ beforeEach(() => {
     failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
+    cardTabsById: {},
     removedWorkspaces: [],
   });
 });
@@ -494,6 +504,118 @@ describe("openBoardInSplit", () => {
     expect(backend.setBoardTabs).toHaveBeenCalledWith(state.boardTabsById);
     expect(backend.setWorkspacesState).toHaveBeenCalled();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("openCardInSplit", () => {
+  it("splits beside the anchor, records the card tab, persists, spawns nothing", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await openCardInSplit("a", "ws-1", "/ws/.gavin-root/plans/login.md", "plan");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout.type).toBe("split");
+    const cardTabIds = Object.keys(state.cardTabsById);
+    expect(cardTabIds).toHaveLength(1);
+    expect(state.cardTabsById[cardTabIds[0]]).toEqual({
+      workspaceId: "ws-1",
+      path: "/ws/.gavin-root/plans/login.md",
+      view: "plan",
+    });
+    expect(state.focusedSessionId).toBe(cardTabIds[0]);
+    expect(backend.setCardTabs).toHaveBeenCalledWith(state.cardTabsById);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("brings an already-open view of the same card forward instead of splitting again", async () => {
+    // The chip is on a terminal tab the human keeps coming back to; two
+    // clicks a minute apart must not leave the page two panes deep in the
+    // same card.
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    const first = Object.keys(get(layoutState).cardTabsById)[0];
+
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+
+    const state = get(layoutState);
+    expect(Object.keys(state.cardTabsById)).toEqual([first]);
+    expect(state.focusedSessionId).toBe(first);
+  });
+
+  it("treats the plan and the changes views of one card as different panes", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+
+    expect(Object.keys(get(layoutState).cardTabsById)).toHaveLength(2);
+  });
+
+  it("splits again when the only matching tab lives on another page", async () => {
+    // The dedupe is a "bring it forward" and cannot bring forward what
+    // this page does not hold -- switching pages under a chip click would
+    // move the human away from the agent they were watching.
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"])), page("page-2", leaf(["b"]))], "page-1")],
+      "ws-1",
+      "a"
+    );
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    const onPageOne = Object.keys(get(layoutState).cardTabsById)[0];
+    // Move that tab's page out from under the pane: the app is now on
+    // page-2, where nothing shows the card.
+    layoutState.update((st) => ({
+      ...st,
+      workspaces: st.workspaces.map((w) => ({ ...w, activePageId: "page-2" })),
+    }));
+
+    await openCardInSplit("b", "ws-1", "/ws/plans/login.md", "plan");
+
+    const ids = Object.keys(get(layoutState).cardTabsById);
+    expect(ids).toHaveLength(2);
+    expect(ids).toContain(onPageOne);
+  });
+
+  it("closes like any other non-session tab: no kill, pruned from the map", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+    const tabId = Object.keys(get(layoutState).cardTabsById)[0];
+    vi.mocked(backend.killSession).mockClear();
+
+    await closeSession(tabId);
+
+    expect(backend.killSession).not.toHaveBeenCalled();
+    expect(get(layoutState).cardTabsById).toEqual({});
+    expect(backend.setCardTabs).toHaveBeenLastCalledWith({});
+  });
+});
+
+describe("card tabs following their card", () => {
+  it("setCardTabPath moves ONE pane, leaving a sibling view of the same card alone", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+    const [planTab, changesTab] = Object.keys(get(layoutState).cardTabsById);
+
+    await setCardTabPath(planTab, "/ws/plans/child.md");
+
+    const map = get(layoutState).cardTabsById;
+    expect(map[planTab].path).toBe("/ws/plans/child.md");
+    expect(map[changesTab].path).toBe("/ws/plans/login.md");
+  });
+
+  it("retargetCardTabs moves every pane on the card, because the FILE moved", async () => {
+    // Setting a card Done files it under plans/done/. Both panes are
+    // still looking at the same card, so both have to follow.
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "plan");
+    await openCardInSplit("a", "ws-1", "/ws/plans/login.md", "changes");
+
+    await retargetCardTabs("/ws/plans/login.md", "/ws/plans/done/login.md");
+
+    const paths = Object.values(get(layoutState).cardTabsById).map((t) => t.path);
+    expect(paths).toEqual(["/ws/plans/done/login.md", "/ws/plans/done/login.md"]);
   });
 });
 
@@ -3158,6 +3280,7 @@ describe("runningSessionCount", () => {
       failureReasonById: {},
       fileTabsById: {},
       boardTabsById: {},
+      cardTabsById: {},
       removedWorkspaces: [],
       ...overrides,
     };

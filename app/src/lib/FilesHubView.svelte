@@ -92,7 +92,12 @@
   const anchorSessionId = $derived.by(() => {
     const focused = $layoutState.focusedSessionId;
     if (!focused) return null;
-    if ($layoutState.fileTabsById[focused] || $layoutState.boardTabsById[focused]) return null;
+    if (
+        $layoutState.fileTabsById[focused] ||
+        $layoutState.boardTabsById[focused] ||
+        $layoutState.cardTabsById[focused]
+      )
+        return null;
     return focused;
   });
 

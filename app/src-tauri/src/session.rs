@@ -58,6 +58,10 @@ fn persist_workspaces(
     session_names: HashMap<String, String>,
     file_tabs: HashMap<String, String>,
     board_tabs: HashMap<String, crate::config::BoardTabRecord>,
+    // Safe beside board_tabs for the reason `superpowers` spells out
+    // below: its value type is not `BoardTabRecord`, so transposing the
+    // two is a compile error rather than a silently swapped map.
+    card_tabs: HashMap<String, crate::config::CardTabRecord>,
     theme: Option<String>,
     // Last, and deliberately not beside file_tabs/board_tabs: three
     // same-shaped maps in a row is an argument list you can transpose
@@ -83,6 +87,7 @@ fn persist_workspaces(
             session_names,
             file_tabs,
             board_tabs,
+            card_tabs,
             theme,
             agent_models,
             terminal_font_size,
@@ -135,6 +140,7 @@ pub fn set_agent_pause(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -147,6 +153,7 @@ pub fn set_agent_pause(
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
@@ -159,6 +166,7 @@ pub fn set_agent_pause(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -207,6 +215,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
             Some("light".to_string()),
             models.clone(),
             None,
@@ -220,6 +229,42 @@ mod workspaces_data_tests {
         assert_eq!(loaded.theme, Some("light".to_string()));
     }
 
+    /// The card-tab map is the one carry-through field whose loss is not
+    /// cosmetic. A tab id in a layout tree that no tab map claims reads
+    /// as a terminal session (see `non_session_tab_ids`), so a save that
+    /// dropped this map would not blank the pane -- the next launch would
+    /// spawn a shell in its place.
+    #[test]
+    fn persist_workspaces_carries_card_tabs_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let mut card_tabs = HashMap::new();
+        card_tabs.insert(
+            "tab-9".to_string(),
+            crate::config::CardTabRecord {
+                workspace_id: "ws-1".to_string(),
+                path: "/tmp/ws/.gavin-root/plans/login.md".to_string(),
+                view: "plan".to_string(),
+            },
+        );
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            card_tabs.clone(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().card_tabs, card_tabs);
+    }
+
     /// The seventh carry-through field. Cheap to lose compared with the
     /// tombstones below, but lost the same way: a save that rebuilds
     /// AppConfig without it silently snaps every terminal in the app back
@@ -231,6 +276,7 @@ mod workspaces_data_tests {
         persist_workspaces(
             dir.path(),
             &data,
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -260,6 +306,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
             None,
             HashMap::new(),
             None,
@@ -282,6 +329,7 @@ mod workspaces_data_tests {
         persist_workspaces(
             dir.path(),
             &data,
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -319,6 +367,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
             None,
             HashMap::new(),
             None,
@@ -346,6 +395,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
             None,
             HashMap::new(),
             None,
@@ -370,6 +420,7 @@ mod workspaces_data_tests {
         persist_workspaces(
             dir.path(),
             &data,
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -435,6 +486,7 @@ mod workspaces_data_tests {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
             Some("light".to_string()),
             HashMap::new(),
             None,
@@ -467,6 +519,7 @@ mod workspaces_data_tests {
         persist_workspaces(
             dir.path(),
             &data,
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -705,6 +758,7 @@ pub fn set_workspaces_state(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -717,6 +771,7 @@ pub fn set_workspaces_state(
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
@@ -730,6 +785,7 @@ pub fn set_workspaces_state(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -754,6 +810,7 @@ pub fn set_agent_model_default(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -778,6 +835,7 @@ pub fn set_agent_model_default(
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
@@ -790,6 +848,7 @@ pub fn set_agent_model_default(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -824,6 +883,7 @@ pub fn set_superpowers_mark(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -847,6 +907,7 @@ pub fn set_superpowers_mark(
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
@@ -859,6 +920,7 @@ pub fn set_superpowers_mark(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -882,6 +944,7 @@ pub fn set_theme_pref(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -901,6 +964,7 @@ pub fn set_theme_pref(
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
@@ -913,6 +977,7 @@ pub fn set_theme_pref(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -944,6 +1009,7 @@ pub fn set_terminal_font_size(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -963,6 +1029,7 @@ pub fn set_terminal_font_size(
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
@@ -975,6 +1042,7 @@ pub fn set_terminal_font_size(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -1003,6 +1071,7 @@ pub fn set_auto_commit(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -1019,6 +1088,7 @@ pub fn set_auto_commit(
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
@@ -1031,6 +1101,7 @@ pub fn set_auto_commit(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -1055,6 +1126,7 @@ pub fn set_session_name(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -1077,6 +1149,7 @@ pub fn set_session_name(
     };
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
@@ -1091,6 +1164,7 @@ pub fn set_session_name(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -1119,6 +1193,7 @@ pub fn set_file_tabs(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -1129,6 +1204,7 @@ pub fn set_file_tabs(
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     let theme = theme_state.0.lock().unwrap().clone();
@@ -1143,6 +1219,7 @@ pub fn set_file_tabs(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -1176,6 +1253,67 @@ pub struct TerminalFontSize(pub Mutex<Option<u16>>);
 /// moves.
 pub struct AutoCommit(pub Mutex<Option<bool>>);
 
+/// Open card tabs (tab id -> which card, and which of its two views).
+/// Same always-carry persistence contract as `FileTabs`/`BoardTabs`, and
+/// the same reason it exists at all: a tab id the frontend cannot
+/// classify is taken to be a terminal session, so a card tab whose entry
+/// went missing would come back from a restart as a shell rather than as
+/// nothing.
+pub struct CardTabs(pub Mutex<HashMap<String, crate::config::CardTabRecord>>);
+
+#[tauri::command]
+pub fn get_card_tabs(state: State<CardTabs>) -> HashMap<String, crate::config::CardTabRecord> {
+    state.0.lock().unwrap().clone()
+}
+
+/// Replaces the whole card-tab map -- whole-map for the same reason as
+/// set_file_tabs/set_board_tabs: callers always mutate it alongside a
+/// pane-tree change they're already persisting wholesale.
+#[tauri::command]
+pub fn set_card_tabs(
+    card_tabs: HashMap<String, crate::config::CardTabRecord>,
+    app_handle: AppHandle,
+    workspaces_state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
+) -> Result<(), String> {
+    *card_tabs_state.0.lock().unwrap() = card_tabs.clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let data = workspaces_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        card_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+        auto_commit,
+        agent_pause,
+        superpowers,
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_board_tabs(state: State<BoardTabs>) -> HashMap<String, crate::config::BoardTabRecord> {
     state.0.lock().unwrap().clone()
@@ -1192,6 +1330,7 @@ pub fn set_board_tabs(
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
     board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
     theme_state: State<ThemePref>,
     agent_models_state: State<AgentModels>,
     font_size_state: State<TerminalFontSize>,
@@ -1200,6 +1339,7 @@ pub fn set_board_tabs(
     superpowers_state: State<SuperpowersMarks>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let data = workspaces_state.0.lock().unwrap().clone();
@@ -1216,6 +1356,7 @@ pub fn set_board_tabs(
         session_names,
         file_tabs,
         board_tabs,
+        card_tabs,
         theme,
         agent_models,
         terminal_font_size,
@@ -1359,6 +1500,7 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
     let non_session_tab_ids = non_session_tab_ids(
         &app_handle.state::<FileTabs>().0.lock().unwrap(),
         &app_handle.state::<BoardTabs>().0.lock().unwrap(),
+        &app_handle.state::<CardTabs>().0.lock().unwrap(),
     );
     attach_and_relay(
         app_handle,
@@ -2560,15 +2702,22 @@ fn reconcile_main_sessions(
     Ok(())
 }
 
-/// Tab ids that are NOT sessions. File and board tabs live in the same id
-/// space as sessions in the layout tree, but the daemon has never heard
-/// of them -- attaching one would fail for an id that was never a
-/// session.
+/// Tab ids that are NOT sessions. File, board and card tabs live in the
+/// same id space as sessions in the layout tree, but the daemon has never
+/// heard of them -- attaching one would fail for an id that was never a
+/// session, and `resolve_sessions` would replace it with a freshly
+/// spawned shell on every launch.
 fn non_session_tab_ids(
     file_tabs: &HashMap<String, String>,
     board_tabs: &HashMap<String, crate::config::BoardTabRecord>,
+    card_tabs: &HashMap<String, crate::config::CardTabRecord>,
 ) -> HashSet<String> {
-    file_tabs.keys().chain(board_tabs.keys()).cloned().collect()
+    file_tabs
+        .keys()
+        .chain(board_tabs.keys())
+        .chain(card_tabs.keys())
+        .cloned()
+        .collect()
 }
 
 /// Every session id this app expects the daemon to stream for it.
@@ -2791,6 +2940,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let session_names = config.session_names;
     let file_tabs = config.file_tabs;
     let board_tabs = config.board_tabs;
+    let card_tabs = config.card_tabs;
 
     let mut workspaces = config.workspaces;
     // A truly fresh install (no config.json yet, or one from before this
@@ -2840,7 +2990,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         }
     }
     reconcile_main_sessions(&mut workspaces, &command_conn, &compat)?;
-    let non_session_tab_ids = non_session_tab_ids(&file_tabs, &board_tabs);
+    let non_session_tab_ids = non_session_tab_ids(&file_tabs, &board_tabs, &card_tabs);
     resolve_workspaces(&mut workspaces, &command_conn, &non_session_tab_ids, &compat)?;
     let active_workspace_id = if had_no_workspaces {
         Some(crate::config::UNFILED_WORKSPACE_ID.to_string())
@@ -2858,6 +3008,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         session_names.clone(),
         file_tabs.clone(),
         board_tabs.clone(),
+        card_tabs.clone(),
         config.theme.clone(),
         config.agent_models.clone(),
         config.terminal_font_size,
@@ -2874,6 +3025,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(SessionNames(Mutex::new(session_names)));
     app_handle.manage(FileTabs(Mutex::new(file_tabs)));
     app_handle.manage(BoardTabs(Mutex::new(board_tabs)));
+    app_handle.manage(CardTabs(Mutex::new(card_tabs)));
     app_handle.manage(ThemePref(Mutex::new(config.theme)));
     app_handle.manage(AgentModels(Mutex::new(config.agent_models)));
     app_handle.manage(TerminalFontSize(Mutex::new(config.terminal_font_size)));
@@ -4805,7 +4957,7 @@ mod attach_target_tests {
     }
 
     #[test]
-    fn non_session_tab_ids_covers_both_file_and_board_tabs() {
+    fn non_session_tab_ids_covers_file_board_and_card_tabs() {
         let mut files = HashMap::new();
         files.insert("f1".to_string(), "/tmp/a.md".to_string());
         let mut boards = HashMap::new();
@@ -4817,9 +4969,19 @@ mod attach_target_tests {
             },
         );
 
-        let ids = non_session_tab_ids(&files, &boards);
+        let mut cards = HashMap::new();
+        cards.insert(
+            "c1".to_string(),
+            crate::config::CardTabRecord {
+                workspace_id: "w1".to_string(),
+                path: "/tmp/ws/.gavin-root/plans/login.md".to_string(),
+                view: "plan".to_string(),
+            },
+        );
 
-        assert_eq!(ids, HashSet::from(["f1".to_string(), "b1".to_string()]));
+        let ids = non_session_tab_ids(&files, &boards, &cards);
+
+        assert_eq!(ids, HashSet::from(["f1".to_string(), "b1".to_string(), "c1".to_string()]));
     }
 
     #[test]

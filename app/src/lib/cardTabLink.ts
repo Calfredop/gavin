@@ -52,6 +52,24 @@ export function cardIsOnARail(orch: Orchestration | undefined, path: string): bo
   return (orch?.rails ?? []).some((r) => r.stages.some((s) => s.steps.some((t) => t.cardPath === path)));
 }
 
+/// What a card at `path` is called, and which hub tab it is best seen
+/// in. Total: a path the tree has never heard of still gets a link, named
+/// after its file, because the alternative is a surface that silently
+/// offers nothing while the tree catches up with a card created seconds
+/// ago.
+export function linkForCardPath(
+  orch: Orchestration | undefined,
+  tree: GavinTree | undefined,
+  path: string
+): LinkedCard {
+  const title = cardIndex(tree).get(path)?.plan.title;
+  return {
+    path,
+    title: title && title.trim() ? title : (path.split("/").at(-1) ?? path),
+    view: cardIsOnARail(orch, path) ? "orchestration" : "kanban",
+  };
+}
+
 /// The whole tab-side question in one call: is this session running a
 /// card, what is it called, and where should the link take the human.
 /// Null for every ordinary terminal -- most tabs are not agents.
@@ -63,12 +81,7 @@ export function linkedCardFor(
 ): LinkedCard | null {
   const path = cardPathForSession(board, sessionId);
   if (!path) return null;
-  const title = cardIndex(tree).get(path)?.plan.title;
-  return {
-    path,
-    title: title && title.trim() ? title : (path.split("/").at(-1) ?? path),
-    view: cardIsOnARail(orch, path) ? "orchestration" : "kanban",
-  };
+  return linkForCardPath(orch, tree, path);
 }
 
 /// The same question asked of a sidebar page-expansion row. The row

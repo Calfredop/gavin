@@ -79,3 +79,17 @@ export interface BoardTab {
   workspaceId: string;
   contextFolder: string;
 }
+
+/// Which half of a card a card tab shows: the detail panel, or the diff
+/// of what its run did to the checkout.
+export type CardTabView = "plan" | "changes";
+
+// One persisted card tab: a card's own view living in a pane rather than
+// in a modal (mirrors config.rs's CardTabRecord). The run baseline is
+// deliberately absent -- it lives on the card's binding, which a
+// re-launch replaces, so a copy here would pin the pane to a dead run.
+export interface CardTab {
+  workspaceId: string;
+  path: string;
+  view: CardTabView;
+}

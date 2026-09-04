@@ -338,18 +338,25 @@ export function allLeaves(node: LayoutNode): Leaf[] {
   return node.children.flatMap(allLeaves);
 }
 
-// Neither a file tab nor a board tab is a terminal session: closing one
-// ends no process, and no agent runs behind one. The two id maps are the
-// only thing that distinguishes them -- a tab absent from both IS a
+// A file, board or card tab is not a terminal session: closing one ends
+// no process, and no agent runs behind one. The three id maps are the
+// only thing that distinguishes them -- a tab absent from all three IS a
 // terminal session. Lives here, with allSessionIds, because both the
 // close-page prompt ("N terminal sessions will end") and the sidebar's
 // per-page recap have to mean the same thing by "session".
+//
+// Every map is a required argument rather than an optional or a rest
+// parameter on purpose: a fourth tab kind added later must break every
+// call site, because the failure of forgetting one is silent (a pane
+// counted as an agent, a close prompt threatening to end a process that
+// does not exist).
 export function sessionTabsOnly(
   ids: string[],
   fileTabsById: Record<string, unknown>,
-  boardTabsById: Record<string, unknown>
+  boardTabsById: Record<string, unknown>,
+  cardTabsById: Record<string, unknown>
 ): string[] {
-  return ids.filter((id) => !fileTabsById[id] && !boardTabsById[id]);
+  return ids.filter((id) => !fileTabsById[id] && !boardTabsById[id] && !cardTabsById[id]);
 }
 
 export function activeSessionId(leaf: Extract<LayoutNode, { type: "leaf" }>): string {

@@ -49,9 +49,12 @@ export async function confirmTabClose(sessionId: string): Promise<boolean> {
   const state = get(layoutState);
   if (!tabCloseConfirmEnabled(state, sessionId)) return true;
   const tree = treeHolding(state, sessionId);
-  // A file or board tab ends no process; a terminal tab does, and saying
-  // so is the whole point of the prompt.
-  const ends = !state.fileTabsById[sessionId] && !state.boardTabsById[sessionId];
+  // A file, board or card tab ends no process; a terminal tab does, and
+  // saying so is the whole point of the prompt.
+  const ends =
+    !state.fileTabsById[sessionId] &&
+    !state.boardTabsById[sessionId] &&
+    !state.cardTabsById[sessionId];
   const lines = [
     ...(ends ? ["The terminal session will end."] : []),
     ...(tree && isLastTabInPane(tree, sessionId)
@@ -70,7 +73,7 @@ export async function confirmTabsClose(sessionIds: string[]): Promise<boolean> {
   if (sessionIds.length === 1) return confirmTabClose(sessionIds[0]);
   const state = get(layoutState);
   if (!tabCloseConfirmEnabled(state, sessionIds[0])) return true;
-  const sessions = sessionTabsOnly(sessionIds, state.fileTabsById, state.boardTabsById).length;
+  const sessions = sessionTabsOnly(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById).length;
   return askConfirm({
     title: `Close ${sessionIds.length} tabs?`,
     lines: sessions === 0 ? [] : [`${sessions} terminal session${sessions === 1 ? "" : "s"} will end.`],
@@ -89,7 +92,7 @@ export async function confirmPaneClose(anySessionId: string): Promise<boolean> {
   const path = findLeafPath(tree, anySessionId);
   if (!path) return true;
   const leaf = getNodeAtPath(tree, path);
-  const count = leaf.type === "leaf" ? sessionTabsOnly(leaf.tabs, state.fileTabsById, state.boardTabsById).length : 0;
+  const count = leaf.type === "leaf" ? sessionTabsOnly(leaf.tabs, state.fileTabsById, state.boardTabsById, state.cardTabsById).length : 0;
   return askConfirm({
     title: "Close this pane?",
     lines: [`${count} terminal session${count === 1 ? "" : "s"} will end.`],
@@ -105,7 +108,7 @@ export async function confirmPageClose(workspaceId: string, pageId: string): Pro
   const state = get(layoutState);
   const page = state.workspaces.find((w) => w.id === workspaceId)?.pages.find((p) => p.id === pageId);
   if (!page) return true;
-  const count = sessionTabsOnly(allSessionIds(page.layout), state.fileTabsById, state.boardTabsById).length;
+  const count = sessionTabsOnly(allSessionIds(page.layout), state.fileTabsById, state.boardTabsById, state.cardTabsById).length;
   return askConfirm({
     title: "Close this page?",
     lines: [`${count} terminal session${count === 1 ? "" : "s"} will end.`],
@@ -126,7 +129,7 @@ export async function confirmWorkspaceClose(workspaceId: string): Promise<boolea
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return true;
-  const count = sessionTabsOnly(allSessionIdsInWorkspace(ws), state.fileTabsById, state.boardTabsById).length;
+  const count = sessionTabsOnly(allSessionIdsInWorkspace(ws), state.fileTabsById, state.boardTabsById, state.cardTabsById).length;
   return askConfirm({
     title: "Remove this workspace from gavin?",
     lines: [

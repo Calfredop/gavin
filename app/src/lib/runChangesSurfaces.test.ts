@@ -50,25 +50,46 @@ describe("the card detail modal", () => {
 
 describe("the tab chip", () => {
   const PANE = "Pane.svelte";
+  const CARD_PANE = "CardTabPane.svelte";
 
   it("appears only for a run that HAS a baseline", () => {
     // `runChangesFor` returns null unless runBaseline is "ready", so the
-    // chip cannot open a modal with nothing to diff.
+    // chip cannot open a view with nothing to diff.
     const text = source(PANE);
     expect(text).toContain("{#if runChangesFor(sessionId)}");
-    expect(text).toContain('if (baseline.kind !== "ready") return null;');
+    expect(text).toContain('baseline.kind === "ready" ? { path: link.path, baseSha: baseline.baseSha } : null');
   });
 
   it("fetches nothing to render itself", () => {
     // A count on a chip is a `git diff` per tab per render. The tooltip
-    // names the baseline instead, and the modal does the reading.
+    // names the baseline instead, and the pane does the reading.
     const text = source(PANE);
     expect(text).toContain("chipTooltip(run.baseSha)");
     expect(text).not.toContain("gitRunChanges");
   });
 
-  it("mounts the same modal the card detail does", () => {
-    expect(source(PANE)).toContain("<RunChangesModal");
+  it("splits the diff in beside the agent rather than throwing a modal over it", () => {
+    const text = source(PANE);
+    expect(text).toContain('openCardInSplit(sessionId, ws.id, run.path, "changes")');
+    // The old modal mount is gone: the pane owns it now, so the diff can
+    // sit next to the terminal that produced it.
+    expect(text).not.toContain("<RunChangesModal");
+  });
+
+  it("hands the pane only the card, never the run it read to draw the chip", () => {
+    // A re-launch mints a new baseline. Copying cwd/baseSha through the
+    // click would pin the pane to the run that was current when the chip
+    // was drawn, so the pane re-derives both from the binding.
+    const text = source(CARD_PANE);
+    expect(text).toContain("runBaseline(binding, $daemonCompat)");
+    expect(text).toContain("cwd={run.cwd}");
+    expect(text).toContain("baseSha={run.baseSha}");
+  });
+
+  it("mounts the same modal the card detail does, drawn as a pane", () => {
+    const text = source(CARD_PANE);
+    expect(text).toContain("<RunChangesModal");
+    expect(text).toContain("inline");
   });
 });
 

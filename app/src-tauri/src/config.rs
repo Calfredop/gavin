@@ -282,6 +282,24 @@ pub struct BoardTabRecord {
     pub context_folder: String,
 }
 
+/// One persisted card tab: a card's own detail view living in a pane
+/// rather than in a modal, opened from the terminal tab that runs it.
+/// `view` picks which half of the card it shows -- "plan" is the detail
+/// panel, "changes" the diff of what this run did to the checkout.
+///
+/// The run's baseline is deliberately NOT stored here. It lives on the
+/// card's `card_sessions` binding, which a re-launch replaces; copying it
+/// into the tab would pin the pane to a run that no longer exists.
+/// Crosses to the frontend via get/set_card_tabs, hence camelCase
+/// (verified by the shape test below).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CardTabRecord {
+    pub workspace_id: String,
+    pub path: String,
+    pub view: String,
+}
+
 /// A duty cycle: sit out `pause_minutes` of every `period_minutes`, and
 /// hold when a probe says a limit window is `limit_percent` full.
 ///
@@ -363,6 +381,15 @@ pub struct AppConfig {
     /// persist_workspaces, or it silently resets to empty on save.
     #[serde(default)]
     pub board_tabs: HashMap<String, BoardTabRecord>,
+    /// Open card tabs, keyed by tab id (same opaque id space as
+    /// session/file/board tabs in the pane tree). Like file_tabs and
+    /// board_tabs this persists alongside `workspaces` and must always be
+    /// carried through persist_workspaces, or it silently resets to empty
+    /// on save -- and an id in a layout tree that no tab map claims is
+    /// taken to be a terminal session, so losing this map does not blank
+    /// a pane, it builds a PTY for an id the daemon never had.
+    #[serde(default)]
+    pub card_tabs: HashMap<String, CardTabRecord>,
     /// App-global light/dark preference: "light", "dark", or absent for
     /// System -- the same "absent means default" convention as
     /// `Workspace::color`. Like session_names/file_tabs/board_tabs this
@@ -581,6 +608,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -606,6 +634,7 @@ mod tests {
             session_names,
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -645,6 +674,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs,
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -759,6 +789,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -803,6 +834,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -833,6 +865,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -866,6 +899,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -913,6 +947,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -935,6 +970,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -965,6 +1001,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs,
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -992,6 +1029,52 @@ mod tests {
         let config = load(dir.path()).unwrap();
         assert_eq!(config.board_tabs, HashMap::new());
         assert_eq!(config.file_tabs.get("t"), Some(&"/a.md".to_string()));
+    }
+
+    #[test]
+    fn card_tabs_roundtrip_and_default_empty_for_a_config_that_predates_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut card_tabs = HashMap::new();
+        card_tabs.insert(
+            "tab-9".to_string(),
+            CardTabRecord {
+                workspace_id: "ws-1".to_string(),
+                path: "/Users/alice/project/.gavin-root/plans/login.md".to_string(),
+                view: "changes".to_string(),
+            },
+        );
+        let config = AppConfig { card_tabs, ..AppConfig::default() };
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.card_tabs.get("tab-9").unwrap().view, "changes");
+
+        // The whole reason the map is persisted at all: an id in a
+        // layout tree that no tab map claims reads as a terminal
+        // session, so a card tab that failed to come back would not go
+        // missing -- it would come back as a shell.
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [], "active_workspace_id": null}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().card_tabs, HashMap::new());
+    }
+
+    #[test]
+    fn card_tab_record_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let record = CardTabRecord {
+            workspace_id: "ws-1".to_string(),
+            path: "/tmp/ws/.gavin-root/plans/login.md".to_string(),
+            view: "plan".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::json!({
+                "workspaceId": "ws-1",
+                "path": "/tmp/ws/.gavin-root/plans/login.md",
+                "view": "plan",
+            })
+        );
     }
 
     #[test]
@@ -1026,6 +1109,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -1061,6 +1145,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,
@@ -1121,6 +1206,7 @@ mod tests {
             session_names: HashMap::new(),
             file_tabs: HashMap::new(),
             board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
             theme: None,
             agent_models: HashMap::new(),
             terminal_font_size: None,

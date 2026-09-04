@@ -62,6 +62,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     failureReasonById: {},
     fileTabsById: {},
     boardTabsById: {},
+    cardTabsById: {},
     removedWorkspaces: [],
   });
 }

@@ -255,7 +255,8 @@ function reasonFor(
   marks: Map<string, StepAttention>
 ): AttentionReason | null {
   if (state.interruptedSessionIds.has(sessionId)) return null;
-  if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId]) return null;
+  if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId] || state.cardTabsById[sessionId])
+    return null;
   const status = state.sessionStatusById[sessionId];
   const mark = marks.get(sessionId);
   if (status === "failed") return "failed";

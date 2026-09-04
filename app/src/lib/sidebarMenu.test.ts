@@ -87,6 +87,7 @@ const tabState = (extra: Partial<PageTabState> = {}): PageTabState => ({
   sessionStatusById: {},
   fileTabsById: {},
   boardTabsById: {},
+  cardTabsById: {},
   ...extra,
 });
 const items = (entries: ContextMenuEntry[]) => entries.filter((e): e is ContextMenuItem => !isSeparator(e));

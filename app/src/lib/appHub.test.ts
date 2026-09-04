@@ -183,6 +183,7 @@ function fleetState(workspaces: Workspace[], overrides: Partial<FleetState> = {}
     sessionStatusById: {},
     fileTabsById: {},
     boardTabsById: {},
+    cardTabsById: {},
     gitStatusById: {},
     interruptedSessionIds: new Set(),
     ...overrides,

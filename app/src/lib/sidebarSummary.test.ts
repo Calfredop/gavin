@@ -32,7 +32,7 @@ function split(children: LayoutNode[]): LayoutNode {
 }
 
 function tabState(overrides: Partial<PageTabState> = {}): PageTabState {
-  return { sessionStatusById: {}, fileTabsById: {}, boardTabsById: {}, ...overrides };
+  return { sessionStatusById: {}, fileTabsById: {}, boardTabsById: {}, cardTabsById: {}, ...overrides };
 }
 
 function workspace(pages: Page[], overrides: Partial<Workspace> = {}): Workspace {

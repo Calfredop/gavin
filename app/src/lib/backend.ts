@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
-import type { BoardTab, GavinTree } from "./gavin";
+import type { BoardTab, CardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { ToolRecord } from "./orchestrationTools";
@@ -320,6 +320,10 @@ export function getBoardTabs(): Promise<Record<string, BoardTab>> {
   return invoke("get_board_tabs");
 }
 
+export function getCardTabs(): Promise<Record<string, CardTab>> {
+  return invoke("get_card_tabs");
+}
+
 /// One live session's cwd/status/restored/interrupted, as
 /// session::SessionBaseline.
 export interface SessionBaseline {
@@ -401,6 +405,10 @@ export function getGitBaselines(cwds: string[]): Promise<(GitStatus | null)[]> {
 
 export function setBoardTabs(boardTabs: Record<string, BoardTab>): Promise<void> {
   return invoke("set_board_tabs", { boardTabs });
+}
+
+export function setCardTabs(cardTabs: Record<string, CardTab>): Promise<void> {
+  return invoke("set_card_tabs", { cardTabs });
 }
 
 export function seedSmokeTestData(rootPath: string): Promise<void> {

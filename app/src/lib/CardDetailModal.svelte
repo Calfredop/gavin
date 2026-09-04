@@ -32,6 +32,7 @@
   } from "./attachments";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
   import { isViewableInApp } from "./fileTypes";
+  import { SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
     agentExitedIndicator,
@@ -85,9 +86,28 @@
     // archives it into `plans/done/`. The host holds the open card's path
     // as identity, so it has to follow, or the modal vanishes mid-edit.
     onPathChange?: (path: string) => void;
+    // Draw as a pane rather than as a dialog -- see Modal's own prop.
+    inline?: boolean;
+    // Take the human to this card on the board or on its rail. Only a
+    // host that is NOT one of those surfaces passes it: the Kanban and
+    // Orchestration tabs already ARE where it would go, so the action is
+    // absent there rather than a no-op. This is the half of the old tab
+    // chip that survives -- the chip now opens this panel in a pane, and
+    // the jump to the hub tab lives here, one click further in.
+    onGoToBoard?: (() => void) | null;
   }
-  let { card, workspaceId, columns, labels, allCards, onClose, onOpenCard, onPathChange }: Props =
-    $props();
+  let {
+    card,
+    workspaceId,
+    columns,
+    labels,
+    allCards,
+    onClose,
+    onOpenCard,
+    onPathChange,
+    inline = false,
+    onGoToBoard = null,
+  }: Props = $props();
 
   const PRIORITIES: Priority[] = ["none", "low", "medium", "high", "urgent"];
   let errorMessage = $state<string | null>(null);
@@ -395,14 +415,19 @@
     }
   }
 
-  // A split needs a terminal session to anchor to; file and board tabs
-  // are not sessions. Null means the app has no pane to split, and the
+  // A split needs a terminal session to anchor to; file, board and card
+  // tabs are not sessions. Null means the app has no pane to split, and the
   // chip falls back to the OS's default application -- an honest second
   // choice, rather than a click that does nothing.
   const anchorSessionId = $derived.by(() => {
     const focused = $layoutState.focusedSessionId;
     if (!focused) return null;
-    if ($layoutState.fileTabsById[focused] || $layoutState.boardTabsById[focused]) return null;
+    if (
+        $layoutState.fileTabsById[focused] ||
+        $layoutState.boardTabsById[focused] ||
+        $layoutState.cardTabsById[focused]
+      )
+        return null;
     return focused;
   });
 
@@ -706,7 +731,7 @@
   }
 </script>
 
-<Modal {onClose} scrollKey={card.id}>
+<Modal {onClose} scrollKey={card.id} {inline}>
   <div class="header">
     <span class="kind-badge kind-{card.kind}">{card.kind}</span>
     <span class="meta">{card.contextName} · {card.fileName}</span>
@@ -740,6 +765,12 @@
       {/if}
       {#each columns as col (col.id)}
         <option value={col.name} selected={slugStatus(col.name) === slugStatus(card.status ?? "")}>{col.name}</option>
+    {#if onGoToBoard}
+      <button type="button" class="go-to-board" onclick={() => onGoToBoard?.()}>
+        <SquareArrowOutUpRight size={12} />
+        Show on the board
+      </button>
+    {/if}
       {/each}
     </select>
   </label>
@@ -1264,6 +1295,28 @@
     gap: 10px;
     margin-bottom: 8px;
     font-size: 0.85em;
+  }
+  /* Pushed to the far end of the header: it is the one control here that
+     leaves this panel entirely, so it does not sit among the fields that
+     edit the card. */
+  .go-to-board {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    flex: none;
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.75em;
+    cursor: pointer;
+  }
+  .go-to-board:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
   }
   .row .label {
     color: var(--text-muted);

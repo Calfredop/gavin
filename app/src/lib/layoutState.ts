@@ -31,7 +31,7 @@ import {
 } from "./settings";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
-import type { BoardTab, GavinTree } from "./gavin";
+import type { BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
@@ -116,6 +116,7 @@ export interface LayoutState {
   statusSinceById: Record<string, StatusSince>;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
+  cardTabsById: Record<string, CardTab>;
   /// Workspaces the sidebar X removed, newest first. Persisted with the
   /// workspaces themselves; see workspace.ts's RemovedWorkspace for why
   /// removing a workspace has to leave a record at all.
@@ -139,6 +140,7 @@ const initialState: LayoutState = {
   statusSinceById: {},
   fileTabsById: {},
   boardTabsById: {},
+  cardTabsById: {},
   removedWorkspaces: [],
 };
 
@@ -313,7 +315,8 @@ export function liveSessionIds(state: LayoutState): Set<string> {
     if (ws.mainSessionId) ids.add(ws.mainSessionId);
     for (const page of ws.pages) {
       for (const id of layout.allSessionIds(page.layout)) {
-        if (!state.fileTabsById[id] && !state.boardTabsById[id]) ids.add(id);
+        if (!state.fileTabsById[id] && !state.boardTabsById[id] && !state.cardTabsById[id])
+          ids.add(id);
       }
     }
   }
@@ -340,8 +343,9 @@ async function createFreshSession(workspaceId: string): Promise<string | null> {
 /// The non-session tabs a close ended, handed back to the caller instead
 /// of being pruned on the spot.
 ///
-/// `fileTabsById`/`boardTabsById` are the ONLY thing that tells
-/// Pane.svelte a tab is a file or a board rather than a terminal. Drop an
+/// `fileTabsById`/`boardTabsById`/`cardTabsById` are the ONLY thing that
+/// tells Pane.svelte a tab is a file, a board or a card rather than a
+/// terminal. Drop an
 /// id from them while it is still in a layout tree and that pane falls
 /// straight through to a `<TerminalPane>` for an id the daemon has never
 /// heard of: it mounts, calls fit(), and asks the daemon to resize it.
@@ -354,6 +358,7 @@ async function createFreshSession(workspaceId: string): Promise<string | null> {
 interface ClosedTabs {
   fileTabIds: string[];
   boardTabIds: string[];
+  cardTabIds: string[];
 }
 
 // Every close path (tab, pane, page, workspace) ends the tabs it owns.
@@ -364,10 +369,12 @@ interface ClosedTabs {
 async function endTabs(
   tabIds: string[],
   fileTabsById: Record<string, FileTab>,
-  boardTabsById: Record<string, BoardTab>
+  boardTabsById: Record<string, BoardTab>,
+  cardTabsById: Record<string, CardTab>
 ): Promise<ClosedTabs | null> {
   const fileTabIds: string[] = [];
   const boardTabIds: string[] = [];
+  const cardTabIds: string[] = [];
   for (const id of tabIds) {
     const fileTab = fileTabsById[id];
     if (fileTab) {
@@ -383,6 +390,13 @@ async function endTabs(
       boardTabIds.push(id);
       continue;
     }
+    if (cardTabsById[id]) {
+      // Same as a board tab: no process, no watcher of its own. The card
+      // file's watch belongs to the detail view inside the pane, which
+      // tears it down when it unmounts.
+      cardTabIds.push(id);
+      continue;
+    }
     try {
       await backend.killSession(id);
     } catch (e) {
@@ -390,7 +404,7 @@ async function endTabs(
       return null;
     }
   }
-  return { fileTabIds, boardTabIds };
+  return { fileTabIds, boardTabIds, cardTabIds };
 }
 
 /// Drops the tabs endTabs ended from the maps that classify them. Call
@@ -398,6 +412,17 @@ async function endTabs(
 async function pruneClosedTabs(closed: ClosedTabs): Promise<void> {
   if (closed.fileTabIds.length > 0) await pruneFileTabs(closed.fileTabIds);
   if (closed.boardTabIds.length > 0) await pruneBoardTabs(closed.boardTabIds);
+  if (closed.cardTabIds.length > 0) await pruneCardTabs(closed.cardTabIds);
+}
+
+// Mirrors pruneBoardTabs exactly, over the third map.
+async function pruneCardTabs(closedIds: string[]): Promise<void> {
+  const remaining: Record<string, CardTab> = {};
+  for (const [id, tab] of Object.entries(get(layoutState).cardTabsById)) {
+    if (!closedIds.includes(id)) remaining[id] = tab;
+  }
+  layoutState.update((s) => ({ ...s, cardTabsById: remaining }));
+  await backend.setCardTabs(remaining).catch(() => {});
 }
 
 // Mirrors pruneFileTabs: best-effort persistence, a failed prune costs a
@@ -536,15 +561,16 @@ function repairBoardTabs(
 
 const unlisteners: UnlistenFn[] = [];
 
-/// Resolves once `fileTabsById`/`boardTabsById` hold what the Rust side
-/// persisted -- see loadTabMaps. Both ready paths await it before letting
+/// Resolves once `fileTabsById`/`boardTabsById`/`cardTabsById` hold what
+/// the Rust side persisted -- see loadTabMaps. Both ready paths await it
+/// before letting
 /// `status` leave "connecting", so no layout tree is ever rendered
 /// against empty maps. Starts resolved so a test (or any caller) that
 /// never ran bootstrap is not left hanging.
 let tabMapsLoaded: Promise<void> = Promise.resolve();
 
-/// Loads the two frontend-owned maps that say which layout-tree ids are
-/// file views and which are boards.
+/// Loads the three frontend-owned maps that say which layout-tree ids are
+/// file views, which are boards and which are cards.
 ///
 /// Unlike session names, these are not cosmetic: every id NOT in them is
 /// taken to be a daemon session. Empty maps therefore do not degrade to
@@ -561,10 +587,20 @@ let tabMapsLoaded: Promise<void> = Promise.resolve();
 async function loadTabMaps(): Promise<void> {
   const maxAttempts = 15;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const [fileTabs, boardTabs] = await Promise.all([
+    const [fileTabs, boardTabs, cardTabs] = await Promise.all([
       backend.getFileTabs().catch(() => null),
       backend.getBoardTabs().catch(() => null),
+      backend.getCardTabs().catch(() => null),
     ]);
+    // Card tabs deliberately do NOT gate this, unlike the other two. The
+    // frontend is served live by vite under `tauri dev`, so an edit that
+    // adds a host command reaches a window whose BINARY predates it, and
+    // `get_card_tabs` then rejects with "not found" forever. Requiring it
+    // here would spend all 15 attempts and then seed nothing at all --
+    // turning every restored file and board tab into a terminal for an id
+    // the daemon never had, which is a far worse failure than the one it
+    // would be reporting. An older binary has no card tabs to lose, and a
+    // genuinely transient miss is what repairUnknownTabs is for.
     if (fileTabs && boardTabs) {
       const fileTabsById: Record<string, FileTab> = {};
       for (const [tabId, path] of Object.entries(fileTabs)) {
@@ -588,6 +624,7 @@ async function loadTabMaps(): Promise<void> {
         ...s,
         fileTabsById: { ...fileTabsById, ...s.fileTabsById },
         boardTabsById: { ...boardTabs, ...s.boardTabsById },
+        cardTabsById: { ...(cardTabs ?? {}), ...s.cardTabsById },
       }));
       return;
     }
@@ -612,8 +649,8 @@ let pendingUnknownTabPass: Promise<void> | null = null;
 /// The last-resort repair for the one thing Pane.svelte cannot tell
 /// apart on its own.
 ///
-/// A tab id in a layout tree and in NEITHER map is a daemon session --
-/// and that is also exactly what a board or file tab looks like the
+/// A tab id in a layout tree and in NONE of the maps is a daemon session
+/// -- and that is also exactly what a board, file or card tab looks like the
 /// moment its map entry goes missing, because nothing about the id
 /// itself says which it is. So a lost entry does not degrade, it
 /// inverts: a real xterm and a `pty-output` listener get built for an id
@@ -660,28 +697,34 @@ async function runUnknownTabPass(): Promise<void> {
   // both ready paths already wait on it -- asking underneath it would be
   // one guaranteed miss per restored board tab.
   await tabMapsLoaded;
-  const [fileTabs, boardTabs] = await Promise.all([
+  const [fileTabs, boardTabs, cardTabs] = await Promise.all([
     backend.getFileTabs().catch(() => null),
     backend.getBoardTabs().catch(() => null),
+    backend.getCardTabs().catch(() => null),
   ]);
   for (const id of ids) unknownTabsInFlight.delete(id);
   // Nothing was learned, so nothing is recorded: leaving these unchecked
   // is what lets the next render ask again.
+  // Same asymmetry as loadTabMaps, for the same reason: a binary without
+  // the command must not cost the file and board repair.
   if (!fileTabs || !boardTabs) return;
   for (const id of ids) unknownTabsChecked.add(id);
   const files = ids.filter((id) => fileTabs[id] !== undefined);
   const boards = ids.filter((id) => boardTabs[id] !== undefined);
-  if (files.length === 0 && boards.length === 0) return;
+  const cards = cardTabs ? ids.filter((id) => cardTabs[id] !== undefined) : [];
+  if (files.length === 0 && boards.length === 0 && cards.length === 0) return;
   layoutState.update((s) => {
     const fileTabsById = { ...s.fileTabsById };
     const boardTabsById = { ...s.boardTabsById };
+    const cardTabsById = { ...s.cardTabsById };
     // ??=, not =: the store is the authority the moment it has an answer
     // of its own, exactly as in loadTabMaps.
     for (const id of files) fileTabsById[id] ??= { path: fileTabs[id] };
     for (const id of boards) boardTabsById[id] ??= boardTabs[id];
-    return { ...s, fileTabsById, boardTabsById };
+    if (cardTabs) for (const id of cards) cardTabsById[id] ??= cardTabs[id];
+    return { ...s, fileTabsById, boardTabsById, cardTabsById };
   });
-  for (const id of [...files, ...boards]) terminalRegistry.destroyTerminal(id);
+  for (const id of [...files, ...boards, ...cards]) terminalRegistry.destroyTerminal(id);
 }
 
 /// Refills what the frontend only ever learns from daemon pushes.
@@ -824,7 +867,11 @@ export async function reconcileLayoutSessions(): Promise<void> {
   const stale = workspace.staleLayoutTabIds(
     before,
     new Set(baselines.map((b) => b.id)),
-    new Set([...Object.keys(before.fileTabsById), ...Object.keys(before.boardTabsById)])
+    new Set([
+      ...Object.keys(before.fileTabsById),
+      ...Object.keys(before.boardTabsById),
+      ...Object.keys(before.cardTabsById),
+    ])
   );
   // handleSessionExited searches the CURRENT trees and is a no-op for an
   // id no longer in one, so a tab closed in the meantime needs no guard.
@@ -1819,6 +1866,90 @@ export async function openBoardInSplit(
   await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }
 
+// Opens one of a card's own views -- its detail panel, or the diff of
+// what its run did to the checkout -- as a new tab split beside the pane
+// holding `anchorSessionId`. Mirrors openBoardInSplit, with
+// cardTabsById/setCardTabs in place of the board-tab map.
+//
+// Unlike the file and board splits this one DEDUPES first. It is reached
+// from a chip on a terminal tab, which the human clicks to check on the
+// agent and clicks again a minute later; splitting a second identical
+// pane every time is how a page ends up four copies deep in the same
+// card. An already-open view of the same card is brought forward
+// instead, wherever on this page it lives.
+export async function openCardInSplit(
+  anchorSessionId: string,
+  workspaceId: string,
+  path: string,
+  view: CardTabView
+): Promise<void> {
+  const state = get(layoutState);
+  const location = activePageLocation(state);
+  if (!location) return;
+  const existing = Object.entries(state.cardTabsById).find(
+    ([id, tab]) =>
+      tab.workspaceId === workspaceId &&
+      tab.path === path &&
+      tab.view === view &&
+      layout.findLeafPath(location.tree, id) !== null
+  );
+  if (existing) {
+    await switchToTab(existing[0]);
+    return;
+  }
+  const tabId = crypto.randomUUID();
+  const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
+  const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
+  const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
+  const cardTabsById = { ...state.cardTabsById, [tabId]: { workspaceId, path, view } };
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, cardTabsById }));
+  try {
+    await backend.setCardTabs(cardTabsById);
+  } catch (e) {
+    setError(String(e));
+    return;
+  }
+  await persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
+/// Repoints ONE card tab at another card -- the pane's own navigation
+/// (the detail panel's Tasks list, its "Part of" row). Deliberately not
+/// retargetCardTabs: that one follows a file that MOVED, and moves every
+/// pane showing it; this one is a human walking from one card to
+/// another in a single pane, and must leave the sibling panes alone.
+export async function setCardTabPath(tabId: string, path: string): Promise<void> {
+  const state = get(layoutState);
+  const tab = state.cardTabsById[tabId];
+  if (!tab || tab.path === path) return;
+  const cardTabsById = { ...state.cardTabsById, [tabId]: { ...tab, path } };
+  layoutState.update((s) => ({ ...s, cardTabsById }));
+  await backend.setCardTabs(cardTabsById).catch(() => {});
+}
+
+/// Points every open card tab at a path that has just moved -- setting a
+/// card Done files it under `plans/done/`, and archiving moves it again.
+/// Without this the pane would go on asking the tree for a card that is
+/// no longer at that path and render its "this card is gone" state for a
+/// card that is merely somewhere else.
+export async function retargetCardTabs(from: string, to: string): Promise<void> {
+  const state = get(layoutState);
+  const cardTabsById: Record<string, CardTab> = {};
+  let moved = false;
+  for (const [id, tab] of Object.entries(state.cardTabsById)) {
+    if (tab.path !== from) {
+      cardTabsById[id] = tab;
+      continue;
+    }
+    moved = true;
+    cardTabsById[id] = { ...tab, path: to };
+  }
+  if (!moved) return;
+  layoutState.update((s) => ({ ...s, cardTabsById }));
+  // Best-effort, like pruneCardTabs: a failed persist costs a stale entry
+  // in config.json, never a tab left pointing at the old path.
+  await backend.setCardTabs(cardTabsById).catch(() => {});
+}
+
 export async function addTab(targetSessionId: string): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
@@ -1834,7 +1965,7 @@ export async function addTab(targetSessionId: string): Promise<void> {
 
 export async function closeSession(sessionId: string): Promise<void> {
   const state = get(layoutState);
-  const closed = await endTabs([sessionId], state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs([sessionId], state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
   // Tree first, maps second (see ClosedTabs): the other order leaves the
   // tab in the tree for a render with nothing left to classify it.
@@ -2291,7 +2422,7 @@ export async function closePane(anySessionId: string): Promise<void> {
   if (leaf.type !== "leaf") return;
   const sessionIds = [...leaf.tabs];
 
-  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
 
   let tree: LayoutNode | null = location.tree;
@@ -2400,7 +2531,7 @@ export async function closeWorkspace(
   if (!ws) return;
   const sessionIds = workspace.allSessionIdsInWorkspace(ws);
 
-  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
@@ -2719,7 +2850,7 @@ export async function closePage(workspaceId: string, pageId: string): Promise<vo
   if (!page) return;
   const sessionIds = layout.allSessionIds(page.layout);
 
-  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById);
+  const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
