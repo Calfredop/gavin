@@ -1,12 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   RUNNABLE_TOOL_KINDS,
+  cannotRunAloneReason,
+  editDraftFor,
   isRunnableStandalone,
   isRunOpen,
   lastRunByTool,
+  listedTools,
   matchesToolSearch,
   runBlockedReason,
-  runnableTools,
   toolCwdLabel,
   toolRunAxis,
   toolRunChip,
@@ -53,16 +55,19 @@ function run(over: Partial<ToolRun> = {}): ToolRun {
 const V30: DaemonCompat = { daemonVersion: 30, appVersion: 30, degraded: false };
 const V29: DaemonCompat = { daemonVersion: 29, appVersion: 30, degraded: true };
 
+const STEP_ONLY: ToolKind[] = ["gavin", "until", "pr"];
+
 describe("which tools run standalone", () => {
-  it("offers exactly the three kinds a human can author", () => {
+  it("names exactly the three kinds a Run button can start", () => {
     expect(RUNNABLE_TOOL_KINDS).toEqual(["agent", "command", "script"]);
   });
 
   // The three that are missing are the three whose bodies are completion
   // RULES: an until step sends the rail backwards, a pr step is nothing
   // but waiting on one, and a gavin tool's body names a rail action.
+  // A human can AUTHOR all six -- this is the narrower question.
   it("drops the kinds that only mean something on a rail", () => {
-    for (const kind of ["gavin", "until", "pr"] as ToolKind[]) {
+    for (const kind of STEP_ONLY) {
       expect(isRunnableStandalone({ kind })).toBe(false);
     }
     for (const kind of RUNNABLE_TOOL_KINDS) {
@@ -70,19 +75,32 @@ describe("which tools run standalone", () => {
     }
   });
 
-  it("filters the shipped library down to the runnable ones", () => {
-    const ids = runnableTools(BUILTIN_TOOLS).map((t) => t.id);
-    expect(ids).not.toContain("builtin:start-rail");
-    expect(ids).not.toContain("builtin:until");
-    expect(ids).not.toContain("builtin:await-pr");
+  // The two halves must stay complementary: a kind with no sentence
+  // would take a dark Run button whose tooltip is the daemon version.
+  it("has a reason for every kind that cannot run, and none for the rest", () => {
+    for (const kind of STEP_ONLY) {
+      expect(cannotRunAloneReason(kind), kind).toMatch(/step/);
+    }
+    for (const kind of RUNNABLE_TOOL_KINDS) {
+      expect(cannotRunAloneReason(kind), kind).toBeNull();
+    }
+  });
+
+  // Listed, not filtered: the tab edits tools now, and a tool switched
+  // to Loop-until must not vanish from under the cursor that switched it.
+  it("lists the whole shipped library, step-only kinds included", () => {
+    const ids = listedTools(BUILTIN_TOOLS).map((t) => t.id);
+    expect(ids).toContain("builtin:start-rail");
+    expect(ids).toContain("builtin:until");
+    expect(ids).toContain("builtin:await-pr");
     expect(ids).toContain("builtin:consolidate-repo");
-    expect(ids).toContain("builtin:reconcile-repo");
+    expect(ids).toHaveLength(BUILTIN_TOOLS.length);
   });
 
   // The human's own tools are what they came here to run; sixteen
   // built-ins above them would bury the one that matters.
   it("puts this workspace's own tools first, then global, then built-in", () => {
-    const list = runnableTools([
+    const list = listedTools([
       tool({ id: "b", name: "Zebra", scope: "builtin" }),
       tool({ id: "g", name: "Apple", scope: "global" }),
       tool({ id: "w", name: "Mango", scope: "workspace" }),
@@ -91,11 +109,33 @@ describe("which tools run standalone", () => {
   });
 
   it("sorts alphabetically within a scope", () => {
-    const list = runnableTools([
+    const list = listedTools([
       tool({ id: "b", name: "Beta" }),
       tool({ id: "a", name: "Alpha" }),
     ]);
     expect(list.map((t) => t.name)).toEqual(["Alpha", "Beta"]);
+  });
+});
+
+describe("editDraftFor", () => {
+  // A copy, always: the list re-renders from the store the moment a save
+  // lands, and a draft that WAS the library entry would fight that.
+  it("hands back a detached copy of a stored tool", () => {
+    const original = tool({ params: [{ name: "env", label: "Env", default: "staging" }] });
+    const draft = editDraftFor(original, "new-id");
+    expect(draft.id).toBe(original.id);
+    expect(draft).not.toBe(original);
+    draft.params[0].default = "prod";
+    expect(original.params[0].default).toBe("staging");
+  });
+
+  // A built-in cannot be saved, so editing one means copying it -- the
+  // same answer the library's own list gives from its own row.
+  it("turns a built-in into a duplicate it can actually save", () => {
+    const draft = editDraftFor(BUILTIN_TOOLS[0], "new-id");
+    expect(draft.id).toBe("new-id");
+    expect(draft.scope).toBe("workspace");
+    expect(draft.name).toContain("(copy)");
   });
 });
 
@@ -258,6 +298,15 @@ describe("runBlockedReason", () => {
     expect(reason).toMatch(/rail/);
   });
 
+  // Ahead of the daemon gate, because nothing lifts it: offering a
+  // version number as the reason would send the human to upgrade
+  // something that leaves a completion rule exactly as unrunnable.
+  it("names the kind before the daemon, since upgrading cannot help", () => {
+    const reason = runBlockedReason({ ...base, compat: V29, tool: tool({ kind: "pr" }) });
+    expect(reason).toMatch(/step/);
+    expect(reason).not.toMatch(/v30/);
+  });
+
   it("refuses when the workspace has no root to run in", () => {
     expect(runBlockedReason({ ...base, rootPath: null })).toMatch(/root folder/);
   });
@@ -303,7 +352,7 @@ describe("search and the empty state", () => {
   // search that found nothing. Telling somebody to write a tool when
   // they have twenty and mistyped one is the wrong instruction.
   it("distinguishes an empty library from an empty search", () => {
-    expect(toolsEmptyMessage([], "")).toMatch(/Manage tools/);
+    expect(toolsEmptyMessage([], "")).toMatch(/New tool/);
     expect(toolsEmptyMessage([], "zzz")).toMatch(/zzz/);
   });
 });

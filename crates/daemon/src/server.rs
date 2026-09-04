@@ -2168,12 +2168,28 @@ impl SessionManager {
     }
 
     pub fn kill_session(&self, id: &str) -> anyhow::Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(session) = sessions.get_mut(id) {
-            session.kill()?;
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(id) {
+                session.kill()?;
+            }
         }
+        self.forget_session(id)
+    }
+
+    /// Drops every trace of a session the daemon is no longer hosting:
+    /// its registry row (and, with it, the follow-ups queued against it)
+    /// and the PTY it was running in.
+    ///
+    /// Shared by `kill_session` and the pump's teardown, which are the
+    /// two ways a session ends, so neither can drift into leaving half of
+    /// it behind. Tolerant of an id it does not know: the two callers
+    /// overlap -- a killed session's pump wakes on the closed PTY and
+    /// tears down after the kill has already run -- and the second pass
+    /// must be a no-op rather than an error.
+    fn forget_session(&self, id: &str) -> anyhow::Result<()> {
         self.registry.lock().unwrap().remove(id)?;
-        sessions.remove(id);
+        self.sessions.lock().unwrap().remove(id);
         Ok(())
     }
 
@@ -2490,14 +2506,15 @@ impl SessionManager {
             // get a pump thread at all to tear it back down again --
             // specifically after a daemon restart, where recover() skips
             // Exited rows entirely, so `sessions` holds no entry, and the
-            // pump's reader_for call would fail outright. (Within one
-            // daemon lifetime an exited session still has its `sessions`
-            // entry -- only kill_session removes it -- so its pump does
-            // spawn, hits EOF immediately, and its normal teardown
-            // unregisters correctly.) The pump's error path now also
-            // unregisters as a backstop, but this gate keeps the daemon
-            // from doing the pointless work in the first place, and
-            // attaching to an already-exited session is a supported flow.
+            // pump's reader_for call would fail outright. That is now the
+            // only shape an Exited row reaching here can have: a session
+            // whose process ends in THIS lifetime is forgotten outright
+            // by the pump's teardown, row and PTY together, so a later
+            // attach to it finds no record at all and never gets here.
+            // The pump's error path unregisters as a backstop either way,
+            // but this gate keeps the daemon from doing the pointless
+            // work in the first place, and attaching to an already-exited
+            // session is a supported flow.
             if record.status != SessionStatus::Exited {
                 let _ = write_message(
                     &mut *writer.lock().unwrap(),
@@ -2867,6 +2884,42 @@ impl SessionManager {
                 manager.orchestration.lock().unwrap().finish_tool_runs_for_session(&id, Some(exit_code))
             {
                 eprintln!("failed to close tool runs for session {id}: {e}");
+            }
+            // Then forget the session itself. Nothing else ever did:
+            // `kill_session` was the only path that removed a row, and it
+            // only runs when a human closes a tab -- so every run that
+            // ended by itself left its record behind, and a hidden one
+            // (the Git tab's commit agent, a tool, anything the app takes
+            // off screen the moment it exits) left one nobody could see.
+            // `recover` skips an exited row rather than dropping it, so
+            // the pile outlived the daemon too, and the task manager was
+            // the only place to clear it, by hand, one run at a time.
+            //
+            // Nothing is lost with it: every reader treats an exited row
+            // and an unknown one identically (see the app's
+            // `adopt_session_impl`), the exit code has already gone into
+            // the card and tool run histories above, and the exit itself
+            // is announced below.
+            //
+            // The exception is a row that still names a process this
+            // session left RUNNING. That record is the human's only
+            // handle on the survivor -- `end_orphan` reads the pid out of
+            // it -- so an orphan turns the reap off rather than being
+            // swept away by it. A recovery that could not respawn a
+            // session marks its row Exited without ever reaching this
+            // block, so those stay too.
+            let orphaned = manager
+                .registry
+                .lock()
+                .unwrap()
+                .get(&id)
+                .ok()
+                .flatten()
+                .is_some_and(|record| record.orphan.is_some());
+            if !orphaned {
+                if let Err(e) = manager.forget_session(&id) {
+                    eprintln!("failed to drop the record of exited session {id}: {e}");
+                }
             }
             // Same atomic take-and-remove as the error path above, and for the same
             // reason: a single `.remove()` call closes the race window a separate
@@ -4294,6 +4347,90 @@ mod tests {
         }
     }
 
+    /// Polls `list_sessions` until `id` is gone, or gives up. A poll
+    /// rather than a signal because the teardown that forgets a session
+    /// runs on that session's own pump thread, not on the one asking.
+    fn wait_until_forgotten(manager: &SessionManager, id: &str) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if !manager.list_sessions().unwrap().iter().any(|s| s.id == id) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn a_session_whose_process_ends_stops_being_listed() {
+        // `kill_session` used to be the only thing that ever removed a
+        // session, and nobody closes a tab that was never there: a hidden
+        // run -- the Git tab's commit agent, a tool, any launch the app
+        // takes off screen the moment it ends -- left its row behind for
+        // good. `recover` skips an exited row rather than dropping it, so
+        // the pile survived daemon restarts too, and the task manager was
+        // the only place to clear it, by hand, one run at a time.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager.create_session("/tmp", "/tmp", Some("exit 3")).unwrap();
+
+        // The pump is what witnesses an exit, and only an Attach starts
+        // one. The client end stays bound: dropping it would close the
+        // socket the teardown reports the exit on.
+        let (_client, server) = UnixStream::pair().unwrap();
+        manager.attach(&id, Arc::new(Mutex::new(server)));
+
+        assert!(
+            wait_until_forgotten(&manager, &id),
+            "a session whose process has ended must stop being listed"
+        );
+    }
+
+    #[test]
+    fn a_session_that_left_a_process_behind_keeps_its_row_when_its_shell_ends() {
+        // The one row worth keeping. A session whose command outlived its
+        // daemon is recorded as an orphan, and that row is the only handle
+        // the human has on the survivor -- `end_orphan` reads the pid out
+        // of it. Reaping it when the bare shell recovery put in its place
+        // finally exits would leave the process running with nothing left
+        // offering to end it.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-kept",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+        let manager = Arc::new(recovered_manager(&dir));
+
+        let (_client, server) = UnixStream::pair().unwrap();
+        manager.attach("orphan-kept", Arc::new(Mutex::new(server)));
+        manager.write_input("orphan-kept", b"exit\n").unwrap();
+
+        // Waits for the status rather than for the row to vanish, because
+        // not vanishing is the whole assertion.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut exited = None;
+        while std::time::Instant::now() < deadline && exited.is_none() {
+            match manager.list_sessions().unwrap().into_iter().find(|s| s.id == "orphan-kept") {
+                Some(row) if row.status == "exited" => exited = Some(row),
+                Some(_) => std::thread::sleep(Duration::from_millis(20)),
+                None => panic!("the row of a session with a surviving process must be kept"),
+            }
+        }
+        let row = exited.expect("the recovered shell never exited");
+        assert_eq!(
+            row.orphan.map(|o| o.pid),
+            Some(handle.pid),
+            "the surviving process must still be reported"
+        );
+
+        kill_and_reap(survivor);
+    }
+
     #[test]
     fn write_input_to_unknown_session_returns_error() {
         let (socket_path, _dir) = start_test_server();
@@ -5702,8 +5839,9 @@ mod tests {
         };
 
         // Attach once, then make the shell exit so the pump thread's
-        // teardown persists SessionStatus::Exited to the registry (this
-        // does not remove the registry record -- only kill_session does).
+        // teardown runs. It forgets the session outright, so the second
+        // attach below is one to an id the daemon no longer knows -- the
+        // shape a tab left holding a finished run actually has.
         let mut stream1 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
@@ -5731,6 +5869,56 @@ mod tests {
         loop {
             match read_message::<_, Response>(&mut reader2) {
                 Ok(Some(Response::StatusChanged { id: rid, .. })) if rid == id => {
+                    panic!("attach() sent a baseline StatusChanged for an exited session");
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break, // nothing more arrived within the timeout, as expected
+            }
+        }
+    }
+
+    #[test]
+    fn attach_sends_no_baseline_status_for_a_row_recovery_could_not_bring_back() {
+        // The Exited gate's remaining input. A session whose process ends
+        // under a live daemon is forgotten outright now -- row and PTY
+        // together -- so the only Exited row an attach can still find is
+        // one a previous lifetime left and recovery could not respawn.
+        // Baselining it would paint a status over a session with nothing
+        // in it.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+            registry
+                .insert(&SessionRecord {
+                    id: "unrecoverable-1".to_string(),
+                    workspace_path: "/definitely/does/not/exist/anywhere".to_string(),
+                    cwd: "/definitely/does/not/exist/anywhere".to_string(),
+                    command: Some("claude".to_string()),
+                    status: SessionStatus::Working,
+                    restored: false,
+                    generation: 0,
+                    interrupted: false,
+                    process: None,
+                    orphan: None,
+                    failure_reason: None,
+                })
+                .unwrap();
+        }
+        let manager = Arc::new(recovered_manager(&dir));
+        assert_eq!(
+            manager.registry.lock().unwrap().get("unrecoverable-1").unwrap().unwrap().status,
+            SessionStatus::Exited,
+            "test premise: recovery must mark this row Exited and keep it"
+        );
+
+        let (client, server) = UnixStream::pair().unwrap();
+        manager.attach("unrecoverable-1", Arc::new(Mutex::new(server)));
+
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let mut reader = BufReader::new(client);
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id, .. })) if id == "unrecoverable-1" => {
                     panic!("attach() sent a baseline StatusChanged for an exited session");
                 }
                 Ok(Some(_)) => continue,
@@ -5769,11 +5957,10 @@ mod tests {
         };
 
         // Attach once, then make the shell exit so the pump thread's
-        // teardown persists SessionStatus::Exited to the registry (this
-        // does not remove the registry record -- only kill_session does).
-        // Teardown also calls unregister_session_repo_mapping before
-        // persisting Exited, so no mapping is left over from this first
-        // attach either.
+        // teardown runs -- which forgets the session, leaving the second
+        // attach below aimed at an id the daemon no longer knows.
+        // Teardown also calls unregister_session_repo_mapping first, so
+        // no mapping is left over from this first attach either.
         let mut stream1 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();

@@ -51,7 +51,7 @@ import {
 } from "./toolRunsState";
 import { resolveToolBody, resolveToolCwd, type Tool } from "./orchestrationTools";
 import { renderLibraryFor, toolRecords } from "./toolsState";
-import { isRunnableStandalone, runBlockedReason } from "./workspaceTools";
+import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "./workspaceTools";
 
 /// A launch the human has been asked to fill the parameters of.
 /// Everything the launch needs is resolved when the dialog OPENS -- the
@@ -132,7 +132,10 @@ async function launch(
   cwd: string
 ): Promise<string | null> {
   if (!isRunnableStandalone(tool)) {
-    return `A ${tool.kind} tool is a rail's completion rule — it only means something as a step.`;
+    // The same sentence the dark Run button carries, from the same
+    // table: this path is only reachable when something bypassed that
+    // button, and two wordings for one fact is two things to keep true.
+    return cannotRunAloneReason(tool.kind) ?? `A ${tool.kind} tool only means something as a step.`;
   }
   const body = resolveToolBody(tool, values);
   const agent = resolvedAgentFor(workspaceId);

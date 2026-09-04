@@ -24,6 +24,11 @@ import {
   GAVIN_ACTIONS,
   type Tool,
   type ToolRecord,
+  TOOL_KINDS,
+  PR_BODY,
+  bodyForKind,
+  toolBodyEditor,
+  toolKindParamNote,
 } from "./orchestrationTools";
 
 function record(over: Partial<ToolRecord> = {}): ToolRecord {
@@ -354,6 +359,73 @@ describe("editing", () => {
     expect(toRecord({ ...tool, cwd: "  " }, "ws-1", 0).cwd).toBeNull();
     expect(toRecord({ ...tool, cwd: null }, "ws-1", 0).cwd).toBeNull();
     expect(toRecord({ ...tool, cwd: " apps/web " }, "ws-1", 0).cwd).toBe("apps/web");
+  });
+});
+
+describe("authoring a kind", () => {
+  // All six, and the order matters: the three that also run on their own
+  // come first, because the Tools tab is where most tools are written.
+  it("offers every kind, runnable ones first", () => {
+    expect(TOOL_KINDS).toEqual(["agent", "command", "script", "until", "pr", "gavin"]);
+  });
+
+  it("gives each kind a body editor of the shape its body actually has", () => {
+    expect(toolBodyEditor("agent")).toMatchObject({ shape: "text", mono: false, rows: 8 });
+    expect(toolBodyEditor("command")).toMatchObject({ shape: "text", mono: true, rows: 3 });
+    expect(toolBodyEditor("script")).toMatchObject({ shape: "text", mono: true, rows: 8 });
+    // The check IS the body, so it is a command line -- but the field
+    // has to say "check", or a human writes a step and expects it to run
+    // once.
+    expect(toolBodyEditor("until")).toMatchObject({ shape: "text", label: "Check command" });
+    expect(toolBodyEditor("gavin").shape).toBe("action");
+    expect(toolBodyEditor("pr").shape).toBe("none");
+  });
+
+  it("names the parameters the three argument kinds read, and nobody else's", () => {
+    expect(toolKindParamNote("until")).toContain("`max`");
+    expect(toolKindParamNote("pr")).toContain("`require`");
+    expect(toolKindParamNote("gavin")).toContain("`rail`");
+    for (const kind of ["agent", "command", "script"] as const) {
+      expect(toolKindParamNote(kind), kind).toBeNull();
+    }
+  });
+});
+
+describe("bodyForKind", () => {
+  // `validateTool` refuses an empty body, and `gavinActionOf` reads this
+  // one: a switch that left a prompt behind would save a gavin tool
+  // naming nothing.
+  it("imposes the fixed body on the two kinds that do not author one", () => {
+    expect(bodyForKind("pr", "npm test", null)).toBe(PR_BODY);
+    expect(bodyForKind("gavin", "npm test", null)).toBe(GAVIN_ACTIONS[0]);
+  });
+
+  it("keeps a gavin body that already names an action", () => {
+    expect(bodyForKind("gavin", "  start-rail  ", null)).toBe("start-rail");
+  });
+
+  it("leaves an authored body alone when the new kind authors one too", () => {
+    expect(bodyForKind("script", "npm test", null)).toBe("npm test");
+    expect(bodyForKind("until", "npm test", "stashed")).toBe("npm test");
+  });
+
+  // The whole point of the stash: clicking the wrong chip costs a click,
+  // not eight lines of prompt. A fixed body is not source, so nothing is
+  // lost by replacing it.
+  it("restores the stashed body when a fixed one is switched away from", () => {
+    expect(bodyForKind("agent", PR_BODY, "Review the diff.")).toBe("Review the diff.");
+    expect(bodyForKind("command", "start-rail", "npm test")).toBe("npm test");
+  });
+
+  it("keeps the fixed body when there is nothing stashed to put back", () => {
+    expect(bodyForKind("agent", PR_BODY, null)).toBe(PR_BODY);
+  });
+
+  // A new tool's body is blank, and blank is worth restoring: reading an
+  // empty stash as "nothing was put away" is what leaves "await-pr"
+  // sitting in a brand-new tool's Command field.
+  it("restores a stashed body that was empty", () => {
+    expect(bodyForKind("command", PR_BODY, "")).toBe("");
   });
 });
 

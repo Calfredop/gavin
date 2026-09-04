@@ -511,7 +511,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "run-start-rail-library",
         text: "Start rail reads “Gavin action” in the drawer and the library, with its own ⚡ icon, and the library offers no Duplicate on it",
-        hint: "Its params popover previews “Start the rail “<name>”.” rather than a command line, and says nothing is named yet when the field is empty. The library's Built-in section shows “gavin's own” where the other eleven show Duplicate.",
+        hint: "Its params popover previews “Start the rail “<name>”.” rather than a command line, and says nothing is named yet when the field is empty. The library's Built-in section offers Duplicate on it like every other built-in, and the copy's body is a select over the actions rather than a text box.",
       },
       {
         id: "run-until-loops",
@@ -531,7 +531,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "run-until-library",
         text: "Loop until a check passes reads “Loop until” in the drawer and the library with its own ↻ icon, and the library offers no Duplicate on it",
-        hint: "It is in the + Add step picker's Tools list beside the others. Its Sliders show two fields, Check command and Retries. The library's Built-in section shows “gavin's own” where the other eleven show Duplicate.",
+        hint: "It is in the + Add step picker's Tools list beside the others. Its Sliders show two fields, Check command and Retries. The library's Built-in section offers Duplicate on it like every other built-in, and the copy's body field says Check command.",
       },
       {
         id: "pr-chips-on-a-bound-rail",
@@ -1731,8 +1731,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "tasks-clear-stale",
-        text: "With an exited row and a live one, “Clear stale (1)” is enabled; pressing it asks once, spelling out what clearing an exited row does, and leaves the live row alone",
-        hint: "Clearing an exited row deletes a record; clearing an orphan sends SIGTERM to a live process. One word covering both would hide the one that matters, so the prompt lists each kind present.",
+        text: "With a stale row and a live one, “Clear stale (1)” is enabled; pressing it asks once, spelling out what clearing each kind present does, and leaves the live row alone",
+        hint: "Clearing an exited row deletes a record; clearing an orphan sends SIGTERM to a live process. One word covering both would hide the one that matters, so the prompt lists each kind present. A run that simply ends no longer leaves a row at all, so stage this with an orphan (`trap '' HUP; sleep 900`, then restart the daemon) or an interrupted one.",
       },
       {
         id: "tasks-grid-scrolls-inside",
@@ -3582,9 +3582,34 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     title: "Tools tab",
     items: [
       {
-        id: "tools-tab-lists-runnable",
-        text: "The Tools tab lists the library's agent / command / script tools and offers no Loop-until, Wait-for-PR or Start-rail row",
-        hint: "Those three are completion rules, not work: an until step's verdict sends the RAIL backwards, a pr step is pure waiting on a rail's branch, and a gavin tool's body names a rail action. They are filtered out of the list, not shown disabled.",
+        id: "tools-tab-lists-every-kind",
+        text: "The Tools tab lists the whole library, and the Loop-until / Wait-for-PR / Start-rail rows sit there with Run dark and a reason naming their own kind",
+        hint: "Those three are completion rules, not work: an until step's verdict sends the RAIL backwards, a pr step is pure waiting on a rail's branch, and a gavin tool's body names a rail action. Listed rather than filtered because the kind is editable from this tab — a filter would make a tool switched to Loop-until vanish from under the cursor that switched it. Hover each dark Run: three different sentences, not one.",
+      },
+      {
+        id: "tools-tab-edits-a-row",
+        text: "A stored tool's pencil opens the library dialog straight on that tool's form; a built-in's Copy opens a saveable duplicate of it",
+        hint: "The point is not having to find the row again inside a dialog. The built-in case must arrive with “(copy)” in the name and This workspace selected — the original cannot be saved, so a form opened on it would refuse after the typing.",
+      },
+      {
+        id: "tools-tab-new-tool",
+        text: "New tool in the tab's own bar opens the empty form, and the tool appears in the list on Save",
+        hint: "Cancel lands on the dialog's list rather than closing it — from there Done closes. An empty library says “press New tool to write one”.",
+      },
+      {
+        id: "tools-kind-switch-all-six",
+        text: "The edit form's Runs as row offers all six kinds, and the body field changes shape with the kind",
+        hint: "Agent prompt → an 8-row prose box; Bash command → 3 rows monospaced; Bash script → 8 monospaced; Loop until → 3 rows labelled Check command; Wait on a pull request → NO body field, just a sentence saying gavin reads GitHub itself; Gavin action → a select, never a text box. The working directory disappears on the last three: a rail step ignores it.",
+      },
+      {
+        id: "tools-kind-switch-keeps-the-body",
+        text: "Switching a written tool to Wait-on-a-PR and back restores the body it had, rather than leaving “await-pr” behind",
+        hint: "Type a prompt, click Wait on a pull request, click Agent prompt again: the prompt is back. The two kinds that impose a body do it so validateTool has one and a plan reads on paper — losing eight lines of prompt to a stray chip click is the failure this prevents.",
+      },
+      {
+        id: "tools-authored-until-loops",
+        text: "A duplicated Loop-until tool, dropped on a rail with a failing check, sends the rail backwards exactly as the built-in does",
+        hint: "This is what the kind switch is for. The scheduler branches on the KIND, never on which built-in id a tool came from — if a copy behaves like a plain command, that branch has grown an id in it. Same for a duplicated Start rail: it must arm the rail its `rail` parameter names.",
       },
       {
         id: "tools-command-settles",
