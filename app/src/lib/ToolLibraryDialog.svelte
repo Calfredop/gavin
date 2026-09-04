@@ -2,7 +2,8 @@
   // The tool library: one modal, two modes. List mode shows what exists,
   // grouped by scope; edit mode is the form. Built-ins are read-only and
   // offer Duplicate rather than Edit (tools spec T4).
-  import { Bot, Terminal, FileCode2, Zap, Repeat, GitPullRequest, Plus, Copy, Pencil, Trash2, Group } from "@lucide/svelte";
+  import { Bot, Terminal, FileCode2, Zap, Repeat, GitPullRequest, Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
+  import { open as openPicker } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import {
@@ -18,6 +19,9 @@
     type ToolScope,
   } from "./orchestrationTools";
   import { saveToolAction, deleteToolAction } from "./toolsState";
+  import { daemonCompat, workspaceRootPath } from "./layoutState";
+  import { featureBlockedReason } from "./daemonCompat";
+  import { tooltip } from "./tooltip";
   import { saveGroupTemplateAction, deleteGroupTemplateAction } from "./groupTemplatesState";
   import type { GroupTemplate, GroupTemplateScope } from "./orchestrationGroups";
 
@@ -183,6 +187,36 @@
   function removeParam(index: number): void {
     if (!editing) return;
     editing.params = editing.params.filter((_, i) => i !== index);
+  }
+
+  // The half of v30 min_version_for cannot see: `cwd` widens SaveTool's
+  // record, so a v29 daemon accepts the save, drops the directory and
+  // hands the tool back rooted wherever the launcher stood. Disabled
+  // rather than offered, because a field that takes a value and loses it
+  // silently is worse than one that is dark with a reason.
+  const cwdBlocked = $derived(featureBlockedReason($daemonCompat, "toolCwd"));
+
+  /// The only OS dialog still permitted: @tauri-apps/plugin-dialog is
+  /// capability-narrowed to `dialog:allow-open`, so `open` works and
+  /// `confirm`/`message`/`ask` fail at the permission layer.
+  ///
+  /// The picked path is stored RELATIVE to the workspace root when it
+  /// sits under it, because that is what makes a tool portable: a global
+  /// tool with an absolute path would run in one repository from every
+  /// workspace that could see it.
+  async function pickCwd(): Promise<void> {
+    if (!editing || cwdBlocked) return;
+    const picked = await openPicker({
+      directory: true,
+      multiple: false,
+      title: "Where this tool runs",
+    });
+    if (typeof picked !== "string") return;
+    const root = workspaceRootPath(workspaceId);
+    editing.cwd =
+      root && picked.startsWith(`${root.replace(/\/+$/, "")}/`)
+        ? picked.slice(root.replace(/\/+$/, "").length + 1)
+        : picked;
   }
 </script>
 
@@ -390,6 +424,37 @@
         Use <code>{"{{name}}"}</code> to drop a parameter in. Substitution is literal — you own the
         quoting.
       </p>
+
+      <!-- The reason hangs on the LABEL, not on the input: a disabled
+           element never fires `mouseenter`, so a tooltip bound to the
+           field itself would never appear. -->
+      <div class="cwd-field" use:tooltip={cwdBlocked}>
+        <span class="field">Working directory</span>
+        <div class="cwd-row">
+          <input
+            bind:value={editing.cwd}
+            disabled={Boolean(cwdBlocked)}
+            spellcheck="false"
+            placeholder="the workspace root"
+          />
+          <button
+            type="button"
+            class="ghost small"
+            disabled={Boolean(cwdBlocked)}
+            onclick={() => void pickCwd()}
+          >
+            <FolderOpen size={12} /> Choose…
+          </button>
+        </div>
+        <p class="hint">
+          {#if cwdBlocked}
+            {cwdBlocked}
+          {:else}
+            Where this tool runs from the Tools tab. Relative to the workspace root; leave it empty
+            to run at the root. A rail step ignores it and runs in the rail's own checkout.
+          {/if}
+        </p>
+      </div>
       {#if undeclared.length > 0}
         <p class="warn">
           No parameter declares {undeclared.map((n) => `{{${n}}}`).join(", ")} — it will be left in
@@ -780,6 +845,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .cwd-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .cwd-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cwd-row input {
+    flex: 1 1 auto;
   }
   .params-head .field {
     flex: 1;

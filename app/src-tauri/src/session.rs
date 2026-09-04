@@ -2,7 +2,7 @@ use crate::config::Workspace;
 use crate::layout::LayoutNode;
 use protocol::{
     read_message, socket_path, write_message, Board, CardRun, Column, ConflictNote, GroupTemplate,
-    Label, Orchestration, Rail, Request, Response, ToolDef,
+    Label, Orchestration, Rail, Request, Response, ToolDef, ToolRun,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -3606,6 +3606,79 @@ pub fn delete_tool(
         send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteTool { id })
             .map_err(|e| e.to_string())?;
     expect_ok(resp)
+}
+
+// --- Standalone tool runs (v30) ---------------------------------------------
+//
+// Three new request TYPES, so the gated send path is a real gate here:
+// against a v29 daemon each of these fails locally with the version
+// message rather than putting bytes on a socket that cannot parse them.
+// The Tools tab is already dark there (FEATURE_MIN_VERSION.toolRuns), so
+// this is the belt to that braces.
+
+#[tauri::command]
+pub fn start_tool_run(
+    workspace_id: String,
+    tool_id: String,
+    session_id: String,
+    command: Option<String>,
+    launch_cwd: Option<String>,
+    conversation_id: Option<String>,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::StartToolRun {
+            workspace_id,
+            tool_id,
+            session_id,
+            command,
+            launch_cwd,
+            conversation_id,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+#[tauri::command]
+pub fn set_tool_run_outcome(
+    session_id: String,
+    outcome: String,
+    exit_code: Option<i32>,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetToolRunOutcome { session_id, outcome, exit_code },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+fn tool_runs_impl(
+    command_conn: &Mutex<UnixStream>,
+    workspace_id: String,
+    compat: &DaemonCompat,
+) -> anyhow::Result<Vec<ToolRun>> {
+    let resp = send_command_reconnecting(command_conn, compat, &Request::ToolRuns { workspace_id })?;
+    match resp {
+        Response::ToolRuns { runs } => Ok(runs),
+        other => anyhow::bail!("expected ToolRuns, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub fn tool_runs(
+    workspace_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<Vec<ToolRun>, String> {
+    tool_runs_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
 }
 
 // --- Group templates --------------------------------------------------------

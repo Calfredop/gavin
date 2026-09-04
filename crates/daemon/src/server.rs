@@ -1618,6 +1618,72 @@ impl SessionManager {
         self.orchestration.lock().unwrap().delete_tool(id)
     }
 
+    // ---- Standalone tool runs (v30) --------------------------------------
+
+    pub fn start_tool_run(
+        &self,
+        workspace_id: &str,
+        tool_id: &str,
+        session_id: &str,
+        command: Option<&str>,
+        launch_cwd: Option<&str>,
+        conversation_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().start_tool_run(
+            workspace_id,
+            tool_id,
+            session_id,
+            command,
+            launch_cwd,
+            conversation_id,
+        )
+    }
+
+    pub fn set_tool_run_outcome(
+        &self,
+        session_id: &str,
+        outcome: &str,
+        exit_code: Option<i32>,
+    ) -> anyhow::Result<()> {
+        self.orchestration.lock().unwrap().set_tool_run_outcome(session_id, outcome, exit_code)
+    }
+
+    /// The last run of each of this workspace's tools, reconciled against
+    /// the registry before it is returned -- exactly as `card_runs` is,
+    /// and for the same reason: `running` is a CLAIM, and this is the only
+    /// place that can check it. A session that ended with nothing
+    /// attached had no pump to report its exit, so without this a run
+    /// that has been over for days reads as still going.
+    pub fn tool_runs(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::ToolRun>> {
+        let runs = self.orchestration.lock().unwrap().tool_runs(workspace_id)?;
+        let claimed: Vec<&str> = runs
+            .iter()
+            .filter(|r| r.outcome == "running")
+            .map(|r| r.session_id.as_str())
+            .collect();
+        if claimed.is_empty() {
+            return Ok(runs);
+        }
+        let registry = self.registry.lock().unwrap();
+        let gone: Vec<String> = claimed
+            .into_iter()
+            .filter(|id| {
+                !matches!(
+                    registry.get(id),
+                    Ok(Some(ref record)) if record.status != SessionStatus::Exited
+                )
+            })
+            .map(|id| id.to_string())
+            .collect();
+        drop(registry);
+        if gone.is_empty() {
+            return Ok(runs);
+        }
+        let mut orchestration = self.orchestration.lock().unwrap();
+        orchestration.abandon_tool_runs_for_sessions(&gone)?;
+        orchestration.tool_runs(workspace_id)
+    }
+
     pub fn group_templates(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::GroupTemplate>> {
         self.orchestration.lock().unwrap().group_templates(workspace_id)
     }
@@ -2789,6 +2855,19 @@ impl SessionManager {
             if let Err(e) = manager.kanban.lock().unwrap().finish_runs_for_session(&id, Some(exit_code)) {
                 eprintln!("failed to close card runs for session {id}: {e}");
             }
+            // And whatever standalone TOOL run it was (v30), here for the
+            // same reason: this is the one block that runs for both a
+            // natural exit and a kill. For a `command` or `script` tool
+            // the code IS the verdict, so this call is the whole of that
+            // tool's result -- nobody has to have been watching. An
+            // `agent` tool's row is already closed by the time its
+            // session ends, and the store's `outcome = 'running'` guard
+            // is what keeps this from overwriting that verdict.
+            if let Err(e) =
+                manager.orchestration.lock().unwrap().finish_tool_runs_for_session(&id, Some(exit_code))
+            {
+                eprintln!("failed to close tool runs for session {id}: {e}");
+            }
             // Same atomic take-and-remove as the error path above, and for the same
             // reason: a single `.remove()` call closes the race window a separate
             // get-then-remove would leave open.
@@ -3029,6 +3108,29 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|_| Response::Ok),
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
+        }
+        Request::StartToolRun {
+            workspace_id,
+            tool_id,
+            session_id,
+            command,
+            launch_cwd,
+            conversation_id,
+        } => manager
+            .start_tool_run(
+                &workspace_id,
+                &tool_id,
+                &session_id,
+                command.as_deref(),
+                launch_cwd.as_deref(),
+                conversation_id.as_deref(),
+            )
+            .map(|_| Response::Ok),
+        Request::SetToolRunOutcome { session_id, outcome, exit_code } => manager
+            .set_tool_run_outcome(&session_id, &outcome, exit_code)
+            .map(|_| Response::Ok),
+        Request::ToolRuns { workspace_id } => {
+            manager.tool_runs(&workspace_id).map(|runs| Response::ToolRuns { runs })
         }
         Request::DeleteCardFile { path } => {
             manager.delete_card_file(&path).map(|_| Response::Ok)
@@ -3302,6 +3404,7 @@ mod tests {
                 default: "origin".into(),
             }],
             position: 0,
+            cwd: None,
         }
     }
 
@@ -4652,6 +4755,93 @@ mod tests {
                 assert_eq!(runs[0].session_id, "s-1");
             }
             other => panic!("expected CardRuns, got {other:?}"),
+        }
+    }
+
+    // --- standalone tool runs (v30) -----------------------------------
+
+    #[test]
+    fn a_tool_run_opens_and_reads_back_over_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        assert!(matches!(
+            handle_request(
+                &manager,
+                Request::StartToolRun {
+                    workspace_id: "ws-1".into(),
+                    tool_id: "builtin:push".into(),
+                    session_id: "s-1".into(),
+                    command: Some("git push".into()),
+                    launch_cwd: Some("/r/app".into()),
+                    conversation_id: None,
+                },
+            ),
+            Response::Ok
+        ));
+
+        match handle_request(&manager, Request::ToolRuns { workspace_id: "ws-1".into() }) {
+            Response::ToolRuns { runs } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].tool_id, "builtin:push");
+                assert_eq!(runs[0].launch_cwd.as_deref(), Some("/r/app"));
+                // Abandoned, not running: the session id names nothing
+                // the registry is hosting, and the read reconciles.
+                assert_eq!(runs[0].outcome, "abandoned");
+            }
+            other => panic!("expected ToolRuns, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_runs_is_an_empty_list_for_a_workspace_that_has_run_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        match handle_request(&manager, Request::ToolRuns { workspace_id: "ws-nothing".into() }) {
+            Response::ToolRuns { runs } => assert!(runs.is_empty()),
+            other => panic!("expected ToolRuns, got {other:?}"),
+        }
+    }
+
+    /// An agent tool's verdict comes from the app, because its session is
+    /// still alive when its turn ends -- nothing the daemon watches would
+    /// ever close that row.
+    #[test]
+    fn an_agent_tools_verdict_is_recorded_by_the_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let session = live_session(&manager);
+        handle_request(
+            &manager,
+            Request::StartToolRun {
+                workspace_id: "ws-1".into(),
+                tool_id: "builtin:commit".into(),
+                session_id: session.clone(),
+                command: None,
+                launch_cwd: None,
+                conversation_id: Some("conv-1".into()),
+            },
+        );
+
+        assert!(matches!(
+            handle_request(
+                &manager,
+                Request::SetToolRunOutcome {
+                    session_id: session.clone(),
+                    outcome: "passed".into(),
+                    exit_code: None,
+                },
+            ),
+            Response::Ok
+        ));
+
+        match handle_request(&manager, Request::ToolRuns { workspace_id: "ws-1".into() }) {
+            Response::ToolRuns { runs } => {
+                assert_eq!(runs[0].outcome, "passed");
+                assert!(runs[0].ended_at.is_some());
+                assert_eq!(runs[0].conversation_id.as_deref(), Some("conv-1"));
+            }
+            other => panic!("expected ToolRuns, got {other:?}"),
         }
     }
 

@@ -3568,6 +3568,61 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Tools tab",
+    items: [
+      {
+        id: "tools-tab-lists-runnable",
+        text: "The Tools tab lists the library's agent / command / script tools and offers no Loop-until, Wait-for-PR or Start-rail row",
+        hint: "Those three are completion rules, not work: an until step's verdict sends the RAIL backwards, a pr step is pure waiting on a rail's branch, and a gavin tool's body names a rail action. They are filtered out of the list, not shown disabled.",
+      },
+      {
+        id: "tools-command-settles",
+        text: "Running a command tool leaves its row on “passed” (exit 0) or “failed” (anything else), without a reload",
+        hint: "Force a failure: duplicate Run tests and give it `exit 3`. The DAEMON closes a shell run off the session exit and pushes nothing, so the row only moves because toolRunsState re-reads on sessionExits — this is the item that catches that watcher being unwired.",
+      },
+      {
+        id: "tools-agent-settles",
+        text: "Running an agent tool leaves its row on “passed” when the agent's turn ends — not on “running” forever",
+        hint: "An interactive agent's session never exits, so nothing the daemon watches would close the row: the app files the verdict when the session goes idle. Same rule as an agent tool step on a rail.",
+      },
+      {
+        id: "tools-agent-failure",
+        text: "An agent tool whose agent breaks lands on “failed”, not “passed”",
+        hint: "Kill the network mid-turn. An agent's `idle` is two quiet seconds, so a broken agent and a finished one look identical without failure detection.",
+      },
+      {
+        id: "tools-run-chip-opens-session",
+        text: "Clicking a row's last-run chip jumps to that run's session",
+        hint: "A chip that says “failed” with no way to see why is a dead end.",
+      },
+      {
+        id: "tools-cwd-runs-there",
+        text: "A tool with a working directory set runs THERE — the new tab's cwd is that folder, not the workspace root",
+        hint: "Set it with Manage tools… → Choose…; a folder under the root is stored relative, so the row shows `apps/web` rather than an absolute path.",
+      },
+      {
+        id: "tools-cwd-ignored-on-a-rail",
+        text: "The SAME tool dropped on a rail still runs in the rail's checkout, ignoring its working directory",
+        hint: "Tools spec T6/T11. Rail conflict detection is computed off worktreePath ?? rootPath, so a step that jumped out of its worktree would let two rails collide with nothing left to warn about.",
+      },
+      {
+        id: "tools-params-prompt",
+        text: "A tool with parameters asks for them first, prefilled with its defaults, and says which folder it will run in",
+        hint: "A tool with none launches straight away — asking about a tool whose whole definition is on the row buys nothing.",
+      },
+      {
+        id: "tools-manage-is-the-same-dialog",
+        text: "“Manage tools…” opens the same library dialog the Orchestration tab opens, and a tool saved there appears on both tabs",
+        hint: "One library, one editor, one store. Two would drift.",
+      },
+      {
+        id: "tools-old-daemon-explains-itself",
+        text: "Against a daemon older than v30 the Run buttons are dark and hovering one names the version",
+        hint: "The reason hangs on a wrapper span, not on the button: a disabled element never fires mouseenter, so a tooltip bound to it would never appear. The working-directory field in the dialog is dark for the same reason — a v29 daemon accepts the save and silently drops the field.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

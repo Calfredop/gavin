@@ -20,6 +20,7 @@ import {
   toolKindLabel,
   gavinActionOf,
   resolveToolParam,
+  resolveToolCwd,
   GAVIN_ACTIONS,
   type Tool,
   type ToolRecord,
@@ -35,6 +36,7 @@ function record(over: Partial<ToolRecord> = {}): ToolRecord {
     body: "./deploy.sh {{env}}",
     params: [{ name: "env", label: "Environment", default: "staging" }],
     position: 0,
+    cwd: null,
     ...over,
   };
 }
@@ -46,8 +48,8 @@ describe("the built-in set", () => {
     return tool;
   };
 
-  it("ships fourteen tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(14);
+  it("ships sixteen tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(16);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
@@ -343,6 +345,16 @@ describe("editing", () => {
   it("refuses to turn a built-in into a save", () => {
     expect(() => toRecord(BUILTIN_TOOLS[0], "ws-1", 0)).toThrow();
   });
+
+  // An untouched field is not a directory. Both spellings have to reach
+  // the daemon as null, or the launcher would have to resolve `""`
+  // against the root and the row would show a blank directory.
+  it("normalises a blank working directory to absent", () => {
+    const tool: Tool = { ...emptyTool("u1"), name: "x", body: "y" };
+    expect(toRecord({ ...tool, cwd: "  " }, "ws-1", 0).cwd).toBeNull();
+    expect(toRecord({ ...tool, cwd: null }, "ws-1", 0).cwd).toBeNull();
+    expect(toRecord({ ...tool, cwd: " apps/web " }, "ws-1", 0).cwd).toBe("apps/web");
+  });
 });
 
 describe("validateTool", () => {
@@ -383,6 +395,15 @@ describe("validateTool", () => {
     expect(validateTool({ ...ok, kind: "gavin", body: "stop-rail" })).toMatch(/stop-rail/);
     expect(validateTool({ ...ok, kind: "gavin", body: "start-rail" })).toBeNull();
   });
+
+  // Only the BODY is substituted (resolveToolBody); resolveToolCwd
+  // resolves, it does not substitute. A directory with a placeholder in
+  // it would look parameterised and would not be, and the session would
+  // start in a folder literally called `{{env}}`.
+  it("rejects a placeholder in the working directory", () => {
+    expect(validateTool({ ...ok, cwd: "builds/{{env}}" })).toMatch(/working directory/);
+    expect(validateTool({ ...ok, cwd: "builds/staging" })).toBeNull();
+  });
 });
 
 describe("gavinActionOf", () => {
@@ -422,5 +443,39 @@ describe("resolveToolParam", () => {
 
   it("is empty for a parameter the tool does not declare", () => {
     expect(resolveToolParam(tool, { other: "x" }, "other")).toBe("");
+  });
+});
+
+// A tool's own working directory (v30). Only a STANDALONE run reads it:
+// a rail step runs in the rail's checkout and never asks the tool, which
+// railStepCwd's own test pins from the other side.
+describe("resolveToolCwd", () => {
+  it("is the workspace root when the tool names no directory", () => {
+    expect(resolveToolCwd({ cwd: null }, "/r")).toBe("/r");
+    expect(resolveToolCwd({}, "/r")).toBe("/r");
+    expect(resolveToolCwd({ cwd: "   " }, "/r")).toBe("/r");
+    expect(resolveToolCwd({ cwd: "." }, "/r")).toBe("/r");
+  });
+
+  it("resolves a relative directory against the root", () => {
+    expect(resolveToolCwd({ cwd: "apps/web" }, "/r")).toBe("/r/apps/web");
+    expect(resolveToolCwd({ cwd: "./apps/web" }, "/r")).toBe("/r/apps/web");
+  });
+
+  it("joins one root to one path however the root was spelled", () => {
+    expect(resolveToolCwd({ cwd: "apps" }, "/r/")).toBe("/r/apps");
+  });
+
+  it("keeps an absolute directory exactly as written", () => {
+    expect(resolveToolCwd({ cwd: "/elsewhere/repo" }, "/r")).toBe("/elsewhere/repo");
+  });
+
+  // An absolute path needs no root, so it still answers -- but a
+  // relative one has nothing to resolve against, and guessing would
+  // start a session wherever the app happens to be.
+  it("refuses a relative directory with no root to resolve against", () => {
+    expect(resolveToolCwd({ cwd: "apps/web" }, null)).toBeNull();
+    expect(resolveToolCwd({ cwd: null }, null)).toBeNull();
+    expect(resolveToolCwd({ cwd: "/abs" }, null)).toBe("/abs");
   });
 });

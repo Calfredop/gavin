@@ -2145,6 +2145,82 @@ describe("launching a tool step", () => {
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
   });
 
+  // Tools spec T6/T11. A tool can carry a working directory of its own
+  // (v30), and the Tools tab runs it there -- but a RAIL step ignores
+  // it and runs in the rail's checkout, always.
+  //
+  // This is not tidiness. Rail conflict detection is computed off
+  // `worktreePath ?? rootPath`: it is how gavin knows two rails are
+  // about to work the same tree. A step that quietly jumped out of its
+  // worktree would let two rails collide with nothing left to warn
+  // about, and the human would find out from a merge.
+  it("ignores the tool's own working directory and uses the rail's checkout", async () => {
+    toolRecords.set({
+      "ws-1": [
+        {
+          id: "u-cwd",
+          workspaceId: "ws-1",
+          name: "Deploy",
+          description: "",
+          kind: "command",
+          body: "./deploy.sh",
+          params: [],
+          position: 0,
+          cwd: "/somewhere/else",
+        },
+      ],
+    });
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...toolRail(),
+      rails: [
+        {
+          ...toolRail().rails[0],
+          stages: [
+            {
+              id: "s1",
+              position: 0,
+              steps: [{ id: "t1", position: 0, cardPath: "", toolId: "u-cwd", toolParams: {} }],
+            },
+          ],
+        },
+      ],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({
+      "ws-1": [
+        {
+          id: "u-cwd",
+          workspaceId: "ws-1",
+          name: "Deploy",
+          description: "",
+          kind: "command",
+          body: "./deploy.sh",
+          params: [],
+          position: 0,
+          cwd: "/somewhere/else",
+        },
+      ],
+    });
+    setRailPageLive();
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("./deploy.sh")
+    );
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/somewhere/else",
+      expect.anything()
+    );
+  });
+
   it("substitutes the step's parameter overrides", async () => {
     vi.mocked(backend.getOrchestration).mockResolvedValue(toolRail({ remote: "upstream" }));
     __resetForTesting();
