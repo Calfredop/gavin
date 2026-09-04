@@ -3177,6 +3177,58 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Cut and copy a line",
+    items: [
+      {
+        id: "lineclip-compose-body-copy",
+        text: "In the ⌘N composer's body, type three lines, put the caret in the middle one with NOTHING selected, press ⌘C, then ⌘V at the end — the whole middle line arrives, on a line of its own",
+        hint: "Nothing selected used to mean the keystroke did nothing at all. The pasted text must carry its line break, or the round trip joins two lines into one.",
+      },
+      {
+        id: "lineclip-compose-body-cut",
+        text: "Same box, caret in the middle line, ⌘X: the line AND its break go, so no blank line is left behind and the caret sits at the start of the line that moved up",
+      },
+      {
+        id: "lineclip-undo",
+        text: "Straight after that ⌘X, press ⌘Z: the cut line comes back",
+        hint: "The delete goes through the field's own editing command for exactly this reason. A hand-written value assignment would leave nothing to undo.",
+      },
+      {
+        id: "lineclip-last-line",
+        text: "⌘X on the LAST line of a multi-line box removes it without leaving a trailing blank line",
+      },
+      {
+        id: "lineclip-selection-untouched",
+        text: "Select a few characters and press ⌘C: just that selection is copied, exactly as before",
+        hint: "The line gesture may only fill the gap where the selection is empty.",
+      },
+      {
+        id: "lineclip-single-line-field",
+        text: "In a one-line field (the composer's title, a search box), ⌘C with no selection copies the whole field — and pasting it into a terminal does NOT submit it",
+        hint: "No trailing break on a single-line field, deliberately: a search query that ends in a newline runs itself the moment it lands at a shell prompt.",
+      },
+      {
+        id: "lineclip-single-line-cut",
+        text: "⌘X in that one-line field clears it, and the surface reacts — the Add button disables, the search results come back",
+        hint: "Proves the edit reaches Svelte's binding rather than only the DOM node.",
+      },
+      {
+        id: "lineclip-file-editor",
+        text: "In a file tab's Edit mode, ⌘X with no selection cuts the caret's line; ⌘V puts it back as a line",
+        hint: "The editor already did this on its own. The pass is to confirm nothing added here got in its way.",
+      },
+      {
+        id: "lineclip-terminal-untouched",
+        text: "With a terminal focused, select output and ⌘C: the selection copies. With nothing selected, ⌘C does NOT paste a stray line anywhere",
+        hint: "The terminal answers the copy itself with its own selection; the line gesture must never speak over it.",
+      },
+      {
+        id: "lineclip-readonly",
+        text: "In a read-only text box, ⌘X copies the line but leaves the text alone",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {

@@ -12,6 +12,7 @@
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
+  import { installLineClipboard } from "$lib/lineClipboard";
   import { installHintTracking, hintMode } from "$lib/shortcutHints";
   import { hintDigitFor } from "$lib/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
@@ -55,6 +56,7 @@
   let closePromptOpen = false;
   let uninstallShortcuts: (() => void) | null = null;
   let uninstallHints: (() => void) | null = null;
+  let uninstallLineClipboard: (() => void) | null = null;
   let unlistenClose: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
@@ -150,12 +152,14 @@
 
     uninstallShortcuts = installKeyboardShortcuts();
     uninstallHints = installHintTracking();
+    uninstallLineClipboard = installLineClipboard();
   });
 
   onDestroy(() => {
     unlistenClose?.();
     uninstallShortcuts?.();
     uninstallHints?.();
+    uninstallLineClipboard?.();
     teardown();
   });
 </script>
