@@ -186,7 +186,14 @@
   }
 </script>
 
+<!-- `wide`: the panel's default cap is 480px of content box, and this
+     dialog's body is a 620px column (a three-up parameter grid and an
+     eight-row body field). Without it the panel was 140px short, and
+     because `overflow-y: auto` computes `overflow-x` to `auto` as well,
+     that came back as a horizontal scrollbar under the whole dialog
+     rather than as content laid out to the width it was given. -->
 <Modal
+  wide
   onClose={editing
     ? () => (editing = null)
     : editingTemplate
@@ -575,8 +582,13 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    /* The width this form is drawn for, and a ceiling that is the panel
+       rather than the viewport: `78vw` was measured against a box the
+       panel had already capped, so on a narrow window the body still
+       asked for more than it was given. `100%` cannot. */
     width: 620px;
-    max-width: 78vw;
+    max-width: 100%;
+    min-width: 0;
     max-height: 76vh;
     overflow-y: auto;
   }
@@ -712,6 +724,11 @@
   }
   input,
   textarea {
+    /* A text control's automatic minimum is its `size`/`cols` intrinsic
+       width, which floored this body at 558px however narrow the panel
+       got -- the same overflow one level in, and what the panel cap
+       alone would have left behind. Zero lets the track drive them. */
+    min-width: 0;
     padding: 5px 7px;
     background: var(--surface-sunken);
     border: 1px solid var(--border);
@@ -742,6 +759,7 @@
   }
   .chips {
     display: flex;
+    flex-wrap: wrap;
     gap: 4px;
   }
   .chip {
