@@ -120,6 +120,38 @@ export function setWorkspacesState(
   return invoke("set_workspaces_state", { workspaces, activeWorkspaceId, removedWorkspaces });
 }
 
+/// Where every workspace currently is: workspace id -> window label, with
+/// absence meaning the main window. See workspace_window.rs -- the map is
+/// ephemeral, so this is a fact about right now, never about the config.
+export function workspaceWindows(): Promise<Record<string, string>> {
+  return invoke("workspace_windows");
+}
+
+/// Opens a window for a workspace, answering with the label that now
+/// holds it. Idempotent: a workspace that already has a window is raised
+/// rather than given a second one.
+export function openWorkspaceWindow(workspaceId: string): Promise<string> {
+  return invoke("open_workspace_window", { workspaceId });
+}
+
+/// Records that a workspace belongs to THIS window -- one created here,
+/// or re-keyed onto a removed workspace's id. Without it, a workspace the
+/// registry has never heard of reads as the main window's.
+export function claimWorkspaceWindow(workspaceId: string): Promise<void> {
+  return invoke("claim_workspace_window", { workspaceId });
+}
+
+/// Brings the window a workspace is already in to the front.
+export function focusWorkspaceWindow(workspaceId: string): Promise<void> {
+  return invoke("focus_workspace_window", { workspaceId });
+}
+
+/// Closes the window a workspace lives in, if it has one of its own. A
+/// no-op for a workspace in the main window.
+export function closeWorkspaceWindow(workspaceId: string): Promise<void> {
+  return invoke("close_workspace_window", { workspaceId });
+}
+
 /// The app-global light/dark preference. null means System -- the Rust
 /// side stores absence rather than the literal string.
 export function getThemePref(): Promise<string | null> {

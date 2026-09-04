@@ -39,6 +39,7 @@
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import NewPageButton from "$lib/NewPageButton.svelte";
+  import OpenInWindowButton from "$lib/OpenInWindowButton.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
   import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
@@ -51,6 +52,7 @@
   import { tooltip } from "$lib/tooltip";
   import { wheelScrollsSideways } from "$lib/wheelScroll";
   import { windowDrag } from "$lib/windowDrag";
+  import { isMainWindow } from "$lib/appWindowState";
 
   let closeConfirmed = false;
   // The prompt is a DOM modal now, so the window can keep sending close
@@ -122,6 +124,12 @@
   onMount(async () => {
     unlistenClose = await getCurrentWindow().onCloseRequested(async (event) => {
       if (closeConfirmed) return;
+      // A workspace window closes without a question. The prompt below
+      // exists because closing the main window is how you put gavin away;
+      // closing a workspace window puts nothing away -- its workspaces go
+      // straight back to the window they came from, and not one session
+      // is touched.
+      if (!isMainWindow()) return;
       event.preventDefault();
       if (closePromptOpen) return;
       closePromptOpen = true;
@@ -293,6 +301,11 @@
                    pane") -- see windowDrag.ts. -->
               <div class="drag-spacer" use:windowDrag></div>
               <div class="tab-actions">
+                <!-- Before the +, and deliberately: both act on the
+                     workspace rather than on what is inside it, and this
+                     one decides WHERE the workspace is before the other
+                     adds to it. -->
+                <OpenInWindowButton />
                 <NewPageButton />
               </div>
             </div>

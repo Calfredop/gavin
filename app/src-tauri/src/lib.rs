@@ -13,6 +13,7 @@ mod session;
 mod superpowers;
 mod trash;
 mod workspace_delete;
+mod workspace_window;
 mod worktree_setup;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -47,6 +48,7 @@ pub fn run() {
         .manage(agent_usage::UsageCache::new())
         .manage(pull_request::PrCache::new())
         .manage(agent_tokens::TokenCache::new())
+        .manage(workspace_window::WorkspaceWindows::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -161,6 +163,11 @@ pub fn run() {
             agent_setup::mcp_formats,
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt,
+            workspace_window::open_workspace_window,
+            workspace_window::workspace_windows,
+            workspace_window::claim_workspace_window,
+            workspace_window::focus_workspace_window,
+            workspace_window::close_workspace_window,
             workspace_delete::scan_gavin_footprint,
             workspace_delete::remove_gavin_footprint,
             git::git_repo_info,

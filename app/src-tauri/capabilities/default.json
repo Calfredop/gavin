@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window. The dialog plugin is narrowed to allow-open deliberately: a file picker is a real OS service, while alerts and confirms are drawn in-app by dialog.ts + AppDialog.svelte, so a reintroduced native message()/confirm() fails here rather than quietly looking foreign.",
-  "windows": ["main"],
+  "description": "Capability for every app window. `ws-*` matches the windows a workspace moves into (workspace_window.rs), which are the same app and need the same permissions -- a workspace window with no capability would come up dead. The dialog plugin is narrowed to allow-open deliberately: a file picker is a real OS service, while alerts and confirms are drawn in-app by dialog.ts + AppDialog.svelte, so a reintroduced native message()/confirm() fails here rather than quietly looking foreign.",
+  "windows": ["main", "ws-*"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

@@ -1,6 +1,6 @@
 import { writable, derived, get, type Writable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { askConfirm } from "./dialog";
+import { askConfirm, showAlert } from "./dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
@@ -38,6 +38,18 @@ import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
 import type { StatusSince } from "./attentionInbox";
 import { candidateAgentConfig, type Candidate } from "./bestOfN";
+import {
+  activeWorkspaceForWindow,
+  isInAnotherWindow,
+  nextActiveAfterHandoff,
+  windowAction,
+} from "./appWindow";
+import {
+  currentWindowLabel,
+  currentWorkspaceWindows,
+  initWorkspaceWindows,
+  isMainWindow,
+} from "./appWindowState";
 
 export type { SessionStatus };
 
@@ -268,6 +280,63 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
   }
 }
 
+/// config.json's `activeWorkspaceId` read for THIS window.
+///
+/// The stored id is one value behind however many windows are open, so it
+/// can be right for at most one of them -- and not even reliably for the
+/// main window, since the workspace it names may since have moved into a
+/// window of its own. Every window therefore takes it as a preference and
+/// falls back to the first workspace it actually holds.
+function forThisWindow(data: WorkspacesData): WorkspacesData {
+  return {
+    ...data,
+    activeWorkspaceId: activeWorkspaceForWindow(
+      data.workspaces,
+      currentWorkspaceWindows(),
+      currentWindowLabel(),
+      data.activeWorkspaceId ?? null
+    ),
+  };
+}
+
+/// Takes on what another window just wrote.
+///
+/// config.json is one file and every window writes the whole array back,
+/// so without this the second window to save would undo the first's work
+/// -- a page renamed here, a tab opened there, and whichever saved last
+/// wins the entire file. The writer is the authority and this is every
+/// other window agreeing with it.
+///
+/// What is NOT adopted: which workspace this window is showing. That is
+/// per window now, and taking the writer's would make one window's click
+/// change what another is looking at.
+function adoptWorkspaces(data: WorkspacesData): void {
+  layoutState.update((s) => {
+    if (s.status !== "ready") return s;
+    const resolved = workspace.resolveActiveFocus({
+      workspaces: data.workspaces,
+      activeWorkspaceId: activeWorkspaceForWindow(
+        data.workspaces,
+        currentWorkspaceWindows(),
+        currentWindowLabel(),
+        s.activeWorkspaceId
+      ),
+      removedWorkspaces: data.removedWorkspaces ?? [],
+    });
+    return {
+      ...s,
+      workspaces: resolved.state.workspaces,
+      activeWorkspaceId: resolved.state.activeWorkspaceId,
+      focusedSessionId: resolved.focusedSessionId,
+      removedWorkspaces: data.removedWorkspaces ?? [],
+    };
+  });
+  // A root bound (or unbound) in the other window is a watch this one
+  // owes the daemon too: gavin trees arrive per window, and a workspace
+  // whose root this window never armed would render an empty board.
+  watchRootedWorkspaces(data.workspaces);
+}
+
 /// Makes a workspace the active one: stamps it as last used, and takes
 /// the app hub down. Every path that puts a workspace on screen goes
 /// through here rather than calling workspace.switchWorkspace directly
@@ -275,8 +344,30 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
 /// hub must not survive underneath the workspace the user just chose,
 /// and both are far too easy to forget one call site at a time.
 function activateWorkspace(state: WorkspacesData, workspaceId: string): WorkspacesData {
+  if (claimedElsewhere(workspaceId)) return state;
   closeAppHub();
   return workspace.switchWorkspace(state, workspaceId, Date.now());
+}
+
+/// The one gate that keeps a workspace out of two windows at once, and
+/// what it does instead: raise the window it is already in.
+///
+/// Every path that puts a workspace on screen -- the sidebar, the hub's
+/// recents, the ⌘⌥-digits, a card jumping to its session, a rail
+/// launching a step -- ends in `activateWorkspace`, so guarding that one
+/// function is what makes the rule hold everywhere without thirty call
+/// sites each remembering it. Two panes over one PTY would each report
+/// their own size to the daemon and resize the program between them for
+/// as long as both were open; see appWindow.ts.
+///
+/// Answering `true` means "not here" -- the caller returns its state
+/// unchanged, so nothing on screen moves.
+function claimedElsewhere(workspaceId: string): boolean {
+  if (!isInAnotherWindow(currentWorkspaceWindows(), workspaceId, currentWindowLabel())) {
+    return false;
+  }
+  void backend.focusWorkspaceWindow(workspaceId).catch(() => {});
+  return true;
 }
 
 // The directory a blank terminal opened inside a workspace should start
@@ -887,6 +978,12 @@ export async function bootstrap(): Promise<void> {
   // in flight by the time either of them has a payload to apply.
   tabMapsLoaded = loadTabMaps();
   void seedSessionBaselines();
+  // Awaited, and ahead of every ready path: which workspace this window
+  // shows depends on which ones it holds, so a payload applied before the
+  // map arrived would put the main window's workspace in a workspace
+  // window for a frame -- with its terminals, which is exactly the
+  // two-windows-one-PTY state the map exists to prevent.
+  unlisteners.push(await initWorkspaceWindows());
   unlisteners.push(
     await listen<WorkspacesData>("workspaces-ready", async (event) => {
       // Awaited BEFORE the tree lands in the store: a file or board tab
@@ -895,7 +992,7 @@ export async function bootstrap(): Promise<void> {
       await tabMapsLoaded;
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
-        const resolved = workspace.resolveActiveFocus(event.payload);
+        const resolved = workspace.resolveActiveFocus(forThisWindow(event.payload));
         return {
           ...s,
           status: "ready",
@@ -908,6 +1005,15 @@ export async function bootstrap(): Promise<void> {
       watchRootedWorkspaces(event.payload.workspaces);
       void refreshDaemonCompat();
       void reconcileLayoutSessions();
+    })
+  );
+  // Another window's save of the shared workspaces file. Its own echo is
+  // ignored by label: the window that wrote it is already showing what it
+  // wrote, and re-adopting would clobber anything it has changed since.
+  unlisteners.push(
+    await listen<{ origin: string; data: WorkspacesData }>("workspaces-synced", (event) => {
+      if (event.payload.origin === currentWindowLabel()) return;
+      adoptWorkspaces(event.payload.data);
     })
   );
   unlisteners.push(
@@ -1164,7 +1270,7 @@ async function pollForStartupState(): Promise<void> {
       await tabMapsLoaded;
       layoutState.update((s) => {
         if (s.status !== "connecting") return s;
-        const resolved = workspace.resolveActiveFocus(data);
+        const resolved = workspace.resolveActiveFocus(forThisWindow(data));
         return {
           ...s,
           status: "ready",
@@ -1204,6 +1310,10 @@ async function restoreRemovedWorkspace(
   // reclaimable() insists the workspace is empty, so nothing is bound to
   // this id -- except, possibly, a watch from an earlier root pick.
   await backend.unwatchGavinRoot(workspaceId).catch(() => {});
+  // The workspace keeps its window across the re-key, but the registry is
+  // keyed by id: without this the old id points at a workspace that no
+  // longer exists and the new one reads as the main window's.
+  if (!isMainWindow()) await backend.claimWorkspaceWindow(tombstone.id).catch(() => {});
 
   const data = workspace.restoreWorkspaceId(state, workspaceId, tombstone.id, rootPath);
   layoutState.update((s) => ({
@@ -2490,6 +2600,10 @@ export async function createWorkspace(name: string): Promise<void> {
   // switchWorkspace, so the hub is taken down here rather than there --
   // the hub's own "+ New workspace…" must land you in what it created.
   closeAppHub();
+  // Claimed before it is stored, so no window ever reads this workspace
+  // as unowned -- which, absence meaning "the main window", would put it
+  // in two windows at once the moment anything switched to it there.
+  if (!isMainWindow()) await backend.claimWorkspaceWindow(id).catch(() => {});
   const data = workspace.createWorkspace(state, id, name);
   const resolved = workspace.resolveActiveFocus(data);
   layoutState.update((s) => ({
@@ -2521,7 +2635,75 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
   await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
+/// Puts a workspace in a window of its own, and stops showing it here.
+///
+/// The order is the whole of it. This window looks away FIRST, then gives
+/// up the terminals it was drawing, and only then asks for the window --
+/// so at no point are two live panes reporting two sizes for one PTY. The
+/// new window builds its own terminals and asks the daemon to repaint
+/// them, which is the same path a reload already takes.
+///
+/// Both halves of the card's ask are this one function: a workspace you
+/// are looking at "moves" to a new window, and one you are not "opens" in
+/// one. The difference is only whether this window had to look away, and
+/// that is a fact it can read for itself rather than a mode the caller
+/// picks.
+export async function handOffWorkspace(workspaceId: string): Promise<void> {
+  const label = currentWindowLabel();
+  const action = windowAction(currentWorkspaceWindows(), workspaceId, label);
+  // Already in a window of its own: the honest answer is to raise it, not
+  // to open a second one onto the same workspace. "none" is this window
+  // being asked to hand over the workspace it IS -- the surfaces withdraw
+  // the action then, and this is what makes a stale click harmless.
+  if (action !== "open") {
+    if (action === "show") await backend.focusWorkspaceWindow(workspaceId).catch(() => {});
+    return;
+  }
+  const state = get(layoutState);
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+
+  if (state.activeWorkspaceId === workspaceId && !get(appHubOpen)) {
+    const next = nextActiveAfterHandoff(
+      state.workspaces,
+      currentWorkspaceWindows(),
+      label,
+      workspaceId
+    );
+    if (next) await switchWorkspace(next);
+    else openAppHub();
+  }
+
+  // Every id in the trees, not just the terminals: destroyTerminal is a
+  // no-op for a file or board tab, and enumerating which is which here
+  // would be a second, drifting copy of the tab maps. The main agent
+  // sits outside every page, so it has to be named separately.
+  for (const id of workspace.allSessionIdsInWorkspace(ws)) {
+    terminalRegistry.destroyTerminal(id);
+  }
+  if (ws.mainSessionId) terminalRegistry.destroyTerminal(ws.mainSessionId);
+
+  try {
+    await backend.openWorkspaceWindow(workspaceId);
+  } catch (e) {
+    // An alert, never setError: the app behind this is perfectly
+    // healthy, and replacing it with the lost-the-daemon overlay
+    // because a window would not open would be a far bigger lie than
+    // the failure itself.
+    await showAlert({
+      title: "Couldn't open a new window",
+      lines: [`${ws.name} stays in this window.`, String(e)],
+    });
+  }
+}
+
 export async function switchWorkspaceView(workspaceId: string, view: string): Promise<void> {
+  // Guarded separately from activateWorkspace, which this deliberately
+  // does not call: `activeView` is stored ON the workspace, so a click
+  // here on a workspace that lives in another window would persist a tab
+  // change that window then adopts -- one window silently redrawing
+  // another.
+  if (claimedElsewhere(workspaceId)) return;
   const state = get(layoutState);
   // Same reason as switchToTab: the workspace is already active so
   // activateWorkspace never runs, but ⌘2 (and the tab row, and Home's
@@ -2563,6 +2745,11 @@ export async function closeWorkspace(
 
   const closed = await endTabs(sessionIds, state.fileTabsById, state.boardTabsById, state.cardTabsById);
   if (!closed) return;
+  // A window whose workspace no longer exists has nothing to show, so it
+  // goes with it. After the confirmation, never before: a cancelled close
+  // must leave the window standing. A no-op for a workspace in the main
+  // window -- removing one must not take the app down.
+  await backend.closeWorkspaceWindow(workspaceId).catch(() => {});
   for (const id of sessionIds) {
     terminalRegistry.destroyTerminal(id);
   }

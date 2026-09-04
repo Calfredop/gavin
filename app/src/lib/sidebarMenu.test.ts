@@ -15,12 +15,29 @@ vi.mock("./layoutState", () => ({
   movePageAction: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
+  handOffWorkspace: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
   setWorkspaceRoot: vi.fn().mockResolvedValue(undefined),
   setTabPinned: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
+// The window registry, with the one thing the real module cannot give a
+// test: which window it is. `currentWindowLabel` reads an object Tauri
+// injects into the page, so outside the app it is always "main" -- and
+// "main" cannot exercise the case where a workspace's own window is
+// asked to hand it over.
+const windowState = vi.hoisted(() => ({ label: "main" }));
+vi.mock("./appWindowState", async () => {
+  const { writable, get } = await import("svelte/store");
+  const store = writable<Record<string, string>>({});
+  return {
+    workspaceWindows: store,
+    currentWorkspaceWindows: () => get(store),
+    currentWindowLabel: () => windowState.label,
+    isMainWindow: () => windowState.label === "main",
+  };
+});
 vi.mock("./confirmClose", () => ({
   confirmWorkspaceClose: vi.fn().mockResolvedValue(true),
   confirmPageClose: vi.fn().mockResolvedValue(true),
@@ -34,6 +51,7 @@ import { gavinRootExists } from "./backend";
 import {
   closeWorkspace,
   closePage,
+  handOffWorkspace,
   movePageAction,
   switchWorkspaceView,
   switchToSessionInPage,
@@ -42,6 +60,7 @@ import {
   setTabPinned,
   splitPane,
 } from "./layoutState";
+import { workspaceWindows } from "./appWindowState";
 import { closeTabs } from "./tabActions";
 import { confirmPageClose } from "./confirmClose";
 import {
@@ -101,12 +120,49 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(confirmPageClose).mockResolvedValue(true);
+  // Nothing has moved: the empty map means every workspace is in the main
+  // window, and this test file is that window unless it says otherwise.
+  workspaceWindows.set({});
+  windowState.label = "main";
 });
 
 describe("buildWorkspaceMenuEntries", () => {
   it("lists the regular workspace menu", () => {
     const labels = items(buildWorkspaceMenuEntries(ws("w1", [page("p1")], "/r"), hooks())).map((e) => e.label);
-    expect(labels).toEqual(["Rename…", "New Page", "Open Root in Finder", "Change Root Folder…", "Close Workspace"]);
+    expect(labels).toEqual([
+      "Rename…",
+      "New Page",
+      "Open in New Window",
+      "Open Root in Finder",
+      "Change Root Folder…",
+      "Close Workspace",
+    ]);
+  });
+  it("offers a window for a workspace that is here, and the way back to one that is not", () => {
+    find(buildWorkspaceMenuEntries(ws("w1", [], "/r"), hooks()), "Open in New Window").onPick();
+    expect(handOffWorkspace).toHaveBeenCalledWith("w1");
+
+    // Never a second window onto the same workspace: once it has one, the
+    // only thing left to offer is a way back to it.
+    workspaceWindows.set({ w1: "ws-w1" });
+    const entries = buildWorkspaceMenuEntries(ws("w1", [], "/r"), hooks());
+    expect(items(entries).map((e) => e.label)).not.toContain("Open in New Window");
+    find(entries, "Show in Its Window").onPick();
+    expect(handOffWorkspace).toHaveBeenCalledTimes(2);
+  });
+  // Both gestures would end where they started, so the menu offers
+  // neither rather than offering a no-op.
+  it("withdraws the entry in the window the workspace already is", () => {
+    workspaceWindows.set({ w1: "ws-w1" });
+    windowState.label = "ws-w1";
+    const labels = items(buildWorkspaceMenuEntries(ws("w1", [], "/r"), hooks())).map((e) => e.label);
+    expect(labels).toEqual([
+      "Rename…",
+      "New Page",
+      "Open Root in Finder",
+      "Change Root Folder…",
+      "Close Workspace",
+    ]);
   });
   it("gives the Scratchpad only New Page", () => {
     const entries = buildWorkspaceMenuEntries(ws(UNFILED_WORKSPACE_ID, []), hooks());

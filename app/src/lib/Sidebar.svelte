@@ -50,6 +50,7 @@
     SquareArrowOutUpRight,
     Boxes,
     Activity,
+    AppWindow,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -110,6 +111,8 @@
     type SidebarMenuHooks,
   } from "./sidebarMenu";
   import { closeTabsNow } from "./tabActions";
+  import { isInAnotherWindow } from "./appWindow";
+  import { currentWindowLabel, workspaceWindows } from "./appWindowState";
   import type { CloseIdleRequest } from "./idleTabs";
   import type { TabMenuContext } from "./tabMenu";
   import {
@@ -252,6 +255,15 @@
   // notice.
   function workspaceWaitingCount(ws: Workspace): number {
     return workspaceAgentsSummary(ws, $layoutState).waiting;
+  }
+
+  // Whether this row's workspace is on screen in a different window. The
+  // row stays in the list -- the sidebar is the whole fleet, not this
+  // window's share of it -- but it is drawn as somewhere else, and every
+  // way of clicking it raises that window instead of switching here
+  // (layoutState's activation guard).
+  function inAnotherWindow(ws: Workspace): boolean {
+    return isInAnotherWindow($workspaceWindows, ws.id, currentWindowLabel());
   }
 
   // The two halves of a workspace's recap row. Both are pure tallies
@@ -1266,6 +1278,7 @@
         <div
           class="workspace-row"
           class:active={ws.id === $layoutState.activeWorkspaceId}
+          class:elsewhere={inAnotherWindow(ws)}
           class:drop-before={hoverState?.targetId === ws.id &&
             hoverState.kind === "reorder" &&
             hoverState.position === "before"}
@@ -1321,6 +1334,18 @@
               ondblclick={() => startEditingWorkspace(ws.id, ws.name)}
               onclick={() => switchWorkspace(ws.id)}
             >{ws.name}</span>
+          {/if}
+          {#if inAnotherWindow(ws)}
+            <!-- A mark, not a badge: this answers "where is it", which is
+                 not one of the axes ui/indicators.ts speaks for. The
+                 tooltip names the axis, since a glyph alone cannot. -->
+            <span
+              class="in-window"
+              use:tooltip={"In another window — click to bring it to the front"}
+              aria-label="In another window"
+            >
+              <AppWindow size={11} />
+            </span>
           {/if}
           {#if workspaceWaitingCount(ws) > 0}
             {@const waiting = workspaceWaitingCount(ws)}
@@ -1512,6 +1537,18 @@
   }
   .workspace-row.active {
     background: var(--surface-raised);
+  }
+  /* Quieter, not disabled: the row still works -- clicking it raises the
+     window the workspace is in. It just is not what this window is
+     showing, and must not read as if it could be. */
+  .workspace-row.elsewhere .workspace-name {
+    opacity: 0.55;
+  }
+  .in-window {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    color: var(--text-dim);
   }
   .workspace-row.pinned {
     font-style: italic;

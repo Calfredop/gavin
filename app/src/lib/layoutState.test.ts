@@ -62,6 +62,14 @@ vi.mock("./backend", () => ({
   // vi.fn() returning undefined would throw rather than exercise the
   // real best-effort path.
   unwatchFileForViewer: vi.fn().mockResolvedValue(undefined),
+  // The window registry (workspace_window.rs). Resolved by default: every
+  // caller here is best-effort -- a window that will not open must never
+  // take the workspace with it.
+  workspaceWindows: vi.fn().mockResolvedValue({}),
+  openWorkspaceWindow: vi.fn().mockResolvedValue("ws-1"),
+  claimWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
+  focusWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
+  closeWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: setWorkspaceRoot and watchRootedWorkspaces call
   // .catch() on these.
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
@@ -118,6 +126,7 @@ vi.mock("./notifications", () => ({
 import * as backend from "./backend";
 import * as notifications from "./notifications";
 import * as terminalRegistry from "./terminalRegistry";
+import { workspaceWindows } from "./appWindowState";
 import {
   layoutState,
   splitPane,
@@ -146,6 +155,7 @@ import {
   renameWorkspace,
   switchWorkspace,
   switchWorkspaceView,
+  handOffWorkspace,
   appHubOpen,
   openAppHub,
   closeWorkspace,
@@ -245,6 +255,9 @@ beforeEach(() => {
   daemonCompat.set(null);
   // Module-level store, same reason.
   daemonRequestError.set(null);
+  // Module-level store, same reason: a workspace parked in another window
+  // by one test would make the next one's activation refuse.
+  workspaceWindows.set({});
   layoutState.set({
     status: "connecting",
     errorMessage: "",
@@ -1686,6 +1699,99 @@ describe("switchWorkspace", () => {
     const state = get(layoutState);
     expect(state.activeWorkspaceId).toBe("ws-2");
     expect(state.focusedSessionId).toBe(null);
+  });
+
+  // The rule this guard exists for: a workspace is on screen in exactly
+  // one window. Two panes over one PTY would each report their own
+  // cols/rows to the daemon and resize the program between them for as
+  // long as both were open. Every path that shows a workspace ends in
+  // activateWorkspace, so this one refusal covers all of them.
+  it("refuses a workspace another window is showing, and raises that window", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a"]))]), ws("ws-2", [page("page-2", leaf(["x"]))])],
+      "ws-1",
+      "a"
+    );
+    workspaceWindows.set({ "ws-2": "ws-ws-2" });
+
+    await switchWorkspace("ws-2");
+
+    const state = get(layoutState);
+    expect(state.activeWorkspaceId).toBe("ws-1");
+    expect(state.focusedSessionId).toBe("a");
+    expect(backend.focusWorkspaceWindow).toHaveBeenCalledWith("ws-2");
+  });
+
+  // Guarded separately, because switchWorkspaceView does not go through
+  // activateWorkspace: `activeView` is stored ON the workspace, so a
+  // click here would persist a tab change the other window then adopts --
+  // one window silently redrawing another.
+  it("refuses to change the tab of a workspace another window is showing", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+    workspaceWindows.set({ "ws-2": "ws-ws-2" });
+
+    await switchWorkspaceView("ws-2", "kanban");
+
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    expect(backend.focusWorkspaceWindow).toHaveBeenCalledWith("ws-2");
+  });
+});
+
+describe("handOffWorkspace", () => {
+  // Order is the whole of it: look away, give up the terminals, then ask
+  // for the window. Any other order has two live panes on one PTY, even
+  // briefly.
+  it("switches away, drops the terminals it was drawing, then opens the window", async () => {
+    setState(
+      [ws("ws-1", [page("page-1", leaf(["a", "b"]))]), ws("ws-2", [page("page-2", leaf(["x"]))])],
+      "ws-1",
+      "a"
+    );
+
+    await handOffWorkspace("ws-1");
+
+    expect(get(layoutState).activeWorkspaceId).toBe("ws-2");
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("a");
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("b");
+    expect(terminalRegistry.destroyTerminal).not.toHaveBeenCalledWith("x");
+    expect(backend.openWorkspaceWindow).toHaveBeenCalledWith("ws-1");
+    // Not killed, not closed: the sessions run on in the daemon and the
+    // new window paints them from its screen model.
+    expect(backend.killSession).not.toHaveBeenCalled();
+  });
+
+  // The main agent sits outside every page tree (D12), so nothing that
+  // walks the layout would ever reach it.
+  it("gives up the main agent's terminal too", async () => {
+    setState([{ ...ws("ws-1", []), mainSessionId: "main-1" }], "ws-1", null);
+
+    await handOffWorkspace("ws-1");
+
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("main-1");
+  });
+
+  it("opens the hub when the window has nothing else to show", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await handOffWorkspace("ws-1");
+
+    expect(get(appHubOpen)).toBe(true);
+    expect(backend.openWorkspaceWindow).toHaveBeenCalledWith("ws-1");
+    // Module-level store: left up, it is the state every test after this
+    // one starts in.
+    appHubOpen.set(false);
+  });
+
+  // A stale click on a row whose window already exists must not open a
+  // second one onto the same workspace.
+  it("raises the existing window instead of opening a second one", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+    workspaceWindows.set({ "ws-2": "ws-ws-2" });
+
+    await handOffWorkspace("ws-2");
+
+    expect(backend.focusWorkspaceWindow).toHaveBeenCalledWith("ws-2");
+    expect(backend.openWorkspaceWindow).not.toHaveBeenCalled();
   });
 });
 

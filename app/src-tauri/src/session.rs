@@ -747,6 +747,21 @@ pub fn get_workspaces_state(state: State<WorkspacesState>) -> WorkspacesData {
     state.0.lock().unwrap().clone()
 }
 
+/// Writes the whole workspaces state, and tells the OTHER windows what
+/// it now says.
+///
+/// config.json is one file behind however many windows are open, and
+/// every window holds its own copy of the array it writes back whole. So
+/// a window that saved a page rename against a copy taken before another
+/// window added a tab would undo that tab. The broadcast below is what
+/// closes that: the writer is the authority, and every other window
+/// adopts what it wrote (layoutState's `workspaces-synced` listener),
+/// keeping only its own `active_workspace_id` -- which is per WINDOW, not
+/// per app, once a workspace can be in a window of its own.
+///
+/// `window` is Tauri's, injected rather than passed: the payload carries
+/// the label that wrote it so the writer can ignore its own echo instead
+/// of re-adopting state it is already showing.
 #[tauri::command]
 pub fn set_workspaces_state(
     workspaces: Vec<Workspace>,
@@ -756,6 +771,7 @@ pub fn set_workspaces_state(
     // default here is every tombstone disappearing on the next save.
     removed_workspaces: Vec<crate::config::RemovedWorkspace>,
     app_handle: AppHandle,
+    window: tauri::Window,
     state: State<WorkspacesState>,
     names_state: State<SessionNames>,
     file_tabs_state: State<FileTabs>,
@@ -795,7 +811,20 @@ pub fn set_workspaces_state(
         agent_pause,
         superpowers,
     )
-        .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit(
+        "workspaces-synced",
+        WorkspacesSync { origin: window.label().to_string(), data },
+    );
+    Ok(())
+}
+
+/// One window's write, addressed to all the others. `origin` is the
+/// label of the window that made it.
+#[derive(Clone, serde::Serialize)]
+pub struct WorkspacesSync {
+    origin: String,
+    data: WorkspacesData,
 }
 
 #[tauri::command]

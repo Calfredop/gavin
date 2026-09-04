@@ -7,11 +7,14 @@ import * as backend from "./backend";
 import {
   closeWorkspace,
   closePage,
+  handOffWorkspace,
   movePageAction,
   switchWorkspaceView,
   switchToSessionInPage,
   setWorkspaceRoot,
 } from "./layoutState";
+import { windowActionLabel } from "./appWindow";
+import { currentWindowLabel, currentWorkspaceWindows } from "./appWindowState";
 import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
 import { buildTabMenuEntries, type TabMenuContext } from "./tabMenu";
 import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "./idleTabs";
@@ -38,9 +41,21 @@ export function buildWorkspaceMenuEntries(ws: Workspace, hooks: SidebarMenuHooks
     return [{ label: "New Page", onPick: () => hooks.newPage(ws.id) }];
   }
   const root = ws.rootPath ?? null;
+  // One entry for both directions, because they are the same wish: "put
+  // this workspace where I can see it on its own". It reads "Open in New
+  // Window" for a workspace this window holds and "Show in Its Window"
+  // for one that already left -- and it is absent entirely in the window
+  // that workspace IS, where both would end where they started.
+  const windowLabel = windowActionLabel(currentWorkspaceWindows(), ws.id, currentWindowLabel());
   return [
     { label: "Rename…", onPick: () => hooks.startRenameWorkspace(ws.id) },
     { label: "New Page", onPick: () => hooks.newPage(ws.id) },
+    ...(windowLabel
+      ? [
+          { separator: true } as ContextMenuEntry,
+          { label: windowLabel, onPick: () => void handOffWorkspace(ws.id) } as ContextMenuEntry,
+        ]
+      : []),
     { separator: true },
     {
       label: "Open Root in Finder",

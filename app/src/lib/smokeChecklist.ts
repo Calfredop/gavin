@@ -2468,6 +2468,52 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Workspace windows",
+    items: [
+      {
+        id: "window-open-from-menu",
+        text: "A workspace's sidebar menu → “Open in New Window” opens a second window showing that workspace, cascaded down-right of this one",
+        hint: "The new window is the whole app: same sidebar, same hub, rounded corners and a working title-bar double-click.",
+      },
+      {
+        id: "window-open-from-hub",
+        text: "The window button on the hub tab row (left of the “+”) does the same for the workspace you are looking at",
+      },
+      {
+        id: "window-first-looks-away",
+        text: "Moving the workspace you are ON switches this window to another workspace — or to the app hub when it was the only one",
+      },
+      {
+        id: "window-terminals-move",
+        text: "A running agent's terminal comes up painted and live in the new window, and typing into it works",
+        hint: "The daemon repaints from its screen model; the session is never restarted, so scrollback from before the move is gone but the program is not.",
+      },
+      {
+        id: "window-marked-elsewhere",
+        text: "The first window still lists that workspace, dimmed with a window glyph; clicking it raises the other window instead of switching",
+        hint: "The menu entry there reads “Show in Its Window”, never a second “Open in New Window”.",
+      },
+      {
+        id: "window-edits-sync",
+        text: "Renaming a page (or adding one) in one window shows up in the other's sidebar without a reload",
+        hint: "config.json is shared; the writer broadcasts and every other window adopts. Check BOTH directions.",
+      },
+      {
+        id: "window-close-returns",
+        text: "Closing the workspace window asks nothing and hands the workspace back: the first window's row un-dims and switching to it works",
+      },
+      {
+        id: "window-close-workspace",
+        text: "Closing that workspace (sidebar X) from the first window takes its window down with it",
+      },
+      {
+        id: "window-not-restored",
+        text: "Quitting with two windows open and relaunching comes back as one window holding everything",
+        hint: "Windows are deliberately not restored — the registry is ephemeral.",
+      },
+    ],
+  },
+  {
     title: "App hub",
     items: [
       {
