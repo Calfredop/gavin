@@ -735,6 +735,12 @@
   <div class="header">
     <span class="kind-badge kind-{card.kind}">{card.kind}</span>
     <span class="meta">{card.contextName} · {card.fileName}</span>
+    {#if onGoToBoard}
+      <button type="button" class="go-to-board" onclick={() => onGoToBoard?.()}>
+        <SquareArrowOutUpRight size={12} />
+        Show on the board
+      </button>
+    {/if}
   </div>
   <input class="title" type="text" bind:value={titleDraft} onblur={commitTitle} onkeydown={(e) => e.key === "Enter" && commitTitle()} />
   <div class="path">{card.id}</div>
@@ -765,12 +771,6 @@
       {/if}
       {#each columns as col (col.id)}
         <option value={col.name} selected={slugStatus(col.name) === slugStatus(card.status ?? "")}>{col.name}</option>
-    {#if onGoToBoard}
-      <button type="button" class="go-to-board" onclick={() => onGoToBoard?.()}>
-        <SquareArrowOutUpRight size={12} />
-        Show on the board
-      </button>
-    {/if}
       {/each}
     </select>
   </label>
@@ -1244,6 +1244,28 @@
     gap: 8px;
     margin-bottom: 6px;
   }
+  /* Pushed to the far end of the header: it is the one control here that
+     leaves this panel entirely, so it does not sit among the fields that
+     edit the card. */
+  .go-to-board {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    flex: none;
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.75em;
+    cursor: pointer;
+  }
+  .go-to-board:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+  }
   .kind-badge {
     border-radius: 10px;
     padding: 1px 8px;
@@ -1295,28 +1317,6 @@
     gap: 10px;
     margin-bottom: 8px;
     font-size: 0.85em;
-  }
-  /* Pushed to the far end of the header: it is the one control here that
-     leaves this panel entirely, so it does not sit among the fields that
-     edit the card. */
-  .go-to-board {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    margin-left: auto;
-    flex: none;
-    padding: 2px 8px;
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text-muted);
-    font-family: inherit;
-    font-size: 0.75em;
-    cursor: pointer;
-  }
-  .go-to-board:hover {
-    color: var(--text);
-    border-color: var(--text-muted);
   }
   .row .label {
     color: var(--text-muted);
