@@ -2018,6 +2018,16 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "Orchestration → bind a rail → New worktree…: the setup session opens on the RAIL's page, in the new worktree",
         hint: "This is the path with no “Start agent here” checkbox at all, and the one that used to hand the dialog a no-op. Check the session's cwd is the fork (not the workspace root) and that it landed on the page named after the rail rather than on the page you were looking at. The rail itself stays idle — this is not a run row.",
       },
+      {
+        id: "wt-fork-error-line",
+        text: "A refused “New worktree…” says why IN the dialog, from every surface that opens it — including a rail's bind dialog, with the Git tab never opened in this workspace",
+        hint: "Force git's refusal: mkdir the folder the dialog proposes and drop a file in it, then press Create. The dialog stays open with git's own sentence under the fields (“New worktree failed: fatal: … already exists”), not a button that appears to do nothing. Do it from the Git tab's switcher too — the banner still carries it there — and from a rail in a workspace whose Git tab you have never opened, which used to be the one path that said nothing anywhere.",
+      },
+      {
+        id: "wt-fork-branch-error-line",
+        text: "Bind a rail → “New branch…” reports a refusal the same way, in the form",
+        hint: "The field's own validation catches a name it can already see, so use one only git can refuse: `git branch parent` by hand, then ask for `parent/child` — git answers “cannot lock ref”. The sentence appears under the form, and the form stays open on what you typed rather than closing as if it had worked.",
+      },
     ],
   },
   {

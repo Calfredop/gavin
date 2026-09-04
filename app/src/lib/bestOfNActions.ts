@@ -154,17 +154,18 @@ export async function startBestOfN(
   // candidate it belongs to.
   const created: CandidatePlan[] = [];
   for (const plan of plans) {
-    const ok = await forkWorktree(workspaceId, {
+    const forked = await forkWorktree(workspaceId, {
       path: plan.worktreePath,
       branch: plan.branch,
       from,
       newBranch: true,
     });
-    if (!ok) {
+    if (!forked.ok) {
       await rollback(workspaceId, created);
-      // git's own message is already in the Git tab's error banner; this
-      // is the sentence the BOARD shows, so it names the candidate.
-      return `Couldn't create the worktree for ${plan.label} — see the Git tab for git's message`;
+      // This is the sentence the BOARD shows, so it names the candidate
+      // AND quotes git. Pointing at the Git tab instead was no help to a
+      // human standing in front of a card modal.
+      return `Couldn't create the worktree for ${plan.label} — ${forked.error}`;
     }
     created.push(plan);
   }

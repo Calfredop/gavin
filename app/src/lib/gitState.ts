@@ -359,25 +359,69 @@ export function noteError(workspaceId: string, message: string): void {
   update(workspaceId, (st) => ({ ...st, error: message }));
 }
 
+/// Said when the workspace has no git view at all. Such a refusal has
+/// nowhere to file itself -- `update()` writes only to a view the store
+/// already has -- so this sentence exists to be RETURNED. It was the one
+/// failure path that used to say nothing anywhere.
+const NO_GIT_VIEW = "Gavin has no git view for this workspace yet";
+
+/// Why a mutation cannot be started, or null when it can. A refusal is
+/// not a failure: git was never asked, so there is no stderr to quote.
+/// Split out for the same reason `agentCommitBlocker` is -- a surface
+/// with no error banner on screen has to be able to SAY why.
+export function runBlocker(state: GitViewState | null): string | null {
+  if (!state) return NO_GIT_VIEW;
+  const holder = state.op?.label ?? state.busy;
+  if (holder) return `Another git operation is still running (${holder})`;
+  return null;
+}
+
+/// What a mutation did. The union is the invariant: a result carries a
+/// sentence exactly when it did not succeed, so a caller can neither
+/// report a success nor swallow a refusal by accident.
+export type RunResult = { ok: true; error: null } | { ok: false; error: string };
+
 /// Every mutation goes through here: refuse while busy, mark busy, run,
 /// refresh, record "<label> failed: <stderr>" on error (spec §4).
 export async function run(workspaceId: string, label: string, op: (cwd: string) => Promise<void>): Promise<boolean> {
+  return (await runWithReason(workspaceId, label, op)).ok;
+}
+
+/// The same, for a caller that has to say what went wrong itself. A
+/// dialog opened from the orchestration hub or from a card is not
+/// looking at the Git tab's error banner, so a bare `false` told it --
+/// and its human -- nothing at all: the button simply did nothing.
+export async function runWithReason(
+  workspaceId: string,
+  label: string,
+  op: (cwd: string) => Promise<void>
+): Promise<RunResult> {
   const s = current(workspaceId);
-  if (!s || s.busy || s.op) return false;
+  const blocked = runBlocker(s);
+  // `!s` is folded in for the type checker alone: runBlocker answers a
+  // null state with a reason, so `blocked` is set whenever `s` is not.
+  if (blocked || !s) {
+    const reason = blocked ?? NO_GIT_VIEW;
+    // Filed as well as returned, so the banner keeps carrying every
+    // refusal for the surfaces that do watch it. A no-op when there is
+    // no view -- the case the return value is here for.
+    noteError(workspaceId, reason);
+    return { ok: false, error: reason };
+  }
   update(workspaceId, (st) => ({ ...st, busy: label, error: null }));
-  let okResult = true;
+  let failure: string | null = null;
   try {
     await op(s.cwd);
   } catch (e) {
-    okResult = false;
-    update(workspaceId, (st) => ({ ...st, error: `${label} failed: ${errorText(e)}` }));
+    failure = `${label} failed: ${errorText(e)}`;
+    update(workspaceId, (st) => ({ ...st, error: failure }));
   }
   // A successful mutation invalidates any line selection (spec §3: the diff
   // is refetched and the selection cleared); a failed one keeps it so the
   // user can retry.
-  update(workspaceId, (st) => ({ ...st, busy: null, lineSelection: okResult ? new Set() : st.lineSelection }));
+  update(workspaceId, (st) => ({ ...st, busy: null, lineSelection: failure ? st.lineSelection : new Set() }));
   await refresh(workspaceId);
-  return okResult;
+  return failure === null ? { ok: true, error: null } : { ok: false, error: failure };
 }
 
 function conflictedPaths(workspaceId: string): Set<string> {
@@ -848,8 +892,11 @@ export function checkout(workspaceId: string, name: string, trackRemote: string 
   return run(workspaceId, `Checkout ${name}`, (cwd) => backend.gitCheckout(cwd, name, trackRemote));
 }
 
-export function createBranch(workspaceId: string, name: string, from: string | null, checkoutAfter: boolean): Promise<boolean> {
-  return run(workspaceId, "New branch", (cwd) => backend.gitCreateBranch(cwd, name, from, checkoutAfter));
+/// Reports its reason for the same read: the rail bind dialog offers
+/// "New branch…" from the orchestration hub, where nothing else would
+/// carry git's refusal.
+export function createBranch(workspaceId: string, name: string, from: string | null, checkoutAfter: boolean): Promise<RunResult> {
+  return runWithReason(workspaceId, "New branch", (cwd) => backend.gitCreateBranch(cwd, name, from, checkoutAfter));
 }
 
 export function deleteBranch(workspaceId: string, name: string, force: boolean): Promise<boolean> {
@@ -1046,11 +1093,14 @@ export async function switchWorktree(workspaceId: string, path: string): Promise
   await refresh(workspaceId);
 }
 
+/// Reports its reason rather than a bare boolean: both of its callers --
+/// the fork dialog and a best-of-N launch -- are surfaces the Git tab's
+/// error banner is not on.
 export function forkWorktree(
   workspaceId: string,
   opts: { path: string; branch: string; from: string | null; newBranch: boolean }
-): Promise<boolean> {
-  return run(workspaceId, "New worktree", (cwd) => backend.gitWorktreeAdd(cwd, opts.path, opts.branch, opts.from, opts.newBranch));
+): Promise<RunResult> {
+  return runWithReason(workspaceId, "New worktree", (cwd) => backend.gitWorktreeAdd(cwd, opts.path, opts.branch, opts.from, opts.newBranch));
 }
 
 export function removeWorktree(workspaceId: string, path: string, force: boolean, deleteBranchName: string | null): Promise<boolean> {
