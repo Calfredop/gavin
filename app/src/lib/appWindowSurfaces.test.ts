@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 
+import { closeWindowPrompt } from "./appClose";
+
 // "A workspace is on screen in exactly one window" is a rule spread over
 // five files that nothing links: the registry (workspace_window.rs), the
 // rules (appWindow.ts), the guard (layoutState.ts) and the two surfaces
@@ -96,11 +98,17 @@ describe("closing a workspace window", () => {
   // gavin away. A workspace window puts nothing away: its workspaces go
   // straight back to the window they came from and no session is touched,
   // so asking would be a question with no stake in it.
+  //
+  // The wording itself is no longer in this file to look for: it is data
+  // in appClose.ts now (closeWindowPrompt, and appClose.test.ts reads
+  // it). What is still a question about WINDOWS, and still only visible
+  // here, is that the guard returns before anything raises it.
   it("asks nothing, unlike the main window", () => {
     expect(PAGE).toContain("if (!isMainWindow()) return;");
     const guard = PAGE.indexOf("if (!isMainWindow()) return;");
-    const prompt = PAGE.indexOf("Close this window?");
+    const prompt = PAGE.indexOf("confirmWindowClose()");
     expect(guard).toBeGreaterThan(-1);
     expect(prompt).toBeGreaterThan(guard);
+    expect(closeWindowPrompt().title).toBe("Close this window?");
   });
 });

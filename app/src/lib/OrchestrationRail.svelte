@@ -11,6 +11,9 @@
     GripVertical,
     Ellipsis,
     LifeBuoy,
+    FolderGit2,
+    GitBranch,
+    PanelsTopLeft,
   } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { resumeNoteFor } from "./autoResume";
@@ -55,6 +58,7 @@
   import { highlightedConflict } from "./orchestrationState";
   import { orchDragState } from "./orchestrationDrag";
   import { openContextMenuFromEvent } from "./contextMenu";
+  import { railBindChip, type RailBindChip, type RailBindTab } from "./railBind";
 
   interface Props {
     rail: Rail;
@@ -111,7 +115,11 @@
     /// the header and the scheduler cannot disagree about which
     /// directory a `gh` runs in.
     checkout: string | null;
-    onBind: () => void;
+    /// Opens the bind dialog on ONE of its three tabs. The header shows
+    /// all three bindings as chips, and a chip that opened the dialog at
+    /// the top of a list the reader then has to find is a link that only
+    /// half arrives.
+    onBind: (tab: RailBindTab) => void;
     /// Hand THIS rail to an agent of its own (the header's wand). Scoped
     /// on purpose: the tab header's Organize button is about the cards
     /// nobody placed, this one is about the arrangement of one rail.
@@ -261,6 +269,16 @@
   );
   const railSeverity = $derived(severityForRail(numbered, rail.id));
 
+  /// The rail's three bindings, each its own chip and each its own way
+  /// into the dialog. One button showing a full worktree path and a page
+  /// name said what two of them were and offered no way to say WHICH one
+  /// you meant to change -- and never mentioned that the branch and the
+  /// page were the same dialog away.
+  const bindWorktree = $derived(railBindChip("worktree", rail, pageName));
+  const bindBranch = $derived(railBindChip("branch", rail, pageName));
+  const bindPage = $derived(railBindChip("page", rail, pageName));
+  const BIND_ICONS = { worktree: FolderGit2, branch: GitBranch, page: PanelsTopLeft };
+
   let draft = $state("");
   // Seeded when edit mode OPENS, not at construction: the parent drops a
   // newly created rail straight into editing without a click, so there is
@@ -352,6 +370,23 @@
     ]);
   }
 </script>
+
+<!-- One shape for all three bindings, so a chip cannot drift into saying
+     its fact differently from its neighbours: icon, current value, the
+     tooltip that explains what the default does, and the tab it opens. -->
+{#snippet bindChip(chip: RailBindChip)}
+  {@const Icon = BIND_ICONS[chip.tab]}
+  <button
+    type="button"
+    class="bind-chip"
+    class:unset={!chip.bound}
+    use:tooltip={chip.tip}
+    onclick={() => onBind(chip.tab)}
+  >
+    <Icon size={11} />
+    <span>{chip.value}</span>
+  </button>
+{/snippet}
 
 <div class="rail" data-orch-rail={rail.id}>
   <header>
@@ -470,18 +505,22 @@
       />
       <IconButton icon={Trash2} label="Delete rail" tone="danger" onclick={onDelete} />
     </div>
-    <button type="button" class="bindings" onclick={onBind}>
-      <span class="wt">
-        {rail.worktreePath ?? "no worktree"}{#if rail.branch}<span class="br"
-          >{rail.branch}</span
-        >{/if}
-      </span>
-      <!-- Not "no page": an unbound rail is not page-less, it gets one
-           of its own the moment a step of it actually launches (spec
-           O16) -- built around that session, which is why it waits for
-           one rather than appearing at Start. -->
-      <span class="pg">{pageName ?? "page at launch"}</span>
-    </button>
+    <div class="bindings">
+      <!-- The branch rides on the worktree's line: the two are one
+           binding read together — WHICH checkout, on WHICH branch. The
+           page is its own fact and gets its own line. Not "no page": an
+           unbound rail is not page-less, it gets one of its own the
+           moment a step of it actually launches (spec O16) — built
+           around that session, which is why it waits for one rather than
+           appearing at Start. -->
+      <div class="bind-line">
+        {@render bindChip(bindWorktree)}
+        {@render bindChip(bindBranch)}
+      </div>
+      <div class="bind-line">
+        {@render bindChip(bindPage)}
+      </div>
+    </div>
     <!-- Only when there is something to say. A branch with no pull
          request is the resting state of most branches, and a permanent
          grey chip saying so would be noise on every rail. -->
@@ -777,38 +816,53 @@
   .bindings {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    padding: 3px 5px;
-    background: none;
+    gap: 2px;
+    padding: 1px 4px;
+  }
+  .bind-line {
+    display: flex;
+    gap: 3px;
+    min-width: 0;
+  }
+  /* Shaped like the pull-request chips two rules down, because it sits
+     directly above them and says the same KIND of thing about the rail --
+     the difference is that this one acts. */
+  .bind-chip {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    padding: 0 5px;
+    background: var(--surface-overlay);
     border: 1px solid transparent;
-    border-radius: 4px;
+    border-radius: 3px;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 10px;
+    line-height: 16px;
     text-align: left;
     cursor: pointer;
   }
-  .bindings:hover {
+  .bind-chip:hover {
     background: var(--surface-hover);
     border-color: var(--border);
+    color: var(--text);
   }
-  .bindings span {
+  /* A binding the rail does not carry is a working default, not a fault:
+     quieter than a set one, and never coloured like a warning. */
+  .bind-chip.unset {
+    background: none;
+    color: var(--text-subtle);
+  }
+  .bind-chip span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .bindings .pg {
-    color: var(--text-subtle);
-    font-size: 10px;
-  }
-  /* The branch rides on the worktree line: the two are one binding read
-     together — WHICH checkout, on WHICH branch. */
-  .bindings .br {
-    margin-left: 5px;
-    padding: 0 4px;
-    border-radius: 3px;
-    background: var(--surface-overlay);
-    color: var(--text);
-    font-size: 10px;
+  /* The glyph names the binding, so it must not be the thing that gets
+     clipped when the value is long. */
+  .bind-chip :global(svg) {
+    flex: none;
+    opacity: 0.75;
   }
   /* Under the binding it qualifies, not beside the rail name: the name
      row is already the one place a 280px column has to ellipsise, and a

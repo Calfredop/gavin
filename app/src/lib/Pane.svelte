@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { LayoutNode } from "./layout";
+  import { paneOwnsActions, type LayoutNode } from "./layout";
   import type { CardTab } from "./gavin";
   import TerminalPane from "./TerminalPane.svelte";
   import FileViewerPane from "./FileViewerPane.svelte";
@@ -61,7 +61,7 @@
     type DropZone,
   } from "./dragDrop";
   import { movePaneOrTab, reorderTabWithinPane } from "./layoutState";
-  import { getActiveWorkspace, getActivePage } from "./workspace";
+  import { getActiveWorkspace, getActivePage, getActiveTree } from "./workspace";
 
   let { leaf }: { leaf: Extract<LayoutNode, { type: "leaf" }> } = $props();
 
@@ -70,6 +70,12 @@
 
   const isFocused = $derived(
     $layoutState.focusedSessionId !== null && leaf.tabs.includes($layoutState.focusedSessionId)
+  );
+  // One row of actions per page, on the pane the keyboard is already in
+  // (layout.ts says which, and why). Only the ACTIVE page renders panes,
+  // so its tree is the one to ask.
+  const ownsActions = $derived(
+    paneOwnsActions(getActiveTree($layoutState), leaf, $layoutState.focusedSessionId)
   );
   const active = $derived(leaf.tabs[leaf.activeTabIndex]);
 
@@ -603,57 +609,64 @@
          chips beside them came the other way, off the individual tab:
          a tab is a label with a close box, and hanging a second and
          third action inside it made a tab something you had to aim at.
-         Both act on the ACTIVE tab, like every other control here. -->
-    <div class="tab-actions">
-      {#if linkedCard(active)}
-        {@const link = linkedCard(active)}
-        <IconButton
-          icon={ListChecks}
-          label="Show the plan this agent is running"
-          tip={`Show plan · ${link?.title}`}
-          tone="accent"
-          size={14}
-          onclick={() => {
-            const ws = getActiveWorkspace($layoutState);
-            if (link && ws) void openCardInSplit(active, ws.id, link.path, "plan");
-          }}
-        />
-      {/if}
-      {#if runChangesFor(active)}
-        {@const run = runChangesFor(active)}
-        <IconButton
-          icon={FileDiff}
-          label="See what this run changed"
-          tip={run ? chipTooltip(run.baseSha) : null}
-          tone="accent"
-          size={14}
-          onclick={() => {
-            const ws = getActiveWorkspace($layoutState);
-            if (run && ws) void openCardInSplit(active, ws.id, run.path, "changes");
-          }}
-        />
-      {/if}
-      {#if activeBoardContext}
-        <IconButton
-          icon={Kanban}
-          label="Open context board"
-          tip={`Open board · ${activeBoardContext.name}`}
-          size={14}
-          onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
-        />
-      {/if}
-      <IconButton icon={Plus} label="New Tab" size={14} shortcut="new-tab" onclick={() => addTab(active)} />
-      <span class="divider"></span>
-      <IconButton icon={Columns2} label="Split Right" size={14} shortcut="split-right" onclick={() => split("row")} />
-      <IconButton icon={Rows2} label="Split Down" size={14} shortcut="split-down" onclick={() => split("column")} />
-      <IconButton icon={X} label="Close Pane" size={14} onclick={handleClosePane} />
-      <!-- Last, and behind a rule: the only control here that is not
-           about this pane. It adds a PAGE, and it rides on this row
-           because this row is the top of the window on a terminal page,
-           exactly as the hub tab row is on every other tab. -->
-      <span class="divider"></span>
-      <NewPageButton />
-    </div>
+         Both act on the ACTIVE tab, like every other control here.
+
+         Once per page, not once per pane: on a split page only the
+         focused pane draws this group (paneOwnsActions), because four
+         copies of Split/Close differing only in which pane they act on
+         is four toolbars pretending to be one. -->
+    {#if ownsActions}
+      <div class="tab-actions">
+        {#if linkedCard(active)}
+          {@const link = linkedCard(active)}
+          <IconButton
+            icon={ListChecks}
+            label="Show the plan this agent is running"
+            tip={`Show plan · ${link?.title}`}
+            tone="accent"
+            size={14}
+            onclick={() => {
+              const ws = getActiveWorkspace($layoutState);
+              if (link && ws) void openCardInSplit(active, ws.id, link.path, "plan");
+            }}
+          />
+        {/if}
+        {#if runChangesFor(active)}
+          {@const run = runChangesFor(active)}
+          <IconButton
+            icon={FileDiff}
+            label="See what this run changed"
+            tip={run ? chipTooltip(run.baseSha) : null}
+            tone="accent"
+            size={14}
+            onclick={() => {
+              const ws = getActiveWorkspace($layoutState);
+              if (run && ws) void openCardInSplit(active, ws.id, run.path, "changes");
+            }}
+          />
+        {/if}
+        {#if activeBoardContext}
+          <IconButton
+            icon={Kanban}
+            label="Open context board"
+            tip={`Open board · ${activeBoardContext.name}`}
+            size={14}
+            onclick={() => void openBoardInSplit(active, activeBoardContext.workspaceId, activeBoardContext.folderPath)}
+          />
+        {/if}
+        <IconButton icon={Plus} label="New Tab" size={14} shortcut="new-tab" onclick={() => addTab(active)} />
+        <span class="divider"></span>
+        <IconButton icon={Columns2} label="Split Right" size={14} shortcut="split-right" onclick={() => split("row")} />
+        <IconButton icon={Rows2} label="Split Down" size={14} shortcut="split-down" onclick={() => split("column")} />
+        <IconButton icon={X} label="Close Pane" size={14} onclick={handleClosePane} />
+        <!-- Last, and behind a rule: the only control here that is not
+             about this pane. It adds a PAGE, and it rides on this row
+             because this row is the top of the window on a terminal page,
+             exactly as the hub tab row is on every other tab. -->
+        <span class="divider"></span>
+        <NewPageButton />
+      </div>
+    {/if}
   </div>
   <div
     class="content"
@@ -726,7 +739,14 @@
     height: var(--header-height);
     box-sizing: border-box;
     padding: var(--header-pad-top) 6px 0;
-    background: var(--surface-raised);
+    /* The view's own surface, not the raised one the row inherited from
+       the title bar it replaced. Raised, this row was a grey band across
+       the top of the window with one black tab cut out of it -- and the
+       padding around that tab read as a margin of the sidebar's colour
+       leaking in over the page. The hub tab row beside it was already
+       flat black; this is that row. What separates the tabs now is the
+       hairline below, not a change of surface. */
+    background: var(--surface-base);
     flex: 0 0 auto;
     min-width: 0;
   }
@@ -738,6 +758,7 @@
   .tab-strip {
     display: flex;
     align-items: stretch;
+    gap: var(--tab-gap);
     flex: 1 1 auto;
     min-width: 0;
     overflow-x: auto;
@@ -762,7 +783,7 @@
   .divider {
     width: 1px;
     align-self: center;
-    height: 14px;
+    height: var(--tab-divider);
     margin: 0 3px;
     background: var(--border);
   }
@@ -792,8 +813,25 @@
     font-size: var(--tab-font-size);
     cursor: pointer;
   }
+  /* The hub row's separator, to the pixel (theme.css): down the middle
+     of the gap, and short of the row's height so it reads as a rule
+     between tabs rather than a box around each one. Off .tab, which is
+     already `position: relative` for the hold-⌘ hint. */
+  .tab + .tab::before {
+    content: "";
+    position: absolute;
+    left: calc(var(--tab-gap) / -2);
+    top: 50%;
+    height: var(--tab-divider);
+    width: 1px;
+    transform: translateY(-50%);
+    background: var(--border);
+  }
+  /* Text alone, as on the hub row. The active tab used to be a black
+     fill against a grey bar; on a bar that is already the view's own
+     black there is no fill left to give it, and the full-strength text
+     against the muted rest is what the hub tabs have always used. */
   .tab.active {
-    background: var(--surface-base);
     color: var(--text);
   }
   /* The workspace's accent, exactly as the hub tabs draw it -- including

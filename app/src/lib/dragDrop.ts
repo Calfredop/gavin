@@ -6,14 +6,27 @@
 // always identify the SOURCE location -- the page the drag started
 // from, which is always the currently active page, since that's the only
 // page ever rendered.
+//
+// "hub-tab" is a workspace's own tab STRIP being rearranged -- a
+// different gesture from "tab" (a session tab moving between panes), and
+// deliberately a different dataTransfer type: the two rows can be on
+// screen at once, and a hub tab dropped on a pane's tab bar must be
+// refused rather than turned into a session.
 export type DragPayload =
   | { kind: "workspace"; workspaceId: string }
   | { kind: "page"; workspaceId: string; pageId: string }
   | { kind: "pane"; workspaceId: string; pageId: string; sessionId: string }
-  | { kind: "tab"; workspaceId: string; pageId: string; sessionId: string };
+  | { kind: "tab"; workspaceId: string; pageId: string; sessionId: string }
+  | { kind: "hub-tab"; workspaceId: string; viewId: string };
 
 const DRAG_TYPE_PREFIX = "application/x-gavin-drag-";
-const DRAG_KINDS: readonly DragPayload["kind"][] = ["workspace", "page", "pane", "tab"];
+const DRAG_KINDS: readonly DragPayload["kind"][] = [
+  "workspace",
+  "page",
+  "pane",
+  "tab",
+  "hub-tab",
+];
 
 export function setDragPayload(event: DragEvent, payload: DragPayload): void {
   if (!event.dataTransfer) return;

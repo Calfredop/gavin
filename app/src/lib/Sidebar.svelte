@@ -21,16 +21,20 @@
     openAppHub,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
-  // The creation flow itself lives in workspaceCreate.ts: the app hub's
-  // "+ New workspace…" drives the very same steps, and a second copy of
-  // the create → setup → wizard handoff is the shape that drifts.
+  // Naming a workspace into existence is the app hub's action now; the
+  // sidebar's is "Open workspace…", which starts from a folder. The
+  // prompt below is the one question that flow can ask.
+  import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "./workspaceOpen";
+  import { sidebarCollapsed, scratchpadEnabled } from "./sidebarPrefs";
   import {
-    newWorkspaceFlow,
-    startCreatingWorkspace,
-    setNewWorkspaceName,
-    commitNewWorkspace,
-    cancelNewWorkspace,
-  } from "./workspaceCreate";
+    closeSidebarSearch,
+    searchSidebar,
+    sidebarSearchOpen,
+    sidebarSearchQuery,
+    type SidebarHit,
+    type SidebarSearchResult,
+  } from "./sidebarSearch";
+  import { isSearching } from "./search";
   import type { SessionStatus } from "./layoutState";
   import { presetSingle, findLeafPath, getNodeAtPath } from "./layout";
   import {
@@ -51,6 +55,7 @@
     Boxes,
     Activity,
     AppWindow,
+    Search,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -59,6 +64,7 @@
 
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel } from "./paths";
   import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
+  import { currentHubTabPrefs } from "./hubTabPrefs";
   import {
     setDragPayload,
     getDragKind,
@@ -75,7 +81,6 @@
     kanbanSummary,
     railsSummary,
     railStripStats,
-    kanbanColumnChips,
     pageAgentsSummary,
     workspaceAgentsSummary,
     pageTabRows,
@@ -88,7 +93,6 @@
     type PageTabRow,
   } from "./sidebarSummary";
   import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "./cardTabLink";
-  import { createHoverIntent } from "./hoverIntent";
   import {
     orchestrations,
     fetchOrchestration,
@@ -170,11 +174,6 @@
     saveExpandedPages(next, knownPageIds());
   }
 
-  let newWorkspaceInput: HTMLInputElement | null = $state(null);
-  // Only the box this surface opened: the hub renders one from the same
-  // store, and both showing at once would fight over focus and text.
-  const naming = $derived($newWorkspaceFlow.naming?.surface === "sidebar" ? $newWorkspaceFlow.naming : null);
-
   let editingWorkspaceId: string | null = $state(null);
   let workspaceEditValue = $state("");
   let workspaceEditInput: HTMLInputElement | null = $state(null);
@@ -215,13 +214,78 @@
   // $layoutState.workspaces accordingly. unfiledWorkspace is null only
   // before bootstrap's first workspaces-ready/poll response arrives
   // (the Rust side always creates it once ready).
-  const unfiledWorkspace = $derived($layoutState.workspaces.find((w) => w.id === UNFILED_WORKSPACE_ID) ?? null);
+  const unfiledWorkspace = $derived(
+    $scratchpadEnabled
+      ? ($layoutState.workspaces.find((w) => w.id === UNFILED_WORKSPACE_ID) ?? null)
+      : null
+  );
   const regularWorkspaces = $derived($layoutState.workspaces.filter((w) => w.id !== UNFILED_WORKSPACE_ID));
 
   // ⌘⌥-number addresses workspaces in the order this sidebar renders
   // them (Scratchpad pinned first) -- the same helper the router uses,
   // so a badge and its shortcut can never point at different rows.
-  const orderedWorkspaces = $derived(sidebarWorkspaceOrder($layoutState.workspaces));
+  const orderedWorkspaces = $derived(
+    sidebarWorkspaceOrder($layoutState.workspaces, $scratchpadEnabled)
+  );
+
+  /// The list the collapsed rail and the search draw from: exactly the
+  /// rows the expanded sidebar would render, in the order it renders
+  /// them. Going through orderedWorkspaces rather than re-splitting
+  /// pinned-from-rest is what keeps all three views (expanded, collapsed,
+  /// searched) naming the same workspaces in the same order.
+  const visibleWorkspaces = $derived(orderedWorkspaces);
+
+  /// One letter for the collapsed rail. The first character of the name
+  /// rather than an initialism: it is an identifier, not an abbreviation,
+  /// and two-letter marks turn a 12px column into a reading exercise.
+  /// Falls back to "?" for a name that is somehow empty, so a row is
+  /// never a blank button.
+  function workspaceInitial(ws: Workspace): string {
+    return (ws.name.trim()[0] ?? "?").toUpperCase();
+  }
+
+  const searchOpen = $derived($sidebarSearchOpen && !$sidebarCollapsed);
+
+  /// The result list, or null when nothing is being searched -- which is
+  /// what tells the template to leave the ordinary workspace list up. An
+  /// open-but-empty search row must not blank the sidebar.
+  const searchHits = $derived.by((): SidebarSearchResult | null => {
+    if (!searchOpen || !isSearching($sidebarSearchQuery)) return null;
+    return searchSidebar(
+      {
+        workspaces: visibleWorkspaces,
+        tabs: $layoutState,
+        sessionNames: $layoutState.sessionNames,
+        cwdBySessionId: $layoutState.cwdBySessionId,
+      },
+      $sidebarSearchQuery
+    );
+  });
+
+  /// Focus follows the row opening, so the magnifier is one click and
+  /// then typing. `searchOpen` is the guard rather than the store itself:
+  /// collapsing the sidebar takes the row down without closing the
+  /// search, and focusing an input that is not rendered throws.
+  let searchInput = $state<HTMLInputElement | null>(null);
+  $effect(() => {
+    if (searchOpen && searchInput) searchInput.focus();
+  });
+
+  /// Picking a hit closes the search. It is a destination, not a filter:
+  /// leaving the results up over the workspace you were just sent to
+  /// would hide the very row that says you arrived.
+  async function openHit(hit: SidebarHit): Promise<void> {
+    closeSidebarSearch();
+    if (hit.sessionId && hit.pageId) {
+      await switchWorkspaceView(hit.workspaceId, "terminal");
+      await switchToSessionInPage(hit.workspaceId, hit.pageId, hit.sessionId);
+    } else if (hit.pageId) {
+      await switchWorkspaceView(hit.workspaceId, "terminal");
+      await switchPage(hit.workspaceId, hit.pageId);
+    } else {
+      await switchWorkspace(hit.workspaceId);
+    }
+  }
 
   /// ⌘⇧-number switches pages, and only within the ACTIVE workspace --
   /// badging another workspace's pages would promise a jump that
@@ -284,35 +348,6 @@
     const orch = $orchestrations[ws.id];
     const marks = $stepAttentionsByWorkspace[ws.id];
     return railsSummary(orch, orch && marks ? railsWantingAttention(orch, marks) : new Set());
-  }
-
-  // Pointing AT the board group expands it; crossing the strip on the
-  // way somewhere else must not. 250ms is the whole difference between
-  // the two, and it lives in hoverIntent so the timing is testable --
-  // a delay wired straight into this file would be invisible to every
-  // suite here.
-  const CARDS_EXPAND_DELAY_MS = 250;
-
-  // One id, not a set: there is one pointer, so at most one workspace's
-  // board group can be expanded at a time.
-  let expandedCards = $state<string | null>(null);
-  const cardsIntent = createHoverIntent(CARDS_EXPAND_DELAY_MS, (key) => {
-    expandedCards = key;
-  });
-  $effect(() => () => cardsIntent.destroy());
-
-  // Mouse focus must NOT expand it: pointerdown has just taken it down
-  // so the click can land on a group that is not moving, and focus
-  // arriving a moment later would put it straight back up. :focus-visible
-  // is exactly the distinction, and an engine too old to parse it simply
-  // does not expand on focus -- the button's aria-label still names
-  // every column, which is the path that actually matters here.
-  function focusExpandsCards(el: Element, ws: Workspace): void {
-    try {
-      if (el.matches(":focus-visible")) cardsIntent.focusNow(ws.id);
-    } catch {
-      // no :focus-visible support -- leave it to the label
-    }
   }
 
   // A page's own half of the recap: what it holds, rather than what the
@@ -470,16 +505,23 @@
   /// offers. Where the home row under the workspace name used to go.
   function openHub(ws: Workspace): void {
     switchWorkspace(ws.id);
-    switchWorkspaceView(ws.id, resolveHubView(ws, import.meta.env.DEV));
+    switchWorkspaceView(ws.id, resolveHubView(ws, import.meta.env.DEV, currentHubTabPrefs(ws.id)));
   }
 
   /// A recap chip's click: straight to the tab that chip summarises,
   /// falling back to the workspace's usual hub landing when that tab is
   /// not on offer (both Git and Orchestration require a bound root).
+  ///
+  /// Against what the workspace OFFERS, not against what its strip draws:
+  /// hiding a tab takes it out of the row, not out of the app, and a chip
+  /// that summarises the board still has to be able to open it.
   function openHubView(ws: Workspace, view: string): void {
     switchWorkspace(ws.id);
     const offered = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
-    switchWorkspaceView(ws.id, offered.includes(view) ? view : resolveHubView(ws, import.meta.env.DEV));
+    switchWorkspaceView(
+      ws.id,
+      offered.includes(view) ? view : resolveHubView(ws, import.meta.env.DEV, currentHubTabPrefs(ws.id))
+    );
   }
 
   // ahead/behind are only meaningful (and only shown) when hasUpstream is
@@ -682,6 +724,10 @@
   function handleWorkspaceDragOver(event: DragEvent, workspaceId: string): void {
     const kind = getDragKind(event);
     if (!kind) return;
+    // A hub tab is being rearranged within its own strip and has nowhere
+    // to land here -- refusing it in the dragover is what keeps the
+    // sidebar from lighting up under a drag it cannot accept.
+    if (kind === "hub-tab") return;
     // The pinned Scratchpad workspace isn't part of the reorderable
     // list, so a dragged workspace has nowhere meaningful to land on
     // it -- ignore.
@@ -723,7 +769,7 @@
       await reorderWorkspaceAction(payload.workspaceId, targetIndex);
     } else if (payload.kind === "page") {
       await movePageAction(payload.pageId, ws.id, ws.pages.length);
-    } else {
+    } else if (payload.kind === "pane" || payload.kind === "tab") {
       await movePaneOrTab(
         { kind: payload.kind, workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
         { kind: "workspace", workspaceId: ws.id }
@@ -737,7 +783,7 @@
 
   function handlePageDragOver(event: DragEvent, pageId: string): void {
     const kind = getDragKind(event);
-    if (!kind || kind === "workspace") return;
+    if (!kind || kind === "workspace" || kind === "hub-tab") return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -752,7 +798,7 @@
     event.preventDefault();
     const payload = getDragPayload(event);
     clearHover();
-    if (!payload || payload.kind === "workspace") return;
+    if (!payload || payload.kind === "workspace" || payload.kind === "hub-tab") return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     if (payload.kind === "page") {
       const position = computeReorderPosition(rect, event.clientY);
@@ -809,12 +855,6 @@
   });
 
   $effect(() => {
-    if (naming && newWorkspaceInput) {
-      newWorkspaceInput.focus();
-    }
-  });
-
-  $effect(() => {
     if (editingWorkspaceId !== null && workspaceEditInput) {
       workspaceEditInput.focus();
       workspaceEditInput.select();
@@ -846,7 +886,7 @@
          is something to count -- an all-zero strip is noise, not a
          recap. -->
     {#if hasRecap(git, cards, rails)}
-      <div class="recap-row" class:cards-expanded={expandedCards === ws.id}>
+      <div class="recap-row">
         {#if showGitChip(git)}
           <button
             class="recap-group git"
@@ -875,40 +915,25 @@
             </span>
           </button>
         {/if}
-        <!-- At rest, one number: how many cards the board holds. Point
-             at it and the group takes the whole strip -- the other two
-             stand down -- to spell the board out column by column, which
-             is the detail the total is standing in for. The initials and
-             the tone both come from kanbanColumnChips, off the same fold
-             the tally itself was counted by. aria-hidden because the
-             button's own label (cardRecapTip) already names every column
-             in full, and a screen reader should hear that once. -->
+        <!-- One number: how many cards the board holds, with the
+             column-by-column breakdown in the tooltip. It used to take
+             over the whole strip on hover -- git and rails standing down
+             so it could spell the columns out inline -- and pointing at
+             it is something you do on the way to somewhere else far more
+             often than because you wanted the detail, so the strip kept
+             rearranging itself under the pointer for no reason. The two
+             badges either side of it have always answered with a
+             tooltip; this one does now too. -->
         {#if cards.total > 0}
           <button
             class="recap-group cards"
             aria-label={cardRecapTip(cards)}
             use:tooltip={cardRecapTip(cards)}
             onclick={() => openHubView(ws, "kanban")}
-            onmouseenter={() => cardsIntent.enter(ws.id)}
-            onmouseleave={() => cardsIntent.leave()}
-            onfocus={(e) => focusExpandsCards(e.currentTarget, ws)}
-            onblur={() => cardsIntent.leave()}
-            onpointerdown={() => cardsIntent.leave()}
           >
             <span class="recap-body">
               <Kanban size={11} />
               <span class="card-total recap-count">{cards.total}</span>
-              <span class="card-cols" aria-hidden="true">
-                <!-- Deliberately unkeyed: these carry no state and nothing
-                     animates, and a board holding two columns of the same
-                     name would make a keyed each throw outright. -->
-                {#each kanbanColumnChips(cards) as column}
-                  <span class="card-col {column.tone}">
-                    <span class="col-initials">{column.initials}</span>
-                    <span class="recap-count">{column.count}</span>
-                  </span>
-                {/each}
-              </span>
             </span>
           </button>
         {/if}
@@ -1182,202 +1207,299 @@
   </div>
 {/snippet}
 
-<div class="sidebar">
-  <!-- Above the Workspaces header, not inside the list: the hub is the
-       app itself, one level up from any workspace. It stays reachable
-       with a workspace open -- gavin has one window and the pinned
-       workspace always exists, so there is no "nothing open" moment to
-       hang a welcome screen on. -->
-  <button
-    type="button"
-    class="app-row"
-    class:active={$appHubOpen}
-    aria-current={$appHubOpen ? "page" : undefined}
-    onclick={openAppHub}
-  >
-    <Boxes size={13} />
-    <span>Gavin</span>
-  </button>
-  <div class="sidebar-header">
-    <span>Workspaces</span>
-    <IconButton icon={Plus} label="New Workspace" size={14} onclick={() => startCreatingWorkspace("sidebar")} />
-  </div>
-  {#if naming}
-    <input
-      class="new-workspace-input"
-      bind:this={newWorkspaceInput}
-      value={naming.name}
-      oninput={(e) => setNewWorkspaceName(e.currentTarget.value)}
-      onblur={() => void commitNewWorkspace()}
-      onkeydown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          void commitNewWorkspace();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          cancelNewWorkspace();
-        }
-      }}
-    />
-  {/if}
-  <div class="workspace-list">
-    {#if unfiledWorkspace}
-      {@const ws = unfiledWorkspace}
-      <div
-        class="workspace-row-group"
+<!-- The collapsed column: one row per workspace, and nothing else. An
+     initial rather than the same glyph repeated down the rail, because
+     the only question this list has to answer while narrow is WHICH
+     workspace a row is -- a column of identical house icons answers it
+     for none of them. The accent stripe and the active fill are the
+     expanded row's own, so a collapsed rail is the same list wearing
+     less, not a second design.
+
+     The waiting badge survives the collapse. It is the one fact on a
+     workspace row that is about to cost the human time, and a rail that
+     dropped it would make collapsing the sidebar a way to stop being
+     told. -->
+{#snippet collapsedList()}
+  <div class="workspace-list collapsed-list">
+    {#each visibleWorkspaces as ws (ws.id)}
+      {@const waiting = workspaceWaitingCount(ws)}
+      <button
+        type="button"
+        class="collapsed-row"
+        class:active={ws.id === $layoutState.activeWorkspaceId}
         style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
+        use:tooltip={waiting > 0
+          ? `${ws.name} — ${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you`
+          : ws.name}
+        aria-label={ws.name}
+        onclick={() => switchWorkspace(ws.id)}
+        oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
       >
-        <div
-          class="workspace-row pinned"
-          class:active={ws.id === $layoutState.activeWorkspaceId}
-          class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
-          ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
-          ondragleave={clearHover}
-          ondragend={clearHover}
-          ondrop={(e) => handleWorkspaceDrop(e, ws)}
-          oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
-        >
-          <!-- The Scratchpad is a drawer for loose pages, not a
-               project: it has no hub worth landing on, and nothing
-               standing in for one either. Reserving the column read as a
-               Hub button that had failed to draw, so the row starts at
-               its chevron and is simply narrower than the rest. -->
-          <IconButton
-            icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
-            label={isExpanded(ws.id) ? "Collapse" : "Expand"}
-            size={12}
-            onclick={() => toggleExpand(ws.id)}
+        <span class="collapsed-initial">{workspaceInitial(ws)}</span>
+        {#if waiting > 0}
+          <StatusBadge
+            indicator={agentIndicatorByState("waiting_for_input")}
+            size={9}
+            text={waiting}
+            tip={null}
+            class="waiting-badge"
           />
-          {#if $hintMode === "cmd-alt"}
-            {@const hint = workspaceHint(ws.id)}
-            {#if hint}<ShortcutHint text={hint} />{/if}
-          {/if}
-          <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
-          {#if workspaceWaitingCount(ws) > 0}
-            {@const waiting = workspaceWaitingCount(ws)}
-            <StatusBadge
-              indicator={agentIndicatorByState("waiting_for_input")}
-              size={10}
-              text={waiting}
-              tip={`${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you in this workspace`}
-              class="waiting-badge"
-            />
-          {/if}
-          <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
-        </div>
-        {#if isExpanded(ws.id)}
-          {@render pageList(ws)}
         {/if}
-      </div>
+      </button>
+    {/each}
+  </div>
+{/snippet}
+
+<!-- What the search row found, in place of the workspace list. Ranked by
+     kind first (sidebarSearch.ts): the workspaces, then the pages, then
+     the sessions. Each row says what it is with the glyph the sidebar
+     already uses for that thing, and names its parent after the label so
+     two pages called "main" are told apart by the workspace they sit in
+     rather than by which one the human clicks first. -->
+{#snippet searchResults(found: SidebarSearchResult)}
+  <div class="workspace-list search-results">
+    {#if found.hits.length === 0}
+      <p class="search-empty">No workspace, page or session matches.</p>
+    {:else}
+      {#each found.hits as hit (hit.key)}
+        <button type="button" class="search-hit" onclick={() => void openHit(hit)}>
+          <span class="hit-kind">
+            {#if hit.kind === "workspace"}
+              <Boxes size={11} />
+            {:else if hit.kind === "page"}
+              <PanelsTopLeft size={11} />
+            {:else}
+              <StatusBadge indicator={agentIndicator(hit.status)} size={10} tip={null} />
+            {/if}
+          </span>
+          <span class="hit-label">{hit.label}</span>
+          {#if hit.where}<span class="hit-where">{hit.where}</span>{/if}
+        </button>
+      {/each}
+      {#if found.total > found.hits.length}
+        <p class="search-empty">{found.total - found.hits.length} more — narrow the search.</p>
+      {/if}
     {/if}
-    {#each regularWorkspaces as ws (ws.id)}
-      <div
-        class="workspace-row-group"
-        style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
-      >
+  </div>
+{/snippet}
+
+<div class="sidebar" class:collapsed={$sidebarCollapsed}>
+  <!-- No "Workspaces" heading above the list. It named the one thing on
+       screen that could not be anything else -- every row under it is a
+       workspace -- and it was carrying the + only because it was there.
+       That action is "Open workspace…" now and lives in the strip above,
+       with the rest of the sidebar's own chrome. -->
+  {#if searchOpen}
+    <!-- The second row, opened by the strip's magnifier and closed by it,
+         by Escape, or by picking a hit. It replaces the workspace list
+         rather than filtering it in place: a hit can be a page or a
+         session, and neither has a row in that list until its workspace
+         is expanded. -->
+    <div class="sidebar-search">
+      <Search size={12} />
+      <input
+        bind:this={searchInput}
+        class="search-input"
+        placeholder="Workspaces, pages, sessions"
+        spellcheck="false"
+        value={$sidebarSearchQuery}
+        oninput={(e) => sidebarSearchQuery.set(e.currentTarget.value)}
+        onkeydown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            closeSidebarSearch();
+          }
+        }}
+      />
+      <IconButton icon={X} label="Close search" size={12} onclick={closeSidebarSearch} />
+    </div>
+  {/if}
+  {#if $sidebarCollapsed}
+    {@render collapsedList()}
+  {:else if searchHits}
+    {@render searchResults(searchHits)}
+  {:else}
+    <div class="workspace-list">
+      {#if unfiledWorkspace}
+        {@const ws = unfiledWorkspace}
         <div
-          class="workspace-row"
-          class:active={ws.id === $layoutState.activeWorkspaceId}
-          class:elsewhere={inAnotherWindow(ws)}
-          class:drop-before={hoverState?.targetId === ws.id &&
-            hoverState.kind === "reorder" &&
-            hoverState.position === "before"}
-          class:drop-after={hoverState?.targetId === ws.id &&
-            hoverState.kind === "reorder" &&
-            hoverState.position === "after"}
-          class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
-          draggable={editingWorkspaceId !== ws.id}
-          ondragstart={(e) => handleWorkspaceDragStart(e, ws.id)}
-          ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
-          ondragleave={clearHover}
-          ondragend={clearHover}
-          ondrop={(e) => handleWorkspaceDrop(e, ws)}
-          oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
+          class="workspace-row-group"
+          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
         >
-          <IconButton
-            icon={House}
-            label="Hub"
-            size={12}
-            active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
-            onclick={() => openHub(ws)}
-          />
-          <IconButton
-            icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
-            label={isExpanded(ws.id) ? "Collapse" : "Expand"}
-            size={12}
-            onclick={() => toggleExpand(ws.id)}
-          />
-          {#if editingWorkspaceId === ws.id}
-            <input
-              class="workspace-name-input"
-              bind:this={workspaceEditInput}
-              bind:value={workspaceEditValue}
-              onclick={(e) => e.stopPropagation()}
-              onblur={commitWorkspaceEdit}
-              onkeydown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitWorkspaceEdit();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  cancelWorkspaceEdit();
-                }
-              }}
+          <div
+            class="workspace-row pinned"
+            class:active={ws.id === $layoutState.activeWorkspaceId}
+            class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
+            ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
+            ondragleave={clearHover}
+            ondragend={clearHover}
+            ondrop={(e) => handleWorkspaceDrop(e, ws)}
+            oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
+          >
+            <!-- The Scratchpad is a drawer for loose pages, not a
+                 project: it has no hub worth landing on, and nothing
+                 standing in for one either. Reserving the column read as a
+                 Hub button that had failed to draw, so the row starts at
+                 its chevron and is simply narrower than the rest. -->
+            <IconButton
+              icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
+              label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+              size={12}
+              onclick={() => toggleExpand(ws.id)}
             />
-          {:else}
             {#if $hintMode === "cmd-alt"}
               {@const hint = workspaceHint(ws.id)}
               {#if hint}<ShortcutHint text={hint} />{/if}
             {/if}
-            <span
-              class="workspace-name"
-              ondblclick={() => startEditingWorkspace(ws.id, ws.name)}
-              onclick={() => switchWorkspace(ws.id)}
-            >{ws.name}</span>
+            <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
+            {#if workspaceWaitingCount(ws) > 0}
+              {@const waiting = workspaceWaitingCount(ws)}
+              <StatusBadge
+                indicator={agentIndicatorByState("waiting_for_input")}
+                size={10}
+                text={waiting}
+                tip={`${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you in this workspace`}
+                class="waiting-badge"
+              />
+            {/if}
+            <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
+          </div>
+          {#if isExpanded(ws.id)}
+            {@render pageList(ws)}
           {/if}
-          {#if inAnotherWindow(ws)}
-            <!-- A mark, not a badge: this answers "where is it", which is
-                 not one of the axes ui/indicators.ts speaks for. The
-                 tooltip names the axis, since a glyph alone cannot. -->
-            <span
-              class="in-window"
-              use:tooltip={"In another window — click to bring it to the front"}
-              aria-label="In another window"
-            >
-              <AppWindow size={11} />
-            </span>
-          {/if}
-          {#if workspaceWaitingCount(ws) > 0}
-            {@const waiting = workspaceWaitingCount(ws)}
-            <StatusBadge
-              indicator={agentIndicatorByState("waiting_for_input")}
-              size={10}
-              text={waiting}
-              tip={`${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you in this workspace`}
-              class="waiting-badge"
-            />
-          {/if}
-          <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
-          <button
-            class="close-workspace"
-            aria-label="Close Workspace"
-            title="Close Workspace"
-            onclick={async () => {
-              if (await confirmWorkspaceClose(ws.id)) {
-                void closeWorkspace(ws.id);
-              }
-            }}
-          >
-            <X size={12} />
-          </button>
         </div>
-        {#if isExpanded(ws.id)}
-          {@render pageList(ws)}
-        {/if}
-      </div>
-    {/each}
-  </div>
+      {/if}
+      {#each regularWorkspaces as ws (ws.id)}
+        <div
+          class="workspace-row-group"
+          style:--row-accent={accentVar(ws.color, themeState.effective) ?? "transparent"}
+        >
+          <div
+            class="workspace-row"
+            class:active={ws.id === $layoutState.activeWorkspaceId}
+            class:elsewhere={inAnotherWindow(ws)}
+            class:drop-before={hoverState?.targetId === ws.id &&
+              hoverState.kind === "reorder" &&
+              hoverState.position === "before"}
+            class:drop-after={hoverState?.targetId === ws.id &&
+              hoverState.kind === "reorder" &&
+              hoverState.position === "after"}
+            class:drop-append={hoverState?.targetId === ws.id && hoverState.kind === "append"}
+            draggable={editingWorkspaceId !== ws.id}
+            ondragstart={(e) => handleWorkspaceDragStart(e, ws.id)}
+            ondragover={(e) => handleWorkspaceDragOver(e, ws.id)}
+            ondragleave={clearHover}
+            ondragend={clearHover}
+            ondrop={(e) => handleWorkspaceDrop(e, ws)}
+            oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
+          >
+            <IconButton
+              icon={House}
+              label="Hub"
+              size={12}
+              active={ws.id === $layoutState.activeWorkspaceId && getActiveView(ws) !== "terminal"}
+              onclick={() => openHub(ws)}
+            />
+            <IconButton
+              icon={isExpanded(ws.id) ? ChevronDown : ChevronRight}
+              label={isExpanded(ws.id) ? "Collapse" : "Expand"}
+              size={12}
+              onclick={() => toggleExpand(ws.id)}
+            />
+            {#if editingWorkspaceId === ws.id}
+              <input
+                class="workspace-name-input"
+                bind:this={workspaceEditInput}
+                bind:value={workspaceEditValue}
+                onclick={(e) => e.stopPropagation()}
+                onblur={commitWorkspaceEdit}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitWorkspaceEdit();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelWorkspaceEdit();
+                  }
+                }}
+              />
+            {:else}
+              {#if $hintMode === "cmd-alt"}
+                {@const hint = workspaceHint(ws.id)}
+                {#if hint}<ShortcutHint text={hint} />{/if}
+              {/if}
+              <span
+                class="workspace-name"
+                ondblclick={() => startEditingWorkspace(ws.id, ws.name)}
+                onclick={() => switchWorkspace(ws.id)}
+              >{ws.name}</span>
+            {/if}
+            {#if inAnotherWindow(ws)}
+              <!-- A mark, not a badge: this answers "where is it", which is
+                   not one of the axes ui/indicators.ts speaks for. The
+                   tooltip names the axis, since a glyph alone cannot. -->
+              <span
+                class="in-window"
+                use:tooltip={"In another window — click to bring it to the front"}
+                aria-label="In another window"
+              >
+                <AppWindow size={11} />
+              </span>
+            {/if}
+            {#if workspaceWaitingCount(ws) > 0}
+              {@const waiting = workspaceWaitingCount(ws)}
+              <StatusBadge
+                indicator={agentIndicatorByState("waiting_for_input")}
+                size={10}
+                text={waiting}
+                tip={`${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you in this workspace`}
+                class="waiting-badge"
+              />
+            {/if}
+            <IconButton icon={Plus} label="New Page" size={12} onclick={() => quickAddPage(ws.id)} />
+            <button
+              class="close-workspace"
+              aria-label="Close Workspace"
+              title="Close Workspace"
+              onclick={async () => {
+                if (await confirmWorkspaceClose(ws.id)) {
+                  void closeWorkspace(ws.id);
+                }
+              }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+          {#if isExpanded(ws.id)}
+            {@render pageList(ws)}
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
   <div class="sidebar-footer">
+    <!-- First in the footer, not first in the sidebar: the hub is the app
+         itself, one level up from any workspace, and the footer is where
+         the app's own rows live (the task manager, usage, settings). It
+         stays reachable with a workspace open -- gavin has one window and
+         the pinned workspace always exists, so there is no "nothing open"
+         moment to hang a welcome screen on.
+
+         The rule under it is INSET rather than full width: a full-width
+         rule reads as the footer's own top edge (which .sidebar-footer
+         already draws), so a second one would say the app row is a
+         section of its own rather than the first of four rows. -->
+    <button
+      type="button"
+      class="footer-row app-row"
+      class:active={$appHubOpen}
+      aria-current={$appHubOpen ? "page" : undefined}
+      onclick={openAppHub}
+    >
+      <Boxes size={12} />
+      <span>Gavin</span>
+    </button>
+    <div class="footer-divider"></div>
     <button class="footer-row" onclick={() => (showSessionsManager = true)}>
       <Activity size={12} />
       <span>Task manager</span>
@@ -1400,6 +1522,28 @@
     </button>
   </div>
 </div>
+
+<!-- The one question "Open workspace…" can ask: the folder holds no
+     .gavin* yet. Three answers, so it is a ConfirmPrompt rather than an
+     askConfirm -- "bind without initializing" is a real answer and not a
+     softer version of either of the other two, and the flow has created
+     nothing yet, so Cancel genuinely leaves no trace. -->
+{#if $pendingOpen}
+  {@const pending = $pendingOpen}
+  <ConfirmPrompt
+    title={`Initialize gavin in “${pending.name}”?`}
+    lines={[
+      pending.rootPath,
+      "Creates .gavin-root/ with a PRD template, config, and plans/docs/specs folders. Nothing existing is overwritten.",
+      "Opening without it still gives the folder its terminals, its git tab and its pages — just no board.",
+    ]}
+    choices={[
+      { label: "Initialize", onPick: () => void initAndOpen(pending) },
+      { label: "Open without initializing", onPick: () => void bindWithoutInit(pending) },
+    ]}
+    onCancel={cancelOpen}
+  />
+{/if}
 
 {#if closeIdle}
   {@const pending = closeIdle}
@@ -1457,52 +1601,134 @@
     min-height: 0;
     overflow-y: auto;
   }
-  .app-row {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    box-sizing: border-box;
-    /* Matches .workspace-row's own padding so the app row and the rows
-       below it sit on one left edge. */
-    padding: 6px 8px 6px 5px;
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-muted);
-    font-family: inherit;
-    font-size: 1em;
-    text-align: left;
-    cursor: pointer;
-  }
-  .app-row:hover {
-    background: var(--surface-hover);
-    color: var(--text);
-  }
+  /* Everything about the row's box is .footer-row's now; what stays here
+     is the one thing the other footer rows have no use for -- the
+     selected state, because this row is the only one of the four that
+     names a destination rather than opening a modal. */
   .app-row.active {
     background: var(--surface-selected);
     color: var(--text);
   }
-  .sidebar-header {
-    /* Pinned now that .sidebar no longer scrolls -- without this it can
-       shrink when the workspace list is long. */
+  /* Inset on purpose (see the markup): the footer's top border is the
+     full-width rule, and a second one would read as a section edge. */
+  .footer-divider {
+    height: 1px;
+    margin: 4px 10px;
+    background: var(--border);
+  }
+  /* Pinned for the reason the "Workspaces" header it replaced was --
+     .sidebar does not scroll, so a row that can shrink will, the moment
+     the workspace list is long. */
+  .sidebar-search {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 8px;
-    font-weight: bold;
+    gap: 4px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
     color: var(--text-muted);
   }
-  .sidebar-header button {
+  .search-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--surface-sunken);
+    color: var(--text);
+    border: 1px solid var(--border-focus);
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 1em;
+    padding: 2px 4px;
+  }
+  .search-hit {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
     background: transparent;
     border: none;
-    color: var(--text-muted);
+    color: var(--text);
+    font-family: inherit;
+    font-size: inherit;
+    text-align: left;
     cursor: pointer;
-    padding: 2px;
   }
-  .new-workspace-input,
+  .search-hit:hover {
+    background: var(--surface-hover);
+  }
+  .hit-kind {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+  }
+  .hit-label {
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The parent's name, not a second title: it is here to tell two
+     identically named pages apart, so it sits back and takes whatever
+     width the name it qualifies has left. */
+  .hit-where {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-size: 0.9em;
+  }
+  .search-empty {
+    margin: 0;
+    padding: 8px;
+    color: var(--text-muted);
+  }
+  /* The collapsed rail's rows. Centred rather than left-aligned: with no
+     names to line up, a left edge would only make the initials look
+     dropped. The stripe stays on the group's left, where it is in the
+     expanded list. */
+  .collapsed-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 4px;
+    background: transparent;
+    border: none;
+    border-left: 3px solid var(--row-accent, transparent);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: inherit;
+    cursor: pointer;
+  }
+  .collapsed-row:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+  .collapsed-row.active {
+    background: var(--surface-raised);
+    color: var(--text);
+  }
+  .collapsed-initial {
+    font-weight: bold;
+    letter-spacing: 0;
+  }
+  /* Collapsed, every footer row is its glyph alone. The words are the
+     tooltip's job at this width, and a row that kept them would be the
+     one thing forcing the column wider than the window controls need. */
+  .sidebar.collapsed .footer-row {
+    justify-content: center;
+    padding: 6px 4px;
+  }
+  .sidebar.collapsed .footer-row span {
+    display: none;
+  }
   .workspace-name-input,
   .page-name-input {
     background: var(--surface-sunken);
@@ -1572,6 +1798,7 @@
      doing the work the fill used to: making a count read as a count. The
      glyph and the tone are the badge's; only the ring is ours. */
   .page-row :global(.waiting-badge),
+  .collapsed-row :global(.waiting-badge),
   .workspace-row :global(.waiting-badge) {
     border: 1px solid var(--border-warning);
     border-radius: 8px;
@@ -1690,92 +1917,15 @@
     background: var(--surface-hover);
     border-color: var(--border-strong);
   }
-  /* On the pill, not the hit area: expanded, the hit area is the whole
-     row, and a focus ring around all of it would say the wrong thing
-     about what is focused. */
+  /* On the pill, not the hit area, which is a bare box that draws
+     nothing -- a ring around it would sit away from the thing it is
+     naming. */
   .recap-group:focus-visible {
     outline: none;
   }
   .recap-group:focus-visible .recap-body {
     outline: 1px solid var(--border-focus);
     outline-offset: 1px;
-  }
-  /* Pointing at the board group trades the whole strip for the board's
-     own columns: git and rails stand down, and the group spells out what
-     its one number was standing in for. The strip only ever has room for
-     one of the two, and a board's shape is worth more than a repo tally
-     for exactly as long as you are pointing at it.
-
-     The full width is not cosmetic. The pointer is somewhere inside the
-     COLLAPSED group when the swap fires, and a group that then occupies
-     the entire row is guaranteed to still be under it. Anything narrower
-     can slide out from under the pointer -- the board group sits in the
-     middle, so hiding git moves it left -- which drops the hover,
-     collapses it, restores the hover, and flickers between the two
-     states for as long as you hold still.
-     Driven by a class rather than by :hover directly: the expansion
-     waits 250ms (hoverIntent), so the trigger is a timer's verdict about
-     whether the hover was meant, not the hover itself. Keyboard focus
-     sets the same class with no delay. */
-  .recap-row.cards-expanded .recap-group.git,
-  .recap-row.cards-expanded .recap-group.rails {
-    display: none;
-  }
-  /* Only the HIT AREA spans the row; the pill inside it stays content
-     width and sits CENTRED in it, so the expansion reads as one thing
-     coming forward rather than as the strip sliding to one side.
-
-     They have to be two different boxes, and centring is the reason it
-     is free to be. git vanishes when this fires and git sits to the
-     LEFT, so the group slides left by however wide git was -- up to
-     ~112px of it, against an expanded pill of ~111px. A pill that WAS
-     the hover target would therefore slide out from under the pointer,
-     drop the hover, collapse, regain the hover, and flicker between the
-     two states for as long as you held still. A hit area covering the
-     whole row cannot: wherever the pointer was, it is still inside, and
-     the pill is then free to be drawn anywhere within it. */
-  .recap-row.cards-expanded .recap-group.cards {
-    width: 100%;
-    /* No global border-box in this app, and the row has 29px of padding
-       to clear. */
-    box-sizing: border-box;
-    justify-content: center;
-  }
-  .recap-row.cards-expanded .card-total {
-    display: none;
-  }
-  .card-cols {
-    display: none;
-  }
-  .recap-row.cards-expanded .card-cols {
-    display: inline-flex;
-    align-items: center;
-    /* Wider than the group's own 3px: the gap is what keeps one column's
-       count from reading as the next one's initials. */
-    gap: 7px;
-    /* Three columns clear the row with room to spare and five just fit;
-       a board with more than that takes a second line rather than
-       spilling past the sidebar. Growing DOWNWARD is safe -- the pointer
-       is inside the group and stays inside a taller one. */
-    flex-wrap: wrap;
-  }
-  .card-col {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-  }
-  /* The name is the label and the number is the answer, so the initials
-     sit back a step and let the count carry the row. */
-  .col-initials {
-    opacity: 0.65;
-  }
-  /* The very tones kanbanSummary buckets by -- to do stays the row's
-     muted default, since "not started" is the absence of news. */
-  .card-col.progress {
-    color: var(--accent-text);
-  }
-  .card-col.done {
-    color: var(--success-text);
   }
   /* Takes the branch glyph's place rather than sitting beside it, so the
      group keeps its width while a run is in flight -- the sidebar is

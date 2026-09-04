@@ -96,7 +96,9 @@ describe("the rail header's first row", () => {
 
 describe("the rail header's second row", () => {
   it("holds every one of the rail's actions", () => {
-    const second = row(ACTION_ROW, '<button type="button" class="bindings"');
+    // The bindings row below is now three chip buttons in a div, not one
+    // button, so the marker that closes the action row is that div.
+    const second = row(ACTION_ROW, '<div class="bindings">');
     for (const icon of [
       "icon={Play}",
       "icon={Pause}",

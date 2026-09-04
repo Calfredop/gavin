@@ -36,7 +36,7 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       { id: "root-banner", text: "Unrooted workspace hub shows the “No root folder set” banner" },
       {
         id: "root-banner-no-picker",
-        text: "That banner sits above the tabs and offers no picker — only “Open settings”, which jumps to the Settings tab",
+        text: "That banner sits above the tabs and offers no picker — only “Open settings”, which opens the workspace's settings",
       },
       {
         id: "root-banner-quiet",
@@ -1463,6 +1463,36 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         text: "The empty part of a PANE's tab row still drags the pane, not the window — grab it and drop the pane elsewhere on the page",
         hint: "The one row that deliberately does not move the window: a bar that did either depending on invisible state would be worse than a small handle.",
       },
+      {
+        id: "header-rows-one-black",
+        text: "A page's tab row is the same black as the terminal under it and as the hub tab row — no grey band across the top, and no grey margin around the active tab",
+        hint: "It used to be --surface-raised, the colour the sidebar's strip still is. Switch between a hub tab and a page and the only thing that changes above the view is the tabs themselves. Check the light theme too.",
+      },
+      {
+        id: "header-tab-dividers",
+        text: "A short vertical hairline sits between neighbouring tabs on BOTH rows, stopping well short of the row's height",
+        hint: "It is what separates the tabs now that no tab has a fill of its own. Full height would read as a box around each tab. The first tab of a row has none to its left.",
+      },
+      {
+        id: "header-one-action-group",
+        text: "Split a page in two: only ONE row of actions is drawn, on the focused pane — click into the other pane and the whole group moves there with the underline",
+        hint: "Every pane used to draw its own, four copies on a 2×2. Split further and check no pane is ever left without one — New page lives in that group.",
+      },
+      {
+        id: "header-workspace-settings-gear",
+        text: "Settings is a gear at the right of the hub tab row, not a tab: click it to open the Settings view, and it stays lit while that view is on screen",
+        hint: "The strip has one tab fewer, so ⌘1–⌘9 and the hold-⌘ badges must line up with the tabs that are left. The root banner's “Open settings” and the sidebar's recap still land there too.",
+      },
+      {
+        id: "close-window-keeps-sessions",
+        text: "Close the window (⌘W on the window, the red light, ⌘Q): the prompt offers Close window / Keep open with an unticked “End every terminal session too” — close with it UNTICKED and reopen; every session is still there",
+        hint: "The box must come up clear every time. Escape and Keep open both leave the window open.",
+      },
+      {
+        id: "close-window-kills-sessions",
+        text: "Close it again with the box TICKED: every terminal and agent is gone when the app is reopened — not just the tabs, the sessions behind them",
+        hint: "Check with the Sessions manager after relaunching, not just by counting tabs. Leave a long-running command in one tab first. Anything already written to disk stays.",
+      },
     ],
   },
   {
@@ -2223,6 +2253,41 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         id: "rail-header-state-stays-whole",
         text: "On a running rail that is waiting on you, “running” and “needs you” stay whole beside the name and the NAME is what ellipsises",
         hint: "Start a rail and let its agent ask a question. If “needs you” is the thing that gets clipped or wraps, the flex weights went the wrong way round.",
+      },
+    ],
+  },
+  {
+    title: "Rail bindings dialog",
+    items: [
+      {
+        id: "bind-chips-three",
+        text: "A rail header shows THREE binding chips — worktree, branch, page — and each opens the dialog on its own tab",
+        hint: "Worktree and branch share the first line, the page has the second. Hover each: an unset one says what the default does (\u201ceach card's own folder\u201d, \u201cwhatever is checked out\u201d, \u201ca page of its own at first launch\u201d), a set one says the whole worktree path the chip abbreviates to a folder name.",
+      },
+      {
+        id: "bind-chips-narrow",
+        text: "At 280px the chips ellipsise their VALUE and keep their glyphs, and the header stays at the same height as before",
+        hint: "Bind a rail to a worktree with a long folder name and a long branch. Nothing may wrap to a fourth header row.",
+      },
+      {
+        id: "bind-tab-strip",
+        text: "The dialog is a tab strip: Worktree / Branch / Page, each tab showing what that binding is set to right now",
+        hint: "Only one list is on screen at a time. Picking a value updates the tab's own sub-label immediately, without leaving the tab.",
+      },
+      {
+        id: "bind-tab-keys",
+        text: "With a tab focused, \u2190/\u2192 move across the strip (wrapping) and Home/End jump to the ends; Escape still closes the dialog",
+        hint: "Escape is the one that matters: a tablist that swallows it leaves the modal stuck open.",
+      },
+      {
+        id: "bind-tab-deep-link",
+        text: "The conflict box's repair button names the binding it repairs and lands on that tab",
+        hint: "A rail bound to a deleted branch offers \u201cPick another branch\u201d and opens on Branch; a deleted worktree offers \u201cPick another worktree\u201d; a rail with no worktree offers \u201cGive it a worktree\u201d. All three used to say \u201cBind worktree…\u201d and open at the top.",
+      },
+      {
+        id: "bind-tab-height",
+        text: "Switching tabs does not resize the dialog under the pointer",
+        hint: "The Page tab on a workspace with one page is the short one — the panel keeps a floor so the Done button stays put.",
       },
     ],
   },
@@ -3369,6 +3434,137 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "lineclip-readonly",
         text: "In a read-only text box, ⌘X copies the line but leaves the text alone",
+      },
+    ],
+  },
+  {
+    title: "Sidebar rework",
+    items: [
+      {
+        id: "sidebar-gavin-footer",
+        text: "“Gavin” is the FIRST row of the sidebar's footer, above Task manager / Usage / Settings, with a short rule under it that does not reach either edge",
+        hint: "It used to sit above the workspace list. Clicking it still opens the app hub, and the row fills while the hub is up.",
+      },
+      {
+        id: "sidebar-no-workspaces-header",
+        text: "There is no “Workspaces” heading row and no + on it — the list starts at the first workspace",
+      },
+      {
+        id: "sidebar-collapse",
+        text: "The strip over the sidebar has a collapse button on the far side from the traffic lights; clicking it narrows the column to an icon rail — it never disappears",
+        hint: "The traffic lights live in that same column, so a hidden sidebar would be a window with no controls. The rail is as wide as the controls need and no wider.",
+      },
+      {
+        id: "sidebar-collapse-rows",
+        text: "Collapsed, each workspace is one row showing its initial, its accent stripe and its active fill; hovering names it in full, clicking switches to it, right-click still opens its menu",
+      },
+      {
+        id: "sidebar-collapse-persists",
+        text: "Collapsed, reload the frontend (⌘R) — it comes back collapsed, and the expand button puts it back",
+        hint: "localStorage, like the row expansion beside it. A reload used to be the only way to lose it.",
+      },
+      {
+        id: "sidebar-open-workspace",
+        text: "The folder button on that strip opens a picker; choosing a folder that already holds .gavin* makes a workspace named after the folder and binds it in one step",
+      },
+      {
+        id: "sidebar-open-workspace-fresh",
+        text: "Choosing a folder with no .gavin* asks Initialize / Open without initializing / Cancel — and Cancel leaves NO new workspace behind",
+        hint: "The old sidebar + created the workspace first and asked afterwards, which is how a nameless rootless row got left on every escape.",
+      },
+      {
+        id: "sidebar-open-workspace-already",
+        text: "Picking a folder a workspace is already on switches to that workspace instead of building a second one on the same root",
+      },
+      {
+        id: "sidebar-search-row",
+        text: "The magnifier opens a search box as the sidebar's second row, focused and ready to type; Escape, the ✕, or the magnifier again closes it AND clears what was typed",
+      },
+      {
+        id: "sidebar-search-order",
+        text: "Type a word several things share: matching workspaces come first, then pages, then sessions — never interleaved",
+        hint: "The ranking is the feature. Seed it by naming a workspace, one of its pages and a terminal in it the same thing.",
+      },
+      {
+        id: "sidebar-search-open",
+        text: "Clicking a hit lands on it — a workspace switches, a page opens, a session gets focus in its page — and the search row closes behind you",
+      },
+      {
+        id: "sidebar-scratchpad-off",
+        text: "Settings → Sidebar → untick “Keep its row in the sidebar”: the Scratchpad row goes, and ⌘⌥1 now means the FIRST remaining workspace",
+        hint: "The sidebar and the shortcut read one ordering on purpose. If the digits are off by one, they have stopped sharing it.",
+      },
+      {
+        id: "sidebar-scratchpad-off-while-in-it",
+        text: "Switch to the Scratchpad first, THEN untick it: the app moves you to another workspace rather than leaving you on one with no row",
+      },
+      {
+        id: "sidebar-scratchpad-back",
+        text: "Tick it again: the row is back, with every page that was in it",
+        hint: "Nothing is closed or deleted by switching it off — only the row goes.",
+      },
+      {
+        id: "sidebar-cards-badge-quiet",
+        text: "Hover the card-count badge on a workspace's recap strip: a tooltip names every column, and the strip does NOT rearrange itself — git and rails stay put",
+        hint: "It used to take over the whole row after 250ms of hover. Crossing the strip on the way elsewhere is far more common than wanting the breakdown.",
+      },
+    ],
+  },
+  {
+    title: "Hub tab strip",
+    items: [
+      {
+        id: "hubtabs-locked-by-default",
+        text: "A tab cannot be dragged until the ⇄ button at the end of the row is clicked",
+        hint: "Locked is the resting state, and it is not remembered: reopening the app locks the row again.",
+      },
+      {
+        id: "hubtabs-drag-reorder",
+        text: "Unlocked, dragging a tab shows an insertion mark on the tab under the cursor and drops it there",
+        hint: "The mark is the pane tab row's own — a 2px bar on the leading or trailing edge.",
+      },
+      {
+        id: "hubtabs-digits-follow",
+        text: "After a reorder, ⌘1…⌘8 open the tabs in their NEW positions, and the badges shown while ⌘ is held agree",
+      },
+      {
+        id: "hubtabs-order-per-workspace",
+        text: "Another workspace's row is untouched by that drag",
+        hint: "Order never inherits: a drag in one strip must not rearrange four others.",
+      },
+      {
+        id: "hubtabs-order-survives-restart",
+        text: "The new order survives an app restart",
+      },
+      {
+        id: "hubtabs-hide-app-default",
+        text: "Settings → Hub tabs → Sections: crossing out an eye takes that tab out of EVERY workspace's row",
+      },
+      {
+        id: "hubtabs-hide-last-refused",
+        text: "Hide all but one: the last eye is disabled, and hovering its ROW says why",
+        hint: "The reason hangs on the row because a disabled button never fires mouseenter.",
+      },
+      {
+        id: "hubtabs-hide-workspace-override",
+        text: "Workspace Settings → Hub tabs → Sections: a change here affects only that workspace, and the panel now says it keeps a list of its own",
+      },
+      {
+        id: "hubtabs-follow-default-again",
+        text: "“Follow the default” puts that workspace back on the app-wide list — including later changes to it",
+      },
+      {
+        id: "hubtabs-hide-active-tab",
+        text: "Hiding the tab currently on screen moves you to the first tab left, rather than stranding the view with nothing selected",
+      },
+      {
+        id: "hubtabs-chips-still-reach",
+        text: "A sidebar recap chip for a hidden section still opens it",
+        hint: "Hiding takes the tab out of the row, not the view out of the app.",
+      },
+      {
+        id: "hubtabs-reset-order",
+        text: "Workspace Settings → Hub tabs → “Reset the order” restores the shipped order, and the row shows it immediately",
       },
     ],
   },

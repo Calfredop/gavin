@@ -581,6 +581,20 @@ describe("sidebarWorkspaceOrder", () => {
   it("is a no-op when Unfiled is absent", () => {
     expect(sidebarWorkspaceOrder([w("a"), w("b")]).map((x) => x.id)).toEqual(["a", "b"]);
   });
+
+  // The sidebar and the ⌘⌥-number router read this one list, so a
+  // Scratchpad the human has switched off has to leave BOTH of them --
+  // and the digits close up over the gap rather than spending one on a
+  // row nothing draws.
+  it("drops the Scratchpad when it is switched off", () => {
+    const list = [w("a"), w(UNFILED_WORKSPACE_ID), w("b")];
+    expect(sidebarWorkspaceOrder(list, false).map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  it("shows it by default, so the hub keeps listing what exists", () => {
+    const list = [w(UNFILED_WORKSPACE_ID), w("a")];
+    expect(sidebarWorkspaceOrder(list).map((x) => x.id)).toEqual(sidebarWorkspaceOrder(list, true).map((x) => x.id));
+  });
 });
 
 describe("tombstones for removed workspaces", () => {

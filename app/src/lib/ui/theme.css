@@ -250,4 +250,12 @@ select {
   --tab-pad: 6px 10px;
   --tab-font-size: 0.85em;
   --tab-indicator: 2px;
+  /* The gap between two tabs, and the hairline drawn down the middle of
+     it. Both rows are one flat surface now -- the same black as the view
+     under them -- so nothing but this rule says where one tab ends and
+     the next begins. It stops SHORT of the row's full height on purpose:
+     a full-height rule would read as a frame around each tab, which is
+     the boxed look the flat bar just got rid of. */
+  --tab-gap: 6px;
+  --tab-divider: 14px;
 }

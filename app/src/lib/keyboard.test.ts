@@ -48,6 +48,11 @@ import {
 import { copySelection, pasteClipboard } from "./clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "./keyboard";
 import { requestedCompose } from "./composeRequest";
+import {
+  hubTabOrderByWorkspace,
+  hubTabsHiddenByWorkspace,
+  hubTabsHiddenDefault,
+} from "./hubTabPrefs";
 
 const state = layoutState as unknown as Writable<Record<string, unknown>>;
 
@@ -102,6 +107,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   (globalThis as Record<string, unknown>).__testIsMac = true;
   requestedCompose.set(null);
+  hubTabsHiddenDefault.set([]);
+  hubTabsHiddenByWorkspace.set({});
+  hubTabOrderByWorkspace.set({});
   setState();
 });
 
@@ -174,6 +182,46 @@ describe("digit navigation", () => {
     // home, git, kanban, ... -> the second visible view is git
     expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "git");
     expect(switchToTab).not.toHaveBeenCalled();
+  });
+
+  // The digits address tabs BY POSITION, so they have to count the row
+  // the human is looking at -- not the one gavin declares.
+  it("counts the hub tabs the human hid", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", rootPath: "/r", activeView: "kanban", activePageId: null, pages: [] },
+      ],
+      focusedSessionId: null,
+    });
+    hubTabsHiddenDefault.set(["git"]);
+    await press("Digit2");
+    // home, kanban, ... -> git is gone, so the second tab is now Kanban.
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "kanban");
+  });
+
+  it("counts the hub tabs in the order they were dragged into", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", rootPath: "/r", activeView: "kanban", activePageId: null, pages: [] },
+      ],
+      focusedSessionId: null,
+    });
+    hubTabOrderByWorkspace.set({ "ws-1": ["plans", "kanban"] });
+    await press("Digit2");
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "kanban");
+  });
+
+  it("lets a workspace's own hidden list beat the app-wide one", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", rootPath: "/r", activeView: "kanban", activePageId: null, pages: [] },
+      ],
+      focusedSessionId: null,
+    });
+    hubTabsHiddenDefault.set(["git"]);
+    hubTabsHiddenByWorkspace.set({ "ws-1": [] });
+    await press("Digit2");
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "git");
   });
 
   it("⌘⇧2 switches page", async () => {
