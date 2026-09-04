@@ -18,6 +18,7 @@ import {
   setRailAutoResume,
   bindRail,
   deleteRail,
+  deleteRails,
   addStage,
   addStep,
   addToolStep,
@@ -1680,6 +1681,25 @@ export function setRailAutoResumeAction(
 
 export function deleteRailAction(workspaceId: string, railId: string): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => deleteRail(o, railId));
+}
+
+/// Every finished rail in ONE plan write, for the toolbar's "Clear done".
+///
+/// One write and not a loop over `deleteRailAction`, for two reasons that
+/// both bite. The plan is persisted wholesale, so N calls are N round
+/// trips over a plan that shrinks under each of them -- and each one
+/// opens its own optimistic-rollback window, so a failure halfway leaves
+/// some rails gone and some back, with no single state to roll back to.
+///
+/// Takes the ids rather than re-deriving them, so what goes is exactly
+/// what the confirm named. The plan can reload between the prompt opening
+/// and the human pressing; re-deriving here would sweep a rail that
+/// finished in that gap and was never on the list they agreed to.
+export function deleteRailsAction(
+  workspaceId: string,
+  railIds: string[]
+): Promise<string | null> {
+  return mutatePlan(workspaceId, (o) => deleteRails(o, railIds));
 }
 
 /// Adds the card as its OWN new stage -- a sequential beat, the safe

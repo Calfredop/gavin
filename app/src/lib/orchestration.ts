@@ -413,6 +413,45 @@ export function runnableIdleRails(orch: Orchestration): Rail[] {
     );
 }
 
+/// The rails a toolbar "Clear done" sweeps away: the ones with nothing
+/// left in them to do. Three conditions, and each one excludes a rail
+/// that would otherwise read as finished by arithmetic alone.
+///
+/// A rail with NO STEPS is unstarted, not finished.
+/// `firstUnfinishedStageId` answers null for it -- correctly, since there
+/// is no stage to arm -- so "every step is done" is vacuously true of a
+/// rail the human added a minute ago and has not filled yet. Sweeping
+/// those under a button that promises to remove finished work is the one
+/// way this action could destroy something nobody had finished with.
+///
+/// `skipped` counts as finished here, and deliberately NOT the way
+/// `railDoneStepIds` counts it. That function answers "which steps are
+/// done WORK", where a skip is a decision rather than an achievement;
+/// this one answers "has this rail anything left", and a step the human
+/// sent the rail past is as much behind it as one that ran. Reading it
+/// the other way would leave a rail with one skipped step unclearable
+/// for good, which is the opposite of what the skip meant.
+///
+/// Only IDLE rails, which is `runnableIdleRails`' exclusion for the
+/// opposite reason: a running rail is mid-flight, and a paused one is
+/// paused because somebody decided it should be -- neither is a rail
+/// whose story is over, whatever its run rows currently add up to.
+///
+/// Cards already sitting in the done column with no run row do NOT make
+/// a rail finished: `firstUnfinishedStageId` does not consult them, so
+/// such a rail is offered to "Run all" instead, and the first tick marks
+/// its steps done and completes it. One rail cannot be both.
+export function finishedRails(orch: Orchestration): Rail[] {
+  return [...orch.rails]
+    .sort((a, b) => a.position - b.position)
+    .filter(
+      (rail) =>
+        railStateOf(orch, rail.id) === "idle" &&
+        rail.stages.some((stage) => stage.steps.length > 0) &&
+        firstUnfinishedStageId(rail, orch) === null
+    );
+}
+
 /// What the `Start rail` tool should do about the rail it names, decided
 /// here so the whole rule is testable without a store (spec T9).
 ///
@@ -1536,7 +1575,27 @@ export function pageToSpawnForRail(
 /// Never removes a worktree or a page -- those outlive the plan that
 /// referenced them (spec §7).
 export function deleteRail(orch: Orchestration, railId: string): Orchestration {
-  return sweepOrphans({ ...orch, rails: renumber(orch.rails.filter((r) => r.id !== railId)) });
+  return deleteRails(orch, [railId]);
+}
+
+/// Several rails in ONE pass, for the toolbar's "Clear done". Not a loop
+/// over `deleteRail`, because both of the steps it takes are wholesale:
+/// `renumber` re-derives every surviving rail's position from its index,
+/// so removing rails one at a time renumbers positions that the next
+/// removal only invalidates again, and `sweepOrphans` walks the whole
+/// plan for run rows to drop. One filter, one renumber, one sweep.
+///
+/// An empty id list returns the plan untouched rather than a fresh
+/// object: the caller's own guard is what stops a no-op write, and
+/// handing back the same reference keeps the optimistic-rollback check
+/// in `mutatePlan` honest.
+export function deleteRails(orch: Orchestration, railIds: string[]): Orchestration {
+  const dropped = new Set(railIds);
+  if (dropped.size === 0) return orch;
+  return sweepOrphans({
+    ...orch,
+    rails: renumber(orch.rails.filter((r) => !dropped.has(r.id))),
+  });
 }
 
 /// A freshly minted stage: `mode: "sequence"`, `name: null`. A stage

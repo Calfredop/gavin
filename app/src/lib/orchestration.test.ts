@@ -9,6 +9,7 @@ import {
   firstUnfinishedStageId,
   isStepFinished,
   runnableIdleRails,
+  finishedRails,
   startRailVerdict,
   railRunsDiffer,
   nextActions,
@@ -16,6 +17,7 @@ import {
   renameRail,
   bindRail,
   deleteRail,
+  deleteRails,
   addStage,
   addStep,
   removeStep,
@@ -277,6 +279,156 @@ describe("runnableIdleRails", () => {
 
   it("is empty for a plan with no rails", () => {
     expect(runnableIdleRails(emptyOrchestration())).toEqual([]);
+  });
+});
+
+describe("finishedRails", () => {
+  // Three rails with one step each, so the only thing separating them is
+  // what their run rows say -- the same shape runnableIdleRails' suite
+  // uses, because these two answer opposite halves of one question.
+  function three(): Rail[] {
+    return [
+      { ...rail("r1", [[["t1", "/x/a.md"]]]), position: 2 },
+      { ...rail("r2", [[["t2", "/x/b.md"]]]), position: 0 },
+      { ...rail("r3", [[["t3", "/x/c.md"]]]), position: 1 },
+    ];
+  }
+
+  function withRuns(
+    rails: Rail[],
+    railRuns: Orchestration["railRuns"],
+    stepRuns: Orchestration["stepRuns"] = []
+  ): Orchestration {
+    return { rails, conflictNotes: [], railRuns, stepRuns };
+  }
+
+  const done = (stepId: string): Orchestration["stepRuns"][number] => ({
+    stepId,
+    state: "done",
+    sessionId: null,
+    reason: null,
+  });
+
+  it("takes the idle rails whose every step is done, in screen order", () => {
+    const o = withRuns(three(), [], [done("t1"), done("t2")]);
+    expect(finishedRails(o).map((r) => r.id)).toEqual(["r2", "r1"]);
+  });
+
+  it("leaves a rail with anything unfinished on it", () => {
+    const o = withRuns(three(), [], [done("t2")]);
+    expect(finishedRails(o).map((r) => r.id)).toEqual(["r2"]);
+  });
+
+  it("counts a skipped step as finished", () => {
+    // A skip is the human sending the rail past that step: there is
+    // nothing left to run, and reading it the other way would leave the
+    // rail unclearable for good.
+    const o = withRuns(
+      three(),
+      [],
+      [{ stepId: "t2", state: "skipped", sessionId: null, reason: null }]
+    );
+    expect(finishedRails(o).map((r) => r.id)).toEqual(["r2"]);
+  });
+
+  it("does not count a stalled step as finished", () => {
+    const o = withRuns(
+      three(),
+      [],
+      [{ stepId: "t2", state: "stalled", sessionId: null, reason: "broke" }]
+    );
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("never takes an empty rail, however vacuously done it looks", () => {
+    // An empty rail is unstarted, not finished, and firstUnfinishedStageId
+    // says null for it -- which is why this needs its own condition.
+    const o = withRuns([rail("empty", []), rail("hollow", [[]])], []);
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("leaves a running rail alone even with every step done", () => {
+    const o = withRuns(
+      three(),
+      [{ railId: "r2", state: "running", currentStageId: "r2-s0" }],
+      [done("t2")]
+    );
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("leaves a paused rail alone even with every step done", () => {
+    const o = withRuns(
+      three(),
+      [{ railId: "r2", state: "paused", currentStageId: "r2-s0" }],
+      [done("t2")]
+    );
+    expect(finishedRails(o)).toEqual([]);
+  });
+
+  it("shares no rail with runnableIdleRails", () => {
+    // The two exclusions have to stay complementary: a rail offered to
+    // "Run all" and swept by "Clear done" in the same breath would be a
+    // race between two buttons on one toolbar.
+    const o = withRuns(three(), [], [done("t2")]);
+    const runnable = new Set(runnableIdleRails(o).map((r) => r.id));
+    expect(finishedRails(o).every((r) => !runnable.has(r.id))).toBe(true);
+  });
+
+  it("is empty for a plan with no rails", () => {
+    expect(finishedRails(emptyOrchestration())).toEqual([]);
+  });
+});
+
+describe("deleteRails", () => {
+  function two(): Orchestration {
+    return {
+      rails: [
+        { ...rail("r1", [[["t1", "/x/a.md"]]]), position: 0 },
+        { ...rail("r2", [[["t2", "/x/b.md"]]]), position: 1 },
+        { ...rail("r3", [[["t3", "/x/c.md"]]]), position: 2 },
+      ],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "idle", currentStageId: null }],
+      stepRuns: [
+        { stepId: "t1", state: "done", sessionId: null, reason: null },
+        { stepId: "t3", state: "done", sessionId: null, reason: null },
+      ],
+    };
+  }
+
+  it("removes every named rail in one pass", () => {
+    expect(deleteRails(two(), ["r1", "r3"]).rails.map((r) => r.id)).toEqual(["r2"]);
+  });
+
+  it("renumbers the survivors from zero", () => {
+    // Once, over the list that is left -- removing one at a time would
+    // renumber positions the next removal only invalidates again.
+    expect(deleteRails(two(), ["r1"]).rails.map((r) => r.position)).toEqual([0, 1]);
+  });
+
+  it("sweeps the run rows of the rails and steps it removed", () => {
+    const after = deleteRails(two(), ["r1", "r3"]);
+    expect(after.railRuns).toEqual([]);
+    expect(after.stepRuns).toEqual([]);
+  });
+
+  it("keeps the run rows of the rails it did not touch", () => {
+    const after = deleteRails(two(), ["r2"]);
+    expect(after.railRuns.map((r) => r.railId)).toEqual(["r1"]);
+    expect(after.stepRuns.map((r) => r.stepId)).toEqual(["t1", "t3"]);
+  });
+
+  it("ignores an id no rail carries", () => {
+    expect(deleteRails(two(), ["nope"]).rails.map((r) => r.id)).toEqual(["r1", "r2", "r3"]);
+  });
+
+  it("hands back the very same plan for an empty list", () => {
+    const o = two();
+    expect(deleteRails(o, [])).toBe(o);
+  });
+
+  it("agrees with deleteRail on a single id", () => {
+    expect(deleteRails(two(), ["r2"])).toEqual(deleteRail(two(), "r2"));
   });
 });
 

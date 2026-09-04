@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Play, Plus } from "@lucide/svelte";
+  import { BrushCleaning, Play, Plus } from "@lucide/svelte";
   import OrchestrationRail from "./OrchestrationRail.svelte";
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
@@ -41,12 +41,14 @@
     findStep,
     findStage,
     runnableIdleRails,
+    finishedRails,
     conflictCheckout,
   } from "./orchestration";
   import type { Rail } from "./orchestration";
   import {
     railDeleteConfirm,
     railClearDoneConfirm,
+    clearFinishedRailsConfirm,
     groupRemoveConfirm,
     runAllConfirm,
   } from "./railConfirm";
@@ -69,6 +71,7 @@
     dismissSaveError,
     addRailAction,
     deleteRailAction,
+    deleteRailsAction,
     addStepAsStageAction,
     removeStepAction,
     startRail,
@@ -229,6 +232,34 @@
     const ids = runnableRails.map((r) => r.id);
     runAllPrompt = false;
     for (const id of ids) await startRail(workspaceId, id);
+  }
+
+  // "Clear done": remove every rail that has finished everything on it.
+  // The same bare-flag shape "Run all" uses, and for the same reason --
+  // the list is re-derived while the prompt stands, so a rail that
+  // finishes (or is deleted by hand, or starts running again) under the
+  // open prompt changes what it says, and the prompt closes if nothing
+  // is left to remove by the time the human reaches the button.
+  let clearFinishedPrompt = $state(false);
+  const finished = $derived(orch ? finishedRails(orch) : []);
+  const clearFinishedContent = $derived.by(() =>
+    clearFinishedPrompt && orch && finished.length > 0
+      ? clearFinishedRailsConfirm(orch, cards)
+      : null
+  );
+  const clearFinishedTip = $derived(
+    finished.length === 0
+      ? "No rail has finished every step it holds"
+      : `Remove ${finished.length} finished ${finished.length === 1 ? "rail" : "rails"}…`
+  );
+
+  /// One write for all of them (deleteRailsAction), and the ids are read
+  /// BEFORE the prompt closes: `finished` is derived, so it empties the
+  /// moment the rails leave the plan.
+  function clearFinished(): void {
+    const ids = finished.map((r) => r.id);
+    clearFinishedPrompt = false;
+    void deleteRailsAction(workspaceId, ids);
   }
 
   // The group whose "Save as template…" dialog is open, by stage id --
@@ -698,6 +729,15 @@
     <button
       type="button"
       class="add-rail"
+      disabled={finished.length === 0}
+      title={clearFinishedTip}
+      onclick={() => (clearFinishedPrompt = true)}
+    >
+      <BrushCleaning size={14} /> Clear done
+    </button>
+    <button
+      type="button"
+      class="add-rail"
       disabled={Boolean(orchestrationBlocked)}
       title={orchestrationBlocked ?? ""}
       onclick={() => void newRail()}
@@ -937,6 +977,21 @@
     lines={runAllContent.lines}
     choices={[{ label: runAllContent.confirmLabel, onPick: () => void runAll() }]}
     onCancel={() => (runAllPrompt = false)}
+  />
+{/if}
+
+{#if clearFinishedContent}
+  <ConfirmPrompt
+    title={clearFinishedContent.title}
+    lines={clearFinishedContent.lines}
+    choices={[
+      {
+        label: clearFinishedContent.confirmLabel,
+        danger: true,
+        onPick: () => clearFinished(),
+      },
+    ]}
+    onCancel={() => (clearFinishedPrompt = false)}
   />
 {/if}
 

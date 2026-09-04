@@ -2175,6 +2175,54 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Clearing finished rails",
+    items: [
+      {
+        id: "clear-done-rails-placement",
+        text: "The Orchestration toolbar's “Clear done” sits between “Run all” and “+ Rail”",
+      },
+      {
+        id: "clear-done-rails-dead-when-nothing",
+        text: "With no rail finished, “Clear done” is greyed and its tooltip reads “No rail has finished every step it holds”",
+        hint: "Check the vacuous case too: a brand-new EMPTY rail must not make the button live. An empty rail is unstarted, not finished.",
+      },
+      {
+        id: "clear-done-rails-confirm-names-them",
+        text: "Pressing it opens the confirm naming each rail it will remove, by name, in the order they sit on screen",
+      },
+      {
+        id: "clear-done-rails-removes-them",
+        text: "Confirming removes exactly those rails, and the rails with work left are still there in their old order",
+      },
+      {
+        id: "clear-done-rails-cards-stay",
+        text: "The cards those rails carried are untouched — still on the Kanban tab, still in their columns, and the confirm said how many would stay",
+        hint: "The whole promise: a rail is a plan over cards, not a container of them. Check the drawer got them back as unplaced.",
+      },
+      {
+        id: "clear-done-rails-worktree-stays",
+        text: "A bound finished rail's worktree is still on disk and still listed on the Git tab; the confirm named it before you pressed",
+      },
+      {
+        id: "clear-done-rails-skipped-counts",
+        text: "A rail whose last step you SKIPPED counts as finished, and the confirm says so in its own line rather than calling the skip done",
+        hint: "The rail has nothing left to run, which is what the skip meant. Excluding it would make one skip leave a rail unclearable forever.",
+      },
+      {
+        id: "clear-done-rails-leaves-paused",
+        text: "A finished rail that is paused is left standing, and the confirm accounted for it",
+      },
+      {
+        id: "clear-done-rails-cancel",
+        text: "Cancelling the confirm removes nothing — every rail is still on the tab",
+      },
+      {
+        id: "clear-done-rails-survives-reload",
+        text: "The removed rails are still gone after a reload — the plan was written, not just re-drawn",
+      },
+    ],
+  },
+  {
     title: "Orchestration agent runs",
     items: [
       {
