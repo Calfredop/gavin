@@ -1336,6 +1336,31 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Sidebar expansion memory",
+    items: [
+      {
+        id: "sidebar-expansion-survives-reload",
+        text: "Expand two workspaces and one page's tab list, reload the window: exactly those rows come back open, and no others",
+        hint: "⌘R, or the Restart daemon & retry overlay — the sidebar is unmounted whenever the layout leaves “ready”, which is what used to lose this.",
+      },
+      {
+        id: "sidebar-expansion-collapse-sticks",
+        text: "Collapse the ACTIVE workspace, reload: it comes back collapsed",
+        hint: "This is the one the first-activation auto-expand used to undo on every launch. A collapse is an answer and must outlive the reload.",
+      },
+      {
+        id: "sidebar-expansion-first-visit-still-opens",
+        text: "A workspace you have never expanded still opens itself the first time you switch to it",
+        hint: "Remembering must not cost the courtesy. Only a workspace with no answer yet auto-expands — after that, whatever you last chose stands.",
+      },
+      {
+        id: "sidebar-expansion-forgets-what-is-gone",
+        text: "Expand a page, close it, relaunch: no ghost row, and the other pages' expansion is untouched",
+        hint: "Same for a removed workspace. Entries are pruned against what still exists on every write.",
+      },
+    ],
+  },
+  {
     title: "Closing a page's idle tabs",
     items: [
       {

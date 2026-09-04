@@ -112,15 +112,45 @@
   import { closeTabsNow } from "./tabActions";
   import type { CloseIdleRequest } from "./idleTabs";
   import type { TabMenuContext } from "./tabMenu";
+  import {
+    loadWorkspaceExpansion,
+    saveWorkspaceExpansion,
+    loadExpandedPages,
+    saveExpandedPages,
+    type WorkspaceExpansion,
+  } from "./sidebarExpansion";
 
-  let expanded: Set<string> = $state(new Set());
+  // Which workspaces show their page list, and which pages show their
+  // tab list. Kept apart rather than in one Set, since workspace ids and
+  // page ids are different concepts that happen to both be strings -- and
+  // because only one of the two has a third state (below).
+  //
+  // Both are restored from storage at mount and written back on every
+  // change (sidebarExpansion.ts). `+page.svelte` mounts this component
+  // only while the layout is `ready`, so a reload, a hot module swap or a
+  // daemon reconnect used to snap every row shut and leave the human
+  // re-opening the same workspaces several times a day.
+  //
+  // The workspaces' side is a TRI-STATE record -- true open, false
+  // closed, absent never answered -- because the auto-expand effect
+  // further down has to tell a deliberate collapse from a workspace
+  // nobody has ruled on yet; a bare set of open ids would read the
+  // collapse as the latter and undo it on the next mount. Pages need no
+  // such distinction: nothing auto-expands one, so absent and collapsed
+  // are the same answer.
+  let workspaceExpansion: WorkspaceExpansion = $state(loadWorkspaceExpansion());
+  let expandedPages: Set<string> = $state(loadExpandedPages());
 
-  // Tracks which pages currently show their tab list -- unrelated to
-  // `expanded` above (that Set tracks which WORKSPACES show their page
-  // list; this one tracks which PAGES show their tabs). Kept separate
-  // rather than reusing one Set, since workspace ids and page ids are
-  // different concepts that happen to both be strings.
-  let expandedPages: Set<string> = $state(new Set());
+  // Every write prunes against what still exists, so entries for deleted
+  // workspaces and closed pages -- uuids, which can never match again --
+  // don't accumulate for the life of the install.
+  function knownWorkspaceIds(): string[] {
+    return $layoutState.workspaces.map((ws) => ws.id);
+  }
+
+  function knownPageIds(): string[] {
+    return $layoutState.workspaces.flatMap((ws) => ws.pages.map((page) => page.id));
+  }
 
   function isPageExpanded(pageId: string): boolean {
     return expandedPages.has(pageId);
@@ -134,6 +164,7 @@
       next.add(pageId);
     }
     expandedPages = next;
+    saveExpandedPages(next, knownPageIds());
   }
 
   let newWorkspaceInput: HTMLInputElement | null = $state(null);
@@ -456,17 +487,19 @@
   }
 
   function isExpanded(workspaceId: string): boolean {
-    return expanded.has(workspaceId);
+    return workspaceExpansion[workspaceId] === true;
+  }
+
+  /// The one write path, so an answer always reaches storage: an
+  /// auto-expand is recorded exactly like a click, and from then on the
+  /// workspace is answered and never auto-expands again.
+  function setExpanded(workspaceId: string, open: boolean): void {
+    workspaceExpansion = { ...workspaceExpansion, [workspaceId]: open };
+    saveWorkspaceExpansion(workspaceExpansion, knownWorkspaceIds());
   }
 
   function toggleExpand(workspaceId: string): void {
-    const next = new Set(expanded);
-    if (next.has(workspaceId)) {
-      next.delete(workspaceId);
-    } else {
-      next.add(workspaceId);
-    }
-    expanded = next;
+    setExpanded(workspaceId, !isExpanded(workspaceId));
   }
 
   /// The app-wide settings panel. A modal, not a hub tab: every hub tab
@@ -726,17 +759,22 @@
   // fighting a later manual collapse. Gating on activeId actually
   // *changing* (via lastSyncedActiveId, a plain closure var -- it's
   // effect-internal bookkeeping, not rendered, so it doesn't need $state)
-  // means `expanded` is only read when activeId itself just changed, not
-  // on every run this effect happens to see -- reading `expanded` inside
-  // an effect that also writes it otherwise re-triggers itself and
+  // means `workspaceExpansion` is only read when activeId itself just
+  // changed, not on every run this effect happens to see -- reading it
+  // inside an effect that also writes it otherwise re-triggers itself and
   // silently reverts the very collapse it just observed.
+  //
+  // "First time" now means the first time EVER, not the first time this
+  // mount: the test is an absent answer rather than a closed row, so a
+  // workspace the human collapsed comes back collapsed after a reload
+  // instead of being helpfully re-opened every single time.
   let lastSyncedActiveId: string | null = null;
   $effect(() => {
     const activeId = $layoutState.activeWorkspaceId;
     if (activeId && activeId !== lastSyncedActiveId) {
       lastSyncedActiveId = activeId;
-      if (!expanded.has(activeId)) {
-        expanded = new Set(expanded).add(activeId);
+      if (workspaceExpansion[activeId] === undefined) {
+        setExpanded(activeId, true);
       }
     }
   });
