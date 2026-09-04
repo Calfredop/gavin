@@ -819,3 +819,61 @@ describe("Sidebar attention badge wiring", () => {
     expect(source).not.toContain('=== "waiting_for_input"');
   });
 });
+
+// The workspace recap strip is three pills of the same shape: a glyph and
+// a tally. Nothing here is testable as a value -- it is a rendering -- but
+// the two numbers that decide its scale are in the committed source, so a
+// grep can hold the line the same way indicatorSurfaces.test.ts does.
+//
+// What went wrong: git and cards each open with a category glyph at 11px
+// and put their count after it at the sidebar's own text size. The rails
+// group has no category glyph -- its badges ARE its identity -- but it was
+// drawn at the size a badge takes where it hangs off a leading stat (10px
+// glyph, 0.85em text, as the page row and the app hub draw it). So the one
+// group whose badge had to carry the axis was the smallest thing in the
+// row, which is what got reported as the running rail badge looking small.
+describe("the workspace recap strip is drawn at one scale", () => {
+  const source = (
+    import.meta.glob("./Sidebar.svelte", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>
+  )["./Sidebar.svelte"];
+
+  /// The strip's markup only: from the guard that renders it to the page
+  /// rows below, which are a tier of their own and keep their own sizes.
+  /// Both markers are asserted rather than assumed -- an `indexOf` of -1
+  /// silently widens this slice to most of the file, which is how the
+  /// page loop being renamed once turned this guard into a grep over
+  /// every sized glyph in the sidebar.
+  const stripStart = source.indexOf("{#if hasRecap(");
+  const stripEnd = source.indexOf("{#each orderedPages(ws)");
+  const strip = source.slice(stripStart, stripEnd);
+
+  it("still knows where the strip starts and ends", () => {
+    expect(stripStart, "the recap strip's opening guard has moved").toBeGreaterThan(-1);
+    expect(stripEnd, "the page loop below the strip has moved").toBeGreaterThan(stripStart);
+  });
+
+  it("draws every glyph in it at the same size", () => {
+    const sizes = [...strip.matchAll(/size=\{(\d+)\}/g)].map((m) => m[1]);
+    expect(sizes.length, "no sized glyph found -- has the strip moved?").toBeGreaterThan(3);
+    expect(
+      [...new Set(sizes)],
+      `the strip draws glyphs at ${[...new Set(sizes)].join("/")}px; a pill drawn smaller than the pills beside it reads as a rendering fault`
+    ).toEqual(["11"]);
+  });
+
+  it("gives the rails tally the same size digits as the tallies beside it", () => {
+    // StatusBadge's own 0.85em is right where a badge trails a bigger
+    // stat; in this strip it put one of three numbers a step below the
+    // other two. Descendant :global(), never a leading one -- that would
+    // resize every badge in the app.
+    expect(strip).toContain('class="recap-body"');
+    const css = source.slice(source.indexOf("<style>"));
+    const at = css.indexOf(".recap-body :global(.badge-text)");
+    expect(at, "the recap strip no longer sizes the badge's own text").toBeGreaterThan(-1);
+    expect(css.slice(at, css.indexOf("}", at))).toContain("font-size: inherit");
+  });
+});

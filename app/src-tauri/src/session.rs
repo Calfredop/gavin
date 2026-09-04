@@ -592,6 +592,7 @@ mod smoketest_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pinned_at: None,
         }
     }
 
@@ -644,6 +645,7 @@ mod smoketest_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pinned_at: None,
         }];
         reconcile_smoketest_workspace(&mut workspaces);
         assert_eq!(workspaces.len(), 1);
@@ -2356,7 +2358,7 @@ mod resolve_workspaces_tests {
     }
 
     fn page(id: &str, layout: LayoutNode) -> Page {
-        Page { id: id.to_string(), name: id.to_string(), layout, focused_session_id: None }
+        Page { id: id.to_string(), name: id.to_string(), layout, focused_session_id: None, pinned_at: None }
     }
 
     fn workspace(id: &str, pages: Vec<Page>) -> Workspace {
@@ -2383,6 +2385,7 @@ mod resolve_workspaces_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pinned_at: None,
         }
     }
 
@@ -2699,6 +2702,7 @@ fn reconcile_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
                 auto_commit: None,
                 auto_resume_runs: false,
                 agent_pause: None,
+                pinned_at: None,
             });
         }
     } else {
@@ -3009,6 +3013,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 auto_commit: None,
                 auto_resume_runs: false,
                 agent_pause: None,
+                pinned_at: None,
             },
         );
     }
@@ -4524,6 +4529,7 @@ mod main_session_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pinned_at: None,
         }
     }
 
@@ -5038,6 +5044,7 @@ mod attach_target_tests {
                 name: "p1".to_string(),
                 layout: leaf(tabs),
                 focused_session_id: None,
+                pinned_at: None,
             }],
             active_page_id: None,
             active_view: None,
@@ -5058,6 +5065,7 @@ mod attach_target_tests {
             auto_commit: None,
             auto_resume_runs: false,
             agent_pause: None,
+            pinned_at: None,
         }
     }
 
