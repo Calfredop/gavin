@@ -1,7 +1,7 @@
 ---
 order: 7168
 title: [ui] app header reorganization
-status: In Progress
+status: Done
 ---
 [x] make hub/page area full app height
 [x] increase workspace's page tab height to the same of the workspace's hub tabs; unify tab indicator of page's to the one of the workspace's hub
