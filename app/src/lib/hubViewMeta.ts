@@ -7,8 +7,6 @@ import { hubViewIsVisible, type Workspace } from "./workspace";
 export interface HubViewMeta {
   id: string;
   label: string;
-  /// Only offered in dev builds, and only in the Smoke Test workspace.
-  devOnly?: boolean;
   /// Only offered once the workspace is bound to a root folder: these
   /// views edit files that live under it.
   requiresRoot?: boolean;
@@ -42,7 +40,6 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   // them all one place left; the gear at the right of the row says the
   // same thing in the place the OS has been putting it for forty years.
   { id: "settings", label: "Settings", viaAction: true },
-  { id: "checklist", label: "Checklist", devOnly: true },
 ];
 
 const VIA_ACTION_IDS = new Set(HUB_VIEW_META.filter((v) => v.viaAction).map((v) => v.id));
@@ -66,20 +63,18 @@ export interface HubTabPrefs {
 export const NO_HUB_TAB_PREFS: HubTabPrefs = { order: null, hidden: null };
 
 /// Every id an order may mention: the strip-eligible views, gating
-/// aside. The dev-only checklist is included on purpose -- a stored
-/// order outlives the build that wrote it, and dropping the id here
-/// would quietly move that tab to the end of the next dev session's
-/// strip.
+/// aside. A stored order outlives the build that wrote it, so an id
+/// dropped from here would quietly move that tab to the end of the next
+/// session's strip.
 export function orderableHubViewIds(): string[] {
   return HUB_VIEW_META.filter((v) => !v.viaAction).map((v) => v.id);
 }
 
-/// The rows the two settings panels list. Views reached by a button have
-/// no tab to take away, and the dev-only checklist is a build artefact
-/// rather than a section of the app a human chooses to keep -- neither
-/// belongs in a list whose only control is "show this or don't".
+/// The rows the two settings panels list. A view reached by a button has
+/// no tab to take away, so it does not belong in a list whose only
+/// control is "show this or don't".
 export function manageableHubViewIds(): string[] {
-  return HUB_VIEW_META.filter((v) => !v.viaAction && !v.devOnly).map((v) => v.id);
+  return HUB_VIEW_META.filter((v) => !v.viaAction).map((v) => v.id);
 }
 
 /// A stored order applied to the ids a workspace actually offers. Ids
@@ -144,8 +139,8 @@ export function canHideHubView(hidden: string[] | null, id: string): boolean {
 /// Deliberately blind to `HubTabPrefs`: hiding a tab takes it out of the
 /// strip, not out of the app. A chip that jumps to the board still opens
 /// the board.
-export function visibleHubViewIds(workspaceId: string, isDev: boolean, hasRoot: boolean): string[] {
-  return HUB_VIEW_META.filter((v) => hubViewIsVisible(v, workspaceId, isDev, hasRoot)).map((v) => v.id);
+export function visibleHubViewIds(hasRoot: boolean): string[] {
+  return HUB_VIEW_META.filter((v) => hubViewIsVisible(v, hasRoot)).map((v) => v.id);
 }
 
 /// The subset that renders as a tab, in strip order.
@@ -156,15 +151,10 @@ export function visibleHubViewIds(workspaceId: string, isDev: boolean, hasRoot: 
 /// also why the human's own order and hidden set are applied HERE and
 /// nowhere else -- one derivation, so a dragged tab and its digit move
 /// together.
-export function tabStripHubViewIds(
-  workspaceId: string,
-  isDev: boolean,
-  hasRoot: boolean,
-  prefs: HubTabPrefs = NO_HUB_TAB_PREFS
-): string[] {
-  const offered = HUB_VIEW_META.filter(
-    (v) => !v.viaAction && hubViewIsVisible(v, workspaceId, isDev, hasRoot)
-  ).map((v) => v.id);
+export function tabStripHubViewIds(hasRoot: boolean, prefs: HubTabPrefs = NO_HUB_TAB_PREFS): string[] {
+  const offered = HUB_VIEW_META.filter((v) => !v.viaAction && hubViewIsVisible(v, hasRoot)).map(
+    (v) => v.id
+  );
   const ordered = orderHubViewIds(offered, prefs.order);
   const hidden = new Set(prefs.hidden ?? []);
   const shown = ordered.filter((id) => !hidden.has(id));
@@ -209,19 +199,14 @@ export function hubViewAttention(viewId: string, activity: HubViewActivity): boo
 
 /// The hub tab to land on when a workspace's Hub button is clicked: the
 /// one it was last showing, or -- when nothing is remembered, or the
-/// remembered tab is no longer offered (its root was unbound, a dev-only
-/// tab in a release build, a tab the human hid) -- the first tab its
-/// strip does draw.
-export function resolveHubView(
-  ws: Workspace,
-  isDev: boolean,
-  prefs: HubTabPrefs = NO_HUB_TAB_PREFS
-): string {
-  const strip = tabStripHubViewIds(ws.id, isDev, Boolean(ws.rootPath), prefs);
+/// remembered tab is no longer offered (its root was unbound, or the
+/// human hid the tab) -- the first tab its strip does draw.
+export function resolveHubView(ws: Workspace, prefs: HubTabPrefs = NO_HUB_TAB_PREFS): string {
+  const strip = tabStripHubViewIds(Boolean(ws.rootPath), prefs);
   // Settings is kept as remembered even though it is not in the strip:
   // hiding cannot reach a view that has no tab, so landing back on the
   // gear is landing back somewhere that is still there.
-  const offered = visibleHubViewIds(ws.id, isDev, Boolean(ws.rootPath));
+  const offered = visibleHubViewIds(Boolean(ws.rootPath));
   const keepable = new Set([...strip, ...offered.filter((id) => VIA_ACTION_IDS.has(id))]);
   return ws.hubView && keepable.has(ws.hubView) ? ws.hubView : strip[0];
 }

@@ -134,12 +134,7 @@ function routeDigit(
   // address, and counting it here would shift every digit past it -- and
   // for the same reason the row's own preferences are passed in: a
   // rearranged or thinned-out strip is still what is being counted.
-  const views = tabStripHubViewIds(
-    ws.id,
-    import.meta.env.DEV,
-    Boolean(ws.rootPath),
-    currentHubTabPrefs(ws.id)
-  );
+  const views = tabStripHubViewIds(Boolean(ws.rootPath), currentHubTabPrefs(ws.id));
   const index = resolveIndex(digit, views.length);
   if (index === null) return null;
   const viewId = views[index];

@@ -90,10 +90,12 @@ Logic goes in a plain `.ts` module with unit tests (`orchestration.ts`,
 `sidebarSummary.ts`, `planBoard.ts`, …); the `.svelte` file stays a thin template
 over it. Extend the pure module, not the template.
 
-Rendered UI is the one thing the suites cannot cover. The manual smoke passes in
-`app/src/lib/smokeChecklist.ts` are the owner's to run. A useful agent
-contribution there is a static pre-flight — grep each item's exact strings
-against the committed source — not a re-run of already-green suites.
+Rendered UI is the one thing the suites cannot cover, and gavin no longer tracks
+it: the smoke checklist and its dev-only workspace are gone, so there is nothing
+to tick and no smoke items to file on a card. Confirming the visible surface is
+the owner's, in the running app. A useful agent contribution is a static
+pre-flight — grep the exact strings a change relies on against the committed
+source — not a re-run of already-green suites.
 
 ## Commit messages and descriptions
 

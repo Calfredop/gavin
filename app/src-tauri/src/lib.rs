@@ -148,7 +148,6 @@ pub fn run() {
             session::link_card_session,
             session::unlink_card_session,
             session::promote_checklist_item,
-            session::seed_smoke_test_data,
             session::set_root_config_field,
             session::get_agent_model_defaults,
             session::set_agent_model_default,

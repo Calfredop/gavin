@@ -526,7 +526,7 @@
   /// offers. Where the home row under the workspace name used to go.
   function openHub(ws: Workspace): void {
     switchWorkspace(ws.id);
-    switchWorkspaceView(ws.id, resolveHubView(ws, import.meta.env.DEV, currentHubTabPrefs(ws.id)));
+    switchWorkspaceView(ws.id, resolveHubView(ws, currentHubTabPrefs(ws.id)));
   }
 
   /// A recap chip's click: straight to the tab that chip summarises,
@@ -538,11 +538,8 @@
   /// that summarises the board still has to be able to open it.
   function openHubView(ws: Workspace, view: string): void {
     switchWorkspace(ws.id);
-    const offered = visibleHubViewIds(ws.id, import.meta.env.DEV, Boolean(ws.rootPath));
-    switchWorkspaceView(
-      ws.id,
-      offered.includes(view) ? view : resolveHubView(ws, import.meta.env.DEV, currentHubTabPrefs(ws.id))
-    );
+    const offered = visibleHubViewIds(Boolean(ws.rootPath));
+    switchWorkspaceView(ws.id, offered.includes(view) ? view : resolveHubView(ws, currentHubTabPrefs(ws.id)));
   }
 
   // ahead/behind are only meaningful (and only shown) when hasUpstream is

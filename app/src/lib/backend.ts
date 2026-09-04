@@ -478,10 +478,6 @@ export function setCardTabs(cardTabs: Record<string, CardTab>): Promise<void> {
   return invoke("set_card_tabs", { cardTabs });
 }
 
-export function seedSmokeTestData(rootPath: string): Promise<void> {
-  return invoke("seed_smoke_test_data", { rootPath });
-}
-
 /// What a setup run wrote, and what it could not (spec §6). `skipped` is
 /// [what, why] pairs, rendered verbatim so an unavailable MCP config is
 /// visible rather than silent.

@@ -331,32 +331,11 @@ export function restoreWorkspaceId(
 // exists in WorkspacesData; must match config.rs's own copy exactly.
 export const UNFILED_WORKSPACE_ID = "__unfiled__";
 
-// Well-known id for the dev-only "Smoke Test" workspace, ensured by debug
-// builds' Rust bootstrap and stripped by release builds. Must match
-// config.rs's own copy of this constant exactly.
-export const SMOKETEST_WORKSPACE_ID = "__smoketest__";
-
-// Whether a workspace should be offered dev-only hub views (the
-// smoke-test checklist): dev builds only, Smoke Test workspace only. Kept
-// here rather than in workspaceViews.ts so it is testable -- that module
-// imports Svelte components, which this project's vitest setup can't
-// process (hence its no-component-tests convention).
-export function showsDevOnlyViews(workspaceId: string, isDev: boolean): boolean {
-  return isDev && workspaceId === SMOKETEST_WORKSPACE_ID;
-}
-
 // One place decides whether a hub view is offered, so the rule stays
 // testable -- workspaceViews.ts imports Svelte components, which this
 // project's vitest setup cannot process.
-export function hubViewIsVisible(
-  view: { devOnly?: boolean; requiresRoot?: boolean },
-  workspaceId: string,
-  isDev: boolean,
-  hasRoot: boolean
-): boolean {
-  if (view.devOnly && !showsDevOnlyViews(workspaceId, isDev)) return false;
-  if (view.requiresRoot && !hasRoot) return false;
-  return true;
+export function hubViewIsVisible(view: { requiresRoot?: boolean }, hasRoot: boolean): boolean {
+  return !view.requiresRoot || hasRoot;
 }
 
 export function createWorkspace(state: WorkspacesData, id: string, name: string): WorkspacesData {

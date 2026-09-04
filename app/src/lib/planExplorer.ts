@@ -26,8 +26,8 @@ export const requestedExplorerFile = writable<ExplorerSelection | null>(null);
 // visit: open a card in the editor, glance at the board, come back to
 // "Select a file." Nothing else remembers it for the human -- it is a
 // per-human view preference, not workspace data -- so it goes where the
-// smoke checklist's ticks and the orchestration conflicts box already
-// live: localStorage, which carries it across a reload as well.
+// orchestration conflicts box already lives: localStorage, which carries
+// it across a reload as well.
 
 /// Storage is injected (defaulting to the browser's) so this stays
 /// testable under vitest's node environment, where localStorage does

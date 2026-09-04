@@ -136,7 +136,9 @@ describe("hubTabPrefsFor", () => {
 describe("hiddenHubViewCount", () => {
   it("counts only the sections a panel actually lists", () => {
     expect(hiddenHubViewCount(["git", "prd"])).toBe(2);
-    expect(hiddenHubViewCount(["checklist"])).toBe(0);
+    // A hidden set outlives the build that wrote it: an id no longer in
+    // HUB_VIEW_META is counted by nothing.
+    expect(hiddenHubViewCount(["retired-view"])).toBe(0);
     expect(hiddenHubViewCount([])).toBe(0);
   });
 });

@@ -5,7 +5,7 @@
   import { agentProfilesStore, agentModelDefaultsStore } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import * as backend from "./backend";
-  import { UNFILED_WORKSPACE_ID, SMOKETEST_WORKSPACE_ID, type Workspace } from "./workspace";
+  import { UNFILED_WORKSPACE_ID, type Workspace } from "./workspace";
   import Modal from "./Modal.svelte";
 
   interface Props {
@@ -70,26 +70,6 @@
     await setWorkspaceRoot(workspace.id, root);
   }
 
-  // The dev-only Smoke Test workspace's one extra affordance: seed the
-  // bound root with the demo fixture set (idempotent -- re-seeding IS the
-  // reset). Gated twice: this workspace only, dev builds only (the Rust
-  // command additionally refuses outside debug builds).
-  const showSeed = $derived(
-    workspace.id === SMOKETEST_WORKSPACE_ID && import.meta.env.DEV && Boolean(workspace.rootPath) && !rootMissing
-  );
-  let seedNote = $state<string | null>(null);
-
-  async function seedDemoData(): Promise<void> {
-    if (!workspace.rootPath) return;
-    seedNote = null;
-    try {
-      await backend.seedSmokeTestData(workspace.rootPath);
-      seedNote = "Seeded — cards appear within ~3s. Re-click any time to reset the demo files.";
-    } catch (e) {
-      seedNote = `Couldn't seed: ${e}`;
-    }
-  }
-
   // Agent integration (D20): offered for every rooted, healthy workspace,
   // but only from Settings (D56) -- it is one-time workspace setup, not
   // per-page context. Writes are merge-aware and re-runnable (gavin-managed
@@ -145,15 +125,6 @@
   {/if}
   {#if errorMessage}
     <div class="banner warning"><span>{errorMessage}</span></div>
-  {/if}
-  {#if showSeed}
-    <div class="banner seed">
-      <span>Dev smoke test — seed the bound folder with demo plans (auto column, ⚠ card, auth context).</span>
-      <button type="button" onclick={seedDemoData}>Seed demo data</button>
-    </div>
-    {#if seedNote}
-      <div class="banner seed"><span>{seedNote}</span></div>
-    {/if}
   {/if}
   <!-- Settings-only (D56), and gated on there being an MCP layout to
        write: without one the run would report MCP config as skipped, so

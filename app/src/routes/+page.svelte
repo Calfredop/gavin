@@ -79,11 +79,9 @@
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
-  // Not HUB_VIEWS directly: dev-only views (the smoke-test checklist)
-  // must never appear in a real workspace or a release build.
-  const hubViews = $derived(
-    visibleHubViews(activeWorkspace?.id ?? "", import.meta.env.DEV, Boolean(activeWorkspace?.rootPath))
-  );
+  // Not HUB_VIEWS directly: a view that edits files under the bound root
+  // must never appear in a workspace that has no root.
+  const hubViews = $derived(visibleHubViews(Boolean(activeWorkspace?.rootPath)));
   // This workspace's own arrangement of the row: the order it was dragged
   // into, and the hidden set it keeps or inherits from the app-wide
   // default. Handed to tabStripHubViews rather than applied here, so the
@@ -101,14 +99,7 @@
   // activeViewDef below still resolves it) but is reached by the gear in
   // the row's actions rather than by a tab -- so this list, not hubViews,
   // is what the tabs and their ⌘-digit badges are counted from.
-  const tabViews = $derived(
-    tabStripHubViews(
-      activeWorkspace?.id ?? "",
-      import.meta.env.DEV,
-      Boolean(activeWorkspace?.rootPath),
-      hubTabPrefs
-    )
-  );
+  const tabViews = $derived(tabStripHubViews(Boolean(activeWorkspace?.rootPath), hubTabPrefs));
   const settingsView = $derived(hubViews.find((v) => v.id === "settings") ?? null);
   // Which views this row can point AT: the tabs it draws, plus the ones
   // reached by a button. A workspace parked on a tab that has since been

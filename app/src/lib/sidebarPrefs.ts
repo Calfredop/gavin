@@ -11,8 +11,7 @@
 // Both are per-human view preferences rather than workspace data -- how
 // wide the chrome is on this screen, and which rows it pins, are not
 // facts about any project -- so they go where the sidebar's row
-// expansion, the smoke checklist's ticks and the Plans tab's selection
-// already live: localStorage. No daemon request, so no protocol bump and
+// expansion and the Plans tab's selection already live: localStorage. No daemon request, so no protocol bump and
 // no compat gate.
 //
 // Deliberately NOT config.json, even though the Scratchpad toggle is

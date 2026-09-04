@@ -10,8 +10,8 @@
 //
 // This is a per-human view preference rather than workspace data -- what
 // is unfolded on this screen is not a fact about the project -- so it
-// goes where the smoke checklist's ticks, the orchestration conflicts
-// box and the Plans tab's selection already live: localStorage. No
+// goes where the orchestration conflicts box and the Plans tab's
+// selection already live: localStorage. No
 // daemon request, so no protocol bump and no compat gate.
 
 /// Storage is injected (defaulting to the browser's) so this module stays

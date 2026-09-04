@@ -52,11 +52,11 @@ pub const SCRATCHPAD_WORKSPACE_NAME: &str = "Scratchpad";
 /// hand, and a hand-picked name outranks ours.
 pub const LEGACY_UNFILED_WORKSPACE_NAME: &str = "Unfiled";
 
-/// Well-known id for the dev-only "Smoke Test" workspace -- ensured at
-/// bootstrap by debug builds, actively stripped by release builds so a dev
-/// config.json can never leak it into prod. Closable: the next dev launch
-/// simply recreates it empty. Must match the frontend's own copy exactly
-/// (app/src/lib/workspace.ts's SMOKETEST_WORKSPACE_ID).
+/// Well-known id for the retired dev-only "Smoke Test" workspace. Nothing
+/// creates one any more; the id survives only so session::drop_smoketest_
+/// workspace can take it back out of a config.json an older debug build
+/// already wrote. Removing the constant would leave that workspace in
+/// every existing dev config for good, with no build able to explain it.
 pub const SMOKETEST_WORKSPACE_ID: &str = "__smoketest__";
 
 /// The range a terminal font size has to fall in to be stored. Must match

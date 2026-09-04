@@ -5,10 +5,9 @@
 //
 // Per-human view preferences rather than workspace data -- which
 // sections of the app this screen shows, and in what order, is not a
-// fact about any project -- so they go where the sidebar's expansion,
-// the smoke checklist's ticks and the Plans tab's selection already
-// live: localStorage. No daemon request, so no protocol bump and no
-// compat gate.
+// fact about any project -- so they go where the sidebar's expansion and
+// the Plans tab's selection already live: localStorage. No daemon
+// request, so no protocol bump and no compat gate.
 //
 // Deliberately NOT config.json, for the reason sidebarPrefs.ts spells
 // out at length: every AppConfig field is a carry-through field that a
@@ -243,11 +242,7 @@ function keepActiveHubViewReachable(): void {
   if (!ws) return;
   const showing = getActiveView(ws);
   if (showing === "terminal") return;
-  const resolved = resolveHubView(
-    { ...ws, hubView: showing },
-    import.meta.env.DEV,
-    currentHubTabPrefs(ws.id)
-  );
+  const resolved = resolveHubView({ ...ws, hubView: showing }, currentHubTabPrefs(ws.id));
   if (resolved !== showing) void switchWorkspaceView(ws.id, resolved);
 }
 

@@ -7,8 +7,8 @@
 // box the human had just closed. Nothing else remembers it for them: the
 // list is derived from rails on every push, so there is no row in the
 // plan to hang it on, and it is a per-human view preference rather than
-// workspace data anyway. Hence localStorage, the same place the smoke
-// checklist keeps its ticks.
+// workspace data anyway. Hence localStorage, the same place the sidebar
+// keeps which rows are unfolded.
 //
 // Absent means expanded, which is the "only expand on first appearance"
 // half of the rule: a box nobody has ruled on yet opens itself, and after

@@ -26,8 +26,6 @@ import {
   setPageFocus,
   resolveActiveFocus,
   UNFILED_WORKSPACE_ID,
-  SMOKETEST_WORKSPACE_ID,
-  showsDevOnlyViews,
   hubViewIsVisible,
   sidebarWorkspaceOrder,
   sidebarPageOrder,
@@ -514,28 +512,14 @@ describe("movePage", () => {
   });
 });
 
-describe("showsDevOnlyViews", () => {
-  it("is true only for the Smoke Test workspace in a dev build", () => {
-    expect(showsDevOnlyViews(SMOKETEST_WORKSPACE_ID, true)).toBe(true);
-    expect(showsDevOnlyViews(SMOKETEST_WORKSPACE_ID, false)).toBe(false);
-    expect(showsDevOnlyViews("ws-1", true)).toBe(false);
-    expect(showsDevOnlyViews(UNFILED_WORKSPACE_ID, true)).toBe(false);
-  });
-});
-
 describe("hubViewIsVisible", () => {
   it("always shows a plain view", () => {
-    expect(hubViewIsVisible({}, "ws-1", false, false)).toBe(true);
+    expect(hubViewIsVisible({}, false)).toBe(true);
   });
 
   it("hides a root-requiring view until a root is bound", () => {
-    expect(hubViewIsVisible({ requiresRoot: true }, "ws-1", true, false)).toBe(false);
-    expect(hubViewIsVisible({ requiresRoot: true }, "ws-1", true, true)).toBe(true);
-  });
-
-  it("keeps the dev-only rule", () => {
-    expect(hubViewIsVisible({ devOnly: true }, SMOKETEST_WORKSPACE_ID, true, false)).toBe(true);
-    expect(hubViewIsVisible({ devOnly: true }, "ws-1", true, true)).toBe(false);
+    expect(hubViewIsVisible({ requiresRoot: true }, false)).toBe(false);
+    expect(hubViewIsVisible({ requiresRoot: true }, true)).toBe(true);
   });
 });
 
