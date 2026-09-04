@@ -35,6 +35,7 @@ import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
 import type { StatusSince } from "./attentionInbox";
+import { indexQueued, type QueuedInput } from "./queuedInput";
 import { candidateAgentConfig, type Candidate } from "./bestOfN";
 
 export type { SessionStatus };
@@ -191,6 +192,77 @@ export const daemonCompat = hotState<Writable<DaemonCompat | null>>(
 /// a dismissible strip instead, so the failure is still visible and the
 /// app is still usable.
 export const daemonRequestError = writable<string | null>(null);
+
+/// Every session's pending follow-ups, in delivery order, keyed by
+/// session id.
+///
+/// A push-fed map WITH a read-back, which is the whole reason
+/// `Request::ListQueuedInputs` exists at all: `QueuedInputsChanged` is
+/// routed to a session's attached writer, so a frontend that reloaded
+/// was attached to nothing when every previous push fired. The daemon
+/// re-sends each session's queue on Attach, and Attach runs once per app
+/// PROCESS -- so without `seedQueuedInputs` below, a `tauri dev` edit
+/// would leave the strip claiming an empty queue over a message the
+/// daemon is still holding. That is the `gitStatusById` bug exactly, and
+/// it is worse here: the human queued the follow-up because they were
+/// walking away, and an empty strip would read as "it was delivered".
+///
+/// A session with nothing pending is ABSENT, never an empty array: the
+/// push carries the whole queue every time, so `[]` and "no key" say the
+/// same thing and keeping both would only invite a surface to tell them
+/// apart.
+///
+/// Parked on hotBag with the rest: an HMR edit re-executes this module
+/// and would otherwise drop every queue back to blank with no push
+/// coming to refill it.
+export const queuedInputsById = hotState(
+  "queuedInputsById",
+  () => writable<Record<string, QueuedInput[]>>({}),
+  hotBag
+);
+
+/// Shared by the "queued-inputs-changed" listener in bootstrap() and
+/// this file's own tests. The payload is the WHOLE queue for that
+/// session, never a delta, so this replaces rather than merges -- a
+/// client that missed a push cannot drift, and one that receives them
+/// out of order still converges on the last one.
+export function handleQueuedInputsChanged(sessionId: string, queued: QueuedInput[]): void {
+  queuedInputsById.update((s) => {
+    // Deleted rather than stored empty, so the map's keys mean "has
+    // something pending" and no surface has to check both.
+    if (queued.length === 0) {
+      if (!(sessionId in s)) return s;
+      const next = { ...s };
+      delete next[sessionId];
+      return next;
+    }
+    return { ...s, [sessionId]: queued };
+  });
+}
+
+/// The read-back. Runs once at bootstrap, and OVERWRITES rather than
+/// filling gaps -- the opposite of seedSessionBaselines' rule, and the
+/// difference is worth naming.
+///
+/// Those maps are fed by pushes that are each a fact about one moment
+/// ("the cwd changed to X"), so a push that has landed is newer than any
+/// snapshot and must win. This one is a fact about a WHOLE LIST, and the
+/// list this reply carries is the one the daemon holds right now. A
+/// merge would keep a stale queue for a session that has since drained
+/// -- the exact bad answer, since a follow-up shown as pending after it
+/// was delivered invites the human to send it a second time.
+async function seedQueuedInputs(): Promise<void> {
+  // Same wait loadTabMaps satisfies: once those maps have come back, the
+  // Rust side has managed the CommandConnection these ride.
+  await tabMapsLoaded;
+  const all = await backend.listQueuedInputs().catch(() => null);
+  // Against a daemon older than v29 this request never reaches the wire,
+  // so the catch is the ordinary path there, not an error: the map stays
+  // empty and every queueing surface is disabled with the version reason
+  // (daemonCompat's `queuedFollowUps`).
+  if (!all) return;
+  queuedInputsById.set(indexQueued(all));
+}
 
 /// Whether the app hub -- the fleet overview above every workspace -- has
 /// taken over the main pane.
@@ -801,6 +873,7 @@ export async function bootstrap(): Promise<void> {
   // in flight by the time either of them has a payload to apply.
   tabMapsLoaded = loadTabMaps();
   void seedSessionBaselines();
+  void seedQueuedInputs();
   unlisteners.push(
     await listen<WorkspacesData>("workspaces-ready", async (event) => {
       // Awaited BEFORE the tree lands in the store: a file or board tab
@@ -884,6 +957,16 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(
     await listen<[string, string]>("session-failed", (event) => {
       handleSessionFailed(event.payload[0], event.payload[1]);
+    })
+  );
+  // Fires for every change to a session's queue, whoever made it: this
+  // window adding one, another surface reordering one, and -- the case
+  // with no local cause at all -- the daemon delivering the head because
+  // the session went idle. The last is why the strip cannot simply trust
+  // the reply to its own writes.
+  unlisteners.push(
+    await listen<[string, QueuedInput[]]>("queued-inputs-changed", (event) => {
+      handleQueuedInputsChanged(event.payload[0], event.payload[1]);
     })
   );
   // An agent naming its own tab (gavin_name_session). Straight into
@@ -1829,6 +1912,15 @@ export function recordSessionExit(sessionId: string, exitCode: number): void {
 }
 
 export function handleSessionExited(sessionId: string): void {
+  // Cleared here rather than left standing like cwd and status, and the
+  // difference is what the entry IS. Those are facts about a session
+  // that stay true after it ends; a queue is undelivered content, and
+  // the daemon drops it with the session for exactly that reason
+  // (registry.rs `remove`) -- a follow-up outliving its session is not
+  // waiting, it is undeliverable. Dropping it here too keeps the two
+  // sides agreeing without needing a push the daemon has no writer left
+  // to send on.
+  handleQueuedInputsChanged(sessionId, []);
   const state = get(layoutState);
   // A main agent session lives outside every page tree (D12), so the
   // search below can never find it -- without this branch its terminal

@@ -26,6 +26,8 @@ import {
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
 import { missingAttachmentReason, resolvedAttachmentPaths } from "./attachments";
+import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "./queuedInput";
+import { queueFollowUp, queueTargetFor } from "./queuedInputActions";
 import type { CardView } from "./planBoard";
 
 /// The run gate for a card's attachments: the absolute paths to hand the
@@ -375,9 +377,24 @@ export function mainAgentSessionId(workspaceId: string): string | null {
   return get(layoutState).workspaces.find((w) => w.id === workspaceId)?.mainSessionId ?? null;
 }
 
-/// Bracketed paste into the workspace's RUNNING main agent, then Enter.
-/// Bracketed so a multi-line prompt arrives as one block instead of
-/// line-by-line submissions. Returns an error string, or null.
+/// Hands a prompt to the workspace's RUNNING main agent: bracket-pasted
+/// straight into its terminal when it is free, QUEUED when it is not.
+/// Returns an error string, or null.
+///
+/// The queue is the whole reason this is not one line. A bracketed paste
+/// into a working agent lands in the middle of its turn -- somewhere in
+/// its reasoning, at a prompt that is not accepting input -- and one
+/// into an agent with a question on screen files a card as the answer to
+/// that question. Both are silent: the paste succeeds, the terminal
+/// scrolls, and the human finds out much later. The daemon holds the
+/// message instead and delivers it at the next idle, which is the moment
+/// a paste was ever going to be safe.
+///
+/// Falling back to the paste is not a fallback for convenience. Against
+/// a daemon older than v29 the queue does not exist on the wire at all,
+/// and this must behave exactly as it did before the feature -- a
+/// silently-dropped card would be strictly worse than a badly-timed
+/// paste. `shouldQueueForMainAgent` covers the rest of that judgement.
 ///
 /// Never starts the agent: agent launches cost money and attention, and
 /// that is the human's call.
@@ -387,6 +404,19 @@ export async function pasteToMainAgent(
 ): Promise<string | null> {
   const mainSessionId = mainAgentSessionId(workspaceId);
   if (!mainSessionId) return NO_MAIN_AGENT;
+  const state = get(layoutState);
+  const target = queueTargetFor(
+    state.sessionStatusById[mainSessionId],
+    state.interruptedSessionIds.has(mainSessionId)
+  );
+  // Refused outright rather than pasted OR queued: what is in an
+  // interrupted tab is a bare shell, so the paste would run the prompt as
+  // a command, and the queue would hold a message that can never be
+  // delivered (`interrupted` is never cleared).
+  if (target.interrupted) return INTERRUPTED_REASON;
+  if (!target.blockedReason && shouldQueueForMainAgent(target.status)) {
+    return queueFollowUp(mainSessionId, target, prompt);
+  }
   try {
     await backend.writeInput(mainSessionId, `\x1b[200~${prompt}\x1b[201~\r`);
   } catch (e) {
@@ -396,12 +426,17 @@ export async function pasteToMainAgent(
 }
 
 // Hands a card to the RUNNING workspace agent (the Home panel's main
-// session, D12) instead of spawning a dedicated one: the same prompt is
-// bracketed-pasted into its terminal and submitted, the card gets In
-// Progress, and the view jumps to Home to watch. No card_sessions
-// binding -- the main agent serves many cards; the card's status
-// lifecycle is the tracking. Never starts the agent (sub-6 invariant:
-// agent launches cost money and attention).
+// session, D12) instead of spawning a dedicated one: the same prompt
+// goes into its terminal -- pasted if the agent is free, queued if it is
+// mid-turn -- the card gets In Progress, and the view jumps to Home to
+// watch. No card_sessions binding -- the main agent serves many cards;
+// the card's status lifecycle is the tracking. Never starts the agent
+// (sub-6 invariant: agent launches cost money and attention).
+//
+// The jump is what makes the queued case legible without a second
+// message: the human lands on the agent panel, and the follow-up queue
+// strip under that terminal is already showing the card they just sent,
+// with the reason it is waiting.
 export async function sendToMainAgent(workspaceId: string, card: CardView): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
   // Checked before composing: composing reads the card file, and "no

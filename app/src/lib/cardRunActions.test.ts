@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
+import type { DaemonCompat } from "./daemonCompat";
+import type { SessionStatus } from "./notifications";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
@@ -13,6 +15,10 @@ vi.mock("./backend", () => ({
   writeInput: vi.fn(),
   getBoard: vi.fn(),
   attachmentStatus: vi.fn(),
+  // Resolved by default with an empty queue: the reply is applied to the
+  // store, not asserted on, so every test that is not about queueing
+  // just needs it not to reject.
+  queueInput: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("./layoutState", () => ({
   layoutState: writable({
@@ -36,6 +42,13 @@ vi.mock("./layoutState", () => ({
     interruptedSessionIds: new Set<string>(),
     failureReasonById: {} as Record<string, string>,
   }),
+  // The three the follow-up queue reads through queuedInputActions.
+  // `daemonCompat` null means "not connected yet", which
+  // featureBlockedReason treats as ungated -- so the default here is a
+  // daemon that CAN queue, and the version-blocked path is set per test.
+  daemonCompat: writable(null as DaemonCompat | null),
+  queuedInputsById: writable({} as Record<string, unknown[]>),
+  handleQueuedInputsChanged: vi.fn(),
   handleAgentSessionSpawned: vi.fn(),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // The DAEMON half of the conversation-resume gate lives here, so the
@@ -84,7 +97,7 @@ vi.mock("./workspace", () => {
 });
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, baseShaForLaunch, armFailureDetection } from "./layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, baseShaForLaunch, armFailureDetection } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
@@ -828,6 +841,99 @@ describe("sendToMainAgent", () => {
     expect(await sendToMainAgent("ws-1", card("plan", null))).toContain("start it on the Home tab");
     expect(await sendToMainAgent("ws-1", card("note", null))).toContain("not runnable");
     expect(backend.writeInput).not.toHaveBeenCalled();
+  });
+
+  /// Setting a status on the main session is how these drive the choice
+  /// between a paste and a queue -- the whole decision is
+  /// shouldQueueForMainAgent over that one value.
+  function setMainStatus(status: SessionStatus | undefined): void {
+    const sessionStatusById: Record<string, SessionStatus> = {};
+    if (status !== undefined) sessionStatusById["main-1"] = status;
+    layoutState.update((st) => ({ ...st, sessionStatusById }));
+  }
+
+  async function sendPlan(): Promise<string | null> {
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    return sendToMainAgent("ws-1", card("plan", "To Do"));
+  }
+
+  it("queues instead of pasting into an agent that is mid-turn", async () => {
+    // A bracketed paste here lands somewhere in the agent's reasoning,
+    // at a prompt that is not accepting input, and says nothing about
+    // having done so.
+    setMainSession("main-1");
+    setMainStatus("working");
+
+    expect(await sendPlan()).toBeNull();
+
+    expect(backend.queueInput).toHaveBeenCalledWith("main-1", expect.stringContaining("/ws/.gavin-root/plans/t.md"));
+    expect(backend.writeInput).not.toHaveBeenCalled();
+    // Still lands the human on Home, which is where the strip showing
+    // the follow-up they just queued lives.
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "home");
+    setMainSession(null);
+    setMainStatus(undefined);
+  });
+
+  it("queues rather than answering an agent's question with a card", async () => {
+    setMainSession("main-1");
+    setMainStatus("waiting_for_input");
+
+    expect(await sendPlan()).toBeNull();
+
+    expect(backend.queueInput).toHaveBeenCalled();
+    expect(backend.writeInput).not.toHaveBeenCalled();
+    setMainSession(null);
+    setMainStatus(undefined);
+  });
+
+  it("pastes into an idle agent, and into one whose status it never heard", async () => {
+    setMainSession("main-1");
+    for (const status of ["idle", "failed", undefined] as const) {
+      vi.mocked(backend.writeInput).mockClear();
+      vi.mocked(backend.queueInput).mockClear();
+      setMainStatus(status);
+
+      expect(await sendPlan()).toBeNull();
+
+      expect(backend.writeInput).toHaveBeenCalled();
+      expect(backend.queueInput).not.toHaveBeenCalled();
+    }
+    setMainSession(null);
+    setMainStatus(undefined);
+  });
+
+  it("keeps the old paste against a daemon too old to hold a queue", async () => {
+    // The request would never reach the wire, so queueing would drop the
+    // card in silence -- strictly worse than a badly timed paste.
+    setMainSession("main-1");
+    setMainStatus("working");
+    daemonCompat.set({ daemonVersion: 25, appVersion: 29, degraded: true });
+
+    expect(await sendPlan()).toBeNull();
+
+    expect(backend.writeInput).toHaveBeenCalled();
+    expect(backend.queueInput).not.toHaveBeenCalled();
+    daemonCompat.set(null);
+    setMainSession(null);
+    setMainStatus(undefined);
+  });
+
+  it("refuses an interrupted main agent instead of running the prompt as a command", async () => {
+    // That tab holds a bare shell in the agent's old cwd. Pasting is a
+    // line of prose at a shell prompt; queueing is a message that can
+    // never be delivered, because `interrupted` is never cleared.
+    setMainSession("main-1");
+    setMainStatus("working");
+    layoutState.update((st) => ({ ...st, interruptedSessionIds: new Set(["main-1"]) }));
+
+    expect(await sendPlan()).toContain("Relaunch the agent");
+
+    expect(backend.writeInput).not.toHaveBeenCalled();
+    expect(backend.queueInput).not.toHaveBeenCalled();
+    layoutState.update((st) => ({ ...st, interruptedSessionIds: new Set<string>() }));
+    setMainSession(null);
+    setMainStatus(undefined);
   });
 });
 

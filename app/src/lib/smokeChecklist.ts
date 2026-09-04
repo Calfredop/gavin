@@ -2890,6 +2890,59 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
     ],
   },
+  {
+    title: "Queued follow-ups",
+    items: [
+      {
+        id: "queue-strip-only-when-useful",
+        text: "An idle terminal has no queue band under it; start an agent working and the band appears, taking height from the terminal rather than covering its bottom rows",
+        hint: "Run `top` or any full-screen TUI first: if its last line is hidden behind the band, the refit after the band appears is not reaching the PTY.",
+      },
+      {
+        id: "queue-holds-until-idle",
+        text: "Queue a follow-up on a working agent: it is listed, NOT typed into the terminal, and it arrives on its own the moment the agent's turn ends",
+        hint: "This is the whole feature. Text appearing in the terminal straight away means the queue was bypassed.",
+      },
+      {
+        id: "queue-one-per-turn",
+        text: "Queue three follow-ups: they are delivered one per idle, not all at once when the agent first stops",
+        hint: "A follow-up is a turn. Three prompts pasted together would run as one.",
+      },
+      {
+        id: "queue-question-is-not-answered",
+        text: "With a queue pending, get the agent to ask you something: the band says so and delivers NOTHING until you have answered and its next turn ends",
+        hint: "Delivering here would file an unrelated follow-up as the answer to the agent's question.",
+      },
+      {
+        id: "queue-reorder-and-cancel",
+        text: "The arrows reorder pending follow-ups and the × cancels one; both survive closing and reopening the app",
+        hint: "The queue lives in the daemon's SQLite, so a relaunch is the real test that it is not app state.",
+      },
+      {
+        id: "queue-send-now-overrides",
+        text: "“Send now” on any entry — not just the first — delivers that one immediately, whatever the agent is doing",
+      },
+      {
+        id: "queue-survives-a-frontend-reload",
+        text: "With something queued, reload the frontend (⌘R under `tauri dev`): the band comes back with the same entries",
+        hint: "The push only reaches an attached writer and Attach runs once per app PROCESS, so this is the read-back working. An empty band here reads as “it was delivered”, which is the worst possible lie.",
+      },
+      {
+        id: "queue-refuses-an-interrupted-tab",
+        text: "Restart the daemon under a running agent, then try to queue in that tab: the compose button is disabled and the hover says to relaunch the agent first",
+        hint: "That tab holds a bare shell. A follow-up delivered there would run the human's English as a shell command, with nobody watching.",
+      },
+      {
+        id: "queue-send-to-agent-queues",
+        text: "With the workspace agent mid-turn, “Send to workspace agent” on a card lands you on Home with that card sitting in the queue band — not pasted into the middle of the agent's reasoning",
+      },
+      {
+        id: "queue-old-daemon-says-why",
+        text: "Against a daemon older than v29 the compose button is disabled with the version reason, and “Send to workspace agent” still pastes exactly as it did before",
+        hint: "A silently dropped card would be strictly worse than a badly timed paste — that is why this one falls back rather than refusing.",
+      },
+    ],
+  },
 ];
 
 export function totalItems(sections: ChecklistSection[] = SMOKE_SECTIONS): number {
