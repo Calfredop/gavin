@@ -400,8 +400,8 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       },
       {
         id: "run-rail-spawns-its-page",
-        text: "Starting an unbound rail spawns a page named after it, and the rail's agents land there",
-        hint: "The page chip reads “page at Start” beforehand and the rail's name afterwards; a new blank shell on that page opens in the rail's checkout, not $HOME. Re-arming it, or pressing Resume, must not make a second page — close the page while it is paused and Resume is the one case that should.",
+        text: "An unbound rail's FIRST LAUNCH spawns a page named after it, and the agent is that page's only tab — no blank terminal ahead of it",
+        hint: "Press Start and watch the sidebar: no page appears until the first step actually launches, and the one that then appears holds exactly one tab, the agent's, opened in the rail's checkout rather than $HOME. This is the fix — the page used to be made at Start, which meant opening an idle shell to have something to put on it, and that shell then sat first in the tab strip forever. Re-arming the rail, or pressing Resume, must not make a second page; close the page mid-run and the next launch makes a fresh one. A rail whose stage holds only a `gavin` action (Start rail) launches no session and so must get no page at all.",
       },
       {
         id: "run-rail-page-at-launch",

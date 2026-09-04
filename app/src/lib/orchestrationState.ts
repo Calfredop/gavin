@@ -41,6 +41,8 @@ import {
   findCardPlacement,
   sendCardToRail,
   pageToSpawnForRail,
+  firstColumnOf,
+  nestedChildrenOf,
   railCardsToMove,
   railDoneStepIds,
   removeSteps,
@@ -82,6 +84,7 @@ import { stepsFromTemplate } from "./orchestrationGroups";
 import type { GroupTemplate } from "./orchestrationGroups";
 import { libraryFor, toolRecords } from "./toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
+import { breakOutChildren, guardCompletion } from "./cardCompletion";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore, refresh as refreshGit } from "./gitState";
 import { branchResolvable } from "./git";
@@ -92,7 +95,7 @@ import {
   baseShaForLaunch,
   conversationIdForLaunch,
   createSessionOnPage,
-  createPage,
+  createSessionOnNewPage,
   handleAgentSessionSpawned,
   sessionExits,
   setOrchestrationAgent,
@@ -100,7 +103,7 @@ import {
   workspaceRootPath,
 } from "./layoutState";
 import { decoyEditedSteps } from "./worktreeCards";
-import { allSessionIds, presetSingle } from "./layout";
+import { allSessionIds } from "./layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
@@ -486,87 +489,116 @@ function railOwning(orch: Orchestration, stepId: string): Rail | null {
   return orch.rails.find((r) => r.stages.some((s) => s.steps.some((t) => t.id === stepId))) ?? null;
 }
 
-const spawningPages = new Set<string>();
-
-/// A running rail gets a page of its OWN, named after it (spec O16): its
-/// agents get a home they can be found in rather than piling onto the
-/// workspace's active page with everyone else's. Only when the rail has
-/// no live page binding -- an explicit one is never overridden, and
-/// re-arming returns to the page the rail already has.
-///
-/// Called at arming (Start, Resume), so the chip names the page before
-/// the first tick -- and again before every launch that makes a session
-/// (createSessionOnRailPage), because arming is not the only way a run
-/// row reaches the store. Idempotent by construction: a bound page that
-/// still exists answers null from pageToSpawnForRail and nothing is made.
-///
-/// Failing to create one is not fatal, and deliberately not a stall: the
-/// rail arms anyway and its launches fall back to the Agents-page
-/// posture (spec §4.3 step 4). A page is where agents land, not a
-/// precondition for running them.
-async function ensureRailPage(workspaceId: string, railId: string): Promise<void> {
-  // One page per rail even under a double-click: creating it is an await
-  // long enough for a second Start to arrive while the rail is still
-  // unbound, and two pages named after one rail is exactly what
-  // pageToSpawnForRail's deduping exists to prevent.
-  if (spawningPages.has(railId)) return;
-  const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
-  if (!rail) return;
-  const pages = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.pages ?? [];
-  const name = pageToSpawnForRail(rail, pages);
-  if (name === null) return;
-  // The page's own blank shell opens in the rail's checkout -- spelled
-  // exactly as executeToolLaunch spells it -- so the page is the rail's
-  // in the way that matters, not just by name. Undefined only when the
-  // workspace has no root at all, and then $HOME is as good a guess as
-  // any.
-  const tree = get(gavinTrees)[workspaceId];
-  const checkout = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
-  spawningPages.add(railId);
-  try {
-    const pageId = await createPage(workspaceId, (ids) => presetSingle(ids[0]), 1, name, {
-      cwd: checkout ?? undefined,
-      // The human is on the Orchestration tab -- they pressed Start
-      // there. The page appears in the sidebar and the rail's chip names
-      // it; taking the screen as well would be a jump they did not ask
-      // for, and unbearable when arming several rails in a row.
-      activate: false,
-    });
-    if (pageId) await mutatePlan(workspaceId, (orch) => bindRail(orch, railId, { pageId }));
-  } finally {
-    spawningPages.delete(railId);
-  }
-}
+/// A rail's page while it is being made, so a second launch WAITS for it
+/// rather than racing it. Keyed by rail id and cleared when the page is
+/// bound.
+const spawningPages = new Map<string, Promise<unknown>>();
 
 /// The rail's page, then the session on it. The ONE seam every launch
 /// that makes a session goes through -- card launch, tool launch, step
-/// resume -- so a rail's own page is a launch-time invariant and not
-/// merely an arming-time one. Start and Resume still call ensureRailPage
-/// themselves, but a run row can reach the store without either: an
+/// resume, worktree setup -- so a rail's own page is a launch-time
+/// invariant. A run row reaches the store by more routes than Start: an
 /// agent writing SetRailRun straight to the daemon socket, a rail left
 /// running across a restart, a push for a workspace not loaded yet.
-/// Before this, every such rail launched onto the workspace's ACTIVE
-/// page (createSessionOnPage's null fallback) and kept doing so for
-/// every later stage, retry and resume -- twenty tabs on "Page 1".
+/// Before this seam, every such rail launched onto the workspace's
+/// ACTIVE page (createSessionOnPage's null fallback) and kept doing so
+/// for every later stage, retry and resume -- twenty tabs on "Page 1".
 ///
-/// The binding is RE-READ after the page is made: bindRail is an
-/// optimistic mutatePlan, so the `rail` a caller captured at its top
-/// still says null. Passing that would land the very first session on
-/// the fallback and leave the new page empty.
+/// A running rail gets a page of its OWN, named after it (spec O16): its
+/// agents get a home they can be found in rather than piling onto the
+/// workspace's active page with everyone else's. Only when the rail has
+/// no live page binding -- an explicit one is never overridden, and a
+/// rail that already has a page just gains a tab on it.
 ///
-/// Not a stall when the page cannot be made: ensureRailPage swallows
-/// that, the binding stays null, and the session takes the fallback
-/// (spec §4.3 step 4).
+/// The page is built AROUND this session (createSessionOnNewPage), not
+/// beside it. Making the page first and landing the session on it
+/// afterwards is what opened every rail page on a blank shell nobody
+/// asked for, first in the tab strip for the life of the page: createPage
+/// spawns the shells itself, so the agent the page existed for arrived as
+/// tab two. It is also why ARMING no longer spawns the page ahead of the
+/// first launch -- at that moment there is no session to build it around,
+/// and a page with no tabs is not something this app can draw. A rail
+/// that runs nothing needs no page.
+///
+/// Not a stall when the page cannot be made: the binding stays null and
+/// the session takes the Agents-page fallback (spec §4.3 step 4). A page
+/// is where agents land, not a precondition for running them.
 async function createSessionOnRailPage(
   workspaceId: string,
   railId: string,
   cwd: string,
   command: string | null
 ): Promise<string | null> {
-  await ensureRailPage(workspaceId, railId);
+  // One page per rail even under a double Start: making it is an await
+  // long enough for a second launch to arrive while the rail is still
+  // unbound, and two pages named after one rail is exactly what
+  // pageToSpawnForRail's deduping exists to prevent. The second caller
+  // WAITS for the first instead of giving up on a page -- giving up used
+  // to drop that session on the Agents page -- and what it waits for
+  // resolves only once the binding is WRITTEN, so the rail it re-reads
+  // below is the bound one.
+  const pending = spawningPages.get(railId);
+  if (pending) await pending;
+  else {
+    const sessionId = await spawnRailPageFor(workspaceId, railId, cwd, command);
+    if (sessionId) return sessionId;
+  }
   const pageId =
     get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId)?.pageId ?? null;
   return createSessionOnPage(workspaceId, pageId, cwd, command);
+}
+
+/// The rail's page and its first tab in one act, or null when the rail
+/// already has a page (or is gone). The session's own cwd is the page's
+/// -- a rail's launch already carries its checkout, spelled the way
+/// executeToolLaunch spells it -- so the page is the rail's in the way
+/// that matters, not just by name.
+///
+/// Everything from the lookup to the spawningPages write runs in ONE
+/// synchronous turn, deliberately: an await before that write would let
+/// a simultaneous launch read the map before the first wrote it, and
+/// both would then spawn a page. That is why the caller's guard above is
+/// a plain map read and not an `await spawningPages.get(...)`.
+async function spawnRailPageFor(
+  workspaceId: string,
+  railId: string,
+  cwd: string,
+  command: string | null
+): Promise<string | null> {
+  const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
+  if (!rail) return null;
+  const pages = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.pages ?? [];
+  const name = pageToSpawnForRail(rail, pages);
+  if (name === null) return null;
+  const spawning = spawnRailPage(workspaceId, railId, name, cwd, command);
+  spawningPages.set(railId, spawning.catch(() => null));
+  try {
+    return (await spawning)?.sessionId ?? null;
+  } finally {
+    spawningPages.delete(railId);
+  }
+}
+
+/// Bound only once the page exists, and awaited by whoever the guard
+/// above is holding -- a waiter that resumed on a half-written binding
+/// would find its rail naming a page the layout does not have yet, read
+/// that as the closed-page case, and spawn a second one.
+async function spawnRailPage(
+  workspaceId: string,
+  railId: string,
+  name: string,
+  cwd: string,
+  command: string | null
+): Promise<{ pageId: string; sessionId: string } | null> {
+  const made = await createSessionOnNewPage(workspaceId, name, cwd, command, {
+    // The human is on the Orchestration tab -- they pressed Start there.
+    // The page appears in the sidebar and the rail's chip names it;
+    // taking the screen as well would be a jump they did not ask for,
+    // and unbearable when arming several rails in a row.
+    activate: false,
+  });
+  if (made) await mutatePlan(workspaceId, (orch) => bindRail(orch, railId, { pageId: made.pageId }));
+  return made;
 }
 
 /// A session on the rail's page that is not a step: the `[worktree] setup`
@@ -593,9 +625,11 @@ export async function startRail(workspaceId: string, railId: string): Promise<vo
   if (!rail) return;
   const stageId = firstUnfinishedStageId(rail, orch);
   if (!stageId) return;
-  // Before the rail is armed, so the first launch of the very first tick
-  // already lands on it.
-  await ensureRailPage(workspaceId, railId);
+  // No page is spawned here. The rail's page is made by its first launch
+  // (createSessionOnRailPage), around the session that launch creates --
+  // arming it earlier meant opening a blank shell to have something to
+  // put on the page, and that shell then sat first in the tab strip
+  // forever. A rail that arms and launches nothing needs no page.
   await setRailRunAction(workspaceId, railId, "running", stageId);
   await tick(workspaceId);
 }
@@ -619,9 +653,8 @@ export async function resumeRail(workspaceId: string, railId: string): Promise<v
   const rail = orch?.rails.find((r) => r.id === railId);
   if (!rail) return;
   const current = orch.railRuns.find((r) => r.railId === railId)?.currentStageId ?? null;
-  // Resume arms the rail too, and its page may well have been closed
-  // while it sat paused.
-  await ensureRailPage(workspaceId, railId);
+  // A page closed while the rail sat paused is replaced by the first
+  // launch after this, for the same reason Start spawns none.
   const stageId =
     current && rail.stages.some((s) => s.id === current)
       ? current
@@ -2070,11 +2103,37 @@ export async function moveRailCardsAction(
 ): Promise<string | null> {
   const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
   if (!rail) return null;
-  const paths = railCardsToMove(rail, cardIndex(get(gavinTrees)[workspaceId]), columnName);
+  const cards = cardIndex(get(gavinTrees)[workspaceId]);
+  const paths = railCardsToMove(rail, cards, columnName);
+  const columns = get(kanbanState)[workspaceId]?.columns ?? [];
   let current = "";
   try {
     for (const path of paths) {
       current = path;
+      // Filing a plan carries its nested tasks with it (cardCompletion.ts).
+      // Asked per card rather than once for the rail: the question names
+      // the plan and its children, and a rail carrying two such plans is
+      // two different answers, not one.
+      const entry = cards.get(path);
+      if (entry) {
+        const decision = await guardCompletion(
+          workspaceId,
+          {
+            title: entry.plan.title,
+            kind: entry.plan.kind,
+            status: entry.plan.status,
+            children: nestedChildrenOf(path, cards).map((c) => ({
+              path: c.plan.path,
+              title: c.plan.title,
+            })),
+          },
+          columnName,
+          columns
+        );
+        if (decision.error) return decision.error;
+        // Declined for THIS card only: the rest of the rail still files.
+        if (!decision.proceed) continue;
+      }
       await backend.setPlanFrontmatterField(path, "status", columnName);
       patchPlanField(workspaceId, path, "status", columnName);
     }
@@ -2083,6 +2142,31 @@ export async function moveRailCardsAction(
     const fileName = current.split("/").at(-1) ?? current;
     return `Couldn't move ${fileName} to ${columnName}: ${e instanceof Error ? e.message : e}`;
   }
+}
+
+/// The `nested-with-parent` repair: give the nested child a status of its
+/// own, which un-nests it into the board's first column while keeping the
+/// `parent:` link. Both halves of that conflict then stop being one piece
+/// of work, and the pair's badge clears without either step leaving a
+/// rail -- which is the answer a human who deliberately placed the child
+/// was reaching for.
+///
+/// Null on success and when there is nothing to do (a board with no
+/// columns, or a card the tree has lost); a message naming the file
+/// otherwise, in the same voice as `moveRailCardsAction`.
+export async function breakOutNestedCardAction(
+  workspaceId: string,
+  cardPath: string
+): Promise<string | null> {
+  const entry = cardIndex(get(gavinTrees)[workspaceId]).get(cardPath);
+  const column = firstColumnOf(get(kanbanState)[workspaceId]?.columns ?? []);
+  if (!entry || !column) return null;
+  const decision = await breakOutChildren(
+    workspaceId,
+    [{ path: cardPath, title: entry.plan.title }],
+    column.name
+  );
+  return decision.error;
 }
 
 /// Take a rail's finished steps OFF it in one plan write -- the header's

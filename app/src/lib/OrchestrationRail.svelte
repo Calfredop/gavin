@@ -477,8 +477,10 @@
         >{/if}
       </span>
       <!-- Not "no page": an unbound rail is not page-less, it gets one
-           of its own the moment the human arms it (spec O16). -->
-      <span class="pg">{pageName ?? "page at Start"}</span>
+           of its own the moment a step of it actually launches (spec
+           O16) -- built around that session, which is why it waits for
+           one rather than appearing at Start. -->
+      <span class="pg">{pageName ?? "page at launch"}</span>
     </button>
     <!-- Only when there is something to say. A branch with no pull
          request is the resting state of most branches, and a permanent

@@ -84,8 +84,15 @@
     return null;
   });
 
-  /// The same page Start would spawn on its own (spec O16), made early:
-  /// named after the rail, opened in the rail's checkout.
+  /// The page the rail's first launch would spawn on its own (spec O16),
+  /// made early: named after the rail, opened in the rail's checkout.
+  ///
+  /// This one DOES open a blank shell, and deliberately. A launch builds
+  /// the page around its own session, which is why it no longer leaves an
+  /// idle terminal first in the tab strip -- but here there is no session
+  /// to build one around, only a human asking for the page now. A page
+  /// has to be made of something, and a shell in the rail's checkout is
+  /// what they asked for.
   async function bindNewPage(): Promise<void> {
     const pageId = await createPage(workspaceId, (ids) => presetSingle(ids[0]), 1, rail.name, {
       cwd: railCheckout ?? undefined,
@@ -248,8 +255,8 @@
       <section>
         <h4>Page</h4>
         <p class="note">
-          Where this rail's agent sessions land. Unbound, Start gives the rail a page of its own,
-          named after it.
+          Where this rail's agent sessions land. Unbound, the rail's first launch gives it a page
+          of its own, named after it, opening on that session.
         </p>
         <ul>
           <li>
@@ -258,7 +265,7 @@
               class:on={rail.pageId === null}
               onclick={() => void bindRailAction(workspaceId, rail.id, { pageId: null })}
             >
-              <span class="path">None — a page of its own, made at Start</span>
+              <span class="path">None — a page of its own, made at its first launch</span>
             </button>
           </li>
           {#each pages as page (page.id)}
@@ -278,7 +285,7 @@
              in the list is selected. -->
         {#if rail.pageId && !pages.some((p) => p.id === rail.pageId)}
           <p class="note">
-            Bound to a page that has since been closed — Start will make a new one.
+            Bound to a page that has since been closed — the next launch will make a new one.
           </p>
         {/if}
         <button type="button" class="secondary" onclick={() => void bindNewPage()}>

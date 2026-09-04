@@ -2521,7 +2521,7 @@ export async function createPage(
 export async function createTiledPage(
   workspaceId: string,
   name: string,
-  specs: readonly { cwd: string; command: string }[],
+  specs: readonly { cwd: string; command: string | null }[],
   opts: { activate?: boolean } = {}
 ): Promise<{ pageId: string; sessionIds: string[] } | null> {
   const state = get(layoutState);
@@ -2535,7 +2535,10 @@ export async function createTiledPage(
     // directory that was created moments ago, and starting them in order
     // means a failure names the candidate it belongs to.
     for (const spec of specs) {
-      sessionIds.push(await backend.createSession(spec.cwd, spec.command));
+      // "" and null both mean "the default", exactly as they do on a
+      // SessionLink -- a one-pane page is spawned by callers that carry
+      // a rail's launch, not only by best-of-N's real worktree paths.
+      sessionIds.push(await backend.createSession(spec.cwd || undefined, spec.command ?? undefined));
     }
   } catch (e) {
     setError(String(e));
@@ -2559,6 +2562,31 @@ export async function createTiledPage(
   }));
   await persistWorkspaces(workspaces, data.activeWorkspaceId);
   return { pageId, sessionIds };
+}
+
+/// ONE session, and a page built AROUND it: the session is the new
+/// page's first and only tab.
+///
+/// The distinction from `createPage` + `createSessionOnPage` -- what
+/// every "make the page, then land the session on it" flow used to be --
+/// is the blank shell that pairing leaves behind. `createPage` opens the
+/// page with fresh shells of its OWN, so the session the page was made
+/// FOR arrives as tab two, behind an idle terminal nobody asked for and
+/// first in the strip for the life of the page. When a page exists
+/// because something is about to run on it, that something is its first
+/// tab.
+///
+/// `createPage` stays right for the human-facing "+": there the blank
+/// shell IS the ask.
+export async function createSessionOnNewPage(
+  workspaceId: string,
+  name: string,
+  cwd: string,
+  command: string | null,
+  opts: { activate?: boolean } = {}
+): Promise<{ pageId: string; sessionId: string } | null> {
+  const made = await createTiledPage(workspaceId, name, [{ cwd, command }], opts);
+  return made ? { pageId: made.pageId, sessionId: made.sessionIds[0] } : null;
 }
 
 // Creates a fresh session for a kanban card link, homing it in the given

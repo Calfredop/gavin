@@ -141,6 +141,7 @@ import {
   openAppHub,
   closeWorkspace,
   createPage,
+  createSessionOnNewPage,
   createSessionForCard,
   openFileInSplit,
   renamePage,
@@ -1759,6 +1760,51 @@ describe("createPage", () => {
     expect(state.workspaces[0].pages[1].name).toBe("backend");
     expect(state.workspaces[0].activePageId).toBe(before);
     expect(state.focusedSessionId).toBe("s1");
+  });
+});
+
+// The bug this exists to prevent: a rail's page opened with a blank
+// shell of its own, and the agent the page was made FOR arrived beside
+// it as tab two -- an idle terminal nobody asked for, first in the strip
+// for the life of the page.
+describe("createSessionOnNewPage", () => {
+  it("makes the session the new page's only tab, with no blank shell ahead of it", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    const made = await createSessionOnNewPage("ws-1", "backend", "/repos/wt", "claude", {
+      activate: false,
+    });
+
+    expect(made).toEqual({ pageId: expect.any(String), sessionId: "agent" });
+    // ONE session, carrying the caller's own cwd and command -- not the
+    // workspace root, and not a bare shell.
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/wt", "claude");
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages).toHaveLength(2);
+    expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["agent"]));
+    // And the page it was told not to activate stays off the screen.
+    expect(state.workspaces[0].activePageId).toBe("p1");
+    expect(state.focusedSessionId).toBe("s1");
+  });
+
+  // "" and null are how a SessionLink spells "the default" -- a rail's
+  // launch carries them straight through.
+  it("treats an empty cwd and a null command as unset", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    await createSessionOnNewPage("ws-1", "backend", "", null);
+
+    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined);
+  });
+
+  it("is null for an unknown workspace, and starts nothing", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    expect(await createSessionOnNewPage("missing", "backend", "/x", "claude")).toBeNull();
+    expect(backend.createSession).not.toHaveBeenCalled();
   });
 });
 
