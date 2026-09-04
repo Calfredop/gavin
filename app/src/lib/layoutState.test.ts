@@ -86,6 +86,9 @@ vi.mock("./backend", () => ({
   // Same: the git half of that refill, keyed by the cwds the call above
   // returned.
   getGitBaselines: vi.fn().mockResolvedValue([]),
+  // Resolved by default: the follow-up queue's read-back, which bootstrap
+  // calls best-effort for the same reason as the two above.
+  listQueuedInputs: vi.fn().mockResolvedValue([]),
   // Resolved by default: pruneBoardTabs calls .catch() on this.
   setBoardTabs: vi.fn().mockResolvedValue(undefined),
   // The three fetches a reclaim fires against the restored id. Empty but
@@ -199,6 +202,8 @@ import {
   runningSessionCount,
   daemonCompat,
   daemonRequestError,
+  queuedInputsById,
+  handleQueuedInputsChanged,
   type LayoutState,
 } from "./layoutState";
 
@@ -255,6 +260,9 @@ beforeEach(() => {
   daemonCompat.set(null);
   // Module-level store, same reason.
   daemonRequestError.set(null);
+  // Module-level store, same reason: a queue seeded by one test would
+  // otherwise still be pending in the next one.
+  queuedInputsById.set({});
   // Module-level store, same reason: a workspace parked in another window
   // by one test would make the next one's activation refuse.
   workspaceWindows.set({});
@@ -2995,6 +3003,99 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
     await vi.waitFor(() => expect(get(layoutState).cwdBySessionId["s-1"]).toBe("/ws"));
     expect(get(layoutState).gitStatusById).toEqual({});
+  });
+
+  // The fifth push-fed map, and the one where a missed baseline is worst:
+  // `QueuedInputsChanged` is routed to a session's attached writer, and
+  // Attach runs once per app PROCESS, so a frontend reload would show an
+  // empty strip over a follow-up the daemon is still holding -- which
+  // reads as "delivered" to the human who queued it and walked away.
+  it("fills every session's queue from the read-back", async () => {
+    vi.mocked(backend.listQueuedInputs).mockResolvedValue([
+      { id: "q1", sessionId: "s-1", text: "run the tests", createdAtUs: 1_000 },
+      { id: "q2", sessionId: "s-2", text: "then commit", createdAtUs: 2_000 },
+      { id: "q3", sessionId: "s-1", text: "and push", createdAtUs: 3_000 },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(queuedInputsById)["s-1"]).not.toBeUndefined());
+    // Grouped by session, in the daemon's order -- which is delivery
+    // order, not the order the rows were written.
+    expect(get(queuedInputsById)["s-1"].map((q) => q.id)).toEqual(["q1", "q3"]);
+    expect(get(queuedInputsById)["s-2"].map((q) => q.id)).toEqual(["q2"]);
+  });
+
+  it("survives a daemon too old to answer the read-back", async () => {
+    // The ordinary path against a pre-v29 daemon: the request never
+    // reaches the wire, and the app behaves as it did before the feature
+    // existed rather than showing an error nobody can act on here.
+    vi.mocked(backend.listQueuedInputs).mockRejectedValue(new Error("unsupported request"));
+
+    await bootstrapReady();
+
+    expect(get(layoutState).status).toBe("ready");
+    expect(get(queuedInputsById)).toEqual({});
+  });
+
+  it("replaces the whole map rather than filling gaps", async () => {
+    // The opposite rule from the baselines above, on purpose. Those
+    // pushes each state one fact about one moment, so a landed push
+    // outranks a snapshot. This reply is the daemon's WHOLE list as it
+    // stands, so a merge would keep a queue that has since drained --
+    // and a delivered follow-up shown as pending invites a second send.
+    handleQueuedInputsChanged("s-old", [
+      { id: "stale", sessionId: "s-old", text: "gone", createdAtUs: 1 },
+    ]);
+    vi.mocked(backend.listQueuedInputs).mockResolvedValue([
+      { id: "q1", sessionId: "s-1", text: "run the tests", createdAtUs: 1_000 },
+    ]);
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(queuedInputsById)["s-1"]).not.toBeUndefined());
+    expect(get(queuedInputsById)["s-old"]).toBeUndefined();
+  });
+});
+
+describe("the follow-up queue map", () => {
+  it("takes the push as the whole truth for that session", () => {
+    handleQueuedInputsChanged("s-1", [
+      { id: "a", sessionId: "s-1", text: "first", createdAtUs: 1 },
+      { id: "b", sessionId: "s-1", text: "second", createdAtUs: 2 },
+    ]);
+    // A reorder arrives as the full list, so this replaces rather than
+    // merges: a client that missed a push still converges on the last.
+    handleQueuedInputsChanged("s-1", [
+      { id: "b", sessionId: "s-1", text: "second", createdAtUs: 2 },
+    ]);
+
+    expect(get(queuedInputsById)["s-1"].map((q) => q.id)).toEqual(["b"]);
+  });
+
+  it("drops the key when a queue empties, rather than storing []", () => {
+    handleQueuedInputsChanged("s-1", [
+      { id: "a", sessionId: "s-1", text: "first", createdAtUs: 1 },
+    ]);
+    handleQueuedInputsChanged("s-1", []);
+
+    // "Has something pending" is one test, not two: no surface should
+    // have to tell an empty array from a missing key.
+    expect("s-1" in get(queuedInputsById)).toBe(false);
+  });
+
+  it("clears a queue when its session exits", () => {
+    // Unlike cwd and status, which stay true after a session ends, an
+    // undelivered follow-up on a dead session can never be delivered --
+    // and the daemon drops it with the session for the same reason.
+    setState([ws("w1", [page("p1", { type: "leaf", tabs: ["s-1"], activeTabIndex: 0 })])], "w1", "s-1");
+    handleQueuedInputsChanged("s-1", [
+      { id: "a", sessionId: "s-1", text: "first", createdAtUs: 1 },
+    ]);
+
+    handleSessionExited("s-1");
+
+    expect("s-1" in get(queuedInputsById)).toBe(false);
   });
 });
 

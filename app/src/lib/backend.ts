@@ -15,6 +15,7 @@ import type { GroupTemplateRecord } from "./orchestrationGroups";
 import type { DaemonCompat } from "./daemonCompat";
 import type { SessionStatus } from "./notifications";
 import type { OrphanProcess } from "./orphan";
+import type { QueuedInput } from "./queuedInput";
 import type { ManagedSessions } from "./sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "./workspaceDelete";
 
@@ -262,6 +263,39 @@ export function setOnWriteInputHook(handler: (sessionId: string) => void): void 
 export function writeInput(sessionId: string, data: string): Promise<void> {
   onWriteInput?.(sessionId);
   return invoke("write_input", { sessionId, data });
+}
+
+// The four follow-up-queue calls. Every one of them answers with the
+// queue it left behind, so a caller never has to wait for the
+// `queued-inputs-changed` push to learn what its own request did -- the
+// push is what tells the OTHER surfaces watching the same session.
+
+/// Holds a follow-up for a session, or hands it over at once if that
+/// session is already idle. Which of the two happens is the daemon's
+/// call: the app does not have to know a session's status to queue for
+/// it, and a status it read a moment ago would be the wrong one anyway.
+export function queueInput(sessionId: string, text: string): Promise<QueuedInput[]> {
+  return invoke("queue_input", { sessionId, text });
+}
+
+/// Every session's pending follow-ups, flat. The read-back for
+/// `queuedInputsById`: `QueuedInputsChanged` is routed to a session's
+/// attached writer, so a frontend that reloaded has missed every push
+/// the daemon ever sent it.
+export function listQueuedInputs(): Promise<QueuedInput[]> {
+  return invoke("list_queued_inputs");
+}
+
+/// The queue this session should have from now on, in order. Anything
+/// omitted is dropped -- one writer for reorder, cancel and clear.
+export function setQueuedInputs(sessionId: string, queuedIds: string[]): Promise<QueuedInput[]> {
+  return invoke("set_queued_inputs", { sessionId, queuedIds });
+}
+
+/// Deliver one queued follow-up now, whatever the session is doing --
+/// the override for an agent the human has decided not to wait for.
+export function sendQueuedInput(sessionId: string, queuedId: string): Promise<QueuedInput[]> {
+  return invoke("send_queued_input", { sessionId, queuedId });
 }
 
 export function resizeSession(sessionId: string, cols: number, rows: number): Promise<void> {

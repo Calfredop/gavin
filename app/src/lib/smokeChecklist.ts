@@ -1802,6 +1802,30 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
     ],
   },
   {
+    title: "Ending many sessions at once",
+    items: [
+      {
+        id: "close-many-task-manager",
+        text: "Open ~10 terminals, then “Kill all…” from the task manager: the rows clear and their tabs go in well under a second, with the window still redrawing throughout",
+        hint: "The one gesture that used to freeze the app. Each kill is a blocking Tauri command on the thread that draws the window, so the daemon's reply latency is frozen window time multiplied by the tab count — it now answers before the process has finished dying.",
+      },
+      {
+        id: "close-many-page",
+        text: "Split a page into ~8 terminal tabs and close the whole page from the sidebar: it disappears at once, with no beachball and no half-drawn layout",
+      },
+      {
+        id: "close-many-archive",
+        text: "Archive a card carrying several live agents: the confirmation names them, and after it the tabs and the card go together without a pause",
+        hint: "Same path one level up — executeArchive closes the card's sessions one after another, so a slow close showed up here as an archive that appeared to stick.",
+      },
+      {
+        id: "close-many-really-ends-them",
+        text: "After any of the above, reopen the task manager: the killed sessions are gone from the list, and `pgrep -f claude` (or whatever they were running) finds nothing left over",
+        hint: "The reply comes back before the process does, so this is the half that could regress silently: the hangup goes out immediately and a reaper thread escalates to SIGKILL if the process ignores it.",
+      },
+    ],
+  },
+  {
     title: "Git tab",
     items: [
       {
@@ -3699,6 +3723,59 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
       {
         id: "pin-survives-restart",
         text: "Pins survive an app restart, and unpinning leaves no trace in config.json",
+      },
+    ],
+  },
+  {
+    title: "Queued follow-ups",
+    items: [
+      {
+        id: "queue-strip-only-when-useful",
+        text: "An idle terminal has no queue band under it; start an agent working and the band appears, taking height from the terminal rather than covering its bottom rows",
+        hint: "Run `top` or any full-screen TUI first: if its last line is hidden behind the band, the refit after the band appears is not reaching the PTY.",
+      },
+      {
+        id: "queue-holds-until-idle",
+        text: "Queue a follow-up on a working agent: it is listed, NOT typed into the terminal, and it arrives on its own the moment the agent's turn ends",
+        hint: "This is the whole feature. Text appearing in the terminal straight away means the queue was bypassed.",
+      },
+      {
+        id: "queue-one-per-turn",
+        text: "Queue three follow-ups: they are delivered one per idle, not all at once when the agent first stops",
+        hint: "A follow-up is a turn. Three prompts pasted together would run as one.",
+      },
+      {
+        id: "queue-question-is-not-answered",
+        text: "With a queue pending, get the agent to ask you something: the band says so and delivers NOTHING until you have answered and its next turn ends",
+        hint: "Delivering here would file an unrelated follow-up as the answer to the agent's question.",
+      },
+      {
+        id: "queue-reorder-and-cancel",
+        text: "The arrows reorder pending follow-ups and the × cancels one; both survive closing and reopening the app",
+        hint: "The queue lives in the daemon's SQLite, so a relaunch is the real test that it is not app state.",
+      },
+      {
+        id: "queue-send-now-overrides",
+        text: "“Send now” on any entry — not just the first — delivers that one immediately, whatever the agent is doing",
+      },
+      {
+        id: "queue-survives-a-frontend-reload",
+        text: "With something queued, reload the frontend (⌘R under `tauri dev`): the band comes back with the same entries",
+        hint: "The push only reaches an attached writer and Attach runs once per app PROCESS, so this is the read-back working. An empty band here reads as “it was delivered”, which is the worst possible lie.",
+      },
+      {
+        id: "queue-refuses-an-interrupted-tab",
+        text: "Restart the daemon under a running agent, then try to queue in that tab: the compose button is disabled and the hover says to relaunch the agent first",
+        hint: "That tab holds a bare shell. A follow-up delivered there would run the human's English as a shell command, with nobody watching.",
+      },
+      {
+        id: "queue-send-to-agent-queues",
+        text: "With the workspace agent mid-turn, “Send to workspace agent” on a card lands you on Home with that card sitting in the queue band — not pasted into the middle of the agent's reasoning",
+      },
+      {
+        id: "queue-old-daemon-says-why",
+        text: "Against a daemon older than v29 the compose button is disabled with the version reason, and “Send to workspace agent” still pastes exactly as it did before",
+        hint: "A silently dropped card would be strictly worse than a badly timed paste — that is why this one falls back rather than refusing.",
       },
     ],
   },

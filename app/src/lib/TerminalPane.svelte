@@ -1,6 +1,10 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import * as backend from "./backend";
+  import FollowUpQueue from "./FollowUpQueue.svelte";
+  import { queuedInputsById, layoutState } from "./layoutState";
+  import { stripVisible } from "./queuedInput";
+  import { queueTargetFor } from "./queuedInputActions";
   import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "./terminalRegistry";
   import type { Terminal } from "@xterm/xterm";
   import type { FitAddon } from "@xterm/addon-fit";
@@ -47,6 +51,10 @@
     mountPoint.appendChild(entry.container);
 
     ready = true;
+    // Seeded beside the first fit so the band effect below does not
+    // repeat it: the queue strip is rendered before onMount runs, so the
+    // measurement this fit takes already accounts for it.
+    fittedForStrip = stripShowing;
     // Awaited, not fired and forgotten: the daemon renders a snapshot at the
     // size it believes the PTY is, so the resize has to reach it first. Both
     // requests ride the streaming connection and the daemon reads it in
@@ -71,6 +79,47 @@
     if (setTerminalFontSize(sessionId, size)) void fit();
   });
 
+  // Whether the follow-up queue band is taking a slice of this pane.
+  //
+  // Recomputed here as well as inside FollowUpQueue, and deliberately
+  // from the same `stripVisible`: the band changes how much height the
+  // terminal has, and xterm only learns a new size from a fit(). Without
+  // this the rows the daemon believes the PTY has would stay at the
+  // pre-band count, and a full-screen TUI would paint its last lines
+  // underneath the strip. The band's own `composerOpen` is not in here,
+  // which is the one gap -- the composer grows the band without a refit
+  // -- and it is left that way on purpose: it is a transient couple of
+  // rows the human is looking straight at, and refitting the PTY under
+  // an agent mid-turn is the more expensive mistake.
+  const stripShowing = $derived(
+    stripVisible(
+      queueTargetFor(
+        $layoutState.sessionStatusById[sessionId],
+        $layoutState.interruptedSessionIds.has(sessionId)
+      ),
+      ($queuedInputsById[sessionId] ?? []).length,
+      false
+    )
+  );
+
+  // The band state the terminal was last fitted for. A plain `let`, not
+  // $state: it must gate the effect below without being a dependency of
+  // it, or writing it would re-arm the very effect that wrote it.
+  let fittedForStrip: boolean | null = null;
+
+  $effect(() => {
+    const showing = stripShowing;
+    // Every session in the app has one of these, so an unconditional
+    // refit here would be a resize per pane per mount for a rectangle
+    // that did not move.
+    if (!ready || fittedForStrip === showing) return;
+    fittedForStrip = showing;
+    // Refit once the band has actually landed in the DOM: fitAddon
+    // measures the container, so running before the tick would measure
+    // the height it is leaving rather than the one it is taking.
+    void tick().then(() => fit());
+  });
+
   // Re-focus whenever this session becomes the one with keyboard focus
   // (tracked by layoutState's focusedSessionId, passed down as `focused` --
   // NOT driven by `visible` alone, which only reflects tab-bar selection
@@ -82,7 +131,10 @@
   });
 </script>
 
-<div class="pane" class:inactive={!visible} bind:this={mountPoint}></div>
+<div class="pane" class:inactive={!visible}>
+  <div class="term" bind:this={mountPoint}></div>
+  <FollowUpQueue {sessionId} />
+</div>
 
 <style>
   .pane {
@@ -90,6 +142,19 @@
     inset: 0;
     width: 100%;
     height: 100%;
+    /* A column, so the queue band takes its height off the terminal
+       rather than covering the bottom rows of it. */
+    display: flex;
+    flex-direction: column;
+  }
+  .term {
+    /* min-height: 0 is load-bearing: without it a flex item refuses to
+       shrink below its content, and the band would push the terminal's
+       bottom out of the pane instead of taking height from it. */
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
   }
   .inactive {
     visibility: hidden;
