@@ -389,6 +389,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "The card detail modal offers the same button above ▶ Run, and by the same rule. The entry is To Do only — confirm it is absent (in BOTH surfaces) on In Progress, on Done, on a note, and on a card that already has a session. The spawned command starts “Use the gavin-develop skill…”; answer its questions and the card comes back as a checklist, nested children or just a sharper prompt, still in To Do and still unbound, so “Start all” can then run it.",
       },
       {
+        id: "develop-locks-the-card",
+        text: "While a card is being developed it wears an accent Agent · developing badge, an accent spine, and both its run pills are dead",
+        hint: "Start a develop run and go back to the board without answering the agent. The card face should carry the drafting-compass badge (click it: it lands you back in that agent's tab) and both pills — ▶ new session AND ▶ hub — should be greyed, with the reason in the row's tooltip. Its right-click menu should offer “Developing — jump to its tab” INSTEAD of Run / Run on several agents / Send to workspace agent, and the detail modal should replace those buttons with one “Jump to the develop session”. Answer the agent and let it finish: within a couple of seconds of the tab going idle the badge clears and every control comes back.",
+      },
+      {
+        id: "develop-lock-covers-every-launch",
+        text: "Nothing can start work on a card being developed — the column's Start all skips it, and a rail step over it stalls with “the card is being developed”",
+        hint: "With one develop run going: the To Do column's “Start all (n unbound)” must both COUNT and start one fewer, leaving the developing card alone. Put the same card on an orchestration rail and start the rail: the step chip stalls with that reason and the rail pauses, rather than launching. Let the develop agent finish, then press the rail's Start again — the step runs, with the card the agent rewrote.",
+      },
+      {
+        id: "develop-lock-survives-a-reload",
+        text: "The lock and the badge survive a frontend reload, and a develop run whose tab you close releases its card",
+        hint: "The record lives in config.json beside the workspace, so ⌘R (or a restart) must come back with the badge still on the card. Then close the develop agent's tab: the badge clears within a tick and the run pills come back — a card locked by an agent that is gone is the one failure mode worse than no lock at all.",
+      },
+      {
         id: "run-develop-switches-kind",
         text: "Developing a card that turns out to need steps flips it to kind: plan, and one that does not leaves it kind: task",
         hint: "Develop a card into a checklist: the board card must gain the n/m progress chip and the detail modal a tickable Checklist section — both are drawn for plans only, so a developed card still marked kind: task looks empty however many “- [ ]” lines it holds. Do it again on a genuinely small card and refuse a decomposition: it should stay kind: task with a rewritten body, since the plan prompt never inlines a body and would hand its agent a checklist that is not there. Read the frontmatter of both afterwards — the agent proposes the switch before it writes, so it is also the one thing you can veto in a word.",

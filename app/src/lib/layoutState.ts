@@ -13,6 +13,7 @@ import type {
   WorkspacesData,
   GitStatus,
   GitViewPrefs,
+  DevelopingCardRecord,
   OrchestrationAgentRecord,
   RemovedWorkspace,
 } from "./workspace";
@@ -1010,6 +1011,13 @@ export async function bootstrap(): Promise<void> {
   // mounted is the bug that made rails tick only on their own tab.
   const { startPauseClock } = await import("./agentPauseState");
   unlisteners.push(startPauseClock());
+  // And the same again for the develop records: a "Develop into a plan…"
+  // run that finishes while the human is on another tab still has to give
+  // the card back, and this watch's first pass is also what ADOPTS a run
+  // that outlived the last window -- the records load with the
+  // workspaces. Dynamically imported for the cycle reason above.
+  const { startDevelopingCardsWatch } = await import("./developingCardsState");
+  unlisteners.push(startDevelopingCardsWatch());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);
@@ -1763,6 +1771,28 @@ export async function setOrchestrationAgent(
   const state = get(layoutState);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, orchestrationAgent: record ?? undefined } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Writes the workspace's in-flight "Develop into a plan…" runs into
+/// config.json. A LIST, unlike the slot above: two develop runs on two
+/// different cards divide the work rather than overwriting each other,
+/// and it is the same card twice that conflicts.
+///
+/// Persisted for the same reason the orchestration agent is -- a develop
+/// run outlives the window that started it, and a window that comes back
+/// with no memory of it offers Run on a card whose file is mid-rewrite.
+/// Stored empty as ABSENT so an untouched workspace keeps the key out of
+/// a file the human reads.
+export async function setDevelopingCards(
+  workspaceId: string,
+  records: DevelopingCardRecord[]
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, developingCards: records.length > 0 ? records : undefined } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

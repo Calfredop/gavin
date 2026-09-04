@@ -130,6 +130,9 @@ beforeEach(() => {
   trace.length = 0;
   vi.clearAllMocks();
   bestOfNRuns.set({});
+  // The layout store is module-level, so a card left under a develop run
+  // by one test would refuse every launch in the next one.
+  layoutState.layoutState.update((st) => ({ ...st, workspaces: [] }));
   // vi.clearAllMocks wipes the implementations declared above.
   forkWorktree.mockImplementation(async (_ws, opts) => {
     trace.push(`fork:${opts.path}`);
@@ -217,6 +220,19 @@ describe("starting a run", () => {
   it("refuses while a single agent is live on the card", async () => {
     vi.mocked(columnRunAction.cardSessionState).mockReturnValue("live" as never);
     expect(await startBestOfN("ws-1", CARD, PLANS, "main")).toMatch(/live agent/);
+    expect(trace).toEqual([]);
+  });
+
+  // N times the reason a single Run has: this launch forks the card's
+  // prompt into a worktree per candidate, so a file mid-rewrite would be
+  // copied into all of them.
+  it("refuses while an agent is developing the card, before any worktree exists", async () => {
+    layoutState.layoutState.update((st) => ({
+      ...st,
+      workspaces: [{ id: "ws-1", developingCards: [{ path: CARD.id, sessionId: "s-dev" }] }] as never,
+    }));
+
+    expect(await startBestOfN("ws-1", CARD, PLANS, "main")).toMatch(/developing this card/);
     expect(trace).toEqual([]);
   });
 

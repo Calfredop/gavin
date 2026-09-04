@@ -39,6 +39,7 @@ import {
   workspaceRootPath,
 } from "./layoutState";
 import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "./cardRun";
+import { developingBlocker } from "./developingCardsState";
 import { resolveAttachmentsForRun } from "./cardRunActions";
 import { cardSessionState } from "./columnRunAction";
 import { discardWorktrees, forkWorktree } from "./gitState";
@@ -83,6 +84,11 @@ export async function startBestOfN(
   if (cardSessionState(get(layoutState), cardSessionFor(existing, card.id)) === "live") {
     return "This card has a live agent — jump to it, or stop it, before starting a run";
   }
+  // And the same develop gate every other launch passes -- with N times
+  // the reason: this one forks the card's prompt into several worktrees
+  // at once, so a file mid-rewrite would be copied into all of them.
+  const developing = developingBlocker(workspaceId, card.id);
+  if (developing) return developing;
 
   // Every candidate's agent is resolved and gated BEFORE anything is
   // created: an agent that takes no prompt refuses the whole run, and

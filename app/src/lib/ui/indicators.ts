@@ -38,6 +38,7 @@ import {
   CirclePause,
   CircleQuestionMark,
   CircleSlash2,
+  DraftingCompass,
   FileWarning,
   GitBranch,
   History,
@@ -136,6 +137,7 @@ function make(
 const AGENT: Record<
   | "working"
   | "waiting_for_input"
+  | "developing"
   | "turn_ended"
   | "stale"
   | "decoy_edit"
@@ -198,6 +200,21 @@ const AGENT: Record<
     "warning",
     "interrupted — the daemon restarted and this run was not resumed"
   ),
+  // An agent is rewriting the CARD rather than doing the work on it
+  // ("Develop into a plan…"). Its own state because it answers a
+  // different question from every other one here: those say how the run
+  // on this card is going, and this one says the card itself is not
+  // finished being written -- which is why every launch is refused while
+  // it is drawn. Accent, because something is happening right now; no
+  // spin, because the agent spends most of the run waiting on the human's
+  // answers rather than moving.
+  developing: make(
+    "agent",
+    "developing",
+    DraftingCompass,
+    "accent",
+    "developing this card — an agent is rewriting it"
+  ),
   idle: make("agent", "idle", CircleDashed, "neutral", "idle — nothing running"),
   exited: make("agent", "exited", CircleSlash2, "neutral", "session exited"),
 };
@@ -231,6 +248,14 @@ export function agentFailedIndicator(reason?: string | null): Indicator {
   if (!reason) return AGENT.failed;
   const tip = `${AXIS_LABEL.agent} · stopped — ${reason}`;
   return { ...AGENT.failed, tip, label: tip };
+}
+
+/// A card whose "Develop into a plan…" run is still going. Read off the
+/// workspace's develop records rather than reported as a status: the run
+/// binds no session to the card on purpose (developing is not starting),
+/// so nothing about the card itself says it.
+export function agentDevelopingIndicator(): Indicator {
+  return AGENT.developing;
 }
 
 /// The agent states in the order a tally should list them: what is
@@ -491,6 +516,7 @@ export function allIndicators(): Indicator[] {
     AGENT.turn_ended,
     AGENT.stale,
     AGENT.decoy_edit,
+    AGENT.developing,
     AGENT.unknown,
     ...PRIORITY_LEVELS.map((p) => PRIORITY[p]),
     ...STEP_STATES.map(stepIndicator),

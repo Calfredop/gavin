@@ -140,6 +140,27 @@ pub struct OrchestrationAgentRecord {
     pub label: String,
 }
 
+/// A "Develop into a plan…" run that was still going when this config was
+/// written: the card being reshaped, and the session doing it.
+///
+/// Kept here because a develop run deliberately binds NOTHING -- no
+/// card<->session binding and no status write, since developing a card is
+/// not starting it -- so without this record the app has no way to tell
+/// that the card in front of it is about to be rewritten. That is what
+/// made it possible to start a second agent on a card whose own file was
+/// being replaced under it.
+///
+/// A list rather than one slot: unlike the orchestration agent, two
+/// develop runs on two DIFFERENT cards divide the work rather than
+/// overwriting each other. It is the same CARD twice that conflicts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DevelopingCardRecord {
+    /// Absolute path of the card file being developed.
+    pub path: String,
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -168,6 +189,12 @@ pub struct Workspace {
     /// idle -- see orchestrationAgent.ts, which owns the whole rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestration_agent: Option<OrchestrationAgentRecord>,
+    /// The cards this workspace is DEVELOPING right now, one record per
+    /// in-flight run. Cleared by the frontend the moment a run's session
+    /// is gone, interrupted or idle -- see developingCards.ts, which owns
+    /// the rule, and shares it with the orchestration agent slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub developing_cards: Vec<DevelopingCardRecord>,
     /// D41 migration only: the pre-settings `agentCommand`, which now
     /// lives in `.gavin-root/config.toml`. Read once at bootstrap,
     /// carried into config.toml, then cleared -- `skip_serializing_if`
@@ -532,6 +559,7 @@ mod tests {
             root_path: None,
             main_session_id: None,
             orchestration_agent: None,
+            developing_cards: Vec::new(),
             legacy_agent_command: None,
             color: None,
             notify_needs_input: true,
@@ -1129,6 +1157,47 @@ mod tests {
     fn absent_orchestration_agent_is_not_serialized() {
         let json = serde_json::to_value(sample_workspace()).unwrap();
         assert!(json.get("orchestrationAgent").is_none());
+    }
+
+    /// Same round trip for the develop records, and for a sharper reason:
+    /// a develop run rewrites the card file, and the whole point of the
+    /// record is that nothing else may be started on that card while it
+    /// does. A record that did not survive a reload would reopen exactly
+    /// the conflict it exists to close.
+    #[test]
+    fn developing_cards_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.developing_cards = vec![DevelopingCardRecord {
+            path: "/repo/.gavin-root/plans/thin-card.md".to_string(),
+            session_id: "session-4".to_string(),
+        }];
+        let config = AppConfig {
+            workspaces: vec![ws],
+            active_workspace_id: Some("workspace-1".to_string()),
+            session_names: HashMap::new(),
+            file_tabs: HashMap::new(),
+            board_tabs: HashMap::new(),
+            card_tabs: HashMap::new(),
+            theme: None,
+            agent_models: HashMap::new(),
+            terminal_font_size: None,
+            auto_commit: None,
+            removed_workspaces: Vec::new(),
+            agent_pause: None,
+            superpowers: HashMap::new(),
+        };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+    }
+
+    /// The empty list is the normal state and serializes away entirely,
+    /// the same courtesy the absent orchestration agent gets: an empty
+    /// array on every workspace is noise in a file the human does read.
+    #[test]
+    fn empty_developing_cards_is_not_serialized() {
+        let json = serde_json::to_value(sample_workspace()).unwrap();
+        assert!(json.get("developingCards").is_none());
     }
 
     // Was main_session_and_agent_command_roundtrip: the launch command

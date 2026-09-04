@@ -123,6 +123,8 @@ import {
   reorganizeLabel,
 } from "./orchestrationAgent";
 import { sessionLiveness } from "./workspace";
+import { developingBlocker } from "./developingCardsState";
+import { DEVELOPING_STALL } from "./developingCards";
 import type { OrchestrationAgentRecord } from "./workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
 import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
@@ -1158,6 +1160,18 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
   if (!entry) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
+    return false;
+  }
+
+  // A card being developed stalls its step rather than running it: the
+  // develop agent is rewriting the card file, so the prompt this step
+  // would compose is about to stop being true. A stall and not a failure
+  // -- the sweep frees the card when the develop run ends, and the rail
+  // picks the step up on the next tick with the card the human actually
+  // asked for.
+  const developing = developingBlocker(workspaceId, step.cardPath);
+  if (developing) {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, DEVELOPING_STALL);
     return false;
   }
 

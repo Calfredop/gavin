@@ -99,13 +99,21 @@ export function columnRunAction(columnName: string): ColumnRunAction | null {
 /// that carries whatever it had already written, which is precisely what
 /// the resume prompt is for. Start and Run stay unbound-only, the way
 /// Run all always behaved.
+///
+/// A card being DEVELOPED is out of every mode (developingCards.ts). The
+/// launch would refuse it anyway, but the count is the point: "Start all
+/// (7 unbound)" that starts six is a button that lied about its own
+/// scope, and this is the column where a thin To Do card sits while an
+/// agent is busy turning it into a real one.
 export function columnRunTargets(
   cards: CardView[],
   mode: ColumnRunMode,
-  sessionState: (id: string) => CardSessionState
+  sessionState: (id: string) => CardSessionState,
+  developing: (id: string) => boolean
 ): CardView[] {
   return cards.filter((c) => {
     if (c.kind === "note") return false;
+    if (developing(c.id)) return false;
     const state = sessionState(c.id);
     if (state === "live") return false;
     return mode === "resume" || state === "none";

@@ -9,6 +9,7 @@
   import { tooltip } from "./tooltip";
   import { layoutState, resolvedAgents } from "./layoutState";
   import { agentPromptBlocker } from "./cardRun";
+  import { developingRunIn } from "./developingCards";
   import {
     columnRunAction,
     columnRunTargets,
@@ -219,8 +220,18 @@
     return cardSessionState($layoutState, cardSessionFor($kanbanState[workspaceId], path));
   }
 
+  // A card whose develop agent is rewriting it is not a target for any
+  // of the three verbs -- and the count on the button has to agree, or
+  // "Start all (7 unbound)" starts six.
   const runnable = $derived(
-    runAction ? columnRunTargets(planCards, runAction.mode, sessionStateFor) : []
+    runAction
+      ? columnRunTargets(
+          planCards,
+          runAction.mode,
+          sessionStateFor,
+          (path) => developingRunIn($layoutState, workspaceId, path) !== null
+        )
+      : []
   );
   let runningAll = $state(false);
 

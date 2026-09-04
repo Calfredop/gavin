@@ -28,6 +28,7 @@ vi.mock("./layoutState", () => ({
     interruptedSessionIds: new Set<string>(),
     failureReasonById: {},
   }),
+  setDevelopingCards: vi.fn().mockResolvedValue(undefined),
   // null = "not connected yet", which featureBlockedReason reads as "do
   // not pre-emptively grey anything out" -- so the archive entry is live
   // in these tests without pinning a daemon version.

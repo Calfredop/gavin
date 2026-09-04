@@ -43,7 +43,15 @@
   import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "./bestOfNState";
   import { pickCandidate, abandonRun } from "./bestOfNActions";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
-  import { runCard, resumeCard, relaunchCard, developCard, revealSession } from "./cardRunActions";
+  import {
+    runCard,
+    resumeCard,
+    relaunchCard,
+    developCard,
+    revealSession,
+    revealDevelopingCard,
+  } from "./cardRunActions";
+  import { developingRunIn } from "./developingCards";
   import { cardSessionState } from "./columnRunAction";
   import { developAvailable, agentPromptBlocker } from "./cardRun";
   import { resumeNoteFor } from "./autoResume";
@@ -588,6 +596,18 @@
     else onClose();
   }
 
+  // The develop run this card is already under, if any. It replaces the
+  // whole unbound block below rather than sitting beside it: an agent is
+  // rewriting the file, so every launch there is refused
+  // (developingCards.ts) and there is exactly one useful thing to do.
+  const developing = $derived(developingRunIn($layoutState, workspaceId, card.id));
+
+  async function handleJumpToDevelop(): Promise<void> {
+    errorMessage = null;
+    await revealDevelopingCard(workspaceId, card.id);
+    onClose();
+  }
+
   // --- best-of-N ------------------------------------------------------
   // A run is the card's agent situation while it lasts: N sessions, no
   // binding, and one decision to make. It replaces the binding block
@@ -1076,6 +1096,18 @@
           {:else}
             <p class="quiet">{baseline.reason}</p>
           {/if}
+        </div>
+      {:else if developing}
+        <p class="session-note">
+          An agent is developing this card — rewriting its body, and possibly its
+          kind and its nested tasks. Until it finishes, nothing else may run this
+          card: a second agent would be executing a prompt that is about to be
+          replaced, and writing its status into a file being rewritten.
+        </p>
+        <div class="session-actions">
+          <button type="button" onclick={() => void handleJumpToDevelop()}>
+            Jump to the develop session
+          </button>
         </div>
       {:else}
         <!-- Stacked, not side by side: both labels are sentences rather

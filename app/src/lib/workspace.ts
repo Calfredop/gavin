@@ -54,6 +54,21 @@ export interface AgentCommitRecord {
 /// (it lands on the Agents page), so the layout tree already knows it
 /// exists -- what the tree cannot say is what it is doing, and a button
 /// that has to refuse a second run has to name the first.
+/// A "Develop into a plan…" run still in flight: the card being reshaped,
+/// and the session doing it.
+///
+/// Its own record because a develop run binds NOTHING -- no card<->session
+/// binding, no status write, since developing a card is not starting it
+/// (cardRunActions.ts's developCard). Without it the app cannot tell that
+/// the card it is about to hand an agent is being REWRITTEN underneath,
+/// which is the one way two runs on one card destroy work rather than
+/// merely duplicating it.
+export interface DevelopingCardRecord {
+  /// Absolute path of the card file, the same key `cardSessions` uses.
+  path: string;
+  sessionId: string;
+}
+
 export interface OrchestrationAgentRecord {
   sessionId: string;
   /// The rail being reorganized; null/absent for a whole-tab Organize.
@@ -86,6 +101,12 @@ export interface Workspace {
   /// in a write of the WHOLE plan -- see orchestrationAgent.ts, which
   /// owns every rule about it.
   orchestrationAgent?: OrchestrationAgentRecord;
+  /// The cards being developed right now, one record per in-flight
+  /// "Develop into a plan…" run. Absent or empty means none. A LIST, not
+  /// a single slot like the orchestration agent above: two develop runs
+  /// on two different cards divide the work, and it is the same card
+  /// twice that conflicts. developingCards.ts owns the rules.
+  developingCards?: DevelopingCardRecord[];
   /// Launch command for it; "claude" when unset.
   /// Accent colour; absent means the default. Machine-local (D35).
   color?: string;

@@ -1194,6 +1194,32 @@ describe("executeActions", () => {
     expect(backend.setRailRun).toHaveBeenLastCalledWith("r1", "idle", null);
   });
 
+  it("a step whose card is being DEVELOPED stalls instead of running the prompt it is replacing", async () => {
+    // The rail's half of the develop lock. A stall, not a failure: the
+    // sweep frees the card when the develop run ends and the rail picks
+    // the step up on the next tick -- with the card the human asked for
+    // rather than the thin one it was.
+    layoutStateModule.layoutState.update((st) => ({
+      ...st,
+      // Only the two fields the develop lookup reads; the rest of a
+      // Workspace is irrelevant to it.
+      workspaces: [{ id: "ws-1", developingCards: [{ path: "/x/a.md", sessionId: "s-dev" }] }] as never,
+    }));
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining("being developed"),
+      null,
+      null,
+      null,
+    );
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
   it("a step whose card has a missing attachment stalls with the file named, spawning nothing", async () => {
     // The rail's half of the run gate. A stalled step is what rule 5
     // pauses the rail on, so the reason reaches the chip -- launching
