@@ -788,20 +788,61 @@ function deadSessionAction(
 /// - `turn-ended` -- the agent stopped talking and the card never
 ///   reached the done column. The work is not finished and nothing is
 ///   going to finish it.
+/// - `stale` -- `turn-ended`, aged. The turn ended more than
+///   STALE_AFTER_MS ago and the card still has not moved, so this is no
+///   longer an agent about to write a status: it is a step that will
+///   never finish and a rail that will wait behind it forever. Named
+///   apart from `turn-ended` because the rail's answer to the two
+///   differs -- one is worth a moment, the other is worth going to look
+///   at.
 /// - `failed` -- the agent stopped because something BROKE: the daemon
 ///   matched the profile's own error text on the rendered screen, or
 ///   watched the machine sleep through the conversation. "The agent
 ///   stopped talking" is true of this too and useless; the human needs
 ///   to know it broke, and a dead network and an expired token want
 ///   opposite responses.
-export type StepAttention = "asking" | "turn-ended" | "failed";
+/// - `decoy-edit` -- the agent wrote this rail worktree's OWN copy of
+///   the step's card instead of the card itself (see worktreeCards.ts).
+///   The one mark that names a cause rather than a symptom, and the only
+///   one that holds while the agent is still working: nothing it does
+///   from here can reach the board.
+export type StepAttention = "asking" | "turn-ended" | "stale" | "failed" | "decoy-edit";
 
-/// `failed` outranks both: a question and a quiet agent are states a
-/// rail can legitimately be in, and a broken one is not. `asking`
-/// outranks `turn-ended` in turn -- one is a question with a human on
-/// the other end of it, the other is work that quietly stopped.
+/// How long a turn has to have been over before `turn-ended` becomes
+/// `stale`.
+///
+/// Ten minutes, and the number is a judgement about ONE failure mode: an
+/// agent that finishes its work and then writes the card's status does
+/// both within a second of each other, so any gap this wide is not a
+/// write in flight. Shorter would start accusing agents mid-sentence
+/// (the daemon calls two quiet seconds `idle`); longer would leave a
+/// wedged rail looking merely slow for most of a coffee break.
+///
+/// Measured from the session's last status CHANGE, which is the only
+/// clock gavin has -- the daemon reports that a status changed, never
+/// when it began. A wait already under way when the app attached is
+/// stamped at first sight, so the elapsed time is a floor: it can only
+/// under-report, never accuse early.
+export const STALE_AFTER_MS = 10 * 60_000;
+
+/// The rank exists twice over: it picks the mark a rail HEADER shows
+/// when several of its steps have one, and it picks which of a single
+/// step's candidate marks wins.
+///
+/// The rule is one line: a mark that means "this will not finish by
+/// itself" outranks a mark that means "it still might". `failed`,
+/// `decoy-edit` and `stale` are the first kind; `asking` (a question
+/// with a human on the other end) and `turn-ended` (a turn that ended a
+/// moment ago, possibly with a status write in flight) are the second.
+///
+/// Within the first kind, `failed` leads because the daemon witnessed it
+/// and it carries the agent's own words; `decoy-edit` follows because
+/// gavin can name the exact mistake; `stale` last because it only knows
+/// that nothing happened.
 const ATTENTION_RANK: Record<StepAttention, number> = {
-  failed: 3,
+  failed: 5,
+  "decoy-edit": 4,
+  stale: 3,
   asking: 2,
   "turn-ended": 1,
 };
@@ -825,7 +866,21 @@ export function stepAttentions(
   board: Board,
   tree: GavinTree | undefined,
   tools: ToolSummary[] | null,
-  sessionStatuses: Map<string, SessionStatus>
+  sessionStatuses: Map<string, SessionStatus>,
+  /// The steps whose card this rail's own worktree has been written in
+  /// (decoyEditedSteps, fed by what each running step's run changed in
+  /// its own checkout). Empty by default, which is what a workspace with
+  /// no bound rail and a sweep that has not run yet both look like --
+  /// and "we have not looked" must never read as "we looked and it was
+  /// fine", which is why absence produces no mark rather than a
+  /// reassuring one.
+  decoyEdits: ReadonlySet<string> = new Set(),
+  /// When each session last CHANGED status, epoch ms -- layoutState's
+  /// statusSinceById, which is the only clock gavin has for this (see
+  /// STALE_AFTER_MS). A session with no stamp never goes stale: an
+  /// unmeasured wait is not a long one.
+  statusSince: ReadonlyMap<string, number> = new Map(),
+  now: number = Date.now()
 ): Map<string, StepAttention> {
   const marks = new Map<string, StepAttention>();
   // Before the tree walk. This runs on every layoutState emission -- a
@@ -849,48 +904,69 @@ export function stepAttentions(
     for (const stage of rail.stages) {
       for (const step of stage.steps) {
         if (stepStateOf(orch, step.id) !== "running") continue;
+        // Gathered rather than returned at the first hit, so the winner
+        // is ATTENTION_RANK's decision and not the order these tests
+        // happen to be written in. A step can genuinely be two of these
+        // at once -- an agent that wrote the decoy and then broke -- and
+        // before this the answer depended on which `if` came first.
+        const candidates: StepAttention[] = [];
+        // The one mark that does not read a session status. A decoy
+        // write is already on disk: the agent may still be working, and
+        // everything it does from here still lands in a file the board
+        // never reads.
+        if (decoyEdits.has(step.id)) candidates.push("decoy-edit");
         const sessionId = runByStep.get(step.id)?.sessionId ?? null;
-        if (!sessionId) continue;
-        const status = sessionStatuses.get(sessionId);
+        const status = sessionId ? sessionStatuses.get(sessionId) : undefined;
         // No status at all is "nothing reported yet", not "finished":
         // the daemon registers every new session idle, so believing an
         // absent status would mark a step the instant it launched.
         //
-        // `failed` first, and for EVERY step kind including a tool's:
-        // this is the one mark that outranks the step's own rules,
-        // because rule 3d has stalled the step on this very tick and the
-        // human is about to be shown a paused rail that owes them a
-        // reason. `turn-ended` skips tool steps below precisely because
-        // their rules speak for them; here the rule and the mark say the
-        // same thing.
+        // `failed` holds for EVERY step kind including a tool's, because
+        // rule 3d has stalled the step on this very tick and the human
+        // is about to be shown a paused rail that owes them a reason.
+        // `turn-ended` skips tool steps below precisely because their
+        // rules speak for them; here the rule and the mark agree.
         if (status === "failed") {
-          marks.set(step.id, "failed");
-          continue;
+          candidates.push("failed");
+        } else if (status === "waiting_for_input") {
+          candidates.push("asking");
+          // An idle TOOL step is never this. An `agent` tool's step is
+          // marked done by agentTurnEnded on this very tick -- from the
+          // running-rail rule and from the reconciliation pass both --
+          // so a mark would only flicker; a `command` tool's verdict is
+          // its exit code and nothing else (T5), because a quiet `npm
+          // run dev` is a server that started rather than an agent that
+          // stopped.
+        } else if (status === "idle" && !isToolStep(step)) {
+          // The card IS finished -- saying its turn ended short of Done
+          // would be false, and rule 1 marks the step done this same
+          // tick. Read through effectiveStatus, so a nested task under a
+          // Done plan counts as done rather than as abandoned work.
+          const entry = cards.get(step.cardPath);
+          const cardStatus = entry ? effectiveStatus(entry, plans) : null;
+          const finished =
+            doneSlug !== null && cardStatus !== null && slugStatus(cardStatus) === doneSlug;
+          if (!finished) {
+            const since = sessionId === null ? undefined : statusSince.get(sessionId);
+            const aged = since !== undefined && now - since >= STALE_AFTER_MS;
+            candidates.push(aged ? "stale" : "turn-ended");
+          }
         }
-        if (status === "waiting_for_input") {
-          marks.set(step.id, "asking");
-          continue;
-        }
-        if (status !== "idle") continue;
-        // An idle TOOL step is never this. An `agent` tool's step is
-        // marked done by agentTurnEnded on this very tick -- from the
-        // running-rail rule and from the reconciliation pass both -- so
-        // a mark would only flicker; a `command` tool's verdict is its
-        // exit code and nothing else (T5), because a quiet `npm run dev`
-        // is a server that started rather than an agent that stopped.
-        if (isToolStep(step)) continue;
-        // The card IS finished -- saying its turn ended short of Done
-        // would be false, and rule 1 marks the step done this same tick.
-        // Read through effectiveStatus, so a nested task under a Done
-        // plan counts as done rather than as abandoned work.
-        const entry = cards.get(step.cardPath);
-        const cardStatus = entry ? effectiveStatus(entry, plans) : null;
-        if (doneSlug && cardStatus !== null && slugStatus(cardStatus) === doneSlug) continue;
-        marks.set(step.id, "turn-ended");
+        const best = highestAttention(candidates);
+        if (best) marks.set(step.id, best);
       }
     }
   }
   return marks;
+}
+
+/// The most urgent of a step's candidate marks, or null for none.
+function highestAttention(candidates: readonly StepAttention[]): StepAttention | null {
+  let best: StepAttention | null = null;
+  for (const mark of candidates) {
+    if (!best || ATTENTION_RANK[mark] > ATTENTION_RANK[best]) best = mark;
+  }
+  return best;
 }
 
 /// One spelling of what a mark MEANS, so the chip's tooltip, the rail
@@ -908,6 +984,22 @@ export function attentionTip(attention: StepAttention, doneName: string): string
       return "the agent stopped because something broke, not because it finished";
     case "turn-ended":
       return `the agent's turn ended but the card is not in ${doneName}`;
+    // Says the elapsed time, because that is the whole difference from
+    // `turn-ended` and the reader cannot see it anywhere else.
+    case "stale":
+      return (
+        `the agent's turn ended over ${Math.round(STALE_AFTER_MS / 60_000)} minutes ago and the ` +
+        `card is still not in ${doneName} — nothing is going to finish this step`
+      );
+    // The only tip that names a file rather than a state: the fix is a
+    // specific one (point the agent at the card's real path, or copy the
+    // worktree's edit over it), and a human told merely that something
+    // is wrong would go looking at the agent instead of at the disk.
+    case "decoy-edit":
+      return (
+        "the agent edited this rail worktree's own copy of the card instead of the card — " +
+        "gavin only ever reads the one in the main checkout, so this step can never finish"
+      );
   }
 }
 

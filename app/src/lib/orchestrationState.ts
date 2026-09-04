@@ -97,7 +97,9 @@ import {
   sessionExits,
   setOrchestrationAgent,
   setSessionName,
+  workspaceRootPath,
 } from "./layoutState";
+import { decoyEditedSteps } from "./worktreeCards";
 import { allSessionIds, presetSingle } from "./layout";
 import {
   composeTaskPrompt,
@@ -120,7 +122,7 @@ import {
 import { sessionLiveness } from "./workspace";
 import type { OrchestrationAgentRecord } from "./workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
-import { activePaused, mayStartWork } from "./agentPauseState";
+import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -139,6 +141,23 @@ export function dismissSaveError(workspaceId: string): void {
 /// persisted -- which is why it lives here and not in the plan.
 export const highlightedConflict = writable<number | null>(null);
 
+/// Which steps a rail's own worktree has had its CARD written in, per
+/// workspace and by step id -- the decoy edit (worktreeCards.ts).
+///
+/// Stored rather than derived, because unlike every other input to
+/// `stepAttentions` this one is not in any store: it is a question about
+/// files in a checkout nobody watches, and only a git call can answer
+/// it. `startDecoyWatch` below is what fills it.
+///
+/// An absent workspace means "not looked at", never "clean". That
+/// distinction is the whole reason the mark fires on presence only and
+/// never on absence.
+export const decoyEditsByWorkspace = writable<Record<string, ReadonlySet<string>>>({});
+
+/// Read as EMPTY_SET, and shared so the derived below hands the same
+/// object to every unswept workspace rather than a fresh one per tick.
+const EMPTY_DECOYS: ReadonlySet<string> = new Set<string>();
+
 /// Every running step that wants a human, per workspace (see
 /// stepAttentions). Derived rather than stored: it is a live read of the
 /// scheduler's own inputs, so it can never drift from what the rail is
@@ -155,9 +174,17 @@ export const highlightedConflict = writable<number | null>(null);
 /// looking at is exactly the one you would otherwise miss.
 export const stepAttentionsByWorkspace: Readable<Record<string, Map<string, StepAttention>>> =
   derived(
-    [orchestrations, kanbanState, gavinTrees, toolRecords, layoutState],
-    ([$orchestrations, $kanban, $trees, $tools, $layout]) => {
+    [orchestrations, kanbanState, gavinTrees, toolRecords, layoutState, decoyEditsByWorkspace, nowStore],
+    ([$orchestrations, $kanban, $trees, $tools, $layout, $decoys, $now]) => {
       const statuses = new Map(Object.entries($layout.sessionStatusById));
+      // `stale` is a function of the clock, so the clock has to be an
+      // input: a derived store re-runs on a store change and never on
+      // the passage of time. nowStore is the app's ONE ticker (30s) --
+      // see agentPauseState -- so this costs no new timer and no new
+      // idea of what time it is.
+      const since = new Map(
+        Object.entries($layout.statusSinceById ?? {}).map(([id, stamp]) => [id, stamp.at])
+      );
       const out: Record<string, Map<string, StepAttention>> = {};
       for (const [workspaceId, orch] of Object.entries($orchestrations)) {
         const board = $kanban[workspaceId];
@@ -167,12 +194,128 @@ export const stepAttentionsByWorkspace: Readable<Record<string, Map<string, Step
           board,
           $trees[workspaceId],
           libraryFor($tools, workspaceId),
-          statuses
+          statuses,
+          $decoys[workspaceId] ?? EMPTY_DECOYS,
+          since,
+          $now
         );
       }
       return out;
     }
   );
+
+/// How often each running step's own checkout is asked what it changed.
+/// The same cadence as the pause clock and the PR sweep: a decoy write
+/// is a mistake that has already happened, so nothing is lost by hearing
+/// about it half a minute late, and this is a git call per running step.
+const DECOY_POLL_MS = 30_000;
+
+let decoyTimer: ReturnType<typeof setInterval> | null = null;
+const decoyInFlight = new Set<string>();
+
+/// Ask every running card step's checkout what this run has changed in
+/// it, and record the ones that changed the step's own CARD.
+///
+/// `git_run_changes` rather than `git status`, and the difference
+/// matters: the baseline is the commit the run started on, so a decoy
+/// edit the agent went on to COMMIT is still reported. A plain status
+/// would show it for as long as it stayed uncommitted and then go quiet
+/// while the rail stayed just as wedged.
+///
+/// Only rails with a worktree, and only steps that are running: an
+/// unbound rail has no second copy of anything, and a step that is not
+/// running has no session to explain. A workspace where nothing is
+/// running therefore makes no git calls at all.
+///
+/// Every unknown is silence, not a mark. No baseline (a run launched
+/// before v26, outside a repo, or on an unborn HEAD), a failed git call,
+/// a workspace whose root gavin does not know -- none of them can
+/// produce a mark, so a sweep that hits one simply says nothing about
+/// that step until the next one. Warn-only and thirty seconds apart:
+/// nothing is stalled or persisted on the strength of this, so a mark
+/// that flickers off for one sweep costs nothing, and a mark invented
+/// out of an unanswered question would cost the human a search.
+export async function refreshDecoyEdits(workspaceId: string): Promise<void> {
+  if (decoyInFlight.has(workspaceId)) return;
+  const orch = get(orchestrations)[workspaceId];
+  if (!orch) return;
+  // The repository root where known, the workspace's bound root
+  // otherwise: run changes come back root-relative, so the two have to
+  // be measured from the same place. A workspace root INSIDE a larger
+  // repo simply matches nothing, which is the safe direction.
+  const rootPath = get(gitStore)[workspaceId]?.repo?.root ?? workspaceRootPath(workspaceId);
+  if (!rootPath) return;
+  const board = get(kanbanState)[workspaceId];
+  const work: Array<{ rail: Rail; cwd: string; baseSha: string }> = [];
+  for (const rail of orch.rails) {
+    if (!rail.worktreePath) continue;
+    for (const step of rail.stages.flatMap((stage) => stage.steps)) {
+      if (isToolStep(step) || stepStateOf(orch, step.id) !== "running") continue;
+      const binding = board ? cardSessionFor(board, step.cardPath) : null;
+      if (!binding?.baseSha) continue;
+      work.push({
+        rail,
+        cwd: binding.launchCwd ?? rail.worktreePath,
+        baseSha: binding.baseSha,
+      });
+    }
+  }
+  if (work.length === 0) {
+    // Nothing running means nothing to say, and a set left behind would
+    // keep marking a step whose run is over.
+    setDecoyEdits(workspaceId, EMPTY_DECOYS);
+    return;
+  }
+  decoyInFlight.add(workspaceId);
+  try {
+    const found = new Set<string>();
+    await Promise.all(
+      work.map(async ({ rail, cwd, baseSha }) => {
+        const changes = await backend.gitRunChanges(cwd, baseSha).catch(() => null);
+        if (!changes || changes.notARepo || changes.baseMissing) return;
+        for (const id of decoyEditedSteps(rail, rootPath, changes.files)) found.add(id);
+      })
+    );
+    setDecoyEdits(workspaceId, found);
+  } finally {
+    decoyInFlight.delete(workspaceId);
+  }
+}
+
+function setDecoyEdits(workspaceId: string, ids: ReadonlySet<string>): void {
+  decoyEditsByWorkspace.update((all) => {
+    const current = all[workspaceId];
+    // Same set, same object: this store feeds a derived one that four
+    // surfaces render, and a fresh Set every thirty seconds would redraw
+    // all of them to say nothing.
+    if (current && current.size === ids.size && [...ids].every((id) => current.has(id))) {
+      return all;
+    }
+    return { ...all, [workspaceId]: ids };
+  });
+}
+
+/// Start the decoy sweep. Module-level and self-paced for the reason
+/// `startScheduler` documents: a poll owned by whichever component
+/// happens to be mounted stops the moment the human navigates away, and
+/// a rail wedged on a decoy write is exactly what they navigated away
+/// from.
+export function startDecoyWatch(): () => void {
+  stopDecoyWatch();
+  const sweep = () => {
+    for (const workspaceId of Object.keys(get(orchestrations))) {
+      void refreshDecoyEdits(workspaceId);
+    }
+  };
+  decoyTimer = setInterval(sweep, DECOY_POLL_MS);
+  sweep();
+  return stopDecoyWatch;
+}
+
+export function stopDecoyWatch(): void {
+  if (decoyTimer !== null) clearInterval(decoyTimer);
+  decoyTimer = null;
+}
 
 const pendingSaves = new Map<string, number>();
 
@@ -996,6 +1139,12 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
 
+  // Resolved BEFORE the prompt, which is a change of order with a
+  // reason: a bound rail launches its agent in a checkout that carries
+  // its own copy of the card, and the prompt has to say so (see
+  // cardHomeNote). An agent that writes the copy leaves the board where
+  // it was and this step running forever.
+  const cwd = rail.worktreePath ?? entry.contextFolder;
   let prompt: string;
   if (entry.plan.kind === "task") {
     const file = await backend.readFileForViewer(step.cardPath);
@@ -1007,10 +1156,11 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       step.cardPath,
       entry.plan.title,
       stripFrontmatter(file.content).trim(),
-      resolved.paths
+      resolved.paths,
+      cwd
     );
   } else {
-    prompt = composePlanPrompt(step.cardPath, resolved.paths);
+    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd);
   }
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"
@@ -1030,7 +1180,6 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     await setStepRunAction(workspaceId, stepId, "stalled", null, noPromptReason(agent.label));
     return false;
   }
-  const cwd = rail.worktreePath ?? entry.contextFolder;
   const baseSha = await baseShaForLaunch(cwd);
   const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
@@ -1541,9 +1690,16 @@ export function startScheduler(): () => void {
 /// The agent stopped; the work is still undone and the rail is still
 /// waiting on it.
 ///
-/// Only `turn-ended`. `asking` already says "needs your input", which is
-/// right, and an agent TOOL step going idle really has finished, because
+/// Only the marks that mean "this step is not going to finish".
+/// `asking` already says "needs your input", which is right, and an
+/// agent TOOL step going idle really has finished, because
 /// agentTurnEnded marks it done on that same tick.
+///
+/// `decoy-edit` gets a sentence of its own rather than the generic one.
+/// It is the same silence to the daemon and a completely different
+/// thing to the human: the work may well be done, in a file the board
+/// will never read, and "stopped without finishing its card" would send
+/// them to restart an agent that would make the same mistake again.
 export function railStatusVoice(sessionId: string, status: SessionStatus): string | null {
   if (status !== "idle") return null;
   // Reads the same derived map the chips do, and the layout store it
@@ -1556,10 +1712,13 @@ export function railStatusVoice(sessionId: string, status: SessionStatus): strin
     if (!orch) continue;
     for (const run of orch.stepRuns) {
       if (run.sessionId !== sessionId) continue;
-      if (marks.get(run.stepId) !== "turn-ended") continue;
+      const mark = marks.get(run.stepId);
+      if (mark !== "turn-ended" && mark !== "stale" && mark !== "decoy-edit") continue;
       const step = findStep(orch, run.stepId);
       const label = step ? cardTitleFor(workspaceId, step) : null;
-      return `${label ?? "a rail step"} stopped without finishing its card`;
+      return mark === "decoy-edit"
+        ? `${label ?? "a rail step"} edited its worktree's copy of the card, so the board never saw it`
+        : `${label ?? "a rail step"} stopped without finishing its card`;
     }
   }
   return null;
@@ -1631,6 +1790,10 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // poll behind a `pr` step has to keep running whatever view is
   // mounted, exactly as the tick does.
   const stopPolling = startPrPolling();
+  // And beside it for the same reason: a rail whose agent edited the
+  // worktree's copy of its card is wedged whatever tab is on screen, and
+  // it is the tab NOT on screen where nobody would ever find out.
+  const stopDecoys = startDecoyWatch();
   // Started here for the reason the scheduler is: it belongs to the app,
   // not to a tab. A Generate that finishes while the human is reading the
   // board still has to release the button, and the record it clears was
@@ -1651,6 +1814,7 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   return () => {
     stop();
     stopPolling();
+    stopDecoys();
     stopAgents();
     stopAutoResume();
     setRailNotificationVoice(null);
@@ -1662,6 +1826,10 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
 export function __resetForTesting(): void {
   orchestrations.set({});
   saveErrors.set({});
+  // A sweep left running would ask git about the next test's rails.
+  stopDecoyWatch();
+  decoyEditsByWorkspace.set({});
+  decoyInFlight.clear();
   pendingSaves.clear();
   ticking.clear();
   tickAgain.clear();

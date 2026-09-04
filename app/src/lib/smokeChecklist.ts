@@ -434,6 +434,21 @@ export const SMOKE_SECTIONS: ChecklistSection[] = [
         hint: "One notification, not two. Needs the workspace's “finished” notification toggle on and the gavin window not frontmost. A step that really does finish (its card reaches Done, or an agent TOOL step's turn ends) keeps the ordinary “finished” wording — check one of those too, or this only proves the rewrite fires.",
       },
       {
+        id: "run-step-decoy-warning",
+        text: "A card step launched on a rail with a WORKTREE opens its agent with the “this card lives at \u2026 and nowhere else” paragraph; the same card run from the board (no worktree) does not",
+        hint: "Read the agent's first screen, or the command in the Sessions manager. The negative half is the point: a board Run launches in the card's own folder, where there is no second copy, and a warning about a hazard that is not there teaches an agent to skim the framing.",
+      },
+      {
+        id: "run-step-decoy-edit",
+        text: "An agent that edits its worktree's OWN copy of the step's card marks the step “needs you” with a file glyph, and the tooltip names the decoy \u2014 within about thirty seconds, whether or not the agent committed it",
+        hint: "Start a rail bound to a worktree, then in that agent's tab edit <worktree>/.gavin-root/plans/<the card>.md (moving it into plans/done/ counts) and leave the real card alone. The sweep runs on a 30s clock, so wait one. Commit the edit inside the worktree and the mark must SURVIVE \u2014 that is the whole reason this reads run changes rather than git status. Touch nothing and no mark may ever appear.",
+      },
+      {
+        id: "run-step-stale",
+        text: "A step whose agent's turn ended and whose card is still not in Done escalates from the amber “turn ended” mark to a red “stopped for good” one after ten minutes, on the chip, the rail header and the hub's Waiting-on-you list",
+        hint: "The same setup as run-step-turn-ended, then leave it. The clock is the session's last status CHANGE, so do not type at the agent while you wait. The hub row's wait column should read “10m” (or “\u226510m” if the app attached after the agent went quiet).",
+      },
+      {
         id: "run-drop-on-running-sequence-stage",
         text: "Dropping a card onto the SINGLE-STEP stage a RUNNING rail is currently on forms a sequence group and the drop stays pending — it goes live on its own the moment the running member finishes",
         hint: "Start a rail, then drag a drawer card onto the chip that is running — the stage becomes a two-member sequence group and the new card sits queued, not started, without you touching Pause/Resume. Finish the running member (its card reaches Done, or its tool step's turn ends) and the second starts on its own, with no Play press needed. Check the negatives too: a drop into the gap between stages, onto a stage the rail has not reached, or onto a paused rail, all stay pending.",

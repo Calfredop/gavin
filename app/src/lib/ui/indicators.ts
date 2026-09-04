@@ -38,6 +38,7 @@ import {
   CirclePause,
   CircleQuestionMark,
   CircleSlash2,
+  FileWarning,
   GitBranch,
   History,
   LoaderCircle,
@@ -136,6 +137,8 @@ const AGENT: Record<
   | "working"
   | "waiting_for_input"
   | "turn_ended"
+  | "stale"
+  | "decoy_edit"
   | "failed"
   | "unknown"
   | "interrupted"
@@ -157,6 +160,16 @@ const AGENT: Record<
   // same axis and the same question, so it lives here rather than
   // becoming a fourth vocabulary on the rails.
   turn_ended: make("agent", "turn_ended", CirclePause, "warning", "turn ended with the card unmoved"),
+  // The same shape as turn_ended, because it IS turn_ended -- aged past
+  // STALE_AFTER_MS with the card still where it was. Only the tone
+  // moves, which is exactly the claim: same question, and the answer has
+  // stopped being "give it a moment".
+  stale: make("agent", "stale", CirclePause, "danger", "turn ended long ago, card still unmoved"),
+  // The agent wrote the rail worktree's own copy of the card rather than
+  // the card (see worktreeCards.ts). Danger, because nothing the run
+  // does from here can reach the board, and a glyph of its own because
+  // the fix is about a FILE and no other agent state is.
+  decoy_edit: make("agent", "decoy_edit", FileWarning, "danger", "edited the worktree's copy of the card"),
   // The daemon's own word for an agent that stopped because something
   // broke -- an API error on its screen, a suspend it never came back
   // from -- rather than because it finished. Danger, because the run is
@@ -464,6 +477,8 @@ export const RUN_OUTCOME_STATES = RUN_OUTCOMES;
 export function attentionIndicator(attention: StepAttention): Indicator {
   if (attention === "asking") return AGENT.waiting_for_input;
   if (attention === "failed") return AGENT.failed;
+  if (attention === "stale") return AGENT.stale;
+  if (attention === "decoy-edit") return AGENT.decoy_edit;
   return AGENT.turn_ended;
 }
 
@@ -474,6 +489,8 @@ export function allIndicators(): Indicator[] {
   return [
     ...AGENT_STATES.map(agentIndicatorByState),
     AGENT.turn_ended,
+    AGENT.stale,
+    AGENT.decoy_edit,
     AGENT.unknown,
     ...PRIORITY_LEVELS.map((p) => PRIORITY[p]),
     ...STEP_STATES.map(stepIndicator),

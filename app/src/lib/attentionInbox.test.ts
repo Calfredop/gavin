@@ -186,6 +186,44 @@ describe("attentionInbox", () => {
     expect(rows[0].reason).toBe("turn-ended");
   });
 
+  // The aged form of the row above. Nothing about the session changed --
+  // only how long it has been that way -- so the inbox has to accept it
+  // on the same terms or a wait that got worse would drop off the list.
+  it("lists a rail step whose turn ended long enough ago to be stale", () => {
+    const state = inboxState([wsWith("a", [page("p1", ["s1"])])], {
+      sessionStatusById: { s1: "idle" },
+      statusSinceById: { s1: since(30) },
+    });
+    const rows = attentionInbox(
+      input(state, {
+        orchestrations: { a: orchRunning("t1", "s1") },
+        stepAttentions: { a: marks([["t1", "stale"]]) },
+      }),
+      NOW
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe("stale");
+  });
+
+  // The decoy row is the one that does NOT need the session to be quiet:
+  // the wrong file is already written, so an agent still talking is no
+  // less unable to reach the board.
+  it("lists a rail step that edited its worktree's copy, even while working", () => {
+    const state = inboxState([wsWith("a", [page("p1", ["s1"])])], {
+      sessionStatusById: { s1: "working" },
+      statusSinceById: { s1: since(2) },
+    });
+    const rows = attentionInbox(
+      input(state, {
+        orchestrations: { a: orchRunning("t1", "s1") },
+        stepAttentions: { a: marks([["t1", "decoy-edit"]]) },
+      }),
+      NOW
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe("decoy-edit");
+  });
+
   // --- what is NOT in it ----------------------------------------------
 
   // The whole point of the list: a terminal that is merely sitting at

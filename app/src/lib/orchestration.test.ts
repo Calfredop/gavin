@@ -68,6 +68,7 @@ import {
   isStageRunning,
   runningStageId,
   stepAttentions,
+  STALE_AFTER_MS,
   railAttention,
   railsWantingAttention,
   attentionTip,
@@ -4095,6 +4096,137 @@ describe("stepAttentions", () => {
     const orch = running(cardRail, "r1-s0", runs());
     expect(attn(orch, statuses("unknown")).get("t1")).toBeUndefined();
   });
+
+  // ---- the decoy card ---------------------------------------------------
+  // The failure this family was extended for. A rail step hands its
+  // agent a worktree cwd and an absolute card path in the main checkout;
+  // the agent writes the worktree's own copy, and everything downstream
+  // stays silent -- the board never moves, so from the rail's side the
+  // agent simply has not finished yet.
+  describe("a decoy write", () => {
+    const decoy = (ids: string[] = ["t1"]) => new Set(ids);
+
+    // The reproduction, as the code sees it: the agent is still working
+    // (or has only just gone quiet), the card is untouched, and before
+    // this every surface in the app had exactly nothing to say.
+    it("used to be invisible: a working agent over an unmoved card gets no mark on its own", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(attn(orch, statuses("working")).get("t1")).toBeUndefined();
+    });
+
+    // ...and the whole point of not reading a session status for this
+    // one: the write is already on disk, so an agent that is still busy
+    // is no less unable to reach the board.
+    it("marks the step while the agent is still working", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("working"), decoy()).get("t1")).toBe(
+        "decoy-edit"
+      );
+    });
+
+    it("outranks a turn that merely ended", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("idle"), decoy()).get("t1")).toBe(
+        "decoy-edit"
+      );
+    });
+
+    // The agent's own words about what broke are the more actionable
+    // fact, and rule 3d has already stalled the step with them.
+    it("still yields to an agent that broke", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("failed"), decoy()).get("t1")).toBe(
+        "failed"
+      );
+    });
+
+    it("marks only the step whose card was written", () => {
+      const two = rail("r1", [[["t1", A], ["t2", "/ws/.gavin-root/plans/b.md"]]]);
+      const orch = running(two, "r1-s0", [
+        { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+        { stepId: "t2", state: "running", sessionId: "s2", reason: null },
+      ]);
+      const marks = stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("working"), decoy(["t2"]));
+      expect(marks.get("t1")).toBeUndefined();
+      expect(marks.get("t2")).toBe("decoy-edit");
+    });
+
+    // "Not looked at" must never read as "looked at and clean" -- which
+    // is why the default is an empty set producing no mark rather than a
+    // reassuring one, and why a step that is not running is never marked
+    // whatever the sweep found.
+    it("says nothing about a step that is not running", () => {
+      const orch = running(cardRail, "r1-s0", runs("done"));
+      expect(stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("idle"), decoy()).size).toBe(0);
+    });
+  });
+
+  // ---- a turn that ended a long time ago --------------------------------
+  describe("staleness", () => {
+    const since = (ms: number) => new Map([["s1", ms]]);
+    const NOW = 1_000_000_000;
+
+    it("is turn-ended until the wait passes the threshold", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      const young = stepAttentions(
+        orch,
+        BOARD,
+        CARDS,
+        TOOLS,
+        statuses("idle"),
+        new Set(),
+        since(NOW - STALE_AFTER_MS + 1),
+        NOW
+      );
+      expect(young.get("t1")).toBe("turn-ended");
+    });
+
+    it("becomes stale once nothing has happened for the threshold", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      const old = stepAttentions(
+        orch,
+        BOARD,
+        CARDS,
+        TOOLS,
+        statuses("idle"),
+        new Set(),
+        since(NOW - STALE_AFTER_MS),
+        NOW
+      );
+      expect(old.get("t1")).toBe("stale");
+    });
+
+    // An unmeasured wait is not a long one. Every session is unstamped
+    // for a moment after the app attaches, and marking those stale would
+    // accuse every rail in the fleet on every restart.
+    it("never goes stale without a stamp", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(
+        stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("idle"), new Set(), new Map(), NOW).get(
+          "t1"
+        )
+      ).toBe("turn-ended");
+    });
+
+    // Staleness is an aged turn-ended and nothing else: a card that
+    // reached Done is finished however long ago its agent stopped.
+    it("says nothing about an old wait whose card did reach Done", () => {
+      const done = tree([plan("a.md", { status: "Done" })]);
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(
+        stepAttentions(orch, BOARD, done, TOOLS, statuses("idle"), new Set(), since(0), NOW).size
+      ).toBe(0);
+    });
+
+    // A busy agent re-stamps its session on every status change, so a
+    // long build never ages into this; only genuine quiet does.
+    it("says nothing about an agent that is still working, however long for", () => {
+      const orch = running(cardRail, "r1-s0", runs());
+      expect(
+        stepAttentions(orch, BOARD, CARDS, TOOLS, statuses("working"), new Set(), since(0), NOW).size
+      ).toBe(0);
+    });
+  });
 });
 
 describe("railAttention / railsWantingAttention", () => {
@@ -4117,6 +4249,18 @@ describe("railAttention / railsWantingAttention", () => {
     const r = rail("r1", [[["t1", A], ["t2", B]]]);
     expect(railAttention(r, marks({ t1: "failed", t2: "asking" }))).toBe("failed");
     expect(railAttention(r, marks({ t1: "turn-ended", t2: "failed" }))).toBe("failed");
+  });
+
+  // The rank's one rule: a mark meaning "this will not finish by itself"
+  // outranks one meaning "it still might". A rail header showing
+  // "needs you" for a question, while another of its steps is wedged on
+  // a decoy write, points the human at the wrong step.
+  it("puts a decoy write and a long-dead turn above a live question", () => {
+    const r = rail("r1", [[["t1", A], ["t2", B]]]);
+    expect(railAttention(r, marks({ t1: "decoy-edit", t2: "asking" }))).toBe("decoy-edit");
+    expect(railAttention(r, marks({ t1: "stale", t2: "asking" }))).toBe("stale");
+    expect(railAttention(r, marks({ t1: "stale", t2: "decoy-edit" }))).toBe("decoy-edit");
+    expect(railAttention(r, marks({ t1: "turn-ended", t2: "stale" }))).toBe("stale");
   });
 
   it("collects the rails with any marked step", () => {

@@ -14,6 +14,9 @@ vi.mock("./backend", () => ({
   deleteTool: vi.fn(),
   gitStatus: vi.fn(),
   gitCheckout: vi.fn(),
+  // The decoy sweep's one call: what THIS run changed in its own
+  // checkout, baseline included, so a committed decoy edit still shows.
+  gitRunChanges: vi.fn(),
   attachmentStatus: vi.fn(),
   // prState reads the backend through the same module object.
   prStatus: vi.fn(),
@@ -212,6 +215,8 @@ import {
   moveRailCardsAction,
   clearDoneStepsAction,
   stepAttentionsByWorkspace,
+  decoyEditsByWorkspace,
+  refreshDecoyEdits,
   railStatusVoice,
   makeStageSequentialAction,
   setStageModeAction,
@@ -2968,6 +2973,140 @@ describe("stepAttentionsByWorkspace", () => {
     boardStore.set({});
     status({ "sess-1": "idle" });
     expect(get(stepAttentionsByWorkspace)["ws-1"]).toBeUndefined();
+  });
+});
+
+// The sweep behind the `decoy-edit` mark: one `git_run_changes` per
+// running card step, against the baseline its run started on. The
+// baseline is the point -- a status call would go quiet the moment the
+// agent committed the wrong file, while the rail stayed just as wedged.
+describe("refreshDecoyEdits", () => {
+  const CARD = "/ws/.gavin-root/plans/a.md";
+
+  function decoyRail(): Orchestration {
+    return {
+      ...emptyOrchestration(),
+      rails: [
+        {
+          id: "r1",
+          name: "backend",
+          position: 0,
+          worktreePath: "/x/wt",
+          pageId: "p1",
+          stages: [
+            { id: "s1", position: 0, steps: [{ id: "t1", position: 0, cardPath: CARD }] },
+          ],
+        },
+      ],
+      stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-1", reason: null }],
+    };
+  }
+
+  function bind(baseSha: string | null): void {
+    boardStore.update((all) => ({
+      ...all,
+      "ws-1": {
+        ...(all["ws-1"] as Record<string, unknown>),
+        cardSessions: [
+          { path: CARD, sessionId: "sess-1", cwd: "/x/wt", command: null, launchCwd: "/x/wt", baseSha },
+        ],
+      },
+    }));
+  }
+
+  const changed = (files: Array<{ path: string; oldPath?: string }>) => ({
+    baseSha: "base",
+    notARepo: false,
+    baseMissing: false,
+    root: "/x/wt",
+    baseSubject: null,
+    files: files.map((f) => ({ ...f, status: "M" as const })),
+    added: 0,
+    removed: 0,
+    commits: 0,
+  });
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.getOrchestration).mockResolvedValue(decoyRail());
+    await fetchOrchestration("ws-1");
+    bind("base");
+  });
+
+  it("records the step whose card the run changed inside the worktree", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: ".gavin-root/plans/a.md" }]));
+    await refreshDecoyEdits("ws-1");
+    expect([...(get(decoyEditsByWorkspace)["ws-1"] ?? [])]).toEqual(["t1"]);
+  });
+
+  it("asks the run's own checkout, against the baseline it started on", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([]));
+    await refreshDecoyEdits("ws-1");
+    expect(backend.gitRunChanges).toHaveBeenCalledWith("/x/wt", "base");
+  });
+
+  it("records nothing for a run that only touched code", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: "app/src/lib/git.ts" }]));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(0);
+  });
+
+  // Every unknown is silence rather than a mark: a run with no baseline
+  // (pre-v26, outside a repo, unborn HEAD) simply cannot be asked.
+  it("makes no call at all without a baseline", async () => {
+    bind(null);
+    await refreshDecoyEdits("ws-1");
+    expect(backend.gitRunChanges).not.toHaveBeenCalled();
+  });
+
+  // ...and neither can a rail with no checkout of its own, which has no
+  // second copy of anything to confuse.
+  it("makes no call for an unbound rail", async () => {
+    orchestrations.update((all) => ({
+      ...all,
+      "ws-1": {
+        ...all["ws-1"],
+        rails: all["ws-1"].rails.map((r) => ({ ...r, worktreePath: null })),
+      },
+    }));
+    await refreshDecoyEdits("ws-1");
+    expect(backend.gitRunChanges).not.toHaveBeenCalled();
+  });
+
+  it("survives a git call that fails, leaving nothing marked", async () => {
+    vi.mocked(backend.gitRunChanges).mockRejectedValue(new Error("no such worktree"));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(0);
+  });
+
+  // The mark is about a LIVE step. A finished run's decoy edit is a
+  // merge problem, not a rail waiting on somebody.
+  it("clears the set once nothing is running", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: ".gavin-root/plans/a.md" }]));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(1);
+    orchestrations.update((all) => ({
+      ...all,
+      "ws-1": {
+        ...all["ws-1"],
+        stepRuns: [{ stepId: "t1", state: "done", sessionId: "sess-1", reason: null }],
+      },
+    }));
+    await refreshDecoyEdits("ws-1");
+    expect(get(decoyEditsByWorkspace)["ws-1"]?.size).toBe(0);
+  });
+
+  // What the whole sweep is for: the mark reaches the chips, the rail
+  // header and the hub through the map every surface already reads.
+  it("puts the mark on the step, even while its agent is still working", async () => {
+    vi.mocked(backend.gitRunChanges).mockResolvedValue(changed([{ path: ".gavin-root/plans/a.md" }]));
+    await refreshDecoyEdits("ws-1");
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "working" } }));
+    expect(get(stepAttentionsByWorkspace)["ws-1"].get("t1")).toBe("decoy-edit");
   });
 });
 

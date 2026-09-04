@@ -3,6 +3,7 @@
 
 import { attachmentPromptBlock } from "./attachments";
 import { slugStatus } from "./planBoard";
+import { cardIsOutside } from "./worktreeCards";
 
 // Every launched agent gets the same opening instruction, board Run and
 // orchestration alike: name the tab before doing anything else. A page
@@ -37,16 +38,55 @@ export function provisionalSessionName(title: string): string | null {
     : collapsed;
 }
 
+// The sentence that names the decoy, appended to every prompt launched
+// somewhere the card does NOT live -- a rail's worktree, a best-of-N
+// candidate's checkout.
+//
+// Where `.gavin*` is tracked in git (this repo is such a workspace), a
+// worktree carries its own copy of every card at the same relative path.
+// The prompt names the absolute one exactly once, and from then on every
+// relative path the agent forms resolves inside its cwd to a file that
+// exists and looks right. Writing that one is silent: the board never
+// moves, so the step never completes and the rail waits forever, and the
+// divergence rides the branch to become a merge conflict.
+//
+// One sentence is the cheapest of the four fixes this was weighed
+// against, and the only one that also covers an agent reaching the card
+// through a skill rather than through the prompt. It says which file is
+// real, what the other one is, and what happens if it is written -- the
+// last part deliberately, because "there is a copy" reads as trivia and
+// "the board never sees it" reads as an instruction.
+//
+// Empty when the card is inside the cwd, which is every board Run: there
+// is no second copy to confuse, and a warning about a hazard that is not
+// present is noise that teaches an agent to skim the framing.
+export function cardHomeNote(path: string, cwd: string | null = null): string {
+  if (!cardIsOutside(path, cwd)) return "";
+  return (
+    `\n\nThis card lives at ${path} and nowhere else. You are running in a different ` +
+    `checkout of this repository, which carries its OWN copy of that file at the same ` +
+    `relative path — a decoy. Gavin never reads it: a status, a tick or a move written ` +
+    `there is invisible to the board, leaves this step running forever, and rides the ` +
+    `branch into a merge conflict. Read and write the absolute path above every time, ` +
+    `and never the copy under your working directory.`
+  );
+}
+
 // `attachments` is the card's resolved ABSOLUTE paths, and defaults to
 // none so the dozen call sites that predate the field keep compiling and
 // keep meaning what they meant. It sits between the framing line and the
 // body deliberately: the files are context FOR the body, and an agent
 // told to read them after the instructions has already started.
+//
+// `cwd` is where the run will be LAUNCHED, and defaults to null so the
+// same call sites keep compiling. It buys the decoy note above, and only
+// the launchers that run outside the card's own folder need to pass it.
 export function composeTaskPrompt(
   path: string,
   title: string,
   body: string,
-  attachments: string[] = []
+  attachments: string[] = [],
+  cwd: string | null = null
 ): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
@@ -54,17 +94,23 @@ export function composeTaskPrompt(
     `${attachmentPromptBlock(attachments)}\n\n` +
     `${body}\n\n` +
     `While you work, keep this card's status current with gavin_set_plan_field on ${path}; ` +
-    `set it to the board's done column when finished.`
+    `set it to the board's done column when finished.` +
+    cardHomeNote(path, cwd)
   );
 }
 
-export function composePlanPrompt(path: string, attachments: string[] = []): string {
+export function composePlanPrompt(
+  path: string,
+  attachments: string[] = [],
+  cwd: string | null = null
+): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Read ${path} and execute that plan. Work its checklist top to bottom: ` +
     `tick items (- [x]) as you complete them, promote items that need their own agent ` +
     `with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field.` +
-    attachmentPromptBlock(attachments)
+    attachmentPromptBlock(attachments) +
+    cardHomeNote(path, cwd)
   );
 }
 
