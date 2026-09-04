@@ -75,6 +75,20 @@ struct HeuristicState {
     /// one instruction, since last_activity is refreshed on every
     /// incoming byte regardless of source.
     seen_osc133: AtomicBool,
+    /// Whether the output-activity heuristic is entitled to speak for
+    /// this session at all. Fixed for the session's whole life (see
+    /// `heuristic_speaks_for`), so it lives outside the mutex.
+    ///
+    /// False for a plain terminal, and that is this flag's entire
+    /// reason for existing: the heuristic reads "bytes arrived" as "the
+    /// agent is working", and a tab the human opened to type in has no
+    /// agent in it. Its prompt paint and its keystroke echoes are
+    /// output, so it used to report `working` for two seconds after
+    /// every character typed -- a spinner drawn from the app's AGENT
+    /// vocabulary (ui/indicators.ts) over a session where nothing was
+    /// running, counted as a running agent by the sidebar recap, the
+    /// fleet view and the close-idle-tabs prompt alike.
+    applies: bool,
 }
 
 struct HeuristicInner {
@@ -172,6 +186,27 @@ struct RepoPollerInner {
     /// `None` until the very first check completes, so a brand-new
     /// poller's first check never waits.
     last_checked: Option<Instant>,
+}
+
+/// Whether the output-activity heuristic may speak for this session.
+///
+/// It may only when gavin put something in the PTY that is expected to
+/// work and then stop: a session created with a command line (an agent,
+/// a rail's script, a git commit run). For those the heuristic is the
+/// only turn-boundary detector there is, since the agents this app hosts
+/// emit no OSC 133.
+///
+/// It may not for a plain terminal -- `command: None`, the tab the human
+/// opens to type in -- nor for a session `recover` put a bare shell into,
+/// whose command column still names an agent that was deliberately NOT
+/// re-run. Both hold a shell at a prompt, and inferring work from a
+/// shell's own echo is inventing a status rather than detecting one.
+///
+/// Explicit signals are untouched by this: a shell with OSC 133
+/// integration still reports its own command boundaries, and a bell still
+/// asks for the human. Only the INFERENCE is withdrawn.
+fn heuristic_speaks_for(record: &SessionRecord) -> bool {
+    record.command.is_some() && !record.interrupted
 }
 
 /// Persists a status transition and, if a client is currently attached,
@@ -543,13 +578,22 @@ fn spawn_suspend_watchdog(manager: &Arc<SessionManager>) {
     });
 }
 
-/// Spawned once per session pump (see spawn_pump), alongside it. Polls
+/// Spawned once per session pump (see spawn_pump), alongside it -- but
+/// only for a session the heuristic speaks for at all
+/// (`heuristic_speaks_for`); a plain terminal gets no timer, because
+/// nothing ever sets the flag it would be timing out. Polls
 /// `heuristic.inner` every HEURISTIC_POLL_INTERVAL; once
 /// HEURISTIC_QUIET_PERIOD has elapsed with no new output AND this session
 /// has never seen a valid OSC 133 marker, fires an Idle transition.
 /// Exits promptly once the session either switches permanently to
 /// OSC-133-only detection (seen_osc133) or ends (running set false).
 fn spawn_heuristic_idle_timer(manager: &Arc<SessionManager>, id: String, heuristic: Arc<HeuristicState>) {
+    if !heuristic.applies {
+        // Nothing to time out: the reactive half never sets
+        // heuristic_working for this session, so this thread would poll
+        // for the session's whole life to decide nothing.
+        return;
+    }
     let manager = Arc::clone(manager);
     std::thread::spawn(move || loop {
         std::thread::sleep(HEURISTIC_POLL_INTERVAL);
@@ -2271,18 +2315,25 @@ impl SessionManager {
                         if let Err(e) = registry.mark_interrupted(&record.id) {
                             eprintln!("failed to mark session {} interrupted: {e}", record.id);
                         }
-                        // The stored status describes the agent that was
-                        // working, and what is here now is a shell
-                        // sitting at a prompt. Attach replays this value
-                        // as its baseline, so leaving it would paint a
-                        // "working" dot over a session doing nothing --
-                        // the same lie in a second place. A plain
-                        // terminal session keeps its status untouched:
-                        // its recovery is unchanged, and its next prompt
-                        // corrects it anyway.
-                        if let Err(e) = registry.update_status(&record.id, SessionStatus::Idle) {
-                            eprintln!("failed to reset status for session {}: {e}", record.id);
-                        }
+                    }
+                    // Every recovered session, not just an interrupted
+                    // one. The stored status describes whatever was in
+                    // the PTY under the previous daemon; what is here now
+                    // is a bare shell sitting at a prompt, and Attach
+                    // replays this value as its baseline -- so leaving it
+                    // paints a "working" dot over a session doing
+                    // nothing.
+                    //
+                    // A plain terminal used to be exempt, on the grounds
+                    // that its next prompt corrected it anyway. It does
+                    // not: the output-activity heuristic no longer speaks
+                    // for a bare shell (see `heuristic_speaks_for`), so
+                    // nothing would ever move that row off `working`
+                    // again. The status is now reset here for the same
+                    // reason it always was for an agent row -- the shell
+                    // in front of the human is idle.
+                    if let Err(e) = registry.update_status(&record.id, SessionStatus::Idle) {
+                        eprintln!("failed to reset status for session {}: {e}", record.id);
                     }
                 }
                 Err(e) => {
@@ -2564,6 +2615,20 @@ impl SessionManager {
                     running: true,
                 }),
                 seen_osc133: AtomicBool::new(false),
+                // Read once, here, rather than per chunk: `command` is
+                // written at creation and never changes, and
+                // `interrupted` is stamped by `recover` before this
+                // session can be attached to. A row that cannot be read
+                // keeps the old behaviour -- an unreadable registry is
+                // not evidence that a session is a plain terminal.
+                applies: match manager.registry.lock().unwrap().get(&id) {
+                    Ok(Some(record)) => heuristic_speaks_for(&record),
+                    Ok(None) => true,
+                    Err(e) => {
+                        eprintln!("failed to read session {id} while starting its pump: {e}");
+                        true
+                    }
+                },
             });
             spawn_heuristic_idle_timer(&manager, id.clone(), Arc::clone(&heuristic));
 
@@ -2621,9 +2686,25 @@ impl SessionManager {
                         {
                             let mut inner = heuristic.inner.lock().unwrap();
                             inner.last_activity = Instant::now();
-                            if !heuristic.seen_osc133.load(Ordering::SeqCst)
-                                && (!inner.heuristic_working || inner.waiting_for_input)
-                            {
+                            if heuristic.seen_osc133.load(Ordering::SeqCst) {
+                                // The shell speaks for itself now, and
+                                // that is a one-way switch.
+                            } else if !heuristic.applies {
+                                // A plain terminal: output claims
+                                // nothing. It does still END a wait --
+                                // the rule that renewed activity clears
+                                // waiting_for_input is about the bell
+                                // being answered, not about anything
+                                // working, and without this a shell that
+                                // beeped once would sit at
+                                // `waiting_for_input` forever, since the
+                                // quiet timer this session has no longer
+                                // runs.
+                                if inner.waiting_for_input {
+                                    inner.waiting_for_input = false;
+                                    persist_and_emit_status(&manager, &id, SessionStatus::Idle);
+                                }
+                            } else if !inner.heuristic_working || inner.waiting_for_input {
                                 // Was idle, waiting for input, or never
                                 // yet working -- now has fresh output,
                                 // fire Working. Emitted while still
@@ -5799,6 +5880,101 @@ mod tests {
         );
     }
 
+    fn session_record(command: Option<&str>, interrupted: bool) -> SessionRecord {
+        SessionRecord {
+            id: "s1".to_string(),
+            workspace_path: "/tmp/ws".to_string(),
+            cwd: "/tmp".to_string(),
+            command: command.map(|c| c.to_string()),
+            status: SessionStatus::Idle,
+            restored: false,
+            generation: 0,
+            interrupted,
+            process: None,
+            orphan: None,
+            failure_reason: None,
+        }
+    }
+
+    #[test]
+    fn the_heuristic_speaks_only_for_a_session_gavin_launched_something_in() {
+        assert!(heuristic_speaks_for(&session_record(Some("claude --model opus"), false)));
+        // The tab a human opened to type in.
+        assert!(!heuristic_speaks_for(&session_record(None, false)));
+        // An agent row `recover` put a bare shell into: the command
+        // column still names the agent, but the agent is not there.
+        assert!(!heuristic_speaks_for(&session_record(Some("claude --model opus"), true)));
+    }
+
+    /// The heuristic's premise is that an agent produces output while it
+    /// works. A plain terminal has no agent in it: every byte it emits is
+    /// the shell painting a prompt or echoing what the human just typed,
+    /// and calling that "working" put a spinner on a tab where nothing
+    /// was happening -- the same lie
+    /// `recover_resets_an_interrupted_rows_status_so_a_bare_shell_never_reads_as_working`
+    /// already had to stamp out on the recovery path.
+    ///
+    /// Asserts the absence of a status rather than the presence of one,
+    /// because the correct answer here is that the daemon says nothing:
+    /// the session is created `idle` and stays there until something
+    /// explicit -- an OSC 133 marker, a bell -- speaks for it.
+    #[test]
+    fn a_plain_terminal_never_reports_working_from_its_own_output() {
+        let (socket_path, _dir) = start_test_server();
+
+        let id = {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            // `None`: exactly what the app sends for a terminal tab the
+            // human opened (backend.createSession with no command).
+            let created = request(
+                &mut stream,
+                &Request::CreateSession {
+                    workspace_path: "/tmp/ws".to_string(),
+                    cwd: "/tmp".to_string(),
+                    command: None,
+                },
+            );
+            match created {
+                Response::SessionCreated { id } => id,
+                other => panic!("expected SessionCreated, got {other:?}"),
+            }
+        };
+
+        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
+        // Typed, not run: bare characters with no newline are echoed by
+        // the shell's line editor without executing anything, so this
+        // exercises the keystroke-echo path without depending on whether
+        // the ambient $SHELL happens to emit OSC 133 around a command.
+        write_message(
+            &mut stream2,
+            &Request::WriteInput { id: id.clone(), data: "echo not_run".to_string() },
+        )
+        .unwrap();
+
+        // Well past HEURISTIC_QUIET_PERIOD, so a heuristic that fired at
+        // all has had time to be seen -- and a read timeout so a quiet
+        // session ends the loop at the deadline instead of blocking.
+        stream2.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + HEURISTIC_QUIET_PERIOD * 3;
+        let mut statuses: Vec<String> = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    statuses.push(status);
+                }
+                Ok(_) => {}
+                // A timeout tick -- keep waiting until the deadline.
+                Err(_) => {}
+            }
+        }
+        assert!(
+            !statuses.iter().any(|s| s == "working"),
+            "a plain terminal reported working with no agent in it, got: {statuses:?}"
+        );
+    }
+
     #[test]
     fn heuristic_permanently_stops_once_a_real_osc_133_marker_has_been_seen() {
         let (socket_path, _dir) = start_test_server();
@@ -6378,10 +6554,11 @@ mod tests {
     }
 
     #[test]
-    fn recover_brings_a_plain_terminal_session_back_exactly_as_it_always_did() {
+    fn recover_brings_a_plain_terminal_session_back_as_an_idle_bare_shell() {
         // The other half of the rule: a session with no command has no
-        // run to have been interrupted, so nothing about it changes and
-        // nothing claims otherwise.
+        // run to have been interrupted, so it is never marked as such --
+        // but it is still a fresh bare shell, so it comes back idle like
+        // every other recovered session.
         let dir = tempfile::tempdir().unwrap();
         leftover_row(
             &dir.path().join("registry.sqlite"),
@@ -6396,7 +6573,10 @@ mod tests {
         let summary = &manager.list_sessions().unwrap()[0];
         assert_eq!(summary.restored, true);
         assert_eq!(summary.interrupted, false, "a plain terminal session was never running a task");
-        assert_eq!(summary.status, "working", "its status is left for its next prompt to correct");
+        assert_eq!(
+            summary.status, "idle",
+            "a shell at a prompt is idle, and nothing else will ever correct this row"
+        );
         assert!(shell_echoes(&manager, "shell-1", "plain_shell_ok"));
     }
 
