@@ -32,9 +32,10 @@
   } from "./attachments";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
   import { isViewableInApp } from "./fileTypes";
-  import { SquareArrowOutUpRight } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
+    agentDevelopingIndicator,
     agentExitedIndicator,
     agentFailedIndicator,
     agentIndicator,
@@ -74,6 +75,19 @@
   import { interruptedCardNote } from "./orphan";
   import { endSessionOrphan } from "./orphanActions";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import { waitLabel } from "./attentionInbox";
+  import { nowStore } from "./agentPauseState";
+  import {
+    cardSessionBar,
+    loadSectionsOpen,
+    railSummary,
+    saveSectionsOpen,
+    settingsSummary,
+    type CardActionId,
+    type CardSectionId,
+    type CardSectionsOpen,
+    type CardSituation,
+  } from "./cardDetail";
   import * as backend from "./backend";
 
   interface Props {
@@ -779,460 +793,693 @@
       errorMessage = `Couldn't open externally: ${e}`;
     }
   }
+
+  // --- what this card is asking of me, right now (cardDetail.ts) -------
+  //
+  // One situation, pinned above the scroller. The precedence is the same
+  // one the panel used to spell out in nested {#if} branches, and it has
+  // to stay that way: a best-of-N run replaces the binding block (there
+  // is no binding until one is picked), and a develop run replaces every
+  // launch (the file is being rewritten, so every launch is refused).
+  const situation = $derived<CardSituation>(
+    card.kind === "note"
+      ? { kind: "none" }
+      : bestOfNRun
+        ? { kind: "best-of-n", summary: runSummary(bestOfNRun, liveIds) }
+        : binding
+          ? {
+              kind: "bound",
+              phase: bindingInterrupted
+                ? "interrupted"
+                : bindingFailed
+                  ? "failed"
+                  : bindingLive
+                    ? "live"
+                    : "exited",
+              // The daemon's status describes whatever occupies the
+              // session id NOW, so it is consulted only while the run is
+              // live -- an interrupted id holds a bare shell.
+              status: bindingLive
+                ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
+                : null,
+              orphan: bindingOrphan !== null,
+            }
+          : developing
+            ? { kind: "developing" }
+            : {
+                kind: "unbound",
+                cardKind: card.kind === "plan" ? "plan" : "task",
+                canDevelop,
+                runBlocked: runBlocked !== null,
+              }
+  );
+  const bar = $derived(cardSessionBar(situation));
+
+  /// The bar's glyph, from the app's one badge vocabulary. Null where
+  /// there is no agent to describe: an unbound card has no state, and a
+  /// best-of-N run's states are one per candidate row below.
+  const barBadge = $derived(
+    situation.kind === "bound"
+      ? bindingBadge
+      : situation.kind === "developing"
+        ? agentDevelopingIndicator()
+        : null
+  );
+
+  /// Which action gets the accent. The FIRST ENABLED one, not simply the
+  /// first: an exited session leads with a disabled "Jump to session",
+  /// and painting that as the primary would point the eye at the one
+  /// button that cannot be pressed. A danger action is never the accent
+  /// -- it already carries its own, louder, emphasis.
+  const primaryActionId = $derived(bar?.actions.find((a) => a.enabled && !a.danger)?.id ?? null);
+
+  /// How long the run has been waiting on a person. Shown only when it
+  /// IS waiting: "working · 4m" is a fact nobody asked for, while
+  /// "waiting for you · 40m" is the whole reason this bar is pinned.
+  /// Rides the app-wide clock (agentPauseState) rather than a timer of
+  /// its own, so an open panel costs nothing.
+  const statusSince = $derived(
+    binding ? ($layoutState.statusSinceById[binding.sessionId] ?? null) : null
+  );
+  const waited = $derived(
+    bar?.wantsHuman && statusSince
+      ? waitLabel(Math.max(0, $nowStore - statusSince.at), statusSince.watched)
+      : null
+  );
+
+  async function runBarAction(id: CardActionId): Promise<void> {
+    switch (id) {
+      case "end-orphan":
+        if (binding) await endSessionOrphan(binding.sessionId);
+        return;
+      case "resume":
+        return handleResume();
+      // One handler for both: `runCard` jumps to a live session rather
+      // than spawning a second agent on the same card.
+      case "jump":
+      case "run":
+        return handleRun();
+      case "relaunch":
+        return handleRelaunch();
+      case "develop":
+        return handleDevelop();
+      case "best-of-n":
+        startBestOfN();
+        return;
+      case "develop-jump":
+        return handleJumpToDevelop();
+    }
+  }
+
+  // --- folded sections --------------------------------------------------
+  // The two blocks a human comes here to CHANGE rather than to read
+  // start folded, and say what they hold while folded so the fold is not
+  // a second hunt.
+  let sectionsOpen = $state<CardSectionsOpen>(loadSectionsOpen());
+  function toggleSection(id: CardSectionId): void {
+    sectionsOpen = { ...sectionsOpen, [id]: !sectionsOpen[id] };
+    saveSectionsOpen(sectionsOpen);
+  }
+
+  const brokenAttachments = $derived(attachmentStatuses.filter((s) => !s.exists).length);
+  const settingsLine = $derived(
+    settingsSummary({
+      labels: card.labels.length,
+      attachments: attachments.length,
+      brokenAttachments,
+      autoCommit: autoCommitOn,
+      autoCommitApplies,
+    })
+  );
+  const railLine = $derived(
+    railSummary({
+      railCount: rails.length,
+      railName: placedRail?.name ?? null,
+      stageNumber: placement?.stageNumber ?? null,
+      stageCount: placement?.stageCount ?? null,
+      stepState: placedState,
+    })
+  );
+
+  // The panel scrolls its middle, not the modal's own panel, so Modal's
+  // `scrollKey` reset cannot reach it: the Tasks list and "Part of"
+  // repoint this panel WITHOUT unmounting it, and the offset left behind
+  // belongs to the card that just went.
+  let scroller = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    void card.id;
+    if (scroller) scroller.scrollTop = 0;
+  });
 </script>
 
-<Modal {onClose} scrollKey={card.id} {inline}>
-  <div class="header">
-    <span class="kind-badge kind-{card.kind}">{card.kind}</span>
-    <span class="meta">{card.contextName} · {card.fileName}</span>
-    {#if onGoToBoard}
-      <button type="button" class="go-to-board" onclick={() => onGoToBoard?.()}>
-        <SquareArrowOutUpRight size={12} />
-        Show on the board
-      </button>
-    {/if}
-  </div>
-  <input class="title" type="text" bind:value={titleDraft} onblur={commitTitle} onkeydown={(e) => e.key === "Enter" && commitTitle()} />
-  <div class="path">{card.id}</div>
-  {#if card.parseWarning}
-    <p class="warning">This card's frontmatter has issues — some fields may not be readable.</p>
-  {/if}
-  {#if card.parent}
-    <div class="row">
-      <span class="label">Part of</span>
-      {#if partOf}
-        <button type="button" class="card-link" title={partOf.title} onclick={() => onOpenCard(partOf.id)}>
-          {partOf.title}
-        </button>
-      {:else}
-        <span class:broken={card.parentBroken}>{card.parentBroken ? `⚠ ${card.parent} (not found)` : card.parentTitle}</span>
-      {/if}
-    </div>
-  {/if}
-  <label class="row">
-    <span class="label">Status</span>
-    <select bind:value={statusChoice} onchange={() => void commitStatus()}>
-      {#if nested}
-        <option value="">(nested in {card.parentTitle})</option>
-      {:else if card.status === null}
-        <option value="">(none — first column)</option>
-      {:else if !statusMatchesColumn}
-        <option value={card.status}>{card.status} (auto column)</option>
-      {/if}
-      {#each columns as col (col.id)}
-        <option value={col.name} selected={slugStatus(col.name) === slugStatus(card.status ?? "")}>{col.name}</option>
-      {/each}
-    </select>
-  </label>
-  <label class="row">
-    <span class="label">Priority</span>
-    <select bind:value={priority} onchange={commitPriority}>
-      {#each PRIORITIES as p (p)}
-        <option value={p}>{p}</option>
-      {/each}
-    </select>
-  </label>
-  {#if labels.length > 0}
-    <div class="row">
-      <span class="label">Labels</span>
-      <div class="chips">
-        {#each labels as l (l.id)}
-          <button
-            type="button"
-            class="chip"
-            class:active={activeLabelSlugs.has(slugStatus(l.name))}
-            style:border-color={l.color}
-            onclick={() => void toggleLabel(l.name)}
-          >
-            {l.name}
+<!-- The head and the foot are pinned; only the middle scrolls. That is
+     the whole rework: what a card ASKS of you (its agent's state and the
+     one button that reaches it) and what you can DO to the card must not
+     move further away the more the human wrote in it. -->
+{#snippet fold(id: CardSectionId, title: string, summary: string)}
+  <button
+    type="button"
+    class="fold-head"
+    aria-expanded={sectionsOpen[id]}
+    onclick={() => toggleSection(id)}
+  >
+    {#if sectionsOpen[id]}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+    <span class="fold-title">{title}</span>
+    <!-- A folded section still says what it holds: a fold that hides
+         whether anything is in there just moves the hunt one click on. -->
+    <span class="fold-summary">{summary}</span>
+  </button>
+{/snippet}
+
+<Modal {onClose} scrollKey={card.id} {inline} wide innerScroll>
+  <div class="card-detail" class:inline>
+    <div class="head">
+      <div class="ident">
+        <span class="kind-badge kind-{card.kind}">{card.kind}</span>
+        <!-- The absolute path used to have a line of its own under the
+             title. It is a thing you copy, not a thing you read, so it
+             rides the bubble here and gives the bar its row back. -->
+        <span class="meta" title={card.id}>{card.contextName} · {card.fileName}</span>
+        {#if onGoToBoard}
+          <button type="button" class="go-to-board" onclick={() => onGoToBoard?.()}>
+            <SquareArrowOutUpRight size={12} />
+            Show on the board
           </button>
-        {/each}
+        {/if}
       </div>
-    </div>
-  {/if}
-  {#if autoCommitApplies}
-    <label class="row auto-commit">
-      <span class="label">Auto commit</span>
       <input
-        type="checkbox"
-        checked={autoCommitOn}
-        disabled={autoCommitBusy || content === null}
-        onchange={(e) => void toggleAutoCommit(e.currentTarget.checked)}
+        class="title"
+        type="text"
+        bind:value={titleDraft}
+        onblur={commitTitle}
+        onkeydown={(e) => e.key === "Enter" && commitTitle()}
       />
-      <span class="auto-commit-hint">
-        <!-- Unknown is not the same answer as off. Until the read lands
-             the box is disabled and says so, rather than showing an
-             unticked box for a card that does carry the block. -->
-        {content === null
-          ? "Reading the card…"
-          : autoCommitOn
-            ? "This card asks its agent to commit when it finishes."
-            : "This card says nothing about committing."}
-      </span>
-    </label>
-    {#if autoCommitError}
-      <p class="error">{autoCommitError}</p>
-    {/if}
-  {/if}
-  <!-- The blocked reason rides the SECTION, not the button: tooltip.ts
-       binds mouseenter, which a disabled element never fires, so a
-       reason hung on the disabled control alone can never be read. -->
-  <div class="section" title={attachmentsBlocked ?? undefined}>
-    <div class="section-title">
-      Attachments{attachments.length > 0 ? ` · ${attachments.length}` : ""}
-    </div>
-    {#if attachments.length === 0}
-      <p class="quiet">
-        No files attached. An attached file is handed to every agent this card launches.
-      </p>
-    {/if}
-    <div class="chips attachment-chips">
-      {#each attachments as path (path)}
-        {@const status = attachmentStatuses.find((s) => s.path === path) ?? null}
-        {@const broken = status !== null && !status.exists}
-        <span class="attachment" class:broken>
-          <button
-            type="button"
-            class="attachment-open"
-            disabled={status === null || broken}
-            title={broken
-              ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
-              : path}
-            onclick={() => status && void openAttachment(status)}
-          >
-            {broken ? "⚠ " : ""}{attachmentName(path)}
-          </button>
-          <button
-            type="button"
-            class="attachment-remove"
-            aria-label={`Remove ${attachmentName(path)}`}
-            disabled={attachmentsBusy || attachmentsBlocked !== null}
-            title={attachmentsBlocked ?? "Take this file off the card"}
-            onclick={() => void writeAttachments(removeAttachment(attachments, path))}
-          >
-            ✕
-          </button>
-        </span>
-      {/each}
-    </div>
-    <div class="session-actions">
-      <button
-        type="button"
-        disabled={attachmentsBusy || attachmentsBlocked !== null}
-        title={attachmentsBlocked ??
-          "Pick a file for this card — inside the root it is stored relative, outside it absolute"}
-        onclick={() => void pickAttachment()}
-      >
-        Pick…
-      </button>
-    </div>
-    {#if attachmentsError}
-      <p class="error">{attachmentsError}</p>
-    {/if}
-  </div>
-  {#if card.kind === "plan" && checklist.length > 0}
-    <div class="section">
-      <div class="section-title">Checklist · {card.checklistDone}/{card.checklistTotal}</div>
-      {#each checklist as item (item.lineIndex)}
-        <div class="check-item">
-          <input
-            type="checkbox"
-            checked={item.checked}
-            onchange={() => void toggleItem(item)}
-          />
-          <span class="check-text" class:done={item.checked}>{item.text}</span>
-          {#if item.promotedFile}
-            <span class="promoted" title="Promoted to {item.promotedFile}">→ task</span>
-          {:else if slugFileName(item.text)}
-            <button type="button" class="promote" onclick={() => void promoteItem(item)}>Promote</button>
-          {/if}
-        </div>
-      {/each}
-      {#if checklistError}
-        <p class="error">{checklistError}</p>
-      {/if}
-    </div>
-  {/if}
-  {#if children.length > 0}
-    <div class="section">
-      <div class="section-title">Tasks</div>
-      <!-- Said once, above the list: a nested task has no status of its
-           own, so nothing else on this modal can tell the human that
-           finishing this plan finishes it too. -->
-      {#if children.some((c) => c.status === null)}
-        <p class="quiet">
-          A nested task has no status of its own — it is done when this plan is, and travels
-          into plans/done/ with it. Break one out to give it a column of its own; it keeps
-          the link back here.
-        </p>
-      {/if}
-      {#each children as child (child.id)}
-        <div class="child-row">
-          <button type="button" class="child-open" title="Open this task's card" onclick={() => onOpenCard(child.id)}>
-            <span class="child-title" title={child.title}>{child.title}</span>
-            <span class="child-status">{child.status ?? "(nested)"}</span>
-          </button>
-          <div class="child-actions">
-            {#if child.status === null && breakOutTarget}
-              <button
-                type="button"
-                class="unparent"
-                title={`Give it its own card in ${breakOutTarget.name} — it stays part of this plan`}
-                onclick={() => void breakOutChild(child)}
-              >
-                Break out
-              </button>
+      <!-- Status and priority are the two fields a human changes from
+           here, so they stay above the fold with the title. Everything
+           else that edits the card is folded away below. -->
+      <div class="fields">
+        <label class="field">
+          <span class="label">Status</span>
+          <select bind:value={statusChoice} onchange={() => void commitStatus()}>
+            {#if nested}
+              <option value="">(nested in {card.parentTitle})</option>
+            {:else if card.status === null}
+              <option value="">(none — first column)</option>
+            {:else if !statusMatchesColumn}
+              <option value={card.status}>{card.status} (auto column)</option>
             {/if}
-            <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
-              Un-parent
-            </button>
+            {#each columns as col (col.id)}
+              <option value={col.name} selected={slugStatus(col.name) === slugStatus(card.status ?? "")}
+                >{col.name}</option
+              >
+            {/each}
+          </select>
+        </label>
+        <label class="field">
+          <span class="label">Priority</span>
+          <select bind:value={priority} onchange={commitPriority}>
+            {#each PRIORITIES as p (p)}
+              <option value={p}>{p}</option>
+            {/each}
+          </select>
+        </label>
+        {#if card.parent}
+          <div class="field">
+            <span class="label">Part of</span>
+            {#if partOf}
+              <button type="button" class="card-link" title={partOf.title} onclick={() => onOpenCard(partOf.id)}>
+                {partOf.title}
+              </button>
+            {:else}
+              <span class:broken={card.parentBroken}
+                >{card.parentBroken ? `⚠ ${card.parent} (not found)` : card.parentTitle}</span
+              >
+            {/if}
           </div>
-        </div>
-      {/each}
-    </div>
-  {/if}
-  {#if card.kind === "task" && bodyHtml !== null}
-    <div class="section">
-      <div class="section-title">Prompt</div>
-      <pre class="prompt">{stripFrontmatter(content ?? "").trim()}</pre>
-    </div>
-  {:else if bodyHtml !== null && stripFrontmatter(content ?? "").trim() !== ""}
-    <div class="section">
-      <div class="section-title">Body</div>
-      <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
-      <div class="body-preview">{@html bodyHtml}</div>
-    </div>
-  {/if}
-  {#if card.kind !== "note"}
-    <div class="section">
-      <div class="section-title">{bestOfNRun ? `Best of ${bestOfNRun.candidates.length}` : "Agent session"}</div>
-      {#if bestOfNRun}
-        <!-- A run replaces the binding block entirely: the card has N
-             agents and no binding at all until one is picked, so every
-             control here is about deciding between them. -->
-        <p class="quiet">{runSummary(bestOfNRun, liveIds)} — each in its own worktree. Picking one keeps its
-          branch and closes the rest; merging is still yours.</p>
-        {#each candidateRows as row (row.candidate.sessionId)}
-          <div class="candidate-row">
-            <StatusBadge
-              indicator={row.live ? agentIndicator($layoutState.sessionStatusById[row.candidate.sessionId]) : agentExitedIndicator()}
-              size={12}
-              text={row.live ? "running" : "stopped"}
-            />
-            <span class="candidate-label" title={row.candidate.worktreePath}>{row.candidate.label}</span>
-            <code class="candidate-branch">{row.candidate.branch}</code>
-            <button
-              type="button"
-              title="Jump to this candidate's terminal"
-              disabled={!row.live}
-              onclick={() => void revealSession(row.candidate.sessionId)}>Watch</button
-            >
-            <button type="button" class="pick" onclick={() => void handlePick(row.candidate.sessionId)}>Keep this one</button>
-          </div>
-        {/each}
-        <div class="session-actions">
-          <button type="button" class="danger" onclick={() => void handleAbandon()}>Discard the run…</button>
-        </div>
-      {:else if binding}
-        <div class="session-info">
-          <StatusBadge indicator={bindingBadge} size={12} text={bindingStatus} class="session-status" />
-          <span class="session-cwd">{binding.cwd}</span>
-        </div>
-        {#if bindingFailed}
-          <p class="session-note">
-            This agent stopped because something broke, not because it finished{failureReason
-              ? ` — ${failureReason}`
-              : ""}. The process is still sitting at its prompt and whatever it had
-            already written is still in the checkout. Resume picks the work up — where
-            this agent supports it, by reopening the same conversation rather than
-            starting a new one.
-          </p>
         {/if}
-        {#if resumeNote}
-          <!-- A run gavin put back by itself. Without this the card
-               reads as one that never broke -- which is the whole point
-               of the trail: coming back to finished work, you have to be
-               able to find out it was not finished all along. -->
-          <p class="session-note">Recovered on its own: {resumeNote}.</p>
-        {/if}
-        {#if bindingInterrupted || bindingOrphan}
-          <!-- One paragraph for both, from orphan.ts: the interrupted
-               wording splits on whether the daemon PROBED, and the orphan
-               case says the agent did not stop at all. -->
-          <p class="session-note" class:orphaned={bindingOrphan !== null}>
-            {interruptedCardNote({ orphan: bindingOrphan, compat: $daemonCompat })}
-          </p>
-        {/if}
-        <div class="session-actions">
-          <!-- First, and ahead of Resume: resuming beside an agent that
-               never stopped is the second-agent-in-one-checkout outcome
-               this card exists to prevent, and it is reached from the
-               button right next to this one. -->
-          {#if bindingOrphan && binding}
-            <button
-              type="button"
-              class="danger"
-              onclick={() => void endSessionOrphan(binding.sessionId)}
-              >End the running process</button
-            >
-          {/if}
-          {#if bindingInterrupted || bindingFailed}
-            <button type="button" onclick={() => void handleResume()}>Resume this card</button>
-          {/if}
-          <button type="button" disabled={!bindingLive} onclick={() => void handleRun()}>Jump to session</button>
-          <button type="button" disabled={bindingLive} onclick={() => void handleRelaunch()}>Re-launch</button>
-          <button type="button" onclick={() => void handleUnlink()}>Unlink</button>
-        </div>
-        <!-- What this run has done to its checkout, from the commit it
-             started on. Its own row rather than a sixth button, because
-             the interesting half is the SENTENCE when there is no
-             baseline: a Changes button that quietly diffs against
-             nothing is the one outcome this feature must not have. -->
-        <div class="changes-row">
-          {#if baseline.kind === "ready"}
-            <button type="button" onclick={() => (showingChanges = true)}>
-              Changes since {baseline.baseSha.slice(0, 7)}…
-            </button>
-          {:else}
-            <p class="quiet">{baseline.reason}</p>
-          {/if}
-        </div>
-      {:else if developing}
-        <p class="session-note">
-          An agent is developing this card — rewriting its body, and possibly its
-          kind and its nested tasks. Until it finishes, nothing else may run this
-          card: a second agent would be executing a prompt that is about to be
-          replaced, and writing its status into a file being rewritten.
-        </p>
-        <div class="session-actions">
-          <button type="button" onclick={() => void handleJumpToDevelop()}>
-            Jump to the develop session
-          </button>
-        </div>
-      {:else}
-        <!-- Stacked, not side by side: both labels are sentences rather
-             than verbs, so on one row they wrap mid-label and the two
-             actions read as one ragged block. -->
-        <div class="session-actions stacked">
-          {#if canDevelop}
-            <button
-              type="button"
-              disabled={runBlocked !== null}
-              onclick={() => void handleDevelop()}
-            >
-              Develop into a plan…
-            </button>
-          {/if}
-          <button type="button" disabled={runBlocked !== null} onclick={() => void handleRun()}>
-            ▶ Run {card.kind === "plan" ? "this plan" : "this task"} with the agent
-          </button>
-          <!-- The same card on several agents at once. The modal closes
-               as it opens the dialog: both are fixed layers at one
-               z-index, so tree order decides, and this one is mounted
-               inside whichever board is showing. -->
-          <button type="button" disabled={runBlocked !== null} onclick={() => startBestOfN()}>
-            Run it on several agents…
-          </button>
-        </div>
-        <!-- Inline rather than a tooltip: a disabled button fires no
-             mouseenter, and this modal has the room to just say it. -->
-        {#if runBlocked}
-          <p class="quiet">{runBlocked}</p>
-        {/if}
-      {/if}
-      <!-- Outside the bound/unbound split on purpose. The Changes view
-           above is about the LIVE run and belongs to the binding; the
-           history is about every run the card has had, and a card whose
-           binding was unlinked -- or replaced, or never survived a
-           daemon restart -- is exactly the one whose history somebody
-           wants. Hiding it there would have made the feature reachable
-           only while it was least interesting.
-           The reason rides the WRAPPER, like the attachments section
-           above: a disabled control fires no mouseenter, so a title on
-           the button itself could never be read. -->
-      <div class="changes-row">
-        <span title={historyBlocked ?? undefined}>
-          <button type="button" disabled={historyBlocked !== null} onclick={() => (showingHistory = true)}>
-            Run history…
-          </button>
-        </span>
       </div>
-    </div>
-    <div class="section">
-      <div class="section-title">Orchestration rail</div>
-      {#if rails.length === 0}
-        <p class="quiet">No rails yet — a rail is a column of stages, built on the Orchestration tab.</p>
-      {:else if placement}
-        <div class="session-info">
-          <span class="rail-where">
-            On “{placedRail?.name}” · stage {placement.stageNumber} of {placement.stageCount}
-          </span>
-          <span class="step-state">{placedState}</span>
-        </div>
-      {:else}
-        <p class="quiet">Not on a rail — it won't run as part of any arrangement.</p>
+      {#if card.parseWarning}
+        <p class="warning">This card's frontmatter has issues — some fields may not be readable.</p>
       {/if}
-      {#if rails.length > 0}
-        <div class="chips rail-chips">
-          {#each rails as rail (rail.id)}
-            {@const here = rail.id === placement?.railId}
-            <button
-              type="button"
-              class="chip"
-              class:active={here}
-              disabled={here}
-              title={here ? "Already on this rail" : `Send to “${rail.name}” as its last stage`}
-              onclick={() => void sendToRail(rail.id)}
+      <!-- The session bar. Pinned because the state it reports is the
+           only thing on this panel that can be URGENT: an agent waiting
+           for a human used to have its one button below a screenful of
+           prompt text. -->
+      {#if bar}
+        <div class="session-bar tone-{bar.tone}" class:wants-human={bar.wantsHuman}>
+          {#if barBadge}
+            <StatusBadge indicator={barBadge} size={13} class="bar-badge" />
+          {/if}
+          <span class="bar-headline">{bar.headline}</span>
+          <!-- An unwatched wait is a FLOOR, never a measurement: gavin can
+               only time a state from the transition it saw, and a status
+               already in place when the app attached was never watched
+               beginning. The "≥" is the mark; this is where it is said. -->
+          {#if waited}
+            <span
+              class="bar-waited"
+              title={statusSince?.watched
+                ? "How long it has been in this state"
+                : "Already in this state when gavin attached, so the wait is a floor"}
             >
-              {rail.name}
-            </button>
+              {waited}
+            </span>
+          {/if}
+          {#if bar.actions.length > 0}
+            <div class="bar-actions">
+              {#each bar.actions as action (action.id)}
+                <button
+                  type="button"
+                  class="bar-action"
+                  class:primary={action.id === primaryActionId}
+                  class:danger={action.danger}
+                  disabled={!action.enabled}
+                  onclick={() => void runBarAction(action.id)}
+                >
+                  {action.label}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <div class="scroll" bind:this={scroller}>
+      <!-- What the bar could not fit: the paragraphs that explain the
+           state, and the rows a best-of-N decision is actually made on.
+           First in the scroller, so the explanation sits directly under
+           the claim it explains. -->
+      {#if card.kind !== "note"}
+        {#if bestOfNRun}
+          <div class="situation">
+            <p class="quiet">
+              {runSummary(bestOfNRun, liveIds)} — each in its own worktree. Picking one keeps its branch
+              and closes the rest; merging is still yours.
+            </p>
+            {#each candidateRows as row (row.candidate.sessionId)}
+              <div class="candidate-row">
+                <StatusBadge
+                  indicator={row.live
+                    ? agentIndicator($layoutState.sessionStatusById[row.candidate.sessionId])
+                    : agentExitedIndicator()}
+                  size={12}
+                  text={row.live ? "running" : "stopped"}
+                />
+                <span class="candidate-label" title={row.candidate.worktreePath}>{row.candidate.label}</span>
+                <code class="candidate-branch">{row.candidate.branch}</code>
+                <button
+                  type="button"
+                  title="Jump to this candidate's terminal"
+                  disabled={!row.live}
+                  onclick={() => void revealSession(row.candidate.sessionId)}>Watch</button
+                >
+                <button type="button" class="pick" onclick={() => void handlePick(row.candidate.sessionId)}
+                  >Keep this one</button
+                >
+              </div>
+            {/each}
+            <div class="session-actions">
+              <button type="button" class="danger" onclick={() => void handleAbandon()}>Discard the run…</button>
+            </div>
+          </div>
+        {:else if binding}
+          {#if bindingFailed || resumeNote || bindingInterrupted || bindingOrphan}
+            <div class="situation">
+              {#if bindingFailed}
+                <p class="session-note">
+                  This agent stopped because something broke, not because it finished{failureReason
+                    ? ` — ${failureReason}`
+                    : ""}. The process is still sitting at its prompt and whatever it had
+                  already written is still in the checkout. Resume picks the work up — where
+                  this agent supports it, by reopening the same conversation rather than
+                  starting a new one.
+                </p>
+              {/if}
+              {#if resumeNote}
+                <!-- A run gavin put back by itself. Without this the card
+                     reads as one that never broke -- which is the whole point
+                     of the trail: coming back to finished work, you have to be
+                     able to find out it was not finished all along. -->
+                <p class="session-note">Recovered on its own: {resumeNote}.</p>
+              {/if}
+              {#if bindingInterrupted || bindingOrphan}
+                <!-- One paragraph for both, from orphan.ts: the interrupted
+                     wording splits on whether the daemon PROBED, and the orphan
+                     case says the agent did not stop at all. -->
+                <p class="session-note" class:orphaned={bindingOrphan !== null}>
+                  {interruptedCardNote({ orphan: bindingOrphan, compat: $daemonCompat })}
+                </p>
+              {/if}
+            </div>
+          {/if}
+        {:else if developing}
+          <div class="situation">
+            <p class="session-note">
+              An agent is developing this card — rewriting its body, and possibly its
+              kind and its nested tasks. Until it finishes, nothing else may run this
+              card: a second agent would be executing a prompt that is about to be
+              replaced, and writing its status into a file being rewritten.
+            </p>
+          </div>
+        {:else if runBlocked}
+          <!-- Inline rather than a tooltip: the bar's buttons are
+               disabled, and a disabled button fires no mouseenter. -->
+          <div class="situation">
+            <p class="quiet">{runBlocked}</p>
+          </div>
+        {/if}
+      {/if}
+
+      {#if card.kind === "plan" && checklist.length > 0}
+        <div class="section">
+          <div class="section-title">Checklist · {card.checklistDone}/{card.checklistTotal}</div>
+          {#each checklist as item (item.lineIndex)}
+            <div class="check-item">
+              <input type="checkbox" checked={item.checked} onchange={() => void toggleItem(item)} />
+              <span class="check-text" class:done={item.checked}>{item.text}</span>
+              {#if item.promotedFile}
+                <span class="promoted" title="Promoted to {item.promotedFile}">→ task</span>
+              {:else if slugFileName(item.text)}
+                <button type="button" class="promote" onclick={() => void promoteItem(item)}>Promote</button>
+              {/if}
+            </div>
+          {/each}
+          {#if checklistError}
+            <p class="error">{checklistError}</p>
+          {/if}
+        </div>
+      {/if}
+
+      {#if children.length > 0}
+        <div class="section">
+          <div class="section-title">Tasks</div>
+          <!-- Said once, above the list: a nested task has no status of its
+               own, so nothing else on this modal can tell the human that
+               finishing this plan finishes it too. -->
+          {#if children.some((c) => c.status === null)}
+            <p class="quiet">
+              A nested task has no status of its own — it is done when this plan is, and travels
+              into plans/done/ with it. Break one out to give it a column of its own; it keeps
+              the link back here.
+            </p>
+          {/if}
+          {#each children as child (child.id)}
+            <div class="child-row">
+              <button type="button" class="child-open" title="Open this task's card" onclick={() => onOpenCard(child.id)}>
+                <span class="child-title" title={child.title}>{child.title}</span>
+                <span class="child-status">{child.status ?? "(nested)"}</span>
+              </button>
+              <div class="child-actions">
+                {#if child.status === null && breakOutTarget}
+                  <button
+                    type="button"
+                    class="unparent"
+                    title={`Give it its own card in ${breakOutTarget.name} — it stays part of this plan`}
+                    onclick={() => void breakOutChild(child)}
+                  >
+                    Break out
+                  </button>
+                {/if}
+                <button type="button" class="unparent" title="Detach from this plan" onclick={() => void unparentChild(child.id)}>
+                  Un-parent
+                </button>
+              </div>
+            </div>
           {/each}
         </div>
       {/if}
-      <div class="session-actions">
-        {#if placement}
-          <button type="button" onclick={() => void takeOffRail()}>Take off rail</button>
+
+      <!-- The card's own text, uncapped. It used to sit in a 200px box
+           with a scrollbar of its own, above a session block nobody
+           could reach: now the panel scrolls once and the text can be as
+           long as it likes without pushing anything urgent out of view. -->
+      {#if card.kind === "task" && bodyHtml !== null}
+        <div class="section">
+          <div class="section-title">Prompt</div>
+          <pre class="prompt">{stripFrontmatter(content ?? "").trim()}</pre>
+        </div>
+      {:else if bodyHtml !== null && stripFrontmatter(content ?? "").trim() !== ""}
+        <div class="section">
+          <div class="section-title">Body</div>
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized above -->
+          <div class="body-preview">{@html bodyHtml}</div>
+        </div>
+      {/if}
+
+      {#if card.kind !== "note"}
+        <!-- Evidence, not reach: where the run happened, what it changed,
+             and every run this card has had. The buttons that REACH an
+             agent are all in the bar; nothing here is time-critical, so
+             it is the one place a fold costs nothing. -->
+        <div class="section">
+          {@render fold("session", "Session details", binding ? bindingStatus : "no session bound")}
+          {#if sectionsOpen.session}
+            <div class="fold-body">
+              {#if binding}
+                <div class="session-info">
+                  <StatusBadge indicator={bindingBadge} size={12} text={bindingStatus} class="session-status" />
+                  <span class="session-cwd" title={binding.cwd}>{binding.cwd}</span>
+                </div>
+                <!-- What this run has done to its checkout, from the commit it
+                     started on. Its own row rather than another button in the
+                     bar, because the interesting half is the SENTENCE when
+                     there is no baseline: a Changes button that quietly diffs
+                     against nothing is the one outcome this feature must not
+                     have. -->
+                <div class="changes-row">
+                  {#if baseline.kind === "ready"}
+                    <button type="button" onclick={() => (showingChanges = true)}>
+                      Changes since {baseline.baseSha.slice(0, 7)}…
+                    </button>
+                  {:else}
+                    <p class="quiet">{baseline.reason}</p>
+                  {/if}
+                </div>
+              {:else}
+                <p class="quiet">No session is bound to this card.</p>
+              {/if}
+              <!-- Outside the bound/unbound split on purpose. The Changes view
+                   above is about the LIVE run and belongs to the binding; the
+                   history is about every run the card has had, and a card whose
+                   binding was unlinked -- or replaced, or never survived a
+                   daemon restart -- is exactly the one whose history somebody
+                   wants.
+                   The reason rides the WRAPPER: a disabled control fires no
+                   mouseenter, so a title on the button itself could never be
+                   read. -->
+              <div class="session-actions">
+                <span title={historyBlocked ?? undefined}>
+                  <button type="button" disabled={historyBlocked !== null} onclick={() => (showingHistory = true)}>
+                    Run history…
+                  </button>
+                </span>
+                {#if binding}
+                  <button type="button" onclick={() => void handleUnlink()}>Unlink</button>
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Labels, the commit instruction and the attached files: three
+           things a human comes here to CHANGE rather than to read, which
+           is rarer than either of the two above. -->
+      <div class="section">
+        {@render fold("settings", "Card settings", settingsLine)}
+        {#if sectionsOpen.settings}
+          <div class="fold-body">
+            {#if labels.length > 0}
+              <div class="row">
+                <span class="label">Labels</span>
+                <div class="chips">
+                  {#each labels as l (l.id)}
+                    <button
+                      type="button"
+                      class="chip"
+                      class:active={activeLabelSlugs.has(slugStatus(l.name))}
+                      style:border-color={l.color}
+                      onclick={() => void toggleLabel(l.name)}
+                    >
+                      {l.name}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+            {#if autoCommitApplies}
+              <label class="row auto-commit">
+                <span class="label">Auto commit</span>
+                <input
+                  type="checkbox"
+                  checked={autoCommitOn}
+                  disabled={autoCommitBusy || content === null}
+                  onchange={(e) => void toggleAutoCommit(e.currentTarget.checked)}
+                />
+                <span class="auto-commit-hint">
+                  <!-- Unknown is not the same answer as off. Until the read lands
+                       the box is disabled and says so, rather than showing an
+                       unticked box for a card that does carry the block. -->
+                  {content === null
+                    ? "Reading the card…"
+                    : autoCommitOn
+                      ? "This card asks its agent to commit when it finishes."
+                      : "This card says nothing about committing."}
+                </span>
+              </label>
+              {#if autoCommitError}
+                <p class="error">{autoCommitError}</p>
+              {/if}
+            {/if}
+            <!-- The blocked reason rides the SECTION, not the button: tooltip.ts
+                 binds mouseenter, which a disabled element never fires, so a
+                 reason hung on the disabled control alone can never be read. -->
+            <div class="sub-section" title={attachmentsBlocked ?? undefined}>
+              <div class="section-title">
+                Attachments{attachments.length > 0 ? ` · ${attachments.length}` : ""}
+              </div>
+              {#if attachments.length === 0}
+                <p class="quiet">
+                  No files attached. An attached file is handed to every agent this card launches.
+                </p>
+              {/if}
+              <div class="chips attachment-chips">
+                {#each attachments as path (path)}
+                  {@const status = attachmentStatuses.find((s) => s.path === path) ?? null}
+                  {@const broken = status !== null && !status.exists}
+                  <span class="attachment" class:broken>
+                    <button
+                      type="button"
+                      class="attachment-open"
+                      disabled={status === null || broken}
+                      title={broken
+                        ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
+                        : path}
+                      onclick={() => status && void openAttachment(status)}
+                    >
+                      {broken ? "⚠ " : ""}{attachmentName(path)}
+                    </button>
+                    <button
+                      type="button"
+                      class="attachment-remove"
+                      aria-label={`Remove ${attachmentName(path)}`}
+                      disabled={attachmentsBusy || attachmentsBlocked !== null}
+                      title={attachmentsBlocked ?? "Take this file off the card"}
+                      onclick={() => void writeAttachments(removeAttachment(attachments, path))}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                {/each}
+              </div>
+              <div class="session-actions">
+                <button
+                  type="button"
+                  disabled={attachmentsBusy || attachmentsBlocked !== null}
+                  title={attachmentsBlocked ??
+                    "Pick a file for this card — inside the root it is stored relative, outside it absolute"}
+                  onclick={() => void pickAttachment()}
+                >
+                  Pick…
+                </button>
+              </div>
+              {#if attachmentsError}
+                <p class="error">{attachmentsError}</p>
+              {/if}
+            </div>
+          </div>
         {/if}
-        <button type="button" onclick={openOrchestrationTab}>Open Orchestration</button>
+      </div>
+
+      {#if card.kind !== "note"}
+        <div class="section">
+          {@render fold("rail", "Orchestration rail", railLine)}
+          {#if sectionsOpen.rail}
+            <div class="fold-body">
+              {#if rails.length === 0}
+                <p class="quiet">No rails yet — a rail is a column of stages, built on the Orchestration tab.</p>
+              {:else if placement}
+                <div class="session-info">
+                  <span class="rail-where">
+                    On “{placedRail?.name}” · stage {placement.stageNumber} of {placement.stageCount}
+                  </span>
+                  <span class="step-state">{placedState}</span>
+                </div>
+              {:else}
+                <p class="quiet">Not on a rail — it won't run as part of any arrangement.</p>
+              {/if}
+              {#if rails.length > 0}
+                <div class="chips rail-chips">
+                  {#each rails as rail (rail.id)}
+                    {@const here = rail.id === placement?.railId}
+                    <button
+                      type="button"
+                      class="chip"
+                      class:active={here}
+                      disabled={here}
+                      title={here ? "Already on this rail" : `Send to “${rail.name}” as its last stage`}
+                      onclick={() => void sendToRail(rail.id)}
+                    >
+                      {rail.name}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+              <div class="session-actions">
+                {#if placement}
+                  <button type="button" onclick={() => void takeOffRail()}>Take off rail</button>
+                {/if}
+                <button type="button" onclick={openOrchestrationTab}>Open Orchestration</button>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <div class="foot">
+      <!-- Pinned with the buttons that produce it: an error from Archive
+           or Delete that scrolled away with the rest of the panel would
+           be an action reporting into nowhere. -->
+      {#if errorMessage}
+        <p class="error">{errorMessage}</p>
+      {/if}
+      <div class="actions">
+        <button type="button" class="danger" onclick={() => (confirmingDelete = true)}>Delete</button>
+        {#if isMemory}
+          <button
+            type="button"
+            disabled={adoptBlocked !== null || adopting}
+            title={adoptBlocked ??
+              `Appends this note under “Learned” in ${instructionsFile} and files the card as done`}
+            onclick={() => void handleAdopt()}
+          >
+            Adopt into {instructionsFile}
+          </button>
+        {/if}
+        <button
+          type="button"
+          disabled={archiveBlocked !== null}
+          title={archiveBlocked ??
+            (archived
+              ? "Files the card back on the board by its status"
+              : "Takes the card off the board — its agents and file tabs close with it")}
+          onclick={() => void toggleArchive()}
+        >
+          {archived ? "Restore from archive" : "Archive"}
+        </button>
+        <button
+          type="button"
+          title="Opens this card's file on the Plans tab, ready to edit"
+          onclick={openInCardEditor}
+        >
+          Open in card editor
+        </button>
+        <button type="button" onclick={() => void openExternally()}>Open externally</button>
+        <button type="button" onclick={onClose}>Close</button>
       </div>
     </div>
-  {/if}
-  {#if errorMessage}
-    <p class="error">{errorMessage}</p>
-  {/if}
-  <div class="actions">
-    <button type="button" class="danger" onclick={() => (confirmingDelete = true)}>Delete</button>
-    {#if isMemory}
-      <button
-        type="button"
-        disabled={adoptBlocked !== null || adopting}
-        title={adoptBlocked ??
-          `Appends this note under “Learned” in ${instructionsFile} and files the card as done`}
-        onclick={() => void handleAdopt()}
-      >
-        Adopt into {instructionsFile}
-      </button>
-    {/if}
-    <button
-      type="button"
-      disabled={archiveBlocked !== null}
-      title={archiveBlocked ??
-        (archived
-          ? "Files the card back on the board by its status"
-          : "Takes the card off the board — its agents and file tabs close with it")}
-      onclick={() => void toggleArchive()}
-    >
-      {archived ? "Restore from archive" : "Archive"}
-    </button>
-    <button
-      type="button"
-      title="Opens this card's file on the Plans tab, ready to edit"
-      onclick={openInCardEditor}
-    >
-      Open in card editor
-    </button>
-    <button type="button" onclick={() => void openExternally()}>Open externally</button>
-    <button type="button" onclick={onClose}>Close</button>
   </div>
 </Modal>
 
@@ -1279,12 +1526,271 @@
 {/if}
 
 <style>
-  .changes-row {
+  /* Three bands: a head that never scrolls, a middle that does, a foot
+     that never does. Modal's `innerScroll` makes the panel the flex
+     column and hands the scrolling down here. */
+  .card-detail {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  /* A hair wider than Modal's 480px default (which is why `wide` is
+     passed and then narrowed again): this panel is a column of
+     label/control rows AND a card's prose, and the prose was the half
+     that suffered. Not the full `wide` cap -- an 880px measure of
+     monospace body text is a wall. */
+  .card-detail:not(.inline) {
+    width: min(600px, 88vw);
+  }
+  .head {
+    flex: 0 0 auto;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 2px 0 4px;
+  }
+  .foot {
+    flex: 0 0 auto;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .ident {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  /* Pushed to the far end of the header: it is the one control here that
+     leaves this panel entirely, so it does not sit among the fields that
+     edit the card. */
+  .go-to-board {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    flex: none;
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.75em;
+    cursor: pointer;
+  }
+  .go-to-board:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+  }
+  .kind-badge {
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 0.75em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    flex: none;
+  }
+  .kind-badge.kind-note {
+    border: 1px solid var(--border-warning);
+    color: var(--warning-text);
+  }
+  .kind-badge.kind-task {
+    border: 1px solid var(--border-accent);
+    color: var(--accent-text);
+  }
+  .kind-badge.kind-plan {
+    border: 1px solid var(--border-success);
+    color: var(--success-text);
+  }
+  .meta {
+    color: var(--text-muted);
+    font-size: 0.8em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .title {
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 1.05em;
+    font-weight: bold;
+    padding: 4px 6px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .warning {
+    color: var(--warning-text);
+    font-size: 0.8em;
+    margin: 6px 0 0;
+  }
+
+  /* Status, priority and the way back to the parent, on one wrapping
+     row. They used to be three full-width rows with a 70px label gutter
+     each -- ninety vertical pixels spent on two selects. */
+  .fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
     margin-top: 8px;
+    font-size: 0.85em;
   }
-  .changes-row .quiet {
-    margin: 0;
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
   }
+  .field .label {
+    color: var(--text-muted);
+    flex: 0 0 auto;
+  }
+  .field select {
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: monospace;
+    padding: 3px 6px;
+    border-radius: 4px;
+  }
+
+  /* The session bar: the whole point of the rework. It sits in the
+     pinned head, so the distance to "Jump to session" is the same on a
+     one-line note-to-self and on a card carrying a page of prompt. */
+  .session-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin-top: 10px;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-base);
+    font-size: 0.85em;
+  }
+  /* Tone is the same five-colour vocabulary the badges speak
+     (ui/indicators.ts): accent means motion, warning wants a human,
+     danger is broken. Only the two that want something tint their
+     ground -- a working agent is not an alert. */
+  .session-bar.tone-warning {
+    background: var(--surface-warning);
+    border-color: var(--border-warning);
+  }
+  .session-bar.tone-danger {
+    background: var(--surface-danger);
+    border-color: var(--border-danger);
+  }
+  .session-bar.tone-accent {
+    border-color: var(--border-accent);
+  }
+  .bar-headline {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-bar.wants-human .bar-headline {
+    font-weight: bold;
+  }
+  .bar-waited {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    flex: none;
+  }
+  /* The actions travel together against the right edge, and wrap as a
+     block rather than one button at a time. */
+  .bar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: auto;
+  }
+  .bar-action {
+    background: var(--surface-overlay);
+    border: 1px solid transparent;
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.95em;
+  }
+  /* The first action is what this situation is FOR, so it is the one
+     that reads as a button rather than as a choice among equals. */
+  .bar-action.primary {
+    background: var(--surface-accent);
+    border-color: var(--border-accent);
+    color: var(--accent-text);
+  }
+  .bar-action.danger {
+    background: var(--surface-danger);
+    border-color: var(--border-danger);
+    color: var(--danger-text);
+  }
+  .bar-action:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .session-bar :global(.bar-badge) {
+    flex: none;
+  }
+
+  /* The paragraphs that explain the bar, and the rows a best-of-N
+     decision is made on: first in the scroller, directly under the
+     claim they explain. */
+  .situation {
+    margin: 10px 0 4px;
+  }
+
+  /* A folded section: a chevron, what it is, and what it holds. */
+  .fold-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.8em;
+    margin: 0 -4px;
+    padding: 3px 4px;
+    text-align: left;
+  }
+  .fold-head:hover {
+    background: var(--surface-base);
+    color: var(--text);
+  }
+  .fold-title {
+    flex: none;
+  }
+  .fold-summary {
+    color: var(--text-subtle);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fold-body {
+    margin-top: 6px;
+  }
+  .sub-section {
+    margin-top: 10px;
+  }
+
   .attachment-chips {
     margin-bottom: 6px;
   }
@@ -1322,79 +1828,6 @@
     opacity: 0.4;
     cursor: default;
   }
-  .header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-  }
-  /* Pushed to the far end of the header: it is the one control here that
-     leaves this panel entirely, so it does not sit among the fields that
-     edit the card. */
-  .go-to-board {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    margin-left: auto;
-    flex: none;
-    padding: 2px 8px;
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text-muted);
-    font-family: inherit;
-    font-size: 0.75em;
-    cursor: pointer;
-  }
-  .go-to-board:hover {
-    color: var(--text);
-    border-color: var(--text-muted);
-  }
-  .kind-badge {
-    border-radius: 10px;
-    padding: 1px 8px;
-    font-size: 0.75em;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  .kind-badge.kind-note {
-    border: 1px solid var(--border-warning);
-    color: var(--warning-text);
-  }
-  .kind-badge.kind-task {
-    border: 1px solid var(--border-accent);
-    color: var(--accent-text);
-  }
-  .kind-badge.kind-plan {
-    border: 1px solid var(--border-success);
-    color: var(--success-text);
-  }
-  .meta {
-    color: var(--text-muted);
-    font-size: 0.8em;
-  }
-  .title {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font-family: monospace;
-    font-size: 1.05em;
-    font-weight: bold;
-    padding: 4px 6px;
-    width: 100%;
-    box-sizing: border-box;
-  }
-  .path {
-    color: var(--text-subtle);
-    font-size: 0.7em;
-    margin: 4px 0 10px;
-    word-break: break-all;
-  }
-  .warning {
-    color: var(--warning-text);
-    font-size: 0.8em;
-  }
   .row {
     display: flex;
     align-items: center;
@@ -1406,14 +1839,6 @@
     color: var(--text-muted);
     width: 70px;
     flex: 0 0 auto;
-  }
-  .row select {
-    background: var(--surface-base);
-    border: 1px solid var(--border);
-    color: var(--text);
-    font-family: monospace;
-    padding: 3px 6px;
-    border-radius: 4px;
   }
   .auto-commit {
     cursor: pointer;
@@ -1567,6 +1992,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* No max-height on either: the panel scrolls once now, so a long
+     prompt costs a flick of the wheel instead of a scrollbar inside a
+     scrollbar. */
   .prompt {
     background: var(--surface-base);
     border: 1px solid var(--border);
@@ -1575,8 +2003,7 @@
     font-size: 0.8em;
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 200px;
-    overflow-y: auto;
+    margin: 0;
   }
   .body-preview {
     -webkit-user-select: text;
@@ -1586,12 +2013,13 @@
     border-radius: 6px;
     padding: 8px 12px;
     font-size: 0.85em;
-    max-height: 240px;
-    overflow-y: auto;
   }
   .error {
     color: var(--danger-text);
     font-size: 0.8em;
+  }
+  .foot .error {
+    margin: 0 0 8px;
   }
   .session-info {
     display: flex;
@@ -1616,6 +2044,7 @@
     margin: 6px 0 8px;
     color: var(--text-muted);
     line-height: 1.45;
+    font-size: 0.85em;
   }
   .session-cwd {
     overflow: hidden;
@@ -1672,12 +2101,7 @@
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
-  }
-  /* Each button keeps its own row and stays sized to its label -- a
-     stretched button would read as a banner, not as an action. */
-  .session-actions.stacked {
-    flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
   }
   .session-actions button {
     background: var(--surface-overlay);
@@ -1692,6 +2116,22 @@
   .session-actions button:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  .changes-row {
+    margin-bottom: 8px;
+  }
+  .changes-row .quiet {
+    margin: 0;
+  }
+  .changes-row button {
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.8em;
   }
   .rail-chips {
     margin-bottom: 8px;
@@ -1716,8 +2156,8 @@
   .actions {
     display: flex;
     justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 8px;
-    margin-top: 16px;
   }
   .actions button {
     background: var(--surface-overlay);
@@ -1727,6 +2167,7 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
+    font-size: 0.85em;
   }
   .actions button.danger {
     background: var(--surface-danger);

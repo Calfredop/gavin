@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { cardSessionBar } from "./cardDetail";
 
 // One fact -- "an agent is rewriting this card" -- expressed on three
 // board surfaces that nothing links: the card face, its context menu and
@@ -83,13 +84,23 @@ describe("the card menu", () => {
 describe("the card detail modal", () => {
   it("replaces the unbound block with the develop note and one jump", () => {
     const text = source(DETAIL);
+    // The launch buttons now live in the pinned session bar, so the
+    // branch that replaces them is the SITUATION the bar is built from.
+    // It has to come before the unbound one, or the Run buttons it
+    // replaces are the ones that render.
+    expect(text).toContain('{ kind: "developing" }');
+    expect(text.indexOf('{ kind: "developing" }')).toBeLessThan(text.indexOf('kind: "unbound"'));
+    // And the note itself, which is what the bar has no room for.
     expect(text).toContain("{:else if developing}");
-    expect(text).toContain("Jump to the develop session");
-    // The branch has to come BEFORE the unbound one, or the Run buttons
-    // it replaces are the ones that render.
-    expect(text.indexOf("{:else if developing}")).toBeLessThan(
-      text.indexOf("Run it on several agents…")
-    );
+    expect(text).toContain("An agent is developing this card");
+  });
+
+  it("gives a developing card exactly one action, and it is the jump", () => {
+    // The bar's own rule, where every other surface's refusal ends up:
+    // nothing may run a card whose file is being rewritten.
+    const bar = cardSessionBar({ kind: "developing" });
+    expect(bar?.actions.map((a) => a.id)).toEqual(["develop-jump"]);
+    expect(bar?.actions[0].label).toBe("Jump to the develop session");
   });
 });
 
