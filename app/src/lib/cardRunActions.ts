@@ -17,6 +17,7 @@ import {
   composeResumeTaskPrompt,
   composeResumePlanPrompt,
   composeDevelopPrompt,
+  composeReviewLaunchPrompt,
   buildRunCommand,
   buildResumeCommand,
   withFreshConversationId,
@@ -141,6 +142,28 @@ export function resumeCard(
   return launchCard(workspaceId, card, "resume", options);
 }
 
+// Review (the Review tab's "Start agent session"): the same launch as a
+// resume, with one thing taken away and one thing kept.
+//
+//  - No status write. A resume on a Done card writes In Progress, which
+//    un-archives it out of `plans/done/` and drops it off the very list
+//    the human is standing in. The Review tab is a place to READ
+//    finished work, and a list that empties as you use it is not one.
+//  - The binding's baseline, kept. The tab's whole middle column is the
+//    diff since that sha; resolving a fresh one at launch would move the
+//    baseline past everything the run did and report the work under
+//    review as nobody's. `launchCard` already keeps it for a resume, and
+//    this rides the same path for the same reason.
+//
+// The conversation is reopened where the profile can do it, which is the
+// best "current card context" there is: the agent that did the work,
+// with its own transcript, waiting for the reviewer's first question.
+// Where it cannot, `composeReviewLaunchPrompt` says the same thing in
+// writing -- including, explicitly, not to touch the card's status.
+export function reviewCardSession(workspaceId: string, card: CardView): Promise<string | null> {
+  return launchCard(workspaceId, card, "review");
+}
+
 // Develop (the To Do column's counterpart to Resume): hand a thin card
 // to the gavin-develop skill so it comes back as worked steps. It parts
 // company with a run in three ways, all of them "developing is not
@@ -221,7 +244,7 @@ export async function developCard(
 async function launchCard(
   workspaceId: string,
   card: CardView,
-  mode: "run" | "resume",
+  mode: "run" | "resume" | "review",
   options: { automatic?: boolean } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
@@ -264,7 +287,11 @@ async function launchCard(
   // deliberate: it is actively being worked (spec §3). A resume normally
   // writes nothing here: its card already sits In Progress.
   let path = card.id;
-  if (runStatusNeeded(card.status)) {
+  // A review never writes one. See reviewCardSession: the card is being
+  // READ, and In Progress would take it out of the column that put it in
+  // front of the reviewer, out of `plans/done/`, and off the list they
+  // are looking at.
+  if (mode !== "review" && runStatusNeeded(card.status)) {
     try {
       path = await backend.setPlanFrontmatterField(card.id, "status", "In Progress");
       patchPlanField(workspaceId, card.id, "status", "In Progress");
@@ -291,7 +318,7 @@ async function launchCard(
   // agent moves into a worktree, and the resumed agent has to run where
   // the work is.
   const resumeCommand =
-    mode === "resume"
+    mode === "resume" || mode === "review"
       ? buildResumeCommand(agent.launchCommand, agent.resumeArgs, binding?.conversationId)
       : null;
   if (resumeCommand !== null && binding) {
@@ -333,7 +360,22 @@ async function launchCard(
   }
 
   let prompt: string;
-  if (card.kind === "task") {
+  // A review reads the card file for BOTH kinds, unlike a run or a
+  // resume: the reviewer's agent is being asked what the work was for,
+  // and a plan's body is where that is written. The other two modes send
+  // a plan agent to read the file itself, because they are about to
+  // rewrite its checklist.
+  if (mode === "review") {
+    const file = await backend.readFileForViewer(path);
+    if (!file.exists) return `Card file not found: ${path}`;
+    prompt = composeReviewLaunchPrompt(
+      path,
+      card.title,
+      card.kind,
+      stripFrontmatter(file.content).trim(),
+      resolved.paths
+    );
+  } else if (card.kind === "task") {
     const file = await backend.readFileForViewer(path);
     if (!file.exists) return `Card file not found: ${path}`;
     const body = stripFrontmatter(file.content).trim();
@@ -360,7 +402,14 @@ async function launchCard(
   // the whole point of buildRunCommand's signature, so it is checked
   // rather than asserted away.
   if (command === null) return noPromptReason(agent.label);
-  const cwd = card.contextFolder;
+  // A review runs WHERE THE WORK IS: the run's launch directory, which
+  // is a worktree of its own whenever a rail cut one. The card's context
+  // folder would put the reviewer's agent in the repository the card
+  // file lives in and the diff on screen somewhere else entirely.
+  // `launchCwd` and not `cwd`, for the reason runChanges.ts gives: `cwd`
+  // follows the session's OSC 7 reports and drifts.
+  const cwd =
+    mode === "review" ? (binding?.launchCwd ?? binding?.cwd ?? card.contextFolder) : card.contextFolder;
   // Before the session exists, because that is the only moment this can
   // be asked: an agent's first minutes move HEAD and dirty the tree.
   //
@@ -371,8 +420,15 @@ async function launchCard(
   // there is none to keep: a view starting at the resume understates
   // what the run did, but it is the only baseline that run will ever
   // have.
+  //
+  // A review keeps it for a stronger reason still: the baseline IS the
+  // view. The tab's file list and every diff in it are taken since that
+  // sha, and re-resolving one here would leave the agent bound to a card
+  // whose "what this run changed" had just become empty.
   const baseSha =
-    mode === "resume" && binding?.baseSha ? binding.baseSha : await baseShaForLaunch(cwd);
+    (mode === "resume" || mode === "review") && binding?.baseSha
+      ? binding.baseSha
+      : await baseShaForLaunch(cwd);
 
   let sessionId: string;
   try {

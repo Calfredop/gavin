@@ -1,11 +1,12 @@
 import type { Component } from "svelte";
-import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints, Wrench } from "@lucide/svelte";
+import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints, Wrench, ScanEye } from "@lucide/svelte";
 import HomeHubView from "./HomeHubView.svelte";
 import GitHubView from "./GitHubView.svelte";
 import SettingsHubView from "./SettingsHubView.svelte";
 import KanbanBoard from "./KanbanBoard.svelte";
 import OrchestrationHubView from "./OrchestrationHubView.svelte";
 import WorkspaceToolsHubView from "./WorkspaceToolsHubView.svelte";
+import ReviewHubView from "./ReviewHubView.svelte";
 import PrdHubView from "./PrdHubView.svelte";
 import AgentFileHubView from "./AgentFileHubView.svelte";
 import PlanExplorerHubView from "./PlanExplorerHubView.svelte";
@@ -38,6 +39,7 @@ const COMPONENTS: Record<HubViewId, { icon: Component; component: Component<{ wo
   kanban: { icon: Kanban, component: KanbanBoard },
   orchestration: { icon: Waypoints, component: OrchestrationHubView },
   tools: { icon: Wrench, component: WorkspaceToolsHubView },
+  review: { icon: ScanEye, component: ReviewHubView },
   prd: { icon: FileText, component: PrdHubView },
   "agent-file": { icon: Bot, component: AgentFileHubView },
   plans: { icon: FolderTree, component: PlanExplorerHubView },
