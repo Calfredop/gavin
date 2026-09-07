@@ -712,13 +712,14 @@
      the way the grid track it replaces was (see the strip's own comment
      in OrchestrationHubView for why it is no longer a grid).
 
-     Capped at 320px, because `flex-grow: 1` alone has no ceiling: two
+     Capped at 380px, because `flex-grow: 1` alone has no ceiling: two
      rails on a wide window each took half the strip, so a chip carrying
      one short title sat in a 700px column and the eye had to travel the
      width of the screen to compare two rails. A kanban column is a flat
      240px; a rail holds strictly more per row than a card does -- a
-     stage band, its mode, a step's status -- so it gets a little more,
-     and the slack past the last rail is where `.add-rail-col` goes.
+     stage band, its mode, a step's status -- so it gets a good deal
+     more, and the slack past the last rail is where `.add-rail-col`
+     goes. 320px was the first cap tried and read as cramped.
 
      The rail is stretched to the strip's height and never grows past
      it, so its own body is what scrolls -- min-height: 0 is what stops a
@@ -726,7 +727,7 @@
      instead. */
   .rail {
     flex: 1 0 280px;
-    max-width: 320px;
+    max-width: 380px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;

@@ -136,7 +136,7 @@ describe("a rail", () => {
     // divided the whole window between however many rails there were.
     // The floor stays -- the cap only stops the growth.
     const rail = ruleFor(RAIL, ".rail");
-    expect(rail).toContain("max-width: 320px");
+    expect(rail).toContain("max-width: 380px");
     expect(rail).toContain("flex: 1 0 280px");
   });
 
@@ -237,12 +237,33 @@ describe("the strip's add-rail CTA", () => {
     expect(hub.indexOf("{/if}", guard)).toBeGreaterThan(hub.indexOf('class="add-rail-col"'));
   });
 
-  it("is drawn as the board's own add-column stub", () => {
+  it("carries EVERY declaration the board's add-column stub does", () => {
+    // Not a hand-picked subset: the first cut of this control shared the
+    // dashed border and the flex placement and still read as a different
+    // control -- a lucide <Plus> beside a left-aligned sans label, where
+    // the board draws a centred monospace "+ Add column". Iterating the
+    // board's own rule is what makes "the same control" checkable, and
+    // makes a future edit to the board's stub fail HERE rather than drift
+    // the two apart silently.
     const board = ruleFor(COLUMN_STRIP, ".add-column");
     const strip = ruleFor(GRID, ".add-rail-col");
-    for (const decl of ["border: 1px dashed var(--border)", "flex: 0 0 auto", "align-self: flex-start"]) {
-      expect(board).toContain(decl);
+    for (const decl of board.split(";").map((d) => d.trim()).filter(Boolean)) {
+      // `width` is the one deliberate departure: this stub stands beside
+      // RAILS, so it takes the rail's floor width, not a card column's.
+      if (decl.startsWith("width:")) continue;
       expect(strip).toContain(decl);
     }
+    expect(board).toContain("width: 240px");
+    expect(strip).toContain("width: 280px");
+  });
+
+  it("labels itself with the board's own `+` glyph, not an icon", () => {
+    // The <Plus> component reads at a different weight and forces a
+    // left-aligned flex row; the board's stub is centred text.
+    const hub = source(GRID);
+    const at = hub.indexOf('class="add-rail-col"');
+    const label = hub.slice(at, hub.indexOf("</button>", at));
+    expect(label).toContain("+ Add rail");
+    expect(label).not.toContain("<Plus");
   });
 });

@@ -889,9 +889,7 @@
           disabled={Boolean(orchestrationBlocked)}
           title={orchestrationBlocked ?? "Add a rail — a column of stages over your cards"}
           onclick={() => void newRail()}
-        >
-          <Plus size={14} /> Add rail
-        </button>
+        >+ Add rail</button>
       {/if}
       </div>
       <OrchestrationDrawer
@@ -1262,32 +1260,40 @@
      the right edge. */
   .grid .empty {
     flex: 0 1 auto;
-    max-width: 320px;
+    max-width: 380px;
   }
-  /* Sized and drawn as the kanban's `.add-column`: a dashed stub at the
-     top of the strip rather than a full-height column, so it reads as an
-     invitation and not as an empty rail. One rail-width wide (280px, the
-     rail's own floor) so it lines the strip up. */
+  /* The kanban's `.add-column`, declaration for declaration: a dashed
+     stub at the TOP of the strip rather than a full-height column, so it
+     reads as an invitation and not as an empty rail, and its label is the
+     same centred monospace "+ Add …" -- a lucide <Plus> beside a
+     left-aligned sans label made it a different control that merely stood
+     in the same place.
+
+     Two deliberate departures, both forced:
+
+     - 280px, not the board's 240px, because this stub stands beside
+       RAILS and takes the rail's own floor width.
+     - a margin, because `.grid` has no gap or padding of its own (each
+       rail carries its padding and its `border-right`), where `.board`
+       hands its `.add-column` a 12px gap and 16px of padding. Without it
+       the stub would butt straight into the last rail's border.
+
+     The disabled rule has no counterpart on the board either: nothing can
+     gate an "add column", while this one is gated on `orchestrationBlocked`
+     like every other orchestration write. */
   .add-rail-col {
-    flex: 0 0 auto;
-    align-self: flex-start;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 280px;
-    box-sizing: border-box;
-    margin: 8px;
-    padding: 10px;
     background: transparent;
     border: 1px dashed var(--border);
     border-radius: 8px;
     color: var(--text-muted);
-    font-size: 13px;
     cursor: pointer;
-  }
-  .add-rail-col:hover:not(:disabled) {
-    border-color: var(--border-strong);
-    color: var(--text);
+    font-family: monospace;
+    padding: 10px;
+    width: 280px;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    box-sizing: border-box;
+    margin: 8px;
   }
   .add-rail-col:disabled {
     color: var(--text-subtle);
