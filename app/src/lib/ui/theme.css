@@ -81,6 +81,15 @@
   --border-strong: var(--grey-6);
   --border-focus: var(--blue-3);
 
+  /* The scroll handle. A role of its own rather than a reuse of a
+     --surface-*, because a handle is drawn OVER whichever surface it
+     scrolls, not beside it: pointed at --surface-raised it is already
+     faint on a modal, and at --surface-overlay it vanishes on one
+     entirely. This is the nearest grey that stays legible on ALL of
+     base, raised and overlay — which is the same pair --border-strong
+     names, and for the same reason. */
+  --scrollbar-thumb: var(--grey-6);
+
   --text: var(--grey-12);
   --text-muted: var(--grey-9);
   --text-subtle: var(--grey-7);
@@ -136,6 +145,8 @@
   --border: var(--grey-11);
   --border-strong: var(--grey-10);
   --border-focus: var(--blue-3);
+
+  --scrollbar-thumb: var(--grey-10);
 
   --text: var(--grey-0);
   --text-muted: var(--grey-7);
@@ -195,6 +206,39 @@ input,
 textarea,
 select {
   font-family: inherit;
+}
+
+/* ---- Scrollbars ------------------------------------------------------
+   The app never said anything about its scrollbars, so every scroller in
+   it wore the user agent's — and the UA draws for the LIGHT scheme
+   unless a page declares `color-scheme`, which nothing here does. On the
+   dark theme that put a pale channel down the right-hand edge of the
+   sidebar, every modal and every list: the one strip in the window that
+   was not the app's own grey.
+
+   `scrollbar-color` inherits, so naming it once on :root reaches every
+   scroller, the viewport's included. A transparent track leaves only the
+   handle, which is the part that carries information.
+
+   `scrollbar-width` does NOT inherit, hence the universal selector; at
+   zero specificity it still yields to the two tab strips that set
+   `scrollbar-width: none` to keep a bar off the active-tab indicator.
+   `thin` is what "a little narrower" costs: measured in WKWebView, a
+   legacy bar goes 17px -> 13px and an overlay bar thins to match, while
+   the overlay one still takes no layout space.
+
+   What must NOT be used here is `::-webkit-scrollbar`. Measured the same
+   way: giving it a width forces a legacy, space-taking bar even when the
+   system is in overlay mode (an 8px gutter appeared on a scroller that
+   had none), so the whole app would permanently lose those pixels on
+   every trackpad-only Mac. The standard properties keep the platform's
+   own choice. */
+:root {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+* {
+  scrollbar-width: thin;
 }
 
 /* ---- Chevrons --------------------------------------------------------
