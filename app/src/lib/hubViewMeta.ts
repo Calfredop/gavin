@@ -27,6 +27,13 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   // a rail is carrying the tool. requiresRoot because a tool runs in a
   // checkout -- a workspace with no folder has nowhere to run one.
   { id: "tools", label: "Tools", requiresRoot: true },
+  // After the three that PUT work in flight and before the documents
+  // that describe it, because that is where it falls in the day: the
+  // board says what exists, orchestration and tools run it, and this is
+  // what you open when it comes back. requiresRoot because every column
+  // of it reads a checkout -- the diff of what a run did, and the file
+  // it did it to.
+  { id: "review", label: "Review", requiresRoot: true },
   { id: "prd", label: "PRD", requiresRoot: true },
   { id: "agent-file", label: "CLAUDE.md", requiresRoot: true },
   { id: "plans", label: "Plans", requiresRoot: true },

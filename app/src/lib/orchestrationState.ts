@@ -116,7 +116,11 @@ import {
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
 import { slugStatus } from "./planBoard";
-import { setRailNotificationVoice, type SessionStatus } from "./notifications";
+import {
+  maybeNotifyReviewWait,
+  setRailNotificationVoice,
+  type SessionStatus,
+} from "./notifications";
 import {
   ORGANIZE_LABEL,
   orchestrationAgentOver,
@@ -1046,6 +1050,40 @@ async function executeToolLaunch(
     // below: the same field carries the LOOP budget, and zeroing it here
     // would make the budget unspendable and the loop unbounded.
     await setStepRunAction(workspaceId, step.id, "running", null, null, null, null, null);
+    return false;
+  }
+
+  // A `review` step launches nothing either, and waits on a PERSON. Like
+  // the wait above it goes `running` and takes no session, so every rule
+  // that reconciles a dead session steps around it (nextActions rule
+  // 3g); unlike it, nothing gavin can poll will ever end it. The step is
+  // over when the human presses Skip or Mark done on the chip, which are
+  // the same two buttons every running step already offers.
+  //
+  // No branch is checked, and no cwd is resolved. A review needs
+  // neither: it is a hold on the rail, and refusing to hold an UNBOUND
+  // rail would be a refusal about something the step was never going to
+  // touch. (launchBlocker's last test still applies, as it does to every
+  // kind: a rail whose worktree has been removed stalls before it gets
+  // here. That one is not about what the step touches -- the checkout
+  // the human was going to review is gone.)
+  if (tool.kind === "review") {
+    // 0, not null: the `resumeAttempts` field carries a LOOP's budget
+    // (see orchestrationLoop.ts) and this step neither loops nor
+    // auto-resumes, so it starts from a clean count like every other
+    // non-looping step. Leaving a stale count behind would make the
+    // rail header claim a retry that is not happening.
+    await setStepRunAction(workspaceId, step.id, "running", null, null, null, null, 0);
+    // The rail may well be running unattended on a tab nobody is
+    // looking at, and a gate that summons nobody is a gate that stops
+    // the rail until somebody happens to check. Rides the workspace's
+    // `needsInput` toggle, because "come and look at this" is exactly
+    // what that toggle answers for.
+    const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+    void maybeNotifyReviewWait(rail.name, tool.name, {
+      needsInput: ws?.notifyNeedsInput ?? true,
+      finished: ws?.notifyFinished ?? true,
+    });
     return false;
   }
 

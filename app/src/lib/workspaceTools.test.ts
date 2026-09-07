@@ -55,17 +55,27 @@ function run(over: Partial<ToolRun> = {}): ToolRun {
 const V30: DaemonCompat = { daemonVersion: 30, appVersion: 30, degraded: false };
 const V29: DaemonCompat = { daemonVersion: 29, appVersion: 30, degraded: true };
 
-const STEP_ONLY: ToolKind[] = ["gavin", "until", "pr"];
+const STEP_ONLY: ToolKind[] = ["gavin", "until", "pr", "review"];
+
+// Every kind is one or the other, and nothing else says so: a kind added
+// to ToolKind and forgotten in both lists takes a Run button whose
+// tooltip is the daemon version, on a tool that cannot run.
+const EVERY_KIND: ToolKind[] = ["agent", "command", "script", "gavin", "until", "pr", "review"];
 
 describe("which tools run standalone", () => {
   it("names exactly the three kinds a Run button can start", () => {
     expect(RUNNABLE_TOOL_KINDS).toEqual(["agent", "command", "script"]);
   });
 
-  // The three that are missing are the three whose bodies are completion
+  it("sorts every kind into runnable or step-only, with nothing left over", () => {
+    expect([...RUNNABLE_TOOL_KINDS, ...STEP_ONLY].sort()).toEqual([...EVERY_KIND].sort());
+  });
+
+  // The ones that are missing are those whose bodies are completion
   // RULES: an until step sends the rail backwards, a pr step is nothing
-  // but waiting on one, and a gavin tool's body names a rail action.
-  // A human can AUTHOR all six -- this is the narrower question.
+  // but waiting on one, a review step nothing but waiting on a person,
+  // and a gavin tool's body names a rail action. A human can AUTHOR
+  // every kind -- this is the narrower question.
   it("drops the kinds that only mean something on a rail", () => {
     for (const kind of STEP_ONLY) {
       expect(isRunnableStandalone({ kind })).toBe(false);

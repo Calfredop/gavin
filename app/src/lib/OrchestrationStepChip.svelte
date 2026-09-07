@@ -7,12 +7,7 @@
     RotateCw,
     SkipForward,
     X,
-    Bot,
     Terminal,
-    FileCode2,
-    Zap,
-    Repeat,
-    GitPullRequest,
     Sliders,
   } from "@lucide/svelte";
   import { tooltip } from "./tooltip";
@@ -24,6 +19,7 @@
   import type { Tool } from "./orchestrationTools";
   import { attentionTip } from "./orchestration";
   import type { CardEntry, StepAttention, StepState } from "./orchestration";
+  import { toolKindIcon } from "./ui/toolKindIcon";
 
   interface Props {
     /// Drives the drag engine's [data-orch-step] hook. On the chip's own
@@ -111,17 +107,7 @@
   );
   const Icon = $derived(
     tool
-      ? tool.kind === "agent"
-        ? Bot
-        : tool.kind === "command"
-          ? Terminal
-          : tool.kind === "gavin"
-            ? Zap
-            : tool.kind === "until"
-              ? Repeat
-              : tool.kind === "pr"
-                ? GitPullRequest
-                : FileCode2
+      ? toolKindIcon(tool.kind)
       : toolId
         ? Terminal
         : kind === "plan"

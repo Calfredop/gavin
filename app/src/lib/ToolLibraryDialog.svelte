@@ -11,7 +11,7 @@
   // into a text box could name nothing, and a `pr` tool has no body to
   // type at all. `toolBodyEditor` answers that per kind, and the three
   // branches below draw its three shapes.
-  import { Bot, Terminal, FileCode2, Zap, Repeat, GitPullRequest, Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
+  import { Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
   import { open as openPicker } from "@tauri-apps/plugin-dialog";
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -38,6 +38,7 @@
   import { tooltip } from "./tooltip";
   import { saveGroupTemplateAction, deleteGroupTemplateAction } from "./groupTemplatesState";
   import type { GroupTemplate, GroupTemplateScope } from "./orchestrationGroups";
+  import { toolKindIcon } from "./ui/toolKindIcon";
 
   interface Props {
     workspaceId: string;
@@ -166,18 +167,7 @@
     if (failure) templateError = failure;
   }
 
-  const iconFor = (kind: ToolKind) =>
-    kind === "agent"
-      ? Bot
-      : kind === "command"
-        ? Terminal
-        : kind === "gavin"
-          ? Zap
-          : kind === "until"
-            ? Repeat
-            : kind === "pr"
-              ? GitPullRequest
-              : FileCode2;
+  const iconFor = toolKindIcon;
 
   const SECTIONS: Array<{ scope: ToolScope; title: string; blurb: string }> = [
     { scope: "workspace", title: "This workspace", blurb: "Only this workspace sees these." },

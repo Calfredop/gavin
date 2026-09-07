@@ -165,6 +165,14 @@ vi.mock("./dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
 }));
+// The tray, mocked wholesale: a review step's launch summons the human,
+// and the real one reaches for the OS window and the permission API.
+// Only the two functions orchestrationState imports -- every other
+// importer in this graph takes a TYPE from here, which is erased.
+vi.mock("./notifications", () => ({
+  setRailNotificationVoice: vi.fn(),
+  maybeNotifyReviewWait: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("./gitState", () => {
   // Settable, not a constant: executeSwitchBranch reads the REFRESHED
   // refs back out of this store to decide whether the checkout actually
@@ -197,6 +205,7 @@ import { toolRecords, __resetForTesting as toolsResetForTesting } from "./toolsS
 import { prReports, __resetForTesting as prResetForTesting } from "./prState";
 import { prKey } from "./pullRequest";
 import type { PrReport } from "./pullRequest";
+import { maybeNotifyReviewWait } from "./notifications";
 import {
   orchestrations,
   fetchOrchestration,
@@ -1750,6 +1759,125 @@ describe("a pull-request wait step's executor", () => {
     // The budget is zeroed as it stalls, so a later Resume gets a fresh
     // one rather than giving up on its first look.
     expect(stall?.at(-1)).toBe(0);
+  });
+});
+
+// ---- the manual-review gate --------------------------------------------------
+// The `pr` step's sibling, with a PERSON in place of GitHub. The pure
+// half is orchestration.test.ts (the scheduler emits nothing for it);
+// this is the executor -- what a launch actually writes, and what it
+// tells the human, neither of which a source grep can check.
+
+/// A card step, then the gate that holds the rail, then more work.
+function reviewRailPlan(): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        branch: null,
+        pageId: "p1",
+        stages: [
+          {
+            id: "s0",
+            position: 0,
+            steps: [{ id: "work", position: 0, cardPath: "/x/a.md", toolId: null }],
+          },
+          {
+            id: "s1",
+            position: 1,
+            steps: [{ id: "gate", position: 0, cardPath: "", toolId: "builtin:manual-review" }],
+          },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+    stepRuns: [
+      { stepId: "work", state: "done", sessionId: "sess-w", reason: null },
+      { stepId: "gate", state: "pending", sessionId: null, reason: null },
+    ],
+  };
+}
+
+describe("a manual-review gate's executor", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-new");
+    vi.mocked(backend.getOrchestration).mockResolvedValue(reviewRailPlan());
+    setRailPageLive();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+  });
+
+  /// Same shape as the pull-request wait, and for the same reason:
+  /// waiting is a STATE, so the step goes `running` with no session
+  /// rather than resolving inside its own launch the way a `gavin`
+  /// action does.
+  it("starts no session and leaves the step running with none", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "gate" }]);
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenLastCalledWith(
+      "gate", "running", null, null, null, null, 0
+    );
+  });
+
+  /// The difference from the `pr` step's launch, which passes null to
+  /// protect a loop budget in the same field. This step neither loops
+  /// nor auto-resumes, so a count left over from a previous run would
+  /// make the rail header claim a retry that is not happening.
+  it("starts from a clean resume count, unlike a looping step", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "gate" }]);
+    expect(vi.mocked(backend.setStepRun).mock.calls.at(-1)?.at(-1)).toBe(0);
+  });
+
+  /// A rail can be running unattended on a tab nobody is watching, and a
+  /// gate that summons nobody stops the rail until somebody happens to
+  /// look. Names the rail and the step, because a fleet can have several
+  /// stopped at once.
+  it("tells the human the rail is waiting on them", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "gate" }]);
+    expect(maybeNotifyReviewWait).toHaveBeenCalledWith(
+      "backend",
+      "Manual review",
+      expect.objectContaining({ needsInput: true })
+    );
+  });
+
+  /// Nothing about a review needs a branch or a worktree: it is a hold
+  /// on the rail. Refusing an unbound rail would be a refusal about
+  /// something the step was never going to touch -- and `reviewRailPlan`
+  /// binds no branch precisely so this is asserted rather than assumed.
+  it("holds an unbound rail just the same", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "gate" }]);
+    const stalls = vi.mocked(backend.setStepRun).mock.calls.filter((c) => c[1] === "stalled");
+    expect(stalls).toEqual([]);
+  });
+
+  /// The human's move, and the whole of "and proceed": the gate is
+  /// skipped and the rail carries on to the stage after it.
+  it("is ended by Skip, which files it skipped and lets the rail move on", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "gate" }]);
+    vi.mocked(backend.setStepRun).mockClear();
+    await skipStep("ws-1", "gate");
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "gate", "skipped", null, null, null, null, null
+    );
+  });
+
+  /// The other honest answer: the human looked, the work was right, and
+  /// "done" says so where "skipped" would not.
+  it("is ended by Mark done as well, for a review that passed", async () => {
+    await executeActions("ws-1", [{ kind: "launch", stepId: "gate" }]);
+    vi.mocked(backend.setStepRun).mockClear();
+    await markStepDone("ws-1", "gate");
+    expect(backend.setStepRun).toHaveBeenCalledWith("gate", "done", null, null, null, null, null);
   });
 });
 

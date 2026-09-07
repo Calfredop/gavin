@@ -158,6 +158,45 @@ export function failureBody(label: string, reason: string | undefined): string {
   return said ? `${label} stopped — ${said}` : `${label} stopped: its agent did not finish`;
 }
 
+// ---- a rail's manual-review gate -------------------------------------------
+
+/// What a review gate says in the tray. Names the RAIL and the step,
+/// because a fleet can have several rails stopped at once and the body
+/// is the only part of the notification the human reads before deciding
+/// whether to get up.
+export function reviewWaitBody(railName: string, stepName: string): string {
+  const rail = railName.trim() || "a rail";
+  const step = stepName.trim() || "a review step";
+  return `${rail} is waiting for you — ${step}`;
+}
+
+/// Called once, when a rail reaches a `review` step and stops there.
+///
+/// A step of its own kind of silence: there is no session, so no status
+/// ever changes and `maybeNotifyStatusChange` above can never speak for
+/// it. Without this, a rail running unattended would stop at its gate
+/// and tell nobody -- which is the whole failure the gate exists to
+/// avoid, arrived at from the other side.
+///
+/// Gated by `needsInput` rather than `finished`: nothing finished, and
+/// the sentence is "come and look at this", which is the fact that
+/// toggle answers for. Suppressed while gavin is frontmost, exactly as a
+/// status change is -- the rail draws a "needs you" badge and the step a
+/// Skip button, and a tray notification for something already on screen
+/// is noise.
+export async function maybeNotifyReviewWait(
+  railName: string,
+  stepName: string,
+  prefs: NotifyPrefs
+): Promise<void> {
+  // Before the window and before permission, so a silenced workspace
+  // neither queries one nor prompts for the other.
+  if (!prefs.needsInput) return;
+  if (await getCurrentWindow().isFocused()) return;
+  if (!(await ensurePermission())) return;
+  sendNotification({ title: "gavin", body: reviewWaitBody(railName, stepName) });
+}
+
 // ---- the Git tab's hidden commit run ---------------------------------------
 
 /// What a "Commit via agent" run turned out to have done. Only the three

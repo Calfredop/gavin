@@ -105,6 +105,7 @@ import { gavinTrees } from "./gavinState";
 import {
   runCard,
   resumeCard,
+  reviewCardSession,
   developCard,
   relaunchCard,
   jumpToBoundSession,
@@ -364,6 +365,174 @@ describe("resumeCard", () => {
 
   it("refuses notes, like every other run", async () => {
     expect(await resumeCard("ws-1", card("note", "In Progress"))).toContain("not runnable");
+  });
+});
+
+describe("reviewCardSession", () => {
+  const DONE_FILE = {
+    content: "---\nkind: plan\ntitle: Fix login\nstatus: Done\n---\n- [x] Did the thing.\n",
+    truncated: false,
+    exists: true,
+  };
+
+  it("never writes a status — the card stays in the column it is being reviewed from", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(DONE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await reviewCardSession("ws-1", card("plan", "Done"))).toBeNull();
+
+    // A resume here would write In Progress and un-archive the card out
+    // of plans/done/, dropping it off the very list the reviewer is on.
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("reads a PLAN's body too, unlike a run or a resume", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(DONE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    await reviewCardSession("ws-1", card("plan", "Done"));
+
+    expect(backend.readFileForViewer).toHaveBeenCalledWith("/ws/.gavin-root/plans/t.md");
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("Did the thing.");
+  });
+
+  it("tells the agent to change nothing and to leave the status alone", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(DONE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    await reviewCardSession("ws-1", card("plan", "Done"));
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("is being reviewed");
+    // Shell-quoted into the command, so an apostrophe arrives as '\'' --
+    // this asserts on a span that has none.
+    expect(command).toContain("Do not change this card");
+    expect(command).toContain("status: it is sitting in the column that put it in front of a reviewer");
+    expect(command).not.toContain("gavin-resume");
+  });
+
+  it("keeps the run's baseline, so the diff on screen stays the run's", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-dead",
+          cwd: "/wt/drifted",
+          command: "x",
+          launchCwd: "/wt/feature",
+          baseSha: "a".repeat(40),
+        },
+      ]),
+    });
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(DONE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    // A fresh baseline would be resolved from here if the mode asked for
+    // one; it must not.
+    vi.mocked(baseShaForLaunch).mockResolvedValue("b".repeat(40));
+
+    expect(await reviewCardSession("ws-1", card("plan", "Done"))).toBeNull();
+
+    expect(baseShaForLaunch).not.toHaveBeenCalled();
+    const link = vi.mocked(backend.linkCardSession).mock.calls[0];
+    expect(link[8]).toBe("a".repeat(40));
+  });
+
+  it("runs where the work is — the launch cwd, not the card's context folder", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-dead",
+          cwd: "/wt/drifted",
+          command: "x",
+          launchCwd: "/wt/feature",
+          baseSha: "a".repeat(40),
+        },
+      ]),
+    });
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(DONE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    await reviewCardSession("ws-1", card("plan", "Done"));
+
+    // `launchCwd`, never `cwd`: the latter follows OSC 7 and drifts.
+    expect(vi.mocked(backend.createSession).mock.calls[0][0]).toBe("/wt/feature");
+  });
+
+  it("falls back to the card's context folder when nothing ever ran it", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(DONE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    await reviewCardSession("ws-1", card("plan", "Done"));
+
+    expect(vi.mocked(backend.createSession).mock.calls[0][0]).toBe("/ws");
+  });
+
+  it("reopens the conversation when the profile can, and sends no prompt", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue({
+      ...NO_RESUME_AGENT,
+      resumeArgs: "--resume ",
+    } as never);
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-dead",
+          cwd: "/ws",
+          command: "x",
+          conversationId: "conv-1",
+          launchCwd: "/ws",
+          baseSha: "a".repeat(40),
+        },
+      ]),
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    expect(await reviewCardSession("ws-1", card("plan", "Done"))).toBeNull();
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("--resume conv-1");
+    expect(command).not.toContain("is being reviewed");
+    // The same conversation, and still no status write.
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0][5]).toBe("conv-1");
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+  });
+
+  it("jumps to a LIVE session rather than starting a second agent on the card", async () => {
+    kanbanState.set({
+      "ws-1": board([
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+      ]),
+    });
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+
+    expect(await reviewCardSession("ws-1", card("plan", "Done"))).toBeNull();
+
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(switchToSessionInPage).toHaveBeenCalledWith("ws-1", "pg-1", "s-live");
+  });
+
+  it("lands the session on a page, so the review is visible on Agents too", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue(DONE_FILE);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+
+    await reviewCardSession("ws-1", card("plan", "Done"));
+
+    expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-9");
+    expect(setSessionName).toHaveBeenCalledWith("s-9", "Fix login");
+  });
+
+  it("refuses notes, like every other run", async () => {
+    expect(await reviewCardSession("ws-1", card("note", "Done"))).toContain("not runnable");
   });
 });
 

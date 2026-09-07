@@ -92,7 +92,9 @@
           ? "This step will run, and re-run the step before it until this passes:"
           : tool.kind === "pr"
             ? "This step will wait on this rail's pull request, re-running the step before it while a check fails:"
-            : "This step will run:"}
+            : tool.kind === "review"
+              ? "This step will hold the rail here until you skip it, or mark it done:"
+              : "This step will run:"}
     </p>
     <pre class="preview">{preview}</pre>
 

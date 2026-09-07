@@ -25,19 +25,25 @@ const SOURCES = import.meta.glob("./*.{svelte,ts}", {
 }) as Record<string, string>;
 
 describe("the gavin tool kind", () => {
-  // Every place that picks an icon from a kind, by the shape they share.
+  // Every place that picks an icon from a kind. Each used to carry its
+  // own ternary, and this asserted the `gavin` arm in three of them;
+  // they share one lookup now, so what is pinned is that they still
+  // reach for it. WHICH glyph each kind gets, and that no two share one,
+  // is ui/toolKindIcon.test.ts -- the glob here does not reach into
+  // ./ui, and widening it to read one line would pull the whole folder
+  // in as raw text.
   const ICON_SITES = [
     "./OrchestrationDrawer.svelte",
     "./ToolLibraryDialog.svelte",
     "./OrchestrationStepChip.svelte",
+    "./WorkspaceToolsHubView.svelte",
   ];
 
   for (const path of ICON_SITES) {
-    it(`${path} draws a gavin tool with its own icon`, () => {
+    it(`${path} draws a tool's icon from its kind`, () => {
       const source = SOURCES[path];
       expect(source, path).toBeTruthy();
-      expect(source).toMatch(/kind === "gavin"/);
-      expect(source).toContain("Zap");
+      expect(source).toContain("toolKindIcon");
     });
   }
 
@@ -45,10 +51,9 @@ describe("the gavin tool kind", () => {
     // TOOL_KINDS drives the edit form's chips. A `gavin` chip was
     // withheld while the body was a free-text box, because a body typed
     // there could name nothing and would stall every step it was dropped
-    // onto -- discoverable only at launch.
-    expect(SOURCES["./orchestrationTools.ts"]).toContain(
-      'export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script", "until", "pr", "gavin"];'
-    );
+    // onto -- discoverable only at launch. That every kind is on the
+    // list is asserted against the TYPE in orchestrationTools.test.ts.
+    expect(SOURCES["./orchestrationTools.ts"]).toContain('"gavin",');
   });
 
   it("draws its body as a select over the actions, never a text box", () => {

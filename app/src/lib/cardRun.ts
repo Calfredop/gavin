@@ -405,3 +405,46 @@ export function composeResumePlanPrompt(path: string, attachments: string[] = []
     attachmentPromptBlock(attachments)
   );
 }
+
+// The Review tab's launch: an agent brought up ON a card whose work is
+// finished, so the human can ask about it beside the diff.
+//
+// It parts company with a resume in the one way that matters here: it
+// says nothing about status. A resume tells the agent to keep the card's
+// status current, which on a Done card means moving it out of the
+// column that put it in front of the reviewer -- a surface that empties
+// itself as you use it. So the instruction is inverted and stated,
+// rather than merely left out: an agent that has read gavin's skill
+// knows to keep a card's status current, and silence would be read as
+// an oversight.
+//
+// It also opens by changing nothing. A review that starts by editing is
+// a review nobody asked for, and the whole value of having the agent
+// here is that the human can ask a question first. Nothing REFUSES a
+// later edit: the human is at the terminal, and the next thing they type
+// may well be "fix it".
+export function composeReviewLaunchPrompt(
+  path: string,
+  title: string,
+  kind: "task" | "plan",
+  body: string,
+  attachments: string[] = []
+): string {
+  const subject = kind === "task" ? "task card" : "plan";
+  // The body is quoted when there is one and skipped when there is not,
+  // rather than always interpolated: a plan's body is its checklist,
+  // which the agent is being sent to READ from the file, and an empty
+  // paragraph in the middle of the prompt reads as a section that failed
+  // to load.
+  const quoted = body.trim() ? `\n\n${body.trim()}` : "";
+  return (
+    `${NAME_TAB_FIRST}\n\n` +
+    `The work for the ${subject} at ${path} ("${title}") is finished and is being reviewed. ` +
+    `Read the card and find what the work actually did — the checklist, the files it ` +
+    `touched, and the commits on this checkout — before you answer anything.` +
+    `${attachmentPromptBlock(attachments)}${quoted}\n\n` +
+    `Change nothing until you are asked to. Do not change this card's status: it is sitting ` +
+    `in the column that put it in front of a reviewer, and moving it takes it off their list. ` +
+    `Wait for the reviewer's first question.`
+  );
+}

@@ -3776,6 +3776,30 @@ describe("every built-in tool can finish", () => {
           reason: "nothing runs before this step, so the check has nothing to send the rail back to",
         });
       });
+    } else if (tool.kind === "review") {
+      // It never finishes on its own, and that IS its contract: the
+      // scheduler emits nothing for it, ever, and the wait ends when a
+      // human presses Skip or Mark done (orchestrationState's skipStep /
+      // markStepDone, covered there). This arm is the one place that
+      // says so out loud -- without it a review tool would fall into the
+      // exit-code arm below and read as a step gavin can finish.
+      it(`${tool.id} waits: the scheduler emits nothing for it`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 0]])
+        );
+        expect(actions).toEqual([]);
+      });
+
+      // A non-zero exit code is not a verdict on it either. It has no
+      // session at all, so a code belonging to some other session must
+      // never stall it -- which is exactly what the session rules below
+      // would do if rule 3g did not come first.
+      it(`${tool.id} is not stalled by an exit code it never produced`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 3]])
+        );
+        expect(actions).toEqual([]);
+      });
     } else if (tool.kind === "pr") {
       // It has no session at all: gavin waits on GitHub itself, so the
       // verdict comes off the poll's report rather than off an exit code.
@@ -3983,6 +4007,100 @@ describe("nextActions — a pr step", () => {
   });
 });
 
+// A `review` step is the `pr` step with a PERSON in place of GitHub: it
+// launches nothing, holds no session and is never finished by anything
+// the scheduler can decide. Which makes it the one step where "the
+// scheduler emitted nothing" is the assertion rather than the absence of
+// one -- every session rule below rule 3g would otherwise speak for a
+// session that does not exist.
+describe("nextActions — a review step", () => {
+  const REVIEW_TOOLS: ToolSummary[] = [
+    { id: "builtin:manual-review", name: "Manual review", kind: "review" },
+    { id: "builtin:run-tests", name: "Run tests", kind: "command" },
+  ];
+
+  /// Work, then a gate, then a push: the shape a review step is actually
+  /// dropped into.
+  const gated = (stepRuns: Orchestration["stepRuns"], railState: RailState = "running") => {
+    const r = toolRail("r1", [
+      [["work", "builtin:run-tests"]],
+      [["gate", "builtin:manual-review"]],
+      [["after", "builtin:run-tests"]],
+    ]);
+    return {
+      rails: [r],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: railState, currentStageId: "r1-s1" }],
+      stepRuns,
+    } as Orchestration;
+  };
+
+  const WAITING: Orchestration["stepRuns"] = [
+    { stepId: "work", state: "done", sessionId: "s0", reason: null },
+    // No session id: gavin launches nothing for a review step.
+    { stepId: "gate", state: "running", sessionId: null, reason: null },
+  ];
+
+  const act = (orch: Orchestration, exits = new Map<string, number>()) =>
+    nextActions(orch, BOARD, CARDS, [], new Set(["s0"]), REVIEW_TOOLS, exits);
+
+  it("launches like any other step -- the hold is what the launch DOES", () => {
+    const orch = gated([{ stepId: "work", state: "done", sessionId: "s0", reason: null }]);
+    expect(act(orch)).toEqual([{ kind: "launch", stepId: "gate" }]);
+  });
+
+  // The whole feature in one assertion: the rail is running, the stage
+  // is reached, and nothing happens until a person acts.
+  it("then waits forever: no action, no advance, no stall", () => {
+    expect(act(gated(WAITING))).toEqual([]);
+  });
+
+  // Skip is the human's move (skipStep), and the rail carries on from
+  // the stage after it. Asserted through the SIMULATED state rather than
+  // by calling skipStep, which is orchestrationState's job: what matters
+  // here is that a `skipped` gate does not hold the rail.
+  it("lets the rail advance once the human has skipped it", () => {
+    const orch = gated([
+      { stepId: "work", state: "done", sessionId: "s0", reason: null },
+      { stepId: "gate", state: "skipped", sessionId: null, reason: null },
+    ]);
+    expect(act(orch)).toContainEqual({ kind: "advance", railId: "r1", stageId: "r1-s2" });
+  });
+
+  it("lets the rail advance once the human has marked it done", () => {
+    const orch = gated([
+      { stepId: "work", state: "done", sessionId: "s0", reason: null },
+      { stepId: "gate", state: "done", sessionId: null, reason: null },
+    ]);
+    expect(act(orch)).toContainEqual({ kind: "advance", railId: "r1", stageId: "r1-s2" });
+  });
+
+  // The difference from a `pr` step, and it is deliberate. A wait on
+  // GitHub is only consulted on a running rail, so one left behind on a
+  // paused rail is stalled to say so; a wait on a PERSON is not -- Skip
+  // works from a paused rail and puts it back to running as it goes, so
+  // the step is still waiting on exactly what it was waiting on.
+  it("is left alone on a paused rail, not stalled like a pull-request wait", () => {
+    expect(act(gated(WAITING, "paused"))).toEqual([]);
+  });
+
+  // It has no session, so no session's exit code is a verdict on it.
+  // Without rule 3g coming first, the dead-session rule would read the
+  // absence of one as a session that ended unwatched and stall the gate.
+  it("is not stalled by a session that ended somewhere else", () => {
+    expect(act(gated(WAITING), new Map([["s0", 1]]))).toEqual([]);
+  });
+
+  // Cold start: with no library loaded the kind is unknown, and an
+  // unknown tool step with no session must be left alone rather than
+  // reported as a session that died -- the rule launchBlocker and the
+  // reconciliation pass both already follow.
+  it("is left alone while the tool library is still loading", () => {
+    const orch = gated(WAITING);
+    expect(nextActions(orch, BOARD, CARDS, [], new Set(["s0"]), null)).toEqual([]);
+  });
+});
+
 // A `running` step says nothing about WHY it is running. Every other
 // surface in the app already reads a session's status -- the tab dot,
 // the sidebar badge, the board card, the OS notification -- and the rail
@@ -4111,6 +4229,85 @@ describe("stepAttentions", () => {
 
   it("returns an empty map for an orchestration with no rails", () => {
     expect(attn(emptyOrchestration(), statuses("idle")).size).toBe(0);
+  });
+
+  // ---- a review gate ----------------------------------------------------
+  // The one mark read off the PLAN rather than off a session status. A
+  // `review` step has no session at all, so every other test in this
+  // file would leave the one step guaranteed to want a human as the one
+  // step with nothing to say -- a rail stopped on purpose looking
+  // exactly like a rail that was busy.
+  describe("a review gate", () => {
+    const REVIEW: ToolSummary[] = [
+      ...TOOLS,
+      { id: "builtin:manual-review", name: "Manual review", kind: "review" },
+    ];
+    const gate = toolRail("r1", [[["t1", "builtin:manual-review"]]]);
+    const waiting = (state: StepState = "running"): Orchestration =>
+      running(gate, "r1-s0", [{ stepId: "t1", state, sessionId: null, reason: null }]);
+
+    it("marks a running review step, with no session to read", () => {
+      expect(attn(waiting(), new Map(), CARDS, REVIEW).get("t1")).toBe("review");
+    });
+
+    it.each(["pending", "done", "skipped", "stalled"] as StepState[])(
+      "says nothing about a %s review step",
+      (state) => {
+        expect(attn(waiting(state), new Map(), CARDS, REVIEW).get("t1")).toBeUndefined();
+      }
+    );
+
+    // The cold-start rule the whole file follows: an unloaded library
+    // must not read as "no step is a review", and it must not read as
+    // "every step is" either.
+    it("says nothing while the tool library is still loading", () => {
+      expect(attn(waiting(), new Map(), CARDS, null).get("t1")).toBeUndefined();
+    });
+
+    // ATTENTION_RANK's second line: the gate is as certain as a break --
+    // neither ends by itself -- but only one of them is a fault, and the
+    // human should be sent to the fault first.
+    it("is outranked by a step that actually broke", () => {
+      const orch = running(
+        toolRail("r1", [[["t1", "builtin:manual-review"], ["t2", "builtin:commit"]]]),
+        "r1-s0",
+        [
+          { stepId: "t1", state: "running", sessionId: null, reason: null },
+          { stepId: "t2", state: "running", sessionId: "s1", reason: null },
+        ]
+      );
+      const marks = stepAttentions(orch, BOARD, CARDS, REVIEW, statuses("failed"));
+      expect(marks.get("t1")).toBe("review");
+      expect(railAttention(orch.rails[0], marks)).toBe("failed");
+    });
+
+    // ...and outranks a turn that merely ended, which might still
+    // resolve itself with a status write already in flight.
+    it("outranks a turn that merely ended", () => {
+      const orch = running(
+        toolRail("r1", [[["t1", "builtin:manual-review"]]]),
+        "r1-s0",
+        [{ stepId: "t1", state: "running", sessionId: null, reason: null }]
+      );
+      const cards = rail("r2", [[["t2", A]]]);
+      const both: Orchestration = {
+        ...orch,
+        rails: [{ ...orch.rails[0], stages: [...orch.rails[0].stages, ...cards.stages] }],
+        stepRuns: [
+          ...orch.stepRuns,
+          { stepId: "t2", state: "running", sessionId: "s1", reason: null },
+        ],
+      };
+      const marks = stepAttentions(both, BOARD, CARDS, REVIEW, statuses("idle"));
+      expect(marks.get("t2")).toBe("turn-ended");
+      expect(railAttention(both.rails[0], marks)).toBe("review");
+    });
+
+    // The tooltip has to name the button that ends the wait: unlike
+    // every other mark here, nothing is going to resolve it on its own.
+    it("says what ends the wait", () => {
+      expect(attentionTip("review", "Done")).toContain("Skip");
+    });
   });
 
   // "turn-ended" is true of a broken agent and useless: it means "the

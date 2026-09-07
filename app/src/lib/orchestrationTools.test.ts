@@ -26,6 +26,8 @@ import {
   type ToolRecord,
   TOOL_KINDS,
   PR_BODY,
+  REVIEW_BODY,
+  type ToolKind,
   bodyForKind,
   toolBodyEditor,
   toolKindParamNote,
@@ -53,8 +55,8 @@ describe("the built-in set", () => {
     return tool;
   };
 
-  it("ships sixteen tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(16);
+  it("ships seventeen tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(17);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
@@ -106,7 +108,31 @@ describe("the built-in set", () => {
 
   it("demonstrates every kind", () => {
     const kinds = new Set(BUILTIN_TOOLS.map((t) => t.kind));
-    expect([...kinds].sort()).toEqual(["agent", "command", "gavin", "pr", "script", "until"]);
+    expect([...kinds].sort()).toEqual([
+      "agent",
+      "command",
+      "gavin",
+      "pr",
+      "review",
+      "script",
+      "until",
+    ]);
+  });
+
+  // The gate a rail stops at. Its whole contract is negative -- it runs
+  // nothing, resolves nothing and asks for nothing -- so what is worth
+  // pinning is that it stayed that way: a parameter added here would be
+  // a field nothing substitutes, and a body that stopped being the fixed
+  // one would be a command line the scheduler never runs.
+  it("ships a Manual review gate that runs nothing and takes no parameters", () => {
+    const tool = builtin("builtin:manual-review");
+    expect(tool.kind).toBe("review");
+    expect(tool.body).toBe(REVIEW_BODY);
+    expect(tool.params).toEqual([]);
+    // The description names the button that ends the wait: the step
+    // offers Skip and Mark done like every running step, and a gate
+    // whose exit the human has to guess at is a wedged rail.
+    expect(tool.description).toContain("Skip");
   });
 
   // Chaining rails is the whole point: the last step of one rail arms
@@ -363,10 +389,35 @@ describe("editing", () => {
 });
 
 describe("authoring a kind", () => {
-  // All six, and the order matters: the three that also run on their own
-  // come first, because the Tools tab is where most tools are written.
+  // All of them, and the order matters: the three that also run on their
+  // own come first, because the Tools tab is where most tools are
+  // written.
   it("offers every kind, runnable ones first", () => {
-    expect(TOOL_KINDS).toEqual(["agent", "command", "script", "until", "pr", "gavin"]);
+    expect(TOOL_KINDS).toEqual([
+      "agent",
+      "command",
+      "script",
+      "until",
+      "pr",
+      "review",
+      "gavin",
+    ]);
+  });
+
+  // Every kind, checked against the type rather than against a list
+  // written out here: a kind added to ToolKind and forgotten in
+  // TOOL_KINDS is a tool nobody can author, and nothing else fails.
+  it("leaves no kind unauthorable", () => {
+    const kinds: ToolKind[] = [
+      "agent",
+      "command",
+      "script",
+      "gavin",
+      "until",
+      "pr",
+      "review",
+    ];
+    expect([...TOOL_KINDS].sort()).toEqual([...kinds].sort());
   });
 
   it("gives each kind a body editor of the shape its body actually has", () => {
@@ -379,13 +430,30 @@ describe("authoring a kind", () => {
     expect(toolBodyEditor("until")).toMatchObject({ shape: "text", label: "Check command" });
     expect(toolBodyEditor("gavin").shape).toBe("action");
     expect(toolBodyEditor("pr").shape).toBe("none");
+    // Nothing to write for the same reason `pr` has nothing: the step
+    // runs no source at all. A text box here would invite a prompt
+    // nobody would ever read.
+    expect(toolBodyEditor("review").shape).toBe("none");
+  });
+
+  // A stray click on a chip must cost a click, not an authored body --
+  // and the two kinds with a FIXED body are the two that can destroy
+  // one. `review` joins `pr` in that rule rather than beside it.
+  it("stashes an authored body across a switch to review and back", () => {
+    expect(bodyForKind("review", "npm test", null)).toBe(REVIEW_BODY);
+    expect(bodyForKind("command", REVIEW_BODY, "npm test")).toBe("npm test");
+    // Nothing was ever put away, so there is nothing to restore and the
+    // fixed body stays rather than being swapped for an empty box.
+    expect(bodyForKind("command", REVIEW_BODY, null)).toBe(REVIEW_BODY);
   });
 
   it("names the parameters the three argument kinds read, and nobody else's", () => {
     expect(toolKindParamNote("until")).toContain("`max`");
     expect(toolKindParamNote("pr")).toContain("`require`");
     expect(toolKindParamNote("gavin")).toContain("`rail`");
-    for (const kind of ["agent", "command", "script"] as const) {
+    // `review` reads none: it takes no arguments at all, and a note
+    // promising one would send a human looking for a field to fill in.
+    for (const kind of ["agent", "command", "script", "review"] as const) {
       expect(toolKindParamNote(kind), kind).toBeNull();
     }
   });

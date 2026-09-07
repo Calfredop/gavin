@@ -5,12 +5,6 @@
     ChevronDown,
     FileText,
     ListChecks,
-    Bot,
-    Terminal,
-    FileCode2,
-    Zap,
-    Repeat,
-    GitPullRequest,
     Settings2,
     Group,
   } from "@lucide/svelte";
@@ -21,6 +15,7 @@
   import type { Tool } from "./orchestrationTools";
   import type { UnplacedGroup } from "./orchestration";
   import type { GroupTemplate } from "./orchestrationGroups";
+  import { toolKindIcon } from "./ui/toolKindIcon";
 
   interface Props {
     groups: UnplacedGroup[];
@@ -159,18 +154,7 @@
   // every time, so they are the part of this panel a human learns to
   // reach for, while the card list churns.
   let toolsCollapsed = $state(false);
-  const iconFor = (kind: Tool["kind"]) =>
-    kind === "agent"
-      ? Bot
-      : kind === "command"
-        ? Terminal
-        : kind === "gavin"
-          ? Zap
-          : kind === "until"
-            ? Repeat
-            : kind === "pr"
-              ? GitPullRequest
-              : FileCode2;
+  const iconFor = toolKindIcon;
 </script>
 
 <aside class="drawer" class:collapsed class:drop-lit={dragging} data-orch-drawer>

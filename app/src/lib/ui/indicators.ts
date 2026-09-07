@@ -39,6 +39,7 @@ import {
   CircleQuestionMark,
   CircleSlash2,
   DraftingCompass,
+  Eye,
   FileWarning,
   GitBranch,
   History,
@@ -409,6 +410,25 @@ export function stepIndicator(state: StepState): Indicator {
 
 export const STEP_STATES = ["pending", "running", "done", "skipped", "stalled"] as const;
 
+/// A step the rail was TOLD to stop at until a human has looked -- the
+/// `review` kind (orchestrationTools.ts). Drawn beside the state badge,
+/// never instead of it: the step really is `running`, and the rail
+/// really has not moved, which is two facts and therefore two badges.
+///
+/// On the STEP axis and not the agent one, which is where every other
+/// attention mark lives, because there is no agent: gavin launches
+/// nothing for a review step, and "Agent · waiting for your review"
+/// would name a session that does not exist. An eye rather than a
+/// square, because the square family is the state badge sitting next to
+/// it and two squares in one chip are one shape saying two things.
+///
+/// Warning, like the rest of the "wants a human" family. Nothing is
+/// broken -- the rail is doing exactly what it was asked -- but it will
+/// not move again until somebody comes.
+export function reviewWaitIndicator(): Indicator {
+  return make("step", "review", Eye, "warning", "waiting for you to review it");
+}
+
 // ---- rail --------------------------------------------------------------
 // The rail itself, one level up from its steps. Both surfaces that show
 // it already spell the state out in words, so the badge is not carrying
@@ -504,6 +524,9 @@ export function attentionIndicator(attention: StepAttention): Indicator {
   if (attention === "failed") return AGENT.failed;
   if (attention === "stale") return AGENT.stale;
   if (attention === "decoy-edit") return AGENT.decoy_edit;
+  // The one attention mark that is not about an agent, because a
+  // `review` step has none. See reviewWaitIndicator.
+  if (attention === "review") return reviewWaitIndicator();
   return AGENT.turn_ended;
 }
 
@@ -520,6 +543,7 @@ export function allIndicators(): Indicator[] {
     AGENT.unknown,
     ...PRIORITY_LEVELS.map((p) => PRIORITY[p]),
     ...STEP_STATES.map(stepIndicator),
+    reviewWaitIndicator(),
     ...RAIL_STATES.map(railIndicator),
     railRetryIndicator(),
     ...RUN_OUTCOME_STATES.map((state) => RUN[state]),

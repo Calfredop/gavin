@@ -39,7 +39,21 @@ import { composeReviewPrompt, REVIEW_RULES_LABEL } from "./codeReview";
 /// the work that failed. A `gavin` tool could not be it -- one of those
 /// resolves inside its own launch and never passes through `running`
 /// (tools spec §8.2), and waiting on CI is nothing but `running`.
-export type ToolKind = "agent" | "command" | "script" | "gavin" | "until" | "pr";
+///
+/// `review` is the `pr` kind with a HUMAN in place of GitHub. It runs
+/// nothing, takes no session and waits -- and the only thing that ends
+/// the wait is the person: Skip sends the rail past it, Mark done says
+/// the work was checked and passed. Both buttons already sit on a
+/// running step, so the kind adds no control of its own; what it adds is
+/// a step the scheduler will never finish by itself, which is exactly
+/// what "hold here until I have looked at this" means.
+///
+/// A kind rather than a body, for the reason `until` is one: what makes
+/// it this tool is its COMPLETION RULE, and the scheduler branches on
+/// `kind` everywhere so a duplicate -- or one a newer gavin ships --
+/// holds the rail for the same reason this one does rather than because
+/// an id was recognised.
+export type ToolKind = "agent" | "command" | "script" | "gavin" | "until" | "pr" | "review";
 
 /// Where a tool came from. `builtin` is read-only -- the library dialog
 /// offers Duplicate instead of Edit. Derived from the wire's
@@ -73,8 +87,8 @@ export interface Tool {
   /// worktree would let two rails collide with nothing left to warn
   /// about.
   ///
-  /// Optional so the fourteen built-ins below -- none of which wants a
-  /// directory of its own -- do not each have to declare `cwd: null`.
+  /// Optional so the built-ins below -- none of which wants a directory
+  /// of its own -- do not each have to declare `cwd: null`.
   cwd?: string | null;
 }
 
@@ -96,21 +110,35 @@ export interface ToolRecord {
 }
 
 /// The kinds a human can AUTHOR, in the order the dialog's chips offer
-/// them: the three that also run on their own first, then the three that
+/// them: the three that also run on their own first, then the four that
 /// only mean something inside a rail.
 ///
 /// It was the first three alone until 2026-09-04, and the reason it is
-/// now all six is worth keeping. `gavin`, `until` and `pr` were withheld
-/// from the chips not because the SCHEDULER treats an authored one
-/// differently -- every rule about them branches on `kind` and never on
-/// a built-in id, so a copy has always worked -- but because the edit
+/// now all of them is worth keeping. `gavin`, `until` and `pr` were
+/// withheld from the chips not because the SCHEDULER treats an authored
+/// one differently -- every rule about them branches on `kind` and never
+/// on a built-in id, so a copy has always worked -- but because the edit
 /// form could not express their bodies. A `gavin` body names an action,
 /// and a free-text box let one name nothing; a `pr` body is not run at
 /// all, so a duplicate came back as a command whose text was the word
 /// "await-pr". `toolBodyEditor` below is what removed that obstacle: the
 /// form now draws a SELECT for an action and no body field at all for a
-/// wait, so each of the six is authorable in the shape it actually has.
-export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script", "until", "pr", "gavin"];
+/// wait, so each kind is authorable in the shape it actually has.
+///
+/// `review` is offered for that same reason and one of its own: a rail
+/// with two review gates on it wants to say what each is FOR, and the
+/// only place a human can say that is a duplicate with a name of its
+/// own ("Check the migration"). Duplicating is the whole of that, so
+/// withholding the chip would withhold the feature.
+export const TOOL_KINDS: ToolKind[] = [
+  "agent",
+  "command",
+  "script",
+  "until",
+  "pr",
+  "review",
+  "gavin",
+];
 
 export function toolKindLabel(kind: ToolKind): string {
   return kind === "agent"
@@ -123,7 +151,9 @@ export function toolKindLabel(kind: ToolKind): string {
           ? "Loop until"
           : kind === "pr"
             ? "Wait on a pull request"
-            : "Bash script";
+            : kind === "review"
+              ? "Wait for a manual review"
+              : "Bash script";
 }
 
 /// The actions a `gavin` tool can name. The body is the selector rather
@@ -155,6 +185,13 @@ export function isBuiltinId(id: string): boolean {
 /// its action rather than hiding it in a branch on the id.
 export const PR_BODY = "await-pr";
 
+/// A `review` tool's body, on the same principle as PR_BODY: nothing
+/// runs it, and it exists so a rail read on paper says what the step
+/// does. `validateTool` also insists every tool has a body, and "" would
+/// make the one kind with nothing to write the one kind that cannot be
+/// saved.
+export const REVIEW_BODY = "await-review";
+
 /// How a kind's body is authored. Three shapes, because the six kinds
 /// have three different relationships with their bodies:
 ///
@@ -162,7 +199,8 @@ export const PR_BODY = "await-pr";
 ///   line, a script, or the shell check an `until` step loops on.
 /// - `action` — the body NAMES something this app implements, so the
 ///   form offers the names rather than a text box. Only `gavin`.
-/// - `none` — there is no body to write. Only `pr`, which runs nothing.
+/// - `none` — there is no body to write. `pr` and `review`, the two
+///   kinds that run nothing at all.
 ///
 /// A descriptor rather than a chain of ternaries in the template,
 /// because the same three questions (what to call the field, how tall,
@@ -216,6 +254,14 @@ export function toolBodyEditor(kind: ToolKind): ToolBodyEditor {
           "Nothing to write: gavin reads the pull request for this rail's branch itself. " +
           "What the step waits for is a parameter, not a body.",
       };
+    case "review":
+      return {
+        shape: "none",
+        note:
+          "Nothing to write: this step runs nothing at all. It holds the rail where it is " +
+          "so you can read the work — and go on editing it, or put an agent back on it — " +
+          "until you press Skip on the step to send the rail past it.",
+      };
     default:
       return {
         shape: "text",
@@ -232,15 +278,19 @@ export function toolBodyEditor(kind: ToolKind): ToolBodyEditor {
 /// throw away.
 function isFixedBody(body: string): boolean {
   const said = body.trim();
-  return said === PR_BODY || (GAVIN_ACTIONS as readonly string[]).includes(said);
+  return (
+    said === PR_BODY ||
+    said === REVIEW_BODY ||
+    (GAVIN_ACTIONS as readonly string[]).includes(said)
+  );
 }
 
 /// The body a draft carries after the human picks a different kind.
 ///
-/// Two of the six have no body a human writes, and both still need one:
-/// `gavinActionOf` READS a `gavin` body, and a `pr` body is what makes
-/// the step legible on paper. So switching to either replaces whatever
-/// was in the box. `stashed` is the authored body held across that swap
+/// Three of the kinds have no body a human writes, and all three still
+/// need one: `gavinActionOf` READS a `gavin` body, and a `pr` or
+/// `review` body is what makes the step legible on paper. So switching
+/// to any of them replaces whatever was in the box. `stashed` is the authored body held across that swap
 /// -- switching back restores it, so a stray click on a chip costs a
 /// click rather than eight lines of prompt.
 ///
@@ -253,6 +303,7 @@ function isFixedBody(body: string): boolean {
 /// re-picking the chip a draft is already on changes nothing.
 export function bodyForKind(kind: ToolKind, current: string, stashed: string | null): string {
   if (kind === "pr") return PR_BODY;
+  if (kind === "review") return REVIEW_BODY;
   if (kind === "gavin") {
     return gavinActionOf({ kind, body: current }) ? current.trim() : GAVIN_ACTIONS[0];
   }
@@ -283,7 +334,7 @@ export function toolKindParamNote(kind: ToolKind): string | null {
 }
 
 // ---- The built-in set ------------------------------------------------------
-// Sixteen tools covering every example the cards named, and
+// Seventeen tools covering every example the cards named, and
 // demonstrating all three authorable kinds. Data, not code: nothing
 // about running any of them is special.
 //
@@ -298,16 +349,17 @@ export function toolKindParamNote(kind: ToolKind): string | null {
 // this list's order is the order the library draws, and a new tool
 // belongs at the end of it.
 //
-// Three are not like the others, and all three are built-in-only because
-// their bodies are not source a human writes in a text box. Start rail is
-// the `gavin` kind: arming another rail is not a shell command and not a
-// prompt, it is something only this app can do, and its body names the
-// action rather than hiding it in a branch on the id. Loop until a check
-// passes is the `until` kind: its body IS a shell command, but its
-// verdict can send the rail backwards, and that is a completion rule
-// rather than a body. Wait for the pull request is the `pr` kind, which
-// has no body to run at all -- gavin reads GitHub itself, and the step is
-// over when the pull request says so.
+// Four are not like the others, because their bodies are not source a
+// human writes in a text box. Start rail is the `gavin` kind: arming
+// another rail is not a shell command and not a prompt, it is something
+// only this app can do, and its body names the action rather than hiding
+// it in a branch on the id. Loop until a check passes is the `until`
+// kind: its body IS a shell command, but its verdict can send the rail
+// backwards, and that is a completion rule rather than a body. Wait for
+// the pull request is the `pr` kind, which has no body to run at all --
+// gavin reads GitHub itself, and the step is over when the pull request
+// says so. Manual review is the `review` kind, which runs nothing and
+// waits on a PERSON: the rail stops there until somebody has looked.
 //
 // Merge ships TWICE, once per direction, because a step always runs in
 // the rail's own checkout and only the inbound direction is reachable
@@ -454,6 +506,24 @@ export const BUILTIN_TOOLS: Tool[] = [
     // step does, so a plan read on paper is legible -- the same reason
     // `builtin:start-rail`'s body names its action.
     body: "await-pr",
+  },
+  {
+    id: "builtin:manual-review",
+    name: "Manual review",
+    description:
+      "Holds the rail here until you have looked at the work yourself. Runs nothing and " +
+      "starts no agent — press Skip on the step to send the rail on.",
+    kind: "review",
+    scope: "builtin",
+    // No parameters, deliberately. There is nothing for the step to
+    // resolve -- it runs no command and writes no prompt -- and a
+    // free-text "what to check" field would be a note nothing displays.
+    // A rail that wants to say WHY it stops here duplicates this tool
+    // and renames the copy, which is the name the chip already draws.
+    params: [],
+    // Nothing runs it. The body says what the step does so a rail read
+    // on paper is legible, exactly as `builtin:await-pr`'s does.
+    body: REVIEW_BODY,
   },
   {
     id: "builtin:unity-tests",
