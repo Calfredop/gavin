@@ -1,10 +1,10 @@
 ---
-order: 4096
+order: 3072
 kind: task
-title: [fix] screen locked
+title: [ui] queque follow up footer
 status: In Progress
 ---
-make terminals works on screen locked
+The queue footer is way too high. Optimize the follow up ui please
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.
