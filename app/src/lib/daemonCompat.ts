@@ -235,6 +235,21 @@ export const FEATURE_MIN_VERSION = {
   // that can produce the payload, and it reads this through
   // featureBlockedReason.
   toolCwd: 30,
+  // A tool's own icon, and the third widening of `SaveTool`'s ToolDef --
+  // after `cwd` above, and on exactly the same blind spot:
+  // min_version_for sorts by request TYPE, so a v32 daemon takes the
+  // save, drops the name and hands the tool back wearing its kind's
+  // glyph. The human picked a rocket, the tool comes back a terminal,
+  // and nothing on the wire said no.
+  //
+  // Which makes it the `groups`/`railBranch`/`toolCwd` failure again,
+  // with one difference worth naming: an icon is PURELY cosmetic, so
+  // there is no second symptom to notice later -- a dropped working
+  // directory eventually runs something in the wrong place, a dropped
+  // icon just quietly never appears. The picker in the library dialog is
+  // the one surface that can produce the payload, and it is disabled
+  // with this reason rather than offering a choice that goes nowhere.
+  toolIcon: 33,
   // A card's `complexity:`. Two holes, and they fail differently -- the
   // same split `attachments` has, and the silent half is again the worse
   // one. A v30 daemon's set_plan_field allow-list has no `complexity`,

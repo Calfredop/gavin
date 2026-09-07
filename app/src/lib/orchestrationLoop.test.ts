@@ -665,17 +665,22 @@ describe("the until step's wiring", () => {
 
   // The four sites that draw a tool by its kind used to carry a private
   // ternary each, and this asserted the `until` arm in three of them.
-  // They now share `toolKindIcon`, so what is worth pinning is that they
+  // They now share one lookup, so what is worth pinning is that they
   // still go through it -- which glyph each kind gets, and that no two
   // share one, is ui/toolKindIcon.test.ts.
+  //
+  // `toolIcon` rather than `toolKindIcon` since v33: it answers the
+  // tool's OWN icon first and falls back to the kind. A surface still
+  // calling the kind lookup directly would draw a terminal on the one
+  // tool its author deliberately made a rocket.
   for (const path of [
     "./OrchestrationDrawer.svelte",
     "./ToolLibraryDialog.svelte",
     "./OrchestrationStepChip.svelte",
     "./WorkspaceToolsHubView.svelte",
   ]) {
-    it(`${path} draws a tool's icon from its kind`, () => {
-      expect(SOURCES[path], path).toContain("toolKindIcon");
+    it(`${path} draws a tool's icon through the shared lookup`, () => {
+      expect(SOURCES[path], path).toContain("toolIcon");
     });
   }
 

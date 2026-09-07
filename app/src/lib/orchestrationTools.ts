@@ -90,6 +90,20 @@ export interface Tool {
   /// Optional so the built-ins below -- none of which wants a directory
   /// of its own -- do not each have to declare `cwd: null`.
   cwd?: string | null;
+  /// The glyph this tool draws wherever tools are listed (v33): a NAME
+  /// from `ui/iconLibrary.ts`, never an image. Null -- and absent, which
+  /// is the same thing -- means "whatever this tool's KIND draws", which
+  /// is what every tool authored before v33 means and what a tool
+  /// nobody picked an icon for still means.
+  ///
+  /// Resolved through `toolIcon`, which falls back to the kind for a
+  /// name it cannot look up. That is what makes a name a NEWER gavin
+  /// offered survive a round trip through this build: it is stored and
+  /// re-saved verbatim, and only the DRAWING degrades.
+  ///
+  /// Optional for the reason `cwd` is: the built-ins below wear their
+  /// kinds' glyphs, and none of them should have to say so.
+  icon?: string | null;
 }
 
 /// One tool as the daemon stores it. `workspaceId` IS the scope.
@@ -107,6 +121,12 @@ export interface ToolRecord {
   /// reads as null -- the reason `toolCwd` is a compat gate rather than
   /// a field the dialog simply offers.
   cwd: string | null;
+  /// v33, and the same shape and the same trap as `cwd` one field up: a
+  /// daemon older than 33 takes the save, drops the name and hands back
+  /// a row without it, which reads as null and draws the tool's kind.
+  /// `toolIcon` in daemonCompat.ts is what keeps the picker from
+  /// offering a choice that daemon would throw away.
+  icon: string | null;
 }
 
 /// The kinds a human can AUTHOR, in the order the dialog's chips offer
@@ -738,6 +758,10 @@ export function toolLibrary(records: ToolRecord[]): Tool[] {
       // a daemon older than v30 has no `cwd` key at all, and undefined
       // and null must not be two spellings of "runs at the root".
       cwd: record.cwd ?? null,
+      // Same rule for the same reason, one version later: a row from a
+      // daemon older than v33 has no `icon` key, and "wears its kind's
+      // glyph" must have one spelling.
+      icon: record.icon ?? null,
     });
   }
   return [...byId.values()];
@@ -843,6 +867,7 @@ export function emptyTool(id: string): Tool {
     params: [],
     scope: "workspace",
     cwd: null,
+    icon: null,
   };
 }
 
@@ -876,6 +901,14 @@ export function toRecord(tool: Tool, workspaceId: string, position: number): Too
     // the same way -- the store trims too, but a record that carried
     // `"  "` would still show a blank directory on the tab.
     cwd: tool.cwd?.trim() ? tool.cwd.trim() : null,
+    // Kept VERBATIM rather than checked against the library, and that is
+    // the deliberate half: a name this build cannot draw is still a name
+    // its author picked -- from a newer gavin, or from a library entry
+    // since renamed -- and dropping it on an unrelated edit would take
+    // their choice away silently. `toolIcon` degrades the drawing; the
+    // record keeps the fact. Blank normalises to null so "wears its
+    // kind's glyph" has one spelling on the wire.
+    icon: tool.icon?.trim() ? tool.icon.trim() : null,
   };
 }
 

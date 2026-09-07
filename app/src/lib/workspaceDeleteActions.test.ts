@@ -63,6 +63,7 @@ const tool = (id: string, workspaceId: string | null, name = id) => ({
   params: [],
   position: 0,
   cwd: null,
+  icon: null,
 });
 
 const template = (id: string, workspaceId: string | null, name = id) => ({

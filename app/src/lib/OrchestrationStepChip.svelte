@@ -19,7 +19,7 @@
   import type { Tool } from "./orchestrationTools";
   import { attentionTip } from "./orchestration";
   import type { CardEntry, StepAttention, StepState } from "./orchestration";
-  import { toolKindIcon } from "./ui/toolKindIcon";
+  import { toolIcon } from "./ui/toolKindIcon";
 
   interface Props {
     /// Drives the drag engine's [data-orch-step] hook. On the chip's own
@@ -107,7 +107,7 @@
   );
   const Icon = $derived(
     tool
-      ? toolKindIcon(tool.kind)
+      ? toolIcon(tool)
       : toolId
         ? Terminal
         : kind === "plan"

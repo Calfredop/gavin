@@ -44,6 +44,7 @@ function record(over: Partial<ToolRecord> = {}): ToolRecord {
     params: [{ name: "env", label: "Environment", default: "staging" }],
     position: 0,
     cwd: null,
+    icon: null,
     ...over,
   };
 }
@@ -225,6 +226,20 @@ describe("toolLibrary", () => {
   it("is just the built-ins when nothing is stored", () => {
     expect(toolLibrary([])).toHaveLength(BUILTIN_TOOLS.length);
   });
+
+  it("carries a stored icon through to the tool", () => {
+    const library = toolLibrary([record({ icon: "rocket" })]);
+    expect(findTool(library, "u1")?.icon).toBe("rocket");
+  });
+
+  // A row written by a daemon older than v33 has no `icon` key at all,
+  // and `undefined` reaching a template would be a second spelling of
+  // "wears its kind's glyph" that every consumer has to remember.
+  it("reads a row with no icon key as no icon", () => {
+    const older = record();
+    delete (older as Partial<ToolRecord>).icon;
+    expect(findTool(toolLibrary([older]), "u1")?.icon).toBeNull();
+  });
 });
 
 describe("placeholders", () => {
@@ -385,6 +400,25 @@ describe("editing", () => {
     expect(toRecord({ ...tool, cwd: "  " }, "ws-1", 0).cwd).toBeNull();
     expect(toRecord({ ...tool, cwd: null }, "ws-1", 0).cwd).toBeNull();
     expect(toRecord({ ...tool, cwd: " apps/web " }, "ws-1", 0).cwd).toBe("apps/web");
+  });
+
+  // Same rule for the icon, one version later: "wears its kind's glyph"
+  // has to have one spelling on the wire, or every reader has to
+  // remember that "" is a second absence.
+  it("normalises a blank icon to absent", () => {
+    const tool: Tool = { ...emptyTool("u1"), name: "x", body: "y" };
+    expect(toRecord({ ...tool, icon: "  " }, "ws-1", 0).icon).toBeNull();
+    expect(toRecord({ ...tool, icon: null }, "ws-1", 0).icon).toBeNull();
+    expect(toRecord({ ...tool, icon: " rocket " }, "ws-1", 0).icon).toBe("rocket");
+  });
+
+  // The deliberate half: an icon this build cannot draw is still a
+  // choice its author made -- from a newer gavin, or from a library
+  // entry since renamed -- and an unrelated edit must not take it away.
+  // `toolIcon` degrades the DRAWING; the record keeps the fact.
+  it("keeps an icon name it cannot resolve rather than dropping it", () => {
+    const tool: Tool = { ...emptyTool("u1"), name: "x", body: "y", icon: "teleporter" };
+    expect(toRecord(tool, "ws-1", 0).icon).toBe("teleporter");
   });
 });
 

@@ -34,6 +34,7 @@ one that WRITES it, and still nothing that reads it.*
 | T10 | **Added 2026-09-03:** two more kinds, and both exist because a **completion rule** is what a kind is for. `until` runs a check and, when it fails, sends the rail **backwards** over the step before it, up to a budget. `pr` runs nothing at all: it waits on the pull request for the rail's branch, which gavin reads with `gh` host-side, and reaches the same verdict from GitHub. Both are built-in only. See §9. |
 | T11 | **Added 2026-09-04:** a tool carries its own **working directory** (`cwd`, relative to the workspace root, absolute kept as written, absent = the root). It is read **only by a standalone run** (T12). A rail step still runs in the rail's checkout and ignores it — T6 is unchanged, and deliberately so: rail conflict detection is computed off `worktreePath ?? rootPath`, so a step that quietly jumped out of its worktree would let two rails collide with nothing left to warn about. See §10. |
 | T12 | **Added 2026-09-04:** a tool can be run **standalone** from a per-workspace **Tools** hub tab — the same library, filtered to the three kinds that mean anything without a rail (`agent`, `command`, `script`), with **one session per run** and a run the **daemon** remembers. Sequencing stays orchestration's job: a multi-step deploy is written as one `script` tool, because bash already sequences. See §10. |
+| T14 | **Added 2026-09-07:** a tool carries its own **icon** — a NAME from the app's curated library (`ui/iconLibrary.ts`), never an image — drawn wherever tools are listed, in place of the glyph its KIND imposes. Absent means "wear the kind's", which is what every tool authored before v33 means. A name this build cannot resolve falls back to the kind and is **kept** on the next save. See §12. |
 | T13 | **Added 2026-09-04:** a human can author **every** kind, and the Tools tab **edits** as well as runs. What kept `gavin`, `until` and `pr` built-in-only was never the scheduler — every rule about them branches on the KIND — it was an edit form with one body field. The form now has three (source / an action select / none), so all six are authorable and every built-in offers Duplicate. The Tools tab lists the whole library, with Run dark and a reason on the three that only mean something as a step. See §11. |
 
 ---
@@ -64,6 +65,9 @@ export interface Tool {
   scope: ToolScope;
   /// Where a STANDALONE run happens (T11, v30). A rail step ignores it.
   cwd?: string | null;
+  /// The glyph this tool draws everywhere it is listed (T14, v33): a
+  /// name from `ui/iconLibrary.ts`. Absent = wear the kind's.
+  icon?: string | null;
 }
 ```
 
@@ -81,6 +85,14 @@ hands the tool back rooted wherever the launcher stood. The gate that
 matters is the app's `FEATURE_MIN_VERSION.toolCwd`, and its consumer is
 the library dialog's field, which is disabled with the reason rather than
 accepting a value the daemon throws away.
+
+`icon` was added by §12, at v33, and it is the same widening of the same
+request with the same blind spot — `FEATURE_MIN_VERSION.toolIcon` is its
+only gate, and the picker is the one surface that can produce the
+payload. One difference is worth naming: an icon is **purely cosmetic**,
+so a dropped one has no second symptom to notice later. A dropped working
+directory eventually runs something in the wrong place; a dropped icon
+simply never appears.
 
 ### 1.2 Step
 
@@ -762,3 +774,59 @@ refuse after the human had typed.
 `initialEdit` is read at **construction**, not in an effect. An effect
 that re-ran for any reason would overwrite what the human had typed with
 the draft they started from.
+
+---
+
+## 12. A tool's own icon (added 2026-09-07, T14)
+
+Six `command` tools on one rail are six identical terminals. The kind
+lookup (`toolKindIcon`) is a good answer to *what is this made of* and no
+answer at all to *which one is this* — and at step-chip size the name is
+truncated to a few characters, so the glyph is the only thing left that
+could tell them apart and it is the one thing they all share.
+
+So a tool may carry an icon of its own. `toolIcon(tool)` is what every
+surface calls now: the author's pick, else the kind's glyph. The four
+sites that draw a tool (drawer, library dialog, Tools tab, step chip) go
+through it, for the reason they were collapsed onto one lookup in the
+first place — a surface still calling `toolKindIcon` directly would draw
+a terminal on the one tool its author deliberately made a rocket.
+
+### 12.1 A name, from a curated library
+
+The stored value is a **name**, never an image and never a component:
+`ui/iconLibrary.ts` is 56 lucide icons in seven groups, and the name is
+gavin's own key rather than lucide's — two entries (`history`,
+`file-code-2`) are aliases whose underlying lucide name has already been
+renamed once, and a tool must not lose its icon because an icon package
+tidied up.
+
+Curated rather than all of lucide, for two reasons. A picker over seven
+thousand icons is a search box with no answer: the human does not know
+what they are looking for, they are looking for something that will do.
+And every name in the module is an **import**, loaded by all four
+surfaces that draw a tool, so the list is a real cost.
+
+The daemon validates **nothing** — it has nothing to validate against,
+and a rule it invented would refuse a name a newer app knows. Skew is
+handled at the only place that can: `iconByName` returns null for a name
+this build has never heard of, `toolIcon` falls back to the kind, and
+`toRecord` keeps the stored string verbatim. The drawing degrades; the
+choice survives, and comes back on a build that can draw it.
+
+### 12.2 Where the picker sits
+
+On the **shared edit form**, so New tool and Edit tool both have it — a
+tool can be given an icon while it is being written rather than only on a
+second pass. Unlike the working directory (§11.2) **every kind** gets the
+field: a rail step chip draws a tool's glyph whatever its kind, and it is
+on a rail that the six identical terminals are.
+
+The grid is behind a toggle, closed by default: it is seven groups of
+glyphs in a form that already scrolls, and most edits are not about the
+icon. Picking closes it, because the panel is tall enough to hide the
+rest of the form and the choice is now on the button that opened it —
+the search text survives, so reconsidering costs one click. Clearing is
+its own control ("Use the kind's icon") rather than a second click on the
+selected cell: no cell in a grid can mean *none*, and without an explicit
+one the only route back from a wrong glyph would be deleting the tool.

@@ -70,8 +70,9 @@ describe("editing a tool from the Tools tab", () => {
     expect(tab).not.toContain("runnableTools(");
     // And the kinds that cannot run still need a glyph, or they draw as
     // scripts. One lookup rather than a ternary here since 2026-09-07;
-    // its own coverage is ui/toolKindIcon.test.ts.
-    expect(tab).toContain("toolKindIcon");
+    // its own coverage is ui/toolKindIcon.test.ts. `toolIcon` since v33,
+    // which resolves the tool's own icon before falling back to it.
+    expect(tab).toContain("toolIcon");
   });
 });
 
@@ -90,5 +91,53 @@ describe("switching a tool's kind", () => {
     // kind that only runs as a step the field has no effect at all — and
     // one that quietly kept a value would be read as having one.
     expect(source(DIALOG)).toContain("{#if isRunnableStandalone(editing)}");
+  });
+});
+
+// The icon picker (v33). Its rules are the ones no other suite can see:
+// the pure half is ui/iconLibrary.test.ts, and what is left is where the
+// field SITS and whether it is gated.
+describe("picking a tool's icon", () => {
+  it("offers the app's icon library rather than a list of its own", () => {
+    const dialog = source(DIALOG);
+    expect(dialog).toContain('from "./ui/iconLibrary"');
+    // Grid cells come from the library's own groups. A hand-written list
+    // here would be a second vocabulary, drifting from the one
+    // `iconByName` resolves a STORED name against — and a name that
+    // resolves nowhere draws as the tool's kind, silently.
+    expect(dialog).toContain("searchIcons(iconQuery)");
+    expect(dialog).toContain("{#each group.icons as entry (entry.name)}");
+  });
+
+  it("puts the field on the form both New tool and Edit tool draw", () => {
+    // One form, two headers — so a tool can be given an icon while it is
+    // being written rather than only on a second pass through Edit. The
+    // field sits after that shared header, which is what makes it part
+    // of the form rather than of the list.
+    const dialog = source(DIALOG);
+    const header = dialog.indexOf('"Edit tool" : "New tool"');
+    const field = dialog.indexOf('class="icon-field"');
+    expect(header, "the shared form header moved").toBeGreaterThan(-1);
+    expect(field, "the icon field is not in the form").toBeGreaterThan(header);
+  });
+
+  it("is gated on the daemon that would store it", () => {
+    // The third widening of SaveTool's record, and the same silent drop
+    // `toolCwd` gates: a v32 daemon takes the save, drops the name and
+    // hands the tool back wearing its kind's glyph. An icon is purely
+    // cosmetic, so there is no second symptom later — it would simply
+    // never appear.
+    const dialog = source(DIALOG);
+    expect(dialog).toContain('featureBlockedReason($daemonCompat, "toolIcon")');
+    expect(dialog).toContain("use:tooltip={iconBlocked}");
+    expect(dialog).toContain("disabled={Boolean(iconBlocked)}");
+  });
+
+  it("offers a way back to the kind's own icon", () => {
+    // Picking is one click and un-picking has to be too. Without it the
+    // only route back from a wrong glyph is deleting the tool, because
+    // no cell in the grid means "none".
+    expect(source(DIALOG)).toContain("function clearIcon()");
+    expect(source(DIALOG)).toContain("editing.icon = null");
   });
 });

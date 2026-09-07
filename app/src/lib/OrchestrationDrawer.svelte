@@ -15,7 +15,7 @@
   import type { Tool } from "./orchestrationTools";
   import type { UnplacedGroup } from "./orchestration";
   import type { GroupTemplate } from "./orchestrationGroups";
-  import { toolKindIcon } from "./ui/toolKindIcon";
+  import { toolIcon } from "./ui/toolKindIcon";
 
   interface Props {
     groups: UnplacedGroup[];
@@ -154,7 +154,7 @@
   // every time, so they are the part of this panel a human learns to
   // reach for, while the card list churns.
   let toolsCollapsed = $state(false);
-  const iconFor = toolKindIcon;
+  const iconFor = toolIcon;
 </script>
 
 <aside class="drawer" class:collapsed class:drop-lit={dragging} data-orch-drawer>
@@ -255,7 +255,7 @@
     {#if sectionOpen(toolsCollapsed)}
       <ul>
         {#each view.tools as tool (tool.id)}
-          {@const Icon = iconFor(tool.kind)}
+          {@const Icon = iconFor(tool)}
           <li>
             <button
               type="button"

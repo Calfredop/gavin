@@ -23,7 +23,8 @@ import {
   Terminal,
   Zap,
 } from "@lucide/svelte";
-import type { ToolKind } from "../orchestrationTools";
+import type { Tool, ToolKind } from "../orchestrationTools";
+import { iconByName } from "./iconLibrary";
 
 /// The icon a tool of this kind draws, everywhere a tool is listed.
 ///
@@ -48,4 +49,22 @@ export function toolKindIcon(kind: ToolKind): Component<{ size?: number }> {
   // the four hand-written ternaries all defaulted to -- and it beats
   // rendering nothing at all beside a name.
   return TOOL_KIND_ICON[kind] ?? FileCode2;
+}
+
+/// The glyph a PARTICULAR tool draws: the one its author picked, else
+/// the one its kind imposes.
+///
+/// The distinction the kind lookup cannot make on its own, and the whole
+/// reason a tool can carry an icon (v33): six `command` tools on one
+/// rail are six identical terminals, and at chip size the name is
+/// truncated to a few characters, so the glyph is the only thing left
+/// that could tell them apart and it is the one thing they all share.
+///
+/// A name this build cannot resolve falls back to the kind rather than
+/// to a placeholder. That covers both directions of skew -- an icon a
+/// NEWER gavin offered, and one dropped from the library -- and in both
+/// the kind's glyph is what the tool drew before anybody picked, which
+/// is a real answer where a question mark would not be.
+export function toolIcon(tool: Pick<Tool, "kind" | "icon">): Component<{ size?: number }> {
+  return iconByName(tool.icon) ?? toolKindIcon(tool.kind);
 }

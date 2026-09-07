@@ -38,7 +38,8 @@
   import { tooltip } from "./tooltip";
   import { saveGroupTemplateAction, deleteGroupTemplateAction } from "./groupTemplatesState";
   import type { GroupTemplate, GroupTemplateScope } from "./orchestrationGroups";
-  import { toolKindIcon } from "./ui/toolKindIcon";
+  import { toolIcon } from "./ui/toolKindIcon";
+  import { iconLabel, searchIcons } from "./ui/iconLibrary";
 
   interface Props {
     workspaceId: string;
@@ -167,7 +168,7 @@
     if (failure) templateError = failure;
   }
 
-  const iconFor = toolKindIcon;
+  const iconFor = toolIcon;
 
   const SECTIONS: Array<{ scope: ToolScope; title: string; blurb: string }> = [
     { scope: "workspace", title: "This workspace", blurb: "Only this workspace sees these." },
@@ -259,6 +260,51 @@
         ? picked.slice(root.replace(/\/+$/, "").length + 1)
         : picked;
   }
+
+  // ---- The tool's own icon (v33) -------------------------------------
+  // The third widening of SaveTool's record, gated for the same reason
+  // `cwd` is: a v32 daemon takes the save, drops the name and hands the
+  // tool back wearing its kind's glyph. An icon is purely cosmetic, so
+  // unlike a dropped working directory there is no second symptom later
+  // -- it would simply never appear, with nothing to say why.
+  const iconBlocked = $derived(featureBlockedReason($daemonCompat, "toolIcon"));
+
+  /// The panel is closed until asked for: it is seven rows of glyphs in
+  /// a form that already scrolls, and most edits are not about the icon.
+  let pickingIcon = $state(false);
+  let iconQuery = $state("");
+  const iconMatches = $derived(searchIcons(iconQuery));
+
+  /// What the tool draws right now -- the picked glyph, or the one its
+  /// KIND imposes, which is what the preview has to show for a tool that
+  /// has not picked one. Switching kinds therefore changes the preview,
+  /// which is the truth: an un-iconed tool follows its kind.
+  const currentIcon = $derived(editing ? toolIcon(editing) : null);
+
+  /// The name under the preview. A stored name this build cannot resolve
+  /// -- one a NEWER gavin offered -- shows RAW rather than reading as
+  /// "no icon": the tool does carry a choice, this build just cannot
+  /// draw it, and `toRecord` keeps it on the next save.
+  const currentIconLabel = $derived(
+    !editing?.icon
+      ? `The ${toolKindLabel(editing?.kind ?? "command")} icon`
+      : (iconLabel(editing.icon) ?? editing.icon)
+  );
+
+  function pickIcon(name: string): void {
+    if (!editing || iconBlocked) return;
+    editing.icon = name;
+    // Closed on pick, deliberately: the panel is tall enough to hide the
+    // rest of the form, and the choice is now on the button that opened
+    // it. `iconQuery` survives, so reconsidering costs one click and
+    // lands back on the same search.
+    pickingIcon = false;
+  }
+
+  function clearIcon(): void {
+    if (!editing || iconBlocked) return;
+    editing.icon = null;
+  }
 </script>
 
 <!-- `wide`: the panel's default cap is 480px of content box, and this
@@ -315,7 +361,7 @@
             {:else}
               <ul>
                 {#each rows as tool (tool.id)}
-                  {@const Icon = iconFor(tool.kind)}
+                  {@const Icon = iconFor(tool)}
                   <li>
                     <Icon size={13} />
                     <span class="name">{tool.name}</span>
@@ -395,6 +441,83 @@
         <span class="field">Description</span>
         <input bind:value={editing.description} placeholder="What this does, in one line" />
       </label>
+
+      <!-- The icon, on the form both New tool and Edit tool draw, so a
+           tool can be given one the moment it is written rather than
+           only on a second pass. Every kind gets the field, unlike the
+           working directory below: a rail step chip draws a tool's glyph
+           whatever its kind, and it is on a rail that six `command`
+           tools are six identical terminals. -->
+      <div class="icon-field" use:tooltip={iconBlocked}>
+        <span class="field">Icon</span>
+        <div class="icon-row">
+          <button
+            type="button"
+            class="icon-current"
+            class:on={pickingIcon}
+            disabled={Boolean(iconBlocked)}
+            onclick={() => (pickingIcon = !pickingIcon)}
+          >
+            {#if currentIcon}
+              {@const Current = currentIcon}
+              <Current size={15} />
+            {/if}
+            <!-- Muted while it is the kind's, because that is not a
+                 choice anybody made: it is what this tool draws until
+                 somebody does. -->
+            <span class="icon-name" class:borrowed={!editing.icon}>{currentIconLabel}</span>
+          </button>
+          {#if editing.icon}
+            <button
+              type="button"
+              class="ghost small"
+              disabled={Boolean(iconBlocked)}
+              onclick={clearIcon}
+            >
+              Use the kind's icon
+            </button>
+          {/if}
+        </div>
+        {#if pickingIcon && !iconBlocked}
+          <div class="icon-picker">
+            <input
+              class="icon-search"
+              bind:value={iconQuery}
+              spellcheck="false"
+              placeholder="Search icons"
+            />
+            {#each iconMatches as group (group.title)}
+              <p class="icon-group">{group.title}</p>
+              <div class="icon-grid">
+                {#each group.icons as entry (entry.name)}
+                  {@const Glyph = entry.icon}
+                  <button
+                    type="button"
+                    class="icon-cell"
+                    class:on={editing.icon === entry.name}
+                    use:tooltip={entry.label}
+                    aria-label={entry.label}
+                    onclick={() => pickIcon(entry.name)}
+                  >
+                    <Glyph size={15} />
+                  </button>
+                {/each}
+              </div>
+            {/each}
+            {#if iconMatches.length === 0}
+              <p class="empty">No icon matches “{iconQuery}”.</p>
+            {/if}
+          </div>
+        {/if}
+        <p class="hint">
+          {#if iconBlocked}
+            {iconBlocked}
+          {:else}
+            Drawn wherever this tool is listed — the drawer, this library, the Tools tab and a
+            rail's step. Without one it wears its kind's icon, which every tool of that kind wears.
+          {/if}
+        </p>
+      </div>
 
       <div class="row">
         <div class="pick">
@@ -925,10 +1048,112 @@
     align-items: center;
     gap: 8px;
   }
-  .cwd-field {
+  .cwd-field,
+  .icon-field {
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .icon-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* Reads as the field it stands in for: a control showing a value,
+     which is what it is -- not a chip, which would read as one of a set
+     of choices all visible at once. */
+  .icon-current {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .icon-current:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .icon-current.on {
+    border-color: var(--border-focus);
+    color: var(--accent-text);
+  }
+  .icon-name {
+    /* The kind's label can be long ("The Wait for a manual review
+       icon"); it ellipsizes rather than growing the form. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
+  }
+  .icon-name.borrowed {
+    color: var(--text-muted);
+  }
+  .icon-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    /* Capped and scrolled: the whole library is seven groups, and a
+       panel that pushed the Save button off the bottom of a form that
+       already scrolls would be worse than one you scroll inside. */
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .icon-search {
+    width: 100%;
+    /* Raised against the sunken panel it sits in: the shared `input`
+       rule paints it `--surface-sunken` too, and a control the same
+       colour as its container reads as part of the container. */
+    background: var(--surface-raised);
+  }
+  /* The shared `.ghost` rule paints its text `--text` unconditionally,
+     so a disabled one looks exactly like a live one. Reachable here:
+     an app that has picked an icon and then met an older daemon still
+     draws this button, with nothing to say why pressing it does
+     nothing. */
+  .icon-row .ghost:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .icon-group {
+    margin: 4px 0 0;
+    color: var(--text-subtle);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .icon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(30px, 1fr));
+    gap: 3px;
+  }
+  .icon-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .icon-cell:hover {
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .icon-cell.on {
+    background: var(--surface-accent);
+    border-color: var(--border-focus);
+    color: var(--accent-text);
   }
   .cwd-row {
     display: flex;

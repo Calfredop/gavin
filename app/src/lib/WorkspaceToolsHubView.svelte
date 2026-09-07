@@ -51,7 +51,7 @@
   import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
   import ToolRunDialog from "./ToolRunDialog.svelte";
   import { tooltip } from "./tooltip";
-  import { toolKindIcon } from "./ui/toolKindIcon";
+  import { toolIcon } from "./ui/toolKindIcon";
 
   interface Props {
     workspaceId: string;
@@ -101,7 +101,7 @@
   const shown = $derived(listedTools(library).filter((t) => matchesToolSearch(t, search)));
   const emptyMessage = $derived(toolsEmptyMessage(shown, search));
 
-  const iconFor = toolKindIcon;
+  const iconFor = toolIcon;
 
   function blockedFor(tool: Tool): string | null {
     return runBlockedReason({
@@ -185,7 +185,7 @@
         {@const blocked = blockedFor(tool)}
         {@const lastRun = lastRuns.get(tool.id)}
         {@const chip = toolRunChip(lastRun, now)}
-        {@const Icon = iconFor(tool.kind)}
+        {@const Icon = iconFor(tool)}
         <li class="tool">
           <span class="kind" use:tooltip={toolKindLabel(tool.kind)}><Icon size={14} /></span>
           <div class="text">

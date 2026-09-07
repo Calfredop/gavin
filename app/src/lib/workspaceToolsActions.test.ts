@@ -230,6 +230,7 @@ describe("an agent tool's verdict", () => {
     params: [],
     position: 0,
     cwd: null,
+    icon: null,
   };
 
   beforeEach(() => {

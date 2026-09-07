@@ -2310,6 +2310,7 @@ describe("launching a tool step", () => {
           params: [],
           position: 0,
           cwd: "/somewhere/else",
+          icon: null,
         },
       ],
     });
@@ -2342,6 +2343,7 @@ describe("launching a tool step", () => {
           params: [],
           position: 0,
           cwd: "/somewhere/else",
+          icon: null,
         },
       ],
     });

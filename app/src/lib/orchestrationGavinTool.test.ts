@@ -40,10 +40,14 @@ describe("the gavin tool kind", () => {
   ];
 
   for (const path of ICON_SITES) {
-    it(`${path} draws a tool's icon from its kind`, () => {
+    it(`${path} draws a tool's icon through the shared lookup`, () => {
       const source = SOURCES[path];
       expect(source, path).toBeTruthy();
-      expect(source).toContain("toolKindIcon");
+      // `toolIcon` since v33, which resolves the tool's OWN icon and
+      // falls back to this lookup. A surface calling `toolKindIcon`
+      // directly would ignore the human's pick on that one surface --
+      // exactly the drift the shared lookup was made to end.
+      expect(source).toContain("toolIcon");
     });
   }
 
