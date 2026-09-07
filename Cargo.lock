@@ -1275,6 +1275,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "uuid",
  "vt100",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -3118,6 +3119,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "windows 0.61.3",
 ]
 
 [[package]]

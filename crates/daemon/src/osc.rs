@@ -98,8 +98,32 @@ impl OscCwdScanner {
         let text = std::str::from_utf8(payload).ok()?;
         let without_scheme = text.strip_prefix("file://")?;
         let path_start = without_scheme.find('/')?;
-        Some(percent_decode(without_scheme[path_start..].as_bytes()))
+        Some(strip_uri_drive_slash(&percent_decode(
+            without_scheme[path_start..].as_bytes(),
+        )))
     }
+}
+
+/// `/C:/Users/ada` back into `C:/Users/ada`.
+///
+/// A file URI's path component always begins with `/`, so Git Bash
+/// reports a Windows cwd as `file://HOST/C:/Users/ada` -- correct as a
+/// URI and not a path anything can open. Only fires on a real drive
+/// letter followed by a separator, which is why it is safe to apply
+/// everywhere: on unix it would need a top-level directory literally
+/// named `C:`, and it is better to have one rule than a `cfg` that is
+/// only exercised on the platform nobody here runs the suite on.
+fn strip_uri_drive_slash(path: &str) -> String {
+    let b = path.as_bytes();
+    let looks_like_a_drive = b.len() >= 4
+        && b[0] == b'/'
+        && b[1].is_ascii_alphabetic()
+        && b[2] == b':'
+        && (b[3] == b'/' || b[3] == b'\\');
+    if looks_like_a_drive {
+        return path[1..].to_string();
+    }
+    path.to_string()
 }
 
 fn percent_decode(bytes: &[u8]) -> String {
@@ -130,6 +154,28 @@ mod tests {
         bytes.extend_from_slice(path.as_bytes());
         bytes.push(0x07);
         bytes
+    }
+
+    /// What Git Bash actually emits, and the whole of the Windows
+    /// story for OSC 7: the cwd arrives as a URI path, one slash too
+    /// long.
+    #[test]
+    fn a_windows_drive_is_unwrapped_from_its_uri_slash() {
+        let mut scanner = OscCwdScanner::new();
+        assert_eq!(
+            scanner.feed(&osc7("/C:/Users/ada/project")),
+            vec!["C:/Users/ada/project".to_string()]
+        );
+        assert_eq!(strip_uri_drive_slash(r"/C:\Users\ada"), r"C:\Users\ada");
+    }
+
+    #[test]
+    fn a_unix_path_is_left_exactly_as_it_came() {
+        // The guard is a drive letter AND a separator, so none of these
+        // is touched.
+        for path in ["/Users/alice", "/C", "/C:", "/CC:/x", "/1:/x"] {
+            assert_eq!(strip_uri_drive_slash(path), path);
+        }
     }
 
     #[test]

@@ -8,12 +8,12 @@ mod pty;
 mod registry;
 mod screen;
 mod server;
+mod shell;
 mod status;
 
 use kanban::KanbanStore;
 use registry::Registry;
 use server::SessionManager;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -32,7 +32,15 @@ fn orchestration_db_path() -> anyhow::Result<PathBuf> {
 fn main() -> anyhow::Result<()> {
     let dir = protocol::app_support_dir()?;
     std::fs::create_dir_all(&dir)?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    // Owner-only, where the OS says that with a mode. On Windows the
+    // directory sits under %LOCALAPPDATA%, which is already inside the
+    // user's profile and inherits its ACL; the socket that used to live
+    // here is a pipe, carrying its own DACL (see protocol::transport).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
 
     let registry = Registry::open(&db_path()?)?;
     let kanban = KanbanStore::open(&kanban_db_path()?)?;

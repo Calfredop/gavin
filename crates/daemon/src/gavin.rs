@@ -3,7 +3,7 @@ use protocol::{
     CardKind, GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::os::unix::net::UnixStream;
+use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -180,7 +180,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         .unwrap_or_default();
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
-        path: path.to_string_lossy().to_string(),
+        path: protocol::wire_path(path),
         modified_at: file_modified_at(path),
         file_name,
         title: get("title").unwrap_or(stem),
@@ -1247,12 +1247,8 @@ fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
                 walk(&path, base, out);
             } else if path.extension().map(|e| e == "md").unwrap_or(false) {
                 out.push(MdFileInfo {
-                    path: path.to_string_lossy().to_string(),
-                    rel_path: path
-                        .strip_prefix(base)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .to_string(),
+                    path: protocol::wire_path(&path),
+                    rel_path: protocol::wire_path(path.strip_prefix(base).unwrap_or(&path)),
                 });
             }
         }
@@ -1284,7 +1280,7 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
         })
         .collect();
     GavinContext {
-        folder_path: folder.to_string_lossy().to_string(),
+        folder_path: protocol::wire_path(folder),
         kind: kind.clone(),
         name: config_name.unwrap_or(folder_name),
         plans,
@@ -1309,7 +1305,10 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
 /// Full scan of one bound root (spec §3). Never fails: a missing root
 /// yields `root_missing: true` with no contexts.
 pub fn scan_root(root: &Path) -> GavinTree {
-    let root_str = root.to_string_lossy().to_string();
+    // Forward slashes from here on: every path this scan produces is a
+    // card id the app splits on `/`, compares and joins. See
+    // `protocol::wire_path`.
+    let root_str = protocol::wire_path(root);
     if !root.is_dir() {
         return GavinTree { root_path: root_str, root_missing: true, contexts: vec![] };
     }
@@ -1650,7 +1649,7 @@ struct WatcherInner {
 pub struct GavinWatcher {
     pub workspace_id: String,
     pub root_path: PathBuf,
-    writer: Arc<Mutex<UnixStream>>,
+    writer: Arc<Mutex<Stream>>,
     inner: Mutex<WatcherInner>,
     debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
     on_scan: Option<ScanHook>,
@@ -1664,7 +1663,7 @@ impl GavinWatcher {
     pub fn start(
         workspace_id: String,
         root_path: PathBuf,
-        writer: Arc<Mutex<UnixStream>>,
+        writer: Arc<Mutex<Stream>>,
         on_scan: Option<ScanHook>,
     ) -> Arc<Self> {
         // Canonicalize before watching: FSEvents resolves symlinks, and a
@@ -1672,7 +1671,8 @@ impl GavinWatcher {
         // /var/folders both live under /private) can silently never see
         // its own events. A missing root can't canonicalize -- keep the
         // given path so scan_root still reports root_missing for it.
-        let root_path = root_path.canonicalize().unwrap_or(root_path);
+        let root_path =
+            protocol::canonical_path(&root_path).unwrap_or(root_path);
         let watcher = Arc::new(GavinWatcher {
             workspace_id,
             root_path,
@@ -2826,7 +2826,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_millis(400))).unwrap();
         let writer = Arc::new(Mutex::new(theirs));
 
@@ -3174,7 +3174,7 @@ mod tests {
         init_gavin_root(&root, "WS").unwrap();
         std::fs::create_dir_all(root.join("packages").join("api").join(GAVIN_DIR)).unwrap();
 
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let _watcher =
             GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
@@ -3220,7 +3220,7 @@ mod tests {
         init_gavin_root(&root, "WS").unwrap();
         std::fs::create_dir_all(root.join("lib").join(GAVIN_DIR)).unwrap();
 
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let _watcher =
             GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
@@ -3254,7 +3254,7 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         init_gavin_root(&root, "WS").unwrap();
 
-        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let (_ours, theirs) = Stream::pair().unwrap();
         let watcher =
             GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
         assert_eq!(watcher.watched_paths(), vec![root.clone()]);
@@ -3284,7 +3284,7 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         init_gavin_root(&root, "WS").unwrap();
 
-        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let (_ours, theirs) = Stream::pair().unwrap();
         let watcher =
             GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
         assert!(watcher.watched_paths().contains(&root), "the root is always watched");
@@ -3308,7 +3308,7 @@ mod tests {
         init_gavin_root(&root, "WS").unwrap();
         std::fs::create_dir(root.join("services")).unwrap();
 
-        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let (_ours, theirs) = Stream::pair().unwrap();
         let watcher =
             GavinWatcher::start("ws-1".to_string(), root.clone(), Arc::new(Mutex::new(theirs)), None);
         assert!(watcher.watched_paths().contains(&root.join("services")));

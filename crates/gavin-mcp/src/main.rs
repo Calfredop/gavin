@@ -1,7 +1,7 @@
 use protocol::{read_message, write_message, Request, Response, PROTOCOL_VERSION};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 
 // ---------- daemon transport ----------
@@ -26,7 +26,7 @@ const UNREACHABLE: &str =
 /// gap to match -- see `send_command_reconnecting_at` in
 /// `app/src-tauri/src/session.rs`.)
 struct Connection {
-    reader: BufReader<UnixStream>,
+    reader: BufReader<Stream>,
     daemon_version: u32,
 }
 
@@ -74,7 +74,7 @@ impl SocketTransport {
             Ok(path) => path,
             Err(why) => anyhow::bail!("{why}"),
         };
-        let stream = UnixStream::connect(socket_path)
+        let stream = Stream::connect(socket_path)
             .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
         let mut reader = BufReader::new(stream);
         write_message(reader.get_mut(), &Request::GetProtocolVersion)
@@ -1093,7 +1093,7 @@ mod tests {
     ) -> (PathBuf, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fake.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let listener = protocol::transport::Listener::bind(&path).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
 
@@ -1102,7 +1102,7 @@ mod tests {
             // Accepts repeatedly, not once: SocketTransport reconnects on
             // failure, and a one-shot accept would hang that retry instead
             // of failing it.
-            while let Ok((mut stream, _)) = listener.accept() {
+            while let Ok(mut stream) = listener.accept() {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 while let Ok(Some(req)) = read_message::<_, Request>(&mut reader) {
                     recorder.lock().unwrap().push(req.clone());

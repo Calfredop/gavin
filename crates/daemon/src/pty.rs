@@ -30,26 +30,30 @@ impl PtySession {
         // CommandBuilder::new would make it one argv[0] and fail with
         // "doesn't exist on the filesystem and was not found in PATH".
         //
-        // /bin/sh rather than $SHELL deliberately: the quoting the app emits is
-        // POSIX, so the parser has to be too -- a user whose login shell is
-        // fish or nushell must not change how an app-generated command line is
-        // read. `sh -c` with a single simple command execs it in place, so the
-        // agent still owns the PTY (signals, job control, exit status) with no
-        // extra process in between.
+        // A POSIX shell rather than $SHELL deliberately: the quoting the app
+        // emits is POSIX, so the parser has to be too -- a user whose login
+        // shell is fish or nushell must not change how an app-generated
+        // command line is read. `sh -c` with a single simple command execs it
+        // in place, so the agent still owns the PTY (signals, job control,
+        // exit status) with no extra process in between. Which sh, and the
+        // Windows answer, is `shell`'s decision.
         let mut cmd = match command {
             Some(c) => {
-                let mut cmd = CommandBuilder::new("/bin/sh");
+                let mut cmd = CommandBuilder::new(crate::shell::posix_shell().as_os_str());
                 cmd.args(["-c", c]);
                 cmd
             }
-            None => CommandBuilder::new(
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-            ),
+            None => CommandBuilder::new(crate::shell::interactive_shell().as_os_str()),
         };
         cmd.cwd(cwd);
         // A daemon auto-spawned by the GUI (not launched from an interactive
         // terminal) inherits no TERM from its parent, which breaks every
         // full-screen TUI, including the AI coding agents this app hosts.
+        //
+        // Harmless on Windows, where ConPTY is the terminal and nothing
+        // consults TERM to decide what it can draw -- but the MSYS
+        // programs running inside sh.exe DO read it, and they are the
+        // same programs that read it on a mac.
         cmd.env("TERM", "xterm-256color");
 
         // Pin the terminal identity instead of letting it leak in from

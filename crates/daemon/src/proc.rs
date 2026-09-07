@@ -17,6 +17,24 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+use windows::Win32::Foundation::{FILETIME, STILL_ACTIVE};
+#[cfg(windows)]
+use windows::Win32::Security::{
+    EqualSid, GetLengthSid, GetTokenInformation, TokenUser, PSID, TOKEN_QUERY, TOKEN_USER,
+};
+#[cfg(windows)]
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+#[cfg(windows)]
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+#[cfg(windows)]
+use windows::Win32::System::Threading::{
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenProcessToken, TerminateProcess,
+    PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+};
+
 /// A pid together with enough to tell it apart from a later process that
 /// inherited that number.
 ///
@@ -219,12 +237,210 @@ fn owned_by_us(pid: u32) -> bool {
     std::fs::metadata(format!("/proc/{pid}")).map(|m| m.uid() == me).unwrap_or(false)
 }
 
+/// The same two questions of Win32, which needs a handle to answer
+/// either.
+///
+/// `PROCESS_QUERY_LIMITED_INFORMATION` rather than
+/// `PROCESS_QUERY_INFORMATION`: it is the narrower right, it is enough
+/// for `GetProcessTimes`, `GetExitCodeProcess` and `OpenProcessToken`,
+/// and -- unlike the wider one -- it is granted for a process running as
+/// another user at a different integrity level, which is what lets the
+/// uid check below be a check rather than an accident of the open
+/// failing.
+///
+/// The start time comes back as a FILETIME, 100-nanosecond ticks since
+/// 1601, and is converted to the microseconds-since-1970 the other two
+/// platforms record. Same identity, same column, same comparison.
+#[cfg(windows)]
+pub fn identify(pid: u32) -> Option<ProcessHandle> {
+    let process = OwnedProcess::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    if !process.is_running() {
+        return None;
+    }
+    if !process.owned_by_us() {
+        return None;
+    }
+    Some(ProcessHandle { pid, started_at_us: process.times()?.created_us })
+}
+
 /// Every other platform. Answering "gone" is the honest placeholder: it
 /// makes recovery behave exactly as it did before this module existed,
 /// rather than inventing a liveness claim from nothing.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn identify(_pid: u32) -> Option<ProcessHandle> {
     None
+}
+
+/// A process handle that closes itself, and the four questions this
+/// module asks through one.
+///
+/// One type rather than four functions that each open and close: every
+/// probe here needs the handle for two calls at least (liveness and
+/// times, identity and termination), and a leaked handle in a daemon
+/// that polls on a timer is a slow-motion resource exhaustion rather
+/// than a visible bug.
+#[cfg(windows)]
+struct OwnedProcess(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+struct ProcessTimes {
+    /// Microseconds since the Unix epoch, from the creation FILETIME.
+    created_us: i64,
+    /// Kernel plus user, in microseconds. A cumulative total, like every
+    /// other arm of `usage`.
+    cpu_us: u64,
+}
+
+#[cfg(windows)]
+impl OwnedProcess {
+    fn open(pid: u32, rights: PROCESS_ACCESS_RIGHTS) -> Option<OwnedProcess> {
+        // SAFETY: no pointer arguments; the handle is owned from here.
+        let handle = unsafe { OpenProcess(rights, false, pid) }.ok()?;
+        if handle.is_invalid() {
+            return None;
+        }
+        Some(OwnedProcess(handle))
+    }
+
+    /// Whether the process has not yet exited.
+    ///
+    /// `GetExitCodeProcess` reports `STILL_ACTIVE` (259) for a live
+    /// process -- and, famously, for one that exited WITH 259. That
+    /// ambiguity cannot mislead this module: a false "alive" here is
+    /// still checked against the recorded creation time by
+    /// `still_running`, and a process that exited cannot have the same
+    /// creation time as whatever now holds its pid. The alternative,
+    /// `WaitForSingleObject`, needs SYNCHRONIZE access, which is a wider
+    /// right for no gain.
+    fn is_running(&self) -> bool {
+        let mut code: u32 = 0;
+        // SAFETY: `code` is a live u32 and the handle is ours.
+        let ok = unsafe { GetExitCodeProcess(self.0, &mut code) }.is_ok();
+        ok && code == STILL_ACTIVE.0 as u32
+    }
+
+    fn times(&self) -> Option<ProcessTimes> {
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: four live FILETIMEs, all four written by the call.
+        unsafe {
+            GetProcessTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user).ok()?;
+        }
+        Some(ProcessTimes {
+            created_us: filetime_to_unix_us(&created)?,
+            cpu_us: (filetime_ticks(&kernel) + filetime_ticks(&user)) / 10,
+        })
+    }
+
+    /// Whether this process runs as the user gavin does.
+    ///
+    /// The Windows half of `owned_by_us`: `proc_pidinfo` refuses another
+    /// user's process outright on macOS and `/proc` is world-readable on
+    /// Linux, while here the answer depends on privilege -- an elevated
+    /// daemon CAN open a stranger's process, and would then offer to
+    /// kill it as if it were the agent gavin spawned. `false` on any
+    /// failure, which is the "not ours" direction, and the safe one.
+    fn owned_by_us(&self) -> bool {
+        let Some(theirs) = self.user_sid() else { return false };
+        let Some(ours) = current_user_sid() else { return false };
+        // SAFETY: both buffers outlive the call and hold real SIDs.
+        unsafe { EqualSid(PSID(theirs.as_ptr() as *mut _), PSID(ours.as_ptr() as *mut _)) }.is_ok()
+    }
+
+    /// This process's token user SID, as the bytes the token wrote.
+    ///
+    /// The buffer is returned rather than the `PSID`, because that
+    /// pointer points INTO it: handing back the pointer alone would be a
+    /// dangling read the moment the vector dropped.
+    fn user_sid(&self) -> Option<Vec<u8>> {
+        unsafe {
+            let mut token = windows::Win32::Foundation::HANDLE::default();
+            OpenProcessToken(self.0, TOKEN_QUERY, &mut token).ok()?;
+            let token = OwnedProcess(token);
+            let mut needed: u32 = 0;
+            // The documented two-call shape: the first fails with
+            // ERROR_INSUFFICIENT_BUFFER and fills in the size.
+            let _ = GetTokenInformation(token.0, TokenUser, None, 0, &mut needed);
+            if needed == 0 {
+                return None;
+            }
+            let mut buf = vec![0u8; needed as usize];
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+                needed,
+                &mut needed,
+            )
+            .ok()?;
+            let user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let sid = user.User.Sid;
+            if sid.is_invalid() {
+                return None;
+            }
+            // Copy the SID out of the token's buffer into one whose
+            // lifetime the caller controls.
+            let len = GetLengthSid(sid) as usize;
+            let mut out = vec![0u8; len];
+            std::ptr::copy_nonoverlapping(sid.0 as *const u8, out.as_mut_ptr(), len);
+            Some(out)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnedProcess {
+    fn drop(&mut self) {
+        // SAFETY: the handle is ours and is closed exactly once.
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// The daemon's own user SID, read once.
+///
+/// Once because it cannot change for the life of the process, and
+/// because `owned_by_us` runs per pid inside a tree walk that is already
+/// capped at `MAX_TREE_PROCESSES`.
+#[cfg(windows)]
+fn current_user_sid() -> Option<&'static Vec<u8>> {
+    static SID: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+    SID.get_or_init(|| {
+        // SAFETY: GetCurrentProcess returns a pseudo-handle that needs
+        // no close; wrapping it here would close it, so it is used raw.
+        let me = OwnedProcess(unsafe { windows::Win32::System::Threading::GetCurrentProcess() });
+        let sid = me.user_sid();
+        // Do NOT close the pseudo-handle.
+        std::mem::forget(me);
+        sid
+    })
+    .as_ref()
+}
+
+/// FILETIME as its raw 100-nanosecond tick count.
+#[cfg(windows)]
+fn filetime_ticks(ft: &FILETIME) -> u64 {
+    ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
+}
+
+/// A creation FILETIME as microseconds since the Unix epoch.
+///
+/// FILETIME counts 100-nanosecond ticks from 1601-01-01; the Unix epoch
+/// is 11644473600 seconds later, which is the constant below in the same
+/// units. `None` for a stamp before 1970, which no live process has and
+/// which would otherwise become a negative identity that matches
+/// nothing.
+#[cfg(windows)]
+fn filetime_to_unix_us(ft: &FILETIME) -> Option<i64> {
+    const EPOCH_DIFFERENCE_TICKS: u64 = 116_444_736_000_000_000;
+    let ticks = filetime_ticks(ft);
+    if ticks < EPOCH_DIFFERENCE_TICKS {
+        return None;
+    }
+    Some(((ticks - EPOCH_DIFFERENCE_TICKS) / 10) as i64)
 }
 
 /// Whether the process this handle names is still the one it named.
@@ -239,7 +455,8 @@ pub fn still_running(handle: ProcessHandle) -> bool {
     identify(handle.pid) == Some(handle)
 }
 
-/// Asks a surviving process to stop, politely.
+/// Asks a surviving process to stop, politely -- where the OS has a way
+/// to ask. See the Windows arm below, which does not.
 ///
 /// SIGTERM, not SIGKILL: an orphaned agent is mid-conversation with a
 /// checkout open, and the graceful path lets it flush whatever it was
@@ -253,6 +470,7 @@ pub fn still_running(handle: ProcessHandle) -> bool {
 /// and its pid be handed to something else. `false` means the process was
 /// already gone, or was never the one recorded -- either way nothing was
 /// signalled.
+#[cfg(unix)]
 pub fn terminate(handle: ProcessHandle) -> bool {
     if !still_running(handle) {
         return false;
@@ -262,6 +480,33 @@ pub fn terminate(handle: ProcessHandle) -> bool {
     // the worst a race here can do is signal a pid that exited in the
     // microseconds since, which is the ESRCH the return value reports.
     unsafe { libc::kill(handle.pid as i32, libc::SIGTERM) == 0 }
+}
+
+/// The same button on Windows, where the polite half of the contract
+/// above does not exist.
+///
+/// There is no SIGTERM. `TerminateProcess` is unconditional: the process
+/// stops where it is, its buffers are not flushed, its atexit handlers
+/// do not run, and an agent mid-write leaves a half-written file. The
+/// documented alternatives are all worse or not applicable -- a console
+/// CTRL_BREAK event needs the target to share this process's console and
+/// would reach every other child in it, and posting WM_CLOSE needs a
+/// message loop a CLI does not have. So the honest statement is that
+/// this is the abrupt one, and the copy on the button that calls it says
+/// so rather than promising a graceful stop it cannot deliver.
+///
+/// The identity re-check is the same as on unix and matters more here,
+/// because what follows it cannot be survived.
+#[cfg(windows)]
+pub fn terminate(handle: ProcessHandle) -> bool {
+    if !still_running(handle) {
+        return false;
+    }
+    let Some(process) = OwnedProcess::open(handle.pid, PROCESS_TERMINATE) else { return false };
+    // SAFETY: the handle is ours and no pointer arguments are passed.
+    // The exit code is the one Windows itself uses for a process killed
+    // from Task Manager.
+    unsafe { TerminateProcess(process.0, 1) }.is_ok()
 }
 
 /// What one process is costing right now: the two numbers a task manager
@@ -366,7 +611,35 @@ pub fn usage(pid: u32) -> Option<Usage> {
     })
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Working set for memory, kernel + user for CPU -- one handle, two
+/// calls.
+///
+/// WorkingSetSize is the figure Task Manager shows as "Memory (active
+/// private working set)"'s parent quantity and the closest analogue to
+/// the RSS the other two arms report: resident pages, not the address
+/// space reservation `PagefileUsage` describes.
+#[cfg(windows)]
+pub fn usage(pid: u32) -> Option<Usage> {
+    let process = OwnedProcess::open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    if !process.is_running() || !process.owned_by_us() {
+        return None;
+    }
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `counters` is a live, correctly-sized PROCESS_MEMORY_COUNTERS
+    // and `cb` is its own size, which is what bounds the write.
+    unsafe {
+        GetProcessMemoryInfo(process.0, &mut counters, counters.cb).ok()?;
+    }
+    Some(Usage {
+        rss_bytes: counters.WorkingSetSize as u64,
+        cpu_time_us: process.times()?.cpu_us,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn usage(_pid: u32) -> Option<Usage> {
     None
 }
@@ -460,7 +733,62 @@ fn children_by_ppid(parent: u32) -> Vec<u32> {
         .collect()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// A whole-system snapshot, filtered by parent pid -- Windows keeps no
+/// per-process child list to ask for.
+///
+/// `th32ParentProcessID` is recorded once, at creation, and is NEVER
+/// cleared: when a parent exits, its pid is free for reuse and every one
+/// of its orphans still names it. So a snapshot filtered by ppid alone
+/// will hand back strangers the moment a pid wraps, which on a busy
+/// Windows box is hours. Each candidate's creation time is therefore
+/// checked to be LATER than the parent's -- a child cannot predate the
+/// process that started it -- which is the same reuse guard
+/// `ProcessHandle` applies, spent here on the walk instead of on a
+/// stored pair.
+#[cfg(windows)]
+pub fn children(pid: u32) -> Vec<u32> {
+    let Some(parent) = OwnedProcess::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) else {
+        return Vec::new();
+    };
+    let Some(parent_times) = parent.times() else { return Vec::new() };
+    // SAFETY: no pointer arguments; the returned handle is closed below.
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return Vec::new();
+    };
+    let snapshot = OwnedProcess(snapshot);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    // SAFETY: `entry` is live and its dwSize is set, as both calls require.
+    unsafe {
+        if Process32FirstW(snapshot.0, &mut entry).is_err() {
+            return out;
+        }
+        loop {
+            if entry.th32ParentProcessID == pid && entry.th32ProcessID != pid {
+                let child = entry.th32ProcessID;
+                let born_after = OwnedProcess::open(child, PROCESS_QUERY_LIMITED_INFORMATION)
+                    .and_then(|c| c.times())
+                    .is_some_and(|t| t.created_us >= parent_times.created_us);
+                if born_after {
+                    out.push(child);
+                }
+            }
+            if out.len() >= MAX_TREE_PROCESSES {
+                break;
+            }
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if Process32NextW(snapshot.0, &mut entry).is_err() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn children(_pid: u32) -> Vec<u32> {
     Vec::new()
 }
@@ -533,6 +861,67 @@ pub fn tree_usage(root: ProcessHandle) -> Option<TreeUsage> {
 mod tests {
     use super::*;
 
+    /// A process that starts nothing of its own and stays alive for
+    /// `seconds`.
+    ///
+    /// Two spellings for one shape, because the shapes really do differ:
+    /// `sh -c 'sleep 5'` is a SINGLE simple command, so the shell execs
+    /// sleep in its own place and the result is one process -- while
+    /// `cmd /C` has no exec to do that with and would always leave a
+    /// parent behind. So on Windows the sleeper is spawned directly, and
+    /// it is `ping` because `timeout` refuses to run with redirected
+    /// input, which is exactly how a test harness runs it.
+    fn spawn_leaf(seconds: u32) -> std::process::Child {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("sleep {seconds}")])
+                .spawn()
+                .unwrap()
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("ping")
+                .args(["-n", &(seconds + 1).to_string(), "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        }
+    }
+
+    /// A process that DOES start something: the two-deep tree
+    /// `tree_usage` and `children` are about.
+    fn spawn_parent(seconds: u32) -> std::process::Child {
+        #[cfg(unix)]
+        {
+            // No `exec`, and a second command after it, so the shell has
+            // to stay and wait.
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("/bin/sleep {seconds}; true")])
+                .spawn()
+                .unwrap()
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", &format!("ping -n {} 127.0.0.1 > nul", seconds + 1)])
+                .spawn()
+                .unwrap()
+        }
+    }
+
+    /// A process that is already over by the time it is looked at.
+    fn spawn_exiting() -> std::process::Child {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap()
+        }
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd").args(["/C", "exit 0"]).spawn().unwrap()
+        }
+    }
+
     #[test]
     fn usage_reports_real_figures_for_the_running_process() {
         let u = usage(std::process::id()).expect("the test process must be measurable");
@@ -544,7 +933,7 @@ mod tests {
 
     #[test]
     fn usage_has_nothing_to_say_about_a_dead_pid() {
-        let mut child = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let mut child = spawn_exiting();
         let pid = child.id();
         child.wait().unwrap();
         assert_eq!(usage(pid), None);
@@ -603,7 +992,7 @@ mod tests {
 
     #[test]
     fn children_finds_a_process_this_one_started() {
-        let mut child = std::process::Command::new("/bin/sh").args(["-c", "sleep 5"]).spawn().unwrap();
+        let mut child = spawn_leaf(5);
         let kids = children(std::process::id());
         assert!(kids.contains(&child.id()), "{kids:?} should contain {}", child.id());
         child.kill().ok();
@@ -612,7 +1001,7 @@ mod tests {
 
     #[test]
     fn children_of_a_leaf_is_empty() {
-        let mut child = std::process::Command::new("/bin/sh").args(["-c", "sleep 5"]).spawn().unwrap();
+        let mut child = spawn_leaf(5);
         assert_eq!(children(child.id()), Vec::<u32>::new());
         child.kill().ok();
         child.wait().ok();
@@ -620,12 +1009,7 @@ mod tests {
 
     #[test]
     fn tree_usage_counts_the_root_and_what_it_started() {
-        // `exec` would replace the shell and leave one process; without
-        // it /bin/sh forks, so the tree is genuinely two deep.
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "/bin/sleep 5; true"])
-            .spawn()
-            .unwrap();
+        let mut child = spawn_parent(5);
         let handle = identify(child.id()).expect("the child must be visible");
         // The grandchild is spawned asynchronously by the shell; give it
         // a moment to exist before asking how many processes there are.
@@ -649,7 +1033,7 @@ mod tests {
 
     #[test]
     fn tree_usage_of_a_gone_process_is_none() {
-        let mut child = std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]).spawn().unwrap();
+        let mut child = spawn_leaf(30);
         let handle = identify(child.id()).unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
@@ -675,10 +1059,7 @@ mod tests {
 
     #[test]
     fn a_dead_pid_is_gone() {
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "exit 0"])
-            .spawn()
-            .unwrap();
+        let mut child = spawn_exiting();
         let pid = child.id();
         child.wait().unwrap();
         // Waited on, so it is not even a zombie any more.
@@ -718,10 +1099,18 @@ mod tests {
 
     #[test]
     fn terminate_signals_a_process_that_matches_and_reports_a_gone_one() {
+        // The unix sleeper ignores SIGHUP deliberately: nothing here
+        // sends one, and a process that died of the PTY closing instead
+        // of of this call would make the test pass for the wrong reason.
+        // Windows has no HUP to ignore, so the plain sleeper is the same
+        // subject there.
+        #[cfg(unix)]
         let mut child = std::process::Command::new("/bin/sh")
             .args(["-c", "trap '' HUP; sleep 30"])
             .spawn()
             .unwrap();
+        #[cfg(windows)]
+        let mut child = spawn_leaf(30);
         let handle = identify(child.id()).expect("the child must be visible");
 
         assert!(terminate(handle), "a matching live process is signalled");
@@ -815,7 +1204,7 @@ mod tests {
             // it is checked here against the file it stands in for,
             // rather than never being executed at all.
             let mut child =
-                std::process::Command::new("/bin/sh").args(["-c", "sleep 5"]).spawn().unwrap();
+                spawn_leaf(5);
             let mut by_ppid = children_by_ppid(std::process::id());
             by_ppid.sort_unstable();
             assert!(by_ppid.contains(&child.id()), "{by_ppid:?} should contain {}", child.id());
