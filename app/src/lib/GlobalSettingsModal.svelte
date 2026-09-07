@@ -466,12 +466,19 @@
     font-size: 1em;
     padding: 3px 8px;
   }
+  /* Capped for the reason SettingsHubView's model row is: a native
+     select is as wide as its widest option, and this panel lists EVERY
+     profile -- including opencode, whose catalogue is 450
+     provider-qualified names. Uncapped, that one row is wider than the
+     modal while the rows above it sit at 140px. */
   .row select {
     min-width: 140px;
+    max-width: 240px;
   }
   .row input.custom {
     flex: 1 1 auto;
     min-width: 0;
+    max-width: 240px;
   }
   .theme-toggle {
     display: flex;

@@ -135,6 +135,7 @@
 <label class="card-agent-field" title={blocked ?? undefined}>
   <span>Model</span>
   <select
+    class="card-agent-model"
     value={modelIsCustom ? CUSTOM_MODEL : ownModel}
     disabled={blocked !== null}
     onchange={(e) => pickModel(e.currentTarget.value)}
@@ -196,6 +197,15 @@
   input.card-agent-model {
     min-width: 0;
     width: 11ch;
+  }
+  /* Both selects are as wide as their widest option, and the model one's
+     is no longer an alias: opencode's catalogue is 450
+     provider-qualified names, the longest 67 characters. These sit in a
+     wrapping strip beside a title, so an uncapped one does not overflow
+     -- it pushes everything after it onto its own line. Wider than the
+     11ch box next to it, narrow enough to stay a control. */
+  select.card-agent-model {
+    max-width: 18ch;
   }
   /* Its own line in both hosts, which are both wrapping flex rows: the
      sentence is longer than the controls it is about, and squeezing it

@@ -1100,14 +1100,25 @@
     padding: 3px 8px;
     min-width: 240px;
   }
-  /* The only row with two controls side by side: the shared 240px floor
-     would push it past a narrow pane. */
+  /* The only row with two controls side by side, so the shared 240px
+     floor becomes a CAP here instead: below it, because two of them
+     would push the pair past a narrow pane; above it, because neither
+     control has a natural width worth trusting.
+     A native select sizes itself to its WIDEST option, and the widest is
+     no longer an alias -- opencode's catalogue is 450 provider-qualified
+     names, the longest 67 characters, which uncapped draws a select
+     wider than the panel. The text box grows for the same reason and had
+     the same answer: every row above it stops at 240px, so this one
+     does too. What gets clipped is readable in full on the "Launches
+     as" line below. */
   .model-row select {
     min-width: 160px;
+    max-width: 240px;
   }
   .model-row input {
     min-width: 0;
     flex: 1 1 auto;
+    max-width: 240px;
   }
   .check {
     display: flex;
