@@ -245,6 +245,7 @@ mod workspaces_data_tests {
                 workspace_id: "ws-1".to_string(),
                 path: "/tmp/ws/.gavin-root/plans/login.md".to_string(),
                 view: "plan".to_string(),
+                session_id: None,
             },
         );
         persist_workspaces(
@@ -4720,6 +4721,7 @@ mod attach_target_tests {
                 workspace_id: "w1".to_string(),
                 path: "/tmp/ws/.gavin-root/plans/login.md".to_string(),
                 view: "plan".to_string(),
+                session_id: None,
             },
         );
 

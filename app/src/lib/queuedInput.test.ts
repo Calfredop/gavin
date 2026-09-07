@@ -7,11 +7,10 @@ import {
   queueBlockedReason,
   INTERRUPTED_REASON,
   deliveryHold,
-  stripVisible,
   queueCountLabel,
   previewLine,
   queuedAgeLabel,
-  entryTip,
+  queueTip,
   shouldQueueForMainAgent,
   type QueuedInput,
   type QueueTarget,
@@ -180,37 +179,6 @@ describe("deliveryHold", () => {
   });
 });
 
-describe("stripVisible", () => {
-  it("is absent from an idle terminal with nothing queued", () => {
-    expect(stripVisible(target({ status: "idle" }), 0, false)).toBe(false);
-    expect(stripVisible(target({ status: undefined }), 0, false)).toBe(false);
-  });
-
-  it("appears while the agent is mid-turn or mid-question", () => {
-    expect(stripVisible(target({ status: "working" }), 0, false)).toBe(true);
-    expect(stripVisible(target({ status: "waiting_for_input" }), 0, false)).toBe(true);
-  });
-
-  it("appears whenever something is queued, whatever the session is doing", () => {
-    expect(stripVisible(target({ status: "idle" }), 1, false)).toBe(true);
-    expect(stripVisible(target({ status: "failed" }), 1, false)).toBe(true);
-  });
-
-  it("stays up for a queue stranded on an interrupted session", () => {
-    // Cancelling is the only thing that clears it, so it has to be
-    // reachable.
-    expect(stripVisible(target({ interrupted: true }), 2, false)).toBe(true);
-  });
-
-  it("does not offer itself on an interrupted session with an empty queue", () => {
-    expect(stripVisible(target({ interrupted: true, status: "working" }), 0, false)).toBe(false);
-  });
-
-  it("appears once the human opens the composer", () => {
-    expect(stripVisible(target({ status: "idle" }), 0, true)).toBe(true);
-  });
-});
-
 describe("queueCountLabel", () => {
   it("counts, and is silent at zero", () => {
     expect(queueCountLabel(0)).toBeNull();
@@ -253,12 +221,28 @@ describe("queuedAgeLabel", () => {
   });
 });
 
-describe("entryTip", () => {
-  it("carries the whole message the preview had to cut, plus the age", () => {
-    const long = entry("a", { text: "line one\nline two", createdAtUs: (NOW - 4 * 60_000) * 1000 });
-    const tip = entryTip(long, NOW);
-    expect(tip).toContain("line one\nline two");
-    expect(tip).toContain("Queued 4m ago");
+describe("queueTip", () => {
+  it("is silent for an empty queue, so the button says what it is for instead", () => {
+    expect(queueTip([])).toBeNull();
+  });
+
+  it("counts, then lists the queue in delivery order", () => {
+    const tip = queueTip([entry("a", { text: "run the tests" }), entry("b", { text: "then commit" })]);
+    expect(tip).toBe("2 follow-ups queued\n1. run the tests\n2. then commit");
+  });
+
+  it("counts the overflow rather than dropping it", () => {
+    const many = ["a", "b", "c", "d", "e", "f"].map((id) => entry(id, { text: id }));
+    const tip = queueTip(many, 2)!;
+    expect(tip).toContain("6 follow-ups queued");
+    expect(tip).toContain("1. a");
+    expect(tip).toContain("2. b");
+    expect(tip).not.toContain("3. c");
+    expect(tip).toContain("… and 4 more");
+  });
+
+  it("shows one line of a multi-line follow-up, like the row it stands for", () => {
+    expect(queueTip([entry("a", { text: "  headline  \nthe detail" })])).toContain("1. headline");
   });
 });
 

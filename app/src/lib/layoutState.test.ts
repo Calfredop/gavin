@@ -176,6 +176,7 @@ import {
   setWorkspaceRoot,
   openBoardInSplit,
   openCardInSplit,
+  openFollowUpsInSplit,
   setCardTabPath,
   retargetCardTabs,
   repairUnknownTabs,
@@ -1114,6 +1115,49 @@ describe("closeSession", () => {
   });
 });
 
+describe("openFollowUpsInSplit", () => {
+  it("records a view tab keyed by the session, with no card path", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+
+    await openFollowUpsInSplit("a", "ws-1");
+
+    const state = get(layoutState);
+    const ids = Object.keys(state.cardTabsById);
+    expect(ids).toHaveLength(1);
+    expect(state.cardTabsById[ids[0]]).toEqual({
+      workspaceId: "ws-1",
+      path: "",
+      view: "followups",
+      sessionId: "a",
+    });
+    expect(backend.createSession).not.toHaveBeenCalled();
+  });
+
+  it("gives two terminals two panes, though both carry the same empty path", async () => {
+    // The dedupe below openCardInSplit matches on path as well as view,
+    // and every queue tab's path is "". Without the session in the
+    // comparison the second terminal's queue would bring the first
+    // one's pane forward and show the wrong agent's follow-ups.
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+
+    await openFollowUpsInSplit("a", "ws-1");
+    await openFollowUpsInSplit("b", "ws-1");
+
+    const tabs = Object.values(get(layoutState).cardTabsById);
+    expect(tabs.map((t) => t.sessionId).sort()).toEqual(["a", "b"]);
+  });
+
+  it("brings the same session's queue forward instead of splitting again", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    await openFollowUpsInSplit("a", "ws-1");
+    const first = Object.keys(get(layoutState).cardTabsById)[0];
+
+    await openFollowUpsInSplit("a", "ws-1");
+
+    expect(Object.keys(get(layoutState).cardTabsById)).toEqual([first]);
+  });
+});
+
 describe("handleSessionExited", () => {
   it("finds and removes a session in a non-active page", () => {
     setState(
@@ -1127,6 +1171,22 @@ describe("handleSessionExited", () => {
     const state = get(layoutState);
     expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["b"]));
     expect(backend.killSession).not.toHaveBeenCalled();
+  });
+
+  it("takes the session's follow-up queue pane with it", async () => {
+    // The queue tab is the one view tab whose subject is a session. Left
+    // standing it would show an empty list and offer a compose box that
+    // writes into a session id the daemon no longer knows.
+    setState([ws("ws-1", [page("page-1", leaf(["a", "b"]))])], "ws-1", "a");
+    await openFollowUpsInSplit("a", "ws-1");
+    const queueTab = Object.keys(get(layoutState).cardTabsById)[0];
+
+    handleSessionExited("a");
+    // The close is fired, not awaited, so the store settles a tick later.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(get(layoutState).cardTabsById[queueTab]).toBeUndefined();
   });
 
   it("reassigns focus to the active page's first session when the focused session exits", () => {

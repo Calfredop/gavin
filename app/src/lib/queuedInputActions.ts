@@ -1,4 +1,4 @@
-// Doing what the follow-up queue strip offers: queueing a message,
+// Doing what the follow-up queue view offers: queueing a message,
 // reordering one, sending one now, and cancelling one.
 //
 // The write side of queuedInput.ts, kept out of that module so the
@@ -28,7 +28,7 @@ import {
 } from "./queuedInput";
 
 /// What the app knows about a session's fitness to be queued for,
-/// assembled from the stores. The strip reads this once and hands it to
+/// assembled from the stores. The view reads this once and hands it to
 /// both `composeRefusal` and `deliveryHold`, so the box that refuses and
 /// the line that explains can never be answering different questions.
 export function queueTargetFor(
@@ -69,7 +69,7 @@ export async function queueFollowUp(
     // daemon's own CR already provides.
     const queued = await backend.queueInput(sessionId, text.trim());
     // Applied optimistically as well as by the push, because the push is
-    // routed to the ATTACHED writer -- and the strip has to be right for
+    // routed to the ATTACHED writer -- and the view has to be right for
     // the human looking at it even in the window where that has not
     // arrived.
     handleQueuedInputsChanged(sessionId, queued);
@@ -95,7 +95,7 @@ async function writeOrder(sessionId: string, ids: string[] | null): Promise<stri
 /// Moves one entry by `delta` places. A move off either end, or of an
 /// entry the daemon has since delivered, is a no-op rather than a write:
 /// `SetQueuedInputs` pushes to everyone attached, so a pointless one
-/// repaints the strip under the human's cursor to say nothing changed.
+/// repaints the queue under the human's cursor to say nothing changed.
 export function moveFollowUp(
   sessionId: string,
   id: string,

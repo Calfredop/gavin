@@ -74,7 +74,7 @@
   import StatusBadge from "./ui/StatusBadge.svelte";
   import { agentIndicator, agentIndicatorByState, gitIndicator } from "./ui/indicators";
 
-  import { sessionLabel, folderName, boardTabLabel, cardTabLabel } from "./paths";
+  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "./paths";
   import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
   import { currentHubTabPrefs } from "./hubTabPrefs";
   import {
@@ -480,6 +480,14 @@
     if (row.kind === "card") {
       const tab = $layoutState.cardTabsById[row.id];
       if (!tab) return row.id;
+      // The queue tab is the one card tab with no card: its subject is a
+      // session, so it is named after that terminal by the same helper
+      // the terminal's own row uses.
+      if (tab.view === "followups") {
+        return followUpsTabLabel(
+          sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, tab.sessionId ?? row.id)
+        );
+      }
       const title = linkForCardPath(
         $orchestrations[tab.workspaceId],
         $gavinTrees[tab.workspaceId],
@@ -515,7 +523,14 @@
   // take over the row's and never hand it back.
   function tabRowTip(row: PageTabRow, status: GitStatus | null): string {
     const kindWord =
-      row.kind === "file" ? "File" : row.kind === "card" ? "Card" : "Board";
+      row.kind === "file"
+        ? "File"
+        : row.kind === "card"
+          ? // The one card row with no card: its subject is a session.
+            $layoutState.cardTabsById[row.id]?.view === "followups"
+            ? "Follow-ups"
+            : "Card"
+          : "Board";
     const lines = [row.status ? statusWord(row.status) : kindWord];
     const where =
       row.kind === "board"

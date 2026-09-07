@@ -28,12 +28,21 @@ export function boardTabLabel(contextName: string | null | undefined, contextFol
   return `${contextName || folderName(contextFolder)} · board`;
 }
 
-// A card tab's label: the card's own title, plus which of its two views
-// this pane holds. Same shape and same reasoning as boardTabLabel -- the
-// tab bar and the sidebar's page expansion both read it, and neither
-// half may invent a second name for the same pane. `title` falls back to
-// the card's file name when the tree has not loaded (or no longer lists
-// the card), so the label is never empty.
+// A card tab's label: the card's own title, plus which of its views this
+// pane holds. Same shape and same reasoning as boardTabLabel -- the tab
+// bar and the sidebar's page expansion both read it, and neither half
+// may invent a second name for the same pane. `title` falls back to the
+// card's file name when the tree has not loaded (or no longer lists the
+// card), so the label is never empty.
 export function cardTabLabel(title: string, view: "plan" | "changes"): string {
   return `${title} · ${view === "plan" ? "plan" : "changes"}`;
+}
+
+// The follow-up queue's tab, whose subject is a session rather than a
+// card -- so it is named after the terminal it belongs to, by the very
+// label that terminal's own tab wears. Separate from cardTabLabel
+// because there is no card and no title to fall back on: the caller
+// resolves the session's name with sessionLabel and hands it here.
+export function followUpsTabLabel(sessionName: string): string {
+  return `${sessionName} · follow-ups`;
 }

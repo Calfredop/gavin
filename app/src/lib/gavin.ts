@@ -82,14 +82,24 @@ export interface BoardTab {
 
 /// Which half of a card a card tab shows: the detail panel, or the diff
 /// of what its run did to the checkout.
-export type CardTabView = "plan" | "changes";
+export type CardTabView = "plan" | "changes" | "followups";
 
-// One persisted card tab: a card's own view living in a pane rather than
-// in a modal (mirrors config.rs's CardTabRecord). The run baseline is
-// deliberately absent -- it lives on the card's binding, which a
-// re-launch replaces, so a copy here would pin the pane to a dead run.
+// One persisted view tab: something a terminal tab asked to see beside
+// itself, living in a pane rather than in a modal (mirrors config.rs's
+// CardTabRecord). The run baseline is deliberately absent -- it lives on
+// the card's binding, which a re-launch replaces, so a copy here would
+// pin the pane to a dead run.
+//
+// "plan" and "changes" are keyed by `path`, the card they show.
+// "followups" is keyed by `sessionId` and carries an empty `path`: an
+// agent's queue belongs to the SESSION, not to whatever card it happens
+// to be running, and two tabs on one card have two different queues.
+// Every walk of this map by path -- retargetCardTabs for a card that
+// moved, closablesForArchive for one leaving the board -- matches
+// against real card paths, so neither ever claims the empty one.
 export interface CardTab {
   workspaceId: string;
   path: string;
   view: CardTabView;
+  sessionId?: string;
 }

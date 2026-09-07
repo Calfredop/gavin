@@ -329,22 +329,39 @@ pub struct BoardTabRecord {
     pub context_folder: String,
 }
 
-/// One persisted card tab: a card's own detail view living in a pane
-/// rather than in a modal, opened from the terminal tab that runs it.
-/// `view` picks which half of the card it shows -- "plan" is the detail
-/// panel, "changes" the diff of what this run did to the checkout.
+/// One persisted view tab: something a terminal tab asked to see beside
+/// itself, living in a pane rather than in a modal. `view` picks which
+/// one -- "plan" is a card's detail panel, "changes" the diff of what its
+/// run did to the checkout, "followups" the queue of messages waiting for
+/// a session's next idle.
+///
+/// The first two are keyed by `path`, the card they show. The third is
+/// keyed by `session_id` and carries an empty `path`: an agent's queue
+/// belongs to the SESSION, not to whatever card it happens to be running,
+/// and two tabs on one card have two different queues. Everything that
+/// walks this map by path -- `retargetCardTabs` for a card that moved,
+/// `archiveClose` for one leaving the board -- matches against real card
+/// paths, so the empty one is never claimed by either.
 ///
 /// The run's baseline is deliberately NOT stored here. It lives on the
 /// card's `card_sessions` binding, which a re-launch replaces; copying it
 /// into the tab would pin the pane to a run that no longer exists.
 /// Crosses to the frontend via get/set_card_tabs, hence camelCase
 /// (verified by the shape test below).
+///
+/// `session_id` is skipped when absent rather than written as null, so a
+/// plan or changes tab serializes to exactly the three keys it always
+/// did -- a config written by this build stays readable by one without
+/// the field, which is the direction that actually happens when a human
+/// runs an older bundle against a config the newer one wrote.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CardTabRecord {
     pub workspace_id: String,
     pub path: String,
     pub view: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// A duty cycle: sit out `pause_minutes` of every `period_minutes`, and
@@ -1118,6 +1135,7 @@ mod tests {
                 workspace_id: "ws-1".to_string(),
                 path: "/Users/alice/project/.gavin-root/plans/login.md".to_string(),
                 view: "changes".to_string(),
+                session_id: None,
             },
         );
         let config = AppConfig { card_tabs, ..AppConfig::default() };
@@ -1143,6 +1161,7 @@ mod tests {
             workspace_id: "ws-1".to_string(),
             path: "/tmp/ws/.gavin-root/plans/login.md".to_string(),
             view: "plan".to_string(),
+            session_id: None,
         };
         assert_eq!(
             serde_json::to_value(&record).unwrap(),
@@ -1152,6 +1171,38 @@ mod tests {
                 "view": "plan",
             })
         );
+    }
+
+    /// The follow-up queue's tab is the one that carries a session
+    /// instead of a card. Pinned separately because the two shapes have
+    /// to stay distinguishable on disk: the reader picks the pane from
+    /// `view`, and a queue tab that lost its `sessionId` would render a
+    /// queue for no session at all.
+    #[test]
+    fn a_follow_up_queue_tab_carries_its_session_and_an_empty_path() {
+        let record = CardTabRecord {
+            workspace_id: "ws-1".to_string(),
+            path: String::new(),
+            view: "followups".to_string(),
+            session_id: Some("sess-7".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            serde_json::json!({
+                "workspaceId": "ws-1",
+                "path": "",
+                "view": "followups",
+                "sessionId": "sess-7",
+            })
+        );
+        // And a config written before the field existed still loads.
+        let old: CardTabRecord = serde_json::from_value(serde_json::json!({
+            "workspaceId": "ws-1",
+            "path": "/tmp/ws/.gavin-root/plans/login.md",
+            "view": "plan",
+        }))
+        .unwrap();
+        assert_eq!(old.session_id, None);
     }
 
     #[test]

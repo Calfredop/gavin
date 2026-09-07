@@ -2133,26 +2133,55 @@ export async function openBoardInSplit(
 // holding `anchorSessionId`. Mirrors openBoardInSplit, with
 // cardTabsById/setCardTabs in place of the board-tab map.
 //
-// Unlike the file and board splits this one DEDUPES first. It is reached
-// from a chip on a terminal tab, which the human clicks to check on the
-// agent and clicks again a minute later; splitting a second identical
-// pane every time is how a page ends up four copies deep in the same
-// card. An already-open view of the same card is brought forward
-// instead, wherever on this page it lives.
-export async function openCardInSplit(
+// Unlike the file and board splits this one DEDUPES first (see
+// openViewTabInSplit). It is reached from a chip on a terminal tab,
+// which the human clicks to check on the agent and clicks again a minute
+// later; splitting a second identical pane every time is how a page ends
+// up four copies deep in the same card. An already-open view of the same
+// card is brought forward instead, wherever on this page it lives.
+export function openCardInSplit(
   anchorSessionId: string,
   workspaceId: string,
   path: string,
   view: CardTabView
 ): Promise<void> {
+  return openViewTabInSplit(anchorSessionId, { workspaceId, path, view });
+}
+
+/// The follow-up queue for ONE session, split beside the terminal it
+/// belongs to. The queue used to be a band under every terminal, which
+/// cost the PTY rows to say nothing on every tab where nothing was
+/// queued; it is a view a human asks for, like the plan and the diff
+/// beside it, so it opens the way those do.
+///
+/// Keyed by the session and not by a card, with an empty path: the queue
+/// outlives whatever card the agent happens to be running, and two tabs
+/// on one card have two separate queues. That is also what makes the
+/// dedupe below correct for it -- matching on path would fold every
+/// session's queue on this page into one pane.
+export function openFollowUpsInSplit(
+  anchorSessionId: string,
+  workspaceId: string
+): Promise<void> {
+  return openViewTabInSplit(anchorSessionId, {
+    workspaceId,
+    path: "",
+    view: "followups",
+    sessionId: anchorSessionId,
+  });
+}
+
+/// The body both of those share: dedupe, split, record, persist.
+async function openViewTabInSplit(anchorSessionId: string, tab: CardTab): Promise<void> {
   const state = get(layoutState);
   const location = activePageLocation(state);
   if (!location) return;
   const existing = Object.entries(state.cardTabsById).find(
-    ([id, tab]) =>
-      tab.workspaceId === workspaceId &&
-      tab.path === path &&
-      tab.view === view &&
+    ([id, open]) =>
+      open.workspaceId === tab.workspaceId &&
+      open.path === tab.path &&
+      open.view === tab.view &&
+      open.sessionId === tab.sessionId &&
       layout.findLeafPath(location.tree, id) !== null
   );
   if (existing) {
@@ -2163,7 +2192,7 @@ export async function openCardInSplit(
   const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
   const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, tabId);
-  const cardTabsById = { ...state.cardTabsById, [tabId]: { workspaceId, path, view } };
+  const cardTabsById = { ...state.cardTabsById, [tabId]: tab };
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces, focusedSessionId: tabId, cardTabsById }));
   try {
     await backend.setCardTabs(cardTabsById);
@@ -2269,6 +2298,16 @@ export function handleSessionExited(sessionId: string): void {
   // sides agreeing without needing a push the daemon has no writer left
   // to send on.
   handleQueuedInputsChanged(sessionId, []);
+  // And the pane that was showing it, for the same reason: a follow-up
+  // queue tab is the one view tab whose subject is a SESSION, so once
+  // that session is gone the pane has nothing left to be about -- an
+  // empty list and a compose box that would write into a session id the
+  // daemon no longer knows. Fired rather than awaited so this function
+  // keeps its synchronous contract; closeSession re-reads the store, so
+  // it sees the tree this call is about to leave behind.
+  for (const [tabId, tab] of Object.entries(get(layoutState).cardTabsById)) {
+    if (tab.view === "followups" && tab.sessionId === sessionId) void closeSession(tabId);
+  }
   const state = get(layoutState);
   // A main agent session lives outside every page tree (D12), so the
   // search below can never find it -- without this branch its terminal

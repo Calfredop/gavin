@@ -6,6 +6,7 @@
   import FileViewerPane from "./FileViewerPane.svelte";
   import BoardPane from "./BoardPane.svelte";
   import CardTabPane from "./CardTabPane.svelte";
+  import FollowUpQueuePane from "./FollowUpQueuePane.svelte";
   import {
     layoutState,
     daemonCompat,
@@ -18,6 +19,8 @@
     setSessionName,
     openBoardInSplit,
     openCardInSplit,
+    openFollowUpsInSplit,
+    queuedInputsById,
     repairUnknownTabs,
     terminalFontSize,
   } from "./layoutState";
@@ -35,7 +38,17 @@
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
   import { windowDrag } from "./windowDrag";
-  import { X, Plus, Kanban, Pin, ListChecks, FileDiff, Columns2, Rows2 } from "@lucide/svelte";
+  import {
+    X,
+    Plus,
+    Kanban,
+    Pin,
+    ListChecks,
+    FileDiff,
+    MessageSquarePlus,
+    Columns2,
+    Rows2,
+  } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import NewPageButton from "./NewPageButton.svelte";
   import CornerOverhang from "./CornerOverhang.svelte";
@@ -54,7 +67,9 @@
   import { hintDigitFor } from "./shortcuts";
   import { tooltip } from "./tooltip";
   import { wheelScrollsSideways } from "./wheelScroll";
-  import { sessionLabel, folderName, boardTabLabel, cardTabLabel } from "./paths";
+  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "./paths";
+  import { queueBlockedReason, queueTip } from "./queuedInput";
+  import { queueTargetFor } from "./queuedInputActions";
   import {
     setDragPayload,
     getDragKind,
@@ -122,6 +137,15 @@
     return $layoutState.cardTabsById[tabId] ?? null;
   }
 
+  /// The session a follow-ups tab is the queue FOR, or null when this tab
+  /// is anything else. A queue tab is a card tab with no card: its
+  /// subject rides in `sessionId`, because an agent's queue outlives
+  /// whatever card it happens to be running.
+  function followUpsFor(tabId: string): string | null {
+    const tab = cardTab(tabId);
+    return tab?.view === "followups" ? (tab.sessionId ?? null) : null;
+  }
+
   /// True for every tab this pane renders as something other than a
   /// terminal. The chips below hang off a SESSION, so each of them opens
   /// with this -- and a card pane offering to open a card pane beside
@@ -147,6 +171,15 @@
   function cardLabel(tabId: string): string {
     const tab = cardTab(tabId);
     if (!tab) return tabId;
+    // Named after the terminal it belongs to rather than after a card,
+    // because it has none -- see followUpsFor. Written as a check on
+    // `view` rather than on followUpsFor's result so the call below
+    // narrows to the two views cardTabLabel can name.
+    if (tab.view === "followups") {
+      return followUpsTabLabel(
+        sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, tab.sessionId ?? tabId)
+      );
+    }
     const title = linkForCardPath(
       $orchestrations[tab.workspaceId],
       $gavinTrees[tab.workspaceId],
@@ -169,6 +202,8 @@
   function tabTooltip(sessionId: string): string {
     const tab = boardTab(sessionId);
     if (tab) return tab.contextFolder;
+    const queueFor = followUpsFor(sessionId);
+    if (queueFor) return tabTooltip(queueFor);
     const card = cardTab(sessionId);
     if (card) return card.path;
     const path = fileTabPath(sessionId);
@@ -652,6 +687,41 @@
             }}
           />
         {/if}
+        {#if !isViewTab(active)}
+          <!-- The follow-up queue. Unlike the two chips above it this one
+               is not conditional on there being something to show: it is
+               also how a follow-up gets WRITTEN, so withholding it until
+               one exists would hide the feature behind itself. The badge
+               is what makes it conditional -- a bare icon means an empty
+               queue.
+
+               The reason hangs on the wrapper, not on the button:
+               tooltip.ts binds mouseenter, which a disabled element never
+               fires. -->
+          {@const blocked = queueBlockedReason(
+            queueTargetFor(
+              $layoutState.sessionStatusById[active],
+              $layoutState.interruptedSessionIds.has(active)
+            )
+          )}
+          {@const queued = $queuedInputsById[active] ?? []}
+          <span use:tooltip={blocked ?? undefined}>
+            <IconButton
+              icon={MessageSquarePlus}
+              label="Follow-ups for this agent"
+              tip={blocked ?? queueTip(queued) ?? "Queue a follow-up for when this agent finishes its turn"}
+              tone={queued.length > 0 ? "accent" : "default"}
+              size={14}
+              disabled={blocked !== null}
+              onclick={() => {
+                const ws = getActiveWorkspace($layoutState);
+                if (ws) void openFollowUpsInSplit(active, ws.id);
+              }}
+            >
+              {#if queued.length > 0}<span class="queue-count">{queued.length}</span>{/if}
+            </IconButton>
+          </span>
+        {/if}
         {#if activeBoardContext}
           <IconButton
             icon={Kanban}
@@ -702,6 +772,13 @@
         <FileViewerPane
           bind:this={paneRefs[sessionId]}
           path={fileTabPath(sessionId) ?? ""}
+          visible={sessionId === active}
+        />
+      {:else if followUpsFor(sessionId)}
+        <FollowUpQueuePane
+          bind:this={paneRefs[sessionId]}
+          sessionId={followUpsFor(sessionId) ?? ""}
+          tabId={sessionId}
           visible={sessionId === active}
         />
       {:else if cardTab(sessionId)}
@@ -791,6 +868,16 @@
     gap: 2px;
     flex: 0 0 auto;
     padding-left: 6px;
+  }
+  /* How many follow-ups are waiting for the active tab's agent. A count
+     rather than a dot: the difference between one queued message and
+     five is the whole reason to open the pane, and the icon alone --
+     which is what an empty queue shows -- already says the action
+     exists. Tabular so the row does not shift when 9 becomes 10. */
+  .queue-count {
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
   }
   /* Groups the actions by what they act on -- this tab, this pane, the
      page -- without spending a row of labels on saying so. */

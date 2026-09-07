@@ -57,7 +57,7 @@ export function indexQueued(all: QueuedInput[]): Record<string, QueuedInput[]> {
 ///
 /// Null rather than the unchanged list, on purpose: `SetQueuedInputs`
 /// answers with the queue AND pushes `QueuedInputsChanged` to everyone
-/// attached, so a no-op write repaints the strip under the human's
+/// attached, so a no-op write repaints the queue under the human's
 /// cursor to say nothing happened. An unknown id is null for a sharper
 /// reason -- it means the entry left the queue between the render and
 /// the click (a delivery fired), and writing a list built from a stale
@@ -155,7 +155,7 @@ export function composeRefusal(target: QueueTarget, text: string): string | null
 /// Distinct from `composeRefusal` because a queue can be perfectly
 /// legitimate and still stuck: the daemon hands over on `idle` and on
 /// nothing else, and every other status is a different reason for the
-/// same stillness. Saying which one is the whole job of the strip's
+/// same stillness. Saying which one is the whole job of the view's
 /// status line; without it a waiting queue and a broken one look
 /// identical.
 export function deliveryHold(target: QueueTarget, queued: number): string | null {
@@ -184,30 +184,8 @@ export function deliveryHold(target: QueueTarget, queued: number): string | null
   }
 }
 
-/// Whether the strip belongs on screen at all.
-///
-/// A permanent bar under every terminal in the app would cost every one
-/// of them a row of height to say nothing, so the strip appears exactly
-/// when queueing is the thing to be doing: the session is mid-turn (so
-/// typing would land in the middle of it), something is already queued
-/// (so the human can see, reorder and cancel it), or they have opened
-/// the composer themselves.
-///
-/// The `interrupted` clause is not an exception to that rule but a
-/// consequence of it: a queue stranded by a daemon restart has to stay
-/// visible, because cancelling it is the only way it ever goes away.
-export function stripVisible(
-  target: QueueTarget,
-  queued: number,
-  composerOpen: boolean
-): boolean {
-  if (composerOpen || queued > 0) return true;
-  if (target.interrupted) return false;
-  return target.status === "working" || target.status === "waiting_for_input";
-}
-
 /// "3 follow-ups queued". Null at zero -- a count of nothing is not a
-/// label, it is noise where the strip's own status line should be.
+/// label, it is noise where the view's own status line should be.
 export function queueCountLabel(queued: number): string | null {
   if (queued <= 0) return null;
   return queued === 1 ? "1 follow-up queued" : `${queued} follow-ups queued`;
@@ -246,10 +224,23 @@ export function queuedAgeLabel(createdAtUs: number, nowMs: number): string {
   return `${Math.floor(delta / DAY)}d`;
 }
 
-/// A row's full text and its age, for the title attribute -- the preview
-/// is cut, and this is where the rest of the message is.
-export function entryTip(entry: QueuedInput, nowMs: number): string {
-  return `${entry.text}\n\nQueued ${queuedAgeLabel(entry.createdAtUs, nowMs)} ago`;
+/// What the tab-actions button says on hover: the count, then the queue
+/// itself one line each, so a human can see what is waiting without
+/// opening the pane.
+///
+/// Null when nothing is queued -- the button is still there, because it
+/// is also how a follow-up gets written, and its own label is the right
+/// thing to say then.
+///
+/// Capped at `max` rows because this is a tooltip and a queue is not
+/// bounded: the overflow is counted rather than dropped, so a long queue
+/// never looks like a short one.
+export function queueTip(queue: QueuedInput[], max = 4): string | null {
+  const count = queueCountLabel(queue.length);
+  if (!count) return null;
+  const lines = queue.slice(0, max).map((q, i) => `${i + 1}. ${previewLine(q.text, 60)}`);
+  if (queue.length > max) lines.push(`… and ${queue.length - max} more`);
+  return [count, ...lines].join("\n");
 }
 
 /// Whether "Send to workspace agent" should QUEUE this card rather than

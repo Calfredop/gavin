@@ -1,7 +1,12 @@
 <script lang="ts">
+  import { MessageSquarePlus } from "@lucide/svelte";
   import TerminalPane from "./TerminalPane.svelte";
+  import FollowUpQueueView from "./FollowUpQueueView.svelte";
+  import IconButton from "./ui/IconButton.svelte";
+  import { tooltip } from "./tooltip";
   import {
     layoutState,
+    queuedInputsById,
     startMainAgent,
     stopMainAgent,
     setAgentField,
@@ -10,6 +15,8 @@
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveTerminalFontSize } from "./terminalFont";
+  import { queueBlockedReason, queueTip } from "./queuedInput";
+  import { queueTargetFor } from "./queuedInputActions";
 
   interface Props {
     workspaceId: string;
@@ -49,13 +56,48 @@
   function start(): void {
     void setAgentField(workspaceId, "command", commandDraft).then(() => startMainAgent(workspaceId));
   }
+
+  // The queue reaches this panel as a dialog rather than as a split.
+  // Every other terminal in the app hangs it off the tab-actions row, and
+  // this one has no tab bar and no pane to split -- but it is the single
+  // most important place to be able to queue, because "Send to workspace
+  // agent" lands here.
+  let queueOpen = $state(false);
+  const queued = $derived(sessionId ? ($queuedInputsById[sessionId] ?? []) : []);
+  const queueBlocked = $derived(
+    sessionId
+      ? queueBlockedReason(
+          queueTargetFor(
+            $layoutState.sessionStatusById[sessionId],
+            $layoutState.interruptedSessionIds.has(sessionId)
+          )
+        )
+      : null
+  );
 </script>
 
 <div class="agent">
   <div class="head">
     <span class="label">Main agent</span>
     {#if sessionId}
-      <button type="button" onclick={() => void stopMainAgent(workspaceId)}>Stop</button>
+      <div class="head-actions">
+        <!-- The reason hangs on the wrapper: a disabled element never
+             fires mouseenter, so it could not explain itself. -->
+        <span use:tooltip={queueBlocked ?? undefined}>
+          <IconButton
+            icon={MessageSquarePlus}
+            label="Follow-ups for this agent"
+            tip={queueBlocked ?? queueTip(queued) ?? "Queue a follow-up for when this agent finishes its turn"}
+            tone={queued.length > 0 ? "accent" : "default"}
+            size={13}
+            disabled={queueBlocked !== null}
+            onclick={() => (queueOpen = true)}
+          >
+            {#if queued.length > 0}<span class="queue-count">{queued.length}</span>{/if}
+          </IconButton>
+        </span>
+        <button type="button" onclick={() => void stopMainAgent(workspaceId)}>Stop</button>
+      </div>
     {/if}
   </div>
   {#if sessionId}
@@ -94,6 +136,14 @@
   {/if}
 </div>
 
+{#if queueOpen && sessionId}
+  <FollowUpQueueView
+    {sessionId}
+    sessionName="Main agent"
+    onClose={() => (queueOpen = false)}
+  />
+{/if}
+
 <style>
   .agent {
     display: flex;
@@ -117,6 +167,19 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     flex: 0 0 auto;
+  }
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* The number of follow-ups waiting for this agent, in the same shape
+     the pane's tab-actions row uses. */
+  .queue-count {
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    text-transform: none;
   }
   .head button,
   .launcher button {
