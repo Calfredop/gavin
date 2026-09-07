@@ -704,6 +704,18 @@ export function agentProfiles(): Promise<
   return invoke("agent_profiles");
 }
 
+/// The models each agent CAN be given right now, keyed by profile id --
+/// for the CLIs whose picker is a list of dated ids rather than aliases
+/// (codex, opencode). Resolved host-side once per app PROCESS, so a
+/// frontend reload costs nothing and a new list needs a new app run.
+///
+/// A profile with no route, and one whose route answered nothing, is
+/// simply absent: the merge treats a missing key and an empty list the
+/// same way, and neither is a reason to fail the call.
+export function agentModelCatalog(): Promise<Record<string, string[]>> {
+  return invoke("agent_model_catalog");
+}
+
 /// One agent's subscription-limit windows, or a named reason there are
 /// none to show. `force` is the panel's explicit refresh: it skips the
 /// host's freshness floor but not its 429 backoff, because a human

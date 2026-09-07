@@ -30,6 +30,7 @@ import {
   type AgentProfileInfo,
   type McpFormatInfo,
 } from "./settings";
+import { mergeDiscoveredModels } from "./agentModel";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
 import type { BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
@@ -1247,9 +1248,29 @@ export async function bootstrap(): Promise<void> {
   // The agent profile table: static Rust data, so one fetch is enough.
   // Best-effort like the rest -- resolveAgentConfig falls back to
   // claude-code's defaults if this never arrives.
+  //
+  // Published TWICE on purpose. The table lands first because every
+  // panel needs a command and a flag immediately, and the catalogue
+  // behind it can cost a subprocess; the second set folds the discovered
+  // names into the same rows. Waiting for both would put the whole agent
+  // config behind a CLI that may not answer for fifteen seconds, which
+  // is far worse than a picker that grows.
+  //
+  // What a panel mounted in between sees, and why it is the harmless
+  // order: a stored model the first table does not list reads as a
+  // Custom one and draws the text box, then becomes a selected row when
+  // the catalogue lands. Wrong-then-right, never right-then-wrong -- and
+  // a catalogue that never answers leaves the first set standing, which
+  // is exactly the picker gavin had before this existed.
   void backend
     .agentProfiles()
-    .then((profiles) => agentProfilesStore.set(profiles))
+    .then((profiles) => {
+      agentProfilesStore.set(profiles);
+      return backend
+        .agentModelCatalog()
+        .then((catalog) => agentProfilesStore.set(mergeDiscoveredModels(profiles, catalog)))
+        .catch(() => {});
+    })
     .catch(() => {});
 
   void backend

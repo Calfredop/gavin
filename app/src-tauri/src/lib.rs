@@ -1,3 +1,4 @@
+mod agent_models;
 mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
@@ -157,6 +158,7 @@ pub fn run() {
             superpowers::superpowers_install,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
+            agent_models::agent_model_catalog,
             agent_usage::agent_usage,
             pull_request::pr_status,
             agent_tokens::card_run_tokens,
