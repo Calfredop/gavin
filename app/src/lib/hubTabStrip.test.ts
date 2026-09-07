@@ -72,6 +72,32 @@ describe("the tab row", () => {
     expect(toggle).toBeLessThan(stripEnd);
   });
 
+  it("opens a tab's own menu on right-click", () => {
+    expect(row).toContain("oncontextmenu={(e) => handleHubTabMenu(e, view.id)}");
+    expect(row).toContain("buildHubTabMenuEntries(");
+  });
+
+  it("gates that menu on the same padlock as the drag", () => {
+    // Hiding a tab is the same kind of edit as moving one. Behind the
+    // lock, a right-click on a tab does nothing gavin-specific -- which
+    // is the point: a locked row's tabs are buttons.
+    expect(row).toContain("if (!$hubTabsUnlocked || !activeWorkspace) return;");
+  });
+
+  it("hides into the workspace's own list rather than the app-wide default", () => {
+    // A right-click happened in ONE strip; writing the default would
+    // rearrange the four rows nobody is looking at.
+    expect(row).toContain("setWorkspaceHubTabsHidden(workspaceId, hidden)");
+  });
+
+  it("can still reach the full list from the menu", () => {
+    // Hiding from the strip has to lead somewhere, or a tab turned off
+    // by a right-click is only findable by someone who knows Settings
+    // has an eye list.
+    expect(row).toContain("HubTabsModal");
+    expect(row).toContain("hubTabsPanelOpen");
+  });
+
   it("marks the tab on screen rather than the one merely remembered", () => {
     // A tab hidden while the workspace was parked on it would otherwise
     // keep rendering with nothing in the row underlined.

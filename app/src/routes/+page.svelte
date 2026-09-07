@@ -17,6 +17,9 @@
   import { hintDigitFor } from "$lib/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import ContextMenu from "$lib/ContextMenu.svelte";
+  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import HubTabsModal from "$lib/HubTabsModal.svelte";
+  import { buildHubTabMenuEntries } from "$lib/hubTabMenu";
   import AppDialog from "$lib/AppDialog.svelte";
   import ReviewDialog from "$lib/ReviewDialog.svelte";
   import { confirmWindowClose } from "$lib/appClose";
@@ -58,6 +61,7 @@
     hubTabsHiddenDefault,
     hubTabsUnlocked,
     setWorkspaceHubTabOrder,
+    setWorkspaceHubTabsHidden,
     toggleHubTabsUnlocked,
   } from "$lib/hubTabPrefs";
   import { getDragKind, getDragPayload, setDragPayload } from "$lib/dragDrop";
@@ -210,6 +214,42 @@
     setWorkspaceHubTabOrder(
       activeWorkspace.id,
       moveHubViewId(hubTabPrefs.order, payload.viewId, viewId, position)
+    );
+  }
+
+  // The eye list, opened from the tab menu rather than from Settings.
+  // Mounted here beside the other app-level modals so it outlives the
+  // menu that asked for it.
+  let hubTabsPanelOpen = $state(false);
+
+  // Right-click on a tab: hide it, put a hidden one back, or open the
+  // full list. Behind the same padlock as dragging, because it is the
+  // same kind of edit -- while the row is locked a tab is a button and
+  // nothing about it moves or disappears, and a right-click falls
+  // through to whatever the app does with one anywhere else.
+  function handleHubTabMenu(event: MouseEvent, viewId: string): void {
+    if (!$hubTabsUnlocked || !activeWorkspace) return;
+    const workspaceId = activeWorkspace.id;
+    openContextMenuFromEvent(
+      event,
+      buildHubTabMenuEntries(
+        {
+          viewId,
+          hasRoot: Boolean(activeWorkspace.rootPath),
+          // The EFFECTIVE set, so a workspace that is inheriting the
+          // app-wide default starts from what its row actually draws.
+          hidden: hubTabPrefs.hidden ?? [],
+          order: hubTabPrefs.order,
+          agentFile: activeAgent.file,
+        },
+        {
+          // This workspace's own list, never the app-wide default: the
+          // gesture happened in one strip, and a right-click must not
+          // rearrange the four rows nobody is looking at.
+          setHidden: (hidden) => setWorkspaceHubTabsHidden(workspaceId, hidden),
+          manage: () => (hubTabsPanelOpen = true),
+        }
+      )
     );
   }
 
@@ -402,6 +442,7 @@
                     ondragleave={clearHubTabDrop}
                     ondragend={clearHubTabDrop}
                     ondrop={(e) => handleHubTabDrop(e, view.id)}
+                    oncontextmenu={(e) => handleHubTabMenu(e, view.id)}
                     onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
                   >
                     <!-- In the icon's place, not beside it: the tab row must
@@ -436,10 +477,12 @@
                    the thing you were aiming at. The padlock shows the
                    state it is IN, not the action -- open means the row
                    is loose right now, which is the thing worth noticing
-                   at a glance. -->
+                   at a glance. It is also the gate on the tabs'
+                   right-click menu, which is why the locked label says
+                   what the unlock is FOR rather than just "rearrange". -->
               <IconButton
                 icon={$hubTabsUnlocked ? LockOpen : Lock}
-                label={$hubTabsUnlocked ? "Lock the tab order" : "Rearrange the tabs"}
+                label={$hubTabsUnlocked ? "Lock the tab row" : "Rearrange or hide the tabs"}
                 size={12}
                 class="arrange-toggle"
                 active={$hubTabsUnlocked}
@@ -508,6 +551,15 @@
 
 {#if $wizardWorkspaceId}
   <SetupWizard workspaceId={$wizardWorkspaceId} />
+{/if}
+
+<!-- The same eye list the two Settings panels open, reached here from a
+     tab's own right-click menu. App-level rather than inside the row: the
+     menu that asks for it is dismissed by the very click that picks the
+     entry, so a modal owned by the strip would be opened and unmounted in
+     the same gesture. -->
+{#if hubTabsPanelOpen && activeWorkspace}
+  <HubTabsModal workspaceId={activeWorkspace.id} onClose={() => (hubTabsPanelOpen = false)} />
 {/if}
 
 <!-- The best-of-N dialog, mounted once for the same reason as the
