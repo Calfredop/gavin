@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { searchOrchestration, stepMatches } from "./orchestrationSearch";
+import { searchDrawer, searchOrchestration, stepMatches } from "./orchestrationSearch";
+import type { Tool } from "./orchestrationTools";
+import type { GroupTemplate } from "./orchestrationGroups";
 import type { CardEntry, Orchestration, Rail, UnplacedGroup } from "./orchestration";
 import type { PlanFileInfo } from "./gavin";
 
@@ -159,5 +161,112 @@ describe("filterUnplaced", () => {
     expect(out.groups.map((g) => g.status)).toEqual(["To Do", "Done"]);
     expect(out.shown).toBe(1);
     expect(out.total).toBe(2);
+  });
+});
+
+describe("searchDrawer", () => {
+  function tool(over: Partial<Tool> & Pick<Tool, "id" | "name">): Tool {
+    return {
+      description: "",
+      kind: "command",
+      body: "",
+      params: [],
+      scope: "builtin",
+      ...over,
+    };
+  }
+  function template(over: Partial<GroupTemplate> & Pick<GroupTemplate, "id" | "name">): GroupTemplate {
+    return { description: "", mode: "parallel", steps: [], scope: "workspace", ...over };
+  }
+
+  const tools: Tool[] = [
+    tool({ id: "builtin:merge", name: "Merge", description: "Bring main in" }),
+    tool({ id: "t2", name: "Ship it", kind: "agent", scope: "workspace" }),
+    tool({ id: "t3", name: "Lint", kind: "script", scope: "global" }),
+  ];
+  const templates: GroupTemplate[] = [
+    template({ id: "g1", name: "Review then merge" }),
+    template({ id: "g2", name: "Smoke", scope: "global", mode: "sequence" }),
+  ];
+  const groups: UnplacedGroup[] = [
+    { status: "To Do", slug: "to-do", isDone: false, cards: [entry(gitTab), entry(kanban)] },
+    { status: "Done", slug: "done", isDone: true, cards: [entry(gitTab)] },
+  ];
+  const lists = { templates, tools, groups };
+
+  it("hands every list back untouched for a blank query", () => {
+    const out = searchDrawer("   ", lists);
+    expect(out.filtering).toBe(false);
+    expect(out.tools).toBe(tools);
+    expect(out.templates).toBe(templates);
+    expect(out.groups).toBe(groups);
+    expect(out.cardsShown).toBe(2);
+    expect(out.cardsTotal).toBe(2);
+  });
+
+  // The whole point of this second box: the tab's lens searches cards
+  // and rails, so a tool -- which has never been on a rail -- was
+  // unfindable by any query at all.
+  it("finds a tool by name", () => {
+    const out = searchDrawer("lint", lists);
+    expect(out.filtering).toBe(true);
+    expect(out.tools.map((t) => t.name)).toEqual(["Lint"]);
+    expect(out.toolsTotal).toBe(3);
+  });
+
+  it("finds a tool by its description, its kind and its scope", () => {
+    expect(searchDrawer("main", lists).tools.map((t) => t.name)).toEqual(["Merge"]);
+    expect(searchDrawer("agent", lists).tools.map((t) => t.name)).toEqual(["Ship it"]);
+    expect(searchDrawer("global", lists).tools.map((t) => t.name)).toEqual(["Lint"]);
+  });
+
+  // The row's tooltip says "Bash command" / "Agent prompt", so those are
+  // the words a human reads off the panel and then types back into it.
+  it("finds a tool by the words its own kind label uses", () => {
+    expect(searchDrawer("bash command", lists).tools.map((t) => t.name)).toEqual(["Merge"]);
+    expect(searchDrawer("prompt", lists).tools.map((t) => t.name)).toEqual(["Ship it"]);
+  });
+
+  it("filters saved groups on the same query", () => {
+    const out = searchDrawer("merge", lists);
+    expect(out.templates.map((t) => t.name)).toEqual(["Review then merge"]);
+    expect(out.templatesTotal).toBe(2);
+    expect(out.tools.map((t) => t.name)).toEqual(["Merge"]);
+  });
+
+  it("filters the unplaced cards exactly as the tab's lens does", () => {
+    const out = searchDrawer("kanban", lists);
+    expect(out.groups).toHaveLength(1);
+    expect(out.groups[0].cards.map((c) => c.plan.title)).toEqual(["Kanban search"]);
+    expect(out.cardsShown).toBe(1);
+    expect(out.cardsTotal).toBe(2);
+  });
+
+  // Same rule the header count has always followed: a done group is
+  // listed but never counted, so the panel cannot report finished work
+  // as still waiting for a rail.
+  it("never counts a done group in either number", () => {
+    const out = searchDrawer("git", lists);
+    expect(out.groups.map((g) => g.status)).toEqual(["To Do", "Done"]);
+    expect(out.cardsShown).toBe(1);
+    expect(out.cardsTotal).toBe(2);
+  });
+
+  it("empties every list when nothing matches, and still reports the totals", () => {
+    const out = searchDrawer("zzz", lists);
+    expect(out.tools).toEqual([]);
+    expect(out.templates).toEqual([]);
+    expect(out.groups).toEqual([]);
+    expect(out.toolsTotal).toBe(3);
+    expect(out.templatesTotal).toBe(2);
+    expect(out.cardsTotal).toBe(2);
+    expect(out.cardsShown).toBe(0);
+  });
+
+  // Every other box in the app ANDs its tokens across fields; this one
+  // is no exception, or "merge main" would find nothing.
+  it("ANDs its tokens across a row's fields", () => {
+    expect(searchDrawer("merge main", lists).tools.map((t) => t.name)).toEqual(["Merge"]);
+    expect(searchDrawer("merge lint", lists).tools).toEqual([]);
   });
 });

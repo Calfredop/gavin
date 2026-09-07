@@ -14,10 +14,11 @@
     Settings2,
     Group,
   } from "@lucide/svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
   import { orchDragState } from "./orchestrationDrag";
+  import { searchDrawer } from "./orchestrationSearch";
   import { toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
-  import { unplacedCount } from "./orchestration";
   import type { UnplacedGroup } from "./orchestration";
   import type { GroupTemplate } from "./orchestrationGroups";
 
@@ -90,26 +91,65 @@
 
   let collapsed = $state(false);
   const dragging = $derived($orchDragState !== null);
+
+  // Built-ins first, then everything the human made, each alphabetical --
+  // a stable order, so a tool stays where they last saw it.
+  const SCOPE_ORDER: Tool["scope"][] = ["builtin", "workspace", "global"];
+  const sortedTools = $derived(
+    [...tools].sort(
+      (a, b) =>
+        SCOPE_ORDER.indexOf(a.scope) - SCOPE_ORDER.indexOf(b.scope) || a.name.localeCompare(b.name)
+    )
+  );
+
+  // The panel's own quick filter (orchestrationSearch.searchDrawer). It
+  // reaches all three lists below -- groups, tools AND cards -- which is
+  // what the tab's box above cannot do: that one is a lens over the
+  // rails, and a tool has never been on a rail to be found. The two
+  // compose, this one applied to what the tab's already handed down.
+  //
+  // Unlike the tab's box, a query here does NOT take dragging away. The
+  // hub locks its drag engine while filtering because rails leave the
+  // grid and a new-stage index measured over what is left lands wrong;
+  // nothing here moves a rail. A drawer row is grabbed by its own id and
+  // dropped at an index measured in the rails, so narrowing this list
+  // leaves every drop honest.
+  let query = $state("");
+  const view = $derived(searchDrawer(query, { templates, tools: sortedTools, groups }));
+  // Either box narrowing the pool means the header count owes a "/ of
+  // what": the tab's hides cards before they ever reach this component
+  // (hiddenCount), and this one hides them here.
+  const anyFilter = $derived(filtering || view.filtering);
+
   // Two different questions, deliberately answered by two numbers. The
   // HEADER answers "how much is left to place", so it skips the done
   // group (unplacedCount). `rows` is just "is this panel empty", which
   // the done group does fill -- otherwise a drawer showing twelve
   // finished cards would also claim every runnable card is on a rail.
-  const total = $derived(unplacedCount(groups));
-  const rows = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
-  const label = $derived(filtering ? `Unplaced (${total} / ${total + hiddenCount})` : `Unplaced (${total})`);
+  const rows = $derived(view.groups.reduce((n, g) => n + g.cards.length, 0));
+  const label = $derived(
+    anyFilter
+      ? `Unplaced (${view.cardsShown} / ${view.cardsTotal + hiddenCount})`
+      : `Unplaced (${view.cardsShown})`
+  );
 
   // Only DEVIATIONS from the default are stored, so a group the human has
   // not touched follows its own isDone rule even as groups come and go.
   let toggled = $state<Record<string, boolean>>({});
   // While filtering every group opens: a collapsed Done group would hide
-  // the very row the query just found.
-  const isCollapsed = (g: UnplacedGroup): boolean => (filtering ? false : (toggled[g.slug] ?? g.isDone));
+  // the very row the query just found. Same for the two sections above
+  // them -- see `sectionOpen`.
+  const isCollapsed = (g: UnplacedGroup): boolean => (anyFilter ? false : (toggled[g.slug] ?? g.isDone));
 
   // Groups sit ABOVE Tools, for the same reason Tools sit above the
   // cards: a saved group is reached for, not browsed, so it starts open
   // too and stays put while the card list churns underneath both.
   let templatesCollapsed = $state(false);
+  /// A section the human collapsed still opens while a query is running:
+  /// otherwise the box would report a hit in Tools and show a shut
+  /// section. Their own collapsed flag is remembered, not cleared, so
+  /// clearing the box puts the panel back the way they left it.
+  const sectionOpen = (collapsedFlag: boolean): boolean => view.filtering || !collapsedFlag;
   const SCOPE_CAPTION: Record<GroupTemplate["scope"], string> = {
     workspace: "This workspace",
     global: "All workspaces",
@@ -131,24 +171,26 @@
             : kind === "pr"
               ? GitPullRequest
               : FileCode2;
-  // Built-ins first, then everything the human made, each alphabetical --
-  // a stable order, so a tool stays where they last saw it.
-  const SCOPE_ORDER: Tool["scope"][] = ["builtin", "workspace", "global"];
-  const sortedTools = $derived(
-    [...tools].sort(
-      (a, b) =>
-        SCOPE_ORDER.indexOf(a.scope) - SCOPE_ORDER.indexOf(b.scope) || a.name.localeCompare(b.name)
-    )
-  );
 </script>
 
 <aside class="drawer" class:collapsed class:drop-lit={dragging} data-orch-drawer>
   <button type="button" class="toggle" onclick={() => (collapsed = !collapsed)}>
     {#if collapsed}<ChevronLeft size={14} />{:else}<ChevronRight size={14} />{/if}
-    {#if !collapsed}<span class:filtered={filtering}>{label}</span>{/if}
+    {#if !collapsed}<span class:filtered={anyFilter}>{label}</span>{/if}
   </button>
 
   {#if !collapsed}
+    <!-- Above every hint and every section, because it governs all
+         three of them. Hidden with the rest of the panel when the drawer
+         is rolled up: a 32px rail has no room for it, and the query it
+         holds comes back untouched when the panel opens again. -->
+    <div class="search-row">
+      <SearchInput
+        bind:value={query}
+        label="Filter tools, groups and cards"
+        placeholder="Filter this panel…"
+      />
+    </div>
     {#if !targetRailId}
       <!-- No rail means nothing to place onto: the rows below stay
            listed, so the human can see what a first rail would be built
@@ -158,7 +200,11 @@
            no rails on purpose. -->
       <p class="hint quiet">No rail to place these on yet — add one with “+ Rail”.</p>
     {:else if filtering}
-      <p class="hint quiet">Filtered — clear the search to drag.</p>
+      <!-- The TAB's box, not the one above: that one takes rails out of
+           the grid, which is why the hub unhooks its drag engine while
+           it is set. A query in this panel's own box leaves every rail
+           standing, so it never reaches this branch. -->
+      <p class="hint quiet">Filtered — clear the tab's search to drag.</p>
     {:else if dragging && $orchDragState?.kind === "step"}
       <p class="hint">Drop here to take a step off its rail.</p>
     {:else if !dragging}
@@ -168,15 +214,18 @@
     <button
       type="button"
       class="group-head"
+      disabled={view.filtering}
       onclick={() => (templatesCollapsed = !templatesCollapsed)}
     >
-      {#if templatesCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+      {#if sectionOpen(templatesCollapsed)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
       <span class="group-name">Groups</span>
-      <span class="group-count">{templates.length}</span>
+      <span class="group-count" class:filtered={view.filtering}
+        >{view.templates.length}{view.filtering ? ` / ${view.templatesTotal}` : ""}</span
+      >
     </button>
-    {#if !templatesCollapsed}
+    {#if sectionOpen(templatesCollapsed)}
       <ul>
-        {#each templates as t (t.id)}
+        {#each view.templates as t (t.id)}
           <li>
             <button
               type="button"
@@ -194,8 +243,8 @@
           </li>
         {/each}
       </ul>
-      {#if templates.length === 0}
-        <p class="empty">No saved groups yet.</p>
+      {#if view.templates.length === 0}
+        <p class="empty">{view.filtering ? "No group matches." : "No saved groups yet."}</p>
       {/if}
       <button
         type="button"
@@ -210,15 +259,18 @@
     <button
       type="button"
       class="group-head"
+      disabled={view.filtering}
       onclick={() => (toolsCollapsed = !toolsCollapsed)}
     >
-      {#if toolsCollapsed}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+      {#if sectionOpen(toolsCollapsed)}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
       <span class="group-name">Tools</span>
-      <span class="group-count">{sortedTools.length}</span>
+      <span class="group-count" class:filtered={view.filtering}
+        >{view.tools.length}{view.filtering ? ` / ${view.toolsTotal}` : ""}</span
+      >
     </button>
-    {#if !toolsCollapsed}
+    {#if sectionOpen(toolsCollapsed)}
       <ul>
-        {#each sortedTools as tool (tool.id)}
+        {#each view.tools as tool (tool.id)}
           {@const Icon = iconFor(tool.kind)}
           <li>
             <button
@@ -239,6 +291,9 @@
           </li>
         {/each}
       </ul>
+      {#if view.tools.length === 0}
+        <p class="empty">{view.filtering ? "No tool matches." : "No tools yet."}</p>
+      {/if}
       <button
         type="button"
         class="manage"
@@ -249,11 +304,11 @@
         <Settings2 size={12} /> Manage tools…
       </button>
     {/if}
-    {#each groups as group (group.slug)}
+    {#each view.groups as group (group.slug)}
       <button
         type="button"
         class="group-head"
-        disabled={filtering}
+        disabled={anyFilter}
         onclick={() => (toggled = { ...toggled, [group.slug]: !isCollapsed(group) })}
       >
         {#if isCollapsed(group)}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
@@ -284,7 +339,7 @@
       {/if}
     {/each}
     {#if rows === 0}
-      <p class="empty">{filtering ? "No unplaced card matches." : "Every runnable card is on a rail."}</p>
+      <p class="empty">{anyFilter ? "No unplaced card matches." : "Every runnable card is on a rail."}</p>
     {/if}
   {/if}
 </aside>
@@ -320,6 +375,10 @@
     color: var(--text-muted);
     font-size: 12px;
     cursor: pointer;
+  }
+  .search-row {
+    padding: 6px;
+    border-bottom: 1px solid var(--border);
   }
   .hint {
     margin: 0;
@@ -401,6 +460,12 @@
   .group-count {
     color: var(--text-subtle);
     font-variant-numeric: tabular-nums;
+  }
+  /* "3 / 14" while the panel's own box is on, in the same accent the
+     header count uses, so the section says at a glance that it is
+     showing a slice and not all it has. */
+  .group-count.filtered {
+    color: var(--accent-text);
   }
   /* "ws" / "all" rather than a full word: the row's job is the tool's
      NAME, and the scope only has to be checkable at a glance. Built-ins
