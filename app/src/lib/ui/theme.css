@@ -240,8 +240,17 @@ select {
    rest on a busy page, none of them being read. The terminal was already
    the exception, because xterm draws its bar in the DOM and inherits VS
    Code's `ScrollbarVisibility.Auto`: 100ms in on mouse-over, 800ms out.
-   These two rules give every other scroller the same manners, and the
-   same timings, so the window behaves one way rather than two.
+   These two rules give every other scroller the same manners, so the
+   window behaves one way rather than two.
+
+   The timings are NOT xterm's, though the fade in is. 800ms out is what
+   a bar that appears one at a time can afford; here the pointer crosses
+   a whole chain of scrollers at once and leaves the same chain behind
+   it, so eight-tenths of a second of grey trails the cursor around the
+   window and reads as lag rather than as grace. 250ms is long enough to
+   be a fade and short enough that the bar is gone by the time the eye
+   follows the pointer to where it went — owner's call, tried at 800 and
+   rejected.
 
    The resting value has to be set on `*`, not inherited from `:root`.
    `scrollbar-color` DOES inherit, but `:hover` matches the whole
@@ -261,7 +270,7 @@ select {
 * {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  transition: scrollbar-color 800ms linear;
+  transition: scrollbar-color 250ms linear;
 }
 
 /* The after-change style carries the transition, so this duration is the
