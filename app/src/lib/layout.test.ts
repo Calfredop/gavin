@@ -27,6 +27,7 @@ import {
   bulkCloseTargets,
   presetTiled,
   paneOwnsActions,
+  paneLeadsWindow,
 } from "./layout";
 import type { LayoutNode, Leaf } from "./layout";
 
@@ -788,5 +789,41 @@ describe("paneOwnsActions", () => {
     expect(paneOwnsActions(only, only, "a")).toBe(true);
     expect(paneOwnsActions(only, only, null)).toBe(true);
     expect(paneOwnsActions(only, only, "elsewhere")).toBe(true);
+  });
+});
+
+describe("paneLeadsWindow", () => {
+  const split = presetSideBySide("a", "b");
+  const left: Leaf = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+  const right: Leaf = { type: "leaf", tabs: ["b"], activeTabIndex: 0 };
+
+  // The window's own chrome sits in the window's corner, so the pane
+  // that draws it is the top-left one -- the first in tree order, which
+  // is what allSessionIds walks.
+  it("gives the window's chrome to the first pane on the page", () => {
+    expect(paneLeadsWindow(split, left)).toBe(true);
+    expect(paneLeadsWindow(split, right)).toBe(false);
+  });
+
+  // The whole difference from paneOwnsActions: the focus can move
+  // anywhere on the page and the corner does not.
+  it("does not follow the focus, however the page is split", () => {
+    const grid = presetGrid2x2("a", "b", "c", "d");
+    const topLeft: Leaf = { type: "leaf", tabs: ["a"], activeTabIndex: 0 };
+    const bottomRight: Leaf = { type: "leaf", tabs: ["d"], activeTabIndex: 0 };
+    expect(paneLeadsWindow(grid, topLeft)).toBe(true);
+    expect(paneLeadsWindow(grid, bottomRight)).toBe(false);
+    // Same answers with the focus parked in the far pane: there is no
+    // focus argument to give it, by design.
+    expect(paneOwnsActions(grid, bottomRight, "d")).toBe(true);
+    expect(paneLeadsWindow(grid, bottomRight)).toBe(false);
+  });
+
+  // The collapse toggle is the only way back from a collapsed rail, so
+  // the chrome can never go missing entirely.
+  it("shows the chrome when there is no tree, and on the only pane", () => {
+    expect(paneLeadsWindow(null, left)).toBe(true);
+    const only = presetSingle("a") as Leaf;
+    expect(paneLeadsWindow(only, only)).toBe(true);
   });
 });

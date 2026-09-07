@@ -20,7 +20,7 @@
   import AppDialog from "$lib/AppDialog.svelte";
   import ReviewDialog from "$lib/ReviewDialog.svelte";
   import { confirmWindowClose } from "$lib/appClose";
-  import { getActiveWorkspace, getActiveView, hubLabel } from "$lib/workspace";
+  import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
   import {
     agentProfilesStore,
@@ -43,6 +43,7 @@
   import OpenInWindowButton from "$lib/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
+  import SidebarActions from "$lib/SidebarActions.svelte";
   import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
@@ -79,6 +80,20 @@
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
+  // Whether this window has to draw a strip of its own for the sidebar's
+  // chrome. Those buttons ride the header row that is the top edge of
+  // the window -- the hub tabs here, a page's session tabs in
+  // Pane.svelte -- and these are exactly the branches that have no such
+  // row: the two connection states, the app hub, a window with no
+  // workspace, and a workspace whose page has no panes yet. The collapse
+  // toggle is the only way back from a collapsed rail, so "nowhere to
+  // put it" is not an option any of them can take.
+  const needsChromeRow = $derived(
+    $layoutState.status !== "ready" ||
+      $appHubOpen ||
+      !activeWorkspace ||
+      (activeView === "terminal" && getActiveTree($layoutState) === null)
+  );
   // Not HUB_VIEWS directly: a view that edits files under the bound root
   // must never appear in a workspace that has no root.
   const hubViews = $derived(visibleHubViews(Boolean(activeWorkspace?.rootPath)));
@@ -283,6 +298,16 @@
       {/if}
     </div>
     <div class="main">
+      <!-- Above the banners, because it is the top edge of the window on
+           every branch that draws it. Its height is the shared header
+           height, so the sidebar beside it starts on the same line here
+           as it does under a row of tabs. -->
+      {#if needsChromeRow}
+        <div class="chrome-row">
+          <SidebarActions />
+          <div class="drag-spacer" use:windowDrag></div>
+        </div>
+      {/if}
       {#if $layoutState.status === "connecting"}
         <div class="overlay">
           <p>Connecting…</p>
@@ -332,6 +357,14 @@
               <WorkspaceRootControl workspace={activeWorkspace} />
             {/if}
             <div class="tabs">
+              <!-- The window's own chrome leads the row, before the
+                   workspace's tabs and outside the scroller: this row is
+                   the top edge of the window, and a collapse toggle that
+                   could scroll out of reach would be a rail with no way
+                   back. A rule after it, so what acts on the WINDOW is
+                   not read as the first tab of the workspace. -->
+              <SidebarActions />
+              <span class="divider"></span>
               <!-- The tabs scroll; what follows them does not. A
                    workspace with a root offers nine of them, and the
                    button that adds a page must not be the first thing a
@@ -586,6 +619,19 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+  }
+  /* The tab row's stand-in on the branches that have no tabs. Same
+     height, same surface, same top pad -- whichever of the two is on
+     screen, the sidebar beside it starts on the same line and the view
+     under it starts on the next one. */
+  .chrome-row {
+    display: flex;
+    align-items: center;
+    height: var(--header-height);
+    box-sizing: border-box;
+    padding: var(--header-pad-top) 10px 0;
+    flex: 0 0 auto;
+    background: var(--surface-base);
   }
   /* One of the app's three header rows (see theme.css): this one, a
      pane's tab row, and the strip over the sidebar are the same height

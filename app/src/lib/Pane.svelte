@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { paneOwnsActions, type LayoutNode } from "./layout";
+  import { paneLeadsWindow, paneOwnsActions, type LayoutNode } from "./layout";
   import type { CardTab } from "./gavin";
   import TerminalPane from "./TerminalPane.svelte";
   import FileViewerPane from "./FileViewerPane.svelte";
@@ -38,6 +38,7 @@
   import { X, Plus, Kanban, Pin, ListChecks, FileDiff, Columns2, Rows2 } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import NewPageButton from "./NewPageButton.svelte";
+  import SidebarActions from "./SidebarActions.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
@@ -78,6 +79,12 @@
   const ownsActions = $derived(
     paneOwnsActions(getActiveTree($layoutState), leaf, $layoutState.focusedSessionId)
   );
+  // The window's own chrome — the sidebar's collapse toggle and its two
+  // list actions — belongs in the window's corner, so it goes on the
+  // pane that LEADS the page rather than on the one the keyboard is in.
+  // On a terminal page this row is the top edge of the window, and there
+  // is nowhere else in it for those buttons to be.
+  const leadsWindow = $derived(paneLeadsWindow(getActiveTree($layoutState), leaf));
   const active = $derived(leaf.tabs[leaf.activeTabIndex]);
 
   // $state, not plain `let` -- editInput is a bind:this target read inside
@@ -461,6 +468,15 @@
 
 <div class="pane-wrapper">
   <div class="tab-bar">
+    <!-- Before the tabs, and outside the scroller: this is the window's
+         top-left corner on a terminal page, and the collapse toggle is
+         the only way back from a collapsed rail. A rule after it, so the
+         chrome that acts on the WINDOW is not read as the first tab of
+         the page. -->
+    {#if leadsWindow}
+      <SidebarActions />
+      <span class="divider"></span>
+    {/if}
     <!-- The tabs scroll under the actions rather than pushing them off
          the pane: a pane with six tabs open must still offer Close Pane.
          Nothing here is a drag source but the tabs themselves -- see the

@@ -389,6 +389,27 @@ export function paneOwnsActions(
   return ids.length === 0 || leaf.tabs.includes(ids[0]);
 }
 
+// Which pane on a page draws the WINDOW's chrome at the top left -- the
+// sidebar's collapse toggle, its search, and "Open workspace…".
+//
+// Deliberately not paneOwnsActions' rule. That one follows the keyboard,
+// which is right for actions that act on a pane: the toolbar belongs
+// with the pane it would split or close. These act on the window, and a
+// window control that moved to whichever pane was last clicked would be
+// a control that is never in the corner. So it is the first pane in the
+// tree -- allSessionIds walks left-to-right, top-to-bottom, so the first
+// session on the page is always in the top-left pane, whatever the page
+// is split into.
+//
+// Same fallbacks as paneOwnsActions, for the same reason: the collapse
+// toggle is the only way back from a collapsed rail, so it can never go
+// missing entirely.
+export function paneLeadsWindow(tree: LayoutNode | null, leaf: Leaf): boolean {
+  if (!tree) return true;
+  const ids = allSessionIds(tree);
+  return ids.length === 0 || leaf.tabs.includes(ids[0]);
+}
+
 export function activeSessionId(leaf: Extract<LayoutNode, { type: "leaf" }>): string {
   return leaf.tabs[leaf.activeTabIndex];
 }

@@ -246,6 +246,32 @@ describe("what the bars carry", () => {
     expect(TITLE_BAR).not.toContain("Close Pane");
   });
 
+  // The strip lives INSIDE the sidebar's column, so everything in it is
+  // a floor under how narrow that column can collapse to. Only the
+  // window controls and a handle are allowed to be that floor -- the
+  // sidebar's own three buttons moved to the header row beside it, where
+  // they cost the column nothing.
+  it("leaves the sidebar's chrome out of the strip over the sidebar", () => {
+    expect(TITLE_BAR).not.toContain("Collapse sidebar");
+    expect(TITLE_BAR).not.toContain("Open workspace");
+    expect(TITLE_BAR).not.toContain("sidebarSearch");
+    expect(source("SidebarActions.svelte")).toContain("Collapse sidebar");
+  });
+
+  // One instance per window, at the window's top-left corner: the hub
+  // row draws it, a page's row draws it on the pane that LEADS the page
+  // (never the focused one, which moves), and the branches with no
+  // header row of their own get a strip of the same height for it.
+  it("draws the sidebar's chrome on whichever row is the window's top edge", () => {
+    expect(PAGE).toContain("<SidebarActions />");
+    expect(PANE).toContain("<SidebarActions />");
+    expect(PANE).toContain("paneLeadsWindow(getActiveTree($layoutState), leaf)");
+    expect(PANE).toMatch(/\{#if leadsWindow\}\s*<SidebarActions \/>/);
+    expect(rule(PAGE, ".chrome-row").height).toBe("var(--header-height)");
+    expect(rule(PAGE, ".chrome-row")["box-sizing"]).toBe("border-box");
+    expect(rule(PAGE, ".chrome-row").padding.startsWith("var(--header-pad-top)")).toBe(true);
+  });
+
   it("offers New page from both rows, and nowhere spells it on the button", () => {
     for (const text of [PAGE, PANE]) {
       expect(text).toContain("<NewPageButton />");
