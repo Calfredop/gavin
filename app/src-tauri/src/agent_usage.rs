@@ -210,7 +210,11 @@ impl UsageReport {
 /// effort: a plausible fallback beats no header at all, since it is the
 /// SHAPE of the user-agent that selects the generous bucket.
 fn claude_version() -> String {
-    Command::new("claude")
+    // Resolved rather than named: on Windows `claude` is an npm shim and
+    // `CreateProcess` will not start it without the extension (see
+    // `program`). A miss leaves the fallback version below, which is the
+    // same answer this already gave for a machine with no CLI.
+    Command::new(crate::program::resolve_or_name("claude"))
         .arg("--version")
         .output()
         .ok()
@@ -367,7 +371,13 @@ fn anthropic_usage(now: i64) -> (UsageReport, Option<i64>) {
 }
 
 fn run_curl(config: &str) -> Result<String, String> {
-    let mut child = Command::new("curl")
+    // curl is a real executable on every platform gavin runs on --
+    // /usr/bin/curl on unix, and shipped in System32 since Windows 10
+    // 1803 -- so the only thing `resolve_or_name` adds here is the
+    // `.exe`. (PowerShell's `curl` alias for `Invoke-WebRequest` is a
+    // shell alias and is not what `CreateProcess` finds.) `-K -` reads
+    // the config, including the header lines, from stdin on all of them.
+    let mut child = Command::new(crate::program::resolve_or_name("curl"))
         .arg("-K")
         .arg("-")
         .stdin(Stdio::piped())

@@ -24,12 +24,16 @@ pub fn trash_path(path: &str) -> Result<(), String> {
     ctx.delete(path).map_err(|e| e.to_string())
 }
 
-/// On Linux the crate's freedesktop backend does the whole job: it
-/// writes `<trash>/info/<name>.trashinfo` and moves the file into
+/// Everywhere else the crate's own backend does the whole job and there
+/// is no grant to sidestep, so this is the plain call.
+///
+/// On Linux that is the freedesktop backend: it writes
+/// `<trash>/info/<name>.trashinfo` and moves the file into
 /// `<trash>/files/`, which is exactly what GNOME's and KDE's "Put back"
-/// reads. No Automation-style grant exists to avoid, so this is the
-/// plain call -- what it DOES need is the `chrono` feature, without
-/// which the info file it writes has no `DeletionDate` (see Cargo.toml).
+/// reads -- and it needs the `chrono` feature, without which the info
+/// file has no `DeletionDate` (see Cargo.toml). On Windows it is
+/// `IFileOperation` with `FOF_ALLOWUNDO`, i.e. the Recycle Bin, with the
+/// same Restore the shell's own delete gives.
 #[cfg(not(target_os = "macos"))]
 pub fn trash_path(path: &str) -> Result<(), String> {
     trash::delete(path).map_err(|e| e.to_string())

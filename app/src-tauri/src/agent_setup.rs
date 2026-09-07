@@ -847,7 +847,10 @@ fn resolve_mcp_binary_path() -> anyhow::Result<PathBuf> {
     let dir = current_exe
         .parent()
         .ok_or_else(|| anyhow::anyhow!("current_exe has no parent directory"))?;
-    let path = dir.join("gavin-mcp");
+    // With the platform's executable suffix -- see
+    // `daemon::resolve_daemon_binary_path`, whose reasoning is the same
+    // and whose file ships beside this one.
+    let path = dir.join(format!("gavin-mcp{}", std::env::consts::EXE_SUFFIX));
     if !path.is_file() {
         anyhow::bail!(
             "gavin-mcp binary not found beside the app ({}) — build it with `cargo build -p gavin-mcp`",

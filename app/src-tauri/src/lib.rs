@@ -9,6 +9,7 @@ mod git;
 mod home;
 mod layout;
 mod mac_window;
+mod program;
 mod pull_request;
 mod session;
 mod superpowers;
@@ -226,7 +227,8 @@ pub fn run() {
             git::git_resolve_deleted,
             git::git_restore_conflict,
             git::git_merge_tool_name,
-            worktree_setup::worktree_setup
+            worktree_setup::worktree_setup,
+            fileviewer::temp_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
