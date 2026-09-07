@@ -170,6 +170,16 @@ export interface Workspace {
   /// its hardest cards need not restate the other four. Absent (rather
   /// than empty) is the ordinary inheriting case.
   complexityAgents?: ComplexityTable;
+  /// Whether the human has been ASKED whether gavin's own files belong in
+  /// this repo's git history. Not the answer: that is the ignore rule in
+  /// the repository itself, which git owns and this must never shadow.
+  ///
+  /// It exists because the setup wizard's git step has no other way to
+  /// know it is finished -- both answers are legitimate, and "tracked" is
+  /// indistinguishable on disk from "nobody has decided yet". Machine-
+  /// local like the rest here: whether THIS person has seen a question is
+  /// not a fact about the project.
+  gitTrackingAsked?: boolean;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

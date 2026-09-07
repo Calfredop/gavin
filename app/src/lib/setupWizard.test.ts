@@ -45,6 +45,7 @@ const NOTHING_DONE = {
   mainSessionId: null,
   superpowers: SP_ABSENT,
   superpowersMark: undefined,
+  gitTrackingAsked: false,
 };
 
 const ALL_DONE = {
@@ -55,6 +56,7 @@ const ALL_DONE = {
   mainSessionId: "agent-1",
   superpowers: SP_FOUND,
   superpowersMark: undefined,
+  gitTrackingAsked: true,
 };
 
 // The home tab's banner lives entirely in compiled markup, which no other
@@ -147,8 +149,18 @@ describe("setupProgress", () => {
   // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
   // last. Pinned because the order is what the stepper draws and what
   // `next` walks.
-  it("puts Superpowers third", () => {
-    expect(SETUP_STEPS).toEqual(["agent", "integration", "superpowers", "prd", "launch"]);
+  it("puts Superpowers third and Git fourth", () => {
+    // Superpowers beside Integration because it is agent tooling (S2);
+    // Git after both because it asks about the files gavin has by then
+    // created, and before PRD because that step writes into one of them.
+    expect(SETUP_STEPS).toEqual([
+      "agent",
+      "integration",
+      "superpowers",
+      "git",
+      "prd",
+      "launch",
+    ]);
   });
 
   it("counts Superpowers when a check found the plugin", () => {
@@ -198,6 +210,37 @@ describe("setupProgress", () => {
     expect(p.done).toEqual(["superpowers"]);
   });
 
+  // The one step whose evidence is a recorded word rather than state on
+  // disk. It has to be: both answers are legitimate, and a repository
+  // cannot tell "tracked, deliberately" from "nobody has decided".
+  it("counts Git once the question has been put, whichever way it was answered", () => {
+    const p = setupProgress({ ...NOTHING_DONE, gitTrackingAsked: true });
+    expect(p.done).toEqual(["git"]);
+  });
+
+  it("does not count Git while nobody has been asked", () => {
+    expect(setupProgress({ ...NOTHING_DONE, gitTrackingAsked: false }).done).toEqual([]);
+  });
+
+  // The whole reason Git sits outside `configured`: every workspace that
+  // existed before the step did has an unanswered git question and a
+  // perfectly good setup. Nagging them all would be a banner about a
+  // question, not about a problem.
+  it("leaves a workspace configured with the git question unanswered", () => {
+    const p = setupProgress({ ...ALL_DONE, gitTrackingAsked: false });
+    expect(p.configured).toBe(true);
+    // ...and the wizard still opens on it, which is where the question
+    // belongs.
+    expect(p.complete).toBe(false);
+    expect(p.next).toBe("git");
+  });
+
+  // Read off the workspace record, so unlike every other input it can
+  // never be mid-flight.
+  it("never holds the derivation pending on the git answer", () => {
+    expect(setupProgress({ ...NOTHING_DONE, gitTrackingAsked: false }).pending).toBe(false);
+  });
+
   it("next skips steps already done out of order", () => {
     const p = setupProgress({ ...NOTHING_DONE, mainSessionId: "agent-1" });
     expect(p.done).toEqual(["launch"]);
@@ -207,7 +250,7 @@ describe("setupProgress", () => {
   // The banner reads its total off this list rather than a literal, which
   // is how "n of 4" survived a fifth step being added anywhere else.
   it("exposes the step list every counter has to count", () => {
-    expect(SETUP_STEPS).toHaveLength(5);
+    expect(SETUP_STEPS).toHaveLength(6);
   });
 
   // The two file bodies arrive from async reads, so every consumer sees a

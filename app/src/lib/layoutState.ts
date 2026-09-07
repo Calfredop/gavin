@@ -2080,6 +2080,28 @@ export async function setWorkspaceAutoCommit(
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
+/// Records that this workspace's human has answered the git question --
+/// in the wizard's git step, in the init prompt, or by flipping the switch
+/// on the Settings tab. Every route through the question calls it, because
+/// a step that stays unfinished after the human answered it is a step that
+/// asks twice.
+///
+/// The ANSWER is not stored here and must not be: it is the ignore rule in
+/// the repository, which git owns. This is only the fact that the question
+/// was put, which git has no way to know.
+///
+/// A no-op once set, so the routes may call it unconditionally rather than
+/// each deciding whether a save is owed.
+export async function markGitTrackingAsked(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  if (state.workspaces.find((w) => w.id === workspaceId)?.gitTrackingAsked) return;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, gitTrackingAsked: true } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
 export async function setWorkspaceColor(workspaceId: string, color: string): Promise<void> {
   const state = get(layoutState);
   const normalized = normalizeColor(color);

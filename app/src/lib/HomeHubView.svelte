@@ -88,6 +88,11 @@
       mainSessionId: ws?.mainSessionId ?? null,
       superpowers,
       superpowersMark,
+      // Read off the workspace record rather than from git: the step's
+      // evidence is a recorded answer, so the banner needs no extra round
+      // trip on every visit to this tab -- and `git` is outside
+      // `configured` anyway, which is what this banner reads.
+      gitTrackingAsked: Boolean(ws?.gitTrackingAsked),
     })
   );
 

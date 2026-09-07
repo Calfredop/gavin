@@ -18,6 +18,7 @@
     setWorkspaceAutoCommit,
     agentDefaultsStore,
     setWorkspaceComplexityTable,
+    markGitTrackingAsked,
   } from "./layoutState";
   import ComplexityTable from "./ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "./complexity";
@@ -30,6 +31,7 @@
   } from "./autoCommit";
   import {
     canToggleTracking,
+    needsUntrackConfirm,
     trackingSummary,
     untrackConfirm,
     type ConfirmCopy,
@@ -209,6 +211,10 @@
     try {
       const next = await backend.setGavinGitTracking(root, tracked, untrack);
       if (mine === trackToken) tracking = next;
+      // Flipping the switch here IS answering the wizard's git step --
+      // otherwise the step goes on asking a question this human has
+      // already settled, in a panel that shows the answer.
+      await markGitTrackingAsked(workspaceId);
     } catch (e) {
       if (mine === trackToken) trackingError = String(e);
     } finally {
@@ -221,7 +227,7 @@
   /// there ("and take them out of git") stages a change the human has to
   /// see coming. Everywhere else it just acts.
   function toggleTracking(tracked: boolean): void {
-    if (!tracked && (tracking?.indexed ?? 0) > 0) {
+    if (needsUntrackConfirm(tracking, tracked)) {
       untrackPrompt = untrackConfirm(tracking?.indexed ?? 0);
       return;
     }

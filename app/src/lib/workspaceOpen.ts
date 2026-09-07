@@ -19,6 +19,7 @@ import * as backend from "./backend";
 import {
   createWorkspace,
   layoutState,
+  markGitTrackingAsked,
   setWorkspaceRoot,
   switchWorkspace,
   type LayoutState,
@@ -102,7 +103,11 @@ export async function initAndOpen(pending: PendingOpen, trackInGit: boolean): Pr
     return;
   }
   await applyInitTracking(pending.rootPath, trackInGit);
-  await bindNewWorkspace(pending.rootPath);
+  const id = await bindNewWorkspace(pending.rootPath);
+  // The prompt just put the git question, so the wizard's git step must
+  // not put it again. Marked after the bind because that is when the
+  // workspace this is recorded on comes into existence.
+  if (id) await markGitTrackingAsked(id);
 }
 
 /// Writes the ignore rule when the human declined tracking, and does
@@ -144,9 +149,10 @@ export function cancelOpen(): void {
 /// created active, so the id is read back off the store afterwards --
 /// the same read commitNewWorkspace does, and for the same reason: that
 /// function has never reported the id it minted.
-async function bindNewWorkspace(rootPath: string): Promise<void> {
+async function bindNewWorkspace(rootPath: string): Promise<string | null> {
   await createWorkspace(nameForRoot(rootPath));
   const id = get(layoutState).activeWorkspaceId;
-  if (!id) return;
+  if (!id) return null;
   await setWorkspaceRoot(id, rootPath);
+  return id;
 }

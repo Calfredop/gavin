@@ -308,6 +308,19 @@ pub struct Workspace {
     /// case.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub complexity_agents: HashMap<String, ComplexityAgent>,
+    /// Whether the human has been ASKED whether gavin's own files belong
+    /// in this repo's git history. Not the answer -- that is the ignore
+    /// rule in the repo itself (`git::tracking`), which git owns and this
+    /// must never shadow.
+    ///
+    /// It exists because the setup wizard's git step has no other way to
+    /// know it is finished: both answers are legitimate, and "tracked"
+    /// is indistinguishable on disk from "nobody has decided yet". Same
+    /// problem the Superpowers step has, and the same shape of answer --
+    /// a recorded word from the human, machine-local, because whether
+    /// THIS person has seen a question is not a fact about the project.
+    #[serde(default)]
+    pub git_tracking_asked: bool,
 }
 
 fn default_true() -> bool {
@@ -727,6 +740,7 @@ mod tests {
             agent_pause: None,
             pinned_at: None,
             complexity_agents: HashMap::new(),
+            git_tracking_asked: false,
         }
     }
 
@@ -986,7 +1000,8 @@ mod tests {
                 "confirmTabClose": true,
                 "autoResumeRuns": false,
                 "gitView": null,
-                "lastActiveAt": null
+                "lastActiveAt": null,
+                "gitTrackingAsked": false
             })
         );
     }

@@ -24,6 +24,7 @@ const layoutMock = vi.hoisted(() => ({
   createWorkspace: vi.fn(),
   setWorkspaceRoot: vi.fn(async () => {}),
   switchWorkspace: vi.fn(async () => {}),
+  markGitTrackingAsked: vi.fn(async () => {}),
 }));
 
 vi.mock("./layoutState", async () => {
@@ -46,6 +47,7 @@ vi.mock("./layoutState", async () => {
     }) as unknown,
     setWorkspaceRoot: layoutMock.setWorkspaceRoot,
     switchWorkspace: layoutMock.switchWorkspace,
+    markGitTrackingAsked: layoutMock.markGitTrackingAsked,
   };
 });
 
@@ -205,6 +207,21 @@ describe("answering the initialize question", () => {
     await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, false);
     expect(dialogMock.showAlert).not.toHaveBeenCalled();
     expect(layoutMock.setWorkspaceRoot).toHaveBeenCalledWith("ws-fresh", "/repo/fresh");
+  });
+
+  // The prompt PUT the git question, so the wizard's git step must not
+  // put it again -- and it can only be recorded once the workspace the
+  // record hangs on exists.
+  it("records that the git question was answered, on the workspace it just made", async () => {
+    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, true);
+    expect(layoutMock.markGitTrackingAsked).toHaveBeenCalledWith("ws-fresh");
+  });
+
+  // Nothing was asked, so nothing has been answered: binding an existing
+  // folder must leave the wizard's step to do its job.
+  it("records nothing when the folder is opened without initializing", async () => {
+    await bindWithoutInit({ rootPath: "/repo/plain", name: "plain" });
+    expect(layoutMock.markGitTrackingAsked).not.toHaveBeenCalled();
   });
 
   // A repo can be a workspace for its terminals and its git tab long

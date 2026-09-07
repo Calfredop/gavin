@@ -10,6 +10,7 @@
   import IntegrationStep from "./wizardSteps/IntegrationStep.svelte";
   import PrdStep from "./wizardSteps/PrdStep.svelte";
   import SuperpowersStep from "./wizardSteps/SuperpowersStep.svelte";
+  import GitStep from "./wizardSteps/GitStep.svelte";
   import LaunchStep from "./wizardSteps/LaunchStep.svelte";
 
   interface Props {
@@ -21,6 +22,7 @@
     { id: "agent", label: "Agent" },
     { id: "integration", label: "Integration" },
     { id: "superpowers", label: "Superpowers" },
+    { id: "git", label: "Git" },
     { id: "prd", label: "PRD" },
     { id: "launch", label: "Launch" },
   ];
@@ -78,6 +80,10 @@
       mainSessionId: ws?.mainSessionId ?? null,
       superpowers,
       superpowersMark,
+      // Off the workspace record, so this input never joins `pending`:
+      // the git step's evidence is a recorded answer, and there is no
+      // read in flight that could change it.
+      gitTrackingAsked: Boolean(ws?.gitTrackingAsked),
     })
   );
 
@@ -106,7 +112,7 @@
 <!-- Held until the reads settle: the modal's first frame is the one
      that picks the step, so showing it early shows the wrong step. -->
 {#if ws && !progress.pending}
-  <!-- `wide`: the panel's default cap is 480px, and this column of five
+  <!-- `wide`: the panel's default cap is 480px, and this column of six
        steps plus a form row (label, control, Pick) needs more than that.
        The wizard itself only sets a preferred width and lets the panel's
        cap win on a narrow window -- a min-width above the cap is how it
@@ -135,6 +141,8 @@
             onChanged={() => void reread()}
             onDone={advance}
           />
+        {:else if current === "git"}
+          <GitStep {workspaceId} onDone={advance} />
         {:else if current === "prd"}
           <!-- integrationDone comes from the same derivation the stepper
                draws, so a PRD repointed here rewrites the integration

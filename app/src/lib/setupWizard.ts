@@ -1,21 +1,28 @@
 import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
 import { superpowersDone } from "./superpowers";
 
-export type SetupStep = "agent" | "integration" | "superpowers" | "prd" | "launch";
+export type SetupStep = "agent" | "integration" | "superpowers" | "git" | "prd" | "launch";
 
 export interface SetupProgress {
   done: SetupStep[];
   /// The first step not yet done, or null when everything is.
   next: SetupStep | null;
   complete: boolean;
-  /// Every step whose evidence is durable -- everything but `launch`.
-  /// The three of them are configuration that stays configured; launch's
-  /// evidence is a live process, so it is the only step that can
-  /// un-happen, and it is optional besides (W2). A nag must read this,
-  /// never `complete`: keyed off `complete`, pressing Stop on the home
-  /// tab's agent panel -- or the agent simply exiting -- reads as a
-  /// finished workspace coming undone (design §5.4: an unlaunched
+  /// Every step a workspace can be BADLY SET UP for -- everything but
+  /// `launch` and `git`. The rest are configuration that stays
+  /// configured; launch's evidence is a live process, so it is the only
+  /// step that can un-happen, and it is optional besides (W2). A nag must
+  /// read this, never `complete`: keyed off `complete`, pressing Stop on
+  /// the home tab's agent panel -- or the agent simply exiting -- reads as
+  /// a finished workspace coming undone (design §5.4: an unlaunched
   /// workspace does not nag).
+  ///
+  /// `git` is out for a different reason: an unanswered git question is
+  /// not a broken workspace. Tracking is on by default and already in
+  /// force, so the only thing missing is that nobody has been ASKED --
+  /// and every workspace that existed before the step did is in exactly
+  /// that state. Nagging them all would be a banner about a question,
+  /// not about a problem.
   configured: boolean;
   /// True while an input the derivation needs has not been read yet.
   /// Every other field then describes only the evidence seen so far and
@@ -56,16 +63,32 @@ export interface SetupInput {
   /// anything. `undefined` is "not asked yet", never "not now" -- the
   /// step's second completion route depends on telling those apart.
   superpowersMark: SuperpowersMark | undefined;
+  /// Whether the human has answered the git question for this workspace
+  /// (`Workspace.gitTrackingAsked`).
+  ///
+  /// The only step whose evidence is a recorded word rather than a state
+  /// on disk, and it has to be: both answers are legitimate, and the
+  /// repository cannot tell "tracked, deliberately" from "nobody has
+  /// decided". Deriving it from the ignore rule would leave every
+  /// workspace that wants the default permanently unfinished. Read off
+  /// the workspace record, so it costs no round trip and never joins
+  /// `pending`.
+  gitTrackingAsked: boolean;
 }
 
 /// Superpowers sits third (spec S2): it is agent tooling, so it belongs
 /// beside Integration, and PRD and Launch stay last. Exported because
 /// every surface that counts steps must count THIS list -- the Home hub's
 /// banner said "of 4" as a literal and would have gone on saying it.
+///
+/// Git sits fourth, between the tooling steps and the content ones: it
+/// asks about the files gavin has by then created, and it is settled
+/// BEFORE the PRD step writes into one of them.
 export const SETUP_STEPS: SetupStep[] = [
   "agent",
   "integration",
   "superpowers",
+  "git",
   "prd",
   "launch",
 ];
@@ -88,6 +111,9 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // S6: a check that found it, the human's word, or their "not now".
   // The third route is why declining once stops the nagging.
   if (superpowersDone(input.superpowers, input.superpowersMark)) done.push("superpowers");
+  // A recorded answer and nothing else -- see `gitTrackingAsked`. Both
+  // answers finish the step; which one they gave lives in the repo.
+  if (input.gitTrackingAsked) done.push("git");
   // At least one placeholder replaced, not all three: filling only Vision
   // is a real PRD, and requiring all three would never complete.
   const prd = input.prdBody;
@@ -106,12 +132,14 @@ export function setupProgress(input: SetupInput): SetupProgress {
   const superpowersSettled = Boolean(input.superpowersMark) || input.superpowers !== undefined;
   const pending =
     input.agentFileBody === undefined || input.prdBody === undefined || !superpowersSettled;
-  // Launch is the one step whose evidence is a live process rather than
-  // a file or a marker, so it is the one step that can un-happen -- and
-  // it is optional besides (W2). `configured` is every durable step, and
-  // it is what the Home banner is allowed to read; `complete` still
-  // means all of them.
-  const configured = ORDER.every((s) => s === "launch" || done.includes(s));
+  // Two steps sit outside the nag, for two different reasons. Launch's
+  // evidence is a live process rather than a file or a marker, so it is
+  // the one step that can un-happen, and it is optional besides (W2).
+  // Git's is a question nobody has been asked yet, which is not the same
+  // as a workspace set up wrong -- see `configured`. What is left is what
+  // the Home banner is allowed to read; `complete` still means all of
+  // them, which is what the wizard opens on.
+  const configured = ORDER.every((s) => s === "launch" || s === "git" || done.includes(s));
   return { done: ordered, next, complete: next === null, configured, pending };
 }
 

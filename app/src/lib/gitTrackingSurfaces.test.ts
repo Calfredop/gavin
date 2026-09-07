@@ -1,21 +1,31 @@
 import { describe, it, expect } from "vitest";
 
-// Git tracking is one question asked on four surfaces -- the sidebar's
+// Git tracking is one question asked on five surfaces -- the sidebar's
 // "Initialize gavin here?" prompt, the Settings tab's own init modal, the
-// workspace Settings panel and the app-wide one -- and nothing links those
-// four files. So every rule they share is invisible to every other suite:
-// a prompt whose tick-box is wired to nothing renders perfectly, and a
-// panel that calls the setter without the root type-checks fine. Both are
-// dead controls, which is what this pins.
+// setup wizard's Git step, the workspace Settings panel and the app-wide
+// one -- and nothing links those files. So every rule they share is
+// invisible to every other suite: a prompt whose tick-box is wired to
+// nothing renders perfectly, and a panel that calls the setter without the
+// root type-checks fine. Both are dead controls, which is what this pins.
 //
 // Reads the component sources rather than the rendered DOM, following
 // autoCommitSurfaces.test.ts.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = {
+  ...(import.meta.glob("./*.svelte", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>),
+  // The wizard's steps live one directory down, and the glob above does
+  // not descend -- without this the Git step's source is simply missing
+  // and every assertion about it would throw rather than fail.
+  ...(import.meta.glob("./wizardSteps/*.svelte", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>),
+};
 
 function source(name: string): string {
   const text = SOURCES[`./${name}`];
@@ -27,6 +37,8 @@ const SIDEBAR = "Sidebar.svelte";
 const ROOT_CONTROL = "WorkspaceRootControl.svelte";
 const WORKSPACE_PANEL = "SettingsHubView.svelte";
 const APP_PANEL = "GlobalSettingsModal.svelte";
+const WIZARD = "SetupWizard.svelte";
+const WIZARD_STEP = "wizardSteps/GitStep.svelte";
 
 describe("the sidebar's initialize prompt", () => {
   it("carries the tick-box, seeded from the app-wide default", () => {
@@ -43,6 +55,55 @@ describe("the sidebar's initialize prompt", () => {
     // argument here is the exact shape of a dead tick-box: it moves, and
     // nothing downstream ever reads it.
     expect(source(SIDEBAR)).toContain("initAndOpen(pending, tracked)");
+  });
+});
+
+describe("the wizard", () => {
+  it("draws the Git step in the stepper and renders it", () => {
+    const text = source(WIZARD);
+    expect(text).toContain('{ id: "git", label: "Git" }');
+    expect(text).toContain('{:else if current === "git"}');
+    expect(text).toContain("<GitStep {workspaceId} onDone={advance} />");
+  });
+
+  it("feeds the derivation off the workspace record, adding no read", () => {
+    // The wizard already waits on three reads before its first frame.
+    // A fourth for a value sitting on the workspace would hold the modal
+    // shut for a round trip that cannot change the answer.
+    expect(source(WIZARD)).toContain("gitTrackingAsked: Boolean(ws?.gitTrackingAsked)");
+  });
+});
+
+describe("the wizard's git step", () => {
+  it("acts on the pick rather than collecting it for a Continue", () => {
+    // A wizard that saved on Continue would leave git and the screen out
+    // of step the moment somebody closed the modal instead.
+    const text = source(WIZARD_STEP);
+    expect(text).toContain("backend.setGavinGitTracking(root, tracked, untrack)");
+    expect(text).toContain("void apply(tracked, false);");
+  });
+
+  it("records that the question was put, which is the step's whole evidence", () => {
+    // Marked even when nothing was clicked: leaving the default in place
+    // is an answer, and the one most people will give.
+    const text = source(WIZARD_STEP);
+    expect(text).toContain("await markGitTrackingAsked(workspaceId);");
+  });
+
+  it("asks about the index through the shared rule, not its own copy", () => {
+    const text = source(WIZARD_STEP);
+    expect(text).toContain("needsUntrackConfirm(status, tracked)");
+    expect(text).toContain("untrackConfirm(status?.indexed ?? 0)");
+  });
+
+  it("says what git says through the shared summary", () => {
+    expect(source(WIZARD_STEP)).toContain("{trackingSummary(status)}");
+  });
+
+  it("guards its own read with a token, like every other async step", () => {
+    const text = source(WIZARD_STEP);
+    expect(text).toContain("const mine = ++token;");
+    expect(text).toContain("if (mine === token)");
   });
 });
 
@@ -64,6 +125,10 @@ describe("the Settings tab's own initialize modal", () => {
     // workspace that answer the git question differently is the bug.
     expect(source(ROOT_CONTROL)).toContain("applyInitTracking(root, trackInGit)");
     expect(source(ROOT_CONTROL)).not.toContain("backend.setGavinGitTracking");
+  });
+
+  it("records the answer, so the wizard step does not ask it again", () => {
+    expect(source(ROOT_CONTROL)).toContain("markGitTrackingAsked(workspace.id)");
   });
 });
 
@@ -88,8 +153,15 @@ describe("the workspace panel", () => {
     expect(source(WORKSPACE_PANEL)).toContain("{trackingSummary(tracking)}");
   });
 
+  it("records the answer, so the wizard step stops asking it", () => {
+    // The panel shows the answer; a step that went on asking for it would
+    // be asking a question this human has already settled.
+    expect(source(WORKSPACE_PANEL)).toContain("await markGitTrackingAsked(workspaceId);");
+  });
+
   it("asks before staging removals, and offers ignoring without them", () => {
     const text = source(WORKSPACE_PANEL);
+    expect(text).toContain("needsUntrackConfirm(tracking, tracked)");
     expect(text).toContain("untrackConfirm(tracking?.indexed ?? 0)");
     expect(text).toContain('label: "Ignore only", onPick: () => void applyTracking(false, false)');
     expect(text).toContain("onPick: () => void applyTracking(false, true)");

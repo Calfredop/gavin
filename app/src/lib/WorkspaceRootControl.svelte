@@ -1,6 +1,11 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { setWorkspaceRoot, switchWorkspaceView, gitTrackingDefault } from "./layoutState";
+  import {
+    setWorkspaceRoot,
+    switchWorkspaceView,
+    gitTrackingDefault,
+    markGitTrackingAsked,
+  } from "./layoutState";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "./gitTracking";
   import { applyInitTracking } from "./workspaceOpen";
   import { gavinTrees } from "./gavinState";
@@ -68,8 +73,11 @@
       return;
     }
     // Shared with the sidebar's own init prompt, so the two routes into a
-    // fresh workspace cannot answer the git question differently.
+    // fresh workspace cannot answer the git question differently -- and
+    // marked asked on both, so the wizard's git step does not put a
+    // question this modal has just put.
     await applyInitTracking(root, trackInGit);
+    await markGitTrackingAsked(workspace.id);
     await setWorkspaceRoot(workspace.id, root);
   }
 
