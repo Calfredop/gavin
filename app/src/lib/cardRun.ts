@@ -130,6 +130,11 @@ export function composePlanPrompt(
 // while one pushed to `kind: plan` without gaining one runs with its
 // body never inlined at all.
 //
+// The level is named for the same reason the kind is: it has no visible
+// half either. A card left unrated runs the workspace's default agent,
+// so an intricate card and a rename come back off the same model -- and
+// nothing about the developed card says which one it should have been.
+//
 // Nothing here mentions the done column: the run ends when the card is
 // developed, and the card stays where it is. Developing is not starting.
 export function composeDevelopPrompt(path: string, title: string): string {
@@ -137,8 +142,8 @@ export function composeDevelopPrompt(path: string, title: string): string {
     `${NAME_TAB_FIRST}\n\n` +
     `Use the gavin-develop skill on the card at ${path} ("${title}"): develop it into ` +
     `work an agent can execute \u2014 a checklist, nested task cards, both, or, when it is ` +
-    `really one sitting, a sharper prompt \u2014 and set the card's kind to match what you ` +
-    `wrote.\n\n` +
+    `really one sitting, a sharper prompt \u2014 and set the card's kind and complexity to ` +
+    `match what you wrote.\n\n` +
     `Interview me in this tab before you decide anything, and write nothing to the card ` +
     `until I approve what you propose. Leave the card's status where it is: developing a ` +
     `card is not starting it.`

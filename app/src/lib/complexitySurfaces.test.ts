@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { COMPLEXITY_LEVELS } from "./complexity";
 
 // Complexity is one field expressed on six surfaces -- the ⌘N composer,
 // the card detail modal, the Plans tab's metadata strip, the shared
@@ -30,6 +31,21 @@ function source(name: string): string {
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }
+
+// The one surface that is not code. Most levels are decided by an agent
+// developing a card rather than by the human filing it -- someone typing
+// one line into ⌘N usually cannot say yet how hard the work is, which is
+// the whole reason develop exists -- so the skill file IS the rating
+// path, and nothing else in this repo would catch it losing the
+// instruction.
+const SKILL_PATH = "../../../.claude/skills/gavin-develop/SKILL.md";
+const DEVELOP_SKILL = (
+  import.meta.glob("../../../.claude/skills/gavin-develop/SKILL.md", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>
+)[SKILL_PATH];
 
 const COMPOSER = "CardComposeModal.svelte";
 const DETAIL = "CardDetailModal.svelte";
@@ -135,5 +151,49 @@ describe("the custom agent", () => {
     // it dark however the flag was configured.
     expect(source(WORKSPACE_PANEL)).toContain("{#if agent.modelFlag}");
     expect(source(WORKSPACE_PANEL)).toContain("modelFlag: agent.modelFlag");
+  });
+});
+
+describe("the develop skill", () => {
+  it("is on disk where the develop prompt points an agent", () => {
+    // A glob that matched nothing would make every assertion below pass
+    // vacuously, which is the one way this suite could go quiet about a
+    // renamed or deleted skill.
+    expect(typeof DEVELOP_SKILL).toBe("string");
+    expect(DEVELOP_SKILL.length).toBeGreaterThan(0);
+  });
+
+  it("teaches every level, in the spelling the daemon parses", () => {
+    // The written names ARE the frontmatter value: a skill that told an
+    // agent to write "med" would produce a card the daemon reads as
+    // unrated, silently.
+    for (const level of COMPLEXITY_LEVELS) {
+      expect(DEVELOP_SKILL).toContain(`\`${level}\``);
+    }
+  });
+
+  it("writes the level through the field setter, not a hand-edited line", () => {
+    expect(DEVELOP_SKILL).toContain('gavin_set_plan_field(path, "complexity", "<level>")');
+  });
+
+  it("rates the children too, in the call that creates them", () => {
+    // A nested task is what an agent actually executes, so an unrated
+    // child is the case the field exists for -- and one filed unrated
+    // and rated afterwards can be run in between.
+    expect(DEVELOP_SKILL).toContain("the child's own `complexity`");
+  });
+
+  it("keeps unrated reachable rather than making the agent guess", () => {
+    // "Nobody can tell yet" is a real state -- it runs the workspace's
+    // own agent -- and a guessed level sends work to the wrong model
+    // with nothing on screen to say so.
+    expect(DEVELOP_SKILL).toContain("unrated");
+    expect(DEVELOP_SKILL).toContain("never a\n  guessed `moderate`");
+  });
+
+  it("proposes the level before writing it, like the kind", () => {
+    // Nothing in this skill is written before the human says yes, and a
+    // level spends their model budget.
+    expect(DEVELOP_SKILL).toContain("the `complexity:` you\nare giving the card and each child");
   });
 });
