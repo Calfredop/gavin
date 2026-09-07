@@ -757,7 +757,7 @@ pub fn prd_relative_path(root: &Path) -> String {
 /// set_root_config_field, for app-side paths that must not depend on a
 /// daemon round trip (the D41 launch-command migration).
 pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
-    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format") {
+    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model_flag") {
         anyhow::bail!("not a settable agent key: {key}");
     }
     let path = root.join(".gavin-root").join("config.toml");

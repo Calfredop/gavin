@@ -1,6 +1,6 @@
 use protocol::{
-    AgentConfig,
-    CardKind, GavinContext, GavinContextKind, GavinTree, MdFileInfo, PlanFileInfo, Priority, Response,
+    AgentConfig, CardKind, Complexity, GavinContext, GavinContextKind, GavinTree, MdFileInfo,
+    PlanFileInfo, Priority, Response,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::net::UnixStream;
@@ -178,6 +178,22 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
                 .collect()
         })
         .unwrap_or_default();
+    // Unreadable degrades to None PLUS a warning, unlike `labels` and
+    // `attachments` which keep whatever junk was written. Those two are
+    // shown back to the human as text; this one is READ BY GAVIN to pick
+    // an agent, so a level it cannot parse has to be absent rather than
+    // approximated -- and the card has to say so, or a typo would quietly
+    // run every card at the workspace default.
+    let complexity = match get("complexity") {
+        None => None,
+        Some(raw) => {
+            let parsed = Complexity::parse(&raw);
+            if parsed.is_none() {
+                warning = true;
+            }
+            parsed
+        }
+    };
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: path.to_string_lossy().to_string(),
@@ -191,6 +207,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         parent,
         labels,
         attachments,
+        complexity,
         checklist_done,
         checklist_total,
         parse_warning: warning,
@@ -333,6 +350,7 @@ pub fn create_plan_file(
     kind: Option<&str>,
     parent: Option<&str>,
     attachments: Option<&str>,
+    complexity: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     let kind = match kind {
         None => "plan",
@@ -397,6 +415,17 @@ pub fn create_plan_file(
     if attachments.is_some_and(|a| a.contains('\n')) {
         anyhow::bail!("attachments must be a single line");
     }
+    // Refused, not dropped, and stored in the enum's own spelling: a
+    // card filed with an unreadable complexity would look placed and run
+    // at the workspace default, which is the one failure this field
+    // exists to prevent.
+    let complexity = match complexity.map(str::trim).filter(|c| !c.is_empty()) {
+        None => None,
+        Some(raw) => Some(
+            Complexity::parse(raw)
+                .ok_or_else(|| anyhow::anyhow!("invalid complexity value: {raw}"))?,
+        ),
+    };
 
     let plans = gavin_dir.join("plans");
     std::fs::create_dir_all(&plans)?;
@@ -438,6 +467,9 @@ pub fn create_plan_file(
     }
     if let Some(a) = attachments {
         content.push_str(&format!("attachments: {a}\n"));
+    }
+    if let Some(c) = complexity {
+        content.push_str(&format!("complexity: {}\n", c.as_str()));
     }
     content.push_str("---\n");
     match body.map(str::trim).filter(|b| !b.is_empty()) {
@@ -748,13 +780,14 @@ pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
 pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<PathBuf> {
     // Empty value removes the line -- permitted only where the card model
     // needs it (status: nesting, parent: un-parenting, labels: clearing,
-    // attachments: removing the last one). Clearing matters more for
-    // attachments than for labels: an empty `attachments:` line would
-    // parse to nothing anyway, but leaving it behind is a card that
-    // still LOOKS like it references a file.
+    // attachments: removing the last one, complexity: back to "nobody
+    // said", which is a different answer from "trivial"). Clearing
+    // matters more for attachments than for labels: an empty
+    // `attachments:` line would parse to nothing anyway, but leaving it
+    // behind is a card that still LOOKS like it references a file.
     if value.is_empty() {
         match key {
-            "status" | "parent" | "labels" | "attachments" => {
+            "status" | "parent" | "labels" | "attachments" | "complexity" => {
                 write_plan_field(path, key, value)?;
                 return relocate_for_status(path);
             }
@@ -805,6 +838,18 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<Pat
             if value.contains('\n') {
                 anyhow::bail!("attachments must be a single line");
             }
+        }
+        // Validated, unlike `attachments` right above, and for the
+        // opposite reason: an attachment path is the human's and may
+        // legitimately be wrong until they fix it, where a complexity
+        // gavin cannot parse is a level that picks no agent. Written in
+        // the enum's own spelling so a hand-typed "Complex" reads back
+        // the same as a picked one.
+        "complexity" => {
+            let level = Complexity::parse(value)
+                .ok_or_else(|| anyhow::anyhow!("invalid complexity value: {value}"))?;
+            write_plan_field(path, key, level.as_str())?;
+            return relocate_for_status(path);
         }
         other => anyhow::bail!("field not allowed: {other}"),
     }
@@ -958,6 +1003,11 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
         // them would put a stale path in front of an agent nobody chose
         // it for. The human attaches to the child if the child needs it.
         None,
+        // No complexity either, and for a sharper version of the same
+        // reason: a plan being hard says nothing about one step of it,
+        // and inheriting the level would spend the plan's model on every
+        // checklist item promoted out of it.
+        None,
     )?;
 
     let line = lines[line_index];
@@ -1021,6 +1071,7 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
                     mcp_file: get("mcp_file"),
                     mcp_format: get("mcp_format"),
                     model: get("model"),
+                    model_flag: get("model_flag"),
                 }
             });
             (name, agent, false)
@@ -1030,14 +1081,14 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
 }
 
 /// The keys an empty value CLEARS rather than being refused for. Each has
-/// a fallback underneath it -- the app-wide default model, the scaffolded
-/// PRD path -- which is what makes removing it meaningful; for the rest an
-/// empty value would mean nothing.
+/// a fallback underneath it -- the app-wide default model, the profile
+/// table's own model flag, the scaffolded PRD path -- which is what makes
+/// removing it meaningful; for the rest an empty value would mean nothing.
 ///
 /// Removing rather than blanking is the point: a `model = ""` line reads
 /// as a deliberate empty model to whoever opens the file next, where an
 /// absent key reads as "gavin decides".
-const CLEARABLE_KEYS: &[&str] = &["model", "prd"];
+const CLEARABLE_KEYS: &[&str] = &["model", "model_flag", "prd"];
 
 /// Writes one key of `.gavin-root/config.toml`. Uses toml_edit so
 /// comments, key order and formatting survive -- this file is hand-edited
@@ -1051,7 +1102,9 @@ const CLEARABLE_KEYS: &[&str] = &["model", "prd"];
 /// at the document root beside `name` and `extra_contexts`.
 pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
     let table = match key {
-        "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model" => Some("agent"),
+        "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model" | "model_flag" => {
+            Some("agent")
+        }
         "prd" => None,
         _ => anyhow::bail!("not a settable config key: {key}"),
     };
@@ -1928,6 +1981,95 @@ mod tests {
     }
 
     #[test]
+    fn complexity_parses_on_every_kind_and_warns_rather_than_guessing() {
+        assert_eq!(
+            plan("---\ncomplexity: intricate\n---\n").complexity,
+            Some(Complexity::Intricate)
+        );
+        // Case and padding are the human's, not the format's.
+        assert_eq!(plan("---\ncomplexity:  Simple \n---\n").complexity, Some(Complexity::Simple));
+        // A note is a fine place to record that something will be hard,
+        // even though nothing will ever run it.
+        assert_eq!(
+            plan("---\nkind: note\ncomplexity: trivial\n---\n").complexity,
+            Some(Complexity::Trivial)
+        );
+        assert_eq!(plan("---\ntitle: A\n---\n").complexity, None);
+        assert!(!plan("---\ntitle: A\n---\n").parse_warning);
+        // The opposite posture to `attachments` above: junk is NOT kept.
+        // This field picks an agent, so a level gavin cannot read has to
+        // read as unset, and the card has to say so.
+        let junk = plan("---\ncomplexity: gnarly\n---\n");
+        assert_eq!(junk.complexity, None);
+        assert!(junk.parse_warning);
+    }
+
+    #[test]
+    fn set_plan_field_writes_clears_and_rejects_complexity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
+
+        // Normalised to the enum's own spelling, so a hand-typed level
+        // reads back exactly like a picked one.
+        set_plan_field(&path, "complexity", "  Complex ").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ncomplexity: complex\ntitle: T\n---\nbody\n"
+        );
+        assert_eq!(
+            plan_file_info(&path, &std::fs::read_to_string(&path).unwrap()).complexity,
+            Some(Complexity::Complex)
+        );
+
+        // The fifth key an empty value may clear. "Nobody said" is a real
+        // answer here -- it means the card runs the workspace's own agent
+        // -- and it is not the same answer as "trivial".
+        set_plan_field(&path, "complexity", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\ntitle: T\n---\nbody\n");
+
+        assert!(set_plan_field(&path, "complexity", "gnarly").is_err());
+    }
+
+    #[test]
+    fn create_plan_file_writes_a_complexity_line_and_refuses_an_unknown_level() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
+        let path = create_plan_file(
+            dir.path(),
+            "hard.md",
+            "Hard one",
+            None,
+            None,
+            None,
+            Some("task"),
+            None,
+            None,
+            Some("Intricate"),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\nkind: task\ntitle: Hard one\nstatus: To Do\ncomplexity: intricate\n---\n# Hard one\n"
+        );
+        // Refused rather than dropped: a card filed with a misspelled
+        // level would look placed and quietly run the workspace default.
+        assert!(create_plan_file(
+            dir.path(),
+            "bad.md",
+            "Bad",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("gnarly"),
+        )
+        .is_err());
+    }
+
+    #[test]
     fn checklist_counts_from_body() {
         let p = plan("---\nkind: plan\n---\n# P\n- [ ] one\n  - [x] nested\n- [x] two\nnot - [ ] a list\n");
         assert_eq!((p.checklist_done, p.checklist_total), (2, 3));
@@ -2536,6 +2678,31 @@ mod tests {
         assert!(set_root_config_field(dir.path(), "profile", "a\nb").is_err(), "newline");
     }
 
+    /// The seventh `[agent]` key, and the one that makes a hand-written
+    /// command a model-varying agent at all: the profile table has no
+    /// flag for `custom` and never can, so without this the complexity
+    /// table could never reach somebody's own binary.
+    #[test]
+    fn model_flag_is_settable_and_an_empty_value_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = dir.path().join(GAVIN_ROOT_DIR).join("config.toml");
+
+        set_root_config_field(dir.path(), "profile", "custom").unwrap();
+        set_root_config_field(dir.path(), "command", "my-agent").unwrap();
+        set_root_config_field(dir.path(), "model_flag", "--llm").unwrap();
+        let agent = scan_root(dir.path()).contexts[0].agent.clone().unwrap();
+        assert_eq!(agent.model_flag.as_deref(), Some("--llm"));
+
+        // Clearing means "fall back to the profile table's flag", which
+        // for `custom` is no flag at all -- an absent key, not `""`.
+        set_root_config_field(dir.path(), "model_flag", "").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("model_flag"), "the key is removed, not blanked: {after}");
+        assert!(after.contains("command = \"my-agent\""), "{after}");
+        assert_eq!(scan_root(dir.path()).contexts[0].agent.as_ref().unwrap().model_flag, None);
+    }
+
     #[test]
     fn model_is_settable_and_an_empty_value_clears_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -2644,7 +2811,7 @@ mod tests {
     fn create_plan_file_writes_canonical_content_with_defaults() {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
-        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None, None).unwrap();
+        let path = create_plan_file(dir.path(), "auth.md", "Auth flow", None, None, None, None, None, None, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\ntitle: Auth flow\nstatus: To Do\n---\n# Auth flow\n"
@@ -2656,6 +2823,7 @@ mod tests {
             Some("In Progress"),
             Some("high"),
             Some("Body text"),
+            None,
             None,
             None,
             None,
@@ -2672,20 +2840,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
         // A nested child: kind task + parent, no status line at all.
-        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md"), None).unwrap();
+        let p = create_plan_file(dir.path(), "child.md", "Child", None, None, None, Some("task"), Some("parent-plan.md"), None, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "---\nkind: task\ntitle: Child\nparent: parent-plan.md\n---\n# Child\n"
         );
         // A note keeps the default/explicit status.
-        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None, None).unwrap();
+        let n = create_plan_file(dir.path(), "note.md", "Note", Some("Done"), None, None, Some("note"), None, None, None).unwrap();
         assert!(std::fs::read_to_string(&n).unwrap().starts_with("---\nkind: note\ntitle: Note\nstatus: Done\n"));
         // kind plan writes no kind line (backward-canonical).
-        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None, None).unwrap();
+        let pl = create_plan_file(dir.path(), "plan.md", "P", None, None, None, Some("plan"), None, None, None).unwrap();
         assert!(std::fs::read_to_string(&pl).unwrap().starts_with("---\ntitle: P\nstatus: To Do\n"));
-        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None, None).is_err());
-        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md"), None).is_err());
-        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md"), None).is_err());
+        assert!(create_plan_file(dir.path(), "x.md", "X", None, None, None, Some("epic"), None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "y.md", "Y", None, None, None, Some("note"), Some("p.md"), None, None).is_err());
+        assert!(create_plan_file(dir.path(), "z.md", "Z", None, None, None, Some("task"), Some("../evil.md"), None, None).is_err());
     }
 
     #[test]
@@ -2693,17 +2861,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_gavin_root(dir.path(), "WS").unwrap();
         // Not a context:
-        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None, None).is_err());
+        assert!(create_plan_file(&dir.path().join("nope"), "a.md", "T", None, None, None, None, None, None, None).is_err());
         // Bad names ("../esc.md" doubles as the path-escape guard):
         for bad in ["", ".md", "no-extension", "sp ace.md", "../esc.md"] {
-            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None, None).is_err(), "{bad}");
+            assert!(create_plan_file(dir.path(), bad, "T", None, None, None, None, None, None, None).is_err(), "{bad}");
         }
         // Bad priority / bad title:
-        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None, None).is_err());
-        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "T", None, Some("banana"), None, None, None, None, None).is_err());
+        assert!(create_plan_file(dir.path(), "a.md", "  ", None, None, None, None, None, None, None).is_err());
         // Never overwrites:
-        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None, None).unwrap();
-        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None, None);
+        create_plan_file(dir.path(), "a.md", "T", None, None, None, None, None, None, None).unwrap();
+        let dup = create_plan_file(dir.path(), "a.md", "T2", None, None, None, None, None, None, None);
         assert!(dup.unwrap_err().to_string().contains("already exists"));
     }
 
@@ -2722,7 +2890,7 @@ mod tests {
                     When the implementation is done, commit it.\n\
                     <!-- /gavin:auto-commit -->";
         let path = create_plan_file(
-            dir.path(), "ac.md", "T", None, None, Some(body), Some("task"), None, None,
+            dir.path(), "ac.md", "T", None, None, Some(body), Some("task"), None, None, None,
         )
         .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
@@ -3304,7 +3472,7 @@ mod tests {
         let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
 
         let done =
-            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None, None)
+            create_plan_file(dir.path(), "shipped.md", "Shipped", Some("Done"), None, None, None, None, None, None)
                 .unwrap();
         assert_eq!(done, plans.join("done").join("shipped.md"));
 
@@ -3319,13 +3487,14 @@ mod tests {
             Some("task"),
             Some("shipped.md"),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(child, plans.join("done").join("sub.md"));
 
         // A file name already used anywhere in the tree is refused.
         assert!(
-            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None, None).is_err()
+            create_plan_file(dir.path(), "shipped.md", "Again", None, None, None, None, None, None, None).is_err()
         );
     }
 

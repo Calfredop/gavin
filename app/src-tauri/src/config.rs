@@ -294,6 +294,20 @@ pub struct Workspace {
     /// as `Page::pinned_at`, one level up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<i64>,
+    /// This workspace's overrides of the app-wide complexity table,
+    /// keyed by the level's written name. Overridden PER LEVEL rather
+    /// than wholesale: a workspace that wants its gnarly cards on a
+    /// different agent should not have to restate the other four, and a
+    /// level with no entry here genuinely means "whatever the app says".
+    ///
+    /// Machine-local for the same reason as `auto_commit` and
+    /// `agent_pause` (D35): which model tier this human spends on a hard
+    /// card here is a habit and a subscription fact, not something to
+    /// hand everyone who clones the repo. `skip_serializing_if` keeps
+    /// the key out of config.json entirely for the ordinary inheriting
+    /// case.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub complexity_agents: HashMap<String, ComplexityAgent>,
 }
 
 fn default_true() -> bool {
@@ -417,6 +431,65 @@ fn default_limit_percent() -> f64 {
     95.0
 }
 
+/// One complexity level's answer to "which agent, at which model".
+/// Mirrors `ComplexityAgent` in `complexity.ts`, which owns every
+/// judgement made from it -- this is storage.
+///
+/// Both halves are plain strings, and an EMPTY `profile` is the
+/// meaningful state: it means this level names only a model, to be run on
+/// whatever profile the workspace already uses. That is the common case
+/// on a machine with one CLI installed -- "hard cards get opus" -- and
+/// making it expressible is what stops the table forcing a profile choice
+/// nobody wanted to make. An empty `model` in turn means "that profile's
+/// own default model".
+///
+/// A level with BOTH empty is not stored at all: the map's absence is
+/// what "inherit" means, at both levels.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComplexityAgent {
+    #[serde(default)]
+    pub profile: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+/// The app-wide half of "which agent executes this card": the `custom`
+/// profile's own command and model flag, plus the complexity table.
+///
+/// One struct rather than three `AppConfig` fields because they are one
+/// question, and because every field here is a field a save site can
+/// silently wipe (see `persist_workspaces`) -- keeping them together
+/// costs that argument list one positional instead of three.
+///
+/// Machine-local, deliberately, and for the reason `Workspace::auto_commit`
+/// spells out: which CLI is installed here and which model tier this
+/// human is willing to spend on a gnarly card is a fact about this
+/// machine and this subscription, not about the project. The per-workspace
+/// override lives on `Workspace::complexity_agents` for the same reason,
+/// rather than in the repo's `.gavin-root/config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDefaultsConfig {
+    /// The command the `custom` profile launches when a workspace on it
+    /// names none of its own. Empty means there is no app-wide custom
+    /// agent, which is the shipped state.
+    #[serde(default)]
+    pub custom_command: String,
+    /// The argv that carries a model into that command, e.g. `--model`.
+    /// Empty means gavin has no way to put a model on it, and every
+    /// model control for the `custom` profile stays hidden rather than
+    /// guessing a flag -- the same posture the Rust profile table takes.
+    #[serde(default)]
+    pub custom_model_flag: String,
+    /// Which agent and model each complexity level runs, keyed by the
+    /// level's written name (`Complexity::as_str`). A level with no entry
+    /// runs the workspace's own agent, exactly as every card did before
+    /// the field existed.
+    #[serde(default)]
+    pub complexity: HashMap<String, ComplexityAgent>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AppConfig {
     #[serde(default)]
@@ -519,6 +592,18 @@ pub struct AppConfig {
     /// should never have left this machine.
     #[serde(default)]
     pub superpowers: HashMap<String, SuperpowersMark>,
+    /// The app-wide custom agent and complexity table. The eighth
+    /// carry-through field: like session_names/file_tabs/board_tabs/
+    /// theme/agent_models/removed_workspaces/agent_pause/superpowers it
+    /// must be carried through `persist_workspaces`, or it silently
+    /// resets on the next save.
+    ///
+    /// One struct rather than three fields on purpose -- see
+    /// `AgentDefaultsConfig`. Its type is shared with nothing else that
+    /// travels beside it, so a transposed argument in that list is a
+    /// compile error rather than a silently swapped value.
+    #[serde(default)]
+    pub agent_defaults: AgentDefaultsConfig,
 }
 
 /// The human's word about Superpowers for one workspace. A distinct type
@@ -611,6 +696,7 @@ mod tests {
             auto_resume_runs: false,
             agent_pause: None,
             pinned_at: None,
+            complexity_agents: HashMap::new(),
         }
     }
 
@@ -710,6 +796,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -736,6 +823,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -776,6 +864,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -891,6 +980,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -936,6 +1026,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -967,6 +1058,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1001,6 +1093,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1049,6 +1142,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1072,6 +1166,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(&nested, &config).unwrap();
 
@@ -1103,6 +1198,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -1245,6 +1341,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1286,6 +1383,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1322,6 +1420,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1383,6 +1482,7 @@ mod tests {
             removed_workspaces: Vec::new(),
             agent_pause: None,
             superpowers: HashMap::new(),
+            agent_defaults: AgentDefaultsConfig::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

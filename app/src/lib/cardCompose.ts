@@ -5,6 +5,7 @@
 
 import { formatAttachments } from "./attachments";
 import { autoCommitAppliesTo, setAutoCommitInBody } from "./autoCommit";
+import { parseComplexity } from "./complexity";
 import { translateDropIndex } from "./pageBoard";
 import { slugFileName } from "./planExplorer";
 import { slugStatus, type CardView } from "./planBoard";
@@ -45,6 +46,12 @@ export interface ComposeSpec {
   // without the instruction, and a failure mode in which it never gets
   // it. Optional -- absent means off.
   autoCommit?: boolean;
+  // How hard the card's work is, as the frontmatter records it. Written
+  // in the same CreatePlan for the same reason the auto-commit block is:
+  // a card filed and then rated is a card that could be RUN in between,
+  // at the wrong agent. Empty or absent means the card gets no
+  // `complexity:` line at all, which is what "unrated" is.
+  complexity?: string;
 }
 
 export type ComposeArgs =
@@ -59,6 +66,12 @@ export type ComposeArgs =
       // rather than a list, so the daemon writes what it was handed
       // instead of re-deriving a format its own parser has to match.
       attachments: string | undefined;
+      // The level name, or undefined for a card that gets no
+      // `complexity:` line. Parsed rather than passed through: the
+      // daemon REFUSES a level it cannot read, and a composer that sent
+      // one would fail the whole file creation over a field the human
+      // may not even have touched.
+      complexity: string | undefined;
     }
   | { error: string };
 
@@ -83,6 +96,7 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
     spec.autoCommit === true && autoCommitAppliesTo(spec.kind)
   );
   const attachments = formatAttachments(spec.attachments ?? []);
+  const complexity = parseComplexity(spec.complexity);
   return {
     fileName,
     title,
@@ -90,6 +104,7 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
     body: body === "" ? undefined : body,
     kind: spec.kind,
     attachments: attachments === "" ? undefined : attachments,
+    complexity: complexity ?? undefined,
   };
 }
 

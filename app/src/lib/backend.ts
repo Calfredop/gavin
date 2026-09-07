@@ -1,3 +1,4 @@
+import type { AgentDefaults } from "./complexity";
 import type { PauseCycle } from "./agentPause";
 import type { AgentUsageReport } from "./agentUsage";
 import type { PrReport } from "./pullRequest";
@@ -214,6 +215,24 @@ export function getAgentPause(): Promise<PauseCycle | null> {
 /// cycle would never fire for anyone who kept adjusting it.
 export function setAgentPause(agentPause: PauseCycle | null): Promise<void> {
   return invoke("set_agent_pause", { agentPause });
+}
+
+/// The app-wide custom agent (command + model flag) and the complexity
+/// table. Machine-local beside the theme and the model defaults, and for
+/// the same reason: which CLI is installed here and which model tier this
+/// human will spend on a hard card is a fact about this machine, not
+/// about the project. Straight to Tauri, so all of it keeps working
+/// across a version skew that has every gavin_* tool failing closed.
+export function getAgentDefaults(): Promise<AgentDefaults> {
+  return invoke("get_agent_defaults");
+}
+
+/// Replaces the whole struct. Wholesale rather than per key, the same
+/// shape as `setAgentPause`: the panel already holds every field, and a
+/// per-key command is how one of them ends up saved while another is
+/// dropped.
+export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
+  return invoke("set_agent_defaults", { agentDefaults });
 }
 
 /// Superpowers plugin status for one workspace root. Straight to Tauri,
@@ -499,7 +518,8 @@ export function createPlan(
   body?: string,
   kind?: "note" | "task" | "plan",
   parent?: string,
-  attachments?: string
+  attachments?: string,
+  complexity?: string
 ): Promise<string> {
   return invoke("create_plan", {
     contextFolder,
@@ -511,6 +531,7 @@ export function createPlan(
     kind,
     parent,
     attachments,
+    complexity,
   });
 }
 
@@ -519,7 +540,16 @@ export function createPlan(
 /// to follow it.
 export function setPlanFrontmatterField(
   path: string,
-  key: "status" | "priority" | "order" | "title" | "kind" | "parent" | "labels" | "attachments",
+  key:
+    | "status"
+    | "priority"
+    | "order"
+    | "title"
+    | "kind"
+    | "parent"
+    | "labels"
+    | "attachments"
+    | "complexity",
   value: string
 ): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });

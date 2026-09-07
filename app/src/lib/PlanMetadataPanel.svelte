@@ -7,6 +7,9 @@
   import { cardIndex, nestedChildrenOf } from "./orchestration";
   import { guardCompletion } from "./cardCompletion";
   import * as backend from "./backend";
+  import { daemonCompat } from "./layoutState";
+  import { featureBlockedReason } from "./daemonCompat";
+  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, NO_COMPLEXITY } from "./complexity";
 
   interface Props {
     plan: PlanFileInfo;
@@ -19,6 +22,11 @@
   let { plan, workspaceId, columnNames, onBeforeWrite }: Props = $props();
 
   const PRIORITIES = ["none", "low", "medium", "high", "urgent"] as const;
+
+  /// A v30 daemon's set_plan_field allow-list has no `complexity`, so the
+  /// write fails on change. Disabled with the reason instead -- the same
+  /// gate the card detail modal and the composer carry.
+  const complexityBlocked = $derived(featureBlockedReason($daemonCompat, "complexity"));
 
   let titleDraft = $state(plan.title);
   let error = $state<string | null>(null);
@@ -67,7 +75,10 @@
 
   /// True when the field was actually written -- a caller holding a
   /// control's own draft has to know whether to put it back.
-  async function commit(key: "title" | "status" | "priority", value: string): Promise<boolean> {
+  async function commit(
+    key: "title" | "status" | "priority" | "complexity",
+    value: string
+  ): Promise<boolean> {
     error = null;
     if (key === "status" && !(await guardStatus(value))) return false;
     try {
@@ -129,6 +140,23 @@
     >
       {#each PRIORITIES as p (p)}
         <option value={p}>{p}</option>
+      {/each}
+    </select>
+  </label>
+  <label title={complexityBlocked ?? undefined}>
+    Complexity
+    <select
+      value={plan.complexity ?? NO_COMPLEXITY}
+      disabled={complexityBlocked !== null}
+      onchange={(e) => void commit("complexity", (e.currentTarget as HTMLSelectElement).value)}
+    >
+      <!-- The absence of the line, not a sixth level: an unrated card
+           runs this workspace's own agent. -->
+      <option value={NO_COMPLEXITY}>unrated</option>
+      {#each COMPLEXITY_LEVELS as level (level)}
+        <option value={level} title={COMPLEXITY_LABELS[level].hint}
+          >{COMPLEXITY_LABELS[level].label.toLowerCase()}</option
+        >
       {/each}
     </select>
   </label>

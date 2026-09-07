@@ -45,6 +45,12 @@
     removeAttachment,
   } from "./attachments";
   import { autoCommitAppliesTo } from "./autoCommit";
+  import {
+    COMPLEXITY_LABELS,
+    COMPLEXITY_LEVELS,
+    NO_COMPLEXITY,
+    parseComplexity,
+  } from "./complexity";
   import { daemonCompat, newCardAutoCommit, workspaceRootPath } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import { formatShortcut } from "./shortcuts";
@@ -117,6 +123,12 @@
   // ticked. Survives `reset()` for the same reason railId does: filing a
   // run of cards that all need committing is one tick, not one per card.
   let autoCommit = $state(get(newCardAutoCommit));
+  // How hard the card is, if the human says. Survives `reset()` like
+  // `autoCommit` and `railId` above, and for the same reason: filing a
+  // run of cards of the same difficulty is one choice, not one per card.
+  // Empty means unrated, which is the absence of the line rather than a
+  // sixth level -- an unrated card runs the workspace's own agent.
+  let complexity = $state<string>(NO_COMPLEXITY);
   let runNow = $state(false);
   let error = $state<string | null>(null);
   let titleEl = $state<HTMLTextAreaElement | null>(null);
@@ -154,6 +166,11 @@
   // and carry none of these files. Nothing on the wire catches that --
   // this gate is the only one there is.
   const attachmentsBlocked = $derived(featureBlockedReason($daemonCompat, "attachments"));
+  // Exactly the same hole, one version later: a v30 daemon parses
+  // CreatePlan happily and drops `complexity` on the floor, so the card
+  // would be filed looking rated and run at the workspace's default
+  // agent. Nothing on the wire catches that either.
+  const complexityBlocked = $derived(featureBlockedReason($daemonCompat, "complexity"));
   const isMac = isMacSync();
 
   async function pickAttachment(): Promise<void> {
@@ -218,7 +235,7 @@
     }
     const ctx = contexts.find((c) => c.folderPath === contextFolder);
     const args = buildCreatePlanArgs(
-      { kind, title, body, status, attachments, autoCommit },
+      { kind, title, body, status, attachments, autoCommit, complexity },
       ctx?.plans.map((p) => p.fileName) ?? []
     );
     if ("error" in args) {
@@ -242,7 +259,8 @@
         args.body,
         args.kind,
         undefined,
-        args.attachments
+        args.attachments,
+        args.complexity
       );
       const created: PlanFileInfo = {
         path,
@@ -255,6 +273,7 @@
         parent: null,
         labels: [],
         attachments: [...attachments],
+        complexity: parseComplexity(args.complexity),
         checklistDone: 0,
         checklistTotal: 0,
         parseWarning: false,
@@ -290,6 +309,10 @@
           parentBroken: false,
           labels: [],
           attachments: [...attachments],
+          // Carried onto the view handed to Run: a card filed at
+          // "intricate" and run in the same gesture has to launch the
+          // agent that level names, not the workspace's default.
+          complexity: parseComplexity(args.complexity),
           checklistDone: 0,
           checklistTotal: 0,
           contextName: ctxName,
@@ -449,6 +472,26 @@
         </select>
       </label>
     {/if}
+    <!-- The blocked reason rides the LABEL, not the select: tooltip.ts
+         binds mouseenter, which a disabled element never fires. -->
+    <label class="field" title={complexityBlocked ?? undefined}>
+      <span>Complexity</span>
+      <select
+        bind:value={complexity}
+        disabled={complexityBlocked !== null}
+        onfocus={() => (focusField = "body")}
+        onkeydown={(e) => handleKeydown("body", e)}
+      >
+        <!-- Not a sixth level: the absence of the line, which runs this
+             workspace's own agent rather than a level's. -->
+        <option value={NO_COMPLEXITY}>unrated</option>
+        {#each COMPLEXITY_LEVELS as level (level)}
+          <option value={level} title={COMPLEXITY_LABELS[level].hint}
+            >{COMPLEXITY_LABELS[level].label.toLowerCase()}</option
+          >
+        {/each}
+      </select>
+    </label>
   </div>
 
   <!-- The blocked reason rides the ROW, not the button: tooltip.ts binds

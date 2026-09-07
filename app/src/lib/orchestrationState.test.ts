@@ -25,6 +25,27 @@ vi.mock("./backend", () => ({
 // tick() reads four stores through get(), so each mock must expose a
 // real store contract, not just its functions -- a bare object makes
 // get() throw and the failure reads as an unrelated crash.
+/// Hoisted so the `vi.mock` factory below (hoisted above every import)
+/// can close over it, and so `resolvedAgentFor` and `agentForCard` can
+/// be the same function object.
+const agentMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    command: "claude",
+    launchCommand: "claude",
+    file: "CLAUDE.md",
+    profile: "claude-code",
+    failurePatterns: ["API Error:"],
+    failureCauses: [
+      { pattern: "/login", cause: "auth" },
+      { pattern: "Connection dropped", cause: "network" },
+    ],
+    sessionIdArgs: "",
+    resumeArgs: "",
+    label: "Claude Code",
+    promptArgs: "",
+  }))
+);
+
 vi.mock("./layoutState", () => ({
   // A REAL store: tick() derives the set of LIVE session ids from it, so
   // a test that needs a running step's session to still exist has to be
@@ -36,18 +57,12 @@ vi.mock("./layoutState", () => ({
     // the scheduler reads its silence as a finished turn.
     failureReasonById: {} as Record<string, string>,
   }),
-  resolvedAgentFor: vi.fn(() => ({
-    command: "claude",
-    launchCommand: "claude",
-    file: "CLAUDE.md",
-    profile: "claude-code",
-    failurePatterns: ["API Error:"],
-      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
-    sessionIdArgs: "",
-    resumeArgs: "",
-    label: "Claude Code",
-    promptArgs: "",
-  })),
+  resolvedAgentFor: agentMock,
+  // The SAME mock function, deliberately: no card fixture here carries a
+  // complexity, so `agentForCard` really does resolve to the workspace's
+  // agent -- and a test that moves one has to move both, or a rail's
+  // card steps and its tool steps would launch with different agents.
+  agentForCard: agentMock,
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // Null by default: no conversation id unless a test asks for one, which
   // is what an unverified profile OR a pre-v21 daemon looks like.

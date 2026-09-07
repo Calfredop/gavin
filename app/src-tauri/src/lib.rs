@@ -162,6 +162,8 @@ pub fn run() {
             agent_tokens::card_run_tokens,
             session::get_agent_pause,
             session::set_agent_pause,
+            session::get_agent_defaults,
+            session::set_agent_defaults,
             agent_setup::mcp_formats,
             agent_setup::move_agent_file,
             agent_setup::compose_agent_prompt,

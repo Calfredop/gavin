@@ -2,7 +2,8 @@
   import type { Snippet } from "svelte";
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
-  import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "./complexity";
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
@@ -179,6 +180,14 @@
   // whether any of them still resolve. Brokenness shows where the host
   // has actually looked -- the detail modal, and the run gate's refusal.
   const attachmentCount = $derived(card.attachments?.length ?? 0);
+  /// The card's level as its STEP on the scale (1-5), which is what the
+  /// chip can actually fit. The word and the boundary go in the tooltip,
+  /// because a single glyph saying "Intricate" is a chip nobody can read
+  /// at column width.
+  const complexityLevel = $derived(parseComplexity(card.complexity));
+  const complexityStep = $derived(
+    complexityLevel ? COMPLEXITY_LEVELS.indexOf(complexityLevel) + 1 : 0
+  );
 
   const labelChips = $derived(
     card.labels.map((name) => ({
@@ -274,6 +283,15 @@
       >
         <Paperclip size={11} />
         <span class="attachment-count">{attachmentCount}</span>
+      </span>
+    {/if}
+    {#if complexityLevel}
+      <span
+        class="complexity"
+        use:tooltip={`${COMPLEXITY_LABELS[complexityLevel].label} (${complexityStep} of ${COMPLEXITY_LEVELS.length}) — ${COMPLEXITY_LABELS[complexityLevel].hint}`}
+      >
+        <Gauge size={11} />
+        <span class="complexity-step">{complexityStep}</span>
       </span>
     {/if}
     {#if card.kind === "plan" && card.checklistTotal > 0}
@@ -522,6 +540,21 @@
     color: var(--text);
   }
   .attachment-count {
+    font-family: monospace;
+    font-size: 0.7em;
+  }
+  /* Deliberately the same rules as .attachments above: both are a glyph
+     with a number beside it, and they sit next to each other. */
+  .complexity {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    color: var(--text-muted);
+  }
+  .card:hover .complexity {
+    color: var(--text);
+  }
+  .complexity-step {
     font-family: monospace;
     font-size: 0.7em;
   }

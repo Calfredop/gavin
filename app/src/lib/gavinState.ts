@@ -1,5 +1,6 @@
 import { writable } from "svelte/store";
 import { parseAttachments } from "./attachments";
+import { parseComplexity } from "./complexity";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "./backend";
 import { refreshBoard } from "./kanbanState";
@@ -119,7 +120,7 @@ export function patchPlanPath(workspaceId: string, oldPath: string, newPath: str
 export function patchPlanField(
   workspaceId: string,
   path: string,
-  key: "status" | "priority" | "order" | "title" | "parent" | "labels" | "attachments",
+  key: "status" | "priority" | "order" | "title" | "parent" | "labels" | "attachments" | "complexity",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -140,6 +141,11 @@ export function patchPlanField(
         // optimistic patch and the tree that lands a moment later agree
         // about how many chips the card has.
         if (key === "attachments") return { ...p, attachments: parseAttachments(value) };
+        // Parsed the way the daemon parses it, so a value it would
+        // refuse never lands in the tree as though it had been stored --
+        // and an empty value clears the field back to "unrated", which
+        // is a different answer from "trivial".
+        if (key === "complexity") return { ...p, complexity: parseComplexity(value) };
         const n = Number(value);
         return Number.isFinite(n) ? { ...p, order: n } : p;
       }),

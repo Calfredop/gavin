@@ -16,7 +16,11 @@
     setWorkspaceFontSize,
     autoCommitDefault,
     setWorkspaceAutoCommit,
+    agentDefaultsStore,
+    setWorkspaceComplexityTable,
   } from "./layoutState";
+  import ComplexityTable from "./ComplexityTable.svelte";
+  import type { Complexity, ComplexityAgent } from "./complexity";
   import { fontSizeOptions, resolveTerminalFontSize } from "./terminalFont";
   import {
     autoCommitFromSelect,
@@ -74,7 +78,12 @@
   const pauseNow = $derived(pauseFor(workspaceId, $nowStore));
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
-  const agent = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore));
+  const agent = $derived(
+    resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore, {
+      command: $agentDefaultsStore.customCommand,
+      modelFlag: $agentDefaultsStore.customModelFlag,
+    })
+  );
   const configWarning = $derived(Boolean(rootContext?.configWarning));
   const hasRoot = $derived(Boolean(ws?.rootPath));
   const profileLabel = $derived(
@@ -237,6 +246,24 @@
   /// writes config.json through Tauri and never asks the daemon.
   const modelBlocked = $derived(featureBlockedReason($daemonCompat, "agentModel"));
 
+  // --- model flag -------------------------------------------------------
+  /// What this workspace has set of its OWN, which is not
+  /// `agent.modelFlag`: that one has already fallen back to the app-wide
+  /// custom flag and then to the profile table's, and the box has to be
+  /// able to tell "inheriting" from "typed the same thing deliberately".
+  const ownModelFlag = $derived(rootContext?.agent?.modelFlag ?? "");
+  /// A v30 daemon's SetRootConfigField allow-list has no `model_flag`,
+  /// and it does not parse the key back out of config.toml either -- so
+  /// a flag written there would compose a model onto a command that then
+  /// went nowhere. This is the only surface that can produce the payload.
+  const modelFlagBlocked = $derived(featureBlockedReason($daemonCompat, "agentModelFlag"));
+
+  // --- complexity -------------------------------------------------------
+  /// This workspace's own overrides. Per LEVEL: a level absent here runs
+  /// whatever the app-wide table says, which is what the picker's first
+  /// option spells out.
+  const complexityTable = $derived(ws?.complexityAgents ?? {});
+
   // --- the lead document ------------------------------------------------
   /// Which file leads this workspace. Not an agent key: it lives at the
   /// root of config.toml and survives a change of CLI.
@@ -323,6 +350,12 @@
     if (focused !== "model") modelDraft = model;
   });
 
+  let modelFlagDraft = $state("");
+  $effect(() => {
+    const flag = ownModelFlag;
+    if (focused !== "modelFlag") modelFlagDraft = flag;
+  });
+
   const modelIsCustom = $derived(
     modelCustomOpen || (ownModel !== "" && !(profileInfo?.models ?? []).includes(ownModel))
   );
@@ -335,6 +368,22 @@
     }
     modelCustomOpen = false;
     void setAgentField(workspaceId, "model", value);
+  }
+
+  function commitModelFlag(): void {
+    const trimmed = modelFlagDraft.trim();
+    if (trimmed === ownModelFlag) return;
+    // "" is a real value here, not a no-op: it removes the key and puts
+    // the workspace back on the app-wide custom flag, or failing that on
+    // the profile table's own.
+    void setAgentField(workspaceId, "model_flag", trimmed);
+  }
+
+  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
+    const next = { ...complexityTable };
+    if (entry) next[level] = entry;
+    else delete next[level];
+    void setWorkspaceComplexityTable(workspaceId, next);
   }
 
   function commitModel(): void {
@@ -503,6 +552,21 @@
         Whether a new task or plan card in this workspace starts asking the agent to commit its work
         when it finishes. Every card can still be switched either way on the card itself.
       </p>
+    </section>
+
+    <section>
+      <h3>Complexity</h3>
+      <p class="hint">
+        Which agent runs a card of each difficulty, in this workspace only. A level left on its
+        default follows the app-wide table in Settings, so leaving one alone is how this workspace
+        tracks that; naming an agent or a model here overrides that level and nothing else.
+      </p>
+      <ComplexityTable
+        profiles={$agentProfilesStore}
+        table={complexityTable}
+        inherited={$agentDefaultsStore.complexity}
+        onChange={setComplexity}
+      />
     </section>
 
     <section>
@@ -716,7 +780,35 @@
             }}
           />
         </label>
-        {#if profileInfo && profileInfo.modelFlag}
+        <div class="row">
+          <label for="model-flag-{workspaceId}">Model flag</label>
+          <input
+            id="model-flag-{workspaceId}"
+            bind:value={modelFlagDraft}
+            spellcheck="false"
+            placeholder={profileInfo?.modelFlag || "--model"}
+            disabled={Boolean(modelFlagBlocked)}
+            title={modelFlagBlocked ?? ""}
+            onfocus={() => (focused = "modelFlag")}
+            onblur={() => {
+              focused = null;
+              commitModelFlag();
+            }}
+            onkeydown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+          />
+        </div>
+        {#if modelFlagBlocked}
+          <p class="hint warn">{modelFlagBlocked}</p>
+        {:else}
+          <p class="hint">
+            How gavin puts a model on the command above. Leave it empty for
+            {profileLabel}{profileInfo?.modelFlag ? `'s own ${profileInfo.modelFlag}` : ""} — it is
+            here for a custom agent, whose flag gavin cannot know.
+          </p>
+        {/if}
+        {#if agent.modelFlag}
           <div class="row model-row">
             <span>Model</span>
             <select
@@ -725,7 +817,7 @@
               title={modelBlocked ?? ""}
               onchange={(e) => pickModel(e.currentTarget.value)}
             >
-              {#each modelOptions(profileInfo, globalModel) as opt (opt.value)}
+              {#each modelOptions({ modelFlag: agent.modelFlag, models: profileInfo?.models ?? [] }, globalModel) as opt (opt.value)}
                 <option value={opt.value}>{opt.label}</option>
               {/each}
             </select>
@@ -754,7 +846,8 @@
           {/if}
         {:else if profileInfo}
           <p class="hint">
-            Set the model in Command — gavin knows no model flag for {profileLabel}.
+            No model flag, so gavin has no way to put one on the command — name the flag above, or
+            put the model in Command itself.
           </p>
         {/if}
         <div class="row">

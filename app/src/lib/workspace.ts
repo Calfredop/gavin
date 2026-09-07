@@ -1,4 +1,5 @@
 import type { PauseCycle } from "./agentPause";
+import type { ComplexityTable } from "./complexity";
 import type { LayoutNode } from "./layout";
 import { allSessionIds, findLeafPath } from "./layout";
 
@@ -163,6 +164,12 @@ export interface Workspace {
   /// milliseconds; absent means not pinned. Same rule and same reason as
   /// `Page.pinnedAt`, one level up.
   pinnedAt?: number;
+  /// This workspace's overrides of the app-wide complexity table, keyed
+  /// by level name. Overridden PER LEVEL: a level with no entry here
+  /// means "whatever the app says", so a workspace that only cares about
+  /// its hardest cards need not restate the other four. Absent (rather
+  /// than empty) is the ordinary inheriting case.
+  complexityAgents?: ComplexityTable;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

@@ -52,6 +52,10 @@ vi.mock("./backend", () => ({
   composeAgentPrompt: vi.fn().mockResolvedValue("prompt"),
   agentProfiles: vi.fn().mockResolvedValue([]),
   getAgentModelDefaults: vi.fn().mockResolvedValue({}),
+  getAgentDefaults: vi
+    .fn()
+    .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {} }),
+  setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
   getAutoCommit: vi.fn().mockResolvedValue(null),
   setAutoCommit: vi.fn().mockResolvedValue(undefined),

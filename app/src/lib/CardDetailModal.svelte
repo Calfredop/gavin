@@ -21,7 +21,18 @@
     openFileInSplit,
     resolvedAgents,
     liveSessionIds,
+    agentDefaultsStore,
+    agentProfilesStore,
+    workspaceComplexityTable,
   } from "./layoutState";
+  import {
+    COMPLEXITY_LABELS,
+    COMPLEXITY_LEVELS,
+    complexityEntry,
+    complexitySummary,
+    NO_COMPLEXITY,
+    parseComplexity,
+  } from "./complexity";
   import {
     addAttachment,
     attachmentFromPick,
@@ -253,7 +264,7 @@
 
   // --- field writes (surgical, patch-on-success) -----------------------
   async function writeField(
-    key: "title" | "status" | "priority" | "labels" | "attachments",
+    key: "title" | "status" | "priority" | "labels" | "attachments" | "complexity",
     value: string
   ): Promise<boolean> {
     errorMessage = null;
@@ -319,6 +330,35 @@
   function commitPriority(): void {
     void writeField("priority", priority);
   }
+
+  // --- complexity (which agent executes this card) ----------------------
+  // A v30 daemon's set_plan_field allow-list has no `complexity`, so the
+  // write would fail on change. Disabled with the reason instead: this
+  // and the ⌘N composer are the two surfaces that can produce the
+  // payload.
+  const complexityBlocked = $derived(featureBlockedReason($daemonCompat, "complexity"));
+  let complexity = $state<string>(NO_COMPLEXITY);
+  $effect(() => {
+    complexity = card.complexity ?? NO_COMPLEXITY;
+  });
+  function commitComplexity(): void {
+    void writeField("complexity", complexity);
+  }
+  /// What this level will actually launch, in one line under the row --
+  /// the whole reason the field exists, and the answer nobody should
+  /// have to open two settings panels to find. Null when the card says
+  /// nothing, which is the ordinary case.
+  const complexityLine = $derived(
+    complexitySummary(
+      parseComplexity(complexity),
+      complexityEntry(
+        parseComplexity(complexity),
+        $agentDefaultsStore.complexity,
+        workspaceComplexityTable(workspaceId)
+      ),
+      (id) => $agentProfilesStore.find((p) => p.id === id)?.label ?? id
+    )
+  );
 
   const activeLabelSlugs = $derived(new Set(card.labels.map(slugStatus)));
   async function toggleLabel(name: string): Promise<void> {
@@ -1003,6 +1043,25 @@
             {/each}
           </select>
         </label>
+        <label class="field">
+          <span class="label">Complexity</span>
+          <select
+            bind:value={complexity}
+            disabled={Boolean(complexityBlocked)}
+            title={complexityBlocked ?? ""}
+            onchange={commitComplexity}
+          >
+            <!-- "Unrated" is not a sixth level: it is the absence of the
+                 line, and it runs this workspace's own agent. Saying so
+                 in the option keeps it from reading as "trivial". -->
+            <option value={NO_COMPLEXITY}>unrated</option>
+            {#each COMPLEXITY_LEVELS as level (level)}
+              <option value={level} title={COMPLEXITY_LABELS[level].hint}
+                >{COMPLEXITY_LABELS[level].label.toLowerCase()}</option
+              >
+            {/each}
+          </select>
+        </label>
         {#if card.parent}
           <div class="field">
             <span class="label">Part of</span>
@@ -1018,6 +1077,11 @@
           </div>
         {/if}
       </div>
+      {#if complexityBlocked}
+        <p class="warning">{complexityBlocked}</p>
+      {:else if complexityLine}
+        <p class="complexity-line">{complexityLine}</p>
+      {/if}
       {#if card.parseWarning}
         <p class="warning">This card's frontmatter has issues — some fields may not be readable.</p>
       {/if}
@@ -1630,6 +1694,15 @@
   }
   .warning {
     color: var(--warning-text);
+    font-size: 0.8em;
+    margin: 6px 0 0;
+  }
+
+  /* What the chosen level will actually launch. Quiet by design: it is
+     an answer to a question the human already asked with the select, not
+     a warning about anything. */
+  .complexity-line {
+    color: var(--text-subtle);
     font-size: 0.8em;
     margin: 6px 0 0;
   }

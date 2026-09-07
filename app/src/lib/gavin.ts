@@ -1,6 +1,8 @@
 // TypeScript mirrors of crates/protocol's gavin tree shapes (camelCase on
 // the wire via serde, verified by the protocol crate's shape tests).
 
+import type { Complexity } from "./complexity";
+
 export interface PlanFileInfo {
   path: string;
   fileName: string;
@@ -24,6 +26,12 @@ export interface PlanFileInfo {
   // broken chip instead of vanishing. Optional for the same reason
   // `modifiedAt` is -- fixtures, and a pre-v18 daemon never sends it.
   attachments?: string[];
+  // The card's `complexity:` line -- how hard the work is -- or null
+  // where the card says nothing, which is a different answer from
+  // "trivial": it means the card runs the workspace's own agent.
+  // Optional for the same reason `attachments` is, and additionally
+  // because a pre-v31 daemon never sends it.
+  complexity?: Complexity | null;
 }
 
 export interface MdFileInfo {
@@ -44,6 +52,12 @@ export interface AgentConfig {
   /// not send it; absent means the app-wide default for this profile
   /// applies instead.
   model?: string | null;
+  /// The argv that carries `model` into this workspace's agent. Absent
+  /// means the profile table's own flag applies, which is the right
+  /// answer for the five stock profiles; it exists for `custom`, whose
+  /// binary the table cannot know. Optional because a pre-v31 daemon
+  /// never sends it.
+  modelFlag?: string | null;
 }
 
 export interface GavinContext {

@@ -3264,6 +3264,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             kind,
             parent,
             attachments,
+            complexity,
         } => {
             crate::gavin::create_plan_file(
                 std::path::Path::new(&context_folder),
@@ -3275,6 +3276,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 kind.as_deref(),
                 parent.as_deref(),
                 attachments.as_deref(),
+                complexity.as_deref(),
             )
             .map(|p| Response::PlanCreated { path: p.to_string_lossy().to_string() })
         }
@@ -4366,6 +4368,7 @@ mod tests {
                 parent: None,
                 body: None,
                 attachments: None,
+                complexity: Some("simple".to_string()),
             },
         );
         let created_path = match resp {

@@ -3,12 +3,16 @@
   import {
     agentProfilesStore,
     agentModelDefaultsStore,
+    agentDefaultsStore,
     setAgentModelDefault,
+    setAgentDefaults,
     terminalFontSizeDefault,
     setTerminalFontSizeDefault,
     autoCommitDefault,
     setAutoCommitDefault,
   } from "./layoutState";
+  import ComplexityTable from "./ComplexityTable.svelte";
+  import type { Complexity, ComplexityAgent } from "./complexity";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "./terminalFont";
   import {
@@ -116,6 +120,29 @@
     const value = (drafts[profileId] ?? stored(profileId)).trim();
     if (value === stored(profileId)) return;
     void setAgentModelDefault(profileId, value);
+  }
+
+  /// The custom agent's two fields, saved on blur rather than per
+  /// keystroke: a half-typed command written through would be launched
+  /// by anything that started an agent mid-edit.
+  function commitCustomAgent(patch: { customCommand?: string; customModelFlag?: string }): void {
+    const next = { ...$agentDefaultsStore, ...patch };
+    if (
+      next.customCommand === $agentDefaultsStore.customCommand &&
+      next.customModelFlag === $agentDefaultsStore.customModelFlag
+    ) {
+      return;
+    }
+    void setAgentDefaults(next);
+  }
+
+  /// One complexity row. `null` clears it, which is what "no agent for
+  /// this level" means -- the card then runs the workspace's own.
+  function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
+    const complexity = { ...$agentDefaultsStore.complexity };
+    if (entry) complexity[level] = entry;
+    else delete complexity[level];
+    void setAgentDefaults({ ...$agentDefaultsStore, complexity });
   }
 </script>
 
@@ -326,6 +353,58 @@
           aliases — for the rest, type the model name your CLI expects.
         </p>
       {/if}
+    </section>
+
+    <section>
+      <h3>Custom agent</h3>
+      <div class="row">
+        <span>Command</span>
+        <input
+          class="custom"
+          spellcheck="false"
+          placeholder="my-agent --flags"
+          value={$agentDefaultsStore.customCommand}
+          onchange={(e) => commitCustomAgent({ customCommand: e.currentTarget.value.trim() })}
+          onkeydown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+        />
+      </div>
+      <div class="row">
+        <span>Model flag</span>
+        <input
+          class="custom"
+          spellcheck="false"
+          placeholder="--model"
+          value={$agentDefaultsStore.customModelFlag}
+          onchange={(e) => commitCustomAgent({ customModelFlag: e.currentTarget.value.trim() })}
+          onkeydown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+        />
+      </div>
+      <p class="hint">
+        The agent behind the <strong>Custom…</strong> profile — your own CLI, launched as written.
+        Any workspace on that profile that names no command of its own uses this one. The model flag
+        is how gavin puts a model on it: without one it has no way to, so every model control for a
+        custom agent stays dark rather than guessing a flag. A workspace can override both on its
+        own Settings tab.
+      </p>
+    </section>
+
+    <section>
+      <h3>Complexity</h3>
+      <p class="hint">
+        A card can say how hard its work is, and each level can run a different agent — so a rename
+        need not spend the model a gnarly refactor needs. A level left alone runs whatever agent the
+        workspace runs; a model on its own keeps that agent and only changes the model. Every
+        workspace can override any level on its own Settings tab.
+      </p>
+      <ComplexityTable
+        profiles={$agentProfilesStore}
+        table={$agentDefaultsStore.complexity}
+        onChange={setComplexity}
+      />
     </section>
 
     <div class="actions">
