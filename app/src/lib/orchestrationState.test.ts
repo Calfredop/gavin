@@ -581,6 +581,58 @@ describe("executeActions — switchBranch (spec O15)", () => {
     expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
   });
 
+  /// The bug this covers: every rail bound to a worktree of a gavin
+  /// workspace stalled on its FIRST tick, before anything launched,
+  /// because the only thing in the checkout was gavin's own board --
+  /// untracked on that branch, and reported as `unstaged` by
+  /// `--untracked-files=all`. The advice the stall gave was advice the
+  /// human must not take: committing the board onto a feature branch is
+  /// wrong, and the stash stack is shared with every other checkout.
+  it("lets gavin's own files through — .gavin-root never blocks the switch", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: ".gavin-root", status: "?", staged: false, untracked: true }],
+    } as never);
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("feature/api"));
+
+    await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.gitCheckout).toHaveBeenCalledWith("/x/wt", "feature/api", null);
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+
+  /// Turning tracking off STAGES the removal of gavin's files and never
+  /// commits it (git/tracking.rs), so that state sits in the index for
+  /// as long as the human takes to review it. Same story on both sides.
+  it("lets a staged removal of gavin's files through too", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [{ path: ".gavin-root/PRD.md", status: "D", staged: true, untracked: false }],
+      unstaged: [],
+    } as never);
+    vi.mocked(backend.gitCheckout).mockResolvedValue(undefined);
+    vi.mocked(gitStateModule.refresh).mockImplementation(async () => refsSay("feature/api"));
+
+    await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.gitCheckout).toHaveBeenCalledWith("/x/wt", "feature/api", null);
+  });
+
+  it("still refuses when gavin's files sit BESIDE the human's work", async () => {
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [
+        { path: ".gavin-root", status: "?", staged: false, untracked: true },
+        { path: "app/src/lib/git.ts", status: "M", staged: false, untracked: false },
+      ],
+    } as never);
+
+    await executeActions("ws-1", [SWITCH]);
+
+    expect(backend.gitCheckout).not.toHaveBeenCalled();
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1");
+  });
+
   it("counts STAGED changes as dirty too", async () => {
     vi.mocked(backend.gitStatus).mockResolvedValue({
       staged: [{ path: "a.ts", status: "M", staged: true, untracked: false }],

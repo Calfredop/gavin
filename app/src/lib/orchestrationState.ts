@@ -88,6 +88,7 @@ import { breakOutChildren, guardCompletion } from "./cardCompletion";
 import { gavinTrees, patchPlanField } from "./gavinState";
 import { gitStore, refresh as refreshGit } from "./gitState";
 import { branchResolvable } from "./git";
+import { isGavinOwnPath } from "./gitTracking";
 import {
   layoutState,
   agentForCard,
@@ -1349,6 +1350,19 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
 /// a stalled rail, and stashing is not gavin's to do: the stash stack is
 /// shared with every other checkout of this repo.
 ///
+/// Dirty means THE PROJECT's files, though, not gavin's own. A gavin
+/// workspace's checkouts all hold the board, and a worktree cut from a
+/// branch that predates it -- or one whose `.gavin-root` is a symlink to
+/// the root checkout's, the usual way a fleet of worktrees shares one
+/// board -- reports it as an untracked change. That read as the human's
+/// work and stalled every bound rail on its first tick, before anything
+/// launched, over a file gavin put there itself; the "commit or stash
+/// them" it offered was advice the human must not take, since committing
+/// the board onto a feature branch is wrong and the stash stack is
+/// shared. Nothing is lost by letting it through: a switch does not
+/// touch an untracked file, and git refuses on its own the one case
+/// where it would (the target branch tracks that very path).
+///
 /// Every failure stalls the rail's current stage rather than throwing,
 /// exactly as a failed launch does, so the reason lands on the chips and
 /// rule 5 pauses the rail.
@@ -1378,7 +1392,8 @@ async function executeSwitchBranch(
   }
   try {
     const status = await backend.gitStatus(path);
-    if (status.staged.length > 0 || status.unstaged.length > 0) {
+    const dirty = [...status.staged, ...status.unstaged].filter((e) => !isGavinOwnPath(e.path));
+    if (dirty.length > 0) {
       await stallStage(
         workspaceId,
         railId,

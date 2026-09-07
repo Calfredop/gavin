@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_GIT_TRACKING,
   canToggleTracking,
+  isGavinOwnPath,
+  needsUntrackConfirm,
   normalizeGitTracking,
   resolveGitTracking,
   trackingSummary,
@@ -105,6 +107,26 @@ describe("the sentence under the switch", () => {
   });
 });
 
+describe("whether the index question is owed", () => {
+  it("is never owed for an on -- turning tracking back on stages nothing", () => {
+    expect(needsUntrackConfirm(status({ tracked: false, indexed: 9 }), true)).toBe(false);
+  });
+
+  it("is not owed for an off with none of gavin's files committed", () => {
+    // The fresh-workspace case, and the common one: a prompt about zero
+    // files is a prompt about nothing.
+    expect(needsUntrackConfirm(status({ indexed: 0 }), false)).toBe(false);
+  });
+
+  it("is owed for an off in a repo that already committed them", () => {
+    expect(needsUntrackConfirm(status({ indexed: 1 }), false)).toBe(true);
+  });
+
+  it("is not owed before the read lands", () => {
+    expect(needsUntrackConfirm(null, false)).toBe(false);
+  });
+});
+
 describe("the untrack confirm", () => {
   it("quotes the count and promises the files survive", () => {
     const copy = untrackConfirm(4);
@@ -118,5 +140,33 @@ describe("the untrack confirm", () => {
 
   it("counts one file in the singular", () => {
     expect(untrackConfirm(1).lines[0]).toContain("1 file ");
+  });
+});
+
+describe("recognising gavin's own paths", () => {
+  it("claims the two folders themselves", () => {
+    expect(isGavinOwnPath(".gavin-root")).toBe(true);
+    expect(isGavinOwnPath(".gavin")).toBe(true);
+  });
+
+  it("claims everything under them, at any depth", () => {
+    expect(isGavinOwnPath(".gavin-root/PRD.md")).toBe(true);
+    expect(isGavinOwnPath(".gavin-root/plans/done/a.md")).toBe(true);
+    expect(isGavinOwnPath("apps/web/.gavin/plans/b.md")).toBe(true);
+    expect(isGavinOwnPath("apps/web/.gavin")).toBe(true);
+  });
+
+  it("leaves a path that merely ENDS in one of the names alone", () => {
+    // The Rust pathspecs use `:(glob)` for exactly this: `*` must not
+    // cross a separator, so a folder called `my.gavin` is the human's.
+    expect(isGavinOwnPath("my.gavin/notes.md")).toBe(false);
+    expect(isGavinOwnPath("src/not.gavin-root/x.ts")).toBe(false);
+    expect(isGavinOwnPath(".gavin-rootish/x.ts")).toBe(false);
+  });
+
+  it("leaves ordinary work alone", () => {
+    expect(isGavinOwnPath("app/src/lib/git.ts")).toBe(false);
+    expect(isGavinOwnPath("README.md")).toBe(false);
+    expect(isGavinOwnPath("")).toBe(false);
   });
 });

@@ -86,6 +86,18 @@ export function trackingSummary(status: GavinTracking | null): string {
     : "Ignored by gavin's block in .gitignore. The files stay on disk and gavin keeps reading them.";
 }
 
+/// Whether flipping the switch to `tracked` needs the human's word about
+/// the index before it acts.
+///
+/// Only ever an OFF in a repo that has already committed some of gavin's
+/// files. An ON stages nothing at all, and an OFF where none of gavin's
+/// files are in the index has nothing to stage -- asking there would be a
+/// prompt about zero files. Expressed here so the wizard's git step and
+/// the Settings switch cannot disagree about when the question is owed.
+export function needsUntrackConfirm(status: GavinTracking | null, tracked: boolean): boolean {
+  return !tracked && (status?.indexed ?? 0) > 0;
+}
+
 export interface ConfirmCopy {
   title: string;
   lines: string[];
@@ -113,3 +125,30 @@ export function untrackConfirm(indexed: number): ConfirmCopy {
 /// The tick-box beside an init prompt. One label, so the sidebar's prompt
 /// and the Settings panel's cannot word the same question two ways.
 export const INIT_TRACKING_LABEL = "Track gavin's files in git";
+
+/// The two folder names gavin owns. Mirrors `IGNORE_PATTERNS` /
+/// `GAVIN_PATHSPECS` in app/src-tauri/src/git/tracking.rs -- the same two
+/// names, matched the same way.
+const GAVIN_DIRS = [".gavin-root", ".gavin"];
+
+/// Whether a repo-relative path git reported is one of gavin's OWN files
+/// rather than the project's.
+///
+/// Needed wherever gavin asks "is this checkout dirty?" and means "does
+/// it hold work". A gavin workspace's checkouts always hold the board --
+/// tracked here, untracked there, a symlink to the root checkout's copy
+/// in a worktree someone shared it with -- and none of that is work. The
+/// rail branch switch is the caller that made this matter: it read the
+/// board as the human's uncommitted changes and stalled every bound rail
+/// before it launched anything, telling the human to commit or stash a
+/// file they must do neither to.
+///
+/// Segment-exact, like the Rust pathspecs' `:(glob)` prefix: a folder
+/// called `my.gavin` is the human's, and only a path whose own segment is
+/// `.gavin-root` or `.gavin` is gavin's. The folder itself counts as well
+/// as everything under it -- `--untracked-files=all` expands a directory
+/// into its files, but a SYMLINK to one is a single entry named for the
+/// folder, which is exactly how a shared worktree reports it.
+export function isGavinOwnPath(path: string): boolean {
+  return path.split("/").some((segment) => GAVIN_DIRS.includes(segment));
+}
