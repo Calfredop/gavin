@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "cargo build -p gavin-daemon -p gavin-mcp && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "sh src-tauri/stage-sidecars.sh --release && npm run build",
+    "beforeBuildCommand": "node src-tauri/stage-sidecars.mjs --release && npm run build",
     "frontendDist": "../build"
   },
   "app": {
@@ -18,6 +18,7 @@
         "minWidth": 800,
         "minHeight": 600,
         "decorations": false,
+        "shadow": true,
         "dragDropEnabled": false
       }
     ],

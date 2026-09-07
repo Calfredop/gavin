@@ -1,8 +1,14 @@
-# The repo's first CI, and the thing that keeps Linux green once the port
-# lands. It runs on ubuntu-latest deliberately: every developer here is on
-# a mac, so macOS is the platform that gets exercised by hand a hundred
-# times a day and Linux is the one that would silently rot between
-# releases.
+# The repo's CI, and the thing that keeps the ports green. Every developer
+# here is on a mac, so macOS is the platform that gets exercised by hand a
+# hundred times a day and the other two are the ones that would silently
+# rot between releases.
+#
+# The two jobs are deliberately at different stages. Linux is DONE: its
+# suites are green and every step is a gate. Windows is a port in flight,
+# so only the thing that has been made to work is a gate -- that the three
+# Rust crates COMPILE for the target -- and everything past it reports
+# without failing the build, until the verification pass on a real Windows
+# machine turns each one into a gate.
 name: CI
 
 on:
@@ -40,12 +46,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
-      # daemon.rs's connect_or_spawn test binds a unix socket with
-      # `nc -lU`, which is netcat-openbsd's spelling. Not part of the
-      # Tauri stack, and not something to discover as a red build.
-      - name: Install netcat (a test spawns `nc -lU`)
-        run: sudo apt-get install --no-install-recommends -y netcat-openbsd
-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -80,5 +80,68 @@ jobs:
         run: npm run check
 
       - name: npm run build
+        working-directory: app
+        run: npm run build
+
+  windows:
+    name: Windows (compiles)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # THE GATE. `std::os::unix` does not exist on this target, so before
+      # the windows-port card these three crates did not fail to run on
+      # Windows -- they failed to parse. Keeping that answer honest is what
+      # this job is for, and it is the one step here allowed to be red.
+      #
+      # These three and not `--workspace`: app/src-tauri drags in the whole
+      # WebView2 and tauri-build chain, which is a different question with a
+      # different failure mode. It is checked below, where a failure reports
+      # instead of blocking.
+      - name: cargo check — the daemon, the MCP server and the protocol
+        run: cargo check -p protocol -p gavin-daemon -p gavin-mcp
+
+      # Everything below reports. A red step here is a piece of the port
+      # that is not finished; promote it to a gate when it goes green.
+      - name: cargo check --workspace --tests
+        continue-on-error: true
+        run: cargo check --workspace --tests
+
+      # Same carve-out as the Linux job: the fs-watcher module is flaky
+      # under full-suite parallelism (watcher timing, not the code), so it
+      # runs alone and is skipped in the sweep.
+      - name: cargo test — the fs-watcher module, alone
+        continue-on-error: true
+        run: cargo test -p gavin-daemon gavin:: -- --test-threads=1
+
+      - name: cargo test --workspace
+        continue-on-error: true
+        run: cargo test --workspace -- --skip gavin::
+
+      - name: npm test
+        continue-on-error: true
+        working-directory: app
+        run: npm test
+
+      - name: npm run check
+        continue-on-error: true
+        working-directory: app
+        run: npm run check
+
+      - name: npm run build
+        continue-on-error: true
         working-directory: app
         run: npm run build

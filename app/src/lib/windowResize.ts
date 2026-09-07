@@ -77,8 +77,20 @@ function corner(anchor: string): string {
 }
 
 /// Whether this platform draws its own resize grips, given what
-/// `platform()` reported. macOS does; every other target of this app is
-/// a borderless GTK window that does not.
+/// `platform()` reported.
+///
+/// macOS does: an NSWindow keeps the OS's edge drag with the title bar
+/// gone. Nowhere else can be relied on to. GTK takes the grips away with
+/// the frame outright. Windows is the ambiguous one -- tao keeps
+/// `WS_THICKFRAME` on an undecorated resizable window and answers
+/// `WM_NCHITTEST` for a border inside the client area, but the WebView2
+/// child window covers those pixels and takes the mouse before the frame
+/// is asked. So the grips are drawn there too: six pixels of overlay at
+/// each edge is a cheap price for a window that is definitely resizable,
+/// and a window that is NOT resizable has no recourse at all. `shadow`
+/// is set in tauri.conf.json alongside `decorations`, which is what
+/// gives an undecorated Windows 11 window its border and rounded
+/// corners.
 export function needsResizeGrips(macOS: boolean): boolean {
   return !macOS;
 }

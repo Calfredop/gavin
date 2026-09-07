@@ -1,7 +1,8 @@
 <script lang="ts">
   // Eight strips over the window's border, each one a resize grip.
   // A thin template over windowResize.ts, which holds the table and the
-  // reasons; see that file for why GTK needs this and macOS does not.
+  // reasons; see that file for why GTK and Windows need this and macOS
+  // does not.
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { isMacSync } from "./platform";
   import { needsResizeGrips, resizeZones, type ResizeDirection } from "./windowResize";

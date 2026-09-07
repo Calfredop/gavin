@@ -43,10 +43,17 @@ it is read only when passed with `--config`.
 
 ## What produces the sidecars
 
-`beforeBuildCommand` runs `stage-sidecars.sh --release`, which builds the
-two binaries and copies them to `binaries/<name>-<host triple>` — the
-suffixed spelling `externalBin` looks for and strips again when it
+`beforeBuildCommand` runs `stage-sidecars.mjs --release`, which builds the
+two binaries and copies them to `binaries/<name>-<host triple><.exe>` —
+the suffixed spelling `externalBin` looks for and strips again when it
 bundles. The directory is gitignored.
+
+**Node, not `sh`.** `beforeBuildCommand` runs through the Tauri CLI's
+shell, which is `cmd /C` on Windows, and a stock Git for Windows install
+does not put `sh.exe` on PATH — its default only adds `<git>/cmd`. The
+shell version of this script was therefore a Windows bundle that failed
+before it started. Node is already a hard requirement: the same command
+line runs `npm run build` after it.
 
 ## Targets
 
@@ -54,6 +61,16 @@ bundles. The directory is gitignored.
 `.rpm` and `.AppImage` on Linux. The AppImage step downloads
 `linuxdeploy` on first use, so the first Linux bundle needs network.
 
+Windows narrows that to `["nsis"]` in `tauri.windows.conf.json` — which
+is auto-discovered by name, unlike `tauri.bundle.conf.json`. "all" there
+would also build an MSI, and the WiX toolchain behind it is a second
+download, a second signing story and a format that cannot express a
+per-user install; NSIS gives the one installer this app needs.
+
 Linux build host needs the same packages CI installs (see
 `.github/workflows/ci.yml`): `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`'s
 transitive set, `librsvg2-dev`, `patchelf` and friends.
+
+A Windows build host needs Git for Windows (which the app requires at
+runtime anyway, see the windows-port card), the MSVC build tools, and
+WebView2 — present on Windows 11 and on any updated Windows 10.
