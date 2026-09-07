@@ -28,6 +28,7 @@
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "./workspaceOpen";
   import { sidebarCollapsed, scratchpadEnabled } from "./sidebarPrefs";
+  import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "./sidebarPeek";
   import {
     closeSidebarSearch,
     searchSidebar,
@@ -256,7 +257,67 @@
     return (ws.name.trim()[0] ?? "?").toUpperCase();
   }
 
-  const searchOpen = $derived($sidebarSearchOpen && !$sidebarCollapsed);
+  /// Collapsed and not peeking: the column is its icon rail, and every
+  /// row in it is an initial or a glyph. Everything that used to ask
+  /// `$sidebarCollapsed` asks this instead, so a peek renders the SAME
+  /// sidebar rather than a third version of it.
+  const showsRail = $derived(sidebarShowsRail($sidebarCollapsed, $sidebarPeek));
+  /// The full column floated over the view rather than filling its own.
+  /// Only ever true while the collapse preference is on -- an expanded
+  /// sidebar is never an overlay, whatever the peek flag says.
+  const peeking = $derived($sidebarCollapsed && $sidebarPeek);
+
+  /// The element the peek is measured against: the pointer leaving it is
+  /// what ends the peek, and a press landing outside it is the backstop
+  /// for a peek the pointer never entered (the search button opens one
+  /// from the header row, where mouseleave alone would never fire).
+  /// $state because the $effect below reads it -- a plain `let` binding
+  /// establishes no reactivity there.
+  let sidebarEl: HTMLElement | null = $state(null);
+
+  /// Both ways out of a peek, wired only while one is up.
+  ///
+  /// Listeners rather than an `onmouseleave` attribute: the a11y warning
+  /// a bare div with a mouse handler earns can only be silenced with a
+  /// `svelte-ignore`, and that comment covers every element nested under
+  /// it too -- four honest warnings in this file would have gone quiet
+  /// with it.
+  ///
+  /// The press backstop is what covers a peek the pointer never entered:
+  /// the header's search button opens one from outside the column, where
+  /// mouseleave alone would never fire.
+  $effect(() => {
+    if (!$sidebarPeek) return;
+    const el = sidebarEl;
+    if (!el) return;
+    const leave = (): void => endSidebarPeek();
+    const onDown = (event: MouseEvent): void => {
+      if (!el.contains(event.target as Node)) endSidebarPeek();
+    };
+    el.addEventListener("mouseleave", leave);
+    // Capture, so a press that also opens a peek (the header's search
+    // button) closes the old one first and opens the new one on click.
+    window.addEventListener("mousedown", onDown, true);
+    return () => {
+      el.removeEventListener("mouseleave", leave);
+      window.removeEventListener("mousedown", onDown, true);
+    };
+  });
+
+  /// Pressing a row on the icon rail opens the peek along with whatever
+  /// the row does. Pressing one is the human saying "this column,
+  /// please", and answering with only the navigation would leave them
+  /// with no way to read what they just landed on short of collapsing
+  /// the sidebar back and forth.
+  ///
+  /// The rows that open a MODAL (task manager, usage, settings) do not
+  /// call this: the modal covers the column, so the peek would end on
+  /// the first mouse move without ever having been seen.
+  function pressedRail(): void {
+    if (showsRail) peekSidebar();
+  }
+
+  const searchOpen = $derived($sidebarSearchOpen && !showsRail);
 
   /// The result list, or null when nothing is being searched -- which is
   /// what tells the template to leave the ordinary workspace list up. An
@@ -1303,7 +1364,10 @@
           ? `${ws.name} — ${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you`
           : ws.name}
         aria-label={ws.name}
-        onclick={() => switchWorkspace(ws.id)}
+        onclick={() => {
+          void switchWorkspace(ws.id);
+          pressedRail();
+        }}
         oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
       >
         <span class="collapsed-initial">{workspaceInitial(ws)}</span>
@@ -1354,7 +1418,7 @@
   </div>
 {/snippet}
 
-<div class="sidebar" class:collapsed={$sidebarCollapsed}>
+<div class="sidebar" class:collapsed={showsRail} class:peeking bind:this={sidebarEl}>
   <!-- No "Workspaces" heading above the list. It named the one thing on
        screen that could not be anything else -- every row under it is a
        workspace -- and it was carrying the + only because it was there.
@@ -1385,7 +1449,7 @@
       <IconButton icon={X} label="Close search" size={12} onclick={closeSidebarSearch} />
     </div>
   {/if}
-  {#if $sidebarCollapsed}
+  {#if showsRail}
     {@render collapsedList()}
   {:else if searchHits}
     {@render searchResults(searchHits)}
@@ -1580,7 +1644,10 @@
       class="footer-row app-row"
       class:active={$appHubOpen}
       aria-current={$appHubOpen ? "page" : undefined}
-      onclick={openAppHub}
+      onclick={() => {
+        openAppHub();
+        pressedRail();
+      }}
     >
       <Boxes size={12} />
       <span>Gavin</span>
@@ -1681,6 +1748,26 @@
        scrolling sidebar would slide away with the content. Pinning it
        pins the header too, which it wasn't before. */
     overflow: hidden;
+  }
+  /* A press on the icon rail floats the whole column over the view for
+     as long as the pointer stays in it. It OVERLAYS rather than widening
+     the column, and that is the point: the rail is collapsed so the view
+     beside it can have the width, and a peek that pushed the content
+     across would refit every terminal in the window twice for one
+     glance. Anchored to .rail (+page.svelte), which owns the top strip
+     this starts below.
+
+     Under the app's modal layers (1000 and up) and over everything in
+     the view: it is chrome floated over content, not a dialog. */
+  .sidebar.peeking {
+    position: absolute;
+    top: var(--header-height);
+    left: 0;
+    bottom: 0;
+    width: var(--sidebar-width);
+    z-index: 50;
+    border-right: 1px solid var(--border);
+    box-shadow: 4px 0 14px rgba(0, 0, 0, 0.35);
   }
   .workspace-list {
     flex: 1 1 auto;
@@ -1801,9 +1888,24 @@
     background: var(--surface-raised);
     color: var(--text);
   }
+  /* A chip rather than a bare letter: on a column this narrow the row IS
+     an icon, and a letter with nothing around it reads as text that lost
+     its line. Sized to the footer rows under it, so the rail is one
+     column of marks rather than letters above pictures. */
   .collapsed-initial {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    background: var(--surface-sunken);
     font-weight: bold;
     letter-spacing: 0;
+  }
+  .collapsed-row:hover .collapsed-initial,
+  .collapsed-row.active .collapsed-initial {
+    background: var(--surface-selected);
   }
   /* Collapsed, every footer row is its glyph alone. The words are the
      tooltip's job at this width, and a row that kept them would be the

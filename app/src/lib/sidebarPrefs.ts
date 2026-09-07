@@ -1,12 +1,18 @@
 // The sidebar's own two preferences: whether the column is collapsed to
 // its icon rail, and whether the pinned Scratchpad has a row in it.
 //
-// Collapsed, NOT hidden: the column stays on screen, narrowed to the
-// width its own title strip needs, and every workspace keeps a row --
-// just its initial rather than its name, badges and actions. A sidebar
-// that disappeared entirely would take the window's traffic lights with
-// it (they live in the strip above it, inside the same column), so
-// "hide" is not a state this layout can offer at all; "collapse" is.
+// Collapsed, NOT hidden: the column stays on screen as an icon rail, and
+// every workspace keeps a row -- just its initial rather than its name,
+// badges and actions. A sidebar that disappeared entirely would take the
+// window's traffic lights with it (they live in the strip above it,
+// inside the same column), so "hide" is not a state this layout can
+// offer at all; "collapse" is.
+//
+// Those traffic lights are also the whole floor: the rail is as narrow
+// as the platform's window controls and no narrower, which is why the
+// sidebar's own chrome buttons had to leave the strip for the header row
+// beside it (SidebarActions.svelte). What a rail cannot show, a peek
+// does -- see sidebarPeek.ts.
 //
 // Both are per-human view preferences rather than workspace data -- how
 // wide the chrome is on this screen, and which rows it pins, are not
@@ -24,6 +30,7 @@
 
 import { get, writable } from "svelte/store";
 import { layoutState, openAppHub, switchWorkspace } from "./layoutState";
+import { endSidebarPeek } from "./sidebarPeek";
 import { UNFILED_WORKSPACE_ID } from "./workspace";
 
 /// Injected (defaulting to the browser's) for the same two reasons
@@ -70,9 +77,15 @@ export function saveSidebarCollapsed(
 /// tree that was just thrown away.
 export const sidebarCollapsed = writable<boolean>(loadSidebarCollapsed());
 
+/// Both writers end any peek in progress. A peek is the collapsed
+/// column borrowing its full width for a moment; once the human has said
+/// what the column should be, the borrowed state has nothing left to
+/// say, and a stale one would leave an overlay floating over the view
+/// with no pointer near it to dismiss it.
 export function setSidebarCollapsed(collapsed: boolean): void {
   sidebarCollapsed.set(collapsed);
   saveSidebarCollapsed(collapsed);
+  endSidebarPeek();
 }
 
 export function toggleSidebarCollapsed(): void {
@@ -80,6 +93,7 @@ export function toggleSidebarCollapsed(): void {
     saveSidebarCollapsed(!collapsed);
     return !collapsed;
   });
+  endSidebarPeek();
 }
 
 export const SCRATCHPAD_KEY = "gavin.scratchpadEnabled";

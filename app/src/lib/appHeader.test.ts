@@ -163,7 +163,7 @@ describe("the hub and the page reach the top of the window", () => {
   // height, twice over once a page's tabs sat below it as well.
   it("puts the title strip in the rail beside the view, not above it", () => {
     expect(PAGE).toMatch(/<div class="rail">\s*<TitleBar \/>/);
-    expect(rule(PAGE, ".rail").width).toBe("200px");
+    expect(rule(PAGE, ".rail").width).toBe("var(--sidebar-width)");
     // The divider between the columns runs the full height, so it has to
     // belong to the column rather than to the sidebar inside it.
     expect(rule(PAGE, ".rail")["border-right"]).toBe("1px solid var(--border)");

@@ -538,12 +538,17 @@
      columns runs the full height of the window. */
   .rail {
     flex: 0 0 auto;
-    width: 200px;
+    width: var(--sidebar-width);
     display: flex;
     flex-direction: column;
     min-height: 0;
     background: var(--surface-raised);
     border-right: 1px solid var(--border);
+    /* What the peeking sidebar is positioned against: a press on the
+       collapsed rail floats the full column over the view beside it
+       rather than widening this one, so the anchor has to be the column
+       and the overlay has to be inside it. */
+    position: relative;
   }
   /* Collapsed, the column narrows to an icon rail -- it never goes away.
      It cannot: the window's traffic lights live in the strip at the top
@@ -563,7 +568,7 @@
        anyway; stating it means the column cannot end up narrower than
        the controls it has to keep reachable. */
     min-width: min-content;
-    max-width: 200px;
+    max-width: var(--sidebar-width);
   }
   /* Everything that is not the window's own column, from the top of the
      window down: the banners, and whichever of the app hub, a hub tab or
