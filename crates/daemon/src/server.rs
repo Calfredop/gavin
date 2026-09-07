@@ -52,6 +52,48 @@ const SUSPEND_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// shortest sleep anyone closes a lid for.
 const SUSPEND_GAP_THRESHOLD: Duration = Duration::from_secs(30);
 
+/// How long after the terminal says something ABOUT ITSELF into a
+/// session its output stops counting as the agent doing something.
+///
+/// Two things gavin does to a PTY make the program in it repaint without
+/// the agent having done anything, and the activity heuristic cannot tell
+/// either repaint from a turn starting:
+///
+///   - a size change, which raises SIGWINCH. One pane geometry change
+///     refits EVERY tab in the pane (Pane.svelte's `fitAll`, deliberately
+///     -- a hidden tab has to already be the right shape when it is
+///     switched to), so one click that opened a page put every agent on
+///     that page into `working` for two seconds.
+///   - a focus report (`ESC [ I` / `ESC [ O`), which xterm sends whenever
+///     its textarea gains or loses focus and the program has asked for
+///     them with DEC mode 1004 -- as Claude Code does. Clicking from one
+///     session to another therefore repainted both.
+///
+/// Worse than the spinner: the same block clears `waiting_for_input`, and
+/// an agent rings its notification bell exactly once. A refit or a click
+/// landing after the question took the only badge saying a human was
+/// needed off every surface, permanently.
+///
+/// Long enough to cover a repaint that dribbles in over several reads,
+/// and far below HEURISTIC_QUIET_PERIOD so an agent that really is
+/// working is picked up by its very next chunk. A resize only opens the
+/// window when the size CHANGED: the kernel raises no SIGWINCH for a
+/// resize to the size the PTY already has, so there is no repaint to
+/// forgive, and the app refits far more often than the geometry moves.
+const PROVOKED_REDRAW_GRACE: Duration = Duration::from_millis(400);
+
+/// The two reports a terminal emulator sends about ITSELF once the
+/// program has enabled DEC mode 1004 (focus in, focus out).
+///
+/// Recognised by the whole payload, never by a prefix: xterm emits each
+/// one as its own data event, and three bytes a human typed arrive as
+/// three separate ones. So an exact match is a report and nothing else --
+/// which matters, because this is what separates the terminal describing
+/// itself from the human typing.
+fn is_focus_report(data: &[u8]) -> bool {
+    data == b"\x1b[I" || data == b"\x1b[O"
+}
+
 /// Shared between a session's pump thread and its heuristic idle-timeout
 /// companion thread (spawn_heuristic_idle_timer). last_activity,
 /// heuristic_working, and running all live behind one lock so a
@@ -1145,6 +1187,24 @@ pub struct SessionManager {
     /// A session already in here is skipped, never queued behind:
     /// whatever the other delivery is doing ends the idleness anyway.
     delivering_queued: Mutex<std::collections::HashSet<String>>,
+    /// The size each session's PTY was last set to.
+    ///
+    /// Remembered so a resize that changes nothing can be told from one
+    /// that does: `resize_session` is called far more often than the
+    /// geometry moves (every mount, every refit), the kernel raises a
+    /// SIGWINCH only on a real change, and a grace window opened by a
+    /// no-op would forgive output nothing provoked. See
+    /// `PROVOKED_REDRAW_GRACE`.
+    last_pty_size: Mutex<HashMap<String, (u16, u16)>>,
+    /// When gavin last did something to a session that makes the program
+    /// in it repaint on its own account -- a real size change, or a focus
+    /// report written into it.
+    ///
+    /// Kept on the manager rather than beside the pump's own heuristic
+    /// state because the writers are request threads, and read by the
+    /// pump, which must not have to lock `sessions` to decide what a
+    /// chunk of output means.
+    provoked_repaint_at: Mutex<HashMap<String, Instant>>,
 }
 
 impl SessionManager {
@@ -1168,6 +1228,8 @@ impl SessionManager {
             gavin_watchers: Mutex::new(HashMap::new()),
             gavin_watch_generation: Mutex::new(HashMap::new()),
             delivering_queued: Mutex::new(std::collections::HashSet::new()),
+            last_pty_size: Mutex::new(HashMap::new()),
+            provoked_repaint_at: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2000,6 +2062,21 @@ impl SessionManager {
                 .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
             session.writer_handle()
         };
+        // A focus report is the terminal describing ITSELF, and every
+        // rule below this point is about the human typing -- so it takes
+        // none of them. It does not acknowledge the failure on screen
+        // (nobody read it), it does not clear the restored badge (nobody
+        // took the tab over), and the repaint it provokes is not the
+        // agent working: xterm sends one whenever its textarea gains or
+        // loses focus, so clicking from one session to another used to
+        // put a spinner on both. Written all the same -- the program
+        // asked for these, and Claude Code uses them to decide whether a
+        // notification is even worth sending.
+        if is_focus_report(data) {
+            self.provoke_repaint(id);
+            writer.lock().unwrap().write_all(data)?;
+            return Ok(());
+        }
         // BEFORE the bytes reach the PTY, and that ordering is the whole
         // correctness of it. Whatever failure is on screen at the moment
         // the human types, they have read -- they are typing at the
@@ -2149,6 +2226,22 @@ impl SessionManager {
                 .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
             session.resize(cols, rows)?;
         }
+        // Recorded before the screen model follows, and deliberately only
+        // when the size MOVED: this is the window in which the repaint
+        // the SIGWINCH provokes must not be mistaken for the agent
+        // working (see PROVOKED_REDRAW_GRACE). A first resize of a
+        // session this daemon has not sized before always counts as a
+        // move -- the PTY is spawned at 80x24 and the app's first
+        // measurement is essentially never that.
+        let moved = self
+            .last_pty_size
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), (cols, rows))
+            != Some((cols, rows));
+        if moved {
+            self.provoke_repaint(id);
+        }
         // The screen model has to follow the PTY, or a snapshot is rendered at
         // a size the session itself stopped believing in -- and the client that
         // asked for it is the one that just changed the size.
@@ -2178,6 +2271,21 @@ impl SessionManager {
         self.forget_session(id)
     }
 
+    /// Opens the window in which this session's output is the program
+    /// answering something gavin did to its terminal, not the agent.
+    fn provoke_repaint(&self, id: &str) {
+        self.provoked_repaint_at.lock().unwrap().insert(id.to_string(), Instant::now());
+    }
+
+    /// Whether that window is still open. See `PROVOKED_REDRAW_GRACE`.
+    fn repainting_for_the_terminal(&self, id: &str) -> bool {
+        self.provoked_repaint_at
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|at| at.elapsed() < PROVOKED_REDRAW_GRACE)
+    }
+
     /// Drops every trace of a session the daemon is no longer hosting:
     /// its registry row (and, with it, the follow-ups queued against it)
     /// and the PTY it was running in.
@@ -2203,6 +2311,8 @@ impl SessionManager {
     /// to act moves off.
     fn forget_session(&self, id: &str) -> anyhow::Result<()> {
         self.registry.lock().unwrap().remove(id)?;
+        self.last_pty_size.lock().unwrap().remove(id);
+        self.provoked_repaint_at.lock().unwrap().remove(id);
         // Bound before the `if let` so the map's guard is dropped at the
         // end of this statement rather than held across the spawn.
         let session = self.sessions.lock().unwrap().remove(id);
@@ -2786,11 +2896,30 @@ impl SessionManager {
                         }
 
                         {
+                            // Read before `inner` is locked: a different
+                            // mutex, and this block's rule is that the
+                            // heuristic lock is taken once and held
+                            // across the whole decide-and-emit sequence.
+                            let repainting = manager.repainting_for_the_terminal(&id);
                             let mut inner = heuristic.inner.lock().unwrap();
                             inner.last_activity = Instant::now();
                             if heuristic.seen_osc133.load(Ordering::SeqCst) {
                                 // The shell speaks for itself now, and
                                 // that is a one-way switch.
+                            } else if repainting {
+                                // The terminal just said something about
+                                // itself into this session -- a new size,
+                                // or a focus report -- so these bytes are
+                                // the program answering that, not the
+                                // agent doing anything. Ahead of BOTH
+                                // branches below on purpose: this must
+                                // neither report `working` nor -- the
+                                // more damaging half -- clear
+                                // `waiting_for_input`, which is the one
+                                // state nothing will say twice. The
+                                // explicit signals underneath (OSC 133,
+                                // the notification bell) are untouched;
+                                // only the guess is suspended.
                             } else if !heuristic.applies {
                                 // A plain terminal: output claims
                                 // nothing. It does still END a wait --
@@ -6274,6 +6403,283 @@ mod tests {
             saw_working_then_idle,
             "expected a \"working\" StatusChanged followed eventually by \"idle\", got: {statuses:?}"
         );
+    }
+
+    /// A session whose program repaints the moment its PTY is resized --
+    /// what every full-screen agent CLI does, and the whole reason a
+    /// refit used to read as work. `read` rather than `sleep` in the
+    /// loop so the trap runs the instant SIGWINCH lands instead of at
+    /// the end of the current second.
+    const REPAINTS_ON_RESIZE: &str =
+        "trap 'printf gavin_redraw' WINCH; printf gavin_painted; while :; do read _unused; done";
+
+    fn create_session_with(socket_path: &std::path::Path, command: &str) -> String {
+        let mut stream = UnixStream::connect(socket_path).unwrap();
+        let created = request(
+            &mut stream,
+            &Request::CreateSession {
+                workspace_path: "/tmp/ws".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some(command.to_string()),
+            },
+        );
+        match created {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        }
+    }
+
+    /// Everything this attached connection is told over `window`, split
+    /// into the statuses and whether the repaint marker came through.
+    ///
+    /// The marker matters as much as the statuses: without it a passing
+    /// assertion could just mean the resize never reached the program,
+    /// which would make the whole test vacuous.
+    fn collect_after(
+        reader: &mut BufReader<UnixStream>,
+        id: &str,
+        window: Duration,
+    ) -> (Vec<String>, bool) {
+        let deadline = std::time::Instant::now() + window;
+        let mut statuses = Vec::new();
+        let mut repainted = false;
+        while std::time::Instant::now() < deadline {
+            match read_message::<_, Response>(reader) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
+                    statuses.push(status)
+                }
+                Ok(Some(Response::Output { id: rid, data }))
+                    if rid == id && data.contains("gavin_redraw") =>
+                {
+                    repainted = true
+                }
+                Ok(_) => {}
+                // A read timeout -- keep waiting until the deadline.
+                Err(_) => {}
+            }
+        }
+        (statuses, repainted)
+    }
+
+    /// Waits for `want` to show up on this connection.
+    ///
+    /// Takes the reader rather than the stream, and every caller shares
+    /// ONE: a `BufReader` dropped mid-stream takes whatever it had
+    /// already pulled out of the socket with it, and the next one starts
+    /// reading in the middle of a line.
+    fn wait_for_status(reader: &mut BufReader<UnixStream>, id: &str, want: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(Response::StatusChanged { id: rid, status })) =
+                read_message::<_, Response>(reader)
+            {
+                if rid == id && status == want {
+                    return;
+                }
+            }
+        }
+        panic!("never saw StatusChanged{{status:{want:?}}} for {id}");
+    }
+
+    /// An attached connection and its one reader, with a read timeout so
+    /// a silent daemon ends a wait at its deadline instead of blocking
+    /// forever.
+    fn attach_reader(socket_path: &std::path::Path, id: &str) -> BufReader<UnixStream> {
+        let mut stream = UnixStream::connect(socket_path).unwrap();
+        write_message(&mut stream, &Request::Attach { id: id.to_string() }).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        BufReader::new(stream)
+    }
+
+    /// The bug: one pane geometry change refits every tab in the pane, so
+    /// a single click that opened a page resized half a dozen live agents
+    /// at once -- and each one's SIGWINCH repaint was read as that agent
+    /// starting work. The sidebar, the tab bar and every board card bound
+    /// to those sessions then said `working` about agents that were
+    /// sitting still.
+    #[test]
+    fn a_resize_is_not_the_agent_working() {
+        let (socket_path, _dir) = start_test_server();
+        let id = create_session_with(&socket_path, REPAINTS_ON_RESIZE);
+
+        let mut attached = attach_reader(&socket_path, &id);
+        // The first paint is real output and legitimately reports
+        // working; wait for the quiet timer to take it back to idle, so
+        // what follows can only have come from the resize. Both halves,
+        // in order: Attach opens with a baseline `idle`, and settling on
+        // that one would resize a session whose shell has not started.
+        wait_for_status(&mut attached, &id, "working");
+        wait_for_status(&mut attached, &id, "idle");
+
+        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        assert!(matches!(
+            request(&mut commands, &Request::ResizeSession { id: id.clone(), cols: 100, rows: 30 }),
+            Response::Ok
+        ));
+
+        let (statuses, repainted) = collect_after(&mut attached, &id, Duration::from_millis(1500));
+        assert!(repainted, "the session never repainted, so this proves nothing about resizes");
+        assert!(
+            statuses.is_empty(),
+            "a resize the daemon itself asked for was reported as the agent working: {statuses:?}"
+        );
+    }
+
+    /// The more damaging half. `waiting_for_input` is cleared by renewed
+    /// output, and an agent rings its notification bell exactly once --
+    /// so a refit landing after the question wiped the only badge saying
+    /// a human was needed, permanently.
+    #[test]
+    fn a_resize_never_answers_a_question_the_agent_asked() {
+        let (socket_path, _dir) = start_test_server();
+        let id = create_session_with(
+            &socket_path,
+            "trap 'printf gavin_redraw' WINCH; \
+             printf '\\033]777;notify;Claude Code;needs your permission\\007'; \
+             while :; do read _unused; done",
+        );
+
+        let mut attached = attach_reader(&socket_path, &id);
+        wait_for_status(&mut attached, &id, "waiting_for_input");
+        // Past HEURISTIC_QUIET_PERIOD, so the wait is settled and no
+        // timer is about to speak for this session either way.
+        std::thread::sleep(HEURISTIC_QUIET_PERIOD + Duration::from_millis(500));
+
+        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        request(&mut commands, &Request::ResizeSession { id: id.clone(), cols: 100, rows: 30 });
+
+        let (statuses, repainted) = collect_after(&mut attached, &id, Duration::from_millis(1500));
+        assert!(repainted, "the session never repainted, so this proves nothing about resizes");
+        assert!(
+            statuses.is_empty(),
+            "a resize took the agent's question off the board: {statuses:?}"
+        );
+        assert_eq!(
+            manager_status(&socket_path, &id),
+            "waiting_for_input",
+            "the stored status must still say a human is needed"
+        );
+    }
+
+    /// The other side of the window: it opens only when the size actually
+    /// MOVED. The app refits far more often than the geometry changes
+    /// (every mount, every ResizeObserver tick), the kernel raises no
+    /// SIGWINCH for a resize to the size the PTY already has, and a
+    /// window opened by one of those would forgive output nothing
+    /// provoked -- real work, gone quiet for a moment.
+    #[test]
+    fn a_resize_that_changes_nothing_still_lets_the_agent_speak() {
+        let (socket_path, _dir) = start_test_server();
+        // `cat` deliberately: it ignores SIGWINCH and paints nothing at
+        // startup, so this test has no repaint whose arrival it would
+        // have to race. What it asserts is about the WINDOW, not about
+        // repainting, and the two resize tests above already cover that
+        // half against a program that does repaint.
+        let id = create_session_with(&socket_path, "cat");
+        let mut attached = attach_reader(&socket_path, &id);
+
+        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        // A real move, to give the PTY a size that can then be asked for
+        // a second time -- and, since nothing answers it, long enough
+        // ago that its window has certainly closed.
+        request(&mut commands, &Request::ResizeSession { id: id.clone(), cols: 100, rows: 30 });
+        std::thread::sleep(PROVOKED_REDRAW_GRACE + Duration::from_millis(300));
+        collect_after(&mut attached, &id, Duration::from_millis(300));
+
+        // The same size again: nothing moves, so no SIGWINCH is raised,
+        // so there is no repaint to forgive -- and the very next byte of
+        // genuine output must still count.
+        request(&mut commands, &Request::ResizeSession { id: id.clone(), cols: 100, rows: 30 });
+        write_message(
+            &mut commands,
+            &Request::WriteInput { id: id.clone(), data: "gavin_typed\n".to_string() },
+        )
+        .unwrap();
+
+        let (statuses, _) = collect_after(&mut attached, &id, Duration::from_secs(3));
+        assert!(
+            statuses.first().map(String::as_str) == Some("working"),
+            "output right after a no-op resize must still report working, got: {statuses:?}"
+        );
+    }
+
+    /// A session whose program repaints when the terminal reports a
+    /// focus change into it -- what Claude Code does (it enables DEC mode
+    /// 1004 at startup; verified against the real CLI). `stty raw -echo`
+    /// so the tty itself does not echo the report back, exactly as a TUI
+    /// in raw mode leaves it: the only output is the program's own.
+    const REPAINTS_ON_FOCUS: &str = "printf gavin_painted; stty raw -echo; \
+         while head -c 3 >/dev/null; do printf gavin_redraw; done";
+
+    /// Clicking from one session to another focuses one terminal and
+    /// blurs another, so xterm writes a focus report into BOTH -- and the
+    /// repaint each program answers with used to read as that agent
+    /// starting work. Nothing had happened but a change of keyboard
+    /// focus.
+    #[test]
+    fn a_focus_report_is_not_the_agent_working() {
+        let (socket_path, _dir) = start_test_server();
+        let id = create_session_with(&socket_path, REPAINTS_ON_FOCUS);
+
+        let mut attached = attach_reader(&socket_path, &id);
+        wait_for_status(&mut attached, &id, "working");
+        wait_for_status(&mut attached, &id, "idle");
+
+        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        // Exactly what xterm sends when its textarea loses focus.
+        request(
+            &mut commands,
+            &Request::WriteInput { id: id.clone(), data: "\u{1b}[O".to_string() },
+        );
+
+        let (statuses, repainted) = collect_after(&mut attached, &id, Duration::from_millis(1500));
+        assert!(repainted, "the session never repainted, so this proves nothing about focus");
+        assert!(
+            statuses.is_empty(),
+            "a focus report the terminal sent about itself was reported as the agent working: {statuses:?}"
+        );
+    }
+
+    /// The other half of the same rule: a focus report is not the human
+    /// taking the tab over, so it must not dismiss the ↻ badge that says
+    /// this session came back as a bare shell. Only typing does that.
+    #[test]
+    fn a_focus_report_does_not_dismiss_the_restored_badge() {
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "shell-1",
+            "/tmp",
+            None,
+            SessionStatus::Idle,
+        );
+        let manager = recovered_manager(&dir);
+        assert!(manager.list_sessions().unwrap()[0].restored, "precondition: the row is restored");
+
+        manager.write_input("shell-1", b"\x1b[O").unwrap();
+        assert!(
+            manager.list_sessions().unwrap()[0].restored,
+            "a focus report dismissed the restored badge -- nobody typed anything"
+        );
+
+        manager.write_input("shell-1", b"x").unwrap();
+        assert!(
+            !manager.list_sessions().unwrap()[0].restored,
+            "typing must still dismiss it"
+        );
+    }
+
+    /// The persisted status, read back the way any other client would.
+    fn manager_status(socket_path: &std::path::Path, id: &str) -> String {
+        let mut stream = UnixStream::connect(socket_path).unwrap();
+        match request(&mut stream, &Request::ListSessions) {
+            Response::SessionList { sessions } => sessions
+                .into_iter()
+                .find(|s| s.id == id)
+                .map(|s| s.status)
+                .unwrap_or_else(|| panic!("session {id} is gone")),
+            other => panic!("expected SessionList, got {other:?}"),
+        }
     }
 
     fn session_record(command: Option<&str>, interrupted: bool) -> SessionRecord {
