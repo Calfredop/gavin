@@ -5,6 +5,7 @@
   import { queuedInputsById, layoutState } from "./layoutState";
   import { stripVisible } from "./queuedInput";
   import { queueTargetFor } from "./queuedInputActions";
+  import { fitWorthTaking } from "./terminalFit";
   import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "./terminalRegistry";
   import type { Terminal } from "@xterm/xterm";
   import type { FitAddon } from "@xterm/addon-fit";
@@ -37,8 +38,19 @@
   // Called by the parent Pane via bind:this whenever this tab's shared
   // pane rectangle changes size -- every tab in a pane gets resized
   // together, not just the active one (see Global Constraints).
+  //
+  // The measurement is checked BEFORE fitAddon.fit(), not after: the
+  // damage is inside fit() itself (it reflows the terminal to the shape
+  // FitAddon proposed), so a guard on the reported cols/rows would be too
+  // late. Every caller -- this pane's own effects, Pane's ResizeObserver,
+  // MainAgentPanel, HomeHubView -- comes through here, so this one check
+  // covers the whole family. See fitWorthTaking for what an empty box
+  // does to a running agent.
   export function fit(): Promise<void> {
     if (!ready) return Promise.resolve();
+    if (!fitWorthTaking(mountPoint.clientWidth, mountPoint.clientHeight)) {
+      return Promise.resolve();
+    }
     fitAddon.fit();
     const { cols, rows } = term;
     return backend.resizeSession(sessionId, cols, rows).catch(() => {});
