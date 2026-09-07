@@ -178,7 +178,11 @@ pub fn agent_usage(
 
     let (report, park) = match probe {
         UsageProbe::AnthropicOauth => anthropic_usage(now),
-        UsageProbe::CodexRollout => (codex_usage(&codex_sessions_dir()), None),
+        // No home means no rollout files to read, which is the same
+        // "nothing measured yet" the missing-directory arm reports.
+        UsageProbe::CodexRollout => {
+            (codex_usage(&codex_sessions_dir().unwrap_or_default()), None)
+        }
     };
 
     let mut map = cache.0.lock().unwrap();
@@ -228,22 +232,45 @@ fn claude_version() -> String {
 /// Returns the secret; every caller must keep it out of argv, logs and
 /// anything that crosses to the frontend.
 fn claude_token() -> Option<String> {
-    let from_keychain = Command::new("security")
+    let path = home_dir()?.join(".claude").join(".credentials.json");
+    token_from_credentials(&credentials_blob(keychain_credentials(), &path)?)
+}
+
+/// Which of the two sources actually answers.
+///
+/// A function of its inputs so the precedence is testable without a
+/// Keychain: which source wins is a decision, and the file arm is the
+/// ONLY arm off macOS, where nothing would otherwise exercise it.
+fn credentials_blob(keychain: Option<String>, file: &Path) -> Option<String> {
+    match keychain {
+        Some(raw) => Some(raw),
+        None => std::fs::read_to_string(file).ok(),
+    }
+}
+
+/// The Keychain copy, on the one OS that has a Keychain.
+///
+/// `security(1)` is a macOS binary and there is no Linux equivalent to
+/// fall back to: Claude Code stores the blob in `~/.claude/.credentials.json`
+/// there, plainly, which is why `credentials_blob`'s file arm is the
+/// whole story off macOS. Shelling out anyway would spend a process
+/// launch per probe on a command that cannot exist -- and on a machine
+/// that happened to have some unrelated `security` on PATH, would run
+/// it.
+#[cfg(target_os = "macos")]
+fn keychain_credentials() -> Option<String> {
+    Command::new("security")
         .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+}
 
-    let raw = match from_keychain {
-        Some(s) => s,
-        None => {
-            let path = home_dir()?.join(".claude").join(".credentials.json");
-            std::fs::read_to_string(path).ok()?
-        }
-    };
-    token_from_credentials(&raw)
+#[cfg(not(target_os = "macos"))]
+fn keychain_credentials() -> Option<String> {
+    None
 }
 
 /// Pull `claudeAiOauth.accessToken` out of a credentials blob. Split out
@@ -480,12 +507,14 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 // ---- Codex ------------------------------------------------------------------
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
+use crate::home::home_dir;
 
-fn codex_sessions_dir() -> PathBuf {
-    home_dir().unwrap_or_default().join(".codex").join("sessions")
+/// `None` when there is no home to look under, rather than a relative
+/// `.codex/sessions` -- the callers treat a missing directory as "no
+/// data yet", which is the right answer, and a relative one would read
+/// whatever happens to sit under the app's cwd instead.
+fn codex_sessions_dir() -> Option<PathBuf> {
+    Some(home_dir()?.join(".codex").join("sessions"))
 }
 
 /// The newest `token_count` event that actually carried rate limits.
@@ -590,6 +619,40 @@ mod tests {
             UsageReport::Ready { windows, .. } => windows,
             _ => panic!("expected a ready report"),
         }
+    }
+
+    #[test]
+    fn the_credentials_file_answers_when_there_is_no_keychain() {
+        // The whole of the Linux path, and the macOS not-signed-in-to-
+        // the-Keychain path: `keychain_credentials()` is a compile-time
+        // `None` off macOS, so the file arm is what has to fill the
+        // usage panel there.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".credentials.json");
+        std::fs::write(&file, r#"{"claudeAiOauth":{"accessToken":"sk-from-file"}}"#).unwrap();
+
+        let raw = credentials_blob(None, &file).expect("the file is the fallback");
+        assert_eq!(token_from_credentials(&raw).as_deref(), Some("sk-from-file"));
+    }
+
+    #[test]
+    fn the_keychain_wins_when_it_answers_and_a_missing_file_is_no_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".credentials.json");
+        std::fs::write(&file, r#"{"claudeAiOauth":{"accessToken":"sk-stale"}}"#).unwrap();
+
+        let raw = credentials_blob(Some(r#"{"claudeAiOauth":{"accessToken":"sk-fresh"}}"#.to_string()), &file);
+        assert_eq!(token_from_credentials(&raw.unwrap()).as_deref(), Some("sk-fresh"));
+
+        // Neither source: the panel says "run `claude` and sign in"
+        // rather than sending a request with no Authorization header.
+        assert_eq!(credentials_blob(None, &dir.path().join("absent.json")), None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn no_keychain_is_consulted_off_macos() {
+        assert_eq!(keychain_credentials(), None);
     }
 
     #[test]
