@@ -33,6 +33,7 @@ import {
 import { mergeDiscoveredModels } from "./agentModel";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
+import { normalizeGitTracking } from "./gitTracking";
 import type { BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
@@ -1299,6 +1300,14 @@ export async function bootstrap(): Promise<void> {
     .then((enabled) => autoCommitDefault.set(normalizeAutoCommit(enabled)))
     .catch(() => {});
 
+  // Normalized on the way in for the same reason, and it matters more
+  // here: this one decides what a fresh `.gitignore` says, and a garbled
+  // value must read as "nobody chose" rather than as "do not track".
+  void backend
+    .getGitTrackingDefault()
+    .then((tracked) => gitTrackingDefault.set(normalizeGitTracking(tracked)))
+    .catch(() => {});
+
   // Best-effort like the rest: an empty table reads as "no level names
   // an agent", which is exactly how every card behaved before the
   // complexity field existed, so a failed fetch degrades to the old
@@ -1582,6 +1591,16 @@ export const autoCommitDefault = writable<boolean | null>(null);
 /// that changing either setting moves the next card in the same tick, and
 /// so the two settings panels and the composer can never disagree about
 /// which one wins.
+/// The app-wide git-tracking default from config.json, or null when the
+/// user has never set one -- the same three-state as autoCommitDefault
+/// above, and for the same reason.
+///
+/// There is deliberately no per-workspace companion. A workspace that
+/// exists keeps its answer in its own repo's `.gitignore`, which the
+/// Settings panel reads through the backend on demand; a store here would
+/// be a copy of a file the human can edit behind the app's back.
+export const gitTrackingDefault = writable<boolean | null>(null);
+
 export const newCardAutoCommit = derived(
   [layoutState, autoCommitDefault],
   ([$layout, $default]) =>
@@ -1984,6 +2003,22 @@ export async function setAutoCommitDefault(enabled: boolean | null): Promise<voi
   try {
     await backend.setAutoCommit(enabled);
     autoCommitDefault.set(enabled);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// The app-wide git-tracking default. Machine-local beside the theme and
+/// the auto-commit default, so it goes straight to config.json through
+/// Tauri and never touches the daemon.
+///
+/// It changes nothing that already exists, deliberately. Every open
+/// workspace's answer is a rule in its own repository, and moving a
+/// preference is not a licence to rewrite `.gitignore` in each of them.
+export async function setGitTrackingDefault(tracked: boolean | null): Promise<void> {
+  try {
+    await backend.setGitTrackingDefault(tracked);
+    gitTrackingDefault.set(tracked);
   } catch (e) {
     setError(String(e));
   }

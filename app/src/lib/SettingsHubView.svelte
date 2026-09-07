@@ -28,6 +28,13 @@
     autoCommitToSelect,
     resolveAutoCommit,
   } from "./autoCommit";
+  import {
+    canToggleTracking,
+    trackingSummary,
+    untrackConfirm,
+    type ConfirmCopy,
+    type GavinTracking,
+  } from "./gitTracking";
   import { gavinTrees } from "./gavinState";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "./daemonCompat";
   import { modelOptions, CUSTOM_MODEL } from "./agentModel";
@@ -152,6 +159,74 @@
   /// panel must never show a box whose selected row is secretly doing
   /// something.
   const inheritedAutoCommit = $derived(resolveAutoCommit(undefined, $autoCommitDefault));
+
+  // --- git --------------------------------------------------------------
+  /// What git says about gavin's files in THIS root. Read on demand, like
+  /// the Superpowers row above and for the same reason -- the answer lives
+  /// in a `.gitignore` the human may have edited in another window, so a
+  /// value cached at mount would be a claim rather than a reading.
+  ///
+  /// `null` while a read is out. The switch is disabled until one lands:
+  /// rendering "tracked" for an unknown state is how a click lands on the
+  /// opposite of what the human saw.
+  let tracking = $state<GavinTracking | null>(null);
+  let trackingBusy = $state(false);
+  let trackingError = $state<string | null>(null);
+  let untrackPrompt = $state<ConfirmCopy | null>(null);
+  let trackToken = 0;
+  async function readTracking(): Promise<void> {
+    const root = ws?.rootPath;
+    // Cleared before the token bumps, exactly as readSuperpowers does: a
+    // workspace switch must not leave the last root's answer on screen,
+    // nor let its in-flight read land under the new one.
+    tracking = null;
+    trackingError = null;
+    const mine = ++trackToken;
+    if (!root) return;
+    try {
+      const next = await backend.gavinGitTracking(root);
+      if (mine === trackToken) tracking = next;
+    } catch (e) {
+      if (mine === trackToken) trackingError = String(e);
+    }
+  }
+  $effect(() => {
+    void ws?.rootPath;
+    void readTracking();
+  });
+
+  /// Applies the switch. `untrack` is the human's separate answer about
+  /// the index, never the toggle's own implication -- turning tracking off
+  /// writes a rule, and staging deletions in a repo somebody may be
+  /// mid-commit in is a second, larger thing to have agreed to.
+  async function applyTracking(tracked: boolean, untrack: boolean): Promise<void> {
+    const root = ws?.rootPath;
+    if (!root) return;
+    untrackPrompt = null;
+    trackingBusy = true;
+    trackingError = null;
+    const mine = ++trackToken;
+    try {
+      const next = await backend.setGavinGitTracking(root, tracked, untrack);
+      if (mine === trackToken) tracking = next;
+    } catch (e) {
+      if (mine === trackToken) trackingError = String(e);
+    } finally {
+      if (mine === trackToken) trackingBusy = false;
+    }
+  }
+
+  /// The switch itself. Turning it OFF in a repo that has already
+  /// committed some of gavin's files asks first, because the useful answer
+  /// there ("and take them out of git") stages a change the human has to
+  /// see coming. Everywhere else it just acts.
+  function toggleTracking(tracked: boolean): void {
+    if (!tracked && (tracking?.indexed ?? 0) > 0) {
+      untrackPrompt = untrackConfirm(tracking?.indexed ?? 0);
+      return;
+    }
+    void applyTracking(tracked, false);
+  }
 
   // --- hub tabs ---------------------------------------------------------
   /// The eye list opens in a panel of its own, shared with app Settings:
@@ -552,6 +627,35 @@
         Whether a new task or plan card in this workspace starts asking the agent to commit its work
         when it finishes. Every card can still be switched either way on the card itself.
       </p>
+    </section>
+
+    <section>
+      <h3>Git</h3>
+      {#if !hasRoot}
+        <!-- Same shape the Agent section takes: without a root there is no
+             repository to answer for, and a disabled switch beside a
+             "Checking…" that never resolves reads as a hung panel. -->
+        <p class="hint">Bind a root folder — there is no repository to track anything in yet.</p>
+      {:else}
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={tracking?.tracked ?? false}
+            disabled={trackingBusy || !canToggleTracking(tracking)}
+            onchange={(e) => toggleTracking(e.currentTarget.checked)}
+          />
+          Track gavin's files in git
+        </label>
+        <p class="hint">
+          .gavin-root/ and every .gavin/ folder — the PRD, the cards, the rails. Off writes an
+          ignore block into this repo's .gitignore; the files stay on disk either way and gavin goes
+          on reading them.
+        </p>
+        <p class="hint">{trackingSummary(tracking)}</p>
+        {#if trackingError}
+          <p class="hint error">{trackingError}</p>
+        {/if}
+      {/if}
     </section>
 
     <section>
@@ -1038,6 +1142,25 @@
       lines={restartConfirmLines($daemonCompat)}
       choices={[{ label: "Restart daemon", danger: true, onPick: () => void restartDaemon() }]}
       onCancel={() => (confirmingRestart = false)}
+    />
+  {/if}
+
+  <!-- Two real answers, so a ConfirmPrompt rather than an askConfirm:
+       "ignore them but leave git alone" is a position somebody holds
+       (a shared repo where the removal belongs in its own commit), not a
+       softer version of Cancel. Neither is marked `danger` -- nothing is
+       deleted and nothing is committed, so Enter on the last choice is
+       safe by the prompt's own rule. -->
+  {#if untrackPrompt}
+    {@const prompt = untrackPrompt}
+    <ConfirmPrompt
+      title={prompt.title}
+      lines={prompt.lines}
+      choices={[
+        { label: "Ignore only", onPick: () => void applyTracking(false, false) },
+        { label: prompt.confirmLabel, onPick: () => void applyTracking(false, true) },
+      ]}
+      onCancel={() => (untrackPrompt = null)}
     />
   {/if}
 

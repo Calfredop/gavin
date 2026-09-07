@@ -1,6 +1,8 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { setWorkspaceRoot, switchWorkspaceView } from "./layoutState";
+  import { setWorkspaceRoot, switchWorkspaceView, gitTrackingDefault } from "./layoutState";
+  import { INIT_TRACKING_LABEL, resolveGitTracking } from "./gitTracking";
+  import { applyInitTracking } from "./workspaceOpen";
   import { gavinTrees } from "./gavinState";
   import { agentProfilesStore, agentModelDefaultsStore } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
@@ -20,6 +22,10 @@
 
   // pendingRoot is non-null while the "Initialize gavin here?" modal is up.
   let pendingRoot = $state<string | null>(null);
+  // The modal's git tick-box. Seeded from the app-wide default when the
+  // modal opens rather than read live, so a change to the default made in
+  // another window mid-question does not move the box under the pointer.
+  let trackInGit = $state(true);
   let errorMessage = $state<string | null>(null);
 
   const tree = $derived($gavinTrees[workspace.id]);
@@ -46,6 +52,7 @@
     if (await backend.gavinRootExists(picked)) {
       await setWorkspaceRoot(workspace.id, picked);
     } else {
+      trackInGit = resolveGitTracking($gitTrackingDefault);
       pendingRoot = picked;
     }
   }
@@ -60,6 +67,9 @@
       errorMessage = `Couldn't initialize gavin: ${e}`;
       return;
     }
+    // Shared with the sidebar's own init prompt, so the two routes into a
+    // fresh workspace cannot answer the git question differently.
+    await applyInitTracking(root, trackInGit);
     await setWorkspaceRoot(workspace.id, root);
   }
 
@@ -152,6 +162,10 @@
       Creates .gavin-root/ with a PRD template, config, and plans/docs/specs folders. Nothing
       existing is overwritten.
     </p>
+    <label class="track">
+      <input type="checkbox" bind:checked={trackInGit} />
+      {INIT_TRACKING_LABEL}
+    </label>
     <div class="actions">
       <button type="button" onclick={confirmInit}>Initialize</button>
       <button type="button" onclick={bindWithoutInit}>Bind without initializing</button>
@@ -175,6 +189,14 @@
      it does not butt against the path. */
   .settings > * + * {
     margin-top: 8px;
+  }
+  .track {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 0;
+    font-size: 0.85em;
+    color: var(--text-subtle);
   }
   .banner {
     display: flex;

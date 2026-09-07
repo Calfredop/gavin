@@ -84,7 +84,13 @@ export async function openWorkspaceFolder(): Promise<void> {
 /// BEFORE the workspace exists, for the reason WorkspaceRootControl
 /// states about its own order: the watch started by binding should see
 /// the skeleton in its first push rather than an empty folder.
-export async function initAndOpen(pending: PendingOpen): Promise<void> {
+///
+/// `trackInGit` is the tick-box beside the prompt, seeded from the
+/// app-wide default. Applied here rather than inside `init_gavin_root`
+/// because the daemon scaffolds the folder and the ignore rule is the
+/// app's business: a `.gitignore` is a fact about this checkout, and the
+/// daemon serves several.
+export async function initAndOpen(pending: PendingOpen, trackInGit: boolean): Promise<void> {
   pendingOpen.set(null);
   try {
     await backend.initGavinRoot(pending.rootPath, pending.name);
@@ -95,7 +101,31 @@ export async function initAndOpen(pending: PendingOpen): Promise<void> {
     });
     return;
   }
+  await applyInitTracking(pending.rootPath, trackInGit);
   await bindNewWorkspace(pending.rootPath);
+}
+
+/// Writes the ignore rule when the human declined tracking, and does
+/// nothing at all when they did not.
+///
+/// Nothing, deliberately: "tracked" is what a repo with no rule already
+/// does, so an "on" has nothing to write, and a folder outside a git repo
+/// has nowhere to write it. `untrack` is false because init has just
+/// created these files -- there is no index entry for them to remove, and
+/// asking the backend to stage deletions during a folder-open is a
+/// surprise nobody consented to.
+///
+/// Failures are swallowed on purpose. The workspace is scaffolded and
+/// about to open; a `.gitignore` that could not be written is a line in
+/// Settings › Git away from being fixed, and is not worth a modal over an
+/// init that otherwise worked.
+export async function applyInitTracking(rootPath: string, trackInGit: boolean): Promise<void> {
+  if (trackInGit) return;
+  try {
+    await backend.setGavinGitTracking(rootPath, false, false);
+  } catch {
+    // See above.
+  }
 }
 
 /// Opens the folder without scaffolding anything. A perfectly ordinary

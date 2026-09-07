@@ -604,7 +604,37 @@ pub struct AppConfig {
     /// compile error rather than a silently swapped value.
     #[serde(default)]
     pub agent_defaults: AgentDefaultsConfig,
+    /// Whether a workspace gavin INITIALISES starts with its own files
+    /// tracked by git. The ninth carry-through field: like
+    /// session_names/file_tabs/board_tabs/theme/agent_models/
+    /// removed_workspaces/agent_pause/superpowers/agent_defaults it must be
+    /// carried through `persist_workspaces`, or it silently resets on the
+    /// next save.
+    ///
+    /// A default and nothing more. Once a workspace exists, the answer for
+    /// it lives in that repo's `.gitignore`, where git already keeps it --
+    /// see `git::tracking`. Storing the per-workspace state here as well
+    /// would be a second copy free to disagree with the file every other
+    /// tool reads.
+    #[serde(default)]
+    pub git_tracking: GitTrackingDefault,
 }
+
+/// The app-wide git-tracking default, wrapped in a type of its own.
+///
+/// A bare `Option<bool>` would sit beside `auto_commit` in
+/// `persist_workspaces`' argument list with exactly the same shape, and
+/// that list already carries the warning about what two same-shaped
+/// positionals do when someone transposes them: nothing the compiler can
+/// see. This one is a compile error instead.
+///
+/// `None` means nobody has chosen, and gavin's own default (tracked)
+/// applies -- absence rather than `true`, the same convention `theme`,
+/// `terminal_font_size` and `auto_commit` follow, so a later change to
+/// that default reaches every install that never expressed a preference.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct GitTrackingDefault(pub Option<bool>);
 
 /// The human's word about Superpowers for one workspace. A distinct type
 /// rather than a `String` so it cannot be transposed with the three
@@ -797,6 +827,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -824,6 +855,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -865,6 +897,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -981,6 +1014,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1027,6 +1061,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1059,6 +1094,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1094,6 +1130,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1143,6 +1180,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1167,6 +1205,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(&nested, &config).unwrap();
 
@@ -1199,6 +1238,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -1342,6 +1382,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1384,6 +1425,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1421,6 +1463,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1483,6 +1526,7 @@ mod tests {
             agent_pause: None,
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
+            git_tracking: GitTrackingDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

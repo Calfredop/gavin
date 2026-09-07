@@ -7,6 +7,13 @@ vi.mock("@tauri-apps/plugin-dialog", () => picker);
 const backendMock = vi.hoisted(() => ({
   gavinRootExists: vi.fn(async () => false),
   initGavinRoot: vi.fn(async () => {}),
+  setGavinGitTracking: vi.fn(async () => ({
+    isRepo: true,
+    tracked: false,
+    ignoredBy: ".gitignore:1:.gavin-root/",
+    gavinManaged: true,
+    indexed: 0,
+  })),
 }));
 vi.mock("./backend", () => backendMock);
 
@@ -66,6 +73,18 @@ function setState(
 beforeEach(() => {
   vi.clearAllMocks();
   backendMock.gavinRootExists.mockResolvedValue(false);
+  // Reset the resolutions too, not just the call log: clearAllMocks
+  // leaves a mockRejectedValue from a previous test in place, and a
+  // scaffold that silently keeps failing turns every later assertion
+  // into a test of the error path.
+  backendMock.initGavinRoot.mockResolvedValue(undefined);
+  backendMock.setGavinGitTracking.mockResolvedValue({
+    isRepo: true,
+    tracked: false,
+    ignoredBy: ".gitignore:1:.gavin-root/",
+    gavinManaged: true,
+    indexed: 0,
+  });
   pendingOpen.set(null);
   setState([]);
 });
@@ -148,7 +167,7 @@ describe("answering the initialize question", () => {
       setState([{ id: `ws-${name}`, name }], `ws-${name}`);
     });
 
-    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" });
+    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, true);
     expect(order).toEqual(["init", "create"]);
     expect(backendMock.initGavinRoot).toHaveBeenCalledWith("/repo/fresh", "fresh");
     expect(layoutMock.setWorkspaceRoot).toHaveBeenCalledWith("ws-fresh", "/repo/fresh");
@@ -158,10 +177,34 @@ describe("answering the initialize question", () => {
   // workspace on a root gavin never wrote to.
   it("reports a failed init and creates nothing", async () => {
     backendMock.initGavinRoot.mockRejectedValue(new Error("read-only"));
-    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" });
+    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, true);
     expect(dialogMock.showAlert).toHaveBeenCalled();
     expect(layoutMock.createWorkspace).not.toHaveBeenCalled();
     expect(get(pendingOpen)).toBeNull();
+  });
+
+  // "Tracked" is what a repo with no rule already does, so an "on" has
+  // nothing to write -- and writing one anyway would put a .gitignore into
+  // every folder anybody ever initialised.
+  it("writes no ignore rule when the box was left ticked", async () => {
+    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, true);
+    expect(backendMock.setGavinGitTracking).not.toHaveBeenCalled();
+  });
+
+  it("writes the ignore rule when the box was cleared, and never touches the index", async () => {
+    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, false);
+    // Third argument false: init has just created these files, so there
+    // is nothing in the index to remove and nothing to ask about.
+    expect(backendMock.setGavinGitTracking).toHaveBeenCalledWith("/repo/fresh", false, false);
+  });
+
+  // The workspace is scaffolded and about to open; a .gitignore that
+  // could not be written is a line in Settings away from being fixed.
+  it("still opens the workspace when the ignore rule cannot be written", async () => {
+    backendMock.setGavinGitTracking.mockRejectedValueOnce(new Error("read-only"));
+    await initAndOpen({ rootPath: "/repo/fresh", name: "fresh" }, false);
+    expect(dialogMock.showAlert).not.toHaveBeenCalled();
+    expect(layoutMock.setWorkspaceRoot).toHaveBeenCalledWith("ws-fresh", "/repo/fresh");
   });
 
   // A repo can be a workspace for its terminals and its git tab long

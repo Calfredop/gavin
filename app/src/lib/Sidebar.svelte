@@ -30,12 +30,14 @@
     appHubOpen,
     openAppHub,
     agentProfilesStore,
+    gitTrackingDefault,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   // Naming a workspace into existence is the app hub's action now; the
   // sidebar's is "Open workspace…", which starts from a folder. The
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "./workspaceOpen";
+  import { INIT_TRACKING_LABEL, resolveGitTracking } from "./gitTracking";
   import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "./sidebarPrefs";
   import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "./sidebarPeek";
   import {
@@ -1764,8 +1766,9 @@
       "Creates .gavin-root/ with a PRD template, config, and plans/docs/specs folders. Nothing existing is overwritten.",
       "Opening without it still gives the folder its terminals, its git tab and its pages — just no board.",
     ]}
+    check={{ label: INIT_TRACKING_LABEL, default: resolveGitTracking($gitTrackingDefault) }}
     choices={[
-      { label: "Initialize", onPick: () => void initAndOpen(pending) },
+      { label: "Initialize", onPick: (_, tracked) => void initAndOpen(pending, tracked) },
       { label: "Open without initializing", onPick: () => void bindWithoutInit(pending) },
     ]}
     onCancel={cancelOpen}

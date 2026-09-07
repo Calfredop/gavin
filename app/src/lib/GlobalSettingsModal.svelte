@@ -10,6 +10,8 @@
     setTerminalFontSizeDefault,
     autoCommitDefault,
     setAutoCommitDefault,
+    gitTrackingDefault,
+    setGitTrackingDefault,
   } from "./layoutState";
   import ComplexityTable from "./ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "./complexity";
@@ -21,6 +23,7 @@
     autoCommitOptions,
     autoCommitToSelect,
   } from "./autoCommit";
+  import { resolveGitTracking } from "./gitTracking";
   import { scratchpadEnabled, setScratchpadEnabled } from "./sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "./hubTabPrefs";
   import HubTabsModal from "./HubTabsModal.svelte";
@@ -243,6 +246,30 @@
         Whether a new task or plan card starts asking the agent to commit its work when it finishes.
         Every workspace that sets nothing of its own follows this; every card can still be switched
         either way on the card itself.
+      </p>
+    </section>
+
+    <section>
+      <h3>Git</h3>
+      <div class="row">
+        <span>Track gavin's files</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={resolveGitTracking($gitTrackingDefault)}
+            onchange={(e) => void setGitTrackingDefault(e.currentTarget.checked)}
+          />
+          <!-- Not INIT_TRACKING_LABEL: that is the question the two init
+               prompts ask, and this row is the answer they START from.
+               Wording them identically would read as a switch that
+               reaches back into every workspace already open. -->
+          <span>On in workspaces gavin initializes</span>
+        </label>
+      </div>
+      <p class="hint">
+        What gavin does when it initializes a workspace: leave .gavin-root/ and every .gavin/ folder
+        to be committed with the project, or write an ignore rule for them. Only new workspaces —
+        each existing one keeps the answer in its own repository, on its Settings tab.
       </p>
     </section>
 

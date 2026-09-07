@@ -58,6 +58,7 @@ vi.mock("./backend", () => ({
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
   getAutoCommit: vi.fn().mockResolvedValue(null),
+  getGitTrackingDefault: vi.fn().mockResolvedValue(null),
   setAutoCommit: vi.fn().mockResolvedValue(undefined),
   setTerminalFontSize: vi.fn().mockResolvedValue(undefined),
   mcpFormats: vi.fn().mockResolvedValue([]),

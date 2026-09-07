@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
+import type { GavinTracking } from "./gitTracking";
 import type { BoardTab, CardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
@@ -201,6 +202,41 @@ export function getAutoCommit(): Promise<boolean | null> {
 
 export function setAutoCommit(enabled: boolean | null): Promise<void> {
   return invoke("set_auto_commit", { enabled });
+}
+
+/// The app-wide default a NEW workspace's init starts from. Same
+/// absence-not-the-default convention as the theme, the font size and the
+/// auto-commit block: null means nobody chose, `false` means an install
+/// that chose OFF and must stay off whatever gavin's default becomes.
+///
+/// A default only. What an EXISTING workspace does is written in its own
+/// repo's `.gitignore` and read back through `gavinGitTracking` -- there
+/// is no second copy here to keep in step.
+export function getGitTrackingDefault(): Promise<boolean | null> {
+  return invoke("get_git_tracking_default");
+}
+
+export function setGitTrackingDefault(tracked: boolean | null): Promise<void> {
+  return invoke("set_git_tracking_default", { tracked });
+}
+
+/// What git says about gavin's files under this root, right now. Nothing
+/// is cached on either side: `.gitignore` is a file the human may have
+/// edited by hand since the last look.
+export function gavinGitTracking(root: string): Promise<GavinTracking> {
+  return invoke("gavin_git_tracking", { root });
+}
+
+/// Writes (or removes) gavin's ignore block and reports where that left
+/// things. `untrack` is only ever meaningful for turning tracking OFF, and
+/// it stages deletions -- so it carries the human's answer to a question
+/// they were asked by name, never the toggle's own implication.
+export function setGavinGitTracking(
+  root: string,
+  tracked: boolean,
+  untrack: boolean
+): Promise<GavinTracking> {
+  return invoke("set_gavin_git_tracking", { root, tracked, untrack });
 }
 
 /// The app-wide agent pause cycle, machine-local beside the theme.
